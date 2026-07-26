@@ -7,17 +7,29 @@ import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.render.Theme;
+import com.bedwarsqol.stats.BedwarsStats;
+import com.bedwarsqol.stats.EligibilitySnapshot;
+import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.stats.StatsCache;
+import com.bedwarsqol.stats.SeraphTag;
+import com.bedwarsqol.stats.UrchinTag;
+import com.mojang.authlib.GameProfile;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.util.ChatAllowedCharacters;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.GL11;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Custom-rendered settings screen — floating in the screen's top-right corner over a blurred, dimmed
@@ -83,6 +95,11 @@ public class SettingsGui extends GuiScreen {
     // Urchin Tags module (master toggle) + its sub-settings (kind numbers shared with the Lunar tree).
     private static final int K_URCHIN = 104, K_URCHIN_BADGE_TAB = 105, K_URCHIN_CHAT_ALERT = 106,
             K_URCHIN_SOUND = 107, K_URCHIN_BADGE_NAMETAG = 108, K_URCHIN_FUSION = 109;
+    // Seraph Tags module (master toggle) + its sub-settings (kind numbers shared with the Lunar tree).
+    private static final int K_SERAPH = 110, K_SERAPH_BADGE_TAB = 111, K_SERAPH_CHAT_ALERT = 112,
+            K_SERAPH_SOUND = 113, K_SERAPH_BADGE_NAMETAG = 114;
+    // Pregame-queue chat alerts (kind numbers shared with the Lunar tree).
+    private static final int K_QUEUE_TAG_ALERT = 115, K_QUEUE_NICK_ALERT = 116;
 
     private static final String[] GUI_SIZES = {"Small", "Medium", "Large"};
     private static final String[] TEXT_SIZES = {"Small", "Medium", "Large"};
@@ -233,7 +250,14 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Chat Alert", K_URCHIN_CHAT_ALERT, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Alert Sound", K_URCHIN_SOUND, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Nametag Badge", K_URCHIN_BADGE_NAMETAG, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Anticheat Fusion", K_URCHIN_FUSION, null, K_URCHIN)),
+                    new RowDef(RowType.TOGGLE, "Anticheat Fusion", K_URCHIN_FUSION, null, K_URCHIN),
+                    new RowDef(RowType.TOGGLE, "Seraph Tags", "Community blacklist/safelist from api.seraph.si", K_SERAPH),
+                    new RowDef(RowType.TOGGLE, "Tab Badge", K_SERAPH_BADGE_TAB, null, K_SERAPH),
+                    new RowDef(RowType.TOGGLE, "Chat Alert", K_SERAPH_CHAT_ALERT, null, K_SERAPH),
+                    new RowDef(RowType.TOGGLE, "Alert Sound", K_SERAPH_SOUND, null, K_SERAPH),
+                    new RowDef(RowType.TOGGLE, "Nametag Badge", K_SERAPH_BADGE_NAMETAG, null, K_SERAPH),
+                    new RowDef(RowType.TOGGLE, "Queue Tag Alert", "Queue only: tags for players who type", K_QUEUE_TAG_ALERT),
+                    new RowDef(RowType.TOGGLE, "Queue Nick Alert", "Queue only: nicks for players who type", K_QUEUE_NICK_ALERT)),
             // Settings: two always-open container GROUP cards (Appearance / HUD) stacked in the column.
             // Each stepper is a child of its group card; the Accent picker is a normal STEPPER (GuiTheme
             // resolves live).
@@ -435,6 +459,55 @@ public class SettingsGui extends GuiScreen {
     private int searchClearX1, searchClearX2; // clear-x hit zone
     private int searchListTop, searchListBottom;
 
+    // ---- Players tab state (fetch-on-click master-detail; see PlayersViewState for session persistence) ----
+    /** The Players section index (the trailing placeholder tab). */
+    private static final int PLAYERS_INDEX = SECTIONS.length - 1;
+    // Wide master-detail band under the header (list left, detail right). Computed in initGui.
+    private int playersX1, playersX2, playersTop, playersBottom, playersListX2, playersDetailX1;
+    private int playersRowH;
+    // The list viewport's clip bounds (set each frame in drawPlayers; shared by click hit-testing so a
+    // click can never select a row hidden by the scissor/padding).
+    private int playersListTop, playersListBottom;
+    // Dedicated player-search field pinned above the list (Players tab only). Computed in initGui.
+    private int playerSearchX1, playerSearchX2, playerSearchY1, playerSearchY2;
+    private int playerSearchClearX1, playerSearchClearX2;
+    private boolean playerSearchFocused; // focus for the above-list player field (separate from the header)
+    // Per-frame row hit rectangles + parallel uuids/names (rebuilt each draw from the tab list).
+    private final List<float[]> playerRowHits = new ArrayList<float[]>();
+    private final List<UUID> playerRowUuids = new ArrayList<UUID>();
+    private final List<String> playerRowNames = new ArrayList<String>();
+    private float[] lookupRowHit; // "Search Hypixel for X" action row rect, or null
+    /** Stable-insertion-order row animation; fresh per GUI open (the real "page opened" boundary). */
+    private final PlayersListAnim playersAnim = new PlayersListAnim();
+    // Own scroll for the player list (kept separate from the shared card scroll).
+    private float playersScrollRender;
+    // Detail-panel vertical scroll (hero + per-mode cards + Urchin + Seraph can overflow the panel).
+    private float detailScroll, detailScrollRender, detailScrollAccum;
+    private int detailMaxScroll;
+    private float playersScrollAccum;
+    private int playersMaxScroll;
+    private boolean draggingPlayersThumb;
+    private float playersThumbGrabDy;
+
+    private boolean playersTab() { return selectedSection == PLAYERS_INDEX; }
+
+    /** Reopen on the section the user last viewed this session (falls back to the default HUD tab). */
+    public SettingsGui() {
+        if (PlayersViewState.selectedSection >= 0 && PlayersViewState.selectedSection < SECTIONS.length) {
+            selectedSection = PlayersViewState.selectedSection;
+        }
+    }
+
+    /** Open directly on a specific section (used by the Players keybind to jump straight to the tab). */
+    public SettingsGui(int section) {
+        if (section >= 0 && section < SECTIONS.length) selectedSection = section;
+    }
+
+    /** A settings screen opened straight to the Players tab (used by the Players keybind). */
+    public static SettingsGui players() {
+        return new SettingsGui(PLAYERS_INDEX);
+    }
+
     @Override
     public void initGui() {
         buttonList.clear();
@@ -486,8 +559,7 @@ public class SettingsGui extends GuiScreen {
         int barY1 = headerY1 + (headerH - barH) / 2;
         int barY2 = barY1 + barH;
         tabsY1 = barY1; tabsY2 = barY2;
-        editHudY1 = barY1; editHudY2 = barY2;
-        searchBarY1 = barY1; searchBarY2 = barY2;
+        // (Search + Edit HUD get a shorter band below, once the header text scale is finalized.)
 
         // The version keeps its own (smaller) scale; the tabs, search field and Edit HUD label share one
         // enlarged scale. When the right-anchored cluster is too wide for the screen, only that shared scale
@@ -516,6 +588,15 @@ public class SettingsGui extends GuiScreen {
                 clamp(Math.round(rowH * 0.14f), 3, 9), 0.34f, 2f, 2f);
         headerScale = fit[0];
         tabScale = headerScale;
+        // The search field + Edit HUD button hug their text so they read as clearly shorter than the tab
+        // pills, while staying centered on the same row. Height = header text height + a small pad, so the
+        // labels stay fully readable; the taller band is reserved for the tab pills only.
+        int actionTextH = Math.round(BedwarsQolFont.height(headerScale));
+        int actionH = Math.min(barH, actionTextH + 2 * clamp(Math.round(rowH * 0.10f), 2, 4));
+        actionH = Math.max(actionTextH + 2, Math.round(actionH * 0.9f)); // 10% shorter again; floor keeps the label readable
+        int actionY1 = barY1 + (barH - actionH) / 2;
+        editHudY1 = actionY1; editHudY2 = actionY1 + actionH;
+        searchBarY1 = actionY1; searchBarY2 = actionY1 + actionH;
         editHudScale = headerScale;
         float tabPadX = fit[1];
         int tabGap = Math.round(fit[2]);
@@ -549,6 +630,34 @@ public class SettingsGui extends GuiScreen {
         // Content column: below the header, full remaining height (scrolls on overflow).
         contentTop = headerY2 + pad;
         contentH = innerBottom - contentTop;
+
+        // Players tab: a wide master-detail band under the header. The settings column is narrow and
+        // right-anchored; the Players view instead spans from the left screen margin to the column's right
+        // edge (list on the left ~38%, detail on the right), floating on the same blurred world.
+        // Align the right card with the module cards' right edge (they stop a scroll-gutter short of
+        // contentRight), then mirror that same inset on the left so the band's left/right screen gaps match.
+        playersX2 = contentRight - SCROLL_GUTTER;
+        playersX1 = vW - playersX2;
+        playersTop = contentTop;
+        playersBottom = innerBottom;
+        int pGap = clamp(Math.round(pad * 1.2f), 8, 18);
+        playersListX2 = playersX1 + Math.round((playersX2 - playersX1) * 0.38f);
+        playersDetailX1 = playersListX2 + pGap;
+        playersRowH = clamp(Math.round(rowH * 0.92f), 16, 34);
+
+        // Dedicated player-search field pinned to the top of the list panel (Players tab only; the header
+        // search field is hidden there). Filters the tab list live and offers a Hypixel lookup for any name
+        // not in the list (the action row in drawPlayers).
+        int psPad = clamp(Math.round(pad * 0.6f), 5, 10);
+        playerSearchX1 = playersX1 + psPad;
+        playerSearchX2 = playersListX2 - psPad;
+        playerSearchY1 = playersTop + psPad;
+        float psScale = clampf(playersRowH * 0.04f, 0.95f, 1.4f);
+        playerSearchY2 = playerSearchY1 + Math.round(BedwarsQolFont.height(psScale))
+                + 2 * clamp(Math.round(playersRowH * 0.16f), 3, 5);
+        int psClearW = clamp(Math.round((playerSearchY2 - playerSearchY1) * 0.5f), 7, 12);
+        playerSearchClearX2 = playerSearchX2 - 4;
+        playerSearchClearX1 = playerSearchClearX2 - psClearW;
 
         if (allModules.isEmpty()) collectModules();
         layoutContent();
@@ -750,7 +859,8 @@ public class SettingsGui extends GuiScreen {
         int hy = openDropdownKind != 0 ? -1 : mouseY;
 
         drawTopBar(hx, hy);
-        if (searchActive()) drawSearchResults(hx, hy);
+        if (searchActive()) drawSearchResults(hx, hy);       // global search overlays any tab, incl. Players
+        else if (playersTab()) drawPlayers(hx, hy);
         else drawCards(hx, hy);
 
         drawDropdownPopup(mouseX, mouseY);
@@ -781,7 +891,7 @@ public class SettingsGui extends GuiScreen {
             GuiRender.textCentered(SECTIONS[i].tab, (t[0] + t[2]) / 2f, vcenter(t[1], t[3] - t[1], tabScale), tabScale, col, MED);
         }
 
-        drawSearchBar(mouseX, mouseY);
+        drawSearchBar(mouseX, mouseY); // header search: global module search on every tab (incl. Players)
         drawEditHudButton(mouseX, mouseY);
     }
 
@@ -789,9 +899,10 @@ public class SettingsGui extends GuiScreen {
      *  destructive red): a subtle keyline that warms to the accent on hover. */
     private void drawEditHudButton(int mouseX, int mouseY) {
         boolean hover = GuiRender.inside(mouseX, mouseY, editHudX1, editHudY1, editHudX2, editHudY2);
-        GuiRender.roundedRect(editHudX1, editHudY1, editHudX2, editHudY2, CARD_R, hover ? BTN_HOVER : BTN_BG);
-        GuiRender.roundedRectOutline(editHudX1, editHudY1, editHudX2, editHudY2, CARD_R, 0.5f,
-                hover ? accent.dropdownOutline() : BTN_BORDER);
+        float r = (editHudY2 - editHudY1) / 2f; // pill corners, matching the tab buttons
+        GuiRender.roundedRect(editHudX1, editHudY1, editHudX2, editHudY2, r, hover ? BTN_HOVER : BTN_BG);
+        GuiRender.roundedRectOutline(editHudX1, editHudY1, editHudX2, editHudY2, r, 0.5f,
+                hover ? TAB_ACTIVE_TEXT : GuiTheme.TEXT_MID);
         GuiRender.textCentered(EDIT_HUD_LABEL, (editHudX1 + editHudX2) / 2f,
                 vcenter(editHudY1, editHudY2 - editHudY1, editHudScale), editHudScale,
                 hover ? GuiTheme.TEXT_HI : GuiTheme.TEXT_MID, MED);
@@ -801,10 +912,10 @@ public class SettingsGui extends GuiScreen {
      *  border appears only while focused. Typing switches the content area to results. */
     private void drawSearchBar(int mouseX, int mouseY) {
         String q = searchQuery.toString();
-        GuiRender.roundedRect(searchBarX1, searchBarY1, searchBarX2, searchBarY2, CARD_R, SEARCH_BAR_BG);
-        if (searchFocused) {
-            GuiRender.roundedRectOutline(searchBarX1, searchBarY1, searchBarX2, searchBarY2, CARD_R, 0.5f, accent.dropdownOutline());
-        }
+        float r = (searchBarY2 - searchBarY1) / 2f; // pill corners, matching the tab buttons
+        GuiRender.roundedRect(searchBarX1, searchBarY1, searchBarX2, searchBarY2, r, SEARCH_BAR_BG);
+        GuiRender.roundedRectOutline(searchBarX1, searchBarY1, searchBarX2, searchBarY2, r, 0.5f,
+                searchFocused ? TAB_ACTIVE_TEXT : GuiTheme.TEXT_MID);
         float barCy = (searchBarY1 + searchBarY2) / 2f;
         float textX = searchBarX1 + 8;
         float textRight = searchClearX1 - 6;
@@ -840,9 +951,10 @@ public class SettingsGui extends GuiScreen {
             int base = on ? GuiTheme.CARD_ON_BG : GuiTheme.CARD_OFF_BG;
             GuiRender.gradientRoundedRectH(card.x, card.y, card.x + card.w, card.y + card.h, CARD_R,
                     gradHi(base), gradLo(base)); // left→right sheen on the card fill
-            // Accent keyline on every card (on, off, and group); on/off still reads via fill + title tone.
+            // Accent keyline on enabled modules and on the always-open Settings group containers; off
+            // modules get the neutral hairline.
             GuiRender.roundedRectOutline(card.x, card.y, card.x + card.w, card.y + card.h, CARD_R, 0.5f,
-                    accent.enabledCardBorder());
+                    (on || card.group) ? accent.enabledCardBorder() : GuiTheme.CARD_OFF_BORDER);
 
             if (module) {
                 float blockH = titleH + CARD_TITLE_DESC_GAP + descH;
@@ -1161,15 +1273,28 @@ public class SettingsGui extends GuiScreen {
         }
         if (mouseButton != 0) return;
 
-        // Search field (persistent): click to focus (and clear via the x); any other click blurs it.
-        boolean inSearchBar = GuiRender.inside(mouseX, mouseY, searchBarX1, searchBarY1, searchBarX2, searchBarY2);
-        searchFocused = inSearchBar;
-        if (inSearchBar) {
-            if (searchQuery.length() > 0
-                    && GuiRender.inside(mouseX, mouseY, searchClearX1, searchBarY1, searchClearX2, searchBarY2)) {
+        // Two independent search fields: the header field (global module search, every tab) and the
+        // above-list player field (Players tab, only while the list — not global results — is showing). A
+        // click focuses whichever it lands in and blurs the other; any other click blurs both.
+        boolean inHeaderSearch = GuiRender.inside(mouseX, mouseY, searchBarX1, searchBarY1, searchBarX2, searchBarY2);
+        boolean inPlayerSearch = playersTab() && !searchActive()
+                && GuiRender.inside(mouseX, mouseY, playerSearchX1, playerSearchY1, playerSearchX2, playerSearchY2);
+        searchFocused = inHeaderSearch;
+        playerSearchFocused = inPlayerSearch;
+        if (inHeaderSearch) {
+            boolean clearHit = GuiRender.inside(mouseX, mouseY, searchClearX1, searchBarY1, searchClearX2, searchBarY2);
+            if (searchQuery.length() > 0 && clearHit) {
                 searchQuery.setLength(0);
                 resetScroll();
                 layoutContent();
+            }
+            playClick();
+            return;
+        }
+        if (inPlayerSearch) {
+            boolean clearHit = GuiRender.inside(mouseX, mouseY, playerSearchClearX1, playerSearchY1, playerSearchClearX2, playerSearchY2);
+            if (PlayersViewState.playerQuery.length() > 0 && clearHit && PlayersViewState.setQuery("")) {
+                playersScrollRender = 0f;
             }
             playClick();
             return;
@@ -1185,7 +1310,7 @@ public class SettingsGui extends GuiScreen {
         }
 
         // Scrollbar: grab the thumb to drag it, or click the track above/below to page.
-        float[] sb = scrollbarGeom();
+        float[] sb = (playersTab() && !searchActive()) ? null : scrollbarGeom();
         if (sb != null && mouseX >= sb[0] - 3 && mouseX <= sb[1] + 1 && mouseY >= sb[2] && mouseY <= sb[3]) {
             float thumbY = sb[2] + sb[5] * clampf(scrollRender / maxScroll, 0f, 1f);
             if (mouseY >= thumbY && mouseY <= thumbY + sb[4]) {
@@ -1216,8 +1341,66 @@ public class SettingsGui extends GuiScreen {
             }
         }
 
+        if (playersTab() && !searchActive()) {
+            playersClick(mouseX, mouseY, cfg);
+            return;
+        }
         // Section grid or search grid — same card click model either way.
         cardsClick(mouseX, mouseY, cfg);
+    }
+
+    /** Click routing inside the Players tab: list scrollbar, a player row (fetch on click), or the
+     *  remote-lookup action row. */
+    private void playersClick(int mouseX, int mouseY, ClientSettings cfg) {
+        float[] sb = playersScrollbarGeom();
+        if (sb != null && mouseX >= sb[0] - 3 && mouseX <= sb[1] + 2 && mouseY >= sb[2] && mouseY <= sb[3]) {
+            float thumbY = sb[2] + sb[5] * clampf(playersScrollRender / playersMaxScroll, 0f, 1f);
+            if (mouseY >= thumbY && mouseY <= thumbY + sb[4]) {
+                draggingPlayersThumb = true;
+                playersThumbGrabDy = mouseY - thumbY;
+            } else {
+                int page = Math.max(playersRowH, (int) ((sb[3] - sb[2]) * 0.9f));
+                PlayersViewState.listScroll = clampf(PlayersViewState.listScroll + (mouseY < thumbY ? -page : page),
+                        0, playersMaxScroll);
+                playClick();
+            }
+            return;
+        }
+        for (int i = 0; i < playerRowHits.size(); i++) {
+            float[] r = playerRowHits.get(i);
+            if (mouseY >= playersListTop && mouseY < playersListBottom
+                    && GuiRender.inside(mouseX, mouseY, r[0], r[1], r[2], r[3])) {
+                UUID u = playerRowUuids.get(i);
+                String n = playerRowNames.get(i);
+                PlayersViewState.selectedUuid = u;
+                PlayersViewState.selectedName = n;
+                PlayersViewState.lookupName = null;
+                detailScroll = detailScrollRender = detailScrollAccum = 0f; // new selection: top of detail
+                if (u != null && HypixelContext.isOnHypixel()) {
+                    boolean elig = cfg.urchinTags && UrchinTag.badgeAllowed(EligibilitySnapshot.current(), n, u);
+                    StatsCache.ensureFetched(u, StatsCache.PRIORITY_USER, elig); // async, deduped, non-blocking
+                }
+                playClick();
+                return;
+            }
+        }
+        if (lookupRowHit != null
+                && mouseY >= playersListTop && mouseY < playersListBottom
+                && GuiRender.inside(mouseX, mouseY, lookupRowHit[0], lookupRowHit[1], lookupRowHit[2], lookupRowHit[3])) {
+            triggerPlayerLookup();
+        }
+    }
+
+    /** Runs the "Search Hypixel for X" remote lookup for the current player-search query. Shared by the
+     *  action-row click and the Enter key; a no-op on a blank query. */
+    private void triggerPlayerLookup() {
+        String q = PlayersViewState.playerQuery.trim();
+        if (q.isEmpty()) return;
+        PlayersViewState.lookupName = q;
+        PlayersViewState.selectedUuid = null;
+        detailScroll = detailScrollRender = detailScrollAccum = 0f; // new selection: top of detail
+        StatsCache.ensureFetchedByName(q, StatsCache.PRIORITY_USER);
+        playClick();
     }
 
     private void cardsClick(int mouseX, int mouseY, ClientSettings cfg) {
@@ -1305,6 +1488,9 @@ public class SettingsGui extends GuiScreen {
         stopEditing();
         Keyboard.enableRepeatEvents(false);
         GuiBlur.end();
+        // Persist the selected section so a normal reopen returns to the same tab (other Players view
+        // state — selected player, list scroll, query — already lives in PlayersViewState statics).
+        PlayersViewState.selectedSection = selectedSection;
         settings().save();
     }
 
@@ -1327,12 +1513,42 @@ public class SettingsGui extends GuiScreen {
         if (Math.abs(scroll - scrollRender) < 0.5f) scrollRender = scroll;
     }
 
+    /** True when the hardware cursor is over the Players detail panel (right column), in virtual space. */
+    private boolean wheelOverDetail() {
+        if (mc.displayWidth <= 0) return false;
+        float vx = (Mouse.getX() * width / (float) mc.displayWidth) / uiScale;
+        return vx >= playersListX2;
+    }
+
     @Override
     public void handleMouseInput() throws IOException {
         super.handleMouseInput();
         int dwheel = Mouse.getEventDWheel();
         if (dwheel == 0) return;
         if (openDropdownKind != 0) return; // an open dropdown is modal: swallow the wheel
+        if (playersTab() && !searchActive()) {
+            // Route the wheel by cursor column: over the detail panel scrolls the detail, else the list.
+            if (wheelOverDetail()) {
+                if (detailMaxScroll <= 0) return;
+                float dd = dwheel / 120f * (rowH * 1.1f);
+                detailScrollAccum -= clampf(dd, -rowH * 2.5f, rowH * 2.5f);
+                int dw = (int) detailScrollAccum;
+                if (dw != 0) {
+                    detailScrollAccum -= dw;
+                    detailScroll = clampf(detailScroll + dw, 0, detailMaxScroll);
+                }
+                return;
+            }
+            if (playersMaxScroll <= 0) return;
+            float d = dwheel / 120f * (playersRowH * 1.1f);
+            playersScrollAccum -= clampf(d, -playersRowH * 2.5f, playersRowH * 2.5f);
+            int whole = (int) playersScrollAccum;
+            if (whole != 0) {
+                playersScrollAccum -= whole;
+                PlayersViewState.listScroll = clampf(PlayersViewState.listScroll + whole, 0, playersMaxScroll);
+            }
+            return;
+        }
         if (maxScroll <= 0) return;
         int rh = Math.max(8, rowH);
         float delta = dwheel / 120f * (rh * 1.1f);
@@ -1351,6 +1567,15 @@ public class SettingsGui extends GuiScreen {
         super.mouseClickMove(mouseX, mouseY, clickedMouseButton, timeSinceLastClick);
         mouseX = Math.round(mouseX / uiScale);
         mouseY = Math.round(mouseY / uiScale);
+        if (clickedMouseButton == 0 && draggingPlayersThumb) {
+            float[] sb = playersScrollbarGeom();
+            if (sb != null && sb[5] > 0f) {
+                float newTop = clampf(mouseY - sb[2] - playersThumbGrabDy, 0f, sb[5]);
+                PlayersViewState.listScroll = clampf(Math.round(newTop / sb[5] * playersMaxScroll), 0, playersMaxScroll);
+                playersScrollRender = PlayersViewState.listScroll;
+            }
+            return;
+        }
         if (clickedMouseButton == 0 && draggingThumb) {
             float[] sb = scrollbarGeom();
             if (sb != null && sb[5] > 0f) {
@@ -1370,6 +1595,7 @@ public class SettingsGui extends GuiScreen {
     protected void mouseReleased(int mouseX, int mouseY, int state) {
         super.mouseReleased(mouseX, mouseY, state);
         draggingThumb = false;
+        draggingPlayersThumb = false;
         if (draggingSliderKind != 0) {
             draggingSliderKind = 0;
             settings().save();
@@ -1386,10 +1612,8 @@ public class SettingsGui extends GuiScreen {
             sliderEditKey(typedChar, keyCode);
             return;
         }
-        if (searchFocused) {
-            searchKey(typedChar, keyCode);
-            return;
-        }
+        if (searchFocused) { searchKey(typedChar, keyCode); return; }              // header: global search
+        if (playerSearchFocused) { playersSearchKey(typedChar, keyCode); return; } // above-list: player filter
         super.keyTyped(typedChar, keyCode);
     }
 
@@ -1463,6 +1687,13 @@ public class SettingsGui extends GuiScreen {
             case K_URCHIN_SOUND: return cfg.urchinAlertSound;
             case K_URCHIN_BADGE_NAMETAG: return cfg.urchinBadgeNametag;
             case K_URCHIN_FUSION: return cfg.urchinAcFusion;
+            case K_SERAPH: return cfg.seraphTags;
+            case K_SERAPH_BADGE_TAB: return cfg.seraphBadgeTab;
+            case K_SERAPH_CHAT_ALERT: return cfg.seraphChatAlert;
+            case K_SERAPH_SOUND: return cfg.seraphAlertSound;
+            case K_SERAPH_BADGE_NAMETAG: return cfg.seraphBadgeNametag;
+            case K_QUEUE_TAG_ALERT: return cfg.queueTagAlert;
+            case K_QUEUE_NICK_ALERT: return cfg.queueNickAlert;
             default: return false;
         }
     }
@@ -1520,12 +1751,19 @@ public class SettingsGui extends GuiScreen {
             case K_NOTIFY_INC: cfg.chatNotifyInc = !cfg.chatNotifyInc; break;
             case K_CHAT_COPY: cfg.chatCopy = !cfg.chatCopy; break;
             case K_INC_KEY: cfg.pcIncKey = !cfg.pcIncKey; break;
-            case K_URCHIN: cfg.urchinTags = !cfg.urchinTags; break;
+            case K_URCHIN: cfg.urchinTags = !cfg.urchinTags; StatsCache.invalidateUrchinResolution(); break;
             case K_URCHIN_BADGE_TAB: cfg.urchinBadgeTab = !cfg.urchinBadgeTab; break;
             case K_URCHIN_CHAT_ALERT: cfg.urchinChatAlert = !cfg.urchinChatAlert; break;
             case K_URCHIN_SOUND: cfg.urchinAlertSound = !cfg.urchinAlertSound; break;
             case K_URCHIN_BADGE_NAMETAG: cfg.urchinBadgeNametag = !cfg.urchinBadgeNametag; break;
             case K_URCHIN_FUSION: cfg.urchinAcFusion = !cfg.urchinAcFusion; break;
+            case K_SERAPH: cfg.seraphTags = !cfg.seraphTags; StatsCache.invalidateSeraphResolution(); break;
+            case K_SERAPH_BADGE_TAB: cfg.seraphBadgeTab = !cfg.seraphBadgeTab; break;
+            case K_SERAPH_CHAT_ALERT: cfg.seraphChatAlert = !cfg.seraphChatAlert; break;
+            case K_SERAPH_SOUND: cfg.seraphAlertSound = !cfg.seraphAlertSound; break;
+            case K_SERAPH_BADGE_NAMETAG: cfg.seraphBadgeNametag = !cfg.seraphBadgeNametag; break;
+            case K_QUEUE_TAG_ALERT: cfg.queueTagAlert = !cfg.queueTagAlert; break;
+            case K_QUEUE_NICK_ALERT: cfg.queueNickAlert = !cfg.queueNickAlert; break;
             default: break;
         }
     }
@@ -1864,6 +2102,643 @@ public class SettingsGui extends GuiScreen {
         scroll = 0;
         scrollRender = 0f;
         scrollAccum = 0f;
+    }
+
+    /** Search-box key handling while the Players tab is active — drives the (separate, session-persisted)
+     *  player query, never the module query. */
+    private void playersSearchKey(char typedChar, int keyCode) {
+        if (keyCode == Keyboard.KEY_ESCAPE) {
+            if (PlayersViewState.setQuery("")) playersScrollRender = 0f;
+            searchFocused = false;
+            return;
+        }
+        if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
+            triggerPlayerLookup();
+            return;
+        }
+        if (keyCode == Keyboard.KEY_BACK) {
+            String cur = PlayersViewState.playerQuery;
+            if (cur.length() > 0 && PlayersViewState.setQuery(cur.substring(0, cur.length() - 1))) {
+                playersScrollRender = 0f;
+            }
+            return;
+        }
+        if (ChatAllowedCharacters.isAllowedCharacter(typedChar) && PlayersViewState.playerQuery.length() < 48) {
+            if (PlayersViewState.setQuery(PlayersViewState.playerQuery + typedChar)) playersScrollRender = 0f;
+        }
+    }
+
+    // =====================================================================================
+    // Players tab — a fetch-on-click master-detail view. The left list shows the tab-list players
+    // (no fetching); clicking a player fetches that one via StatsCache (existing deduped USER path) and
+    // the right panel renders its full stats + Urchin state. Search filters the names; a no-match query
+    // offers a single remote lookup. All view state lives in PlayersViewState (session-persistent).
+    // =====================================================================================
+
+    private static final int PLAYERS_PANEL_BG = 0xDE201B15;   // list/detail fill (matches module card opacity)
+    private static final int PLAYERS_ROW_SEL  = 0x33FFF2E4;    // selected row wash
+    private static final int DETAIL_CARD_BG   = 0x16FFFFFF;    // per-mode card fill
+    private static final int DETAIL_DIVIDER   = 0x22FFFFFF;    // section rule
+
+    /** Multiply an ARGB color's alpha by {@code a} (clamped) for the list slide/fade. Keeps alpha &ge; 1 so
+     *  the custom font's "alpha 0 &rarr; opaque" quirk never triggers on a nearly-faded row. */
+    private static int applyAlpha(int argb, float a) {
+        int base = (argb >>> 24) & 0xFF;
+        int na = Math.max(1, Math.round(base * clampf(a, 0f, 1f)));
+        return (na << 24) | (argb & 0xFFFFFF);
+    }
+
+    private void drawPlayers(int mouseX, int mouseY) {
+        ClientSettings cfg = settings();
+        // Ease the list scroll toward its (session-persisted) target.
+        playersScrollRender += (PlayersViewState.listScroll - playersScrollRender) * 0.35f;
+        if (Math.abs(PlayersViewState.listScroll - playersScrollRender) < 0.5f) {
+            playersScrollRender = PlayersViewState.listScroll;
+        }
+
+        // Panel backdrops for the two columns, each with an accent keyline matching the module cards.
+        GuiRender.roundedRect(playersX1, playersTop, playersListX2, playersBottom, CARD_R, PLAYERS_PANEL_BG);
+        GuiRender.roundedRect(playersDetailX1, playersTop, playersX2, playersBottom, CARD_R, PLAYERS_PANEL_BG);
+        GuiRender.roundedRectOutline(playersX1, playersTop, playersListX2, playersBottom, CARD_R, 0.5f, accent.enabledCardBorder());
+        GuiRender.roundedRectOutline(playersDetailX1, playersTop, playersX2, playersBottom, CARD_R, 0.5f, accent.enabledCardBorder());
+
+        // Dedicated player-search field at the top of the list panel.
+        drawPlayerSearchBar(mouseX, mouseY);
+
+        boolean onHypixel = HypixelContext.isOnHypixel();
+
+        // Live players in enumeration order + per-row search match (insertion order = slot order).
+        String q = PlayersViewState.playerQuery.trim();
+        List<UUID> liveUuids = new ArrayList<UUID>();
+        List<String> liveNames = new ArrayList<String>();
+        List<Integer> tmp = new ArrayList<Integer>();
+        List<Boolean> matchList = new ArrayList<Boolean>();
+        int shownLive = 0;
+        for (NetworkPlayerInfo info : tabPlayers()) {
+            UUID uuid = info.getGameProfile().getId();
+            String name = profileName(info);
+            if (uuid == null || name == null) continue;
+            boolean m = q.isEmpty() || ModuleSearch.scoreField(q, name, tmp) != ModuleSearch.NO_MATCH;
+            liveUuids.add(uuid);
+            liveNames.add(name);
+            matchList.add(m);
+            if (m) shownLive++;
+        }
+        boolean[] matched = new boolean[matchList.size()];
+        for (int i = 0; i < matched.length; i++) matched[i] = matchList.get(i);
+
+        int listPad = clamp(Math.round(pad * 0.6f), 5, 10);
+        int listInnerX1 = playersX1 + listPad;
+        int listInnerX2 = playersListX2 - listPad;
+        int listTop = playerSearchY2 + clamp(Math.round(pad * 0.5f), 4, 9); // below the search field
+        int listBottom = playersBottom - listPad;
+        playersListTop = listTop;
+        playersListBottom = listBottom;
+        int rowGap = 2;
+        int rowStride = playersRowH + rowGap;
+        boolean wantLookup = !q.isEmpty() && shownLive == 0 && onHypixel;
+        int rows = shownLive + (wantLookup ? 1 : 0);
+        int blockH = rows * rowStride;
+        int viewH = listBottom - listTop;
+        playersMaxScroll = Math.max(0, blockH - viewH);
+        // Clamp both the target and the eased render offset so a shrinking/filtered list can't leave a
+        // stale negative/overrun scroll that paints (or hit-tests) into the panel padding.
+        PlayersViewState.listScroll = clampf(PlayersViewState.listScroll, 0, playersMaxScroll);
+        playersScrollRender = clampf(playersScrollRender, 0, playersMaxScroll);
+
+        // Advance the stable-insertion animation model against the live set (seed/append/leave/filter).
+        playersAnim.sync(liveUuids, liveNames, matched, listTop, playersScrollRender, rowStride);
+
+        // ---- Left: player list (clipped, scrollable) ----
+        playerRowHits.clear();
+        playerRowUuids.clear();
+        playerRowNames.clear();
+        lookupRowHit = null;
+
+        // Always scissor the list (even at zero max) so nothing paints into the top/bottom padding.
+        GuiRender.beginScissor(playersX1, listTop, playersListX2, listBottom);
+        float rowScale = clampf(playersRowH * 0.042f, 1.0f, 1.6f);
+        long now = System.currentTimeMillis();
+        for (PlayersListAnim.Row row : playersAnim.rows()) {
+            if (row.alpha <= 0.02f) continue;
+            float y = row.renderY;
+            if (!(y + playersRowH > listTop && y < listBottom)) continue; // half-open viewport clip
+            boolean sel = !row.leaving && row.uuid.equals(PlayersViewState.selectedUuid);
+            boolean hittable = row.hittable();
+            boolean hover = hittable && !sel
+                    && GuiRender.inside(mouseX, mouseY, listInnerX1, y, listInnerX2, y + playersRowH)
+                    && mouseY >= listTop && mouseY < listBottom;
+            if (sel) GuiRender.roundedRect(listInnerX1, y, listInnerX2, y + playersRowH, CARD_R,
+                    applyAlpha(PLAYERS_ROW_SEL, row.alpha));
+            else if (hover) GuiRender.roundedRect(listInnerX1, y, listInnerX2, y + playersRowH, CARD_R,
+                    applyAlpha(ROW_HOVER, row.alpha));
+            drawPlayerRow(cfg, row, listInnerX1, listInnerX2, y, rowScale, now);
+            // A hit rectangle is appended (with its UUID/name) only for a present, matching, clickable
+            // live row — never a fading ghost or a filtered row — so the shared hit index in
+            // playersClick() can never resolve a click to one.
+            if (hittable) {
+                playerRowHits.add(new float[]{listInnerX1, y, listInnerX2, y + playersRowH});
+                playerRowUuids.add(row.uuid);
+                playerRowNames.add(row.name);
+            }
+        }
+        if (wantLookup) {
+            float y = listTop - playersScrollRender + shownLive * rowStride;
+            if (y + playersRowH > listTop && y < listBottom) {
+                boolean hover = GuiRender.inside(mouseX, mouseY, listInnerX1, y, listInnerX2, y + playersRowH)
+                        && mouseY >= listTop && mouseY < listBottom;
+                if (hover) GuiRender.roundedRect(listInnerX1, y, listInnerX2, y + playersRowH, CARD_R, ROW_HOVER);
+                GuiRender.text(ellipsize("Search Hypixel for \"" + q + "\"", rowScale, listInnerX2 - listInnerX1 - 10),
+                        listInnerX1 + 6, vcenter((int) y, playersRowH, rowScale), rowScale, accent.enabledCardBorder(), MED);
+                lookupRowHit = new float[]{listInnerX1, y, listInnerX2, y + playersRowH};
+            }
+        }
+        GuiRender.endScissor();
+
+        if (shownLive == 0 && !wantLookup) {
+            String msg = !onHypixel ? "Open on Hypixel to see players"
+                    : (q.isEmpty() ? "No players in the tab list" : "No match");
+            GuiRender.textCentered(msg, (playersX1 + playersListX2) / 2f,
+                    listTop + viewH / 2f - BedwarsQolFont.height(rowScale) / 2f, rowScale, GuiTheme.TEXT_LO);
+        }
+        if (playersMaxScroll > 0) drawPlayersScrollbar(listTop, listBottom, blockH);
+
+        // ---- Right: detail panel (own sequential, non-nested scissor so long content can't overrun) ----
+        GuiRender.beginScissor(playersDetailX1, playersTop, playersX2, playersBottom);
+        drawPlayerDetail(cfg, now);
+        GuiRender.endScissor();
+    }
+
+    /** Dedicated player-search field at the top of the list panel: filters the tab list live and, for a name
+     *  not in the list, drives the "Search Hypixel for X" action row. Border shows only while focused. */
+    private void drawPlayerSearchBar(int mouseX, int mouseY) {
+        String q = PlayersViewState.playerQuery;
+        GuiRender.roundedRect(playerSearchX1, playerSearchY1, playerSearchX2, playerSearchY2, CARD_R, SEARCH_BAR_BG);
+        if (playerSearchFocused) {
+            GuiRender.roundedRectOutline(playerSearchX1, playerSearchY1, playerSearchX2, playerSearchY2, CARD_R, 0.5f,
+                    accent.dropdownOutline());
+        }
+        float sScale = clampf(playersRowH * 0.04f, 0.95f, 1.4f);
+        float ty = vcenter(playerSearchY1, playerSearchY2 - playerSearchY1, sScale);
+        float textX = playerSearchX1 + 8;
+        float textRight = playerSearchClearX1 - 6;
+        if (q.isEmpty()) {
+            GuiRender.text("Search players...", textX, ty, sScale, GuiTheme.TEXT_LO);
+        } else {
+            GuiRender.text(ellipsize(q, sScale, textRight - textX), textX, ty, sScale, GuiTheme.TEXT_HI);
+            boolean xHover = GuiRender.inside(mouseX, mouseY, playerSearchClearX1, playerSearchY1, playerSearchClearX2, playerSearchY2);
+            drawCross((playerSearchClearX1 + playerSearchClearX2) / 2f, (playerSearchY1 + playerSearchY2) / 2f,
+                    (playerSearchClearX2 - playerSearchClearX1) * 0.28f, xHover ? GuiTheme.TEXT_HI : GuiTheme.TEXT_MID);
+        }
+    }
+
+    /** One master-list row from the animation model: colored star + name + colored FKDR + one severity
+     *  chip when resolved; a "Fetching…" hint while a click's fetch is in flight; a faint "click to load"
+     *  dot when unfetched; or a state hint (nicked/never played/error). Every color is pre-multiplied by
+     *  the row's eased alpha for the slide/fade. Never triggers a fetch (cached reads only). */
+    private void drawPlayerRow(ClientSettings cfg, PlayersListAnim.Row row,
+                               int x1, int x2, float y, float scale, long now) {
+        UUID uuid = row.uuid;
+        String name = row.name;
+        float a = row.alpha;
+        BedwarsStats st = StatsCache.getCached(uuid);
+        float ty = vcenter((int) y, playersRowH, scale);
+        float rightX = x2 - 6;
+
+        if (st != null && st.state == BedwarsStats.State.OK) {
+            // Severity chip (gating-filtered per provider), then colored FKDR, then star+name — right to left.
+            EligibilitySnapshot snap = EligibilitySnapshot.current();
+            List<UrchinTag> ut = cfg.urchinTags && UrchinTag.badgeAllowed(snap, name, uuid)
+                    ? st.urchinTags : java.util.Collections.<UrchinTag>emptyList();
+            List<SeraphTag> stg = cfg.seraphTags && SeraphTag.badgeAllowed(snap, name, uuid)
+                    ? st.seraphTags : java.util.Collections.<SeraphTag>emptyList();
+            PlayersFormat.Chip chip = PlayersFormat.chipFor(ut, now, stg);
+            if (chip != null && chip.code != null) {
+                float cs = scale * 0.85f;
+                float cw = GuiRender.textWidth(chip.code, cs, MED);
+                GuiRender.text(chip.code, rightX - cw, vcenter((int) y, playersRowH, cs), cs,
+                        applyAlpha(chip.argb, a), MED);
+                rightX -= cw + 6;
+            } else if (chip != null) {
+                float sq = playersRowH * 0.28f;
+                GuiRender.roundedRect(rightX - sq, y + (playersRowH - sq) / 2f, rightX,
+                        y + (playersRowH + sq) / 2f, 1.5f, applyAlpha(chip.argb, a));
+                rightX -= sq + 6;
+            }
+            String fkdr = BedwarsStats.fkdrColor(st.overall.fkdr) + PlayersFormat.fmt2(st.overall.fkdr);
+            float fw = GuiRender.textWidth(fkdr, scale, MED);
+            GuiRender.text(fkdr, rightX - fw, ty, scale, applyAlpha(GuiTheme.TEXT_HI, a), MED);
+            String head = (st.bedwarsLevel > 0 ? BedwarsStats.starTag(st.bedwarsLevel) + " " : "") + name;
+            GuiRender.text(ellipsize(head, scale, (rightX - fw - 8) - (x1 + 6)), x1 + 6, ty, scale,
+                    applyAlpha(GuiTheme.TEXT_HI, a), MED);
+            return;
+        }
+
+        if (st == null) {
+            // Not resolved: "Fetching…" while this player's click-fetch is in flight, else a faint dot.
+            if (StatsCache.isFetching(uuid)) {
+                String f = "Fetching...";
+                float fw = GuiRender.textWidth(f, scale, BedwarsQolFont.Weight.REGULAR);
+                GuiRender.text(f, rightX - fw, ty, scale, applyAlpha(GuiTheme.TEXT_MID, a),
+                        BedwarsQolFont.Weight.REGULAR);
+                GuiRender.text(ellipsize(name, scale, (rightX - fw - 8) - (x1 + 6)), x1 + 6, ty, scale,
+                        applyAlpha(GuiTheme.TEXT_HI, a), MED);
+            } else {
+                String dot = "·"; // faint "click to load" affordance
+                float dw = GuiRender.textWidth(dot, scale, BedwarsQolFont.Weight.REGULAR);
+                GuiRender.text(dot, rightX - dw, ty, scale, applyAlpha(GuiTheme.TEXT_LO, a),
+                        BedwarsQolFont.Weight.REGULAR);
+                GuiRender.text(ellipsize(name, scale, x2 - 12 - (x1 + 6)), x1 + 6, ty, scale,
+                        applyAlpha(GuiTheme.TEXT_HI, a), MED);
+            }
+            return;
+        }
+
+        // Resolved non-OK: name + a state hint.
+        String hint = st.state == BedwarsStats.State.NICKED ? "nicked"
+                : st.state == BedwarsStats.State.NEVER_PLAYED ? "never played"
+                : st.state == BedwarsStats.State.ERROR ? "error" : null;
+        if (hint != null) {
+            float hw = GuiRender.textWidth(hint, scale, BedwarsQolFont.Weight.REGULAR);
+            GuiRender.text(hint, rightX - hw, ty, scale, applyAlpha(GuiTheme.TEXT_LO, a),
+                    BedwarsQolFont.Weight.REGULAR);
+            GuiRender.text(ellipsize(name, scale, (rightX - hw - 8) - (x1 + 6)), x1 + 6, ty, scale,
+                    applyAlpha(GuiTheme.TEXT_MID, a), MED);
+        } else {
+            GuiRender.text(ellipsize(name, scale, x2 - 12 - (x1 + 6)), x1 + 6, ty, scale,
+                    applyAlpha(GuiTheme.TEXT_HI, a), MED);
+        }
+    }
+
+    /** Right panel: full stats for the selected (or remote-looked-up) player, fetched on demand. Shows the
+     *  entire available data ceiling — all six raw counters + FKDR/WLR/KD for every mode — plus a
+     *  always-present Urchin section. */
+    private void drawPlayerDetail(ClientSettings cfg, long now) {
+        // Ease the detail scroll toward its target.
+        detailScrollRender += (detailScroll - detailScrollRender) * 0.35f;
+        if (Math.abs(detailScroll - detailScrollRender) < 0.5f) detailScrollRender = detailScroll;
+
+        int dpad = clamp(Math.round(pad * 0.8f), 6, 14);
+        int dx1 = playersDetailX1 + dpad;
+        int dx2 = playersX2 - dpad;
+        int top = playersTop + dpad;
+        int viewH = (playersBottom - dpad) - top;
+        float midX = (playersDetailX1 + playersX2) / 2f;
+
+        UUID uuid = PlayersViewState.selectedUuid;
+        String lookup = PlayersViewState.lookupName;
+        BedwarsStats st = uuid != null ? StatsCache.getCached(uuid)
+                : (lookup != null ? StatsCache.getCachedByName(lookup) : null);
+        boolean remote = uuid == null && lookup != null;
+
+        if (uuid == null && lookup == null) {
+            GuiRender.textCentered("Select a player", midX, (playersTop + playersBottom) / 2f,
+                    valueScale, GuiTheme.TEXT_LO);
+            detailMaxScroll = 0;
+            return;
+        }
+
+        // The exact live-row name (captured at click) gates the safety sections even before stats resolve.
+        String liveName = remote ? lookup : PlayersViewState.selectedName;
+        String gateName = liveName != null && !liveName.isEmpty() ? liveName
+                : (st != null ? PlayersFormat.stripSection(st.displayName) : null);
+        int startY = top - Math.round(detailScrollRender);
+        int dy = startY;
+
+        if (st == null || st.state != BedwarsStats.State.OK) {
+            // Simple header (name + rank) then an honest status line; the hero card is OK-players only.
+            String title = st != null && st.displayName != null && !st.displayName.isEmpty()
+                    ? PlayersFormat.stripSection(st.displayName)
+                    : (liveName != null && !liveName.isEmpty() ? liveName : "Player");
+            GuiRender.text(ellipsize(title, valueScale * 1.25f, dx2 - dx1), dx1, dy, valueScale * 1.25f,
+                    GuiTheme.TEXT_HI, MED);
+            dy += Math.round(BedwarsQolFont.height(valueScale * 1.25f)) + 4;
+            if (st != null && st.rankPrefix != null && !st.rankPrefix.isEmpty()) {
+                GuiRender.text(st.rankPrefix, dx1, dy, valueScale * 0.85f, GuiTheme.TEXT_MID,
+                        BedwarsQolFont.Weight.REGULAR);
+                dy += Math.round(BedwarsQolFont.height(valueScale * 0.85f)) + 4;
+            }
+            boolean fetching = st == null
+                    && (remote ? StatsCache.isFetchingName(lookup) : StatsCache.isFetching(uuid));
+            String status = st == null
+                    ? (fetching ? "Fetching..." : "Not loaded - click again to retry")
+                    : st.state == BedwarsStats.State.NICKED ? "Nicked player"
+                    : st.state == BedwarsStats.State.NEVER_PLAYED ? "Never played Bedwars"
+                    : (remote ? "No player found" : "Failed to load - click again to retry");
+            GuiRender.text(status, dx1, dy + 4, valueScale, GuiTheme.TEXT_LO);
+            dy += Math.round(BedwarsQolFont.height(valueScale)) + 18;
+        } else {
+            // Hero "Overall" card, then a card per specific mode.
+            dy = drawHeroCard(st, uuid, dx1, dx2, dy);
+            dy += 5;
+            String[] mLabels = {"Solo", "Doubles", "3s", "4s"};
+            BedwarsStats.ModeStats[] mArr = {st.solo, st.doubles, st.threes, st.fours};
+            for (int i = 0; i < mLabels.length; i++) {
+                dy = drawModeCard(dx1, dx2, dy, mLabels[i], mArr[i]);
+                dy += 3;
+            }
+            dy += 3;
+        }
+
+        dy = drawUrchinSection(cfg, gateName, st, uuid, remote, now, dx1, dx2, dy);
+        dy += 6;
+        dy = drawSeraphSection(cfg, gateName, st, uuid, remote, now, dx1, dx2, dy);
+
+        // Scroll bookkeeping (content height is scroll-independent: dy started at top - detailScrollRender).
+        int contentH = dy - startY;
+        detailMaxScroll = Math.max(0, contentH - viewH);
+        detailScroll = clampf(detailScroll, 0, detailMaxScroll);
+        detailScrollRender = clampf(detailScrollRender, 0, detailMaxScroll);
+        if (detailMaxScroll > 0) {
+            // Display-only scrollbar hugging the detail panel's right inner edge.
+            float thumbH = Math.max(12f, viewH * (float) viewH / (float) contentH);
+            float thumbY = top + (viewH - thumbH) * clampf(detailScrollRender / detailMaxScroll, 0f, 1f);
+            float sx2 = playersX2 - 2.5f, sx1 = sx2 - 2.5f;
+            GuiRender.roundedRect(sx1, thumbY, sx2, thumbY + thumbH, 1.25f, 0x55FFFFFF);
+        }
+    }
+
+    /** The prominent "Overall" hero: player head + one-line colored star/rank/name, then big colored
+     *  FKDR / WLR / KD centered on a band. Compact so the detail need not scroll. Returns the y just
+     *  below the card. */
+    private int drawHeroCard(BedwarsStats st, UUID uuid, int dx1, int dx2, int dy) {
+        float nameScale = valueScale * 1.2f;
+        float bigScale = valueScale * 1.15f;
+        float labScale = bigScale * 0.5f;
+        int padX = 8, padY = 6, gap = 6;
+        float nameH = BedwarsQolFont.height(nameScale);
+        float bandH = BedwarsQolFont.height(bigScale) + 2 + BedwarsQolFont.height(labScale);
+        int bodyH = Math.round(nameH + gap + bandH);
+        int headPx = bodyH; // big head — spans the full hero body height
+        int cardTop = dy;
+        int cardH = padY * 2 + bodyH;
+        int cardBot = cardTop + cardH;
+        GuiRender.roundedRect(dx1, cardTop, dx2, cardBot, CARD_R, applyAlpha(accent.enabledCardBorder(), 0.16f));
+
+        int ix1 = dx1 + padX, ix2 = dx2 - padX;
+        int headY = cardTop + padY;
+        String nameOnly = PlayersFormat.stripSection(st.displayName == null ? "" : st.displayName);
+        // Big head on the far right (placeholder behind for unresolved skins). Tab-list players resolve from
+        // their live skin; a manually searched player resolves from their name (async, cached).
+        int headX = ix2 - headPx;
+        GuiRender.roundedRect(headX, headY, headX + headPx, headY + headPx, 3f, 0x33000000);
+        drawPlayerHead(uuid, nameOnly, headX, headY, headPx);
+
+        // Header column on the left, filling the hero height: star/rank/name line then the big
+        // FKDR / WLR / KD band beneath (each value authentic-colored; §r resets to the name color).
+        int lx2 = headX - 10; // header text right boundary (clear of the head)
+        String star = st.bedwarsLevel > 0 ? BedwarsStats.starTag(st.bedwarsLevel) + " " : "";
+        String rank = st.rankPrefix != null && !st.rankPrefix.isEmpty() ? st.rankPrefix + " " : "";
+        String line1 = star + rank + "§r" + nameOnly;
+        GuiRender.text(ellipsize(line1, nameScale, lx2 - ix1), ix1, headY, nameScale, GuiTheme.TEXT_HI, MED);
+
+        float bandTop = headY + nameH + gap;
+        int third = (lx2 - ix1) / 3;
+        drawBandStat(ix1, bandTop, bandH, "FKDR",
+                BedwarsStats.fkdrColor(st.overall.fkdr) + PlayersFormat.fmt2(st.overall.fkdr), bigScale, labScale);
+        drawBandStat(ix1 + third, bandTop, bandH, "WLR",
+                BedwarsStats.wlrColor(st.overall.wlr) + PlayersFormat.fmt2(st.overall.wlr), bigScale, labScale);
+        drawBandStat(ix1 + 2 * third, bandTop, bandH, "KD",
+                BedwarsStats.kdColor(st.overall.kd) + PlayersFormat.fmt2(st.overall.kd), bigScale, labScale);
+        return cardBot;
+    }
+
+    /** Draw the player's skin head (face + hat overlay) at ({@code x},{@code y}) scaled to {@code size}px.
+     *  Uses the live tab-list skin when {@code uuid} is present, else resolves {@code name} remotely
+     *  (async, cached). No-op until a skin is available. */
+    private void drawPlayerHead(UUID uuid, String name, int x, int y, int size) {
+        ResourceLocation skin = null;
+        if (uuid != null) {
+            NetHandlerPlayClient net = mc.getNetHandler();
+            NetworkPlayerInfo info = net == null ? null : net.getPlayerInfo(uuid);
+            if (info != null) skin = info.getLocationSkin();
+        }
+        if (skin == null && name != null && !name.isEmpty()) skin = RemoteSkins.face(name);
+        if (skin == null) return;
+        GlStateManager.enableBlend();
+        GlStateManager.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        GlStateManager.color(1f, 1f, 1f, 1f);
+        mc.getTextureManager().bindTexture(skin);
+        drawScaledCustomSizeModalRect(x, y, 8f, 8f, 8, 8, size, size, 64f, 64f);   // face
+        drawScaledCustomSizeModalRect(x, y, 40f, 8f, 8, 8, size, size, 64f, 64f);  // hat overlay
+        GlStateManager.color(1f, 1f, 1f, 1f);
+    }
+
+    /** A big value (its §-codes carry the color) with a small neutral label beneath, the pair vertically
+     *  centered in a band of height {@code bandH} at x. This shared band baseline replaces the old ad-hoc
+     *  per-label offset so stat rows are consistently centered. */
+    private void drawBandStat(float x, float bandTop, float bandH, String label, String value,
+                              float valScale, float labScale) {
+        float vh = BedwarsQolFont.height(valScale);
+        float lh = BedwarsQolFont.height(labScale);
+        float stackH = vh + 2 + lh;
+        float sy = bandTop + (bandH - stackH) / 2f;
+        GuiRender.text(value, x, sy, valScale, GuiTheme.TEXT_HI, MED);
+        GuiRender.text(label, x, sy + vh + 2, labScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+    }
+
+    /** One per-mode card: mode label + colored FKDR/WLR/KD, then a sub-line of abbreviated raw counters
+     *  (FK/FD/W/L/K/D). A mode with no games shows "no games" (public fields read directly — never the
+     *  Overall fallback). Returns the y just below the card. */
+    private int drawModeCard(int dx1, int dx2, int dy, String label, BedwarsStats.ModeStats m) {
+        boolean played = m != null && m.hasGames();
+        float lScale = clampf(valueScale * 0.85f, 0.85f, 1.2f);
+        float subScale = clampf(valueScale * 0.68f, 0.72f, 1.05f);
+        int padX = 8, padY = 4;
+        float lineH = BedwarsQolFont.height(lScale);
+        float subH = played ? BedwarsQolFont.height(subScale) + 2 : 0;
+        int cardTop = dy;
+        int cardH = Math.round(padY + lineH + subH + padY);
+        int cardBot = cardTop + cardH;
+        GuiRender.roundedRect(dx1, cardTop, dx2, cardBot, 3f, DETAIL_CARD_BG);
+        int ix1 = dx1 + padX, ix2 = dx2 - padX;
+        float ty = cardTop + padY;
+        GuiRender.text(label, ix1, ty, lScale, GuiTheme.TEXT_HI, MED);
+        if (!played) {
+            String ng = "no games";
+            float w = GuiRender.textWidth(ng, lScale, BedwarsQolFont.Weight.REGULAR);
+            GuiRender.text(ng, ix2 - w, ty, lScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return cardBot;
+        }
+        String[] ratios = {
+                "FKDR " + BedwarsStats.fkdrColor(m.fkdr) + PlayersFormat.fmt2(m.fkdr),
+                "WLR " + BedwarsStats.wlrColor(m.wlr) + PlayersFormat.fmt2(m.wlr),
+                "KD " + BedwarsStats.kdColor(m.kd) + PlayersFormat.fmt2(m.kd)
+        };
+        float rx = ix2;
+        for (int i = ratios.length - 1; i >= 0; i--) {
+            float w = GuiRender.textWidth(ratios[i], lScale, MED);
+            GuiRender.text(ratios[i], rx - w, ty, lScale, GuiTheme.TEXT_HI, MED);
+            rx -= w + 10;
+        }
+        String counters = "FK " + PlayersFormat.abbrev(m.finalKills) + "   FD " + PlayersFormat.abbrev(m.finalDeaths)
+                + "   W " + PlayersFormat.abbrev(m.wins) + "   L " + PlayersFormat.abbrev(m.losses)
+                + "   K " + PlayersFormat.abbrev(m.kills) + "   D " + PlayersFormat.abbrev(m.deaths);
+        String c = ellipsize(counters, subScale, ix2 - ix1);
+        float cw = GuiRender.textWidth(c, subScale, BedwarsQolFont.Weight.REGULAR);
+        GuiRender.text(c, ix2 - cw, ty + lineH + 2, subScale, GuiTheme.TEXT_MID, BedwarsQolFont.Weight.REGULAR);
+        return cardBot;
+    }
+
+    /** Urchin panel — ALWAYS rendered (heading + state), even while stats are loading or for
+     *  nicked/never-played/error base stats. {@code name} is the exact live-row tab name (independent of
+     *  {@code st}, which may be null while loading) so {@code badgeAllowed} stays an exact (name, uuid)
+     *  gate. Name-keyed remote lookups are explicitly unavailable. */
+    private int drawUrchinSection(ClientSettings cfg, String name, BedwarsStats st, UUID uuid, boolean remote,
+                                  long now, int dx1, int dx2, int dy) {
+        float mScale = valueScale * 0.82f;
+        GuiRender.rect(dx1, dy - 2, dx2, dy - 1, DETAIL_DIVIDER);
+        dy += 4;
+        GuiRender.text("Urchin", dx1, dy, mScale, GuiTheme.TEXT_MID, MED);
+        dy += Math.round(BedwarsQolFont.height(mScale)) + 4;
+        boolean eligible = !remote && uuid != null && name != null && cfg.urchinTags
+                && UrchinTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
+        if (!eligible) {
+            GuiRender.text(remote ? "unavailable for name lookups" : "available in an active game",
+                    dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        StatsCache.UrchinResolution res = StatsCache.urchinResolution(uuid);
+        if (res == StatsCache.UrchinResolution.PENDING || res == StatsCache.UrchinResolution.ABSENT) {
+            GuiRender.text("checking...", dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        if (res == StatsCache.UrchinResolution.RESOLVED_EMPTY) {
+            GuiRender.text("no tags", dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        List<UrchinTag> tags = st != null ? st.urchinTags : Collections.<UrchinTag>emptyList();
+        for (UrchinTag t : UrchinTag.activeTags(tags, now)) {
+            int color = PlayersFormat.sectionColorToRgb(t.color()); // authoritative per-type §-color
+            String icon = t.displayIcon();
+            String header = (icon != null ? "[" + icon + "] " : "") + PlayersFormat.stripSection(t.displayName());
+            GuiRender.text(header, dx1, dy, mScale, color, MED);
+            String meta = urchinMeta(t, now);
+            if (!meta.isEmpty()) {
+                float mw = GuiRender.textWidth(meta, mScale, BedwarsQolFont.Weight.REGULAR);
+                GuiRender.text(meta, dx2 - mw, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            }
+            dy += Math.round(BedwarsQolFont.height(mScale)) + 2;
+            if (t.reason != null && !t.reason.isEmpty()) {
+                GuiRender.text(ellipsize("  " + t.reason, mScale, dx2 - dx1), dx1, dy, mScale,
+                        GuiTheme.TEXT_MID, BedwarsQolFont.Weight.REGULAR);
+                dy += Math.round(BedwarsQolFont.height(mScale)) + 3;
+            }
+        }
+        return dy;
+    }
+
+    /** Seraph safety panel — mirrors Urchin's gating. The header carries a right-aligned
+     *  threat/encounters readout when resolved and present ({@code -1} omitted); each tag shows its
+     *  icon+color and reason. Returns the y just below the section. */
+    private int drawSeraphSection(ClientSettings cfg, String name, BedwarsStats st, UUID uuid, boolean remote,
+                                  long now, int dx1, int dx2, int dy) {
+        float mScale = valueScale * 0.82f;
+        GuiRender.rect(dx1, dy - 2, dx2, dy - 1, DETAIL_DIVIDER);
+        dy += 4;
+        GuiRender.text("Seraph", dx1, dy, mScale, GuiTheme.TEXT_MID, MED);
+        boolean eligible = !remote && uuid != null && name != null && cfg.seraphTags
+                && SeraphTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
+        // The threat/encounters readout is Seraph data — show it only behind the same eligibility gate.
+        if (eligible && st != null && (st.seraphThreat >= 0 || st.seraphEncounters >= 0)) {
+            StringBuilder b = new StringBuilder();
+            if (st.seraphThreat >= 0) b.append("threat ").append(st.seraphThreat);
+            if (st.seraphEncounters >= 0) {
+                if (b.length() > 0) b.append("   ·   ");
+                b.append(st.seraphEncounters).append(" seen");
+            }
+            String meta = b.toString();
+            float mw = GuiRender.textWidth(meta, mScale, BedwarsQolFont.Weight.REGULAR);
+            GuiRender.text(meta, dx2 - mw, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+        }
+        dy += Math.round(BedwarsQolFont.height(mScale)) + 4;
+        if (!eligible) {
+            GuiRender.text(remote ? "unavailable for name lookups" : "available in an active game",
+                    dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        StatsCache.UrchinResolution res = StatsCache.seraphResolution(uuid);
+        if (res == StatsCache.UrchinResolution.PENDING || res == StatsCache.UrchinResolution.ABSENT) {
+            GuiRender.text("checking...", dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        if (res == StatsCache.UrchinResolution.RESOLVED_EMPTY) {
+            GuiRender.text("no tags", dx1, dy, mScale, GuiTheme.TEXT_LO, BedwarsQolFont.Weight.REGULAR);
+            return dy + Math.round(BedwarsQolFont.height(mScale));
+        }
+        List<SeraphTag> tags = st != null ? st.seraphTags : Collections.<SeraphTag>emptyList();
+        for (SeraphTag t : SeraphTag.activeTags(tags)) {
+            int color = PlayersFormat.sectionColorToRgb(t.color());
+            String icon = t.displayIcon();
+            String header = (icon != null ? "[" + icon + "] " : "") + t.displayName();
+            GuiRender.text(header, dx1, dy, mScale, color, MED);
+            dy += Math.round(BedwarsQolFont.height(mScale)) + 2;
+            if (t.reason != null && !t.reason.isEmpty()) {
+                GuiRender.text(ellipsize("  " + t.reason, mScale, dx2 - dx1), dx1, dy, mScale,
+                        GuiTheme.TEXT_MID, BedwarsQolFont.Weight.REGULAR);
+                dy += Math.round(BedwarsQolFont.height(mScale)) + 3;
+            }
+        }
+        return dy;
+    }
+
+    /** "added 3d  expires in 5d" metadata for a tag, from its addedOnMs / expiresAtMs. */
+    private static String urchinMeta(UrchinTag t, long now) {
+        StringBuilder b = new StringBuilder();
+        if (t.addedOnMs > 0) b.append("added ").append(durString(now - t.addedOnMs)).append(" ago");
+        if (t.expiresAtMs != null) {
+            if (b.length() > 0) b.append("   ");
+            long left = t.expiresAtMs - now;
+            b.append(left > 0 ? "expires in " + durString(left) : "expired");
+        }
+        return b.toString();
+    }
+
+    private static String durString(long ms) {
+        long s = Math.abs(ms) / 1000L;
+        long d = s / 86400L; if (d > 0) return d + "d";
+        long h = s / 3600L;  if (h > 0) return h + "h";
+        long m = s / 60L;    if (m > 0) return m + "m";
+        return s + "s";
+    }
+
+    /** Live tab-list players in the net handler's own enumeration order (no sort — {@link PlayersListAnim}
+     *  keeps a stable per-player insertion slot, so re-buckets never reorder rows). Never fetches. */
+    private List<NetworkPlayerInfo> tabPlayers() {
+        List<NetworkPlayerInfo> out = new ArrayList<NetworkPlayerInfo>();
+        NetHandlerPlayClient net = mc.getNetHandler();
+        if (net == null) return out;
+        for (NetworkPlayerInfo info : net.getPlayerInfoMap()) {
+            if (info != null && info.getGameProfile() != null) out.add(info);
+        }
+        return out;
+    }
+
+    private static String profileName(NetworkPlayerInfo info) {
+        if (info == null) return null;
+        GameProfile p = info.getGameProfile();
+        return p == null ? null : p.getName();
+    }
+
+    private void drawPlayersScrollbar(int viewTop, int viewBottom, int blockH) {
+        float track = viewBottom - viewTop;
+        if (blockH <= track) return;
+        float thumbH = Math.max(18f, track * (track / blockH));
+        float span = track - thumbH;
+        float thumbY = viewTop + span * clampf(playersScrollRender / playersMaxScroll, 0f, 1f);
+        float sx2 = playersListX2 - 2, sx1 = sx2 - 2.5f;
+        GuiRender.roundedRect(sx1, thumbY, sx2, thumbY + thumbH, 1.2f, 0x55FFFFFF);
+    }
+
+    /** [x1,x2,top,bottom,thumbH,span] for the player-list scrollbar, or null when it doesn't scroll. */
+    private float[] playersScrollbarGeom() {
+        if (playersMaxScroll <= 0) return null;
+        int viewTop = playersListTop, viewBottom = playersListBottom; // set each frame in drawPlayers
+        float track = viewBottom - viewTop;
+        int blockH = playersMaxScroll + (int) track;
+        float thumbH = Math.max(18f, track * (track / blockH));
+        float sx2 = playersListX2 - 2, sx1 = sx2 - 2.5f;
+        return new float[]{sx1, sx2, viewTop, viewBottom, thumbH, track - thumbH};
     }
 
     private void playClick() {

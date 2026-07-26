@@ -11,7 +11,10 @@ import net.minecraft.util.ChatStyle;
 import net.minecraft.util.IChatComponent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -32,6 +35,17 @@ import java.util.UUID;
 public final class ChatHoverStats {
 
     private ChatHoverStats() {}
+
+    /** Last tab UUID resolved per sender (lower-cased), held through tab-churn dropouts. Read-only
+     *  reuse against the warm cache — see lookup(). Cleared on world change by ChatNameTags. */
+    private static final Map<String, UUID> TAB_UUID_PIN = new HashMap<String, UUID>();
+    /** Safety cap; a lobby is <=16 players, so this only bounds a pathological session. */
+    private static final int MAX_PINS = 128;
+
+    /** Drop all name->UUID pins (world change: tab identities reset). */
+    public static void clearPins() {
+        TAB_UUID_PIN.clear();
+    }
 
     /**
      * @return the merged hover lines (Hypixel's card + our stats) to render, or {@code null} when this
@@ -75,11 +89,24 @@ public final class ChatHoverStats {
      * {@code null} until it lands so the caller can show a "loading" line.
      */
     private static BedwarsStats lookup(String name) {
+        String pinKey = name.toLowerCase(Locale.ROOT);
         UUID uuid = ChatSender.uuidInTab(name);
         if (uuid != null) {
+            if (TAB_UUID_PIN.size() >= MAX_PINS) TAB_UUID_PIN.clear();
+            TAB_UUID_PIN.put(pinKey, uuid);
             BedwarsStats s = StatsCache.getCached(uuid);
             if (s == null) StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_USER);
             return s;
+        }
+        // Tab churn (remove->re-add on updates, death/spectate) blips a present player out of the map
+        // for a tick or two. Falling straight to the name key here flipped a resolved card back to
+        // "loading" AND fired a redundant name-keyed fetch (the ChatNameTags Holder.tabUuid bug) — so
+        // reuse the pinned UUID, but only to read a still-warm entry: a cold pin falls through to the
+        // name path, since the player may genuinely be gone and only a name fetch can resolve them.
+        UUID pinned = TAB_UUID_PIN.get(pinKey);
+        if (pinned != null) {
+            BedwarsStats s = StatsCache.getCached(pinned);
+            if (s != null) return s;
         }
         BedwarsStats s = StatsCache.getCachedByName(name);
         if (s == null) StatsCache.ensureFetchedByName(name, StatsCache.PRIORITY_USER);

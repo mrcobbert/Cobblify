@@ -1,5 +1,7 @@
 package com.bedwarsqol.feature;
 
+import net.minecraft.util.IChatComponent;
+
 /**
  * Implemented on the vanilla {@code GuiNewChat} by {@code mixin/GuiNewChatMixin} so the Copy Chat
  * right-click handler in {@code mixin/GuiChatMixin} can ask the chat GUI which full message sits under
@@ -8,6 +10,6 @@ package com.bedwarsqol.feature;
  */
 public interface ChatCopyAccess {
 
-    /** Formatted text of the full chat message under the raw mouse position, or null when none. */
-    String bedwarsqol$fullTextAt(int rawMouseX, int rawMouseY);
+    /** Full original chat message under the raw mouse position, or null when none. */
+    IChatComponent bedwarsqol$fullComponentAt(int rawMouseX, int rawMouseY);
 }

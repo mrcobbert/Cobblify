@@ -32,7 +32,7 @@ function describeTags(tags) {
     .join(", ");
 }
 
-async function probe(label, path, init) {
+async function probe(label, path, init, requestedUuids) {
   try {
     const res = await fetch(BASE + path, {
       ...init,
@@ -40,14 +40,23 @@ async function probe(label, path, init) {
       headers: { ...(init && init.headers), "X-API-Key": key },
     });
     let body = null;
-    try { body = await res.json(); } catch { /* non-JSON */ }
+    // 401 has an EMPTY body, so the status is reported before (and regardless of) any parse.
+    try { body = await res.json(); } catch { /* non-JSON / empty */ }
     console.log(`\n[${label}] HTTP ${res.status}`);
-    if (body && body.error) console.log(`  error: ${body.error}`);
+    if (body && body.error) console.log(`  error (ErrorResponse): ${body.error}`);
     if (body && body.tags !== undefined) console.log(`  tags: ${describeTags(body.tags)}`);
     if (body && body.uuid) console.log(`  uuid: present (${String(body.uuid).length} chars)`);
+    if (body && body.displayname !== undefined) console.log(`  displayname: present`);
     if (body && body.players) {
       for (const [k, v] of Object.entries(body.players)) {
         console.log(`  players[${k.length}-char key]: ${describeTags(v)}`);
+      }
+      // Present-with-[] means CHECKED AND CLEAN; absent means the entry was SKIPPED. The
+      // worker must never conflate them, so the probe reports the split explicitly.
+      if (requestedUuids) {
+        const present = new Set(Object.keys(body.players).map((k) => k.toLowerCase().replace(/-/g, "")));
+        const absent = requestedUuids.filter((u) => !present.has(u.toLowerCase().replace(/-/g, "")));
+        console.log(`  requested=${requestedUuids.length} present=${present.size} ABSENT=${absent.length}`);
       }
     }
     const rl = ["x-ratelimit-limit", "x-ratelimit-remaining", "ratelimit-limit", "ratelimit-remaining"]
@@ -63,11 +72,12 @@ console.log(`Urchin Coral v3 probe - ${new Date().toISOString()} - base ${BASE}`
 await probe("single tagged", `/v3/player/tags?player=${encodeURIComponent(taggedName)}`);
 await probe("single untagged", `/v3/player/tags?player=${encodeURIComponent(untaggedName)}`);
 await probe("unknown player (expect 404)", `/v3/player/tags?player=DefinitelyNotARealNameXq`);
-await probe("batch (2 uuids, 1 malformed)", `/v3/players`, {
+const batchUuids = ["069a79f444e94726a5befca90e38aaf5", "malformed"];
+await probe("batch (2 uuids, 1 malformed -> expect it ABSENT)", `/v3/players`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ uuids: ["069a79f444e94726a5befca90e38aaf5", "malformed"] }),
-});
+  body: JSON.stringify({ uuids: batchUuids }),
+}, batchUuids);
 
 // Invalid-key probe uses a DIFFERENT random key, never derived from the real one.
 const badKey = "invalid-probe-key-000000";
@@ -76,7 +86,9 @@ try {
     redirect: "error",
     headers: { "X-API-Key": badKey },
   });
-  console.log(`\n[invalid key (expect 401)] HTTP ${res.status}`);
+  const text = await res.text();
+  // Both 401 (bad key) and 403 (locked/forbidden key) map to "rejected" in the worker.
+  console.log(`\n[invalid key (expect 401, empty body)] HTTP ${res.status} body.len=${text.length}`);
 } catch (e) {
   console.log(`\n[invalid key] FETCH ERROR: ${String(e && e.message).slice(0, 120)}`);
 }

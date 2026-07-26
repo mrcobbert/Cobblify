@@ -11,9 +11,12 @@
 
 import { parseBedwarsFromHtml } from "./bedwars-parse.js";
 import { parseProfile } from "./profile-parse.js";
-import { readCached, writeCached, readStar } from "./cache.js";
+import {
+  readCached, writeCached, readStar, readBlocked, writeBlocked, NEG_TTL_SEC, NICKED_TTL_SEC,
+} from "./cache.js";
 import { scrapeStarForPool } from "./star.js";
 import { tagsForUuids, resultFields } from "./urchin.js";
+import { tagsForUuids as seraphTagsForUuids, resultFields as seraphResultFields } from "./seraph.js";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -77,8 +80,9 @@ function errBody(player, error, httpStatus) {
 }
 
 /** Fetch + stream-read a player page. Returns { ok, html } or { ok:false, body, retry429? }. */
-export async function scrapePlayerHtml(player) {
-  const target = `https://hypixel.net/player/${encodeURIComponent(player)}`;
+export async function scrapePlayerHtml(player, env) {
+  const base = (env && env.HYPIXEL_BASE) || "https://hypixel.net";
+  const target = `${base}/player/${encodeURIComponent(player)}`;
   let response;
   try {
     response = await fetch(target, {
@@ -113,10 +117,22 @@ export async function scrapePlayerHtml(player) {
   return { ok: true, html };
 }
 
-/** Scrape one player, parse, merge profile header, and cache on success. Returns { body, retry429? }. */
+/** Scrape one player, parse, merge profile header, and cache the outcome. Returns { body, retry429? }. */
 async function scrapeAndCache(player, env, ctx) {
-  const scraped = await scrapePlayerHtml(player);
-  if (!scraped.ok) return { body: scraped.body, retry429: scraped.retry429 === true };
+  // Circuit breaker: while the origin is serving challenge pages every scrape is doomed, so
+  // fail instantly without touching hypixel. The short-circuit body is NOT cached (the flag
+  // already throttles; caching it would outlive the flag's own TTL per player).
+  if (await readBlocked(env)) {
+    return { body: errBody(player, "blocked_by_cloudflare") };
+  }
+  const scraped = await scrapePlayerHtml(player, env);
+  if (!scraped.ok) {
+    if (scraped.body && scraped.body.error === "blocked_by_cloudflare") writeBlocked(env, ctx);
+    // 429s are NOT negatively cached: the pool retries them, and a cached terminal 429
+    // would poison the very lookups the backoff is about to make succeed.
+    if (!scraped.retry429) writeCached(player, scraped.body, env, ctx, NEG_TTL_SEC);
+    return { body: scraped.body, retry429: scraped.retry429 === true };
+  }
 
   const parsed = parseBedwarsFromHtml(scraped.html, player);
   if (parsed.success === true) {
@@ -125,6 +141,10 @@ async function scrapeAndCache(player, env, ctx) {
     parsed.networkLevel = profile.networkLevel ?? 0;
     parsed.rank = profile.rank;
     writeCached(player, parsed, env, ctx);
+  } else {
+    // NICKED is a stable page state (the profile page just has no Bedwars section) so it
+    // caches like a success; other parse failures are transient and cache briefly.
+    writeCached(player, parsed, env, ctx, parsed.state === "NICKED" ? NICKED_TTL_SEC : NEG_TTL_SEC);
   }
   return { body: parsed };
 }
@@ -215,7 +235,7 @@ function dedupeValidate(names) {
  * second and an all-cold lobby fills in progressively instead of blocking on the slowest player.
  * Each line carries a "name" field (the requested name) so the client can map it back.
  */
-export function streamBedwarsBatch(names, env, ctx, urchinCtx) {
+export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx) {
   const valid = dedupeValidate(names);
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -247,6 +267,26 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx) {
     return Object.keys(f).length > 1 || (Object.keys(f).length === 1 && !f.urchinUuid) ? f : null;
   };
 
+  // Seraph tags resolve in parallel with the same shape (per-UUID fan-out; §7d no cache), attaching
+  // inline when settled or as "seraphUpdate" follow-up lines after the counter pass.
+  const seraphPromise =
+    seraphCtx && seraphCtx.uuidByName && seraphCtx.uuidByName.size > 0 && !seraphCtx.unavailableOnly
+      ? seraphTagsForUuids([...seraphCtx.uuidByName.values()], env, ctx).catch(() => new Map())
+      : null;
+  let seraphResults = null;
+  if (seraphPromise) {
+    seraphPromise.then((m) => { seraphResults = m; });
+    ctx.waitUntil(seraphPromise.then(() => {}));
+  }
+  const seraphFieldsFor = (name) => {
+    if (!seraphResults || !seraphCtx) return null;
+    const uuid = seraphCtx.uuidByName.get(name.toLowerCase());
+    if (!uuid) return null;
+    const f = seraphResultFields(seraphResults.get(uuid), uuid);
+    // seraphUuid alone (no metadata) is meaningless - require actual resolution fields.
+    return Object.keys(f).length > 1 || (Object.keys(f).length === 1 && !f.seraphUuid) ? f : null;
+  };
+
   ctx.waitUntil(
     (async () => {
       try {
@@ -254,8 +294,9 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx) {
         const needStar = [];
         // Emit one counter line, overlaying the star if it's already cached (warm = instant). A cold
         // star is recorded for the star pass instead of blocking the counter line.
-        // Names whose urchin result was NOT ready at base-line time (follow-up pass).
+        // Names whose urchin/seraph result was NOT ready at base-line time (follow-up pass).
         const needUrchin = [];
+        const needSeraph = [];
         const emitWithStar = async (name, body) => {
           if (body && body.success === true) {
             const s = await readStar(name, env, ctx);
@@ -268,6 +309,13 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx) {
             const f = urchinFieldsFor(name);
             if (f) Object.assign(body, f);
             else needUrchin.push(name);
+          }
+          if (seraphCtx && seraphCtx.unavailableOnly && seraphCtx.uuidByName.has(name.toLowerCase())) {
+            body.seraphUnavailable = true; // no key source -> zero Seraph calls, resolved unavailable
+          } else if (seraphPromise && seraphCtx.uuidByName.has(name.toLowerCase())) {
+            const f = seraphFieldsFor(name);
+            if (f) Object.assign(body, f);
+            else needSeraph.push(name);
           }
           await writeLine(name, body);
         };
@@ -308,6 +356,14 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx) {
           for (const name of needUrchin) {
             const f = urchinFieldsFor(name);
             if (f) await writeLine(name, { success: true, urchinUpdate: true, ...f });
+          }
+        }
+        // 5) Seraph follow-ups, same invariant: emitted only after every base line.
+        if (seraphPromise && needSeraph.length > 0) {
+          await Promise.race([seraphPromise, sleep(3000)]);
+          for (const name of needSeraph) {
+            const f = seraphFieldsFor(name);
+            if (f) await writeLine(name, { success: true, seraphUpdate: true, ...f });
           }
         }
       } catch (e) {

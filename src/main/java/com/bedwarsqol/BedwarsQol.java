@@ -16,8 +16,11 @@ import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
 import com.bedwarsqol.feature.PartyJoinAlert;
 import com.bedwarsqol.feature.PauseKeyHandler;
+import com.bedwarsqol.feature.PlayersKeyHandler;
+import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SettingsKeyHandler;
 import com.bedwarsqol.feature.SweatReport;
+import com.bedwarsqol.feature.SeraphAlert;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.stats.BedwarsModeDetector;
@@ -46,6 +49,8 @@ public class BedwarsQol {
     public static KeyBinding pauseKeyBinding;
     /** Rebindable key (default unbound) that sends /pc INC — see {@link com.bedwarsqol.feature.IncSender}. */
     public static KeyBinding incKeyBinding;
+    /** Rebindable key (default unbound) that opens the Players tab — see {@link com.bedwarsqol.feature.PlayersKeyHandler}. */
+    public static KeyBinding playersKeyBinding;
 
     @Mod.EventHandler
     public void onInit(FMLInitializationEvent event) {
@@ -58,10 +63,13 @@ public class BedwarsQol {
         ClientRegistry.registerKeyBinding(pauseKeyBinding);
         incKeyBinding = new KeyBinding("Send /pc INC", Keyboard.KEY_NONE, "Cobblify");
         ClientRegistry.registerKeyBinding(incKeyBinding);
+        playersKeyBinding = new KeyBinding("Open Cobblify Players", Keyboard.KEY_NONE, "Cobblify");
+        ClientRegistry.registerKeyBinding(playersKeyBinding);
         ClientCommandHandler.instance.registerCommand(new BedwarsQolCommand());
         MinecraftForge.EVENT_BUS.register(new SettingsKeyHandler(settingsKeyBinding));
         MinecraftForge.EVENT_BUS.register(new PauseKeyHandler(pauseKeyBinding));
         MinecraftForge.EVENT_BUS.register(new IncSender(incKeyBinding));
+        MinecraftForge.EVENT_BUS.register(new PlayersKeyHandler(playersKeyBinding));
         MinecraftForge.EVENT_BUS.register(new ChatNotifications());
         MinecraftForge.EVENT_BUS.register(new BedwarsHudRenderer());
         MinecraftForge.EVENT_BUS.register(new NametagStats());
@@ -77,5 +85,7 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(CheaterDetector.get());
         MinecraftForge.EVENT_BUS.register(new GameSessionTracker());
         MinecraftForge.EVENT_BUS.register(new UrchinAlert());
+        MinecraftForge.EVENT_BUS.register(new SeraphAlert());
+        MinecraftForge.EVENT_BUS.register(new QueueAlert());
     }
 }

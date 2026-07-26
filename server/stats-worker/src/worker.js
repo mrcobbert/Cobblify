@@ -20,6 +20,13 @@ import {
   resultFields,
   handleKeySet,
 } from "./urchin.js";
+import {
+  seraphAllowed,
+  seraphCapable,
+  tagsForUuids as seraphTagsForUuids,
+  resultFields as seraphResultFields,
+  handleKeySet as seraphHandleKeySet,
+} from "./seraph.js";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -31,7 +38,7 @@ const NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
 
 export default {
   async scheduled(event, env, ctx) {
-    const result = await probeHypixelPlayer("beepor");
+    const result = await probeHypixelPlayer("beepor", env);
     console.log("SCHEDULED_PROBE", JSON.stringify(result));
   },
 
@@ -40,7 +47,13 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/" || path === "/health") {
-      if (path === "/health") return jsonResponse(await probeHypixelPlayer("beepor"));
+      if (path === "/health") {
+        const denied = checkAuth(request, env);
+        if (denied) return denied;
+        const p = await probeHypixelPlayer("beepor", env);
+        p.workerColo = (request.cf && request.cf.colo) || null; // where the Worker itself executes
+        return jsonResponse(p);
+      }
       return new Response(usageText(), { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
 
@@ -53,10 +66,14 @@ export default {
       if (names.length === 0) {
         return jsonResponse({ success: false, error: "no_names" }, 400);
       }
-      // Urchin enrichment: owner token + opt-in header + KV, plus index-aligned uuids
-      // ("-" = ineligible member, never Coral-resolved). Anything off -> pure legacy stream.
+      // Provider enrichment: owner token + per-provider opt-in header + KV, plus index-aligned
+      // uuids ("-" = ineligible member, never resolved). Anything off -> pure legacy stream.
+      // The uuid alignment is provider-independent, so it is built once and shared.
+      const uAllowed = urchinAllowed(request, env);
+      const sAllowed = seraphAllowed(request, env);
       let urchinCtx = null;
-      if (urchinAllowed(request, env)) {
+      let seraphCtx = null;
+      if (uAllowed || sAllowed) {
         const uuidsParam = url.searchParams.get("uuids") || "";
         const rawUuids = uuidsParam ? uuidsParam.split(",").map((s) => s.trim()) : [];
         if (rawUuids.length === names.length) {
@@ -73,15 +90,16 @@ export default {
             else uuidByName.set(k, u);
           }
           for (const k of conflicted) uuidByName.delete(k);
-          // Without STATS_KV the module makes zero Coral calls but still tells the owner
+          // Without STATS_KV a provider makes zero upstream calls but still tells the owner
           // client "resolved unavailable" so it does not misdiagnose authentication.
           if (uuidByName.size > 0) {
-            urchinCtx = { uuidByName, unavailableOnly: !urchinCapable(env) };
+            if (uAllowed) urchinCtx = { uuidByName, unavailableOnly: !urchinCapable(env) };
+            if (sAllowed) seraphCtx = { uuidByName, unavailableOnly: !seraphCapable(env) };
           }
         }
       }
       // Streams NDJSON (one line per player as it resolves) — not a buffered JSON response.
-      return streamBedwarsBatch(names, env, ctx, urchinCtx);
+      return streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx);
     }
 
     const bedwars = path.match(/^\/bedwars\/([^/]+)$/);
@@ -109,11 +127,29 @@ export default {
           }
         }
       }
+      // Automatic-single Seraph enrichment is likewise UUID-only, gated by its own opt-in header.
+      if (seraphAllowed(request, env)) {
+        const uuid = normalizeUuid(url.searchParams.get("uuid") || "");
+        if (uuid) {
+          if (!seraphCapable(env)) {
+            body.seraphUnavailable = true;
+          } else {
+            try {
+              const results = await seraphTagsForUuids([uuid], env, ctx);
+              Object.assign(body, seraphResultFields(results.get(uuid), uuid));
+            } catch (_) { /* silent degradation */ }
+          }
+        }
+      }
       return jsonResponse(body);
     }
 
     if (path === "/urchin/key" && request.method === "POST") {
       return handleKeySet(request, env, ctx);
+    }
+
+    if (path === "/seraph/key" && request.method === "POST") {
+      return seraphHandleKeySet(request, env, ctx);
     }
 
     // Manual lookup: the only name-resolving Coral path.
@@ -145,6 +181,33 @@ export default {
       });
     }
 
+    // Manual Seraph lookup: UUID-only. Seraph exposes no name endpoint, so the client resolves
+    // name->uuid before calling; the route otherwise mirrors the urchin manual route's gating/shape.
+    const seraph = path.match(/^\/seraph\/([^/]+)$/);
+    if (seraph && request.method === "GET") {
+      if (!seraphAllowed(request, env)) {
+        return jsonResponse({ success: false, error: "unauthorized" }, 403);
+      }
+      const uuid = normalizeUuid(decodeURIComponent(seraph[1]));
+      if (!uuid) {
+        return jsonResponse({ success: false, error: "invalid_uuid" }, 400);
+      }
+      if (!seraphCapable(env)) {
+        return jsonResponse({ success: true, uuid, tags: [], notFound: false, unavailable: true });
+      }
+      const results = await seraphTagsForUuids([uuid], env, ctx);
+      const r = results.get(uuid) || { state: "unavailable", tags: [] };
+      return jsonResponse({
+        success: true,
+        uuid,
+        tags: (r.tags || []).map(({ kind, subtype, reason, addedOn, verified }) => ({
+          kind, ...(subtype ? { subtype } : {}), reason, addedOn, ...(verified ? { verified: true } : {}),
+        })),
+        notFound: r.state === "notfound",
+        unavailable: r.state === "unavailable",
+      });
+    }
+
     const test = path.match(/^\/test\/([^/]+)$/);
     if (test) {
       const denied = checkAuth(request, env);
@@ -153,7 +216,7 @@ export default {
       if (!NAME_RE.test(player)) {
         return jsonResponse({ error: "invalid_player_name", player }, 400);
       }
-      return jsonResponse(await probeHypixelPlayer(player));
+      return jsonResponse(await probeHypixelPlayer(player, env));
     }
 
     return new Response("Not found. Try GET /bedwars/PlayerName", { status: 404 });
@@ -176,8 +239,9 @@ function checkAuth(request, env) {
 }
 
 /** Diagnostic egress probe (full read, no cache) — used by /test, /health and the cron. */
-async function probeHypixelPlayer(player) {
-  const target = `https://hypixel.net/player/${encodeURIComponent(player)}`;
+async function probeHypixelPlayer(player, env) {
+  const base = (env && env.HYPIXEL_BASE) || "https://hypixel.net";
+  const target = `${base}/player/${encodeURIComponent(player)}`;
   const started = Date.now();
 
   let response;

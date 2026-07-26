@@ -11,8 +11,11 @@ preview_urls = true
 
 # Run the Worker near hypixel.net (it makes many same-origin subrequests), trimming per-scrape
 # latency. Takes ~15 min to take effect after deploy and only routes to colos it has run in.
+# TEMPORARILY DISABLED 2026-07-23: smart placement pinned egress to the Miami (SMF) colo whose IP
+# hypixel's Cloudflare was persistently challenging (403). mode="off" force-clears the sticky
+# server-side placement (merely omitting the block leaves it pinned). Re-enable once the block clears.
 [placement]
-mode = "smart"
+mode = "off"
 
 # Global L2 cache (Tier 2). OFF by default so anyone can deploy to their own Cloudflare account —
 # a KV binding must reference a namespace that exists in THAT account, and a hardcoded id from

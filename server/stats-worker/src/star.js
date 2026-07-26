@@ -13,7 +13,7 @@
  * slows the fast stats stream.
  */
 
-import { writeStar } from "./cache.js";
+import { writeStar, readBlocked } from "./cache.js";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -61,8 +61,9 @@ export function parseStar(html) {
 }
 
 /** Fetch + stream-read a player's achievements page. Returns { ok, html } or { ok:false, retry429? }. */
-export async function scrapeStarHtml(player) {
-  const target = `https://hypixel.net/player/${encodeURIComponent(player)}/achievements`;
+export async function scrapeStarHtml(player, env) {
+  const base = (env && env.HYPIXEL_BASE) || "https://hypixel.net";
+  const target = `${base}/player/${encodeURIComponent(player)}/achievements`;
   let response;
   try {
     response = await fetch(target, {
@@ -98,7 +99,9 @@ export async function scrapeStarHtml(player) {
  * The caller is responsible for pacing (this does not gate itself).
  */
 export async function scrapeStarForPool(player, env, ctx) {
-  const r = await scrapeStarHtml(player);
+  // Circuit breaker: while the origin is blocked the achievements page is doomed too.
+  if (await readBlocked(env)) return { level: null };
+  const r = await scrapeStarHtml(player, env);
   if (r.retry429) return { retry429: true };
   if (!r.ok) return { level: null };
   const level = parseStar(r.html);

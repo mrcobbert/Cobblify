@@ -2,6 +2,7 @@ package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.AlertCopyReason;
 import com.bedwarsqol.feature.ChatCopyAccess;
 import com.bedwarsqol.feature.ChatHoverStats;
 import net.minecraft.client.Minecraft;
@@ -64,11 +65,12 @@ public abstract class GuiChatMixin extends GuiScreen {
         if (mc == null || mc.ingameGUI == null) return;
         Object chat = mc.ingameGUI.getChatGUI();
         if (!(chat instanceof ChatCopyAccess)) return;
-        String formatted = ((ChatCopyAccess) chat).bedwarsqol$fullTextAt(Mouse.getX(), Mouse.getY());
-        if (formatted == null) return;
-        String plain = EnumChatFormatting.getTextWithoutFormattingCodes(formatted);
+        IChatComponent component =
+                ((ChatCopyAccess) chat).bedwarsqol$fullComponentAt(Mouse.getX(), Mouse.getY());
+        if (component == null) return;
+        String plain = EnumChatFormatting.getTextWithoutFormattingCodes(component.getFormattedText());
         if (plain == null || plain.trim().isEmpty()) return;
-        GuiScreen.setClipboardString(plain.trim());
+        GuiScreen.setClipboardString(AlertCopyReason.appendToPlain(component, plain.trim()));
         mc.getSoundHandler().playSound(
                 PositionedSoundRecord.create(new ResourceLocation("gui.button.press"), 1.0F));
     }

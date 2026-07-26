@@ -7,6 +7,13 @@ public final class BedwarsStats {
 
     public enum State { OK, NEVER_PLAYED, NICKED, ERROR }
 
+    /**
+     * Whether this account's rank is known to be elevated (can use /nick), known not to be, or
+     * unknown. Used as the denick rank backstop. UNKNOWN forces a fresh lookup rather than a reject,
+     * so a warm/old cache entry that predates rank-code persistence is never falsely rejected.
+     */
+    public enum RankProvenance { ELEVATED, NON_ELEVATED, UNKNOWN }
+
     /** The six raw Bedwars counters for one mode (or overall) plus derived ratios. */
     public static final class ModeStats {
         public static final ModeStats EMPTY = new ModeStats(0, 0, 0, 0, 0, 0);
@@ -46,6 +53,12 @@ public final class BedwarsStats {
     public final int bedwarsLevel;
     /** Pre-colored §-prefixed rank label, e.g. {@code §b[MVP§c+§b]}; empty for no rank. */
     public final String rankPrefix;
+    /**
+     * Raw forum rank code (e.g. {@code superstar}, {@code mvp_plus}), for elevation classification.
+     * {@code ""} = a successfully-fetched rankless (Default) account; {@code null} = unknown (an old
+     * cache entry from before this field, or a non-OK state) which forces a refetch, never a reject.
+     */
+    public final String rankCode;
 
     public final ModeStats overall;
     public final ModeStats solo;
@@ -67,17 +80,31 @@ public final class BedwarsStats {
     /** Community-reported Urchin tags (in-memory only, never persisted); unmodifiable, never null. */
     public final List<UrchinTag> urchinTags;
 
+    /** Seraph list tags (in-memory only, never persisted); unmodifiable, never null. */
+    public final List<SeraphTag> seraphTags;
+
+    /** Seraph statistics (in-memory only, never persisted); {@code -1} when absent. */
+    public final int seraphThreat;
+    public final int seraphEncounters;
+
     private BedwarsStats(State state, String displayName, int networkLevel, int bedwarsLevel,
-                         String rankPrefix, ModeStats overall, ModeStats solo, ModeStats doubles,
-                         ModeStats threes, ModeStats fours, List<UrchinTag> urchinTags) {
+                         String rankPrefix, String rankCode, ModeStats overall, ModeStats solo,
+                         ModeStats doubles, ModeStats threes, ModeStats fours, List<UrchinTag> urchinTags,
+                         List<SeraphTag> seraphTags, int seraphThreat, int seraphEncounters) {
         this.urchinTags = urchinTags == null
                 ? Collections.<UrchinTag>emptyList()
                 : Collections.unmodifiableList(new java.util.ArrayList<UrchinTag>(urchinTags));
+        this.seraphTags = seraphTags == null
+                ? Collections.<SeraphTag>emptyList()
+                : Collections.unmodifiableList(new java.util.ArrayList<SeraphTag>(seraphTags));
+        this.seraphThreat = seraphThreat < 0 ? -1 : seraphThreat;
+        this.seraphEncounters = seraphEncounters < 0 ? -1 : seraphEncounters;
         this.state = state;
         this.displayName = displayName;
         this.networkLevel = Math.max(0, networkLevel);
         this.bedwarsLevel = Math.max(0, bedwarsLevel);
         this.rankPrefix = rankPrefix == null ? "" : rankPrefix;
+        this.rankCode = rankCode;
         this.overall = overall == null ? ModeStats.EMPTY : overall;
         this.solo = solo == null ? ModeStats.EMPTY : solo;
         this.doubles = doubles == null ? ModeStats.EMPTY : doubles;
@@ -96,33 +123,58 @@ public final class BedwarsStats {
     }
 
     public static BedwarsStats nicked() {
-        return new BedwarsStats(State.NICKED, null, 0, 0, "", null, null, null, null, null, null);
+        return new BedwarsStats(State.NICKED, null, 0, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats error() {
-        return new BedwarsStats(State.ERROR, null, 0, 0, "", null, null, null, null, null, null);
+        return new BedwarsStats(State.ERROR, null, 0, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats neverPlayed(String displayName) {
-        return new BedwarsStats(State.NEVER_PLAYED, displayName, 0, 0, "", null, null, null, null, null, null);
+        return new BedwarsStats(State.NEVER_PLAYED, displayName, 0, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats ok(String displayName, int networkLevel, int bedwarsLevel, String rankPrefix,
-                                  ModeStats overall, ModeStats solo, ModeStats doubles,
+                                  String rankCode, ModeStats overall, ModeStats solo, ModeStats doubles,
                                   ModeStats threes, ModeStats fours) {
-        return new BedwarsStats(State.OK, displayName, networkLevel, bedwarsLevel, rankPrefix,
-                overall, solo, doubles, threes, fours, null);
+        return new BedwarsStats(State.OK, displayName, networkLevel, bedwarsLevel, rankPrefix, rankCode,
+                overall, solo, doubles, threes, fours, null, null, -1, -1);
+    }
+
+    /**
+     * Elevation of this account's rank for the denick backstop. Only an {@code OK} account with a
+     * known rank code yields ELEVATED/NON_ELEVATED; a null code (old cache / non-OK) is UNKNOWN so
+     * the caller refetches rather than falsely rejecting a warm elevated entry.
+     */
+    public RankProvenance rankProvenance() {
+        if (state != State.OK) return RankProvenance.UNKNOWN;
+        if (rankCode == null) return RankProvenance.UNKNOWN;
+        if (rankCode.isEmpty()) return RankProvenance.NON_ELEVATED; // fetched, rankless (Default)
+        return HypixelRanks.isElevated(rankCode)
+                ? RankProvenance.ELEVATED : RankProvenance.NON_ELEVATED;
     }
 
     /** A copy carrying {@code tags} (Urchin resolution merge). Preserves all stats fields. */
     public BedwarsStats withUrchinTags(List<UrchinTag> tags) {
-        return new BedwarsStats(state, displayName, networkLevel, bedwarsLevel, rankPrefix,
-                overall, solo, doubles, threes, fours, tags);
+        return new BedwarsStats(state, displayName, networkLevel, bedwarsLevel, rankPrefix, rankCode,
+                overall, solo, doubles, threes, fours, tags, seraphTags, seraphThreat, seraphEncounters);
+    }
+
+    /** A copy carrying Seraph {@code tags} + statistics (Seraph resolution merge). {@code threat} /
+     *  {@code encounters} are {@code -1} when absent. Preserves all stats fields. */
+    public BedwarsStats withSeraph(List<SeraphTag> tags, int threat, int encounters) {
+        return new BedwarsStats(state, displayName, networkLevel, bedwarsLevel, rankPrefix, rankCode,
+                overall, solo, doubles, threes, fours, urchinTags, tags, threat, encounters);
     }
 
     /** The highest-severity active Urchin tag at {@code nowMs}, or null when there is none. */
     public UrchinTag priorityUrchinTag(long nowMs) {
         return UrchinTag.priority(urchinTags, nowMs);
+    }
+
+    /** The highest-severity Seraph tag, or null when there is none. */
+    public SeraphTag prioritySeraphTag() {
+        return SeraphTag.priority(seraphTags);
     }
 
     /**
@@ -132,8 +184,8 @@ public final class BedwarsStats {
      */
     public BedwarsStats withLevel(int level) {
         if (state != State.OK || level <= 0 || level == bedwarsLevel) return this;
-        return new BedwarsStats(state, displayName, networkLevel, level, rankPrefix,
-                overall, solo, doubles, threes, fours, urchinTags);
+        return new BedwarsStats(state, displayName, networkLevel, level, rankPrefix, rankCode,
+                overall, solo, doubles, threes, fours, urchinTags, seraphTags, seraphThreat, seraphEncounters);
     }
 
     /** The stats for {@code mode}, falling back to overall when that mode has no games. */
@@ -161,7 +213,27 @@ public final class BedwarsStats {
         return "§c";                   // Red    - sweat
     }
 
+    /** Skill ramp by WLR: White &lt; 1 &rarr; Green 1-2 &rarr; Yellow 2-3 &rarr; Gold 3-5 &rarr; Red 5+. */
+    public static String wlrColor(double wlr) {
+        if (wlr < 1.0) return "§f";
+        if (wlr < 2.0) return "§a";
+        if (wlr < 3.0) return "§e";
+        if (wlr < 5.0) return "§6";
+        return "§c";
+    }
+
+    /** Skill ramp by KD: White &lt; 1 &rarr; Green 1-2 &rarr; Yellow 2-3 &rarr; Gold 3+. */
+    public static String kdColor(double kd) {
+        if (kd < 1.0) return "§f";
+        if (kd < 2.0) return "§a";
+        if (kd < 3.0) return "§e";
+        return "§6";
+    }
+
     public String formatForNametag(BedwarsMode mode, boolean showLevel, boolean showRank) {
+        // A transient fetch failure renders nothing (like a still-loading player) — see specialLabel;
+        // falling through would paint a real player as a misleading "FKDR 0.00" for the error TTL.
+        if (state == State.ERROR) return null;
         String special = specialLabel();
         if (special != null) return special;
         ModeStats m = statsFor(mode);
@@ -172,6 +244,7 @@ public final class BedwarsStats {
     }
 
     public String formatForTab(BedwarsMode mode, boolean showLevel, boolean showRank) {
+        if (state == State.ERROR) return null; // same render-nothing contract as formatForNametag
         String special = specialLabel();
         if (special != null) return special;
         ModeStats m = statsFor(mode);

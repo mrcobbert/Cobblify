@@ -73,8 +73,14 @@ public class BedwarsQolCommand extends Command {
             case "urchin":
                 handleUrchin(args);
                 return;
+            case "seraph":
+                handleSeraph(args);
+                return;
             case "urchinkey":
                 handleUrchinKey(args);
+                return;
+            case "seraphkey":
+                handleSeraphKey(args);
                 return;
             default:
                 // A non-reserved first token is a player name → stats card.
@@ -113,7 +119,9 @@ public class BedwarsQolCommand extends Command {
         send("§f/cobblify statsurl <url> §7— set the stats backend");
         send("§f/cobblify statstoken <token> §7— set the backend token");
         send("§f/cobblify urchin <player> §7— community Urchin tags for a player");
+        send("§f/cobblify seraph <player> §7— Seraph tags for a player");
         send("§f/cobblify urchinkey <key|clear> §7— set the server-side Urchin key");
+        send("§f/cobblify seraphkey <key|clear> §7— set the server-side Seraph key");
         send("§f/cobblify help §7— this page");
         send("§7§m------------------------------");
     }
@@ -292,6 +300,65 @@ public class BedwarsQolCommand extends Command {
         }
     }
 
+    /** {@code /cobblify seraph <name>} — on-demand Seraph-tag lookup via the Worker's manual route. */
+    private void handleSeraph(String[] args) {
+        ClientSettings cfg = settings();
+        if (!cfg.seraphTags) {
+            send("§cSeraph Tags is disabled. Enable it in /cobblify.");
+            return;
+        }
+        if (args.length < 2 || args[1].trim().isEmpty()) {
+            send("§eUsage: §f/cobblify seraph <player>");
+            return;
+        }
+        final String name = args[1].trim();
+        final String url = cfg.statsBackendUrl;
+        final String token = cfg.statsBackendToken;
+        if (url == null || url.trim().isEmpty()) {
+            send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
+            return;
+        }
+        send("§7Looking up Seraph tags for §f" + name + "§7...");
+        URCHIN_EXEC.submit(() -> {
+            try {
+                com.bedwarsqol.stats.ScraperBackendClient.SeraphLookup r =
+                        com.bedwarsqol.stats.ScraperBackendClient.getSeraph(url, token, name);
+                scheduled(() -> printSeraph(name, r));
+            } catch (Throwable t) {
+                scheduled(() -> send("§cSeraph lookup failed for §f" + name + "§c."));
+            }
+        });
+    }
+
+    private static void printSeraph(String name, com.bedwarsqol.stats.ScraperBackendClient.SeraphLookup r) {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.thePlayer == null) return;
+        if (r == null || !r.success) {
+            local("§cSeraph unavailable right now.");
+            return;
+        }
+        if (r.notFound) {
+            local("§7No Hypixel player named §f" + name + "§7 was found.");
+            return;
+        }
+        java.util.List<com.bedwarsqol.stats.SeraphTag> tags =
+                com.bedwarsqol.stats.SeraphTag.activeTags(r.tags);
+        if (tags.isEmpty()) {
+            if (r.unavailable) local("§7Seraph unavailable right now.");
+            else local("§a" + name + " §7has no Seraph tags.");
+            return;
+        }
+        local("§8[§6Cobblify§8] §fSeraph tags for §e" + name + "§7:");
+        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        for (com.bedwarsqol.stats.SeraphTag t : tags) {
+            StringBuilder sb = new StringBuilder("  ").append(t.color()).append("[")
+                    .append(t.displayIcon()).append("] §f").append(t.displayName());
+            if (!t.reason.isEmpty()) sb.append(" §7- §f").append(t.reason);
+            if (t.addedOnMs > 0) sb.append(" §8(").append(fmt.format(new java.util.Date(t.addedOnMs))).append(')');
+            local(sb.toString());
+        }
+    }
+
     /**
      * {@code /cobblify urchinkey <key|clear>} — sets/clears the server-side Urchin key. The key never touches
      * chat history, disk, logs, exceptions, or URLs. The whole handler is guarded so it can never throw.
@@ -383,6 +450,87 @@ public class BedwarsQolCommand extends Command {
         }
         return UrchinKeyScrub.scrubKeyEntries(sent);
     }
+
+    /**
+     * {@code /cobblify seraphkey <key|clear>} — sets/clears the server-side Seraph key. Mirrors
+     * {@link #handleUrchinKey}: the key never touches chat history, disk, logs, exceptions, or URLs, and
+     * the whole handler is guarded so it can never throw.
+     */
+    private void handleSeraphKey(String[] args) {
+        try {
+            if (!scrubSeraphKeyHistory()) {
+                send("§cCould not clear the command from chat history - key not sent. "
+                        + "Use §fwrangler secret put SERAPH_KEY§c instead.");
+                return;
+            }
+            ClientSettings cfg = settings();
+            final String url = cfg.statsBackendUrl;
+            final String token = cfg.statsBackendToken;
+            if (url == null || url.trim().isEmpty()) {
+                send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
+                return;
+            }
+            if (args.length < 2 || args[1].trim().isEmpty()) {
+                send("§eUsage: §f/cobblify seraphkey <key|clear>");
+                return;
+            }
+            final boolean clear = "clear".equalsIgnoreCase(args[1].trim())
+                    || "none".equalsIgnoreCase(args[1].trim());
+            final String body = clear ? "{\"key\":null}" : "{\"key\":\"" + jsonEscape(args[1].trim()) + "\"}";
+            if (clear) {
+                // Strip local tags BEFORE submitting (I1): the Worker commits the deletion before it
+                // replies, so a committed-but-response-lost clear must still leave the display safe.
+                StatsCache.stripSeraphTags();
+            }
+            send("§7Submitting Seraph key...");
+            URCHIN_EXEC.submit(() -> {
+                com.bedwarsqol.stats.ScraperBackendClient.SecretPostResult res =
+                        com.bedwarsqol.stats.ScraperBackendClient.postSecret(url, "/seraph/key", token, body);
+                scheduled(() -> finishSeraphKey(res, clear));
+            });
+        } catch (Throwable t) {
+            try { send("§cSeraph key update failed."); } catch (Throwable ignored) { }
+        }
+    }
+
+    private static void finishSeraphKey(com.bedwarsqol.stats.ScraperBackendClient.SecretPostResult res, boolean clear) {
+        if (clear) {
+            if (res != null && res.success) {
+                local("§aSeraph key cleared.");
+            } else {
+                local("§eSeraph key clear submitted, but the server did not confirm it - the server-side "
+                        + "clear may not have taken effect. Retry, or remove it with §fwrangler secret "
+                        + "delete SERAPH_KEY§e / §fwrangler kv§e.");
+            }
+            return;
+        }
+        if (res != null && res.success) {
+            StatsCache.invalidateSeraphResolution();
+            local("§aSeraph key updated.");
+            return;
+        }
+        String err = res == null ? null : res.error;
+        if ("key_managed_by_secret".equals(err)) {
+            local("§cThe key is managed by a wrangler secret - use §fwrangler secret delete SERAPH_KEY§c first.");
+        } else if (res != null && res.status == 403) {
+            local("§cUnauthorized. Set a matching §f/cobblify statstoken§c, or provision with §fwrangler secret put SERAPH_KEY§c.");
+        } else {
+            local("§cSeraph key update failed. Check §f/cobblify statsurl§c/§fstatstoken§c, or use §fwrangler secret put SERAPH_KEY§c.");
+        }
+    }
+
+    private static boolean scrubSeraphKeyHistory() {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.ingameGUI == null) return false;
+        java.util.List<String> sent;
+        try {
+            sent = mc.ingameGUI.getChatGUI().getSentMessages();
+        } catch (Throwable t) {
+            return false;
+        }
+        return SeraphKeyScrub.scrubKeyEntries(sent);
+    }
+
 
     private static String jsonEscape(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");

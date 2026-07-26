@@ -407,7 +407,9 @@ public final class CheaterDetector {
         // Kill Aura B (MWE): landing a melee hit mid-consumption. Requires the attacker to STILL be using
         // the item at hit time — a legit cancel-eat-to-punch drops the flag (and useTicks) first. The
         // [7,32] window ports MWE's 1.7-client guards: <7 tolerates jitter, >32 means the state desynced.
-        if (cfg.acEating && ad.usingItem && holdingConsumable(a) && ad.useTicks >= 7 && ad.useTicks <= 32) {
+        // Gated on meleeHit like wall/multi: a fire-tick, fall, or arrow on someone near a flailing
+        // eater must not count as the eater's hit.
+        if (cfg.acEating && meleeHit && ad.usingItem && holdingConsumable(a) && ad.useTicks >= 7 && ad.useTicks <= 32) {
             ad.eat.add(100);
             hbAccrual[CHECK_EAT]++;
             maybeFlag(a, ad, CHECK_EAT, ad.eat, "attacked " + ad.useTicks + " ticks into eating/drinking");

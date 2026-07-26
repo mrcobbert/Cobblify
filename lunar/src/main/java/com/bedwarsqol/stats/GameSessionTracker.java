@@ -100,6 +100,7 @@ public final class GameSessionTracker {
         // Publish the per-tick eligibility snapshot the background dispatch threads consume.
         ClientSettings cfg = BedwarsQol.config;
         boolean masterOn = cfg != null && cfg.urchinTags;
+        boolean seraphOn = cfg != null && cfg.seraphTags;
         boolean exactHost = false;
         if (mc != null && !mc.isSingleplayer()) {
             ServerData server = mc.getCurrentServerData();
@@ -108,6 +109,7 @@ public final class GameSessionTracker {
             }
         }
         EligibilitySnapshot.publish(new EligibilitySnapshot(
-                id, exactHost, activeGame, masterOn, NickUtils.identitySnapshot()));
+                id, exactHost, activeGame, masterOn, seraphOn,
+                NickUtils.identitySnapshot()));
     }
 }

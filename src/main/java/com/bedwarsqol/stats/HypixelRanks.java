@@ -9,6 +9,32 @@ public final class HypixelRanks {
 
     private HypixelRanks() {}
 
+    /**
+     * True if the raw forum rank code is an <b>elevated</b> rank able to use Hypixel's /nick feature:
+     * MVP++ ({@code superstar}), YOUTUBE, or staff. Used as the denick rank backstop (a genuine denick's
+     * resolved real account must be elevated). Null/unknown → false (fail closed). Classify on the raw
+     * code, never the colored prefix (an unknown/failed code collapses to the same empty prefix as
+     * Default and must not be read as a rank).
+     */
+    public static boolean isElevated(String code) {
+        if (code == null) return false;
+        switch (code.toLowerCase()) {
+            case "superstar":   // MVP++
+            case "youtuber":
+            case "youtube":
+            case "mojang":
+            case "admin":
+            case "owner":
+            case "staff":
+            case "game_master":
+            case "moderator":
+            case "helper":
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public static String prefix(String code) {
         if (code == null) return "";
         switch (code.toLowerCase()) {

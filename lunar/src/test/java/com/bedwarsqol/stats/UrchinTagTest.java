@@ -61,9 +61,9 @@ public class UrchinTagTest {
 
     @Test
     public void nonCheaterTagsAreStillDisplayableForFusion() {
-        // I2: fusion applies to ANY displayable tag, not just cheater types. These are the display-tag
-        // policy the fusion path relies on - non-cheater yet displayable, so they must fuse with live
-        // AC flags. isCheaterType() gates only the ordinary alert pling, verified above.
+        // I2: fusion *badge highlight* applies to ANY displayable tag + live AC. Fusion *chat* is
+        // cheater-only (see UrchinAlertFormatTest). These stay displayable so sniper/caution badges
+        // still highlight when fused.
         assertTrue(tag("sniper").isDisplayable());
         assertTrue(tag("legit_sniper").isDisplayable());
         assertTrue(tag("possible_sniper").isDisplayable());

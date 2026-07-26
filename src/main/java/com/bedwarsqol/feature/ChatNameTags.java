@@ -102,7 +102,10 @@ public final class ChatNameTags {
         tracked.clear();
         byName.clear();
         ticks = 0;
-        ChatPlayerHeads.clear(); // drop per-skin head-sentinel allocations with the tracked lines
+        // Head sentinels deliberately outlive this wipe: Minecraft's chat lines survive a server switch,
+        // so the surviving lines still carry their codepoints and would lose (or alias onto) their heads
+        // if the registry were cleared here. It recycles least-recently-used slots on its own instead.
+        ChatHoverStats.clearPins(); // tab identities reset with the world; drop name->UUID pins
     }
 
     /** What a world change is about to discard — liveUntagged are trusted lines whose FKDR never landed. */
@@ -145,10 +148,10 @@ public final class ChatNameTags {
         ChatComponentText suffix = new ChatComponentText("");
         String hoist = prependSibling(event.message, prefix);
         event.message.appendSibling(suffix);
-        // Chat Heads: an empty holder spliced immediately before the sender's name, filled with an
-        // invisible per-skin sentinel by apply() — same trust + back-patch path as the FKDR bracket.
-        ChatComponentText head = new ChatComponentText("");
-        boolean hasHead = ChatPlayerHeads.spliceHeadHolder(event.message, sender, head);
+        // Chat Heads: splice only while enabled. Replacing the sender leaf unnecessarily when heads
+        // are off loses Lunar's client-side name styling during its copy-on-add conversion.
+        ChatComponentText head = cfg.chatPlayerHeads ? new ChatComponentText("") : null;
+        boolean hasHead = head != null && ChatPlayerHeads.spliceHeadHolder(event.message, sender, head);
         DiagLog.log("RECV sender=" + sender + " typed=" + typedShape + " hoist=" + hoist + " head=" + hasHead);
 
         Holder h = new Holder(sender, typedShape, System.currentTimeMillis(), event.message, prefix, suffix,
@@ -227,13 +230,30 @@ public final class ChatNameTags {
      * FKDR to the real account; with it off we never reveal the account (nor its stats) but Nick Notify
      * can still flag the disguise as {@code (Nicked)}.
      */
-    private static String[] buildParts(String sender, ClientSettings cfg) {
+    private static String[] buildParts(Holder h, ClientSettings cfg) {
+        String sender = h.sender;
         String real = Denicks.realNameForNick(sender);
         // Name-reveal and (Nicked) tags are Nick Utils features; keep them behind that module even when
         // Chat Stats alone enabled this path for the leading bracket.
         boolean reveal = cfg.nickUtils && real != null && cfg.autoDenick;
 
-        UUID uuid = reveal ? null : ChatSender.uuidInTab(sender);
+        UUID uuid = null;
+        if (!reveal) {
+            uuid = ChatSender.uuidInTab(sender);
+            if (uuid != null) {
+                h.tabUuid = uuid;
+            } else if (h.tabUuid != null) {
+                // Tab churn (remove→re-add on updates, death/spectate) blips a present player out of
+                // the map for a tick or two. Falling through to the name key here repainted a resolved
+                // FKDR as the pending placeholder AND fired a redundant name-keyed fetch — so once a
+                // line has resolved its tab UUID, it keeps that key through dropouts.
+                uuid = h.tabUuid;
+                if (!h.pinLogged) {
+                    h.pinLogged = true;
+                    DiagLog.log("PIN sender=" + sender + " kept uuid through tab dropout");
+                }
+            }
+        }
         String fkdrName = reveal ? real : sender;
         BedwarsStats st = resolveStats(fkdrName, uuid);
 
@@ -645,8 +665,8 @@ public final class ChatNameTags {
         final IChatComponent root; // the whole received line — re-attached when Lunar stored a copy
         final ChatComponentText prefix;
         final ChatComponentText suffix;
-        /** The head slot spliced before the name, or null when the name couldn't be located. */
-        final ChatComponentText head;
+        /** The head slot spliced before the name, or null until enabled/locatable. */
+        ChatComponentText head;
         boolean decided;           // verdict reached (final either way)
         boolean live;              // verdict: sender trusted, annotate + back-patch
         /** The line's full text at add time — the fingerprint a Lunar-stored copy still carries. */
@@ -656,6 +676,9 @@ public final class ChatNameTags {
         String lastPrefix = "";
         String lastSuffix = "";
         char lastHeadSentinel;     // the sentinel currently in the head slot (0 = empty)
+        /** Last tab UUID resolved for the sender — the FKDR cache key, held through tab churn. */
+        UUID tabUuid;
+        boolean pinLogged;         // one PIN diag per line, not one per blipped tick
 
         Holder(String sender, boolean typedShape, long receivedMs, IChatComponent root,
                ChatComponentText prefix, ChatComponentText suffix, ChatComponentText head) {
@@ -671,7 +694,7 @@ public final class ChatNameTags {
 
         /** Recompute all parts and, where any differs from what's drawn, rewrite it. Returns true on change. */
         boolean apply(ClientSettings cfg) {
-            String[] parts = buildParts(sender, cfg);
+            String[] parts = buildParts(this, cfg);
             boolean changed = false;
             if (!parts[0].equals(lastPrefix)) {
                 if (lastPrefix.isEmpty() && !parts[0].isEmpty()) {
@@ -687,7 +710,7 @@ public final class ChatNameTags {
                 writeChild(suffix, parts[1]);
                 changed = true;
             }
-            if (head != null && applyHead(cfg)) changed = true;
+            if (applyHead(cfg)) changed = true;
             return changed;
         }
 
@@ -697,6 +720,11 @@ public final class ChatNameTags {
          * Same async pattern as the FKDR bracket: empty until the skin lands, back-patched on a later tick.
          */
         private boolean applyHead(ClientSettings cfg) {
+            if (head == null && cfg.chatPlayerHeads) {
+                ChatComponentText candidate = new ChatComponentText("");
+                if (ChatPlayerHeads.spliceHeadHolder(root, sender, candidate)) head = candidate;
+            }
+            if (head == null) return false;
             char want = 0;
             if (cfg.chatPlayerHeads) {
                 ResourceLocation skin = ChatPlayerHeads.skinForSender(sender);

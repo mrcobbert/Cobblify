@@ -92,7 +92,8 @@ public final class UrchinTag {
         return " §8[" + inner + "§8]";
     }
 
-    /** Cheater-type tags gate ONLY the alert sound; fusion applies to any displayable tag. */
+    /** Cheater-type tags gate ordinary chat, its pling, and fusion chat/pling; fusion badge
+     *  highlight still applies to any displayable tag. */
     public boolean isCheaterType() {
         return type.equals("confirmed_cheater") || type.equals("blatant_cheater")
                 || type.equals("closet_cheater");

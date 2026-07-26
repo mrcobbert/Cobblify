@@ -63,6 +63,34 @@ public final class HypixelContext {
     }
 
     /**
+     * Whether we're in a Bedwars <b>pregame queue</b> — the waiting lobby on a game server, not the
+     * Bedwars hub. Both carry a "BED WARS" sidebar and neither has the active game's slot-2 objective,
+     * so {@code isInBedwars() && !isInActiveBedwarsGame()} matches the hub too; only the queue's
+     * sidebar lists the match being assembled. The {@code Mode:} line is that marker — present for
+     * every queue including modes {@link BedwarsModeDetector} doesn't map, and absent in the hub.
+     */
+    public static boolean isInBedwarsQueue() {
+        if (!isInBedwars() || isInActiveBedwarsGame()) return false;
+        return sidebarHasModeLine();
+    }
+
+    private static boolean sidebarHasModeLine() {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.theWorld == null) return false;
+        Scoreboard board = mc.theWorld.getScoreboard();
+        if (board == null) return false;
+        ScoreObjective sidebar = board.getObjectiveInDisplaySlot(1);
+        if (sidebar == null) return false;
+        for (net.minecraft.scoreboard.Score score : board.getSortedScores(sidebar)) {
+            ScorePlayerTeam team = board.getPlayersTeam(score.getPlayerName());
+            String line = EnumChatFormatting.getTextWithoutFormattingCodes(
+                    ScorePlayerTeam.formatPlayerName(team, score.getPlayerName()));
+            if (line != null && line.contains("Mode:")) return true;
+        }
+        return false;
+    }
+
+    /**
      * Whether the sidebar objective is a Duels game (title contains "DUELS"). Unlike the Bedwars check
      * this doesn't require a second objective, so it's true in the Duels lobby too — harmless, since the
      * lobby has no combat to judge; combat only happens once a match starts. Used to let the cheater

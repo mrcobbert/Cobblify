@@ -188,7 +188,7 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
     // ---- Copy Chat ----
 
     @Override
-    public String bedwarsqol$fullTextAt(int rawMouseX, int rawMouseY) {
+    public IChatComponent bedwarsqol$fullComponentAt(int rawMouseX, int rawMouseY) {
         if (!getChatOpen()) return null;
         ScaledResolution sr = new ScaledResolution(mc);
         int scaleFactor = sr.getScaleFactor();
@@ -208,9 +208,9 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
         int cursor = 0;
         for (ChatLine line : chatLines) {
             int wrapped = bedwarsqol$split(line.getChatComponent()).size();
-            if (drawnIdx < cursor + wrapped) return line.getChatComponent().getFormattedText();
+            if (drawnIdx < cursor + wrapped) return line.getChatComponent();
             cursor += wrapped;
         }
-        return drawnChatLines.get(drawnIdx).getChatComponent().getFormattedText();
+        return drawnChatLines.get(drawnIdx).getChatComponent();
     }
 }

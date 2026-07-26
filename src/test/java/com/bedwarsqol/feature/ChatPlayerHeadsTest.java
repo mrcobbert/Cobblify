@@ -80,6 +80,28 @@ public class ChatPlayerHeadsTest {
         assertFalse("clear drops allocations", ChatPlayerHeads.isSentinel(ca));
     }
 
+    /** Chat lines outlive the world change, so a full registry recycles by use order instead of wiping. */
+    @Test
+    public void sentinelRegistryRecyclesLeastRecentlyUsedWhenFull() {
+        ChatPlayerHeads.clear();
+        int slots = (ChatPlayerHeads.SENTINEL_MAX - ChatPlayerHeads.SENTINEL_MIN) + 1;
+        char[] codes = new char[slots];
+        for (int i = 0; i < slots; i++) {
+            codes[i] = ChatPlayerHeads.sentinelFor(new ResourceLocation("skins/" + i));
+        }
+        assertEquals("the range is full", ChatPlayerHeads.SENTINEL_MAX, codes[slots - 1]);
+        char kept = ChatPlayerHeads.sentinelFor(new ResourceLocation("skins/0")); // re-touch: now most recent
+        assertEquals(codes[0], kept);
+
+        char fresh = ChatPlayerHeads.sentinelFor(new ResourceLocation("skins/new"));
+        assertNotEquals("a full registry still hands out a codepoint", 0, fresh);
+        assertEquals("the re-touched skin was not the victim", codes[0], ChatPlayerHeads.sentinelFor(
+                new ResourceLocation("skins/0")));
+        assertEquals("the least-recently-used slot was the one recycled", codes[1], fresh);
+        assertNotEquals("the evicted skin lost its old codepoint", codes[1], ChatPlayerHeads.sentinelFor(
+                new ResourceLocation("skins/1")));
+    }
+
     // ---- component-tree splice ------------------------------------------------------------------
 
     @Test
@@ -103,6 +125,7 @@ public class ChatPlayerHeadsTest {
         assertNotEquals("holder is in the tree", -1, hi);
         IChatComponent afterName = leaves.get(hi + 1);
         assertEquals("Notch", afterName.getUnformattedTextForChat());
+        assertSame("an already-separated name keeps its exact client-styled component", name, afterName);
         assertNotNull("name keeps its rank-card hover", afterName.getChatStyle().getChatHoverEvent());
         assertSame(holder, leaves.get(hi));
     }

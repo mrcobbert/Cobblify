@@ -29,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 
 /**
  * UUID-keyed cache and scheduler for Bedwars stats fetched from the BedwarsQol stats
@@ -50,9 +51,15 @@ public final class StatsCache {
     private static final long NEGATIVE_TTL_MS = 30L * 60L * 1000L;
     /** Bounded retry gap for an unresolved Urchin lookup on an eligible warm entry. */
     private static final long URCHIN_REFRESH_MS = 60L * 1000L;
+    /** Bounded retry gap for an unresolved Seraph lookup on an eligible warm entry. */
+    private static final long SERAPH_REFRESH_MS = 60L * 1000L;
     // Short so a transient fetch failure retries within a few seconds (it renders blank meanwhile,
-    // never "[?]") instead of sticking for a full minute on a real, lookupable player.
+    // never "[?]") instead of sticking for a full minute on a real, lookupable player. Doubles per
+    // consecutive failure (see ERROR_STREAK) so a name that keeps failing — or a backend outage —
+    // backs off instead of re-scraping every few seconds for as long as the line stays rendered.
     private static final long ERROR_TTL_MS = 6L * 1000L;
+    /** Ceiling for the doubled ERROR retry gap. */
+    private static final long ERROR_TTL_MAX_MS = 5L * 60L * 1000L;
     private static final long FLUSH_INTERVAL_MS = 30L * 1000L;
     private static final int MAX_QUEUE = 512;
 
@@ -64,12 +71,18 @@ public final class StatsCache {
     }
 
     private static final ConcurrentMap<String, Entry> CACHE = new ConcurrentHashMap<>();
+    /** Consecutive ERROR results per key, cleared by any non-ERROR result; paces the ERROR TTL. */
+    private static final ConcurrentMap<String, Integer> ERROR_STREAK = new ConcurrentHashMap<>();
     private static final java.util.Set<String> QUEUED = ConcurrentHashMap.newKeySet();
     private static final PriorityBlockingQueue<Task> QUEUE = new PriorityBlockingQueue<>();
     private static final AtomicLong SEQ = new AtomicLong();
     /** Bumped by {@link #stripUrchinTags()} (key clear); requests capture it at dispatch so a
      *  pre-clear response is dropped at merge instead of reattaching stripped tags (B2). */
     private static final java.util.concurrent.atomic.AtomicInteger URCHIN_GEN =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Seraph counterpart of {@link #URCHIN_GEN}: bumped on Seraph key set/clear so a pre-change
+     *  response is dropped at merge instead of reattaching stripped/stale tags. */
+    private static final java.util.concurrent.atomic.AtomicInteger SERAPH_GEN =
             new java.util.concurrent.atomic.AtomicInteger();
     private static final Gson GSON = new GsonBuilder().create();
 
@@ -136,15 +149,79 @@ public final class StatsCache {
         return e == null ? null : e.stats;
     }
 
+    /** Coarse Urchin lookup state for a UUID, derived purely from the immutable cache entry.
+     *  Policy-free: callers apply the master toggle + {@link UrchinTag#badgeAllowed} themselves
+     *  before displaying anything. Used by the Players page to show checking / no-tags / tags. */
+    public enum UrchinResolution { ABSENT, PENDING, RESOLVED_EMPTY, RESOLVED_TAGS }
+
+    /** The Urchin resolution state for {@code uuid} from immutable cache reads only — no fetch, no
+     *  name lookup, no eligibility policy. {@code ABSENT} = no live cache entry (or not yet fetched). */
+    public static UrchinResolution urchinResolution(UUID uuid) {
+        if (uuid == null) return UrchinResolution.ABSENT;
+        Entry e = liveEntry(uuid.toString());
+        if (e == null) return UrchinResolution.ABSENT;
+        return classifyUrchin(e.urchinResolved, e.stats.urchinTags, System.currentTimeMillis());
+    }
+
+    /** Pure classification of a cache entry's Urchin state (no cache access) — the testable core of
+     *  {@link #urchinResolution}. {@code resolved} = the lookup concluded; otherwise it is still pending. */
+    public static UrchinResolution classifyUrchin(boolean resolved, List<UrchinTag> tags, long nowMs) {
+        if (!resolved) return UrchinResolution.PENDING;
+        return UrchinTag.activeTags(tags, nowMs).isEmpty()
+                ? UrchinResolution.RESOLVED_EMPTY : UrchinResolution.RESOLVED_TAGS;
+    }
+
+    /** The Seraph resolution state for {@code uuid} from immutable cache reads only (no fetch/policy). */
+    public static UrchinResolution seraphResolution(UUID uuid) {
+        if (uuid == null) return UrchinResolution.ABSENT;
+        Entry e = liveEntry(uuid.toString());
+        if (e == null) return UrchinResolution.ABSENT;
+        return classifySeraph(e.seraphResolved, e.stats.seraphTags);
+    }
+
+    /** Pure classification of a cache entry's Seraph state (no cache access, no expiry). */
+    public static UrchinResolution classifySeraph(boolean resolved, List<SeraphTag> tags) {
+        if (!resolved) return UrchinResolution.PENDING;
+        return SeraphTag.activeTags(tags).isEmpty()
+                ? UrchinResolution.RESOLVED_EMPTY : UrchinResolution.RESOLVED_TAGS;
+    }
+
+    /** Whether a fetch for {@code uuid} is currently queued or in flight. The {@link #QUEUED} key is the
+     *  dashed {@code uuid.toString()} used by {@link #ensureFetched(UUID, int, boolean, boolean)}. */
+    public static boolean isFetching(UUID uuid) {
+        return uuid != null && QUEUED.contains(uuid.toString());
+    }
+
+    /** Whether a name-only lookup for {@code name} is currently queued or in flight. Uses the same
+     *  namespaced key as {@link #ensureFetchedByName(String, int, boolean)} so a remote lookup can show
+     *  an honest fetching state. */
+    public static boolean isFetchingName(String name) {
+        return name != null && !name.isEmpty() && QUEUED.contains(nameKey(name));
+    }
+
     /** The non-expired cache entry for a key, evicting it if the TTL has passed. */
     private static Entry liveEntry(String k) {
         Entry e = CACHE.get(k);
         if (e == null) return null;
-        if (System.currentTimeMillis() - e.timestamp > ttlFor(e.stats.state)) {
+        long ttl = e.stats.state == BedwarsStats.State.ERROR ? errorTtl(k) : ttlFor(e.stats.state);
+        if (System.currentTimeMillis() - e.timestamp > ttl) {
             CACHE.remove(k, e);
             return null;
         }
         return e;
+    }
+
+    /** The ERROR retry gap for a key: base TTL doubled per consecutive failure, capped. */
+    private static long errorTtl(String key) {
+        Integer streak = ERROR_STREAK.get(key);
+        int doublings = streak == null ? 0 : Math.min(Math.max(streak - 1, 0), 6);
+        return Math.min(ERROR_TTL_MS << doublings, ERROR_TTL_MAX_MS);
+    }
+
+    /** Track consecutive ERROR results per key so {@link #errorTtl} can back off retries. */
+    private static void noteErrorStreak(String key, BedwarsStats.State state) {
+        if (state == BedwarsStats.State.ERROR) ERROR_STREAK.merge(key, 1, Integer::sum);
+        else ERROR_STREAK.remove(key);
     }
 
     /** Whether an eligible pair still needs an Urchin lookup: eligible && unresolved && attempt aged out. */
@@ -154,10 +231,34 @@ public final class StatsCache {
         return !e.urchinResolved && now - e.urchinAttemptMs > URCHIN_REFRESH_MS;
     }
 
+    /** Whether an eligible pair still needs a Seraph lookup: eligible && unresolved && attempt aged out. */
+    private static boolean needsSeraphRefresh(boolean pairEligible, Entry e, long now) {
+        if (!pairEligible) return false;
+        if (e == null) return true;
+        return !e.seraphResolved && now - e.seraphAttemptMs > SERAPH_REFRESH_MS;
+    }
+
+    /** Whether a task still needs ANY provider fetch (base stats OR an unresolved eligible provider). */
+    private static boolean needsAnyRefresh(Task t, Entry e, long now) {
+        if (e == null) return true;
+        // A force task refetches past a live entry once it has aged out of the refresh window —
+        // the dispatch-side mirror of the ensureFetchedByName force gate (an entry refreshed
+        // since enqueue is still skipped, bounding a failing name to one refetch per window).
+        if (t.force && now - e.timestamp > URCHIN_REFRESH_MS) return true;
+        return needsUrchinRefresh(t.urchinEligible, e, now) || needsSeraphRefresh(t.seraphEligible, e, now);
+    }
+
     /** Undashed lowercase canonical UUID to send, or null when the send-time recheck fails (fail-closed). */
     private static String urchinSendUuid(Task t) {
         if (!t.urchinEligible || t.uuid == null) return null;
         if (!EligibilitySnapshot.current().eligible(t.playerName, t.uuid)) return null;
+        return t.uuid.toString().replace("-", "").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** Seraph counterpart of {@link #urchinSendUuid}: rechecks {@code eligibleSeraph} at send time. */
+    private static String seraphSendUuid(Task t) {
+        if (!t.seraphEligible || t.uuid == null) return null;
+        if (!EligibilitySnapshot.current().eligibleSeraph(t.playerName, t.uuid)) return null;
         return t.uuid.toString().replace("-", "").toLowerCase(java.util.Locale.ROOT);
     }
 
@@ -167,10 +268,10 @@ public final class StatsCache {
         // while the key was missing/rejected must not re-resolve the entry after the new
         // key succeeds (it would pin the player resolved-empty for the entry lifetime).
         URCHIN_GEN.incrementAndGet();
-        for (Map.Entry<String, Entry> e : CACHE.entrySet()) {
-            Entry cur = e.getValue();
-            CACHE.put(e.getKey(), new Entry(cur.stats, cur.timestamp, false, 0L));
-        }
+        // replaceAll remaps each key atomically, so a concurrent per-key merge (compute) sees the
+        // reset entry rather than losing this update to a stale get-then-put.
+        CACHE.replaceAll((k, cur) -> new Entry(cur.stats, cur.timestamp, false, 0L,
+                cur.seraphResolved, cur.seraphAttemptMs));
     }
 
     /** Immediately drop every entry's tags and mark it resolved-empty (used on a successful key clear). */
@@ -179,10 +280,23 @@ public final class StatsCache {
         // resolution is dropped at merge (mergeUrchin/putResolved), so it cannot reattach tags here.
         URCHIN_GEN.incrementAndGet();
         long now = System.currentTimeMillis();
-        for (Map.Entry<String, Entry> e : CACHE.entrySet()) {
-            Entry cur = e.getValue();
-            CACHE.put(e.getKey(), new Entry(cur.stats.withUrchinTags(null), cur.timestamp, true, now));
-        }
+        CACHE.replaceAll((k, cur) -> new Entry(cur.stats.withUrchinTags(null), cur.timestamp, true, now,
+                cur.seraphResolved, cur.seraphAttemptMs));
+    }
+
+    /** Reset Seraph resolution on all entries so warm players re-enqueue (used on a successful key set). */
+    public static void invalidateSeraphResolution() {
+        SERAPH_GEN.incrementAndGet();
+        CACHE.replaceAll((k, cur) -> new Entry(cur.stats, cur.timestamp,
+                cur.urchinResolved, cur.urchinAttemptMs, false, 0L));
+    }
+
+    /** Immediately drop every entry's Seraph tags and mark it resolved-empty (on a successful key clear). */
+    public static void stripSeraphTags() {
+        SERAPH_GEN.incrementAndGet();
+        long now = System.currentTimeMillis();
+        CACHE.replaceAll((k, cur) -> new Entry(cur.stats.withSeraph(null, -1, -1), cur.timestamp,
+                cur.urchinResolved, cur.urchinAttemptMs, true, now));
     }
 
     /** Cache key for a name-only lookup, namespaced so it can't collide with a UUID key. */
@@ -191,21 +305,26 @@ public final class StatsCache {
     }
 
     public static void ensureFetched(UUID uuid, int priority) {
-        ensureFetched(uuid, priority, false);
+        ensureFetched(uuid, priority, false, false);
+    }
+
+    public static void ensureFetched(UUID uuid, int priority, boolean urchinEligible) {
+        ensureFetched(uuid, priority, urchinEligible, false);
     }
 
     /**
-     * As {@link #ensureFetched(UUID, int)} but marks the task Urchin-eligible when {@code urchinEligible}
-     * is true (only ever set from a current-session confirmed-row pair). An eligible task re-enqueues
-     * even on a cache hit while its Urchin lookup is unresolved and the 60 s retry gap has passed.
+     * As {@link #ensureFetched(UUID, int)} but marks the task eligible per provider when its flag is
+     * true (only ever set from a current-session confirmed-row pair). An eligible task re-enqueues even
+     * on a cache hit while ANY provider lookup is unresolved and its 60 s retry gap has passed.
      */
-    public static void ensureFetched(UUID uuid, int priority, boolean urchinEligible) {
+    public static void ensureFetched(UUID uuid, int priority, boolean urchinEligible, boolean seraphEligible) {
         if (uuid == null) return;
         if (!useBackend()) return;
         String k = uuid.toString();
         Entry e = liveEntry(k);
         long now = System.currentTimeMillis();
-        if (e != null && !needsUrchinRefresh(urchinEligible, e, now)) return;
+        if (e != null && !needsUrchinRefresh(urchinEligible, e, now)
+                && !needsSeraphRefresh(seraphEligible, e, now)) return;
         String playerName = PlayerNames.nameForUuid(uuid);
         if (playerName == null || playerName.isEmpty()) return;
         if (!QUEUED.add(k)) return;
@@ -213,7 +332,8 @@ public final class StatsCache {
             QUEUED.remove(k);
             return;
         }
-        QUEUE.add(new Task(k, uuid, playerName, priority, SEQ.incrementAndGet(), urchinEligible));
+        QUEUE.add(new Task(k, uuid, playerName, priority, SEQ.incrementAndGet(),
+                urchinEligible, seraphEligible, false));
     }
 
     /**
@@ -221,16 +341,29 @@ public final class StatsCache {
      * party/guild members in another lobby). The result is cached under the name, not a UUID.
      */
     public static void ensureFetchedByName(String name, int priority) {
+        ensureFetchedByName(name, priority, false);
+    }
+
+    /**
+     * As {@link #ensureFetchedByName(String, int)}, but when {@code force} is set a live cached entry
+     * no longer short-circuits the enqueue once it has aged past {@link #URCHIN_REFRESH_MS}. The denick
+     * backstop uses this to upgrade a stale pre-rankCode entry (whose provenance reads UNKNOWN) with a
+     * fresh lookup instead of waiting out the full TTL; the age gate bounds a persistently-failing name
+     * to one refetch per refresh window so it can never hammer the backend.
+     */
+    public static void ensureFetchedByName(String name, int priority, boolean force) {
         if (name == null || name.isEmpty()) return;
         if (!useBackend()) return;
         String key = nameKey(name);
-        if (getCachedByKey(key) != null) return;
+        Entry cached = liveEntry(key);
+        if (cached != null
+                && !(force && System.currentTimeMillis() - cached.timestamp > URCHIN_REFRESH_MS)) return;
         if (!QUEUED.add(key)) return;
         if (QUEUE.size() >= MAX_QUEUE) {
             QUEUED.remove(key);
             return;
         }
-        QUEUE.add(new Task(key, null, name.trim(), priority, SEQ.incrementAndGet(), false));
+        QUEUE.add(new Task(key, null, name.trim(), priority, SEQ.incrementAndGet(), false, false, force));
     }
 
     /**
@@ -322,21 +455,26 @@ public final class StatsCache {
     }
 
     private static void submitSingle(Task t) {
-        final int gen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops this result's tags
+        final int uGen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops this result's tags
+        final int sGen = SERAPH_GEN.get();
         FETCHERS.submit(() -> {
             long now = System.currentTimeMillis();
             try {
                 Entry e = liveEntry(t.key);
-                if (e != null && !needsUrchinRefresh(t.urchinEligible, e, now)) return;
+                if (e != null && !needsAnyRefresh(t, e, now)) return;
                 String backend = statsBackendUrl();
                 if (backend == null || t.playerName == null || t.playerName.isEmpty()) return;
-                String sendUuid = urchinSendUuid(t); // null unless send-time recheck passes
-                UrchinResult[] holder = {null};
+                String urchinUuid = urchinSendUuid(t); // null unless send-time recheck passes
+                String seraphUuid = seraphSendUuid(t);
+                UrchinResult[] uHolder = {null};
+                SeraphResult[] sHolder = {null};
                 BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend, statsBackendToken(),
-                        false, sendUuid, r -> holder[0] = r);
-                putResolved(t.key, s, holder[0], sendUuid != null, now, gen);
+                        false, urchinUuid, r -> uHolder[0] = r, seraphUuid, r -> sHolder[0] = r);
+                putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
+                        sHolder[0], seraphUuid != null, sGen, now);
             } catch (Throwable other) {
-                put(t.key, BedwarsStats.error());
+                // Never clobber a warm entry with a failure marker (mirrors the batch-fallback guard).
+                if (liveEntry(t.key) == null) put(t.key, BedwarsStats.error());
             } finally {
                 QUEUED.remove(t.key); // done (or skipped) -> allow a future re-fetch
             }
@@ -349,7 +487,8 @@ public final class StatsCache {
      * Names that never resolve (network error) are marked ERROR (short TTL) so they retry soon.
      */
     private static void submitBatch(List<Task> batch) {
-        final int gen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops these results' tags
+        final int uGen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops these results' tags
+        final int sGen = SERAPH_GEN.get();
         FETCHERS.submit(() -> {
             String backend = statsBackendUrl();
             long now = System.currentTimeMillis();
@@ -358,7 +497,7 @@ public final class StatsCache {
             Set<String> names = new LinkedHashSet<>();
             for (Task t : batch) {
                 Entry e = liveEntry(t.key);
-                boolean keep = e == null || needsUrchinRefresh(t.urchinEligible, e, now);
+                boolean keep = e == null || needsAnyRefresh(t, e, now);
                 if (t.playerName == null || t.playerName.isEmpty() || !keep) {
                     QUEUED.remove(t.key);
                     continue;
@@ -370,49 +509,70 @@ public final class StatsCache {
                 for (List<Task> ts : byName.values()) for (Task t : ts) QUEUED.remove(t.key);
                 return;
             }
-            // Index-aligned uuids param: the eligible member's canonical UUID per name (send-time
-            // rechecked), "-" for ineligible members. Header only sent when at least one member passes.
+            // Index-aligned uuids param: a member's canonical UUID is emitted when EITHER provider is
+            // eligible (send-time rechecked), "-" otherwise. The uuid identity is shared, but each
+            // provider's opt-in header + attempt-stamp target is tracked separately so a member eligible
+            // for only one provider is never looked up by the other.
             List<String> nameList = new ArrayList<>(names);
             StringBuilder uuidsSb = new StringBuilder();
-            boolean anyEligible = false;
-            // The single cache key per name whose UUID is actually emitted in this request. Its attempt
-            // is stamped when the base stats line lands so a no-Urchin-metadata batch still bounds the
-            // retry to 60 s (B1); Urchin metadata merges ONLY into it, never into other keys sharing the
-            // name (I6). A name absent from the map had no eligible member.
-            Map<String, String> emittedKeyByName = new HashMap<>();
-            // Canonical emitted UUID -> cache key. The Urchin resolution merges by UUID identity, never
-            // by name (B1): a case-varied duplicate name could otherwise route one UUID's accusation to
-            // another's cache key. Names are lowercased in emittedKeyByName for defense in depth.
+            boolean anyUrchin = false, anySeraph = false;
+            // Per-name attempt-stamp target key, split per provider (only the provider that actually
+            // emitted the uuid stamps its attempt on the base line, B1/I6).
+            Map<String, String> urchinKeyByName = new HashMap<>();
+            Map<String, String> seraphKeyByName = new HashMap<>();
+            // Canonical emitted UUID -> cache key (shared): resolutions merge by UUID identity, never by
+            // name (B1). A case-varied duplicate name can't cross-attach one UUID's tags to another.
             Map<String, String> emittedKeyByUuid = new HashMap<>();
             for (String nm : nameList) {
                 String send = "-";
                 for (Task t : byName.get(nm)) {
                     String u = urchinSendUuid(t);
-                    if (u != null) {
-                        send = u;
-                        anyEligible = true;
-                        emittedKeyByName.put(nm.toLowerCase(java.util.Locale.ROOT), t.key);
-                        emittedKeyByUuid.put(u, t.key);
+                    String su = seraphSendUuid(t);
+                    if (u != null || su != null) {
+                        String canon = u != null ? u : su;
+                        send = canon;
+                        emittedKeyByUuid.put(canon, t.key);
+                        String lk = nm.toLowerCase(java.util.Locale.ROOT);
+                        if (u != null) { anyUrchin = true; urchinKeyByName.put(lk, t.key); }
+                        if (su != null) { anySeraph = true; seraphKeyByName.put(lk, t.key); }
                         break;
                     }
                 }
                 if (uuidsSb.length() > 0) uuidsSb.append(',');
                 uuidsSb.append(send);
             }
-            String uuidsCsv = anyEligible ? uuidsSb.toString() : null;
+            String uuidsCsv = (anyUrchin || anySeraph) ? uuidsSb.toString() : null;
+            BiConsumer<String, UrchinResult> onUrchin = anyUrchin
+                    ? (name, result) -> {
+                        String emittedKey = UrchinRefreshPolicy.urchinMergeTarget(
+                                result == null ? null : result.uuid, emittedKeyByUuid);
+                        if (emittedKey == null) return;
+                        mergeUrchin(emittedKey, result, System.currentTimeMillis(), uGen);
+                    } : null;
+            BiConsumer<String, SeraphResult> onSeraph = anySeraph
+                    ? (name, result) -> {
+                        String emittedKey = UrchinRefreshPolicy.urchinMergeTarget(
+                                result == null ? null : result.uuid, emittedKeyByUuid);
+                        if (emittedKey == null) return;
+                        mergeSeraph(emittedKey, result, System.currentTimeMillis(), sGen);
+                    } : null;
             Set<String> resolved = new HashSet<>();
+            boolean threw = false;
             try {
                 ScraperBackendClient.fetchBatchStreaming(nameList, backend, statsBackendToken(),
                         (name, stats) -> {
                             List<Task> ts = byName.get(name);
                             if (ts == null) return;
                             resolved.add(name);
-                            String emittedKey = emittedKeyByName.get(name.toLowerCase(java.util.Locale.ROOT));
+                            String lk = name.toLowerCase(java.util.Locale.ROOT);
+                            String uKey = urchinKeyByName.get(lk);
+                            String sKey = seraphKeyByName.get(lk);
                             for (Task t : ts) {
-                                // Stamp the attempt only for the emitted UUID's key even if no Urchin
-                                // line follows (B1); other keys sharing the name are not the target (I6).
+                                // Stamp each provider's attempt only for the key whose UUID it emitted (B1);
+                                // other keys sharing the name are not the target (I6).
                                 putBase(t.key, stats,
-                                        UrchinRefreshPolicy.isUrchinMergeTarget(t.key, emittedKey), now);
+                                        UrchinRefreshPolicy.isUrchinMergeTarget(t.key, uKey),
+                                        UrchinRefreshPolicy.isUrchinMergeTarget(t.key, sKey), now);
                                 QUEUED.remove(t.key); // clear in-flight as each player lands
                             }
                         },
@@ -425,36 +585,39 @@ public final class StatsCache {
                                 if (e != null) put(t.key, e.stats.withLevel(level));
                             }
                         },
-                        uuidsCsv,
-                        (name, result) -> {
-                            // Merge the resolution into ONLY the cache key whose EMITTED canonical UUID
-                            // equals the result's UUID (B1). Selecting by UUID, not by the streamed name,
-                            // stops a case-varied duplicate name from cross-attaching one UUID's accusation
-                            // to another; a null/unmatched result UUID drops the resolution everywhere.
-                            String emittedKey = UrchinRefreshPolicy.urchinMergeTarget(
-                                    result == null ? null : result.uuid, emittedKeyByUuid);
-                            if (emittedKey == null) return;
-                            mergeUrchin(emittedKey, result, System.currentTimeMillis(), gen);
-                        });
+                        uuidsCsv, onUrchin, onSeraph);
             } catch (Throwable other) {
-                // unresolved tasks fall back to single lookups below
+                threw = true; // whether singles make sense is decided below
             } finally {
                 // Any player the batch didn't resolve falls back to a per-player lookup — the
                 // long-standing single path — instead of leaving the tab/nametag blank. This also
                 // covers a deployed Worker that predates the /bedwars/batch route: its single-route
                 // fallback returns one non-NDJSON object the stream can't map, so nothing resolves and
                 // everyone lands here. Once the batch Worker is deployed this branch goes quiet.
+                //
+                // Exception: the batch route erroring before ANY line resolved (429/5xx/transport)
+                // means the backend is refusing or unreachable, so up to 16 immediate singles would
+                // only amplify the failure. Mark cold keys ERROR instead — the short TTL plus streak
+                // backoff paces the retry. A clean-but-unresolved stream (legacy single-route Worker,
+                // server case-dedupe) and a partially-resolved stream still fall back as before.
+                boolean backendDown = threw && resolved.isEmpty();
                 for (Map.Entry<String, List<Task>> e : byName.entrySet()) {
                     if (resolved.contains(e.getKey())) continue;
                     for (Task t : e.getValue()) {
                         Entry cur = liveEntry(t.key);
-                        if (cur == null || needsUrchinRefresh(t.urchinEligible, cur, now)) {
+                        if (backendDown) {
+                            if (cur == null) put(t.key, BedwarsStats.error());
+                        } else if (cur == null || needsAnyRefresh(t, cur, now)) {
                             try {
-                                String sendUuid = urchinSendUuid(t); // batch-fallback single: recheck too
-                                UrchinResult[] holder = {null};
+                                String urchinUuid = urchinSendUuid(t); // batch-fallback single: recheck too
+                                String seraphUuid = seraphSendUuid(t);
+                                UrchinResult[] uHolder = {null};
+                                SeraphResult[] sHolder = {null};
                                 BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend,
-                                        statsBackendToken(), false, sendUuid, r -> holder[0] = r);
-                                putResolved(t.key, s, holder[0], sendUuid != null, System.currentTimeMillis(), gen);
+                                        statsBackendToken(), false, urchinUuid, r -> uHolder[0] = r,
+                                        seraphUuid, r -> sHolder[0] = r);
+                                putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
+                                        sHolder[0], seraphUuid != null, sGen, System.currentTimeMillis());
                             } catch (Throwable single) {
                                 if (cur == null) put(t.key, BedwarsStats.error());
                             }
@@ -467,63 +630,124 @@ public final class StatsCache {
     }
 
     private static void put(String key, BedwarsStats stats) {
-        putBase(key, stats, false, 0L);
+        putBase(key, stats, false, false, 0L);
     }
 
     /**
-     * Base (non-Urchin) stats merge. When {@code uuidEmitted} is true this member's canonical UUID
-     * was actually sent in the request, so its Urchin attempt is stamped to {@code now} even if no
-     * resolution line follows (B1) - without marking the entry resolved. See
-     * {@link UrchinRefreshPolicy#attemptForBaseMerge}.
+     * Base (non-tag) stats merge. When a provider's {@code *Emitted} flag is true its canonical UUID
+     * was actually sent in the request, so its attempt is stamped to {@code now} even if no resolution
+     * line follows (B1) - without marking the entry resolved. Each provider's prior tags/resolution are
+     * preserved across a plain stats refresh. See {@link UrchinRefreshPolicy#attemptForBaseMerge}.
      */
-    private static void putBase(String key, BedwarsStats stats, boolean uuidEmitted, long now) {
-        Entry prior = CACHE.get(key);
-        BedwarsStats merged = stats;
-        boolean resolved = false;
-        long attempt = 0L;
-        if (prior != null) {
-            resolved = prior.urchinResolved;
-            attempt = prior.urchinAttemptMs;
-            // A plain stats refresh (star update, re-fetch) keeps any tags already resolved for this key.
-            if (stats.urchinTags.isEmpty() && !prior.stats.urchinTags.isEmpty()) {
-                merged = stats.withUrchinTags(prior.stats.urchinTags);
+    private static void putBase(String key, BedwarsStats stats, boolean urchinEmitted,
+                               boolean seraphEmitted, long now) {
+        // compute remaps the key atomically so a concurrent strip/merge on the other provider can't be
+        // lost to a stale get-then-put; the merged entry is always built from the current value.
+        CACHE.compute(key, (k, prior) -> {
+            // A transient failure (a streamed batch line included) must never clobber good data: keep
+            // the prior entry and let the retry happen after it expires on its own TTL.
+            if (prior != null && stats.state == BedwarsStats.State.ERROR
+                    && prior.stats.state != BedwarsStats.State.ERROR) {
+                return prior;
             }
-        }
-        attempt = UrchinRefreshPolicy.attemptForBaseMerge(attempt, uuidEmitted, now);
-        CACHE.put(key, new Entry(merged, System.currentTimeMillis(), resolved, attempt));
+            BedwarsStats merged = stats;
+            boolean uResolved = false, sResolved = false;
+            long uAttempt = 0L, sAttempt = 0L;
+            if (prior != null) {
+                uResolved = prior.urchinResolved;
+                uAttempt = prior.urchinAttemptMs;
+                sResolved = prior.seraphResolved;
+                sAttempt = prior.seraphAttemptMs;
+                // A plain stats refresh (star update, re-fetch) keeps any provider data already resolved.
+                if (stats.urchinTags.isEmpty() && !prior.stats.urchinTags.isEmpty()) {
+                    merged = merged.withUrchinTags(prior.stats.urchinTags);
+                }
+                if (stats.seraphTags.isEmpty() && (!prior.stats.seraphTags.isEmpty()
+                        || prior.stats.seraphThreat >= 0 || prior.stats.seraphEncounters >= 0)) {
+                    merged = merged.withSeraph(prior.stats.seraphTags, prior.stats.seraphThreat,
+                            prior.stats.seraphEncounters);
+                }
+            }
+            uAttempt = UrchinRefreshPolicy.attemptForBaseMerge(uAttempt, urchinEmitted, now);
+            sAttempt = UrchinRefreshPolicy.attemptForBaseMerge(sAttempt, seraphEmitted, now);
+            return new Entry(merged, System.currentTimeMillis(), uResolved, uAttempt, sResolved, sAttempt);
+        });
+        noteErrorStreak(key, stats.state);
         if (stats.state != BedwarsStats.State.ERROR) dirty = true;
     }
 
-    /** Put fresh stats plus the Urchin resolution from the same fetch (single / batch-fallback paths). */
-    private static void putResolved(String key, BedwarsStats stats, UrchinResult result,
-                                    boolean attempted, long now, int reqGen) {
-        // Key cleared mid-flight: merge the stats but drop the Urchin resolution so a pre-clear
-        // response can't reattach stripped tags (B2). Prior tags are already empty post-strip.
-        if (UrchinRefreshPolicy.dropStaleUrchin(reqGen, URCHIN_GEN.get())) result = null;
-        Entry prior = CACHE.get(key);
-        BedwarsStats merged = stats;
-        boolean resolved = false;
-        long attempt = attempted ? now : (prior != null ? prior.urchinAttemptMs : 0L);
-        if (result != null) {
-            merged = stats.withUrchinTags(result.tags);
-            resolved = result.resolved();
-        } else if (prior != null) {
-            resolved = prior.urchinResolved;
-            if (!prior.stats.urchinTags.isEmpty()) merged = stats.withUrchinTags(prior.stats.urchinTags);
-        }
-        CACHE.put(key, new Entry(merged, now, resolved, attempt));
+    /**
+     * Put fresh stats plus ALL providers' resolutions from the same fetch (single / batch-fallback
+     * paths). Each provider is independently gated: a key cleared mid-flight (its generation advanced
+     * since dispatch) drops that provider's resolution so a pre-clear response can't reattach stripped
+     * data (B2), while the other providers and the base stats still merge.
+     */
+    private static void putResolved(String key, BedwarsStats stats,
+                                    UrchinResult uResult, boolean uAttempted, int uReqGen,
+                                    SeraphResult sResult, boolean sAttempted, int sReqGen, long now) {
+        // Drop each stale provider result up front (gen advanced since dispatch), then remap atomically
+        // so the surviving provider and base stats merge onto the current entry, never a stale snapshot.
+        final UrchinResult uR = UrchinRefreshPolicy.dropStaleUrchin(uReqGen, URCHIN_GEN.get()) ? null : uResult;
+        final SeraphResult sR = UrchinRefreshPolicy.dropStaleUrchin(sReqGen, SERAPH_GEN.get()) ? null : sResult;
+        CACHE.compute(key, (k, prior) -> {
+            // Same guard as putBase: a failed refetch must not clobber a warm entry.
+            if (prior != null && stats.state == BedwarsStats.State.ERROR
+                    && prior.stats.state != BedwarsStats.State.ERROR) {
+                return prior;
+            }
+            BedwarsStats merged = stats;
+            boolean uResolved = false;
+            long uAttempt = uAttempted ? now : (prior != null ? prior.urchinAttemptMs : 0L);
+            if (uR != null) {
+                merged = merged.withUrchinTags(uR.tags);
+                uResolved = uR.resolved();
+            } else if (prior != null) {
+                uResolved = prior.urchinResolved;
+                if (!prior.stats.urchinTags.isEmpty()) merged = merged.withUrchinTags(prior.stats.urchinTags);
+            }
+            boolean sResolved = false;
+            long sAttempt = sAttempted ? now : (prior != null ? prior.seraphAttemptMs : 0L);
+            if (sR != null) {
+                merged = merged.withSeraph(sR.tags, sR.threatLevel, sR.encounters);
+                sResolved = sR.resolved();
+            } else if (prior != null) {
+                sResolved = prior.seraphResolved;
+                if (!prior.stats.seraphTags.isEmpty() || prior.stats.seraphThreat >= 0
+                        || prior.stats.seraphEncounters >= 0)
+                    merged = merged.withSeraph(prior.stats.seraphTags,
+                            prior.stats.seraphThreat, prior.stats.seraphEncounters);
+            }
+            return new Entry(merged, now, uResolved, uAttempt, sResolved, sAttempt);
+        });
+        noteErrorStreak(key, stats.state);
         if (stats.state != BedwarsStats.State.ERROR) dirty = true;
     }
 
     /** Merge a follow-up / inline Urchin resolution into an existing entry (tags are not persisted). */
     private static void mergeUrchin(String key, UrchinResult result, long now, int reqGen) {
-        Entry prior = CACHE.get(key);
-        if (prior == null || result == null) return; // documented drop: next fetch attaches inline
-        // Key cleared after this request dispatched: drop the tags rather than reattach them (B2).
-        if (UrchinRefreshPolicy.dropStaleUrchin(reqGen, URCHIN_GEN.get())) return;
-        BedwarsStats s = prior.stats.withUrchinTags(result.tags);
-        boolean resolved = result.resolved() || prior.urchinResolved;
-        CACHE.put(key, new Entry(s, prior.timestamp, resolved, now));
+        if (result == null) return;
+        // compute reads the current entry under the key lock, so a Seraph strip/merge racing this
+        // update can neither be lost nor have its cleared data resurrected from a stale snapshot.
+        CACHE.compute(key, (k, prior) -> {
+            if (prior == null) return null; // documented drop: next fetch attaches inline
+            // Key cleared after this request dispatched: drop the tags rather than reattach them (B2).
+            if (UrchinRefreshPolicy.dropStaleUrchin(reqGen, URCHIN_GEN.get())) return prior;
+            BedwarsStats s = prior.stats.withUrchinTags(result.tags);
+            boolean resolved = result.resolved() || prior.urchinResolved;
+            return new Entry(s, prior.timestamp, resolved, now, prior.seraphResolved, prior.seraphAttemptMs);
+        });
+    }
+
+    /** Merge a follow-up / inline Seraph resolution into an existing entry (tags are not persisted). */
+    private static void mergeSeraph(String key, SeraphResult result, long now, int reqGen) {
+        if (result == null) return;
+        CACHE.compute(key, (k, prior) -> {
+            if (prior == null) return null;
+            if (UrchinRefreshPolicy.dropStaleUrchin(reqGen, SERAPH_GEN.get())) return prior;
+            BedwarsStats s = prior.stats.withSeraph(result.tags, result.threatLevel, result.encounters);
+            boolean resolved = result.resolved() || prior.seraphResolved;
+            return new Entry(s, prior.timestamp, prior.urchinResolved, prior.urchinAttemptMs, resolved, now);
+        });
     }
 
     private static long ttlFor(BedwarsStats.State state) {
@@ -602,14 +826,21 @@ public final class StatsCache {
         final boolean urchinResolved;
         /** When the last Urchin lookup was attempted (bounds the 60 s refresh predicate). */
         final long urchinAttemptMs;
+        /** Seraph lookup concluded for this entry — no further Seraph retry. */
+        final boolean seraphResolved;
+        /** When the last Seraph lookup was attempted. */
+        final long seraphAttemptMs;
         Entry(BedwarsStats stats, long timestamp) {
-            this(stats, timestamp, false, 0L);
+            this(stats, timestamp, false, 0L, false, 0L);
         }
-        Entry(BedwarsStats stats, long timestamp, boolean urchinResolved, long urchinAttemptMs) {
+        Entry(BedwarsStats stats, long timestamp, boolean urchinResolved, long urchinAttemptMs,
+              boolean seraphResolved, long seraphAttemptMs) {
             this.stats = stats;
             this.timestamp = timestamp;
             this.urchinResolved = urchinResolved;
             this.urchinAttemptMs = urchinAttemptMs;
+            this.seraphResolved = seraphResolved;
+            this.seraphAttemptMs = seraphAttemptMs;
         }
     }
 
@@ -621,13 +852,20 @@ public final class StatsCache {
         final long seq;
         /** Provenance: the task was created from a current-session confirmed-row pair (send-time rechecked). */
         final boolean urchinEligible;
-        Task(String key, UUID uuid, String playerName, int priority, long seq, boolean urchinEligible) {
+        /** Seraph counterpart of {@link #urchinEligible} (independent per-provider opt-in). */
+        final boolean seraphEligible;
+        /** Refetch past a live entry once aged out of the refresh window (denick upgrade path). */
+        final boolean force;
+        Task(String key, UUID uuid, String playerName, int priority, long seq,
+             boolean urchinEligible, boolean seraphEligible, boolean force) {
             this.key = key;
             this.uuid = uuid;
             this.playerName = playerName;
             this.priority = priority;
             this.seq = seq;
             this.urchinEligible = urchinEligible;
+            this.seraphEligible = seraphEligible;
+            this.force = force;
         }
         @Override
         public int compareTo(Task o) {
@@ -644,6 +882,7 @@ public final class StatsCache {
         int networkLevel;
         int bedwarsLevel;
         String rankPrefix;
+        String rankCode; // null on entries persisted before this field → provenance UNKNOWN → refetch
         ModeDTO overall;
         ModeDTO solo;
         ModeDTO doubles;
@@ -660,6 +899,7 @@ public final class StatsCache {
             pe.networkLevel = s.networkLevel;
             pe.bedwarsLevel = s.bedwarsLevel;
             pe.rankPrefix = s.rankPrefix;
+            pe.rankCode = s.rankCode;
             pe.overall = ModeDTO.from(s.overall);
             pe.solo = ModeDTO.from(s.solo);
             pe.doubles = ModeDTO.from(s.doubles);
@@ -673,7 +913,7 @@ public final class StatsCache {
             if (state == null) return null;
             switch (state) {
                 case "OK":
-                    return BedwarsStats.ok(displayName, networkLevel, bedwarsLevel, rankPrefix,
+                    return BedwarsStats.ok(displayName, networkLevel, bedwarsLevel, rankPrefix, rankCode,
                             ModeDTO.toOrEmpty(overall), ModeDTO.toOrEmpty(solo), ModeDTO.toOrEmpty(doubles),
                             ModeDTO.toOrEmpty(threes), ModeDTO.toOrEmpty(fours));
                 case "NEVER_PLAYED":

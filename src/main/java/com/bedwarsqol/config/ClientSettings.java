@@ -179,6 +179,38 @@ public class ClientSettings {
     /** Sub of Urchin Tags: fuse a tag with live Cheater Detector flags into one red alert + badge. */
     public boolean urchinAcFusion = true;
 
+    /**
+     * Seraph Tags: master toggle for the Seraph community blacklist/safelist provider (api.seraph.si),
+     * resolved server-side by the stats Worker. Off by default. When off the mod causes zero Seraph
+     * traffic and shows no tags. Independent of Urchin — either, both, or neither may be enabled.
+     */
+    public boolean seraphTags = false;
+    /** Sub of Seraph Tags: append the priority tag badge to the tab-list overlay. */
+    public boolean seraphBadgeTab = true;
+    /** Sub of Seraph Tags: one private chat line the first time a tagged player is seen each game. */
+    public boolean seraphChatAlert = true;
+    /** Sub of Seraph Tags: play a pling with the chat alert (blacklist tags only). */
+    public boolean seraphAlertSound = true;
+    /** Sub of Seraph Tags: append the priority tag badge above the in-game nametag. */
+    public boolean seraphBadgeNametag = true;
+
+    /**
+     * Queue Tag Alert: in the Bedwars <b>pregame queue only</b>, print one Urchin/Seraph cheater-tag
+     * line for a player who <b>types</b> in chat (the queue's tab list is anonymized, so nobody else
+     * can be checked). Off by default — each new name costs an outbound provider lookup, capped per
+     * queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs {@link #urchinTags} and/or
+     * {@link #seraphTags} plus a configured stats backend; disabled providers are never queried.
+     */
+    public boolean queueTagAlert = false;
+
+    /**
+     * Queue Nick Alert: in the Bedwars <b>pregame queue only</b>, print one line when a player who
+     * <b>types</b> in chat has no Mojang account (i.e. is nicked). Off by default — each new name
+     * costs an outbound name resolution, capped per queue. Independent of Nick Utils, which cannot
+     * see the queue's anonymized tab list.
+     */
+    public boolean queueNickAlert = false;
+
     // Stats come from a Cloudflare Worker that each user self-hosts (see server/stats-worker). No
     // public backend is shipped — never commit a real URL or token here. Users set their own via
     // /bedwarsqol statsurl <url> and (optionally) /bedwarsqol statstoken <token>.

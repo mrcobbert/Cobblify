@@ -54,8 +54,9 @@ public final class ChatPlayerHeads {
     /**
      * A private-use sub-range reserved for head sentinels: one codepoint per distinct skin currently on
      * screen. 256 slots comfortably covers a busy hub (heads only exist on trusted senders in your tab),
-     * and the registry is cleared on world change. Kept narrow so a stray server-sent PUA glyph elsewhere
-     * in the range is only ever treated as a head when we actually allocated it (see {@link #isSentinel}).
+     * and a full registry recycles its least-recently-used slot. Kept narrow so a stray server-sent PUA
+     * glyph elsewhere in the range is only ever treated as a head when we actually allocated it (see
+     * {@link #isSentinel}).
      */
     static final char SENTINEL_MIN = '\uE000';
     static final char SENTINEL_MAX = '\uE0FF';
@@ -65,20 +66,38 @@ public final class ChatPlayerHeads {
     private static final ResourceLocation[] slots = new ResourceLocation[SLOTS];
     /** skin -> codepoint, so the same skin reuses one slot across every line it appears on. */
     private static final Map<ResourceLocation, Character> bySkin = new HashMap<ResourceLocation, Character>();
+    /** Per-slot use stamp (same index as {@link #slots}); the smallest one is the eviction victim. */
+    private static final long[] used = new long[SLOTS];
+    /** Monotonic stamp source: bumped on every allocation and every re-use of an existing slot. */
+    private static long useTick;
     private static int next;
 
     // ---- codepoint registry ---------------------------------------------------------------------
 
-    /** The sentinel codepoint for a skin (allocating one on first use), or 0 when the range is exhausted. */
+    /**
+     * The sentinel codepoint for a skin, allocating one on first use; 0 only for a null skin. A full
+     * registry recycles the least-recently-used slot, so the oldest head on screen goes stale rather
+     * than new senders silently losing theirs.
+     */
     public static char sentinelFor(ResourceLocation skin) {
         if (skin == null) return 0;
         Character c = bySkin.get(skin);
-        if (c != null) return c.charValue();
-        if (next >= SLOTS) return 0; // full until the next world change clears it
-        char ch = (char) (SENTINEL_MIN + next);
-        slots[next] = skin;
+        if (c != null) {
+            used[c.charValue() - SENTINEL_MIN] = ++useTick;
+            return c.charValue();
+        }
+        int idx;
+        if (next < SLOTS) {
+            idx = next++;
+        } else {
+            idx = 0; // full: evict the slot untouched for longest (linear scan, 256 entries, new skins only)
+            for (int i = 1; i < SLOTS; i++) if (used[i] < used[idx]) idx = i;
+            bySkin.remove(slots[idx]);
+        }
+        char ch = (char) (SENTINEL_MIN + idx);
+        slots[idx] = skin;
+        used[idx] = ++useTick;
         bySkin.put(skin, Character.valueOf(ch));
-        next++;
         return ch;
     }
 
@@ -98,7 +117,11 @@ public final class ChatPlayerHeads {
         return info == null ? null : info.getLocationSkin();
     }
 
-    /** Drop every allocation (world change / toggle). Head holders re-fill from live skins afterward. */
+    /**
+     * Drop every allocation. Nothing in the client calls this any more — chat lines outlive both the
+     * world change and the toggle, so wiping the registry under them would dangle or alias their
+     * sentinels; it survives as the reset seam for tests against this static registry.
+     */
     public static void clear() {
         for (int i = 0; i < next; i++) slots[i] = null;
         bySkin.clear();
@@ -106,18 +129,22 @@ public final class ChatPlayerHeads {
         loggedDraw = false;
     }
 
-    /** Toggle flipped in the settings GUI: rebuild chat so head slots appear/disappear now. */
+    /**
+     * Toggle flipped in the settings GUI: rebuild chat so head slots appear/disappear now. The registry
+     * is left intact so a re-enable restores the same heads on the lines that already carry sentinels.
+     */
     public static void onToggle() {
-        clear();
+        loggedDraw = false;
         ChatNameTags.refreshDisplayMode();
     }
 
     // ---- draw bridge (called by FontRendererMixin's drawString TAIL) ----------------------------
 
     /**
-     * Paint a head at every head sentinel in the row about to be drawn. The sentinel is zero-width, so
-     * the head sits at its left edge; the {@link #SLOT_GAP} spaces right after it hold the name clear.
-     * Honors the row's fade alpha (the top byte of {@code color}).
+     * Paint a head at every head sentinel in the row about to be drawn. The head sits after the
+     * sentinel's measured advance (0 when the width hook applied, its native width when it didn't),
+     * so head-to-name spacing is identical either way; the {@link #SLOT_GAP} spaces right after it
+     * hold the name clear. Honors the row's fade alpha (the top byte of {@code color}).
      */
     public static void drawRowHeads(FontRenderer fr, String rowText, int x, int y, int color) {
         if (rowText == null || rowText.isEmpty()) return;
@@ -129,7 +156,7 @@ public final class ChatPlayerHeads {
             if (!isSentinel(c)) continue;
             ResourceLocation skin = skinFor(c);
             if (skin == null) continue;
-            int offset = fr.getStringWidth(rowText.substring(0, i));
+            int offset = fr.getStringWidth(rowText.substring(0, i)) + fr.getCharWidth(c);
             drawHead(skin, x + offset, y, a);
             if (!loggedDraw) { loggedDraw = true; DiagLog.log("HEAD-DRAW fired (render hook live)"); }
         }
@@ -196,6 +223,12 @@ public final class ChatPlayerHeads {
     /** Replace {@code sibs[i]} (a leaf) with {@code before / holder / after}, keeping its style + children. */
     private static void insertSplitting(List<IChatComponent> sibs, int i, ChatComponentText leaf, int k,
                                         ChatComponentText holder) {
+        // The common Hypixel shape gives the sender its own styled leaf. Keep that exact object so
+        // Lunar's copy-on-add path cannot lose styling while converting a replacement component.
+        if (k == 0) {
+            sibs.add(i, holder);
+            return;
+        }
         String text = leaf.getUnformattedTextForChat();
         ChatStyle style = leaf.getChatStyle();
         ChatComponentText before = new ChatComponentText(text.substring(0, k));

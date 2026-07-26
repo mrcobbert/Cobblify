@@ -30,11 +30,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Urchin chat alert + anticheat fusion surface. Every ~1 s (client-thread) it sweeps the tab list,
  * drives Urchin fetches for current-session confirmed players, and — the first time a player with a
- * displayable community tag is seen each game — prints one private chat line (tooltip + click to
- * {@code /bw urchin <name>}), with an optional pling for cheater-type tags. When ANY displayable tag
- * AND live Cheater Detector flags coincide, it fires a distinct red fusion line + double pling once
- * per player per game and marks the badge for red-bold highlighting (the cheater-type distinction
- * gates only the ordinary alert pling, never fusion).
+ * cheater-type tag (CCC / BC / CC) is seen each game — prints one private chat line (tooltip + click
+ * to {@code /bw urchin <name>}), with an optional pling. Sniper/caution tags stay badge-only (no
+ * ordinary chat). When ANY displayable tag AND live Cheater Detector flags coincide, the badge is
+ * marked for red-bold fusion highlighting; fusion <em>chat</em> + double pling fire only for
+ * cheater-type tags, once per player per game.
  */
 public final class UrchinAlert {
 
@@ -90,8 +90,11 @@ public final class UrchinAlert {
             if (!snap.eligible(name, uuid)) continue;
 
             // Population: keep the Urchin fetch moving for every eligible tab player, even with both
-            // badge surfaces off (so the chat alert alone still works).
-            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_TAB, true);
+            // badge surfaces off (so the chat alert alone still works). Carry the sibling provider's
+            // eligibility too — a single-bit task leaves the other provider unresolved, and its own
+            // sweep would fire a second full fetch for the same player seconds later.
+            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_TAB, true,
+                    snap.eligibleSeraph(name, uuid));
 
             BedwarsStats stats = StatsCache.getCached(uuid);
             if (stats == null) continue;
@@ -99,7 +102,9 @@ public final class UrchinAlert {
             if (tag == null) continue;
 
             String key = name.toLowerCase(Locale.ROOT);
-            if (cfg.urchinChatAlert && alerted.add(key)) {
+            // Only cheater types get ordinary chat; do not mark alerted for sniper/caution so a later
+            // priority upgrade can still announce once.
+            if (cfg.urchinChatAlert && tag.isCheaterType() && alerted.add(key)) {
                 announceAlert(mc, cfg, name, stats, tag, now);
             }
             maybeFusion(mc, cfg, name, tag, key);
@@ -108,12 +113,13 @@ public final class UrchinAlert {
 
     private void announceAlert(Minecraft mc, ClientSettings cfg, String name, BedwarsStats stats,
                                UrchinTag tag, long now) {
-        String icon = tag.displayIcon();
-        ChatComponentText msg = new ChatComponentText("§8[§6Cobblify§8] §e" + name
-                + " §7has a community-reported Urchin tag " + tag.color() + "[" + icon + "]");
+        String line = UrchinAlertFormat.formatOrdinary(TeamColors.nameColor(name), name, tag);
+        if (line == null) return;
+        ChatComponentText msg = new ChatComponentText(line);
+        ChatComponentText hover = AlertCopyReason.attach(
+                new ChatComponentText(tooltip(stats, now)), tag.reason);
         msg.getChatStyle()
-                .setChatHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                        new ChatComponentText(tooltip(stats, now))))
+                .setChatHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, hover))
                 .setChatClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/bw urchin " + name));
         mc.thePlayer.addChatMessage(ModChat.mark(msg));
         if (cfg.urchinAlertSound && tag.isCheaterType()) {
@@ -123,15 +129,15 @@ public final class UrchinAlert {
 
     private void maybeFusion(Minecraft mc, ClientSettings cfg, String name, UrchinTag tag, String key) {
         if (!cfg.urchinAcFusion || !cfg.anticheat) return;
-        // Fusion applies to ANY displayable Urchin tag plus live AC flags (I2); isCheaterType gates only
-        // the ordinary alert pling, not this path. The tag here already came from priorityUrchinTag,
-        // which only returns displayable tags.
+        // Highlight: ANY displayable Urchin tag + live AC flags (badge red-bold). Chat/pling: cheater
+        // types only. The tag here already came from priorityUrchinTag (displayable only).
         if (!CheaterDetector.get().hasLiveFlags(name)) return;
-        if (!fusionFired.add(key)) return;
         FUSION_HIGHLIGHT.add(key);
-        ChatComponentText msg = new ChatComponentText("§8[§cCobblify§8] §c" + name
-                + "§7: community-reported Urchin tag " + tag.color() + "[" + tag.displayIcon()
-                + "]§7 + §clive AC flags");
+        if (!tag.isCheaterType()) return;
+        if (!fusionFired.add(key)) return;
+        String line = UrchinAlertFormat.formatFusion(TeamColors.nameColor(name), name, tag);
+        if (line == null) return;
+        ChatComponentText msg = new ChatComponentText(line);
         mc.thePlayer.addChatMessage(ModChat.mark(msg));
         // Distinct double pling (1.6f then 2.0f, 3 ticks apart) — ChatNotifications second-pling pattern.
         mc.thePlayer.playSound("note.pling", 1.0f, 1.6f);

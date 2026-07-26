@@ -14,8 +14,11 @@ import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
 import com.bedwarsqol.feature.PartyJoinAlert;
 import com.bedwarsqol.feature.PauseKeyHandler;
+import com.bedwarsqol.feature.PlayersKeyHandler;
+import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SettingsKeyHandler;
 import com.bedwarsqol.feature.SweatReport;
+import com.bedwarsqol.feature.SeraphAlert;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.stats.BedwarsModeDetector;
@@ -46,6 +49,7 @@ public class BedwarsQol implements ModInitializer {
 
         EventBus.subscribe(new KeybindRegistry());
         EventBus.subscribe(new SettingsKeyHandler());
+        EventBus.subscribe(new PlayersKeyHandler());
         EventBus.subscribe(new PauseKeyHandler());
         EventBus.subscribe(new IncSender());
         EventBus.subscribe(new ChatNotifications());
@@ -60,6 +64,8 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(CheaterDetector.get());
         EventBus.subscribe(new GameSessionTracker());
         EventBus.subscribe(new UrchinAlert());
+        EventBus.subscribe(new SeraphAlert());
+        EventBus.subscribe(new QueueAlert());
 
         CommandBus.register(new BedwarsQolCommand());
 

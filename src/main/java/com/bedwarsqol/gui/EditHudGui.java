@@ -5,6 +5,7 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
+import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
@@ -24,6 +25,7 @@ public class EditHudGui extends GuiScreen {
     private static final int SELECTED_FILL = 0x1AFFFFFF; // selected fill: ~10% white
     private static final int SNAP_LINE = 0xFFBFBFBF;     // snap guide: light gray
     private static final float RESET_SCALE = 0.65f;      // "Reset HUD Sizes" button label scale (half size)
+    private static final int SCRIM = 0x73000000;         // same dim-over-blur scrim as SettingsGui
 
     private String selectedId = BedwarsHudRenderer.POTION_HUD;
     private boolean dragging;
@@ -40,11 +42,17 @@ public class EditHudGui extends GuiScreen {
     @Override
     public void initGui() {
         buttonList.clear();
+        GuiBlur.begin(); // start the world-blur fade-in behind the editor
     }
 
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
-        drawDefaultBackground();
+        // Re-establish the 2D GUI orthographic projection ourselves (BedwarsHudRenderer cancels the
+        // in-game overlay while the blur is active, which otherwise skips vanilla's setupOverlayRendering).
+        mc.entityRenderer.setupOverlayRendering();
+        GuiBlur.update(0, 0, mc.displayWidth, mc.displayHeight);
+        if (GuiBlur.isActive()) GuiRender.rect(0, 0, width, height, SCRIM);
+        else drawDefaultBackground();
 
         ClientSettings cfg = settings();
         Minecraft mc = Minecraft.getMinecraft();
@@ -145,6 +153,7 @@ public class EditHudGui extends GuiScreen {
 
     @Override
     public void onGuiClosed() {
+        GuiBlur.end();
         settings().save();
     }
 

@@ -90,10 +90,12 @@ public final class NickUtils {
     /** Session-transition hook (called by {@link GameSessionTracker} on the client thread). */
     public static void clearIdentitySnapshot() {
         identitySnapshot = IdentitySnapshot.EMPTY;
+        Denicks.publishVerified(null); // session changed → drop verified denicks
     }
 
     private static void publishEmptyIdentity() {
         identitySnapshot = IdentitySnapshot.EMPTY;
+        Denicks.publishVerified(null); // identities untrustworthy (off-Hypixel/no net/window) → no denick
     }
 
     private static void publishIdentity(Set<String> confirmedRows) {
@@ -196,8 +198,8 @@ public final class NickUtils {
                 windowDiag.add(diagLine(inGame, version, true, skin));
                 continue;
             }
-            if (skin == null) continue; // no signed identity (stripped/absent) — nothing to judge
             boolean self = id.equals(selfId) || inGame.equalsIgnoreCase(selfName);
+            if (skin == null) continue;
             rows.add(new Row(inGame, id, version, skin, self));
         }
 
@@ -247,19 +249,47 @@ public final class NickUtils {
 
         // Phase 3: v1-gated candidates, settled over consecutive clean scans before they take effect.
         Set<String> present = new HashSet<String>();
+        List<String[]> settled = new ArrayList<String[]>(); // [nick, proposed real account] this scan
         for (Row r : rows) {
             if (r.version != 1 || r.consistent() || r.self) continue;
+            // Layer 1: a v1 row wearing a known Hypixel /nick pool skin embeds the pool skin's
+            // uploader, not the player — denicking it would publish a wrong name. Skip it (stays a
+            // nick, unresolved). Kept-personal-skin nicks are not pool skins and fall through.
+            if (Denicks.isNickSkin(r.skin.textureHash)) continue;
             String key = r.name.toLowerCase() + "|" + r.skin.name.toLowerCase();
             present.add(key);
             Integer prior = settleCounts.get(key);
             int seen = Math.min(prior == null ? 1 : prior + 1, SETTLE_SCANS);
             settleCounts.put(key, seen);
-            if (seen >= SETTLE_SCANS) {
-                Denicks.put(r.name, r.skin.name);
-                currentDenicks.add(new String[]{r.name, r.skin.name});
-            }
+            if (seen >= SETTLE_SCANS) settled.add(new String[]{r.name, r.skin.name});
         }
         settleCounts.keySet().retainAll(present);
+
+        // Layer 2: publish a denick only after its real account resolves OK + elevated rank — only an
+        // elevated rank (MVP++/YOUTUBE/staff) can /nick, so a non-elevated resolution is a false
+        // denick (e.g. an unknown pool skin naming a plain uploader). The verified map and
+        // currentDenicks are rebuilt from the live rows every scan, so a departed / owner-changed /
+        // rank-downgraded nick is pruned at once and no unverified or stale name is ever exposed.
+        // UNKNOWN provenance (uncached, old cache, or fetch error) refetches and stays pending.
+        Map<String, String> verified = new HashMap<String, String>();
+        for (String[] c : settled) {
+            String nick = c[0], real = c[1];
+            switch (Denicks.decide(StatsCache.getCachedByName(real))) {
+                case VERIFY:
+                    verified.put(nick.toLowerCase(), real);
+                    currentDenicks.add(new String[]{nick, real});
+                    break;
+                case PENDING:
+                    // force: a stale pre-rankCode cache entry reads UNKNOWN; upgrade it with a fresh
+                    // lookup now instead of staying pending until the full TTL expires.
+                    StatsCache.ensureFetchedByName(real, StatsCache.PRIORITY_TAB, true);
+                    break;
+                default: // DROP — this account cannot have nicked
+                    break;
+            }
+        }
+
+        Denicks.publishVerified(verified);
 
         publishIdentity(confirmedRows);
 
