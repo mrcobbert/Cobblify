@@ -71,13 +71,6 @@ public class SettingsGui extends GuiScreen {
     private static final int K_NICK_NOTIFY = 74;
     private static final int K_AUTO_DENICK = 75;
     private static final int K_CHATSTATS = 76;
-    // Cheater Detector module (master toggle) + its per-check sub-settings.
-    private static final int K_ANTICHEAT = 77;
-    private static final int K_AC_ANTIKB = 78;
-    private static final int K_AC_WALL = 79;
-    private static final int K_AC_AUTOBLOCK = 80;
-    private static final int K_AC_EAT = 81;
-    private static final int K_AC_NOSLOW = 82;
     private static final int K_SCOREBOARD_SIZE = 46, K_STYLEDTAB_SIZE = 47;
     private static final int K_SUPPRESSESC = 48;
     // "In Game Only" sub-toggles: render the HUD only during an active BedWars game.
@@ -94,7 +87,7 @@ public class SettingsGui extends GuiScreen {
             K_CHAT_COPY = 102, K_INC_KEY = 103;
     // Urchin Tags module (master toggle) + its sub-settings (kind numbers shared with the Lunar tree).
     private static final int K_URCHIN = 104, K_URCHIN_BADGE_TAB = 105, K_URCHIN_CHAT_ALERT = 106,
-            K_URCHIN_SOUND = 107, K_URCHIN_BADGE_NAMETAG = 108, K_URCHIN_FUSION = 109;
+            K_URCHIN_SOUND = 107, K_URCHIN_BADGE_NAMETAG = 108;
     // Seraph Tags module (master toggle) + its sub-settings (kind numbers shared with the Lunar tree).
     private static final int K_SERAPH = 110, K_SERAPH_BADGE_TAB = 111, K_SERAPH_CHAT_ALERT = 112,
             K_SERAPH_SOUND = 113, K_SERAPH_BADGE_NAMETAG = 114;
@@ -239,18 +232,11 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Nick Utils", "Detect and denick nicked players", K_NICKUTILS),
                     new RowDef(RowType.TOGGLE, "Nick Notify", K_NICK_NOTIFY, null, K_NICKUTILS),
                     new RowDef(RowType.TOGGLE, "Auto Denick", K_AUTO_DENICK, null, K_NICKUTILS),
-                    new RowDef(RowType.TOGGLE, "Cheater Detector", "Privately flag suspicious players", K_ANTICHEAT),
-                    new RowDef(RowType.TOGGLE, "Anti-Knockback", K_AC_ANTIKB, null, K_ANTICHEAT),
-                    new RowDef(RowType.TOGGLE, "Hits Through Walls", K_AC_WALL, null, K_ANTICHEAT),
-                    new RowDef(RowType.TOGGLE, "Autoblock", K_AC_AUTOBLOCK, null, K_ANTICHEAT),
-                    new RowDef(RowType.TOGGLE, "Attack While Eating", K_AC_EAT, null, K_ANTICHEAT),
-                    new RowDef(RowType.TOGGLE, "No Slowdown", K_AC_NOSLOW, null, K_ANTICHEAT),
                     new RowDef(RowType.TOGGLE, "Urchin Tags", "Community-reported blacklist tags from urchin.ws", K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Tab Badge", K_URCHIN_BADGE_TAB, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Chat Alert", K_URCHIN_CHAT_ALERT, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Alert Sound", K_URCHIN_SOUND, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Nametag Badge", K_URCHIN_BADGE_NAMETAG, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Anticheat Fusion", K_URCHIN_FUSION, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Seraph Tags", "Community blacklist/safelist from api.seraph.si", K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Tab Badge", K_SERAPH_BADGE_TAB, null, K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Chat Alert", K_SERAPH_CHAT_ALERT, null, K_SERAPH),
@@ -1650,12 +1636,6 @@ public class SettingsGui extends GuiScreen {
             case K_NICKUTILS: return cfg.nickUtils;
             case K_NICK_NOTIFY: return cfg.nickNotify;
             case K_AUTO_DENICK: return cfg.autoDenick;
-            case K_ANTICHEAT: return cfg.anticheat;
-            case K_AC_ANTIKB: return cfg.acAntiKb;
-            case K_AC_WALL: return cfg.acThroughWall;
-            case K_AC_AUTOBLOCK: return cfg.acAutoblock;
-            case K_AC_EAT: return cfg.acEating;
-            case K_AC_NOSLOW: return cfg.acNoSlow;
             case K_TAB_HEADERFOOTER: return cfg.tabHideHeaderFooter;
             case K_CHATHEADS: return cfg.chatPlayerHeads;
             case K_KEYSTROKES: return cfg.keystrokesEnabled;
@@ -1686,7 +1666,6 @@ public class SettingsGui extends GuiScreen {
             case K_URCHIN_CHAT_ALERT: return cfg.urchinChatAlert;
             case K_URCHIN_SOUND: return cfg.urchinAlertSound;
             case K_URCHIN_BADGE_NAMETAG: return cfg.urchinBadgeNametag;
-            case K_URCHIN_FUSION: return cfg.urchinAcFusion;
             case K_SERAPH: return cfg.seraphTags;
             case K_SERAPH_BADGE_TAB: return cfg.seraphBadgeTab;
             case K_SERAPH_CHAT_ALERT: return cfg.seraphChatAlert;
@@ -1717,12 +1696,6 @@ public class SettingsGui extends GuiScreen {
             case K_NICKUTILS: cfg.nickUtils = !cfg.nickUtils; break;
             case K_NICK_NOTIFY: cfg.nickNotify = !cfg.nickNotify; break;
             case K_AUTO_DENICK: cfg.autoDenick = !cfg.autoDenick; break;
-            case K_ANTICHEAT: cfg.anticheat = !cfg.anticheat; break;
-            case K_AC_ANTIKB: cfg.acAntiKb = !cfg.acAntiKb; break;
-            case K_AC_WALL: cfg.acThroughWall = !cfg.acThroughWall; break;
-            case K_AC_AUTOBLOCK: cfg.acAutoblock = !cfg.acAutoblock; break;
-            case K_AC_EAT: cfg.acEating = !cfg.acEating; break;
-            case K_AC_NOSLOW: cfg.acNoSlow = !cfg.acNoSlow; break;
             case K_TAB_HEADERFOOTER: cfg.tabHideHeaderFooter = !cfg.tabHideHeaderFooter; break;
             case K_CHATHEADS:
                 cfg.chatPlayerHeads = !cfg.chatPlayerHeads;
@@ -1756,7 +1729,6 @@ public class SettingsGui extends GuiScreen {
             case K_URCHIN_CHAT_ALERT: cfg.urchinChatAlert = !cfg.urchinChatAlert; break;
             case K_URCHIN_SOUND: cfg.urchinAlertSound = !cfg.urchinAlertSound; break;
             case K_URCHIN_BADGE_NAMETAG: cfg.urchinBadgeNametag = !cfg.urchinBadgeNametag; break;
-            case K_URCHIN_FUSION: cfg.urchinAcFusion = !cfg.urchinAcFusion; break;
             case K_SERAPH: cfg.seraphTags = !cfg.seraphTags; StatsCache.invalidateSeraphResolution(); break;
             case K_SERAPH_BADGE_TAB: cfg.seraphBadgeTab = !cfg.seraphBadgeTab; break;
             case K_SERAPH_CHAT_ALERT: cfg.seraphChatAlert = !cfg.seraphChatAlert; break;

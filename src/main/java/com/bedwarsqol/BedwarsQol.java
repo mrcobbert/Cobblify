@@ -1,6 +1,5 @@
 package com.bedwarsqol;
 
-import com.bedwarsqol.anticheat.CheaterDetector;
 import com.bedwarsqol.bedwars.GeneratorTracker;
 import com.bedwarsqol.command.BedwarsQolCommand;
 import com.bedwarsqol.config.ClientSettings;
@@ -11,6 +10,7 @@ import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ChatNotifications;
 import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.feature.IncSender;
+import com.bedwarsqol.feature.OutgoingChat;
 import com.bedwarsqol.feature.TntFuseDisplay;
 import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
@@ -56,7 +56,6 @@ public class BedwarsQol {
     public void onInit(FMLInitializationEvent event) {
         config = SettingsManager.load();
         DiagLog.init("Cobblify v" + VERSION + " (forge)");
-        CheaterDetector.logStartup();
         settingsKeyBinding = new KeyBinding("Open Cobblify Settings", config.settingsKeyCode, "Cobblify");
         ClientRegistry.registerKeyBinding(settingsKeyBinding);
         pauseKeyBinding = new KeyBinding("Open Game Menu", Keyboard.KEY_NONE, "Cobblify");
@@ -74,6 +73,7 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new BedwarsHudRenderer());
         MinecraftForge.EVENT_BUS.register(new NametagStats());
         MinecraftForge.EVENT_BUS.register(new BedwarsModeDetector());
+        MinecraftForge.EVENT_BUS.register(OutgoingChat.get());
         MinecraftForge.EVENT_BUS.register(new SweatReport());
         MinecraftForge.EVENT_BUS.register(new AutoGg());
         MinecraftForge.EVENT_BUS.register(new PartyJoinAlert());
@@ -82,7 +82,6 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new GeneratorTracker());
         MinecraftForge.EVENT_BUS.register(new BlockOverlayRenderer());
         MinecraftForge.EVENT_BUS.register(new TntFuseDisplay());
-        MinecraftForge.EVENT_BUS.register(CheaterDetector.get());
         MinecraftForge.EVENT_BUS.register(new GameSessionTracker());
         MinecraftForge.EVENT_BUS.register(new UrchinAlert());
         MinecraftForge.EVENT_BUS.register(new SeraphAlert());

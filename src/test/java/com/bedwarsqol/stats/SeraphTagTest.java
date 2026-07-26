@@ -70,11 +70,9 @@ public class SeraphTagTest {
     }
 
     @Test
-    public void badgeTokenBracketsIconAndFusionForcesRed() {
-        SeraphTag bl = tag("blacklist");
-        assertEquals(" §8[§cBL§8]", bl.badgeToken(false));
-        assertEquals(" §8[§c§lBL§8]", bl.badgeToken(true)); // fusion = red bold
-        assertEquals("", tag("mystery").badgeToken(false)); // non-displayable -> empty
+    public void badgeTokenBracketsIcon() {
+        assertEquals(" §8[§cBL§8]", tag("blacklist").badgeToken());
+        assertEquals("", tag("mystery").badgeToken()); // non-displayable -> empty
     }
 
     @Test

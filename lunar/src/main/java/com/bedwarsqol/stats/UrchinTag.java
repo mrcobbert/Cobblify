@@ -9,7 +9,7 @@ import java.util.Locale;
 
 /**
  * One community-reported Urchin blacklist tag plus THE single policy/format authority every surface
- * (tab badge, nametag badge, chat alert, hover, command, anticheat fusion) consults. Immutable;
+ * (tab badge, nametag badge, chat alert, hover, command) consults. Immutable;
  * relayed in-memory only (never persisted to disk).
  *
  * <p>Tags carry an optional {@link #expiresAtMs}; a tag whose expiry has passed is inactive and must
@@ -83,17 +83,15 @@ public final class UrchinTag {
         return displayIcon() != null;
     }
 
-    /** The bracketed badge token appended to a tab/nametag line, e.g. {@code " §8[§4S§8]"}. A
-     *  fusion-highlighted player renders the icon in red-bold. Empty for a non-displayable tag. */
-    public String badgeToken(boolean fusionHighlight) {
+    /** The bracketed badge token appended to a tab/nametag line, e.g. {@code " §8[§4S§8]"}. Empty
+     *  for a non-displayable tag. */
+    public String badgeToken() {
         String icon = displayIcon();
         if (icon == null) return "";
-        String inner = fusionHighlight ? "§c§l" + icon : color() + icon;
-        return " §8[" + inner + "§8]";
+        return " §8[" + color() + icon + "§8]";
     }
 
-    /** Cheater-type tags gate ordinary chat, its pling, and fusion chat/pling; fusion badge
-     *  highlight still applies to any displayable tag. */
+    /** Cheater-type tags gate ordinary chat and its pling. */
     public boolean isCheaterType() {
         return type.equals("confirmed_cheater") || type.equals("blatant_cheater")
                 || type.equals("closet_cheater");

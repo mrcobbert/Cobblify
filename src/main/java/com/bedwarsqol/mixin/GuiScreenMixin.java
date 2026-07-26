@@ -1,6 +1,7 @@
 package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.feature.ChatHoverStats;
+import com.bedwarsqol.feature.OutgoingChat;
 import net.minecraft.client.gui.GuiChat;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.util.IChatComponent;
@@ -17,6 +18,9 @@ import java.util.List;
  * rendering a chat component's SHOW_TEXT tooltip (Hypixel's rank card); we intercept it for chat
  * screens, merge in the hovered player's stats, draw the combined card ourselves, and cancel the
  * vanilla draw so there is a single tooltip. See {@link ChatHoverStats}.
+ *
+ * <p>Also notifies {@link OutgoingChat} on every chat-GUI submit so client commands (which never
+ * reach {@code EntityPlayerSP}) still cancel optional automation and open the quiet window.
  */
 @Mixin(GuiScreen.class)
 public abstract class GuiScreenMixin {
@@ -30,5 +34,13 @@ public abstract class GuiScreenMixin {
         if (lines == null || lines.isEmpty()) return;
         this.drawHoveringText(lines, x, y);
         ci.cancel();
+    }
+
+    @Inject(method = "sendChatMessage(Ljava/lang/String;Z)V", at = @At("HEAD"))
+    private void bedwarsqol$outgoingUserIntent(String msg, boolean addToChat, CallbackInfo ci) {
+        // Only the chat GUI — other screens that call sendChatMessage must not cancel automation.
+        if (!((Object) this instanceof GuiChat)) return;
+        if (OutgoingChat.get().isPassthrough()) return;
+        OutgoingChat.get().onUserIntent(msg);
     }
 }

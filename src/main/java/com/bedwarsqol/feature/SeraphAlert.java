@@ -31,8 +31,8 @@ import java.util.UUID;
  * private chat line with a hover tooltip, plus an optional pling for blacklist tags.
  *
  * <p>Differences from {@link UrchinAlert} (deliberate): a <b>safelist</b> tag is a positive signal and
- * never alerts; there is no anticheat fusion and no click-to-lookup (Seraph's API is UUID-only, so
- * there is no {@code /bw seraph <name>} command to suggest).
+ * never alerts; there is no click-to-lookup (Seraph's API is UUID-only, so there is no
+ * {@code /bw seraph <name>} command to suggest).
  */
 public final class SeraphAlert {
 

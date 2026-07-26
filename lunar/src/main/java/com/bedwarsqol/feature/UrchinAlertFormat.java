@@ -21,18 +21,6 @@ public final class UrchinAlertFormat {
         return "§8[§6Urchin§8] " + tc + name + " §7is a " + clause;
     }
 
-    /**
-     * Fusion Urchin chat line (red prefix), or {@code null} when the tag is not a cheater type.
-     * Highlight gating is separate — callers still mark fusion highlight for any displayable tag +
-     * live AC.
-     */
-    public static String formatFusion(String nameColor, String name, UrchinTag tag) {
-        String clause = cheaterClause(tag);
-        if (clause == null) return null;
-        String tc = nameColor == null || nameColor.isEmpty() ? "§e" : nameColor;
-        return "§8[§cUrchin§8] " + tc + name + " §7is a " + clause + " §7+ §clive AC flags";
-    }
-
     private static String cheaterClause(UrchinTag tag) {
         if (tag == null || !tag.isCheaterType()) return null;
         if ("confirmed_cheater".equals(tag.type)) return "confirmed cheater";

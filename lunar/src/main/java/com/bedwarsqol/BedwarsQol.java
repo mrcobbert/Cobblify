@@ -1,6 +1,5 @@
 package com.bedwarsqol;
 
-import com.bedwarsqol.anticheat.CheaterDetector;
 import com.bedwarsqol.bedwars.GeneratorTracker;
 import com.bedwarsqol.command.BedwarsQolCommand;
 import com.bedwarsqol.config.ClientSettings;
@@ -9,6 +8,7 @@ import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ChatNotifications;
 import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.feature.IncSender;
+import com.bedwarsqol.feature.OutgoingChat;
 import com.bedwarsqol.feature.KeybindRegistry;
 import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
@@ -45,7 +45,6 @@ public class BedwarsQol implements ModInitializer {
     public void init() {
         config = SettingsManager.load();
         DiagLog.init("Cobblify v" + VERSION + " (lunar)");
-        CheaterDetector.logStartup();
 
         EventBus.subscribe(new KeybindRegistry());
         EventBus.subscribe(new SettingsKeyHandler());
@@ -56,12 +55,12 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(new BedwarsHudRenderer());
         EventBus.subscribe(new NametagStats());
         EventBus.subscribe(new BedwarsModeDetector());
+        EventBus.subscribe(OutgoingChat.get());
         EventBus.subscribe(new SweatReport());
         EventBus.subscribe(new PartyJoinAlert());
         EventBus.subscribe(new NickUtils());
         EventBus.subscribe(new ChatNameTags());
         EventBus.subscribe(new GeneratorTracker());
-        EventBus.subscribe(CheaterDetector.get());
         EventBus.subscribe(new GameSessionTracker());
         EventBus.subscribe(new UrchinAlert());
         EventBus.subscribe(new SeraphAlert());

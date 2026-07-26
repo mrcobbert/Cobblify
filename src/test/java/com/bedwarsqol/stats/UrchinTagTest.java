@@ -60,10 +60,8 @@ public class UrchinTagTest {
     }
 
     @Test
-    public void nonCheaterTagsAreStillDisplayableForFusion() {
-        // I2: fusion *badge highlight* applies to ANY displayable tag + live AC. Fusion *chat* is
-        // cheater-only (see UrchinAlertFormatTest). These stay displayable so sniper/caution badges
-        // still highlight when fused.
+    public void nonCheaterTagsAreStillDisplayable() {
+        // Badges render for ANY displayable tag; *chat* is cheater-only (see UrchinAlertFormatTest).
         assertTrue(tag("sniper").isDisplayable());
         assertTrue(tag("legit_sniper").isDisplayable());
         assertTrue(tag("possible_sniper").isDisplayable());
@@ -71,6 +69,13 @@ public class UrchinTagTest {
         assertTrue(tag("some_future_type").isDisplayable());
         assertFalse(tag("sniper").isCheaterType());
         assertFalse(tag("caution").isCheaterType());
+    }
+
+    @Test
+    public void badgeTokenBracketsIconInTagColor() {
+        assertEquals(" §8[§5CCC§8]", tag("confirmed_cheater").badgeToken());
+        assertEquals(" §8[§4S§8]", tag("sniper").badgeToken());
+        assertEquals("", tag("info").badgeToken()); // non-displayable -> empty
     }
 
     @Test

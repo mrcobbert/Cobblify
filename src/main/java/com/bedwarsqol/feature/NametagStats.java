@@ -80,11 +80,11 @@ public class NametagStats {
         }
         if (cfg.urchinTags && cfg.urchinBadgeNametag && urchinEligible) {
             UrchinTag tag = stats.priorityUrchinTag(System.currentTimeMillis());
-            if (tag != null) text += tag.badgeToken(UrchinAlert.isFusionHighlighted(name));
+            if (tag != null) text += tag.badgeToken();
         }
         if (cfg.seraphTags && cfg.seraphBadgeNametag && seraphEligible) {
             SeraphTag tag = stats.prioritySeraphTag();
-            if (tag != null) text += tag.badgeToken(UrchinAlert.isFusionHighlighted(name));
+            if (tag != null) text += tag.badgeToken();
         }
         if (text.isEmpty()) return;
         drawStat(player, event, text.startsWith(" ") ? text.trim() : text);

@@ -2,7 +2,6 @@ package com.bedwarsqol.stats;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
-import com.bedwarsqol.feature.UrchinAlert;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.util.EnumChatFormatting;
@@ -64,25 +63,25 @@ public final class TabListLookup {
             if (s != null) stat = s;
         }
         String out = stat
-                + urchinBadge(cfg, stats, name, urchinEligible)
-                + seraphBadge(cfg, stats, name, seraphEligible);
+                + urchinBadge(cfg, stats, urchinEligible)
+                + seraphBadge(cfg, stats, seraphEligible);
         return out.isEmpty() ? null : out;
     }
 
     /** The Urchin priority-tag badge for the tab overlay, or "" when off / no active tag. */
-    private static String urchinBadge(ClientSettings cfg, BedwarsStats stats, String name, boolean eligible) {
+    private static String urchinBadge(ClientSettings cfg, BedwarsStats stats, boolean eligible) {
         if (cfg == null || !cfg.urchinTags || !cfg.urchinBadgeTab || !eligible) return "";
         UrchinTag tag = stats.priorityUrchinTag(System.currentTimeMillis());
         if (tag == null) return "";
-        return tag.badgeToken(UrchinAlert.isFusionHighlighted(name));
+        return tag.badgeToken();
     }
 
     /** The Seraph priority-tag badge for the tab overlay, or "" when off / no active tag. */
-    private static String seraphBadge(ClientSettings cfg, BedwarsStats stats, String name, boolean eligible) {
+    private static String seraphBadge(ClientSettings cfg, BedwarsStats stats, boolean eligible) {
         if (cfg == null || !cfg.seraphTags || !cfg.seraphBadgeTab || !eligible) return "";
         SeraphTag tag = stats.prioritySeraphTag();
         if (tag == null) return "";
-        return tag.badgeToken(UrchinAlert.isFusionHighlighted(name));
+        return tag.badgeToken();
     }
 
     /**

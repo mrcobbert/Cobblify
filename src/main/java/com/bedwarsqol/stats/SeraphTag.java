@@ -74,16 +74,15 @@ public final class SeraphTag {
         return displayIcon() != null;
     }
 
-    /** The bracketed badge token appended to a tab/nametag line, e.g. {@code " [BL]"}. A
-     *  fusion-highlighted player renders the icon in red-bold. Empty for a non-displayable tag. */
-    public String badgeToken(boolean fusionHighlight) {
+    /** The bracketed badge token appended to a tab/nametag line, e.g. {@code " [BL]"}. Empty for a
+     *  non-displayable tag. */
+    public String badgeToken() {
         String icon = displayIcon();
         if (icon == null) return "";
-        String inner = fusionHighlight ? "§c§l" + icon : color() + icon;
-        return " §8[" + inner + "§8]";
+        return " §8[" + color() + icon + "§8]";
     }
 
-    /** Only a blacklist accusation gates the alert sound; fusion applies to any displayable tag. */
+    /** Only a blacklist accusation gates the alert sound. */
     public boolean isCheaterType() {
         return kind.equals("blacklist");
     }

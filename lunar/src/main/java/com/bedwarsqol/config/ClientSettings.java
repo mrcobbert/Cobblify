@@ -57,7 +57,7 @@ public class ClientSettings {
      * {@code threes}/{@code fours} always show that mode. Set with {@code /bw mode <...>}.
      */
     public String chatStatsMode = "auto";
-    /** When in an active Bedwars game, broadcast the sweatiest enemy teams to party chat once. */
+    /** When in an active Bedwars game, broadcast one condensed sweat line to party chat once. */
     public boolean statsSweatReport = false;
 
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
@@ -83,23 +83,6 @@ public class ClientSettings {
     public boolean pcIncKey = true;
     /** Key code for the Send /pc INC key, echoed from the Controls menu rebind. Default unbound. */
     public int pcIncKeyCode = Keyboard.KEY_NONE;
-
-    /**
-     * Cheater Detector: master toggle for the passive observer-side checks (see
-     * {@link com.bedwarsqol.anticheat.CheaterDetector}). Off by default. Output is a private local
-     * chat flag only — boolean verdicts, never other players' numbers, never automated actions.
-     */
-    public boolean anticheat = false;
-    /** Anti-Knockback: broadcast S12 impulse vs the victim's realized displacement. */
-    public boolean acAntiKb = true;
-    /** Kill Aura: melee hits landed through solid walls (lag-compensated look-ray). */
-    public boolean acThroughWall = true;
-    /** Autoblock: swinging while the sword-block flag has been held continuously. */
-    public boolean acAutoblock = true;
-    /** Kill Aura: landing melee hits mid-eat/drink. */
-    public boolean acEating = true;
-    /** No Slowdown: sprint + use-item metadata flags concurrent at sprint speed. */
-    public boolean acNoSlow = true;
 
     /**
      * Nick Utils: master toggle for the nicked-player module. Detects Hypixel-nicked players entirely
@@ -134,8 +117,6 @@ public class ClientSettings {
     public boolean urchinAlertSound = true;
     /** Sub of Urchin Tags: append the priority tag badge above the in-game nametag. */
     public boolean urchinBadgeNametag = true;
-    /** Sub of Urchin Tags: fuse a tag with live Cheater Detector flags into one red alert + badge. */
-    public boolean urchinAcFusion = true;
 
     /**
      * Seraph Tags: master toggle for the Seraph community blacklist/safelist provider (api.seraph.si),

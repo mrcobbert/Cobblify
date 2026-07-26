@@ -39,6 +39,23 @@ public class ClientSettingsConfigTest {
         assertFalse("the legacy moduleTheme key is gone", out.contains("moduleTheme"));
     }
 
+    // Config from a build that still had the anticheat module + Urchin fusion toggle.
+    private static final String ANTICHEAT_JSON = "{\"anticheat\":true,\"acAntiKb\":false,"
+            + "\"acThroughWall\":true,\"acAutoblock\":false,\"acEating\":true,\"acNoSlow\":false,"
+            + "\"urchinAcFusion\":true,\"guiSize\":1,\"autoGg\":true}";
+
+    @Test
+    public void staleAnticheatKeysAreIgnoredAndDropOnSave() {
+        ClientSettings s = GSON.fromJson(ANTICHEAT_JSON, ClientSettings.class);
+        s.sanitize();
+        assertEquals("unrelated int setting survives", 1, s.guiSize);
+        assertTrue("unrelated boolean setting survives", s.autoGg);
+        String out = GSON.toJson(s);
+        assertFalse("anticheat key is gone", out.contains("anticheat"));
+        assertFalse("per-check keys are gone", out.contains("acAntiKb"));
+        assertFalse("fusion key is gone", out.contains("urchinAcFusion"));
+    }
+
     @Test
     public void normalizeTokenDefaultsAndPreserves() {
         assertEquals("orange", GuiTheme.normalizeToken(null));

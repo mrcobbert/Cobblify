@@ -12,9 +12,8 @@
     "GuiChatMixin",
     "FontRendererMixin",
     "GuiScreenMixin",
-    "ItemRendererMixin",
-    "NetHandlerPlayClientMixin",
-    "PlayerControllerMPMixin"
+    "EntityPlayerSPMixin",
+    "ItemRendererMixin"
   ],
   "verbose": true
 }
