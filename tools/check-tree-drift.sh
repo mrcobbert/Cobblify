@@ -3,28 +3,35 @@
 # Fails when the Forge tree and the Lunar tree diverge in a way that
 # tools/tree-divergence.txt does not declare.
 #
-# Comparison is on git BLOB HASHES from the index, not on files read off disk.
-# That is the whole trick here, and it is worth stating plainly:
+# Comparison uses the git index: each tracked path's <mode, blob hash> pair.
+# That is the whole trick, and it is worth stating plainly:
 #
-#   * Two paths are byte-identical exactly when their blob hashes match, so
-#     there is no content read, no encoding question, and no NUL problem. (A
-#     source file here once carried a raw NUL, which made git itself classify
-#     it as binary and hid a real difference from every text-based tool.)
-#   * Symlinks need no special case: git stores the link text as the blob, so
-#     two links with different targets simply have different hashes.
+#   * Two paths hold identical content exactly when their blob hashes match, so
+#     nothing reads file content and there is no encoding question. (A source
+#     file here once carried a raw NUL, which made git itself classify it as
+#     binary and hid a real difference from every text-based tool.)
+#   * The mode is part of the key, so a symlink and a regular file are never
+#     equal even when git stores the same bytes for both - a link whose target
+#     text is `foo` and a file containing `foo` share a blob but are entirely
+#     different compiler inputs.
 #   * Nothing dereferences a path, so a symlinked parent directory cannot make
-#     two different tracked files appear equal.
-#   * The index is also what CI has just checked out, and it includes staged
-#     changes, so a local pre-commit run sees what the commit will contain.
+#     two different tracked files appear equal. Symlinks need no special case:
+#     git stores link text as the blob, so different targets differ here too.
+#   * The index is what CI just checked out, and it includes staged changes, so
+#     a local pre-commit run sees what the commit will contain.
+#
+# Blob equality equals byte equality only while no checkout filter or EOL
+# normalisation is in play; a clean/smudge filter could store one blob and check
+# out two different files. That is guarded explicitly below rather than assumed.
 #
 # Usage: tools/check-tree-drift.sh
 # Exit:  0 = no undeclared drift
 #        1 = drift found
-#        2 = cannot check (git failure, unusable path, malformed manifest)
+#        2 = cannot check (git failure, unusable path, filters active, bad manifest)
 #
-# Scope: git-tracked files only. An untracked new file is invisible until it is
-# staged. What this CANNOT catch at all: one commit editing both copies
-# differently. That is a review problem, not a tooling one.
+# Scope: the git index. An untracked or unstaged change is not compared until it
+# is staged; the run says so. What this cannot catch at all: one commit editing
+# both copies differently. That is a review problem, not a tooling one.
 
 set -uo pipefail
 
@@ -37,48 +44,75 @@ manifest="tools/tree-divergence.txt"
 norm=$(mktemp) || exit 2
 main_f=$(mktemp) || exit 2; main_l=$(mktemp) || exit 2
 test_f=$(mktemp) || exit 2; test_l=$(mktemp) || exit 2
-scratch=$(mktemp) || exit 2
-trap 'rm -f "$norm" "$main_f" "$main_l" "$test_f" "$test_l" "$scratch"' EXIT
+raw=$(mktemp) || exit 2; tmp1=$(mktemp) || exit 2; union=$(mktemp) || exit 2
+trap 'rm -f "$norm" "$main_f" "$main_l" "$test_f" "$test_l" "$raw" "$tmp1" "$union"' EXIT
 
 failures=0
 fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
+die()  { echo "error: $*" >&2; exit 2; }
+
+# --- guard: checkout filters would break the blob-equality premise ----------
+
+if [ -n "$(git ls-files -- '.gitattributes' '*/.gitattributes' 2>/dev/null)" ]; then
+  die ".gitattributes is present. Blob hashes may no longer equal checked-out bytes
+       (clean/smudge filters, text=auto, eol). This check must be taught to honour
+       attributes before it can be trusted here."
+fi
+for cfg in core.autocrlf core.eol; do
+  v=$(git config --get "$cfg" 2>/dev/null)
+  case "$v" in
+    ""|false|native) ;;
+    *) die "$cfg=$v changes checked-out bytes relative to the stored blob; cannot compare safely." ;;
+  esac
+done
 
 # --- manifest -> greppable keys ---------------------------------------------
 
-sed 's/#.*//' "$manifest" | awk 'NF' | awk '
+sed 's/#.*//' "$manifest" > "$tmp1" || die "could not read $manifest"
+awk 'NF' "$tmp1" > "$raw" || die "could not parse $manifest"
+awk '
   $1 == "divergent" && NF == 3 { print "divergent|" $2 "|" $3; next }
   $1 == "one-sided" && NF == 4 { print "one-sided|" $2 "|" $3 "|" $4; next }
   { print "BADLINE|" $0 }
-' > "$norm"
+' "$raw" > "$norm" || die "could not normalise $manifest"
 
 if grep -q '^BADLINE|' "$norm"; then
   echo "error: malformed lines in $manifest:" >&2
   sed -n 's/^BADLINE|/  /p' "$norm" >&2
   exit 2
 fi
+[ -s "$norm" ] || die "manifest normalised to nothing; refusing to check"
 
-# --- inventories: "<40-char blob sha> <path>", one per line -----------------
+# --- inventories: "<mode> <sha> <path>", one per line -----------------------
 #
 # `git ls-files -s -z` emits "<mode> <sha> <stage>\t<path>\0". -z is required:
 # without it git C-quotes any non-ASCII path, and a quoted string is not the
-# path, so the file would drop out of the comparison entirely.
+# path, so the file would silently drop out of the comparison.
 #
-# A newline inside a path is the one thing the line-oriented form below cannot
-# represent, so it is rejected outright. Checking that with `grep` would not
-# work - grep treats a newline as a record separator, so a bracket expression
-# can never match the very character in question - hence the byte count. Tabs
-# and every other character are fine: the path is taken as everything after the
-# first tab, and parsed by position, not by field splitting.
+# A newline inside a path is the one thing this line-oriented form cannot carry,
+# so it is rejected. Detecting that with grep would not work - grep treats a
+# newline as a record separator, so a bracket expression can never match the
+# character in question - hence the byte count.
+#
+# Every stage is status-checked and the row count is verified against the number
+# of NUL records, so a failing `sed`/`tr`/`sort` cannot quietly yield an empty
+# inventory and a clean report.
+
+PREFIX_LEN=48   # "100644 " (7) + 40-char sha + " " => path starts at column 49
 
 list_tree() { # <dir> <outfile>
-  local dir=$1 out=$2 rc
-  git ls-files -s -z -- "$dir" > "$scratch"; rc=$?
-  [ "$rc" -eq 0 ] || return 1
-  [ "$(LC_ALL=C tr -dc '\n' < "$scratch" | wc -c | tr -d ' ')" = "0" ] || return 2
-  tr '\000' '\n' < "$scratch" \
-    | sed -e '/^$/d' -e 's/^[0-7]\{6\} \([0-9a-f]\{40\}\) [0-9]'$'\t''/\1 /' \
-    | sed "s| $dir/| |" \
-    | LC_ALL=C sort > "$out"
+  local dir=$1 out=$2 want got
+  git ls-files -s -z -- "$dir" > "$raw" || return 1
+  [ "$(LC_ALL=C tr -dc '\n' < "$raw" | wc -c | tr -d ' ')" = "0" ] || return 2
+  want=$(LC_ALL=C tr -dc '\000' < "$raw" | wc -c | tr -d ' ')
+  tr '\000' '\n' < "$raw" > "$tmp1" || return 3
+  sed -e '/^$/d' \
+      -e 's/^\([0-7]\{6\}\) \([0-9a-f]\{40\}\) [0-9]'$'\t''/\1 \2 /' \
+      -e "s|^\(.\{$PREFIX_LEN\}\)$dir/|\1|" "$tmp1" > "$out" || return 3
+  LC_ALL=C sort "$out" > "$tmp1" || return 3
+  cp "$tmp1" "$out" || return 3
+  got=$(wc -l < "$out" | tr -d ' ')
+  [ "$want" = "$got" ] || return 4
   return 0
 }
 
@@ -88,24 +122,21 @@ for spec in "src/main/java:$main_f" "lunar/src/main/java:$main_l" \
   list_tree "$d" "$o"
   case $? in
     0) ;;
-    2) echo "error: a tracked path under $d contains a newline; cannot check" >&2; exit 2 ;;
-    *) echo "error: could not enumerate $d (git ls-files failed)" >&2; exit 2 ;;
+    1) die "could not enumerate $d (git ls-files failed)" ;;
+    2) die "a tracked path under $d contains a newline; cannot check" ;;
+    3) die "an inventory transformation failed for $d (sed/tr/sort)" ;;
+    4) die "inventory row count mismatch for $d; refusing to report on partial data" ;;
   esac
 done
 
-# An empty inventory is NOT treated as infrastructure failure: git succeeded, so
-# an empty tree is a real index state (every file deleted or moved), and that is
-# drift for the passes below to report - not a reason to refuse to look.
-
-forge_dir() { [ "$1" = main ] && echo src/main/java || echo src/test/java; }
-lunar_dir() { [ "$1" = main ] && echo lunar/src/main/java || echo lunar/src/test/java; }
 forge_list() { [ "$1" = main ] && echo "$main_f" || echo "$test_f"; }
 lunar_list() { [ "$1" = main ] && echo "$main_l" || echo "$test_l"; }
 
-# Exact match on the path portion (everything from column 42), so a path can
-# contain spaces, tabs or unicode without confusing the lookup.
-sha_of() { awk -v p="$2" 'substr($0,42)==p { print substr($0,1,40); exit }' "$1"; }
-paths_of() { cut -c42- "$1"; }
+# The path is passed through the environment, NOT `awk -v`: -v assignments
+# interpret backslash escapes, so a path literally containing `\t` would be
+# turned into a tab and never match its own inventory row.
+key_of() { P=$2 awk 'substr($0,'"$((PREFIX_LEN+1))"')==ENVIRON["P"] { print substr($0,1,'"$((PREFIX_LEN-1))"'); exit }' "$1"; }
+paths_of() { cut -c$((PREFIX_LEN+1))- "$1"; }
 
 declared_divergent() { grep -Fxq "divergent|$1|$2" "$norm"; }
 declared_side() {
@@ -117,28 +148,25 @@ declared_side() {
 # --- pass A: everything in either index must be declared or identical -------
 
 for tree in main test; do
-  paths_of "$(forge_list "$tree")" >  "$scratch"
-  paths_of "$(lunar_list "$tree")" >> "$scratch"
-  if ! LC_ALL=C sort -u "$scratch" > "$scratch.u"; then
-    echo "error: sort failed while building the $tree path union" >&2; exit 2
-  fi
+  { paths_of "$(forge_list "$tree")"; paths_of "$(lunar_list "$tree")"; } > "$tmp1" \
+    || die "could not build the $tree path list"
+  LC_ALL=C sort -u "$tmp1" > "$union" || die "sort failed while building the $tree path union"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    fs=$(sha_of "$(forge_list "$tree")" "$p")
-    ls=$(sha_of "$(lunar_list "$tree")" "$p")
+    fk=$(key_of "$(forge_list "$tree")" "$p")
+    lk=$(key_of "$(lunar_list "$tree")" "$p")
     side=$(declared_side "$tree" "$p")
 
-    if [ -n "$fs" ] && [ -n "$ls" ]; then
-      if [ "$fs" != "$ls" ] && ! declared_divergent "$tree" "$p"; then
+    if [ -n "$fk" ] && [ -n "$lk" ]; then
+      if [ "$fk" != "$lk" ] && ! declared_divergent "$tree" "$p"; then
         fail "$tree: $p differs between trees but is not declared. Add 'divergent $tree $p' if intended."
       fi
-    elif [ -n "$fs" ]; then
+    elif [ -n "$fk" ]; then
       [ -n "$side" ] || fail "$tree: $p exists only in the Forge tree and is not declared. Add 'one-sided $tree forge $p', or restore the Lunar copy."
-    elif [ -n "$ls" ]; then
+    elif [ -n "$lk" ]; then
       [ -n "$side" ] || fail "$tree: $p exists only in the Lunar tree and is not declared. Add 'one-sided $tree lunar $p', or restore the Forge copy."
     fi
-  done < "$scratch.u"
-  rm -f "$scratch.u"
+  done < "$union"
 done
 
 # --- pass B: every declared entry must still describe reality ---------------
@@ -155,11 +183,11 @@ while IFS= read -r line; do
 
   if [ "$kind" = divergent ]; then
     p=$rest
-    fs=$(sha_of "$(forge_list "$tree")" "$p")
-    ls=$(sha_of "$(lunar_list "$tree")" "$p")
-    if [ -z "$fs" ] || [ -z "$ls" ]; then
-      fail "manifest: 'divergent $tree $p' but the file is missing from $([ -z "$fs" ] && echo Forge || echo Lunar). Remove the entry, or declare it one-sided."
-    elif [ "$fs" = "$ls" ]; then
+    fk=$(key_of "$(forge_list "$tree")" "$p")
+    lk=$(key_of "$(lunar_list "$tree")" "$p")
+    if [ -z "$fk" ] || [ -z "$lk" ]; then
+      fail "manifest: 'divergent $tree $p' but the file is missing from $([ -z "$fk" ] && echo Forge || echo Lunar). Remove the entry, or declare it one-sided."
+    elif [ "$fk" = "$lk" ]; then
       fail "manifest: 'divergent $tree $p' but the two copies are now identical. Remove the stale entry."
     fi
   else
@@ -168,38 +196,49 @@ while IFS= read -r line; do
       forge|lunar) ;;
       *) fail "manifest: unknown side '$want' in: $line"; continue ;;
     esac
-    fs=$(sha_of "$(forge_list "$tree")" "$p")
-    ls=$(sha_of "$(lunar_list "$tree")" "$p")
-    if [ -n "$fs" ] && [ -n "$ls" ]; then
+    fk=$(key_of "$(forge_list "$tree")" "$p")
+    lk=$(key_of "$(lunar_list "$tree")" "$p")
+    if [ -n "$fk" ] && [ -n "$lk" ]; then
       fail "manifest: 'one-sided $tree $want $p' but it now exists in BOTH trees. Remove the stale entry, or delete the unintended copy."
-    elif [ -z "$fs" ] && [ -z "$ls" ]; then
+    elif [ -z "$fk" ] && [ -z "$lk" ]; then
       fail "manifest: 'one-sided $tree $want $p' but the file exists in NEITHER tree. Remove the stale entry."
-    elif [ "$want" = forge ] && [ -z "$fs" ]; then
+    elif [ "$want" = forge ] && [ -z "$fk" ]; then
       fail "manifest: 'one-sided $tree forge $p' but the file is in the Lunar tree instead. It changed sides."
-    elif [ "$want" = lunar ] && [ -z "$ls" ]; then
+    elif [ "$want" = lunar ] && [ -z "$lk" ]; then
       fail "manifest: 'one-sided $tree lunar $p' but the file is in the Forge tree instead. It changed sides."
     fi
   fi
 done < "$norm"
 
 # --- report -----------------------------------------------------------------
+#
+# The inventories sort by mode+sha, so extracted paths must be re-sorted before
+# comm; otherwise comm silently under-counts and the summary understates how
+# much was actually compared.
 
-# NB: the inventories are sorted by line, i.e. by blob sha, so the extracted
-# paths must be re-sorted before comm - otherwise comm silently under-counts and
-# the summary understates how much was actually compared.
-pairs=$(comm -12 <(paths_of "$main_f" | LC_ALL=C sort) <(paths_of "$main_l" | LC_ALL=C sort) | wc -l | tr -d ' ')
-tpairs=$(comm -12 <(paths_of "$test_f" | LC_ALL=C sort) <(paths_of "$test_l" | LC_ALL=C sort) | wc -l | tr -d ' ')
+count_pairs() { # <forge list> <lunar list>
+  paths_of "$1" | LC_ALL=C sort > "$tmp1" || return 1
+  paths_of "$2" | LC_ALL=C sort > "$union" || return 1
+  comm -12 "$tmp1" "$union" | wc -l | tr -d ' '
+}
+pairs=$(count_pairs "$main_f" "$main_l") || die "could not count mirrored main pairs"
+tpairs=$(count_pairs "$test_f" "$test_l") || die "could not count mirrored test pairs"
 decl=$(grep -c . "$norm")
 
-# This check reads the index, so a purely local edit is not visible to it. In CI
-# that is a distinction without a difference (a fresh checkout has no unstaged
-# work), but running it by hand after editing would otherwise look reassuring
-# while comparing the previous content. Say so rather than quietly pass.
-unstaged=$(git diff --name-only -- \
-  src/main/java lunar/src/main/java src/test/java lunar/src/test/java 2>/dev/null | wc -l | tr -d ' ')
-if [ "${unstaged:-0}" != "0" ]; then
-  echo "  note: $unstaged compared file(s) have unstaged edits. This check reads the git index,"
-  echo "        so those edits were NOT compared. Stage them and re-run to include them."
+# This check reads the index, so a purely local edit is invisible to it. In CI
+# that is a distinction without a difference. Run by hand it would otherwise
+# look reassuring while comparing the previous content, so say so - and if the
+# probe itself fails, say that rather than silently implying "no local edits".
+if unstaged_out=$(git diff --name-only -- \
+     src/main/java lunar/src/main/java src/test/java lunar/src/test/java 2>/dev/null); then
+  unstaged=$(printf '%s' "$unstaged_out" | grep -c . )
+  if [ "$unstaged" != "0" ]; then
+    echo "  note: $unstaged compared file(s) have unstaged edits. This check reads the git index,"
+    echo "        so those edits were NOT compared. Stage them and re-run to include them."
+  fi
+else
+  echo "  warning: could not determine whether there are unstaged edits (git diff failed);"
+  echo "           this run reflects the index only."
 fi
 
 if [ "$failures" -eq 0 ]; then
