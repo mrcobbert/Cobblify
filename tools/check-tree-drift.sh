@@ -3,31 +3,35 @@
 # Fails when the Forge tree and the Lunar tree diverge in a way that
 # tools/tree-divergence.txt does not declare.
 #
-# Comparison uses the git index: each tracked path's <mode, blob hash> pair.
-# That is the whole trick, and it is worth stating plainly:
+# Comparison uses the git index: each tracked path's <mode, object id> pair.
 #
-#   * Two paths hold identical content exactly when their blob hashes match, so
+#   * Two paths hold identical content exactly when their object ids match, so
 #     nothing reads file content and there is no encoding question. (A source
 #     file here once carried a raw NUL, which made git itself classify it as
 #     binary and hid a real difference from every text-based tool.)
 #   * The mode is part of the key, so a symlink and a regular file are never
 #     equal even when git stores the same bytes for both - a link whose target
-#     text is `foo` and a file containing `foo` share a blob but are entirely
+#     text is `foo` and a file containing `foo` share an object but are entirely
 #     different compiler inputs.
 #   * Nothing dereferences a path, so a symlinked parent directory cannot make
-#     two different tracked files appear equal. Symlinks need no special case:
-#     git stores link text as the blob, so different targets differ here too.
-#   * The index is what CI just checked out, and it includes staged changes, so
-#     a local pre-commit run sees what the commit will contain.
+#     two different tracked files appear equal.
 #
-# Blob equality equals byte equality only while no checkout filter or EOL
-# normalisation is in play; a clean/smudge filter could store one blob and check
-# out two different files. That is guarded explicitly below rather than assumed.
+# Object-id equality means byte equality only while nothing rewrites content
+# between index and worktree. Rather than assume that, the effective `filter`,
+# `text` and `eol` attributes of every compared path are queried with
+# `git check-attr` (which honours .gitattributes, .git/info/attributes and
+# core.attributesFile alike), and core.autocrlf/core.eol are read. Anything that
+# could rewrite bytes makes this refuse to answer instead of guessing.
+#
+# Every git and text-tool invocation is status-checked. A tool that fails must
+# never degrade into "empty input, therefore nothing to compare, therefore OK" -
+# a detector that passes because it checked nothing is worse than no detector.
 #
 # Usage: tools/check-tree-drift.sh
 # Exit:  0 = no undeclared drift
 #        1 = drift found
-#        2 = cannot check (git failure, unusable path, filters active, bad manifest)
+#        2 = cannot check (git or tool failure, unusable path, content filters
+#            active, unmerged index, unsupported object format, bad manifest)
 #
 # Scope: the git index. An untracked or unstaged change is not compared until it
 # is staged; the run says so. What this cannot catch at all: one commit editing
@@ -41,29 +45,49 @@ cd "$repo_root" || exit 2
 manifest="tools/tree-divergence.txt"
 [ -f "$manifest" ] || { echo "error: missing $manifest" >&2; exit 2; }
 
-norm=$(mktemp) || exit 2
-main_f=$(mktemp) || exit 2; main_l=$(mktemp) || exit 2
-test_f=$(mktemp) || exit 2; test_l=$(mktemp) || exit 2
-raw=$(mktemp) || exit 2; tmp1=$(mktemp) || exit 2; union=$(mktemp) || exit 2
-trap 'rm -f "$norm" "$main_f" "$main_l" "$test_f" "$test_l" "$raw" "$tmp1" "$union"' EXIT
+# One temp directory, trapped immediately, so a later allocation failure cannot
+# leak an earlier file.
+tmpd=$(mktemp -d) || exit 2
+trap 'rm -rf "$tmpd"' EXIT
+
+norm="$tmpd/norm"; raw="$tmpd/raw"; tmp1="$tmpd/t1"; union="$tmpd/union"
+main_f="$tmpd/main_f"; main_l="$tmpd/main_l"
+test_f="$tmpd/test_f"; test_l="$tmpd/test_l"
+
+TREES="src/main/java lunar/src/main/java src/test/java lunar/src/test/java"
 
 failures=0
 fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 die()  { echo "error: $*" >&2; exit 2; }
 
-# --- guard: checkout filters would break the blob-equality premise ----------
+# --- object format: the inventory layout depends on the id width -------------
 
-if [ -n "$(git ls-files -- '.gitattributes' '*/.gitattributes' 2>/dev/null)" ]; then
-  die ".gitattributes is present. Blob hashes may no longer equal checked-out bytes
-       (clean/smudge filters, text=auto, eol). This check must be taught to honour
-       attributes before it can be trusted here."
-fi
+fmt=$(git rev-parse --show-object-format 2>/dev/null) \
+  || die "could not determine the repository object format"
+case "$fmt" in
+  sha1)   HEXLEN=40 ;;
+  sha256) HEXLEN=64 ;;
+  *)      die "unsupported object format '$fmt'" ;;
+esac
+PREFIX_LEN=$((6 + 1 + HEXLEN + 1))   # "100644 " + <id> + " "
+
+# --- premise guards ---------------------------------------------------------
+
+# An unmerged index holds several rows per path (stages 1-3). A first-match
+# lookup over those would be arbitrary and could compare a shared base row while
+# ignoring the differing sides, so refuse instead.
+git ls-files -u -- $TREES > "$tmp1" || die "could not check for an unmerged index"
+[ ! -s "$tmp1" ] || die "the index has unmerged entries; resolve the merge before checking drift"
+
 for cfg in core.autocrlf core.eol; do
-  v=$(git config --get "$cfg" 2>/dev/null)
-  case "$v" in
-    ""|false|native) ;;
-    *) die "$cfg=$v changes checked-out bytes relative to the stored blob; cannot compare safely." ;;
-  esac
+  v=$(git config --get "$cfg" 2>/dev/null); st=$?
+  [ "$st" -le 1 ] || die "could not read git config $cfg"
+  if [ "$st" -eq 0 ]; then
+    case "$v" in
+      false|native) ;;
+      *) die "$cfg=$v rewrites bytes between index and worktree; cannot compare safely." ;;
+    esac
+  fi
 done
 
 # --- manifest -> greppable keys ---------------------------------------------
@@ -83,36 +107,45 @@ if grep -q '^BADLINE|' "$norm"; then
 fi
 [ -s "$norm" ] || die "manifest normalised to nothing; refusing to check"
 
-# --- inventories: "<mode> <sha> <path>", one per line -----------------------
+# --- inventories: "<mode> <id> <path>", one per line ------------------------
 #
-# `git ls-files -s -z` emits "<mode> <sha> <stage>\t<path>\0". -z is required:
+# `git ls-files -s -z` emits "<mode> <id> <stage>\t<path>\0". -z is required:
 # without it git C-quotes any non-ASCII path, and a quoted string is not the
 # path, so the file would silently drop out of the comparison.
 #
-# A newline inside a path is the one thing this line-oriented form cannot carry,
-# so it is rejected. Detecting that with grep would not work - grep treats a
-# newline as a record separator, so a bracket expression can never match the
-# character in question - hence the byte count.
-#
-# Every stage is status-checked and the row count is verified against the number
-# of NUL records, so a failing `sed`/`tr`/`sort` cannot quietly yield an empty
-# inventory and a clean report.
-
-PREFIX_LEN=48   # "100644 " (7) + 40-char sha + " " => path starts at column 49
+# A newline inside a path cannot survive this line-oriented form, so it is
+# rejected. Detecting that with grep would not work - grep treats a newline as a
+# record separator, so a bracket expression can never match the character in
+# question - hence the byte extraction. Every stage writes to a file and is
+# status-checked, so no lossy step can pass silently.
 
 list_tree() { # <dir> <outfile>
   local dir=$1 out=$2 want got
   git ls-files -s -z -- "$dir" > "$raw" || return 1
-  [ "$(LC_ALL=C tr -dc '\n' < "$raw" | wc -c | tr -d ' ')" = "0" ] || return 2
-  want=$(LC_ALL=C tr -dc '\000' < "$raw" | wc -c | tr -d ' ')
-  tr '\000' '\n' < "$raw" > "$tmp1" || return 3
+
+  LC_ALL=C tr -dc '\n' < "$raw" > "$tmpd/nl" || return 3
+  [ ! -s "$tmpd/nl" ] || return 2
+
+  LC_ALL=C tr -dc '\000' < "$raw" > "$tmpd/nul" || return 3
+  want=$(wc -c < "$tmpd/nul") || return 3
+  want=${want//[[:space:]]/}
+
+  tr '\000' '\n' < "$raw" > "$tmpd/lines" || return 3
   sed -e '/^$/d' \
-      -e 's/^\([0-7]\{6\}\) \([0-9a-f]\{40\}\) [0-9]'$'\t''/\1 \2 /' \
-      -e "s|^\(.\{$PREFIX_LEN\}\)$dir/|\1|" "$tmp1" > "$out" || return 3
-  LC_ALL=C sort "$out" > "$tmp1" || return 3
-  cp "$tmp1" "$out" || return 3
-  got=$(wc -l < "$out" | tr -d ' ')
+      -e 's/^\([0-7]\{6\}\) \([0-9a-f]\{'"$HEXLEN"'\}\) [0-9]'$'\t''/\1 \2 /' \
+      -e "s|^\(.\{$PREFIX_LEN\}\)$dir/|\1|" "$tmpd/lines" > "$tmpd/stripped" || return 3
+  LC_ALL=C sort "$tmpd/stripped" > "$out" || return 3
+
+  got=$(wc -l < "$out") || return 3
+  got=${got//[[:space:]]/}
   [ "$want" = "$got" ] || return 4
+
+  # Every surviving row must have been rewritten to "<mode> <id> " form; if the
+  # prefix substitution missed any line the layout assumption is wrong.
+  if [ -s "$out" ] && ! awk -v n="$PREFIX_LEN" \
+       'substr($0,1,7) !~ /^[0-7]{6} $/ || length($0) < n { bad=1; exit } END { exit bad?1:0 }' "$out"; then
+    return 5
+  fi
   return 0
 }
 
@@ -124,19 +157,48 @@ for spec in "src/main/java:$main_f" "lunar/src/main/java:$main_l" \
     0) ;;
     1) die "could not enumerate $d (git ls-files failed)" ;;
     2) die "a tracked path under $d contains a newline; cannot check" ;;
-    3) die "an inventory transformation failed for $d (sed/tr/sort)" ;;
+    3) die "an inventory transformation failed for $d (tr/sed/sort/wc)" ;;
     4) die "inventory row count mismatch for $d; refusing to report on partial data" ;;
+    5) die "unexpected index row layout for $d; refusing to guess" ;;
   esac
 done
+
+# --- content-filter guard (after path validation) ---------------------------
+#
+# This runs after the inventories, not before: `git check-attr -z` emits a flat
+# (path, attribute, value) stream, and parsing it positionally requires that no
+# path contains a newline. The inventory step above has already established that,
+# so the triples cannot be misaligned here.
+
+# Effective attributes, not the presence of a file: .gitattributes,
+# .git/info/attributes and core.attributesFile can all assign a filter, and a
+# filter that is merely configured but never assigned is harmless.
+git ls-files -z -- $TREES > "$raw" || die "could not list the compared trees"
+if [ -s "$raw" ]; then
+  git check-attr -z --stdin filter text eol < "$raw" > "$tmp1" \
+    || die "git check-attr failed; cannot establish whether content filters are active"
+  LC_ALL=C tr '\000' '\n' < "$tmp1" > "$union" || die "could not read git check-attr output"
+  # -z output is a flat stream of (path, attribute, value) triples.
+  if awk 'NR%3==0 && $0 != "unspecified" { print; exit }' "$union" | grep -q .; then
+    offenders=$(awk 'NR%3==1{p=$0} NR%3==2{a=$0} NR%3==0 && $0!="unspecified"{print "  " p " -> " a "=" $0}' "$union" | head -5)
+    die "content filters or EOL attributes apply to compared paths, so index object ids
+       no longer imply identical checked-out bytes:
+$offenders
+       Teach this check to honour attributes before trusting it here."
+  fi
+fi
 
 forge_list() { [ "$1" = main ] && echo "$main_f" || echo "$test_f"; }
 lunar_list() { [ "$1" = main ] && echo "$main_l" || echo "$test_l"; }
 
-# The path is passed through the environment, NOT `awk -v`: -v assignments
-# interpret backslash escapes, so a path literally containing `\t` would be
-# turned into a tab and never match its own inventory row.
-key_of() { P=$2 awk 'substr($0,'"$((PREFIX_LEN+1))"')==ENVIRON["P"] { print substr($0,1,'"$((PREFIX_LEN-1))"'); exit }' "$1"; }
-paths_of() { cut -c$((PREFIX_LEN+1))- "$1"; }
+# The path goes through the environment, NOT `awk -v`: -v assignments interpret
+# backslash escapes, so a path literally containing `\t` would become a tab and
+# never match its own inventory row.
+key_of() {
+  P=$2 awk -v pl="$PREFIX_LEN" \
+    'substr($0,pl+1)==ENVIRON["P"] { print substr($0,1,pl-1); exit }' "$1"
+}
+paths_of() { cut -c$((PREFIX_LEN + 1))- "$1"; }
 
 declared_divergent() { grep -Fxq "divergent|$1|$2" "$norm"; }
 declared_side() {
@@ -212,26 +274,29 @@ done < "$norm"
 
 # --- report -----------------------------------------------------------------
 #
-# The inventories sort by mode+sha, so extracted paths must be re-sorted before
-# comm; otherwise comm silently under-counts and the summary understates how
-# much was actually compared.
+# Inventories sort by mode+id, so extracted paths must be re-sorted before comm;
+# otherwise comm silently under-counts and the summary understates how much was
+# actually compared.
 
 count_pairs() { # <forge list> <lunar list>
-  paths_of "$1" | LC_ALL=C sort > "$tmp1" || return 1
-  paths_of "$2" | LC_ALL=C sort > "$union" || return 1
-  comm -12 "$tmp1" "$union" | wc -l | tr -d ' '
+  paths_of "$1" > "$tmpd/ca" || return 1
+  LC_ALL=C sort "$tmpd/ca" > "$tmpd/ca.s" || return 1
+  paths_of "$2" > "$tmpd/cb" || return 1
+  LC_ALL=C sort "$tmpd/cb" > "$tmpd/cb.s" || return 1
+  comm -12 "$tmpd/ca.s" "$tmpd/cb.s" > "$tmpd/cc" || return 1
+  local n; n=$(wc -l < "$tmpd/cc") || return 1
+  printf '%s' "${n//[[:space:]]/}"
 }
 pairs=$(count_pairs "$main_f" "$main_l") || die "could not count mirrored main pairs"
 tpairs=$(count_pairs "$test_f" "$test_l") || die "could not count mirrored test pairs"
 decl=$(grep -c . "$norm")
 
 # This check reads the index, so a purely local edit is invisible to it. In CI
-# that is a distinction without a difference. Run by hand it would otherwise
-# look reassuring while comparing the previous content, so say so - and if the
-# probe itself fails, say that rather than silently implying "no local edits".
-if unstaged_out=$(git diff --name-only -- \
-     src/main/java lunar/src/main/java src/test/java lunar/src/test/java 2>/dev/null); then
-  unstaged=$(printf '%s' "$unstaged_out" | grep -c . )
+# that is a distinction without a difference. Run by hand it would otherwise look
+# reassuring while comparing the previous content, so say so - and if the probe
+# itself fails, say that rather than implying there were no local edits.
+if git diff --name-only -- $TREES > "$tmp1" 2>/dev/null; then
+  unstaged=$(grep -c . "$tmp1")
   if [ "$unstaged" != "0" ]; then
     echo "  note: $unstaged compared file(s) have unstaged edits. This check reads the git index,"
     echo "        so those edits were NOT compared. Stage them and re-run to include them."
