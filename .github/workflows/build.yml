@@ -1,5 +1,7 @@
 # Builds the mod on every push/PR, and on a version tag (v*) publishes a GitHub Release
 # with the correct production jar attached (the remapped, NON -dev jar).
+# Two separate Gradle builds run in parallel: the Forge one at the repo root, and the
+# Weave/Lunar one rooted at `lunar/` (its own wrapper, own settings, own toolchain).
 
 name: Build & Release
 
@@ -76,3 +78,50 @@ jobs:
           files: release/*.jar
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  lunar:
+    name: Build (Lunar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Gradle 9.4 itself needs JDK 17+ to run, but lunar/build.gradle.kts pins a Java 8
+      # toolchain for the mod classes, so both JDKs have to be on the machine.
+      - name: Set up JDK 21 and the JDK 8 toolchain
+        uses: actions/setup-java@v4
+        with:
+          java-version: |
+            8
+            21
+          distribution: temurin
+
+      - name: Cache Gradle / Weave
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-lunar-${{ hashFiles('lunar/**/*.gradle*', 'lunar/gradle.properties', 'lunar/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-lunar-
+
+      - name: Chmod Gradle
+        run: chmod +x ./lunar/gradlew
+
+      # fromEnv points the Java 8 toolchain at the JDK setup-java installed, so Gradle never
+      # has to auto-provision one. Do NOT add --configuration-cache here: lunar/gradle.properties
+      # disables it on purpose (Weave 1.3.3 configures Minecraft deps in afterEvaluate and the
+      # cache silently drops the mapped-Minecraft dependency).
+      - name: Build
+        working-directory: lunar
+        run: ./gradlew build --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BedwarsQOL-Lunar-jar
+          path: lunar/build/libs/*.jar

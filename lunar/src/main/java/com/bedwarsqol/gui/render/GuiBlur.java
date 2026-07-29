@@ -116,6 +116,12 @@ public final class GuiBlur {
                 GlStateManager.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
             }
         }
+        // Guarantee the GUI draws to the SCREEN at full viewport. The blit chain should already leave the
+        // main framebuffer bound, but if a blit (or the lazy FBO build) threw, a tiny scratch FBO can stay
+        // bound with a 1/16-size viewport — content would then render into it (off-screen) and the panel
+        // "wouldn't appear" while the last good blur frame still showed. Rebinding here is cheap insurance.
+        Framebuffer main2 = mc.getFramebuffer();
+        if (main2 != null) main2.bindFramebuffer(true);
     }
 
     /** Frees the scratch framebuffers and ends the fade. */
