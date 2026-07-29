@@ -37,6 +37,12 @@ jobs:
       - name: Check tree drift
         run: ./tools/check-tree-drift.sh
 
+      # Tests the checker itself. A drift check that passes when it should fail
+      # manufactures confidence, so its claimed behaviours are asserted rather
+      # than assumed. Runs entirely in throwaway clones; needs no JDK.
+      - name: Self-test the drift checker
+        run: ./tools/test-tree-drift.sh
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
