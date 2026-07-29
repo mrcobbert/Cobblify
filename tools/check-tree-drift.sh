@@ -44,12 +44,48 @@ if grep -q '^BADLINE|' "$norm"; then
 fi
 
 # --- tree inventories (index contents, so staged adds are seen too) ---------
+#
+# Enumeration is NUL-delimited. `git ls-files` without -z C-quotes any path that
+# is not plain ASCII (core.quotePath), and a quoted string is not the path on
+# disk - so a file named `Café.java` would silently drop out of the comparison
+# and could carry undeclared drift straight through. -z never quotes.
+#
+# Every failure here is fatal (exit 2). Without that, a git error yields empty
+# inventories and the script would cheerfully report "OK, 0 mirrored pairs" -
+# a detector that passes because it checked nothing.
 
-list_tree() { git ls-files "$1" | sed "s|^$1/||" | sort; }
-list_tree src/main/java        > "$main_f"
-list_tree lunar/src/main/java  > "$main_l"
-list_tree src/test/java        > "$test_f"
-list_tree lunar/src/test/java  > "$test_l"
+list_tree() { # <dir> <outfile>
+  local dir=$1 out=$2 z rc
+  z=$(mktemp) || return 1
+  git ls-files -z -- "$dir" > "$z"; rc=$?
+  if [ "$rc" -ne 0 ]; then rm -f "$z"; return 1; fi
+  # A newline inside a filename cannot survive the line-oriented lists below.
+  # There is no legitimate one in a Java source tree, so fail closed.
+  if LC_ALL=C tr -d '\000' < "$z" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    rm -f "$z"; return 2
+  fi
+  tr '\000' '\n' < "$z" | sed "s|^$dir/||" | sed '/^$/d' | LC_ALL=C sort > "$out"
+  rm -f "$z"
+  return 0
+}
+
+for spec in "src/main/java:$main_f" "lunar/src/main/java:$main_l" \
+            "src/test/java:$test_f" "lunar/src/test/java:$test_l"; do
+  d=${spec%:*}; o=${spec##*:}
+  list_tree "$d" "$o"
+  case $? in
+    0) ;;
+    2) echo "error: unsupported control character in a tracked path under $d" >&2; exit 2 ;;
+    *) echo "error: could not enumerate $d (git ls-files failed)" >&2; exit 2 ;;
+  esac
+done
+
+# src/main/java always has files. An empty inventory means the working directory,
+# index or checkout is not what we think it is - refuse rather than pass.
+if [ ! -s "$main_f" ]; then
+  echo "error: src/main/java enumerated to nothing; refusing to report a clean tree" >&2
+  exit 2
+fi
 
 forge_dir() { [ "$1" = main ] && echo src/main/java || echo src/test/java; }
 lunar_dir() { [ "$1" = main ] && echo lunar/src/main/java || echo lunar/src/test/java; }
@@ -68,6 +104,28 @@ declared_side() {
   grep -Fxq "one-sided|$1|lunar|$2" "$norm" && { echo lunar; return; }
   echo ""
 }
+
+# --- symlink guard ----------------------------------------------------------
+#
+# `[ -f ]` and `cmp` both follow symlinks, so two links whose tracked blobs
+# differ (`-> ModChat.java` vs `-> ./ModChat.java`) would compare their
+# identical targets and pass, and two broken links would read as absent from
+# both trees. This detector promises to compare the tracked bytes, so a symlink
+# it cannot honestly compare is an error rather than a silent pass. There are
+# none in either tree today.
+
+for tree in main test; do
+  fdir=$(forge_dir "$tree"); ldir=$(lunar_dir "$tree")
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    for d in "$fdir" "$ldir"; do
+      if [ -L "$d/$p" ]; then
+        echo "error: symlink in a compared tree is not supported: $d/$p" >&2
+        exit 2
+      fi
+    done
+  done < <(LC_ALL=C sort -u "$(forge_list "$tree")" "$(lunar_list "$tree")")
+done
 
 # --- pass A: everything actually on disk must be declared or identical ------
 
@@ -145,6 +203,7 @@ decl=$(grep -c . "$norm")
 
 if [ "$failures" -eq 0 ]; then
   echo "tree drift check: OK ($pairs mirrored main pairs, $tpairs mirrored test pairs, $decl declared exceptions)"
+  echo "  scope: git-tracked files only - an untracked new file is not compared until it is staged."
   exit 0
 fi
 

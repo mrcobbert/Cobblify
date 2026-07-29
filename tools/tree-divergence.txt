@@ -109,7 +109,10 @@ one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
 one-sided test forge com/bedwarsqol/gui/TabBarFitTest.java
 
-# Harness + Forge stub: depend on src/test/resources, which Lunar does not have.
+# Benchmark harness: LaneContrastHarness loads /lobby-arrivals.txt from
+# src/test/resources, which Lunar does not have; FakeStatsBackend exists to
+# support it. Loader.java is separate - a stub for the Forge API, needed because
+# only the Forge tree compiles against net.minecraftforge, no resource involved.
 one-sided test forge com/bedwarsqol/harness/FakeStatsBackend.java
 one-sided test forge com/bedwarsqol/harness/LaneContrastHarness.java
 one-sided test forge com/bedwarsqol/harness/LaneContrastTest.java
