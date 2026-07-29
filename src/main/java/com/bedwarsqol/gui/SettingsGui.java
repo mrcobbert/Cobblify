@@ -46,7 +46,7 @@ public class SettingsGui extends GuiScreen {
 
     // control kinds
     private static final int K_POTION = 1, K_ARMOR = 2,
-            K_INVENTORY = 5, K_GENTIMERS = 6, K_STATS = 7, K_LEVEL = 8, K_RANK = 9,
+            K_INVENTORY = 5, K_GENTIMERS = 6, K_STATS = 7, K_RANK = 9,
             K_NAMETAG = 10, K_TAB = 11, K_KEYSTROKES = 12, K_HANDPOS = 13, K_HANDSCALE = 14,
             K_BLOCKOVERLAY = 15, K_SEETHROUGH = 16, K_HANDX = 17, K_HANDY = 18,
             K_HANDZ = 19, K_TNTFUSE = 23;
@@ -227,7 +227,6 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Show Tab", K_TAB, null, K_STATS),
                     new RowDef(RowType.TOGGLE, "Chat Hover", K_CHATHOVER, null, K_STATS),
                     new RowDef(RowType.TOGGLE, "Chat Stats", K_CHATSTATS, null, K_STATS),
-                    new RowDef(RowType.TOGGLE, "Show Level", K_LEVEL, null, K_STATS),
                     new RowDef(RowType.TOGGLE, "Show Rank", K_RANK, null, K_STATS),
                     new RowDef(RowType.TOGGLE, "Party Report", K_SWEATREPORT, null, K_STATS),
                     new RowDef(RowType.TOGGLE, "Auto GG", "Say gg when a game ends", K_AUTOGG),
@@ -1631,7 +1630,6 @@ public class SettingsGui extends GuiScreen {
             case K_TAB: return cfg.playerStatsTab;
             case K_CHATHOVER: return cfg.playerStatsChatHover;
             case K_CHATSTATS: return cfg.playerStatsChat;
-            case K_LEVEL: return cfg.playerStatsShowLevel;
             case K_RANK: return cfg.playerStatsShowRank;
             case K_SWEATREPORT: return cfg.statsSweatReport;
             case K_AUTOGG: return cfg.autoGg;
@@ -1692,7 +1690,6 @@ public class SettingsGui extends GuiScreen {
             case K_TAB: cfg.playerStatsTab = !cfg.playerStatsTab; break;
             case K_CHATHOVER: cfg.playerStatsChatHover = !cfg.playerStatsChatHover; break;
             case K_CHATSTATS: cfg.playerStatsChat = !cfg.playerStatsChat; break;
-            case K_LEVEL: cfg.playerStatsShowLevel = !cfg.playerStatsShowLevel; break;
             case K_RANK: cfg.playerStatsShowRank = !cfg.playerStatsShowRank; break;
             case K_SWEATREPORT: cfg.statsSweatReport = !cfg.statsSweatReport; break;
             case K_AUTOGG: cfg.autoGg = !cfg.autoGg; break;
@@ -2269,7 +2266,7 @@ public class SettingsGui extends GuiScreen {
         }
     }
 
-    /** One master-list row from the animation model: colored star + name + colored FKDR + one severity
+    /** One master-list row from the animation model: name + colored FKDR + one severity
      *  chip when resolved; a "Fetching…" hint while a click's fetch is in flight; a faint "click to load"
      *  dot when unfetched; or a state hint (nicked/never played/error). Every color is pre-multiplied by
      *  the row's eased alpha for the slide/fade. Never triggers a fetch (cached reads only). */
@@ -2283,7 +2280,7 @@ public class SettingsGui extends GuiScreen {
         float rightX = x2 - 6;
 
         if (st != null && st.state == BedwarsStats.State.OK) {
-            // Severity chip (gating-filtered per provider), then colored FKDR, then star+name — right to left.
+            // Severity chip (gating-filtered per provider), then colored FKDR, then name — right to left.
             EligibilitySnapshot snap = EligibilitySnapshot.current();
             List<UrchinTag> ut = cfg.urchinTags && UrchinTag.badgeAllowed(snap, name, uuid)
                     ? st.urchinTags : java.util.Collections.<UrchinTag>emptyList();
@@ -2305,8 +2302,7 @@ public class SettingsGui extends GuiScreen {
             String fkdr = BedwarsStats.fkdrColor(st.overall.fkdr) + PlayersFormat.fmt2(st.overall.fkdr);
             float fw = GuiRender.textWidth(fkdr, scale, MED);
             GuiRender.text(fkdr, rightX - fw, ty, scale, applyAlpha(GuiTheme.TEXT_HI, a), MED);
-            String head = (st.bedwarsLevel > 0 ? BedwarsStats.starTag(st.bedwarsLevel) + " " : "") + name;
-            GuiRender.text(ellipsize(head, scale, (rightX - fw - 8) - (x1 + 6)), x1 + 6, ty, scale,
+            GuiRender.text(ellipsize(name, scale, (rightX - fw - 8) - (x1 + 6)), x1 + 6, ty, scale,
                     applyAlpha(GuiTheme.TEXT_HI, a), MED);
             return;
         }
@@ -2435,7 +2431,7 @@ public class SettingsGui extends GuiScreen {
         }
     }
 
-    /** The prominent "Overall" hero: player head + one-line colored star/rank/name, then big colored
+    /** The prominent "Overall" hero: player head + one-line colored rank/name, then big colored
      *  FKDR / WLR / KD centered on a band. Compact so the detail need not scroll. Returns the y just
      *  below the card. */
     private int drawHeroCard(BedwarsStats st, UUID uuid, int dx1, int dx2, int dy) {
@@ -2461,12 +2457,11 @@ public class SettingsGui extends GuiScreen {
         GuiRender.roundedRect(headX, headY, headX + headPx, headY + headPx, 3f, 0x33000000);
         drawPlayerHead(uuid, nameOnly, headX, headY, headPx);
 
-        // Header column on the left, filling the hero height: star/rank/name line then the big
+        // Header column on the left, filling the hero height: rank/name line then the big
         // FKDR / WLR / KD band beneath (each value authentic-colored; §r resets to the name color).
         int lx2 = headX - 10; // header text right boundary (clear of the head)
-        String star = st.bedwarsLevel > 0 ? BedwarsStats.starTag(st.bedwarsLevel) + " " : "";
         String rank = st.rankPrefix != null && !st.rankPrefix.isEmpty() ? st.rankPrefix + " " : "";
-        String line1 = star + rank + "§r" + nameOnly;
+        String line1 = rank + "§r" + nameOnly;
         GuiRender.text(ellipsize(line1, nameScale, lx2 - ix1), ix1, headY, nameScale, GuiTheme.TEXT_HI, MED);
 
         float bandTop = headY + nameH + gap;

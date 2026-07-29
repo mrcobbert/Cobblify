@@ -12,9 +12,8 @@
 import { parseBedwarsFromHtml } from "./bedwars-parse.js";
 import { parseProfile } from "./profile-parse.js";
 import {
-  readCached, writeCached, readStar, readBlocked, writeBlocked, NEG_TTL_SEC, NICKED_TTL_SEC,
+  readCached, writeCached, readBlocked, writeBlocked, NEG_TTL_SEC, NICKED_TTL_SEC,
 } from "./cache.js";
-import { scrapeStarForPool } from "./star.js";
 import { tagsForUuids, resultFields } from "./urchin.js";
 import { tagsForUuids as seraphTagsForUuids, resultFields as seraphResultFields } from "./seraph.js";
 
@@ -32,24 +31,148 @@ const MAX_PREFIX_BYTES = 90_000; // hard stop; also fully contains any <50 KB ch
 // Politeness toward hypixel — pinned to the measured ~1.7/s per-IP origin limit (with margin).
 const BATCH_CFG = {
   concurrency: 2, // gate below dominates; 2 lets a scrape overlap the next start's latency
-  minSpacingMs: 620, // ~1.6/s — under the ~2/s 429 threshold measured on this IP
-  maxAttempts: 4,
-  backoffSpacingMs: 1300, // collapse to ~today's proven-safe rate on a 429
-  backoffBaseMs: 1200,
+  maxAttempts: 4, // 429 backoff itself now lives in the shared origin gate below
 };
 const MAX_BATCH = 24;
 
-// Star scrapes run AFTER the counter pass (sequentially, in the same batch) so they never overlap it
-// and stack origin load. Gentler than the counter pace since they're never on the critical path.
-const STAR_CFG = {
-  concurrency: 1,
-  minSpacingMs: 720,
-  maxAttempts: 3,
-  backoffSpacingMs: 1300,
-  backoffBaseMs: 1200,
-};
+// Attempts for the single route's counter scrape (the batch pool uses BATCH_CFG.maxAttempts).
+const SINGLE_MAX_ATTEMPTS = 3;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Origin gate lanes. HIGH = a human is waiting on it; LOW = background lobby work. */
+export const LANE_HIGH = 0;
+export const LANE_LOW = 1;
+
+const SPACING_MS = 620; // ~1.6/s — the measured ceiling; never tightened
+const ELEVATED_SPACING_MS = 1300; // collapse to ~today's proven-safe rate on a 429
+const ELEVATION_MS = 60_000; // how long a 429 keeps spacing elevated before decaying
+const ORIGIN_BACKOFF_BASE_MS = 1200; // per-attempt pause after a 429
+const HIGH_STREAK_MAX = 3; // fairness floor: the low lane gets >= 1 slot in 4
+const STALE_WAITER_MS = 60_000; // a waiter older than this is treated as abandoned
+const PICK_QUANTUM_MS = 25; // re-check interval while it is not my turn
+
+/**
+ * Shared origin gate. EVERY hypixel origin start goes through it - the batch counter pool, the
+ * single route's counter scrape and the diagnostic probe - so a /bw lookup can no longer stack on
+ * top of a running batch and push the isolate past the measured ~1.7 req/s per-IP limit. A 429 on
+ * any path throttles all of them.
+ *
+ * Two lanes, one timeline. Nothing is ever RESERVED: `lastStart` is a past fact, not a future
+ * claim, so each slot's winner is chosen at release time from whoever is waiting. That is what lets
+ * a HIGH arrival get ahead of already-queued LOW work, which the old synchronous claim could not do
+ * (its waiters were asleep holding earlier timestamps that nothing could revoke).
+ *
+ * Rate invariant: `lastStart` is assigned in exactly ONE place, to `now`, and only when
+ * `now >= lastStart + spacingAt(now)`. So any two consecutive grants are at least the current
+ * spacing apart for every lane mix - priority chooses WHICH waiter is served, never HOW MANY.
+ *
+ * Why polling and not one shared timer: in workerd a timer belongs to the I/O context that
+ * scheduled it, so a single pump scheduled by request A on behalf of request B's waiter dies when A
+ * ends, hanging B. Polling keeps every sleep inside its own live request context. The cost is up to
+ * PICK_QUANTUM_MS of slack per contended grant, which can only make the gate SLOWER than the
+ * spacing, never faster, so it cannot violate the measured constraint.
+ *
+ * HIGH_STREAK_MAX = 3 guarantees the low lane at least 1 slot in 4. `highStreak` counts consecutive
+ * grants taken WHILE A LOW WAITER WAS PRESENT (hence the reset when there is none), so an
+ * uncontended high run cannot cause a spurious later deferral. It costs a high waiter at most one
+ * slot of deferral: worst case 2 slots (~1.24 s), typically 1 (~0.62 s).
+ *
+ * 429 elevation now applies to both lanes AND retroactively to already-queued waiters, because
+ * spacingAt/backoffUntil are read at grant time instead of at claim time. Under the old synchronous
+ * claim a waiter that claimed before the 429 kept its pre-429 timestamp; this is strictly safer.
+ *
+ * Concurrency 2 stays. A batch contributes at most 2 waiters, and since nothing is reserved a high
+ * arrival's wait is bounded by one spacing plus at most one deferral REGARDLESS of batch size. The
+ * second worker exists only so a page fetch slower than the spacing does not idle the gate.
+ *
+ * Abandoned waiters: if a request context is torn down mid-sleep the coroutine is discarded and
+ * `finally` may not run, leaving a phantom waiter. A phantom in the high lane would otherwise be
+ * picked forever and never grant itself, blocking the low lane permanently. So oldest() skips
+ * waiters older than STALE_WAITER_MS and pickNext falls back to oldest-of-all when only stale
+ * entries remain: deprioritized, never dropped, never hung. 60 s is ~2x the longest legitimate wait
+ * (24 names x 1300 ms elevated plus one backoff pause ~= 33 s).
+ *
+ * Cold start: `lastStart = 0` means the first claim after an idle period is granted instantly. That
+ * single-request burst exists today, is what makes an idle-lobby /bw fast, and is deliberately NOT
+ * a since-boot rule. It is not a token bucket - no burst allowance accumulates.
+ *
+ * PER-ISOLATE (platform limit): Workers offers no cross-isolate coordination short of a Durable
+ * Object, so two isolates can still overlap. Accepted for single-owner traffic — the amplification
+ * being removed is the within-isolate kind.
+ */
+const ORIGIN_GATE = {
+  lastStart: 0,
+  backoffUntil: 0,
+  elevatedUntil: 0,
+  waiters: [], // { lane, seq, at }
+  seq: 0,
+  highStreak: 0,
+};
+
+function spacingAt(now) {
+  return now < ORIGIN_GATE.elevatedUntil ? ELEVATED_SPACING_MS : SPACING_MS;
+}
+
+/** Oldest live waiter in `lane` (FIFO by seq), skipping abandoned ones. */
+function oldest(lane, now) {
+  let best = null;
+  for (const w of ORIGIN_GATE.waiters) {
+    if (w.lane !== lane || now - w.at > STALE_WAITER_MS) continue;
+    if (!best || w.seq < best.seq) best = w;
+  }
+  return best;
+}
+
+function oldestOfAll() {
+  let best = null;
+  for (const w of ORIGIN_GATE.waiters) if (!best || w.seq < best.seq) best = w;
+  return best;
+}
+
+/** Who gets the next slot: strict priority, bounded by the low lane's fairness floor. */
+function pickNext(now) {
+  const hi = oldest(LANE_HIGH, now);
+  const lo = oldest(LANE_LOW, now);
+  if (lo && (!hi || ORIGIN_GATE.highStreak >= HIGH_STREAK_MAX)) return lo;
+  if (hi) return hi;
+  return lo || oldestOfAll(); // only abandoned waiters left: serve one, never hang
+}
+
+/** Wait for this lane's turn on the shared timeline. Returns once the origin start is granted. */
+export async function claimOrigin(lane) {
+  const w = { lane, seq: ++ORIGIN_GATE.seq, at: Date.now() };
+  ORIGIN_GATE.waiters.push(w);
+  try {
+    while (true) {
+      const now = Date.now();
+      const earliest = Math.max(ORIGIN_GATE.lastStart + spacingAt(now), ORIGIN_GATE.backoffUntil);
+      if (now >= earliest && pickNext(now) === w) {
+        ORIGIN_GATE.lastStart = now; // the ONLY assignment: rate invariant lives here
+        if (lane === LANE_HIGH) {
+          ORIGIN_GATE.highStreak = oldest(LANE_LOW, now) ? ORIGIN_GATE.highStreak + 1 : 0;
+        } else {
+          ORIGIN_GATE.highStreak = 0;
+        }
+        return;
+      }
+      await sleep(now >= earliest ? PICK_QUANTUM_MS : earliest - now);
+    }
+  } finally {
+    const i = ORIGIN_GATE.waiters.indexOf(w);
+    if (i >= 0) ORIGIN_GATE.waiters.splice(i, 1);
+  }
+}
+
+/** Feed a 429 back into the gate: pause every path, then keep spacing elevated for a bounded window. */
+export function noteOrigin429(attempt) {
+  const now = Date.now();
+  ORIGIN_GATE.backoffUntil = Math.max(
+    ORIGIN_GATE.backoffUntil,
+    now + ORIGIN_BACKOFF_BASE_MS * Math.max(1, attempt)
+  );
+  ORIGIN_GATE.elevatedUntil = now + ELEVATION_MS; // bounded: decays back to per-claim spacing
+}
 
 /** Read just enough of the response body to cover the header + Bedwars block, then abort the rest. */
 async function readHtmlPrefix(response) {
@@ -138,7 +261,6 @@ async function scrapeAndCache(player, env, ctx) {
   if (parsed.success === true) {
     const profile = parseProfile(scraped.html);
     if (profile.displayName) parsed.displayName = profile.displayName;
-    parsed.networkLevel = profile.networkLevel ?? 0;
     parsed.rank = profile.rank;
     writeCached(player, parsed, env, ctx);
   } else {
@@ -149,58 +271,43 @@ async function scrapeAndCache(player, env, ctx) {
   return { body: parsed };
 }
 
-/**
- * Overlay the Bedwars star onto a resolved body. If the star is cached (the common case once any user
- * has warmed it), attach it inline at zero extra latency. If not, kick off a background scrape so the
- * NEXT lookup has it — never blocking this response on the second page. The client falls back to the
- * network level until the real star lands.
- */
-async function overlayStar(player, body, env, ctx) {
-  if (!body || body.success !== true) return body;
-  const cached = await readStar(player, env, ctx);
-  if (cached != null) {
-    body.bedwarsLevel = cached;
-  } else {
-    ctx.waitUntil(scrapeStarForPool(player, env, ctx).catch(() => {}));
+/** Single-player resolution: cache (unless fresh) then scrape. */
+export async function getBedwars(player, env, ctx, fresh, lane = LANE_LOW) {
+  let body;
+  if (!fresh) {
+    const cached = await readCached(player, env);
+    if (cached) body = { ...cached, cached: true };
+  }
+  if (!body) {
+    // The single route claims origin slots from the same gate as the batch pool, so it never
+    // increases throughput - the lane only decides who is served first. 429s retry (they are never
+    // negatively cached); the terminal body is whatever the last attempt produced, exactly as before.
+    for (let attempt = 1; attempt <= SINGLE_MAX_ATTEMPTS; attempt++) {
+      await claimOrigin(lane);
+      const r = await scrapeAndCache(player, env, ctx);
+      body = r.body;
+      if (!r.retry429) break;
+      noteOrigin429(attempt);
+    }
   }
   return body;
 }
 
-/** Single-player resolution: two-tier cache (unless fresh) then scrape, with star overlaid. */
-export async function getBedwars(player, env, ctx, fresh) {
-  let body;
-  if (!fresh) {
-    const cached = await readCached(player, env, ctx);
-    if (cached) body = { ...cached.body, cached: true };
-  }
-  if (!body) body = (await scrapeAndCache(player, env, ctx)).body;
-  return await overlayStar(player, body, env, ctx);
-}
-
 /**
- * Run items through fn with bounded concurrency, min spacing between starts, and shared 429 backoff.
+ * Run items through fn with bounded concurrency, pacing every start through the shared origin gate
+ * in `lane` (so the pool never races the single route), and shared 429 backoff.
  * Calls onResult(item, terminalResult) exactly once per item (after retries settle).
  */
-async function scrapePool(items, fn, cfg, onResult) {
-  const state = { nextStart: 0, spacing: cfg.minSpacingMs, backoffUntil: 0 };
+async function scrapePool(items, fn, onResult, lane) {
   let idx = 0;
-
-  async function gate() {
-    const now = Date.now();
-    const start = Math.max(now, state.nextStart, state.backoffUntil); // synchronous claim -> serialized
-    state.nextStart = start + state.spacing;
-    const wait = start - now;
-    if (wait > 0) await sleep(wait);
-  }
 
   async function runOne(name) {
     let r;
-    for (let attempt = 1; attempt <= cfg.maxAttempts; attempt++) {
-      await gate();
+    for (let attempt = 1; attempt <= BATCH_CFG.maxAttempts; attempt++) {
+      await claimOrigin(lane); // a retry re-claims at the SAME lane
       r = await fn(name);
       if (!r || !r.retry429) break;
-      state.spacing = Math.max(state.spacing, cfg.backoffSpacingMs); // throttle everyone
-      state.backoffUntil = Date.now() + cfg.backoffBaseMs * attempt;
+      noteOrigin429(attempt); // throttles every origin path, not just this pool
     }
     if (onResult) await onResult(name, r);
     return r;
@@ -210,7 +317,7 @@ async function scrapePool(items, fn, cfg, onResult) {
     while (idx < items.length) await runOne(items[idx++]);
   }
 
-  const n = Math.min(cfg.concurrency, items.length);
+  const n = Math.min(BATCH_CFG.concurrency, items.length);
   await Promise.all(Array.from({ length: Math.max(0, n) }, worker));
 }
 
@@ -235,7 +342,7 @@ function dedupeValidate(names) {
  * second and an all-cold lobby fills in progressively instead of blocking on the slowest player.
  * Each line carries a "name" field (the requested name) so the client can map it back.
  */
-export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx) {
+export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane = LANE_LOW) {
   const valid = dedupeValidate(names);
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -290,19 +397,10 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx) {
   ctx.waitUntil(
     (async () => {
       try {
-        // Players still missing a star after the counter pass — scraped (or background-warmed) below.
-        const needStar = [];
-        // Emit one counter line, overlaying the star if it's already cached (warm = instant). A cold
-        // star is recorded for the star pass instead of blocking the counter line.
         // Names whose urchin/seraph result was NOT ready at base-line time (follow-up pass).
         const needUrchin = [];
         const needSeraph = [];
-        const emitWithStar = async (name, body) => {
-          if (body && body.success === true) {
-            const s = await readStar(name, env, ctx);
-            if (s != null) body.bedwarsLevel = s;
-            else needStar.push(name);
-          }
+        const emitLine = async (name, body) => {
           if (urchinCtx && urchinCtx.unavailableOnly && urchinCtx.uuidByName.has(name.toLowerCase())) {
             body.urchinUnavailable = true; // no KV -> zero Coral calls, resolved unavailable
           } else if (urchinPromise && urchinCtx.uuidByName.has(name.toLowerCase())) {
@@ -323,31 +421,19 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx) {
         // 1) Emit cache hits immediately.
         const misses = [];
         for (const name of valid) {
-          const cached = await readCached(name, env, ctx);
-          if (cached) await emitWithStar(name, { ...cached.body, cached: true });
+          const cached = await readCached(name, env);
+          if (cached) await emitLine(name, { ...cached, cached: true });
           else misses.push(name);
         }
         // 2) Scrape counter misses politely, emitting each as it terminally resolves.
         await scrapePool(
           misses,
           (name) => scrapeAndCache(name, env, ctx),
-          BATCH_CFG,
           async (name, r) =>
-            emitWithStar(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name })
+            emitLine(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name }),
+          lane
         );
-        // 3) Star pass (after counters, so it can't stack origin load): scrape each uncached star and
-        //    stream a lightweight "starUpdate" line so the client upgrades the number in the same game.
-        await scrapePool(
-          needStar,
-          (name) => scrapeStarForPool(name, env, ctx),
-          STAR_CFG,
-          async (name, r) => {
-            if (r && r.level != null) {
-              await writeLine(name, { success: true, starUpdate: true, bedwarsLevel: r.level });
-            }
-          }
-        );
-        // 4) Urchin follow-ups: every base line has been emitted, so an urchinUpdate can
+        // 3) Urchin follow-ups: every base line has been emitted, so an urchinUpdate can
         //    never precede its base. Wait up to 3 s for the Coral batch; a timed-out
         //    lookup still caches (its promise was launched under ctx.waitUntil-covered
         //    work above), just without follow-up lines this request.
@@ -358,7 +444,7 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx) {
             if (f) await writeLine(name, { success: true, urchinUpdate: true, ...f });
           }
         }
-        // 5) Seraph follow-ups, same invariant: emitted only after every base line.
+        // 4) Seraph follow-ups, same invariant: emitted only after every base line.
         if (seraphPromise && needSeraph.length > 0) {
           await Promise.race([seraphPromise, sleep(3000)]);
           for (const name of needSeraph) {

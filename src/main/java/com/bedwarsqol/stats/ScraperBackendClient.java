@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.ObjIntConsumer;
 
 /**
  * Fetches Bedwars stats from the BedwarsQol Cloudflare Worker (forum scrape backend).
@@ -78,17 +77,27 @@ public final class ScraperBackendClient {
      */
     public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
             String urchinUuid, Consumer<UrchinResult> onUrchin) throws IOException {
-        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, null, null);
+        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, null, null, false);
+    }
+
+    public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
+            String urchinUuid, Consumer<UrchinResult> onUrchin,
+            String seraphUuid, Consumer<SeraphResult> onSeraph) throws IOException {
+        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, seraphUuid, onSeraph, false);
     }
 
     /**
      * Single fetch enriched by any subset of providers. Each provider's non-null uuid adds its opt-in
      * header and (the shared) {@code ?uuid=}, and its resolution is delivered to its callback. All-null
      * provider args = pure legacy request, zero provider traffic.
+     *
+     * <p>{@code highPriority} sends {@code &prio=1}, which only REORDERS work at the backend's origin
+     * pacer - a high-lane request is granted ahead of queued background work. It does not raise the
+     * origin request rate, so it makes a waited-on lookup land sooner without adding scrape load.
      */
     public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
             String urchinUuid, Consumer<UrchinResult> onUrchin,
-            String seraphUuid, Consumer<SeraphResult> onSeraph) throws IOException {
+            String seraphUuid, Consumer<SeraphResult> onSeraph, boolean highPriority) throws IOException {
         if (playerName == null || playerName.trim().isEmpty()) {
             throw new BackendException("Empty player name");
         }
@@ -106,6 +115,7 @@ public final class ScraperBackendClient {
         if (uuid != null) {
             query.append(query.length() == 0 ? '?' : '&').append("uuid=").append(uuid);
         }
+        if (highPriority) query.append(query.length() == 0 ? '?' : '&').append("prio=1");
         // fresh=1 tells the Worker to bypass (and refresh) its edge cache for an up-to-date scrape.
         String url = base + "/bedwars/" + encoded + query;
         HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS);
@@ -133,18 +143,7 @@ public final class ScraperBackendClient {
      */
     public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
             BiConsumer<String, BedwarsStats> onResult) throws IOException {
-        fetchBatchStreaming(names, baseUrl, token, onResult, null);
-    }
-
-    /**
-     * As {@link #fetchBatchStreaming(List, String, String, BiConsumer)}, but also receives the Bedwars
-     * star as a follow-up. The backend streams counters first, then a lightweight {@code starUpdate}
-     * line per player once its achievements page (the only source of the real star) resolves; those
-     * arrive on {@code onStar} so the caller can upgrade the level in place without a second request.
-     */
-    public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
-            BiConsumer<String, BedwarsStats> onResult, ObjIntConsumer<String> onStar) throws IOException {
-        fetchBatchStreaming(names, baseUrl, token, onResult, onStar, null, null);
+        fetchBatchStreaming(names, baseUrl, token, onResult, null, null);
     }
 
     /**
@@ -155,9 +154,16 @@ public final class ScraperBackendClient {
      * legacy stream, zero Urchin traffic.
      */
     public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
-            BiConsumer<String, BedwarsStats> onResult, ObjIntConsumer<String> onStar,
+            BiConsumer<String, BedwarsStats> onResult,
             String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin) throws IOException {
-        fetchBatchStreaming(names, baseUrl, token, onResult, onStar, uuidsCsv, onUrchin, null);
+        fetchBatchStreaming(names, baseUrl, token, onResult, uuidsCsv, onUrchin, null, false);
+    }
+
+    public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
+            BiConsumer<String, BedwarsStats> onResult,
+            String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin,
+            BiConsumer<String, SeraphResult> onSeraph) throws IOException {
+        fetchBatchStreaming(names, baseUrl, token, onResult, uuidsCsv, onUrchin, onSeraph, false);
     }
 
     /**
@@ -165,11 +171,15 @@ public final class ScraperBackendClient {
      * opt-in header is sent when its callback is non-null; resolutions arrive on the matching callback
      * (inline on base lines and via {@code urchinUpdate}/{@code seraphUpdate} follow-ups). A provider
      * with a null callback causes zero traffic.
+     *
+     * <p>{@code highPriority} sends {@code &prio=1}, which only REORDERS work at the backend's origin
+     * pacer - a high-lane request is granted ahead of queued background work. It does not raise the
+     * origin request rate, so it never speeds the origin up, it only changes who goes first.
      */
     public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
-            BiConsumer<String, BedwarsStats> onResult, ObjIntConsumer<String> onStar,
+            BiConsumer<String, BedwarsStats> onResult,
             String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin,
-            BiConsumer<String, SeraphResult> onSeraph) throws IOException {
+            BiConsumer<String, SeraphResult> onSeraph, boolean highPriority) throws IOException {
         if (names == null || names.isEmpty()) return;
         String base = normalizeBase(baseUrl);
         if (base == null) throw new BackendException("No stats backend URL configured");
@@ -190,6 +200,7 @@ public final class ScraperBackendClient {
 
         String url = base + "/bedwars/batch?names=" + param;
         if (haveUuids && (wantUrchin || wantSeraph)) url += "&uuids=" + uuidsCsv;
+        if (highPriority) url += "&prio=1";
         HttpURLConnection conn = open(url, token, BATCH_READ_TIMEOUT_MS);
         conn.setRequestProperty("Accept", "application/x-ndjson");
         conn.setRequestProperty("Accept-Encoding", "identity"); // keep NDJSON lines unbuffered
@@ -214,11 +225,6 @@ public final class ScraperBackendClient {
                 }
                 String name = string(po, "name");
                 if (name == null || name.isEmpty()) continue;
-                if (bool(po, "starUpdate", false)) {
-                    int level = number(po, "bedwarsLevel");
-                    if (onStar != null && level > 0) onStar.accept(name, level);
-                    continue;
-                }
                 if (bool(po, "urchinUpdate", false)) {
                     if (onUrchin != null) {
                         UrchinResult ur = parseUrchin(po);
@@ -233,6 +239,12 @@ public final class ScraperBackendClient {
                     }
                     continue;
                 }
+                // Every base line carries a state; follow-up lines never do. An unrecognized
+                // follow-up (a legacy starUpdate from a backend that still scrapes the star page,
+                // or any kind added later) would otherwise parse as a base line with no counters
+                // and overwrite an already-resolved player with FKDR 0.00. Skipping it costs
+                // nothing: the player keeps the stats its base line already delivered.
+                if (string(po, "state") == null) continue;
                 onResult.accept(name, statsFromPlayerObject(po, name));
                 if (onUrchin != null) {
                     UrchinResult ur = parseUrchin(po); // inline resolution on a base line
@@ -311,8 +323,6 @@ public final class ScraperBackendClient {
             return BedwarsStats.error();
         }
 
-        int networkLevel = number(root, "networkLevel");
-        int bedwarsLevel = number(root, "bedwarsLevel");
         String rankCode = string(root, "rank");
         String rankPrefix = HypixelRanks.prefix(rankCode);
         // Coerce null → "" so a successfully-fetched rankless (Default) account is KNOWN non-elevated,
@@ -320,8 +330,6 @@ public final class ScraperBackendClient {
         JsonObject modes = obj(root, "modes");
         return BedwarsStats.ok(
                 displayName,
-                networkLevel,
-                bedwarsLevel,
                 rankPrefix,
                 rankCode == null ? "" : rankCode,
                 readOverall(root),

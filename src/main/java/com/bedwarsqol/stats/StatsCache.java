@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.feature.DiagLog;
 import net.minecraftforge.fml.common.Loader;
 
 import java.io.File;
@@ -94,6 +95,10 @@ public final class StatsCache {
     private static final int MAX_BATCH = 16;
     /** Brief window to let a whole lobby's tab/nametag fetches coalesce into one batch. */
     private static final long COALESCE_WINDOW_MS = 80L;
+    /** Max per-player lookups a partially-failed batch may fall back to (the rest retry via ERROR TTL). */
+    private static final int FALLBACK_SINGLES_MAX = 5;
+    /** Wall-clock budget for one batch's fallback singles; no further fetch starts past it. */
+    private static final long FALLBACK_BUDGET_MS = 15_000L;
     private static final ExecutorService FETCHERS = Executors.newFixedThreadPool(FETCH_THREADS, r -> {
         Thread t = new Thread(r, "BedwarsQol-StatsFetch");
         t.setDaemon(true);
@@ -396,7 +401,9 @@ public final class StatsCache {
         if (name == null || name.isEmpty()) {
             return BedwarsStats.nicked();
         }
-        BedwarsStats stats = ScraperBackendClient.fetch(name, backend, statsBackendToken(), force);
+        // /bw is the player waiting on a lookup they typed: high lane, same as PRIORITY_USER queue work.
+        BedwarsStats stats = ScraperBackendClient.fetch(name, backend, statsBackendToken(), force,
+                null, null, null, null, true);
         put(uuid.toString(), stats);
         return stats;
     }
@@ -445,12 +452,18 @@ public final class StatsCache {
             QUEUE.drainTo(drained, MAX_BATCH - 1);
 
             // Keep the priority lane crisp: any USER tasks swept in still go out immediately.
-            List<Task> batch = new ArrayList<>();
+            // The rest split by lane so an on-screen player is never queued behind the tab-only
+            // players it was coalesced with - a mixed batch would give the visible lookup the
+            // latency of its position in a 16-player scrape.
+            List<Task> high = new ArrayList<>();
+            List<Task> low = new ArrayList<>();
             for (Task t : drained) {
                 if (t.priority == PRIORITY_USER) submitSingle(t);
-                else batch.add(t);
+                else if (t.priority <= PRIORITY_VISIBLE) high.add(t);
+                else low.add(t);
             }
-            if (!batch.isEmpty()) submitBatch(batch);
+            if (!high.isEmpty()) submitBatch(high);
+            if (!low.isEmpty()) submitBatch(low);
         }
     }
 
@@ -469,7 +482,8 @@ public final class StatsCache {
                 UrchinResult[] uHolder = {null};
                 SeraphResult[] sHolder = {null};
                 BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend, statsBackendToken(),
-                        false, urchinUuid, r -> uHolder[0] = r, seraphUuid, r -> sHolder[0] = r);
+                        false, urchinUuid, r -> uHolder[0] = r, seraphUuid, r -> sHolder[0] = r,
+                        t.priority <= PRIORITY_VISIBLE);
                 putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
                         sHolder[0], seraphUuid != null, sGen, now);
             } catch (Throwable other) {
@@ -558,7 +572,11 @@ public final class StatsCache {
                     } : null;
             Set<String> resolved = new HashSet<>();
             boolean threw = false;
+            // Homogeneous by construction: the dispatcher partitions each drain by lane before
+            // calling here, so the first task's lane is the whole batch's lane.
+            boolean high = batch.get(0).priority <= PRIORITY_VISIBLE;
             try {
+                DiagLog.log("BATCH n=" + nameList.size());
                 ScraperBackendClient.fetchBatchStreaming(nameList, backend, statsBackendToken(),
                         (name, stats) -> {
                             List<Task> ts = byName.get(name);
@@ -576,16 +594,7 @@ public final class StatsCache {
                                 QUEUED.remove(t.key); // clear in-flight as each player lands
                             }
                         },
-                        (name, level) -> {
-                            // Star arrives after the counters — upgrade the cached entry in place.
-                            List<Task> ts = byName.get(name);
-                            if (ts == null) return;
-                            for (Task t : ts) {
-                                Entry e = CACHE.get(t.key);
-                                if (e != null) put(t.key, e.stats.withLevel(level));
-                            }
-                        },
-                        uuidsCsv, onUrchin, onSeraph);
+                        uuidsCsv, onUrchin, onSeraph, high);
             } catch (Throwable other) {
                 threw = true; // whether singles make sense is decided below
             } finally {
@@ -600,30 +609,78 @@ public final class StatsCache {
                 // only amplify the failure. Mark cold keys ERROR instead — the short TTL plus streak
                 // backoff paces the retry. A clean-but-unresolved stream (legacy single-route Worker,
                 // server case-dedupe) and a partially-resolved stream still fall back as before.
+                //
+                // The singles are capped ({@link #FALLBACK_SINGLES_MAX}), paced through the shared
+                // LIMITER and bounded by a wall-clock budget ({@link #FALLBACK_BUDGET_MS}), so a
+                // partially-failed batch can never fan out unpaced or occupy a fetcher thread
+                // indefinitely. Anything beyond the cap/budget gets the backendDown treatment.
                 boolean backendDown = threw && resolved.isEmpty();
+                List<Task> pending = new ArrayList<>();
+                // Every key handled below enters `remaining` first and leaves it as its cleanup site
+                // runs; the outermost finally sweeps whatever is left, so the enqueue-to-result
+                // invariant (a key stays in QUEUED until its result lands) holds on every exit path.
+                Set<String> remaining = new HashSet<>();
                 for (Map.Entry<String, List<Task>> e : byName.entrySet()) {
                     if (resolved.contains(e.getKey())) continue;
                     for (Task t : e.getValue()) {
+                        pending.add(t);
+                        remaining.add(t.key);
+                    }
+                }
+                try {
+                    int singles = 0;
+                    boolean stop = backendDown; // a refusing/unreachable backend gets no singles at all
+                    long fallbackStart = System.currentTimeMillis();
+                    for (Task t : pending) {
                         Entry cur = liveEntry(t.key);
-                        if (backendDown) {
-                            if (cur == null) put(t.key, BedwarsStats.error());
-                        } else if (cur == null || needsAnyRefresh(t, cur, now)) {
-                            try {
-                                String urchinUuid = urchinSendUuid(t); // batch-fallback single: recheck too
-                                String seraphUuid = seraphSendUuid(t);
-                                UrchinResult[] uHolder = {null};
-                                SeraphResult[] sHolder = {null};
-                                BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend,
-                                        statsBackendToken(), false, urchinUuid, r -> uHolder[0] = r,
-                                        seraphUuid, r -> sHolder[0] = r);
-                                putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
-                                        sHolder[0], seraphUuid != null, sGen, System.currentTimeMillis());
-                            } catch (Throwable single) {
-                                if (cur == null) put(t.key, BedwarsStats.error());
+                        boolean needsFetch = cur == null || needsAnyRefresh(t, cur, now);
+                        if (needsFetch && !stop) {
+                            long elapsed = System.currentTimeMillis() - fallbackStart;
+                            if (singles >= FALLBACK_SINGLES_MAX || elapsed >= FALLBACK_BUDGET_MS) {
+                                stop = true;
+                            } else {
+                                boolean slot = false;
+                                try {
+                                    // Bounded by the remaining budget: a fetch can never start past
+                                    // the deadline, and the pacing wait itself can never exceed it.
+                                    slot = LIMITER.awaitSlot(FALLBACK_BUDGET_MS - elapsed);
+                                } catch (InterruptedException ie) {
+                                    Thread.currentThread().interrupt();
+                                }
+                                if (!slot) {
+                                    stop = true; // deadline or interrupt: start no further fetches
+                                } else if (System.currentTimeMillis() - fallbackStart >= FALLBACK_BUDGET_MS) {
+                                    stop = true; // budget ran out while waiting for the slot: no fetch
+                                } else {
+                                    singles++;
+                                    needsFetch = false;
+                                    try {
+                                        String urchinUuid = urchinSendUuid(t); // fallback single: recheck too
+                                        String seraphUuid = seraphSendUuid(t);
+                                        UrchinResult[] uHolder = {null};
+                                        SeraphResult[] sHolder = {null};
+                                        BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend,
+                                                statsBackendToken(), false, urchinUuid, r -> uHolder[0] = r,
+                                                seraphUuid, r -> sHolder[0] = r,
+                                                t.priority <= PRIORITY_VISIBLE);
+                                        putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
+                                                sHolder[0], seraphUuid != null, sGen,
+                                                System.currentTimeMillis());
+                                    } catch (Throwable single) {
+                                        // Never clobber a warm entry with a failure marker.
+                                        if (cur == null) put(t.key, BedwarsStats.error());
+                                    }
+                                }
                             }
                         }
+                        // Not fetched (backend down, past the cap/budget, or interrupted): mark cold
+                        // keys ERROR so the short TTL + streak backoff re-paces them.
+                        if (needsFetch && stop && cur == null) put(t.key, BedwarsStats.error());
                         QUEUED.remove(t.key);
+                        remaining.remove(t.key);
                     }
+                } finally {
+                    for (String k : remaining) QUEUED.remove(k);
                 }
             }
         });
@@ -658,7 +715,7 @@ public final class StatsCache {
                 uAttempt = prior.urchinAttemptMs;
                 sResolved = prior.seraphResolved;
                 sAttempt = prior.seraphAttemptMs;
-                // A plain stats refresh (star update, re-fetch) keeps any provider data already resolved.
+                // A plain stats refresh (re-fetch) keeps any provider data already resolved.
                 if (stats.urchinTags.isEmpty() && !prior.stats.urchinTags.isEmpty()) {
                     merged = merged.withUrchinTags(prior.stats.urchinTags);
                 }
@@ -761,7 +818,7 @@ public final class StatsCache {
     // ---- Disk persistence ------------------------------------------------
 
     private static File cacheFile() {
-        // v2: richer entries (network level, rank, per-mode). Old v1 files are abandoned.
+        // v2: richer entries (rank, per-mode). Old v1 files are abandoned.
         return new File(Loader.instance().getConfigDir(), "cobblify-stats-cache-v2.json");
     }
 
@@ -773,8 +830,20 @@ public final class StatsCache {
                 Thread.currentThread().interrupt();
                 return;
             }
+            sweep();
             if (dirty) flush();
         }
+    }
+
+    /**
+     * Evict expired entries and orphaned error streaks so a long session can't retain players that
+     * never appear again (they are otherwise only evicted when looked up). Streaks are dropped first
+     * and only for keys with no entry at all, so a just-expired ERROR entry keeps its streak until
+     * the next cycle and an actively-retried player's backoff isn't reset.
+     */
+    private static void sweep() {
+        ERROR_STREAK.keySet().removeIf(k -> !CACHE.containsKey(k));
+        for (String k : CACHE.keySet()) liveEntry(k);
     }
 
     private static synchronized void flush() {
@@ -879,8 +948,6 @@ public final class StatsCache {
         String uuid;
         String state;
         String displayName;
-        int networkLevel;
-        int bedwarsLevel;
         String rankPrefix;
         String rankCode; // null on entries persisted before this field → provenance UNKNOWN → refetch
         ModeDTO overall;
@@ -896,8 +963,6 @@ public final class StatsCache {
             pe.uuid = uuid;
             pe.state = s.state.name();
             pe.displayName = s.displayName;
-            pe.networkLevel = s.networkLevel;
-            pe.bedwarsLevel = s.bedwarsLevel;
             pe.rankPrefix = s.rankPrefix;
             pe.rankCode = s.rankCode;
             pe.overall = ModeDTO.from(s.overall);
@@ -913,7 +978,7 @@ public final class StatsCache {
             if (state == null) return null;
             switch (state) {
                 case "OK":
-                    return BedwarsStats.ok(displayName, networkLevel, bedwarsLevel, rankPrefix, rankCode,
+                    return BedwarsStats.ok(displayName, rankPrefix, rankCode,
                             ModeDTO.toOrEmpty(overall), ModeDTO.toOrEmpty(solo), ModeDTO.toOrEmpty(doubles),
                             ModeDTO.toOrEmpty(threes), ModeDTO.toOrEmpty(fours));
                 case "NEVER_PLAYED":

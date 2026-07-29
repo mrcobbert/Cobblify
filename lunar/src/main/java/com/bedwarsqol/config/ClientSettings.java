@@ -45,7 +45,6 @@ public class ClientSettings {
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
     public boolean playerStatsNametag = true;
     public boolean playerStatsTab = true;
-    public boolean playerStatsShowLevel = true;
     public boolean playerStatsShowRank = true;
     /** Hovering a player's name in chat appends their BedWars stats to the hover card (lobby/queue/game). */
     public boolean playerStatsChatHover = true;

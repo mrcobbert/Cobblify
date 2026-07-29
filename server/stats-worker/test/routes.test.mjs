@@ -313,7 +313,7 @@ test("batch: uuids aligned with '-' placeholders; only eligible uuids reach Cora
   }
   // Ordering: any urchinUpdate line must come after its base line.
   const baseIdx = new Map();
-  lines.forEach((l, i) => { if (!l.urchinUpdate && !l.starUpdate) baseIdx.set(l.name, i); });
+  lines.forEach((l, i) => { if (!l.urchinUpdate) baseIdx.set(l.name, i); });
   lines.forEach((l, i) => {
     if (l.urchinUpdate) assert.ok(baseIdx.has(l.name) && baseIdx.get(l.name) < i);
   });

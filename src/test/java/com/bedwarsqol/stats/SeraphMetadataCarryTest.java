@@ -9,13 +9,13 @@ import static org.junit.Assert.assertEquals;
 /**
  * Pins the invariant behind code-review IMPORTANT-1: Seraph threat/encounter metadata is stored by
  * {@code withSeraph} and preserved by every other copy method even when the tag list is empty, so a
- * metadata-only Seraph result is never lost across a later Urchin merge or star update.
+ * metadata-only Seraph result is never lost across a later Urchin merge.
  */
 public class SeraphMetadataCarryTest {
 
     private static BedwarsStats ok() {
         BedwarsStats.ModeStats m = new BedwarsStats.ModeStats(10, 5, 8, 4, 20, 10);
-        return BedwarsStats.ok("Notch", 100, 312, "", "", m, m, m, m, m);
+        return BedwarsStats.ok("Notch", "", "", m, m, m, m, m);
     }
 
     @Test
@@ -27,13 +27,12 @@ public class SeraphMetadataCarryTest {
     }
 
     @Test
-    public void metadataSurvivesUrchinAndLevelCopies() {
+    public void metadataSurvivesUrchinCopy() {
         BedwarsStats s = ok().withSeraph(Collections.<SeraphTag>emptyList(), 5, 12)
-                .withUrchinTags(Collections.<UrchinTag>emptyList())
-                .withLevel(500);
+                .withUrchinTags(Collections.<UrchinTag>emptyList());
         assertEquals(5, s.seraphThreat);
         assertEquals(12, s.seraphEncounters);
-        assertEquals(500, s.bedwarsLevel);
+        assertEquals(0, s.urchinTags.size());
     }
 
     @Test

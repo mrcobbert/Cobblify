@@ -121,8 +121,6 @@ public final class BedwarsStatsCommand {
 
         String displayName = stats.displayName != null ? stats.displayName : name;
         StringBuilder nameLine = new StringBuilder("§e").append(displayName);
-        if (stats.bedwarsLevel > 0) nameLine.append(" ").append(BedwarsStats.starTag(stats.bedwarsLevel));
-        else if (stats.networkLevel > 0) nameLine.append(" §7[").append(stats.networkLevel).append("]");
         if (!stats.rankPrefix.isEmpty()) nameLine.append(" ").append(stats.rankPrefix);
         sendChat(nameLine.toString());
 

@@ -33,7 +33,7 @@ public class RankProvenanceTest {
     }
 
     private static BedwarsStats ok(String code) {
-        return BedwarsStats.ok("P", 1, 1, HypixelRanks.prefix(code), code,
+        return BedwarsStats.ok("P", HypixelRanks.prefix(code), code,
                 ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY);
     }
 
@@ -52,7 +52,7 @@ public class RankProvenanceTest {
     @Test
     public void provenanceUnknownForNullCodeAndNonOk() {
         // null rankCode = old cache entry (pre-field) → must refetch, not reject.
-        BedwarsStats warmOld = BedwarsStats.ok("P", 1, 1, "§6[MVP§c++§6]", null,
+        BedwarsStats warmOld = BedwarsStats.ok("P", "§6[MVP§c++§6]", null,
                 ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY);
         assertEquals(RankProvenance.UNKNOWN, warmOld.rankProvenance());
         assertEquals(RankProvenance.UNKNOWN, BedwarsStats.error().rankProvenance());

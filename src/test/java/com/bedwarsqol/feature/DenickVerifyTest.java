@@ -27,7 +27,7 @@ public class DenickVerifyTest {
     }
 
     private static BedwarsStats ok(String code) {
-        return BedwarsStats.ok("P", 1, 1, HypixelRanks.prefix(code), code,
+        return BedwarsStats.ok("P", HypixelRanks.prefix(code), code,
                 ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY);
     }
 
@@ -45,7 +45,7 @@ public class DenickVerifyTest {
     public void warmOldCacheEntryStaysPendingNotDropped() {
         // A pre-field cache entry: rankPrefix present but rankCode null → UNKNOWN → refetch, never a
         // false DROP of a genuine (warm) MVP++.
-        BedwarsStats warmOld = BedwarsStats.ok("P", 1, 1, "§6[MVP§c++§6]", null,
+        BedwarsStats warmOld = BedwarsStats.ok("P", "§6[MVP§c++§6]", null,
                 ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY, ModeStats.EMPTY);
         assertEquals(DenickDecision.PENDING, Denicks.decide(warmOld));
     }

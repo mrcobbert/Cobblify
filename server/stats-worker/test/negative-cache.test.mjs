@@ -109,6 +109,7 @@ test("NICKED is cached: second lookup serves from cache, one origin hit", async 
   assert.equal(b2.success, false);
   assert.equal(b2.displayName, "NickGuy");
   assert.equal(b2.cached, true);
+  // Player bodies live in the Cache API alone now (no KV tier), so this covers L1 only.
   assert.equal(hitCount("NickGuy"), 1);
 });
 
@@ -120,6 +121,7 @@ test("parse_failed is cached briefly: one origin hit across two lookups", async 
   assert.equal(b2.error, "parse_failed");
   assert.equal(b2.state, "ERROR");
   assert.equal(b2.cached, true);
+  // Cache API layer only - the KV tier for player bodies is gone.
   assert.equal(hitCount("ParseFailGuy"), 1);
 });
 
@@ -132,6 +134,7 @@ test("success path still caches after the writeCached TTL change", async () => {
   assert.equal(b2.state, "OK");
   assert.equal(b2.cached, true);
   assert.equal(b2.finalKills, 20);
+  // Cache API layer only - the KV tier for player bodies is gone.
   assert.equal(hitCount("OkGuy"), 1);
 });
 

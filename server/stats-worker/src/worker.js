@@ -10,7 +10,14 @@
  * paced server-side with 429 backoff so the mod never has to rate-limit itself.
  */
 
-import { getBedwars, streamBedwarsBatch } from "./scrape.js";
+import {
+  getBedwars,
+  streamBedwarsBatch,
+  claimOrigin,
+  noteOrigin429,
+  LANE_HIGH,
+  LANE_LOW,
+} from "./scrape.js";
 import {
   urchinAllowed,
   urchinCapable,
@@ -35,6 +42,10 @@ const CHALLENGE_RE =
   /just a moment|cf-challenge|turnstile|challenge-platform|attention required/i;
 
 const NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
+
+// &prio=1 marks a request a human is waiting on: it is served first by the shared origin gate,
+// which reorders work without ever raising the origin request rate.
+const laneFor = (url) => (url.searchParams.get("prio") === "1" ? LANE_HIGH : LANE_LOW);
 
 export default {
   async scheduled(event, env, ctx) {
@@ -99,7 +110,7 @@ export default {
         }
       }
       // Streams NDJSON (one line per player as it resolves) — not a buffered JSON response.
-      return streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx);
+      return streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, laneFor(url));
     }
 
     const bedwars = path.match(/^\/bedwars\/([^/]+)$/);
@@ -111,7 +122,7 @@ export default {
         return jsonResponse({ success: false, error: "invalid_player_name", player }, 400);
       }
       const fresh = url.searchParams.get("fresh") === "1";
-      const body = await getBedwars(player, env, ctx, fresh);
+      const body = await getBedwars(player, env, ctx, fresh, laneFor(url));
       // Automatic-single Urchin enrichment is UUID-only: the eligible client sends
       // ?uuid=<canonical>; missing/invalid uuid -> no Coral lookup, no resolution metadata.
       if (urchinAllowed(request, env)) {
@@ -242,6 +253,9 @@ function checkAuth(request, env) {
 async function probeHypixelPlayer(player, env) {
   const base = (env && env.HYPIXEL_BASE) || "https://hypixel.net";
   const target = `${base}/player/${encodeURIComponent(player)}`;
+  // The probe fetches the same full page as a scrape, so it must claim an origin slot too. HIGH:
+  // /health and /test are interactive. Claimed before `started` so elapsedMs stays fetch-only.
+  await claimOrigin(LANE_HIGH);
   const started = Date.now();
 
   let response;
@@ -275,6 +289,9 @@ async function probeHypixelPlayer(player, env) {
     };
   }
 
+  // Feed the shared gate, exactly as the scrape paths do, so a probe 429 throttles everything.
+  if (response.status === 429) noteOrigin429(1);
+
   const body = await response.text();
   const titleMatch = body.match(/<title[^>]*>([^<]+)<\/title>/i);
   const title = titleMatch ? titleMatch[1].trim() : null;
@@ -287,6 +304,7 @@ async function probeHypixelPlayer(player, env) {
 
   let verdict;
   if (response.status === 200 && hasBedwars) verdict = "PASS";
+  else if (response.status === 429) verdict = "RATE_LIMITED";
   else if (response.status === 403 || looksLikeChallenge) verdict = "BLOCKED";
   else if (response.status === 200 && !hasBedwars) verdict = "UNEXPECTED_HTML";
   else verdict = "FAIL";
@@ -312,7 +330,9 @@ async function probeHypixelPlayer(player, env) {
         ? "Worker egress can scrape this page today."
         : verdict === "BLOCKED"
           ? "Worker egress is blocked."
-          : "Unexpected response; inspect title/bodyBytes.",
+          : verdict === "RATE_LIMITED"
+            ? "Origin rate-limited this egress IP; the shared gate has been throttled."
+            : "Unexpected response; inspect title/bodyBytes.",
   };
 }
 
@@ -334,5 +354,8 @@ function usageText() {
     "  GET /bedwars/batch?names=a,b -> stats JSON for many players in one call",
     "  GET /test/<player>           -> diagnostic egress probe",
     "  GET /health                  -> health check",
+    "",
+    "  &prio=1 on either /bedwars route -> served first by the origin pacer",
+    "          (reorders work only; the origin request rate is unchanged)",
   ].join("\n");
 }

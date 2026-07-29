@@ -74,8 +74,7 @@ public class NametagStats {
         // Rendering stays per-module: Player Stats off + a provider on -> only the badge draws.
         String text = "";
         if (cfg.playerStats && cfg.playerStatsNametag) {
-            String s = stats.formatForNametag(BedwarsModeDetector.current(),
-                    cfg.playerStatsShowLevel, cfg.playerStatsShowRank);
+            String s = stats.formatForNametag(BedwarsModeDetector.current(), cfg.playerStatsShowRank);
             if (s != null) text = s;
         }
         if (cfg.urchinTags && cfg.urchinBadgeNametag && urchinEligible) {

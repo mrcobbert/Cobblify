@@ -138,8 +138,8 @@ if ($who -match 'not authenticated|not logged|wrangler login') {
 }
 Ok 'Logged in to Cloudflare.'
 
-# 5. Create the stats cache (KV namespace) and wire it into this copy of wrangler.toml
-Say 'Setting up the stats cache...'
+# 5. Create the provider-key store (KV namespace) and wire it into this copy of wrangler.toml
+Say 'Setting up the provider-key store...'
 $kvTitle = 'STATS_KV'
 $kvOut = Capture @('wrangler', 'kv', 'namespace', 'create', 'STATS_KV')
 $kvId = ([regex]::Match($kvOut, '[0-9a-f]{32}')).Value
@@ -157,9 +157,9 @@ if (-not $kvId) {
     } catch {}
   }
 }
-if (-not $kvId) { Write-Host $kvOut; Die 'could not create the stats cache' }
+if (-not $kvId) { Write-Host $kvOut; Die 'could not create the provider-key store' }
 Add-Content -Path 'wrangler.toml' -Value "`n[[kv_namespaces]]`nbinding = `"STATS_KV`"`nid = `"$kvId`""
-Ok 'Stats cache ready.'
+Ok 'Provider-key store ready.'
 
 # 6. Deploy - interactive on purpose: brand-new Cloudflare accounts are asked to register a
 # free workers.dev name here, and that prompt only appears when the output is a real terminal.

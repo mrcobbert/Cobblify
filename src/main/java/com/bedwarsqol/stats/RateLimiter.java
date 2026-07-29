@@ -59,4 +59,34 @@ public final class RateLimiter {
             }
         }
     }
+
+    /**
+     * Bounded variant of {@link #awaitSlot()}: waits at most {@code maxWaitMs} for a slot, measured
+     * against a deadline fixed on entry. Returns {@code true} once a slot is claimed, or {@code false}
+     * when the deadline passes first — in which case no slot is claimed and nothing may be sent.
+     */
+    public boolean awaitSlot(long maxWaitMs) throws InterruptedException {
+        final long deadline = System.currentTimeMillis() + Math.max(0L, maxWaitMs);
+        synchronized (lock) {
+            while (true) {
+                long now = System.currentTimeMillis();
+
+                // Expiry is decided before the gate, on every wakeup: a slot that only comes free at
+                // or after the deadline must be refused without claiming and without moving
+                // lastRequestAt, because the caller may no longer send anything.
+                long allowance = deadline - now;
+                if (allowance <= 0) return false;
+
+                long wait = now < pausedUntilMs
+                        ? pausedUntilMs - now
+                        : (lastRequestAt + MIN_SPACING_MS) - now;
+                if (wait <= 0) {
+                    lastRequestAt = System.currentTimeMillis();
+                    return true;
+                }
+
+                lock.wait(Math.min(wait, allowance));
+            }
+        }
+    }
 }

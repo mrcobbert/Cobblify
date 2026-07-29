@@ -58,8 +58,7 @@ public final class TabListLookup {
         // Rendering stays per-module: Player Stats off + a provider on -> only the badge renders.
         String stat = "";
         if (cfg.playerStats && cfg.playerStatsTab) {
-            String s = stats.formatForTab(BedwarsModeDetector.current(),
-                    cfg.playerStatsShowLevel, cfg.playerStatsShowRank);
+            String s = stats.formatForTab(BedwarsModeDetector.current(), cfg.playerStatsShowRank);
             if (s != null) stat = s;
         }
         String out = stat

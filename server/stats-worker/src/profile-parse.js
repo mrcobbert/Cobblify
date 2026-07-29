@@ -1,17 +1,10 @@
-/** Parse account-header fields (display name, network level, rank) from hypixel.net/player HTML. */
+/** Parse account-header fields (display name, rank) from hypixel.net/player HTML. */
 
 export function parseProfile(html) {
   return {
     displayName: parseDisplayName(html),
-    networkLevel: parseNetworkLevel(html),
     rank: parseRank(html),
   };
-}
-
-/** Network level: `<div class="level" title="Player's Network Level" ...>204</div>`. */
-function parseNetworkLevel(html) {
-  const m = html.match(/title="Player's Network Level"[^>]*>\s*(\d+)\s*</);
-  return m ? parseInt(m[1], 10) : null;
 }
 
 /**

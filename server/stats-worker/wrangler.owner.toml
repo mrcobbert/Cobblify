@@ -17,10 +17,11 @@ preview_urls = true
 [placement]
 mode = "off"
 
-# Global L2 cache (Tier 2). OFF by default so anyone can deploy to their own Cloudflare account —
-# a KV binding must reference a namespace that exists in THAT account, and a hardcoded id from
-# someone else's account makes `wrangler deploy` fail. The Worker degrades to the per-colo
-# caches.default when this binding is absent, so leaving it off just means no cross-colo L2 cache.
+# Namespace for the Urchin/Seraph API keys and the "origin blocked" breaker (player stats never
+# touch KV). OFF by default so anyone can deploy to their own Cloudflare account — a KV binding
+# must reference a namespace that exists in THAT account, and a hardcoded id from someone else's
+# account makes `wrangler deploy` fail. Without this binding those provider tags resolve
+# unavailable and the breaker keeps working off the per-colo caches.default alone.
 # To enable it on your own account, create a namespace and uncomment the three lines with your id:
 #   wrangler kv namespace create STATS_KV
 [[kv_namespaces]]

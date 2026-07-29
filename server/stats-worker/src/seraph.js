@@ -234,6 +234,50 @@ function noteKeyRejected(env, ctx, nowMs) {
   }
 }
 
+// ---- upstream-failure circuit breaker --------------------------------------
+
+/**
+ * A 429 arms a backoff and a 401/403 arms DISABLED_RETRY_MS, but a plain upstream failure
+ * (5xx / timeout / unparseable body) arms nothing and - §7d - is never cached, so during a Seraph
+ * outage every lobby re-issues one keyed GET per player, every 60 s, forever. This bounds that.
+ *
+ * Structurally identical to urchin.js's shipped breaker: two isolate-local numbers plus a
+ * timestamp, zero KV reads and zero KV writes (§7d untouched - no result data is stored anywhere).
+ *
+ * It fails OPEN by construction: state only ever suppresses calls for at most FAIL_COOLDOWN_MS, any
+ * successful round trip clears it, and an unset value never compares true. A tripped lookup returns
+ * the ordinary transient null (omitted from the map, client keeps PENDING and retries on its
+ * existing cadence) rather than "unavailable", which the client treats as resolved FOREVER - an
+ * outage must never pin a player as un-checkable.
+ *
+ * 3 consecutive failures: one blip must not stop anything. 60 s: long enough to stop the retry
+ * storm, short enough to recover in-game unnoticed.
+ */
+const FAIL_STREAK_TRIP = 3;
+const FAIL_COOLDOWN_MS = 60 * 1000;
+let isolateFailStreak = 0;
+let isolateBreakerUntil = 0;
+let isolateLastFailAt = 0;
+
+function noteFail(nowMs) {
+  // Decay: "3 consecutive failures" is only evidence of an outage when they are close together.
+  // Without this, three unrelated blips hours apart trip a 60 s suppression for no reason.
+  if (isolateLastFailAt && nowMs - isolateLastFailAt > FAIL_COOLDOWN_MS) isolateFailStreak = 0;
+  isolateLastFailAt = nowMs;
+  if (++isolateFailStreak >= FAIL_STREAK_TRIP) {
+    isolateFailStreak = 0;
+    isolateBreakerUntil = nowMs + FAIL_COOLDOWN_MS;
+    console.log("SERAPH_BREAKER_TRIPPED cooldown_ms=" + FAIL_COOLDOWN_MS);
+  }
+}
+
+/** Any completed round trip proves the upstream is answering, so it clears the streak. */
+function noteOk() {
+  isolateFailStreak = 0;
+  isolateBreakerUntil = 0;
+  isolateLastFailAt = 0;
+}
+
 // ---- Seraph calls ---------------------------------------------------------
 
 /** Parse the rate-limit headers into { remaining, resetMs } (either may be null). */
@@ -299,16 +343,21 @@ function absorbRateLimit(env, ctx, rl, nowMs) {
 
 /** Resolve one canonical UUID to a per-player result, with isolate in-flight dedupe. */
 function lookupOne(uuid, env, ctx, nowMs) {
+  // Tripped breaker: report the same transient failure the callers already handle, without
+  // spending a subrequest. Not counted as a failure - it never reached the upstream.
+  if (Date.now() < isolateBreakerUntil) return Promise.resolve(null);
   const existing = inflight.get(uuid);
   if (existing) return existing;
   const p = (async () => {
     const r = await seraphFetch(env, uuid, nowMs);
     if (r.status === "ok") {
+      noteOk();
       absorbRateLimit(env, ctx, r.rl, nowMs);
       const stats = mapStatistics(r.data);
       return { state: "ok", tags: mapTags(r.data, nowMs), threatLevel: stats.threatLevel, encounters: stats.encounters };
     }
     if (r.status === "notfound") {
+      noteOk();
       absorbRateLimit(env, ctx, r.rl, nowMs);
       return { state: "notfound", tags: [] };
     }
@@ -321,7 +370,9 @@ function lookupOne(uuid, env, ctx, nowMs) {
       return { state: "unavailable", tags: [] };
     }
     if (r.status === "nokey") return { state: "unavailable", tags: [] };
-    // Transient error: omit so the client may retry later (no cache to fall back on).
+    // Transient error: omit so the client may retry later (no cache to fall back on), and feed the
+    // outage breaker so a sustained failure stops re-issuing one GET per player per lobby.
+    noteFail(nowMs);
     return null;
   })().finally(() => inflight.delete(uuid));
   inflight.set(uuid, p);
@@ -432,6 +483,10 @@ export async function handleKeySet(request, env, ctx) {
   }
   isolateKeyRejectedAt = 0;
   isolateBackoffUntil = 0;
+  // A key change is an explicit "try again now": clear the outage breaker too.
+  isolateFailStreak = 0;
+  isolateBreakerUntil = 0;
+  isolateLastFailAt = 0;
   return json({ success: true });
 }
 
