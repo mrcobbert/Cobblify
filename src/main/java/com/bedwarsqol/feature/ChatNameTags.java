@@ -36,6 +36,11 @@ import java.util.UUID;
  * name: a denicked player's real name ({@code (Dewier2)} — needs Auto Denick) and a {@code (Nicked)}
  * disguise flag (needs Nick Notify). For a denicked player the FKDR is the <i>real</i> account's.
  *
+ * <p><b>Roster lines are the exception to "one tag per line".</b> A {@code /party list} line
+ * ({@code "Party Leader: [VIP] SrCobb ●"}) names several players and no sender, so it gets one bracket
+ * per member, spliced in front of that member's own rank tag instead of one at the head of the line —
+ * see {@link #trackRoster}.
+ *
  * <p><b>How it stays correct without baking stale data.</b> The denick and the FKDR both resolve
  * asynchronously, often after the message is already on screen. When the line arrives we splice in two
  * <i>empty, mutable</i> {@link ChatComponentText} components — one at the head of the sibling list (the
@@ -82,6 +87,8 @@ public final class ChatNameTags {
      * an untrusted broadcast is dropped long before its context could ever legitimately change.
      */
     private static final long DECIDE_WINDOW_MS = 5000L;
+    /** Stand-in "sender" for a roster line's holder: it has members, not one sender. Diag/index only. */
+    private static final String ROSTER_SENDER = "party-list";
 
     private final Deque<Holder> tracked = new ArrayDeque<Holder>();
     private final Map<String, List<Holder>> byName = new HashMap<String, List<Holder>>();
@@ -116,7 +123,7 @@ public final class ChatNameTags {
             if (!h.decided) undecided++;
             else if (h.live) {
                 live++;
-                if (h.lastPrefix.isEmpty()) liveUntagged++;
+                if (h.untagged()) liveUntagged++;
             }
         }
         DiagLog.log("WIPE worldChange tracked=" + tracked.size() + " undecided=" + undecided
@@ -134,6 +141,15 @@ public final class ChatNameTags {
         // Only the stable gate here (server IP). The Bedwars/identities context signals are
         // eventually-consistent and must not veto a line at receive — see the class javadoc.
         if (!HypixelContext.isOnHypixel()) return;
+
+        // A /party list roster line names several players and no sender; it is tagged per member and
+        // never falls through to the single-sender path (its "Party Leader:" head is a label, not a
+        // player — the accounts Leader/Moderators/Members exist and used to be looked up here).
+        List<String> roster = ChatSender.rosterMembers(event.message);
+        if (!roster.isEmpty()) {
+            if (chatStatsEnabled(cfg)) trackRoster(event.message, roster, cfg);
+            return;
+        }
 
         // typedChatName is extractName's colon branch: whenever it is non-null the two agree, so one
         // sender string plus a "was this a typed line" flag captures both candidates for decide().
@@ -164,6 +180,41 @@ public final class ChatNameTags {
         // What the line reads as right now — a cache-hit tag included — is what a Lunar-stored COPY of
         // it will still read as later; ensureVisible() relocates the copy by exactly this text.
         h.baselineText = safeText(event.message);
+    }
+
+    /**
+     * Track a {@code /party list} roster line: one FKDR bracket in front of <i>each</i> member, ahead of
+     * the rank tag they wear ({@code "[1.25] [MVP++] Dewier"}) so it reads in the same order as every
+     * other chat line. Placement reuses the Chat Heads splice, which already inserts a mutable holder
+     * ahead of a named player, splitting the covering leaf and preserving its style and rank-card hover.
+     * The holders are empty when spliced, so the line's text — and therefore every later member's
+     * offset — is unchanged by the ones before it. Your own name is skipped, as everywhere else in chat.
+     *
+     * <p>The tags then back-patch on the same tick loop as any other line: a member who isn't cached
+     * yet shows the width-matched placeholder until their lookup lands.
+     */
+    private void trackRoster(IChatComponent message, List<String> members, ClientSettings cfg) {
+        // Same reason as the single-sender path: a name still inside the root's own text isn't reachable
+        // as a sibling, and the splice declines it.
+        String hoist = hoistRootText(message);
+        List<Holder.Slot> slots = new ArrayList<Holder.Slot>();
+        for (String name : members) {
+            if (isSelf(name)) continue;
+            ChatComponentText tag = new ChatComponentText("");
+            if (ChatPlayerHeads.spliceBeforeRankedName(message, name, tag)) {
+                slots.add(new Holder.Slot(name, tag));
+            }
+        }
+        DiagLog.log("ROSTER members=" + members.size() + " tagged=" + slots.size() + " hoist=" + hoist);
+        if (slots.isEmpty()) return; // a party of just you, or a line we couldn't splice
+        // Trusted like typed chat: a roster is your own party's state, which Hypixel never anonymizes.
+        Holder h = new Holder(ROSTER_SENDER, true, System.currentTimeMillis(), message,
+                new ChatComponentText(""), new ChatComponentText(""), null);
+        h.roster = slots;
+        track(h);
+        decide(h, operate(), typedChatContext());
+        if (h.live) h.apply(cfg);
+        h.baselineText = safeText(message);
     }
 
     @SubscribeEvent
@@ -257,29 +308,34 @@ public final class ChatNameTags {
         String fkdrName = reveal ? real : sender;
         BedwarsStats st = resolveStats(fkdrName, uuid);
 
-        String prefix = "";
         String suffix = "";
         if (reveal) {
             suffix = " §7(§f" + real + "§7)";
         } else if (cfg.nickUtils && cfg.nickNotify && (real != null || (st != null && st.state == BedwarsStats.State.NICKED))) {
             suffix = " §7(§cNicked§7)";
         }
+        return new String[]{fkdrBracket(st, cfg), suffix};
+    }
 
-        // Chat Stats (a Hypixel Stats sub-toggle) owns the leading bracket: the FKDR, or [New] for an
-        // account with no Bedwars games. [New] rides with the FKDR here, not with the Nick Utils tags.
-        // While stats are still fetching, a width-matched placeholder reserves the slot so the line
-        // doesn't shift when the real FKDR back-patches.
-        if (chatStatsEnabled(cfg)) {
-            if (st == null) {
-                prefix = FKDR_PENDING;
-            } else if (st.state == BedwarsStats.State.OK) {
-                double fkdr = st.statsFor(chatDisplayMode(cfg)).fkdr;
-                prefix = "§7[" + BedwarsStats.fkdrColor(fkdr) + fmt2(fkdr) + "§7]§r ";
-            } else if (st.state == BedwarsStats.State.NEVER_PLAYED) {
-                prefix = "§7[New]§r ";
-            }
+    /**
+     * The stats bracket a player's name is annotated with: their current-mode FKDR, or {@code [New]} for
+     * an account with no Bedwars games, and "" when Chat Stats is off or the lookup ended in a state we
+     * don't annotate. While stats are still fetching, a width-matched placeholder reserves the slot so
+     * the line doesn't shift when the real FKDR back-patches.
+     *
+     * <p>Chat Stats (a Hypixel Stats sub-toggle) owns this bracket; {@code [New]} rides with the FKDR
+     * here, not with the Nick Utils tags. Shared by the single-sender line head and the per-member
+     * roster tags so both read identically.
+     */
+    private static String fkdrBracket(BedwarsStats st, ClientSettings cfg) {
+        if (!chatStatsEnabled(cfg)) return "";
+        if (st == null) return FKDR_PENDING;
+        if (st.state == BedwarsStats.State.OK) {
+            double fkdr = st.statsFor(chatDisplayMode(cfg)).fkdr;
+            return "§7[" + BedwarsStats.fkdrColor(fkdr) + fmt2(fkdr) + "§7]§r ";
         }
-        return new String[]{prefix, suffix};
+        if (st.state == BedwarsStats.State.NEVER_PLAYED) return "§7[New]§r ";
+        return "";
     }
 
     /**
@@ -318,15 +374,21 @@ public final class ChatNameTags {
         if (changed) refreshChat();
     }
 
-    /** Cached stats for a name (by tab UUID when supplied, else name-keyed), kicking a fetch if absent. */
+    /**
+     * Cached stats for a name (by tab UUID when supplied, else name-keyed), kicking a fetch if absent.
+     *
+     * <p>VISIBLE, not TAB: a chat line is on screen now, so it takes the high origin lane instead of
+     * being coalesced into the background tab batch (where its latency became its position in a
+     * 16-player scrape). It still shares the short coalescing window, unlike USER.
+     */
     private static BedwarsStats resolveStats(String name, UUID uuid) {
         if (uuid != null) {
             BedwarsStats s = StatsCache.getCached(uuid);
-            if (s == null) StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_USER);
+            if (s == null) StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_VISIBLE);
             return s;
         }
         BedwarsStats s = StatsCache.getCachedByName(name);
-        if (s == null) StatsCache.ensureFetchedByName(name, StatsCache.PRIORITY_USER);
+        if (s == null) StatsCache.ensureFetchedByName(name, StatsCache.PRIORITY_VISIBLE);
         return s;
     }
 
@@ -660,13 +722,16 @@ public final class ChatNameTags {
     private static final class Holder {
         final String key; // lower-cased sender, for grouped back-patching
         final String sender;
-        final boolean typedShape;  // the line was "<sender>: message" (trustable in any Bedwars context)
+        /** The line names its players for real in any Bedwars context: typed chat, or a party roster. */
+        final boolean typedShape;
         final long receivedMs;     // decide-window anchor
         final IChatComponent root; // the whole received line — re-attached when Lunar stored a copy
         final ChatComponentText prefix;
         final ChatComponentText suffix;
         /** The head slot spliced before the name, or null until enabled/locatable. */
         ChatComponentText head;
+        /** Per-member tag slots on a {@code /party list} roster line; null on single-sender lines. */
+        List<Slot> roster;
         boolean decided;           // verdict reached (final either way)
         boolean live;              // verdict: sender trusted, annotate + back-patch
         /** The line's full text at add time — the fingerprint a Lunar-stored copy still carries. */
@@ -694,6 +759,7 @@ public final class ChatNameTags {
 
         /** Recompute all parts and, where any differs from what's drawn, rewrite it. Returns true on change. */
         boolean apply(ClientSettings cfg) {
+            if (roster != null) return applyRoster(cfg);
             String[] parts = buildParts(this, cfg);
             boolean changed = false;
             if (!parts[0].equals(lastPrefix)) {
@@ -715,6 +781,55 @@ public final class ChatNameTags {
         }
 
         /**
+         * Re-render every member's bracket on a roster line from the live caches. The Nick Utils tags
+         * and the head slot belong to a line's single sender, so a roster line carries neither.
+         */
+        private boolean applyRoster(ClientSettings cfg) {
+            boolean changed = false;
+            for (Slot s : roster) {
+                String text = fkdrBracket(s.stats(), cfg);
+                if (text.equals(s.lastText)) continue;
+                if (s.lastText.isEmpty()) {
+                    DiagLog.log("TAGGED sender=" + s.name + " after="
+                            + (System.currentTimeMillis() - receivedMs) + "ms prefix=" + text.trim());
+                }
+                s.lastText = text;
+                writeChild(s.comp, text);
+                changed = true;
+            }
+            return changed;
+        }
+
+        /** No bracket has rendered on this line yet — on a roster line, not on any of its members. */
+        boolean untagged() {
+            if (roster == null) return lastPrefix.isEmpty();
+            for (Slot s : roster) if (!s.lastText.isEmpty()) return false;
+            return true;
+        }
+
+        /** One party member's tag on a roster line: the spliced holder plus that member's cache key. */
+        static final class Slot {
+            final String name;
+            final ChatComponentText comp;
+            /** Last tab UUID seen for the member, held through tab churn exactly as buildParts does. */
+            private UUID tabUuid;
+            String lastText = "";
+
+            Slot(String name, ChatComponentText comp) {
+                this.name = name;
+                this.comp = comp;
+            }
+
+            /** Cached stats for this member, kicking a fetch when nothing is cached yet. */
+            BedwarsStats stats() {
+                UUID uuid = ChatSender.uuidInTab(name);
+                if (uuid != null) tabUuid = uuid;
+                else uuid = tabUuid;
+                return resolveStats(name, uuid);
+            }
+        }
+
+        /**
          * Fill (or clear) the head slot with the invisible per-skin sentinel: only when Chat Heads is on
          * and the sender's tab skin — what the client already shows, a nick's included — has resolved.
          * Same async pattern as the FKDR bracket: empty until the skin lands, back-patched on a later tick.
@@ -733,7 +848,7 @@ public final class ChatNameTags {
             if (want == lastHeadSentinel) return false;
             lastHeadSentinel = want;
             // Sentinel (zero-width position/skin marker) + real spaces that reserve the visible slot.
-            writeChild(head, want == 0 ? "" : String.valueOf(want) + ChatPlayerHeads.SLOT_GAP);
+            writeChild(head, want == 0 ? "" : String.valueOf(want) + ChatPlayerHeads.slotGap());
             return true;
         }
 

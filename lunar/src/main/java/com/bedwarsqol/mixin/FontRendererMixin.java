@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <ul>
  *   <li><b>Reserve the slot.</b> Every allocated head-sentinel codepoint (see
  *       {@link ChatPlayerHeads#isSentinel}) is invisible and zero-width — it is only a position/skin
- *       marker. The visible slot is real spaces ({@link ChatPlayerHeads#SLOT_GAP}), measured natively, so
+ *       marker. The visible slot is real spaces ({@link ChatPlayerHeads#slotGap}), measured natively, so
  *       the name is held clear even where this char-width hook doesn't apply (Lunar's chat layout).</li>
  *   <li><b>Draw the head.</b> After each string is drawn ({@code drawString} TAIL), paint a head over any
  *       sentinel in it. This is the shared low-level path: Lunar renders chat through its own HUD renderer
@@ -35,7 +35,7 @@ public class FontRendererMixin {
     @Inject(method = "getCharWidth", at = @At("HEAD"), cancellable = true, require = 0)
     private void bedwarsqol$sentinelWidth(char c, CallbackInfoReturnable<Integer> cir) {
         if (bedwarsqol$active() && ChatPlayerHeads.isSentinel(c)) {
-            cir.setReturnValue(0); // zero-width marker; the SLOT_GAP spaces reserve the room
+            cir.setReturnValue(0); // zero-width marker; the slotGap() spaces reserve the room
         }
     }
 

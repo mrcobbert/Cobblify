@@ -33,7 +33,7 @@ import java.util.Map;
  *
  * <p>This class owns three things: the codepoint&harr;skin registry ({@link #sentinelFor}); the
  * component-tree splice that places the holder before the name ({@link #spliceHeadHolder}); and the draw
- * bridge ({@link #drawRowHeads}), which draws at the sentinel's left edge; the {@link #SLOT_GAP} spaces
+ * bridge ({@link #drawRowHeads}), which draws at the sentinel's left edge; the {@link #slotGap} spaces
  * reserve the room. The draw lives in {@code FontRendererMixin} — the shared low-level path, so heads
  * render under Lunar's own chat renderer too.
  */
@@ -41,15 +41,33 @@ public final class ChatPlayerHeads {
 
     private ChatPlayerHeads() {}
 
-    /** Drawn head face size (px), square. The reserved slot is made of real spaces (see {@link #SLOT_GAP}). */
+    /** Drawn head face size (px), square. The reserved slot is made of real spaces (see {@link #slotGap}). */
     public static final int FACE = 8;
+    /** Blank pixels wanted between the head's right edge and the first character of the name. */
+    private static final int GAP = 4;
+    /** Slot used when no font is available to measure: vanilla's 4px space, three of them = FACE + GAP. */
+    private static final String SLOT_GAP_FALLBACK = "   ";
+
     /**
      * The reserved head slot, as <b>real spaces</b> written right after the sentinel. Every font measures
      * these natively on both Forge and Lunar, so the name is pushed right regardless of whether our
      * {@code FontRenderer} char-width hook applies — the sentinel is only a zero-width position+skin marker.
-     * ~3 spaces ≈ the 8px face + a small gap before the name.
+     *
+     * <p>The count is measured against the live font rather than fixed at three: vanilla hardcodes the space
+     * at 4px, but OptiFine's custom-font path takes every glyph width — the space included — from the
+     * resource pack's {@code font/ascii.png}. A pack with a narrower space made the fixed three-space slot
+     * shorter than the 8px face, so the name sat flush against the head.
      */
-    public static final String SLOT_GAP = "   ";
+    public static String slotGap() {
+        Minecraft mc = Minecraft.getMinecraft();
+        FontRenderer fr = mc == null ? null : mc.fontRendererObj;
+        int space = fr == null ? 0 : fr.getStringWidth(" ");
+        if (space <= 0) return SLOT_GAP_FALLBACK;
+        int n = (FACE + GAP + space - 1) / space; // ceil: never narrower than the face plus its gap
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) sb.append(' ');
+        return sb.toString();
+    }
 
     /**
      * A private-use sub-range reserved for head sentinels: one codepoint per distinct skin currently on
@@ -143,7 +161,7 @@ public final class ChatPlayerHeads {
     /**
      * Paint a head at every head sentinel in the row about to be drawn. The head sits after the
      * sentinel's measured advance (0 when the width hook applied, its native width when it didn't),
-     * so head-to-name spacing is identical either way; the {@link #SLOT_GAP} spaces right after it
+     * so head-to-name spacing is identical either way; the {@link #slotGap} spaces right after it
      * hold the name clear. Honors the row's fade alpha (the top byte of {@code color}).
      */
     public static void drawRowHeads(FontRenderer fr, String rowText, int x, int y, int color) {
@@ -183,15 +201,34 @@ public final class ChatPlayerHeads {
     /**
      * Insert {@code holder} (an empty, mutable component {@link ChatNameTags} back-patches) as a sibling
      * immediately before {@code sender}'s name in {@code root}, splitting the covering leaf if the name
-     * sits mid-leaf. Returns false (no head, FKDR untouched) when the name can't be located in a sibling —
+     * sits mid-leaf. Also used for the FKDR brackets on a {@code /party list} roster line, where several
+     * named players share one line and each needs its own slot in front of its own name.
+     * Returns false (no head, FKDR untouched) when the name can't be located in a sibling —
      * {@link ChatNameTags} has already hoisted any root-own text into a sibling by the time it calls us, so
      * the name is normally reachable. Never throws.
      */
     public static boolean spliceHeadHolder(IChatComponent root, String sender, ChatComponentText holder) {
+        return splice(root, sender, holder, false);
+    }
+
+    /**
+     * As {@link #spliceHeadHolder}, but placed ahead of the rank tag the name wears, so a roster line
+     * reads {@code "[1.25] [MVP++] Dewier"} — the order every other chat line puts the FKDR in — rather
+     * than {@code "[MVP++] [1.25] Dewier"}. Falls back to the name itself for an unranked player.
+     */
+    public static boolean spliceBeforeRankedName(IChatComponent root, String sender,
+                                                 ChatComponentText holder) {
+        return splice(root, sender, holder, true);
+    }
+
+    private static boolean splice(IChatComponent root, String sender, ChatComponentText holder,
+                                  boolean aheadOfRank) {
         try {
             if (root instanceof ChatComponentTranslation) return false; // vanilla <Name> path; not our shapes
-            int target = locateName(root.getUnformattedText(), sender);
+            String flat = root.getUnformattedText();
+            int target = locateName(flat, sender);
             if (target < 0) return false;
+            if (aheadOfRank) target = rankStart(flat, target);
             int rootOwn = safeOwnLen(root);
             if (target < rootOwn) return false; // name still in root own text (hoist failed) — degrade
             int[] cursor = {rootOwn};
@@ -262,6 +299,20 @@ public final class ChatPlayerHeads {
             from = idx + 1;
         }
         return -1;
+    }
+
+    /**
+     * Where a tag belongs for a name that wears a rank: the start of the {@code [..]} span immediately
+     * before {@code nameStart} (spaces may sit between), else {@code nameStart} itself. On a roster line
+     * a member's own rank is the only bracket that can be adjacent — the previous member's name and
+     * status dot break the run for everyone else.
+     */
+    static int rankStart(String flat, int nameStart) {
+        int i = nameStart - 1;
+        while (i >= 0 && flat.charAt(i) == ' ') i--;
+        if (i < 0 || flat.charAt(i) != ']') return nameStart;
+        int open = flat.lastIndexOf('[', i);
+        return open < 0 ? nameStart : open;
     }
 
     private static boolean wordBounded(String s, int start, int len) {

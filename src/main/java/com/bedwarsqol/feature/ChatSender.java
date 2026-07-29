@@ -8,6 +8,7 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -26,6 +27,10 @@ import java.util.regex.Pattern;
  * recognised: since ~Aug 2024 Hypixel anonymizes the names in them (junk like {@code vj3x1s4w18}), so
  * those shapes can never be trusted to name a real player and must never drive lookups or tags, no
  * matter what context the caller believes it is in.
+ *
+ * <p>{@code /party list} roster lines are the one colon shape whose names sit <i>after</i> the colon,
+ * and they get their own accessor ({@link #rosterMembers}) rather than a sender — see
+ * {@link #isRosterLabel}.
  */
 public final class ChatSender {
 
@@ -105,10 +110,55 @@ public final class ChatSender {
         boolean hadBracket = head.indexOf('[') >= 0;
         List<String> tokens = nameTokens(BRACKET_TAG.matcher(head).replaceAll(" "));
         if (tokens.isEmpty()) return null;
+        if (isRosterLabel(head, tokens)) return null; // names are after the colon; see rosterMembers
         String last = tokens.get(tokens.size() - 1);
         if (hadBracket || channel) return last;
         if (tokens.size() != 1) return null;
         return uuidInTab(last) != null ? last : null;
+    }
+
+    /**
+     * True when a pre-colon head is a {@code /party list} roster <i>label</i> ("Party Leader",
+     * "Party Moderators", "Party Members") rather than a channel prefix. Those lines carry their names
+     * after the colon, so the channel branch's trailing-token rule returned the label word itself — and
+     * because the accounts {@code Leader}, {@code Moderators} and {@code Members} all exist, the line
+     * silently showed a stranger's FKDR and burned a lookup fetching it.
+     *
+     * <p>Party <i>chat</i> always carries the {@code >} marker ("Party > [VIP] Name: msg"), which is
+     * what keeps a real player named Leader taggable. Brackets are already stripped out of
+     * {@code tokens}, so our own prepended {@code [x.xx]} tag can't hide the label from this check when
+     * the hover path re-parses an already-tagged line.
+     */
+    private static boolean isRosterLabel(String head, List<String> tokens) {
+        if (head.indexOf('>') >= 0) return false;
+        if (tokens.size() != 2 || !tokens.get(0).equalsIgnoreCase("Party")) return false;
+        String label = tokens.get(1);
+        return label.equalsIgnoreCase("Leader") || label.equalsIgnoreCase("Moderators")
+                || label.equalsIgnoreCase("Members");
+    }
+
+    /** Cap on names taken off one roster line: a bound on the lookups a single line can fire. */
+    private static final int MAX_ROSTER = 20;
+
+    /**
+     * The party members named by a {@code /party list} roster line ("Party Leader: [VIP] A ●",
+     * "Party Members: [MVP+] B ● C ●"), in line order; empty for every other line. Rank brackets are
+     * dropped and the {@code ●} status dots separate the names, so what is left is the member list.
+     *
+     * <p>These names are real: a party roster is your own party's state, which Hypixel does not
+     * anonymize the way it does the pregame lobby's broadcasts and nametags.
+     */
+    public static List<String> rosterMembers(IChatComponent component) {
+        String raw = plainText(component);
+        if (raw == null) return Collections.emptyList();
+        int colon = raw.indexOf(':');
+        if (colon <= 0) return Collections.emptyList();
+        String head = raw.substring(0, colon);
+        if (!isRosterLabel(head, nameTokens(BRACKET_TAG.matcher(head).replaceAll(" ")))) {
+            return Collections.emptyList();
+        }
+        List<String> names = nameTokens(BRACKET_TAG.matcher(raw.substring(colon + 1)).replaceAll(" "));
+        return names.size() > MAX_ROSTER ? names.subList(0, MAX_ROSTER) : names;
     }
 
     /** Every {@link #NAME} token in a string, in order. */

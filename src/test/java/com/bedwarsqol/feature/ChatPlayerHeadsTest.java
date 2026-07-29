@@ -130,6 +130,39 @@ public class ChatPlayerHeadsTest {
         assertSame(holder, leaves.get(hi));
     }
 
+    /**
+     * A {@code /party list} roster line carries several names and gets one holder in front of each.
+     * The holders are empty when spliced, so the line's text never shifts and every name's offset is
+     * still valid for the splices that follow it.
+     */
+    @Test
+    public void splicesOneHolderBeforeEachRosterName() {
+        ChatComponentText root = new ChatComponentText("");
+        root.appendSibling(new ChatComponentText("Party Members: [MVP+] wnmv ● [VIP] Zebra ●"));
+
+        ChatComponentText first = new ChatComponentText("");
+        ChatComponentText second = new ChatComponentText("");
+        assertTrue(ChatPlayerHeads.spliceHeadHolder(root, "wnmv", first));
+        assertTrue(ChatPlayerHeads.spliceHeadHolder(root, "Zebra", second));
+
+        List<IChatComponent> leaves = new ArrayList<IChatComponent>();
+        collectLeaves(root, leaves);
+        assertTrue("each holder sits immediately before its own member",
+                startsAfter(leaves, first, "wnmv") && startsAfter(leaves, second, "Zebra"));
+        assertEquals("the line still reads the same once the holders are empty",
+                "Party Members: [MVP+] wnmv ● [VIP] Zebra ●", root.getUnformattedText());
+    }
+
+    /** True when the leaf right after {@code holder} begins with {@code name}. */
+    private static boolean startsAfter(List<IChatComponent> leaves, IChatComponent holder, String name) {
+        for (int i = 0; i < leaves.size() - 1; i++) {
+            if (leaves.get(i) == holder) {
+                return leaves.get(i + 1).getUnformattedTextForChat().startsWith(name);
+            }
+        }
+        return false;
+    }
+
     @Test
     public void spliceFailsClosedWhenNameAbsent() {
         ChatComponentText root = new ChatComponentText("");
