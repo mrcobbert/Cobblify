@@ -29,6 +29,14 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Fails when the Forge and Lunar trees diverge in a way tools/tree-divergence.txt
+      # does not declare. It runs in this job, not the Lunar one, because this job
+      # publishes the Release on a tag and the two jobs are independent - a detector
+      # over there could fail only after the release had already been created.
+      # Needs no JDK, so running it first costs nothing.
+      - name: Check tree drift
+        run: ./tools/check-tree-drift.sh
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:

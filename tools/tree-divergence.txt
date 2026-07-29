@@ -1,0 +1,120 @@
+# Declared differences between the Forge tree and the Lunar tree.
+#
+# Checked by tools/check-tree-drift.sh. Anything NOT declared here must be
+# byte-identical in both trees, or the check fails.
+#
+# Format (whitespace separated, `#` starts a comment):
+#
+#   divergent <tree> <path>          - present in both trees, allowed to differ
+#   one-sided <tree> <side> <path>   - present on <side> only
+#
+#   <tree> = main | test        <side> = forge | lunar
+#   <path> is package-relative, e.g. com/bedwarsqol/gui/SettingsGui.java
+#
+# Entries are validated in both directions. A `divergent` entry whose two copies
+# have become identical fails, as does a `one-sided` entry that appears in both
+# trees, on the wrong side, or in neither. Stale entries are errors, not noise -
+# a manifest nobody prunes stops being a safety net.
+
+# ---------------------------------------------------------------------------
+# divergent: same path in both trees, contents legitimately differ
+# ---------------------------------------------------------------------------
+
+# Loader entry point: Forge @Mod + EVENT_BUS vs Weave ModInitializer + EventBus.
+divergent main com/bedwarsqol/BedwarsQol.java
+
+# Event API shape: ClientChatReceivedEvent/TickEvent vs ChatEvent.Received/TickEvent.Post.
+divergent main com/bedwarsqol/bedwars/GeneratorTracker.java
+divergent main com/bedwarsqol/feature/ChatNameTags.java
+divergent main com/bedwarsqol/feature/NametagStats.java
+divergent main com/bedwarsqol/feature/NickUtils.java
+divergent main com/bedwarsqol/feature/PartyJoinAlert.java
+divergent main com/bedwarsqol/feature/QueueAlert.java
+divergent main com/bedwarsqol/feature/SeraphAlert.java
+divergent main com/bedwarsqol/feature/SweatReport.java
+divergent main com/bedwarsqol/feature/UrchinAlert.java
+divergent main com/bedwarsqol/stats/BedwarsModeDetector.java
+divergent main com/bedwarsqol/stats/GameSessionTracker.java
+
+# Weave has no ICommandSender; Forge uses ClientCommandHandler.
+divergent main com/bedwarsqol/command/BedwarsQolCommand.java
+
+# Config directory: Forge Loader.getConfigDir() vs ~/.cobblify on Lunar.
+divergent main com/bedwarsqol/config/SettingsManager.java
+divergent main com/bedwarsqol/stats/StatsCache.java
+
+# Intentional feature removal: Lunar ships these natively, so the rows, config
+# fields and HUD elements are absent there. See .ai/TASK.md.
+divergent main com/bedwarsqol/config/ClientSettings.java
+divergent main com/bedwarsqol/feature/ChatNotifications.java
+divergent main com/bedwarsqol/feature/OutgoingChat.java
+divergent main com/bedwarsqol/gui/EditHudGui.java
+divergent main com/bedwarsqol/gui/SettingsGui.java
+divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
+
+# Keybinds: Weave has no vanilla KeyBinding or options.txt persistence.
+divergent main com/bedwarsqol/feature/IncSender.java
+divergent main com/bedwarsqol/feature/PauseKeyHandler.java
+divergent main com/bedwarsqol/feature/PlayersKeyHandler.java
+divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
+
+# Resource loading: Weave never registers the mod's assets/ domain.
+divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
+divergent main com/bedwarsqol/gui/render/Icons.java
+
+# Forge takes scissor-clip parameters; Weave's overlay event is not cancellable.
+divergent main com/bedwarsqol/gui/render/GuiBlur.java
+
+# Mixins: Lunar adds require = 0 so a mapping miss degrades to a no-op.
+divergent main com/bedwarsqol/mixin/FontRendererMixin.java
+divergent main com/bedwarsqol/mixin/GuiChatMixin.java
+divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
+divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
+divergent main com/bedwarsqol/mixin/GuiScreenMixin.java
+divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
+
+# ---------------------------------------------------------------------------
+# one-sided: exists in one tree only
+# ---------------------------------------------------------------------------
+
+# Lunar ships these features natively, so the mod does not provide them there.
+one-sided main forge com/bedwarsqol/feature/AutoGg.java
+one-sided main forge com/bedwarsqol/feature/BlockOverlayRenderer.java
+one-sided main forge com/bedwarsqol/feature/TntFuseDisplay.java
+
+# Generic chat QOL is Forge-only; Lunar ships it natively.
+one-sided main forge com/bedwarsqol/feature/ChatCopyAccess.java
+one-sided main forge com/bedwarsqol/mixin/GuiNewChatMixin.java
+one-sided main forge com/bedwarsqol/mixin/MinecraftChatClearMixin.java
+
+# Longer Messages: Forge-only by explicit decision 2026-07-28. NOT because Lunar
+# ships it - it does not. The Weave port is real mixin work nobody has done.
+# Do not "restore parity" here assuming it was an oversight.
+one-sided main forge com/bedwarsqol/feature/ChatLengthLimit.java
+one-sided main forge com/bedwarsqol/mixin/C01PacketChatMessageMixin.java
+
+# Weave-only shims with no Forge equivalent.
+one-sided main lunar com/bedwarsqol/feature/KeybindRegistry.java
+one-sided main lunar com/bedwarsqol/gui/render/ClasspathTexture.java
+
+# Tests for Forge-only features, or whose subject imports net.minecraft.* and so
+# was not shared. Extending Lunar coverage is tracked separately.
+one-sided test forge com/bedwarsqol/config/ClientSettingsConfigTest.java
+one-sided test forge com/bedwarsqol/feature/AlertCopyReasonTest.java
+one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
+one-sided test forge com/bedwarsqol/feature/ChatPlayerHeadsTest.java
+one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
+one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
+one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
+one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
+one-sided test forge com/bedwarsqol/gui/TabBarFitTest.java
+
+# Harness + Forge stub: depend on src/test/resources, which Lunar does not have.
+one-sided test forge com/bedwarsqol/harness/FakeStatsBackend.java
+one-sided test forge com/bedwarsqol/harness/LaneContrastHarness.java
+one-sided test forge com/bedwarsqol/harness/LaneContrastTest.java
+one-sided test forge net/minecraftforge/fml/common/Loader.java
+
+# Pins the Gson stale-key path for configs written by builds that had the
+# removed anticheat module. Platform-independent; could be shared later.
+one-sided test lunar com/bedwarsqol/config/ClientSettingsStaleKeysTest.java
