@@ -3,13 +3,19 @@ package com.bedwarsqol.feature;
 import java.util.Locale;
 
 /**
- * Pure party-epoch helper: bumps a generation counter only when Hypixel chat clearly means the
- * player's party membership ended (left / kicked / disbanded). Invite expiry and leadership
- * transfer do <b>not</b> bump — the party channel remains valid.
+ * Pure party tracking: a generation counter that bumps only when Hypixel chat clearly means the
+ * player's party membership ended (left / kicked / disbanded), plus a coarse "am I in a party"
+ * flag used to gate {@code /pc} traffic. Invite expiry and leadership transfer do <b>not</b> bump
+ * — the party channel remains valid.
+ *
+ * <p>{@link #inParty()} starts true and stays true while unknown: a false send costs one Hypixel
+ * error line, which is itself the signal that corrects the state, whereas a false block silently
+ * loses the report with no trace.
  */
 public final class PartyEpoch {
 
     private int epoch;
+    private boolean inParty = true;
 
     public int current() {
         return epoch;
@@ -17,6 +23,11 @@ public final class PartyEpoch {
 
     public int bump() {
         return ++epoch;
+    }
+
+    /** Whether we may still be in a party — false only once Hypixel has told us we are not. */
+    public boolean inParty() {
+        return inParty;
     }
 
     /**
@@ -27,18 +38,56 @@ public final class PartyEpoch {
         if (plain == null) return false;
         String msg = plain.trim();
         if (msg.isEmpty()) return false;
-        String lower = msg.toLowerCase(Locale.ROOT);
+        String lower = stripLeadingBrackets(msg.toLowerCase(Locale.ROOT));
 
-        // Exact / prefix membership ends. Avoid broad contains() that false-positive on party chat.
-        if (lower.equals("the party was disbanded")
+        // Party chat proves membership. Checked first so a member typing a system-looking line
+        // ("the party was disbanded") can never be read as one.
+        if (lower.startsWith("party >")) {
+            inParty = true;
+            return false;
+        }
+
+        // We joined — the only self-join wording seen in logs.
+        if (lower.startsWith("you have joined ") && lower.contains("party")) {
+            inParty = true;
+            return false;
+        }
+
+        // Rejected /pc. Hypixel has at least three wordings ("...not in a party.", "...not in a
+        // party right now.", "...not currently in a party."), so match the stable head + subject.
+        // Nothing changed — we only learned — so the epoch stands.
+        if (lower.startsWith("you are not") && lower.contains("in a party")) {
+            inParty = false;
+            return false;
+        }
+
+        // Prefix membership ends. Avoid broad contains() that false-positive on party chat.
+        if (lower.startsWith("the party was disbanded")
                 || lower.startsWith("you left the party")
                 || lower.startsWith("you have been kicked from the party")
                 || lower.startsWith("you were kicked from the party")
                 || isOtherDisbanded(lower)) {
+            inParty = false;
             bump();
             return true;
         }
         return false;
+    }
+
+    /**
+     * Drop leading {@code [...]} groups so a prefixed line still matches at position 0. Our own
+     * ChatNameTags FKDR bracket lands ahead of the text ({@code [7.19] Party > name: msg} appears
+     * in real logs), as would any future prefix.
+     */
+    private static String stripLeadingBrackets(String lower) {
+        int i = 0;
+        while (i < lower.length() && lower.charAt(i) == '[') {
+            int close = lower.indexOf(']', i);
+            if (close < 0) break;
+            i = close + 1;
+            while (i < lower.length() && lower.charAt(i) == ' ') i++;
+        }
+        return i == 0 ? lower : lower.substring(i);
     }
 
     /** {@code <name> has disbanded the party!} — name is 3–16 alnum/underscore. */

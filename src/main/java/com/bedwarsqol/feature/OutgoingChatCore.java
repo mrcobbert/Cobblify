@@ -1,5 +1,9 @@
 package com.bedwarsqol.feature;
 
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Pure outgoing-chat coordinator state: queue, pacing clocks, sweat/inc flight acknowledgements,
  * and context validity. No Minecraft types — unit-tested directly; {@link OutgoingChat} is the
@@ -48,12 +52,20 @@ public final class OutgoingChatCore {
         public final String serverKey;
         public final boolean activeGame;
         public final int partyEpoch;
+        /** False only once Hypixel has told us we are partyless; unknown counts as in a party. */
+        public final boolean inParty;
 
         public LiveContext(int sessionId, String serverKey, boolean activeGame, int partyEpoch) {
+            this(sessionId, serverKey, activeGame, partyEpoch, true);
+        }
+
+        public LiveContext(int sessionId, String serverKey, boolean activeGame, int partyEpoch,
+                           boolean inParty) {
             this.sessionId = sessionId;
             this.serverKey = serverKey == null ? "" : serverKey;
             this.activeGame = activeGame;
             this.partyEpoch = partyEpoch;
+            this.inParty = inParty;
         }
     }
 
@@ -92,6 +104,12 @@ public final class OutgoingChatCore {
     private long lastManualMs = Long.MIN_VALUE / 4;
 
     private SweatFlight sweatFlight = SweatFlight.IDLE;
+    /** Undelivered tail of the current sweat batch; the head lives in the queue. */
+    private final ArrayDeque<String> sweatRemaining = new ArrayDeque<String>();
+    /** At least one line of this batch reached the wire — a retry must resume, never rebuild. */
+    private boolean sweatPartlySent;
+    /** Most recent sweat request, reused as the context template for follow-up lines. */
+    private OutgoingChatRequest sweatHead;
     private boolean incInFlight;
     private long lastIncDeliveredMs = Long.MIN_VALUE / 4;
 
@@ -107,6 +125,7 @@ public final class OutgoingChatCore {
         lastSendMs = Long.MIN_VALUE / 4;
         lastManualMs = Long.MIN_VALUE / 4;
         sweatFlight = SweatFlight.IDLE;
+        clearSweatBatch();
         incInFlight = false;
         lastIncDeliveredMs = Long.MIN_VALUE / 4;
     }
@@ -151,6 +170,7 @@ public final class OutgoingChatCore {
             cancelSweat(auto, SweatCancelReason.PARTY_CHANGED);
         } else if (sweatFlight == SweatFlight.IN_FLIGHT || sweatFlight == SweatFlight.RETRYABLE) {
             sweatFlight = SweatFlight.DONE;
+            clearSweatBatch();
         }
     }
 
@@ -232,6 +252,7 @@ public final class OutgoingChatCore {
         }
         if (kind == OutgoingChatKind.SWEAT) {
             sweatFlight = SweatFlight.IN_FLIGHT;
+            sweatHead = request;
         } else if (kind == OutgoingChatKind.INC) {
             incInFlight = true;
         }
@@ -244,24 +265,67 @@ public final class OutgoingChatCore {
     }
 
     public void submitSweat(String text, LiveContext ctx, long nowMs) {
-        if (sweatFlight == SweatFlight.IN_FLIGHT || sweatFlight == SweatFlight.DONE) return;
-        submit(OutgoingChatKind.SWEAT, text, ctx, nowMs);
+        submitSweat(Collections.singletonList(text), ctx, nowMs);
     }
 
-    /** Consume RETRYABLE → IDLE so SweatReport may resubmit once. */
-    public boolean consumeSweatRetry() {
+    /**
+     * Submit a whole report. Only the first line enters the queue; each following line is enqueued
+     * once its predecessor is acknowledged, so the batch is paced like any other managed traffic.
+     */
+    public void submitSweat(List<String> lines, LiveContext ctx, long nowMs) {
+        if (lines == null || lines.isEmpty()) return;
+        if (sweatFlight == SweatFlight.IN_FLIGHT || sweatFlight == SweatFlight.DONE) return;
+        clearSweatBatch();
+        for (int i = 1; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (line != null && !line.isEmpty()) sweatRemaining.addLast(line);
+        }
+        submit(OutgoingChatKind.SWEAT, lines.get(0), ctx, nowMs);
+    }
+
+    /**
+     * Consume RETRYABLE. A batch that never reached the wire goes IDLE so SweatReport rebuilds it
+     * with fresher stats; a partly-sent batch resumes its remaining lines instead, so no team is
+     * ever reported twice.
+     */
+    public boolean consumeSweatRetry(long nowMs) {
         if (sweatFlight != SweatFlight.RETRYABLE) return false;
+        if (sweatPartlySent) {
+            if (!enqueueNextSweat(nowMs)) sweatFlight = SweatFlight.DONE;
+            return true;
+        }
+        clearSweatBatch();
         sweatFlight = SweatFlight.IDLE;
         return true;
     }
 
     public void markSweatDone() {
         sweatFlight = SweatFlight.DONE;
+        clearSweatBatch();
     }
 
     public void resetSweatForNewGame() {
         queue.cancelKind(OutgoingChatKind.SWEAT);
         sweatFlight = SweatFlight.IDLE;
+        clearSweatBatch();
+    }
+
+    /** Move the next batch line into the queue under the head's context. False when none remain. */
+    private boolean enqueueNextSweat(long nowMs) {
+        if (sweatRemaining.isEmpty() || sweatHead == null) return false;
+        OutgoingChatRequest next = new OutgoingChatRequest(
+                OutgoingChatKind.SWEAT, sweatRemaining.pollFirst(),
+                sweatHead.sessionId, sweatHead.serverKey, true, true, sweatHead.partyEpoch, nowMs);
+        queue.enqueue(next);
+        sweatHead = next;
+        sweatFlight = SweatFlight.IN_FLIGHT;
+        return true;
+    }
+
+    private void clearSweatBatch() {
+        sweatRemaining.clear();
+        sweatPartlySent = false;
+        sweatHead = null;
     }
 
     // ---- cancel / world -----------------------------------------------------
@@ -287,8 +351,10 @@ public final class OutgoingChatCore {
         if (inc != null) incInFlight = false;
         if (auto != null && auto.kind == OutgoingChatKind.SWEAT) {
             sweatFlight = SweatFlight.DONE;
+            clearSweatBatch();
         } else if (sweatFlight == SweatFlight.IN_FLIGHT || sweatFlight == SweatFlight.RETRYABLE) {
             sweatFlight = SweatFlight.DONE;
+            clearSweatBatch();
         }
         if (held != null) return Decision.notice(held, "world change");
         return Decision.none();
@@ -335,7 +401,12 @@ public final class OutgoingChatCore {
             return Decision.notice(dropped, "timed out");
         }
 
-        if (!OutgoingChatPolicy.canSend(next.kind, nowMs, lastSendMs, lastManualMs, false)) {
+        // A report already underway keeps its lines at the old ~0.5s cadence; everything else
+        // (including the report's own first line) pays the full gap.
+        long gap = next.kind == OutgoingChatKind.SWEAT && sweatPartlySent
+                ? OutgoingChatPolicy.SWEAT_LINE_GAP_MS
+                : OutgoingChatPolicy.MIN_GAP_MS;
+        if (!OutgoingChatPolicy.canSend(next.kind, nowMs, lastSendMs, lastManualMs, false, gap)) {
             return Decision.none();
         }
 
@@ -373,7 +444,8 @@ public final class OutgoingChatCore {
 
     /**
      * Returns a non-null cancel reason when {@code request} no longer matches {@code ctx}.
-     * Party mismatch is distinct so Sweat is finalized (never RETRYABLE).
+     * Party mismatch — a changed epoch, or knowing we are partyless — is distinct so Sweat is
+     * finalized (never RETRYABLE). Public chat and AutoGG are unaffected.
      */
     static SweatCancelReason classifyStale(OutgoingChatRequest request, LiveContext ctx) {
         if (request == null || ctx == null) return SweatCancelReason.CONTEXT_STALE;
@@ -381,7 +453,7 @@ public final class OutgoingChatCore {
         String live = ctx.serverKey == null ? "" : ctx.serverKey;
         if (!request.serverKey.equals(live)) return SweatCancelReason.CONTEXT_STALE;
         if (request.requireActiveGame && !ctx.activeGame) return SweatCancelReason.GAME_STALE;
-        if (request.requireParty && request.partyEpoch != ctx.partyEpoch) {
+        if (request.requireParty && (request.partyEpoch != ctx.partyEpoch || !ctx.inParty)) {
             return SweatCancelReason.PARTY_CHANGED;
         }
         return null;
@@ -395,7 +467,11 @@ public final class OutgoingChatCore {
             lastManualMs = nowMs;
         }
         if (request.kind == OutgoingChatKind.SWEAT) {
-            sweatFlight = SweatFlight.DONE;
+            sweatPartlySent = true;
+            if (!enqueueNextSweat(nowMs)) {
+                sweatFlight = SweatFlight.DONE;
+                clearSweatBatch();
+            }
         }
         if (request.kind == OutgoingChatKind.INC) {
             incInFlight = false;
@@ -414,7 +490,16 @@ public final class OutgoingChatCore {
 
     private void cancelSweat(OutgoingChatRequest dropped, SweatCancelReason reason) {
         if (dropped == null || dropped.kind != OutgoingChatKind.SWEAT) return;
-        sweatFlight = isRetryable(reason) ? SweatFlight.RETRYABLE : SweatFlight.DONE;
+        if (isRetryable(reason)) {
+            sweatFlight = SweatFlight.RETRYABLE;
+            // Put the cancelled line back only when earlier lines are already out; otherwise the
+            // whole report is rebuilt on retry and keeping the old text would duplicate it.
+            if (sweatPartlySent) sweatRemaining.addFirst(dropped.text);
+            else clearSweatBatch();
+        } else {
+            sweatFlight = SweatFlight.DONE;
+            clearSweatBatch();
+        }
     }
 
     /** Only safe interruptions keep Sweat retryable; party/context ends are final. */

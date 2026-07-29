@@ -7,65 +7,99 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** Pins SweatReport condensation: one line, hard length cap, sweat-first ordering. */
+/** Pins the SweatReport payload: one line per team, sweatiest first, length cap, line cap. */
 public class SweatReportTextTest {
+
+    private static SweatReportText.Entry known(String name, double fkdr) {
+        return new SweatReportText.Entry(name, SweatReportText.fmt1(fkdr), fkdr, true);
+    }
+
+    private static SweatReportText.Entry unknown(String name, String tag) {
+        return new SweatReportText.Entry(name, tag, 0.0, false);
+    }
 
     @Test
     public void emptyInputYieldsNoLines() {
-        assertTrue(SweatReportText.condense(null).isEmpty());
-        assertTrue(SweatReportText.condense(new ArrayList<SweatReportText.Entry>()).isEmpty());
+        assertTrue(SweatReportText.lines(null).isEmpty());
+        assertTrue(SweatReportText.lines(new ArrayList<SweatReportText.Team>()).isEmpty());
+        assertTrue(SweatReportText.lines(Arrays.asList(
+                new SweatReportText.Team("RED", new ArrayList<SweatReportText.Entry>()))).isEmpty());
     }
 
     @Test
-    public void producesAtMostOneLine() {
-        List<SweatReportText.Entry> entries = new ArrayList<SweatReportText.Entry>();
-        for (int i = 0; i < 20; i++) {
-            entries.add(new SweatReportText.Entry("RED", false, "Player" + i, "9.9", 9.9, true));
-        }
-        List<String> lines = SweatReportText.condense(entries);
-        assertEquals(1, lines.size());
-        assertEquals(SweatReportText.MAX_LINES, 1);
-        assertTrue(lines.get(0).length() <= SweatReportText.MAX_CONTENT);
-        assertTrue(lines.get(0).startsWith("Sweats: "));
+    public void oneLinePerTeamWithAverageAndMembers() {
+        List<String> lines = SweatReportText.lines(Arrays.asList(
+                new SweatReportText.Team("RED", Arrays.asList(known("Techno", 8.4), known("Skeppy", 2.6))),
+                new SweatReportText.Team("BLUE (US)", Arrays.asList(known("You", 3.0), known("Mate", 1.0)))));
+        assertEquals(2, lines.size());
+        assertEquals("RED(5.5): Techno 8.4, Skeppy 2.6", lines.get(0));
+        assertEquals("BLUE (US)(2.0): You 3.0, Mate 1.0", lines.get(1));
     }
 
     @Test
-    public void ordersByFkdrDescending() {
-        List<String> lines = SweatReportText.condense(Arrays.asList(
-                new SweatReportText.Entry("BLUE", false, "Low", "1.0", 1.0, true),
-                new SweatReportText.Entry("RED", false, "High", "8.5", 8.5, true),
-                new SweatReportText.Entry("GREEN", false, "Mid", "3.2", 3.2, true)
-        ));
-        assertEquals(1, lines.size());
-        String line = lines.get(0);
-        int high = line.indexOf("High");
-        int mid = line.indexOf("Mid");
-        int low = line.indexOf("Low");
-        assertTrue(high >= 0 && mid >= 0 && low >= 0);
-        assertTrue(high < mid && mid < low);
+    public void teamsOrderedBySweatiestAverageAndUnknownTeamsLast() {
+        List<String> lines = SweatReportText.lines(Arrays.asList(
+                new SweatReportText.Team("GREEN", Arrays.asList(unknown("Ghost", "err"))),
+                new SweatReportText.Team("BLUE", Arrays.asList(known("Mid", 3.0))),
+                new SweatReportText.Team("RED", Arrays.asList(known("High", 9.0)))));
+        assertEquals(3, lines.size());
+        assertTrue(lines.get(0).startsWith("RED("));
+        assertTrue(lines.get(1).startsWith("BLUE("));
+        assertEquals("GREEN(?): Ghost err", lines.get(2));
     }
 
     @Test
-    public void marksOurTeamWithUsSuffix() {
-        List<String> lines = SweatReportText.condense(Arrays.asList(
-                new SweatReportText.Entry("RED", true, "You", "2.0", 2.0, true),
-                new SweatReportText.Entry("BLUE", false, "Pro", "8.0", 8.0, true)
-        ));
-        assertEquals(1, lines.size());
-        assertTrue(lines.get(0).contains("RED/US"));
-        assertTrue(lines.get(0).contains("You"));
+    public void unknownMembersSortLastAndKeepTheirTag() {
+        String line = SweatReportText.lines(Arrays.asList(new SweatReportText.Team("RED", Arrays.asList(
+                unknown("Nicked", "nick"), known("Pro", 7.0), unknown("Broken", "err"),
+                unknown("Slow", "..."), known("Rookie", 0.5))))).get(0);
+        assertTrue(line.indexOf("Pro") < line.indexOf("Rookie"));
+        assertTrue(line.indexOf("Rookie") < line.indexOf("Nicked"));
+        assertTrue(line.contains("Nicked nick"));
+        assertTrue(line.contains("Broken err"));
+        assertTrue(line.contains("Slow ..."));
     }
 
     @Test
-    public void truncatesWithPlusCountUnderCap() {
-        List<SweatReportText.Entry> entries = new ArrayList<SweatReportText.Entry>();
-        for (int i = 0; i < 30; i++) {
-            entries.add(new SweatReportText.Entry("BLUE", false, "Nameeeeeee" + i, "7.7", 7.7, true));
-        }
-        String line = SweatReportText.condense(entries).get(0);
-        assertTrue(line.contains("+"));
+    public void averageIgnoresUnknownMembers() {
+        String line = SweatReportText.lines(Arrays.asList(new SweatReportText.Team("RED", Arrays.asList(
+                known("A", 4.0), known("B", 2.0), unknown("C", "nick"))))).get(0);
+        assertTrue(line.startsWith("RED(3.0): "));
+    }
+
+    @Test
+    public void longTeamTruncatesWithPlusCountUnderCap() {
+        List<SweatReportText.Entry> members = new ArrayList<SweatReportText.Entry>();
+        for (int i = 0; i < 20; i++) members.add(known("LongPlayerName" + i, 7.7));
+        String line = SweatReportText.lines(
+                Arrays.asList(new SweatReportText.Team("YELLOW", members))).get(0);
         assertTrue(line.length() <= SweatReportText.MAX_CONTENT);
+        assertTrue(line.matches(".*\\+\\d+$"));
+    }
+
+    @Test
+    public void capsLineCountAndReportsDroppedTeams() {
+        List<SweatReportText.Team> teams = new ArrayList<SweatReportText.Team>();
+        for (int i = 0; i < 8; i++) {
+            teams.add(new SweatReportText.Team("T" + i, Arrays.asList(known("P" + i, i))));
+        }
+        List<String> lines = SweatReportText.lines(teams);
+        assertEquals(SweatReportText.MAX_LINES, lines.size());
+        assertTrue(lines.get(0).startsWith("T7(")); // sweatiest first
+        assertTrue(lines.get(lines.size() - 1).endsWith(", +4 teams"));
+        for (String line : lines) {
+            assertTrue(line.length() <= SweatReportText.MAX_CONTENT);
+        }
+    }
+
+    @Test
+    public void noDroppedTeamsTailWhenEverythingFits() {
+        List<String> lines = SweatReportText.lines(Arrays.asList(
+                new SweatReportText.Team("RED", Arrays.asList(known("A", 1.0)))));
+        assertEquals(1, lines.size());
+        assertFalse(lines.get(0).contains("teams"));
     }
 }

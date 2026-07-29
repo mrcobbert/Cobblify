@@ -19,14 +19,16 @@ import net.weavemc.api.event.TickEvent;
 import net.weavemc.api.event.WorldEvent;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Once per Bedwars game, after enemy/team stats have resolved, broadcasts a condensed sweat summary
- * to party chat via {@code /pc}. Output is a single line (see {@link SweatReportText}) routed through
- * {@link OutgoingChat}. Delivery is acknowledged by the coordinator — cancelled reports may retry in
- * the same active game without duplicate in-flight submits.
+ * Once per Bedwars game, after enemy/team stats have resolved, broadcasts a sweat rundown to party
+ * chat via {@code /pc}: one line per team, sweatiest first (see {@link SweatReportText}), routed
+ * through {@link OutgoingChat}. Delivery is acknowledged line by line by the coordinator —
+ * cancelled reports may retry in the same active game without duplicate in-flight submits.
  */
 public final class SweatReport {
 
@@ -34,7 +36,8 @@ public final class SweatReport {
 
     private static final int TICK_INTERVAL = 10;
     private static final int REARM_GRACE_SLOTS = 3;
-    private static final long MAX_WAIT_MS = 25_000;
+    /** Give up waiting on unresolved players after this; they report as {@code ...} rather than stall. */
+    private static final long MAX_WAIT_MS = 60_000;
 
     private int ticks;
     private long activeSinceMs;
@@ -68,8 +71,11 @@ public final class SweatReport {
                 || flight == OutgoingChatCore.SweatFlight.DONE) {
             return;
         }
-        // RETRYABLE → IDLE so we may rebuild and resubmit once for this game.
-        OutgoingChat.get().consumeSweatRetry();
+        if (flight == OutgoingChatCore.SweatFlight.RETRYABLE) {
+            // Resumes a partly-sent report, or re-arms us to rebuild it on a later slot.
+            OutgoingChat.get().consumeSweatRetry();
+            return;
+        }
 
         if (activeSinceMs == 0L) activeSinceMs = System.currentTimeMillis();
 
@@ -88,24 +94,14 @@ public final class SweatReport {
         int resolved = 0;
         int needed = enemies.size() + team.size();
         for (NetworkPlayerInfo info : enemies) {
-            UUID id = info.getGameProfile().getId();
-            if (StatsCache.getCached(id) != null) {
-                resolved++;
-            } else {
-                StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
-            }
+            if (countResolved(info)) resolved++;
         }
         for (NetworkPlayerInfo info : team) {
-            UUID id = info.getGameProfile().getId();
-            if (StatsCache.getCached(id) != null) {
-                resolved++;
-            } else {
-                StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
-            }
+            if (countResolved(info)) resolved++;
         }
         if (resolved < needed && !timedOut) return;
 
-        List<String> lines = SweatReportText.condense(buildEntries(enemies, team, board, myColor));
+        List<String> lines = SweatReportText.lines(buildTeams(enemies, team, board, myColor));
         if (DEBUG) {
             System.out.println("[BedwarsQol][SweatReport] fire attempt: " + lines.size() + " line(s), "
                     + resolved + "/" + needed + " players resolved, timedOut=" + timedOut);
@@ -117,7 +113,22 @@ public final class SweatReport {
             OutgoingChat.get().markSweatDone();
             return;
         }
-        OutgoingChat.get().submitSweat("/pc " + lines.get(0));
+        List<String> out = new ArrayList<String>(lines.size());
+        for (String line : lines) out.add("/pc " + line);
+        OutgoingChat.get().submitSweat(out);
+    }
+
+    /**
+     * Whether this player's stats are settled for reporting purposes, queueing a fetch when not.
+     * An ERROR entry does not count: it would otherwise pass the gate instantly and print as a
+     * bogus unknown, where waiting lets the cache's backoff retry inside our window.
+     */
+    private static boolean countResolved(NetworkPlayerInfo info) {
+        UUID id = info.getGameProfile().getId();
+        BedwarsStats stats = StatsCache.getCached(id);
+        if (stats != null && stats.state != BedwarsStats.State.ERROR) return true;
+        StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
+        return false;
     }
 
     private void rearm(String reason) {
@@ -153,41 +164,60 @@ public final class SweatReport {
         return out;
     }
 
-    private static List<SweatReportText.Entry> buildEntries(List<NetworkPlayerInfo> enemies,
-                                                           List<NetworkPlayerInfo> team,
-                                                           Scoreboard board, char myColor) {
+    /** Group every player under their team color — Hypixel gives each player a 1-person scoreboard
+     *  team, so nametag color is the only shared team signal. Our own team is labelled {@code (US)}. */
+    private static List<SweatReportText.Team> buildTeams(List<NetworkPlayerInfo> enemies,
+                                                         List<NetworkPlayerInfo> team,
+                                                         Scoreboard board, char myColor) {
         BedwarsMode mode = BedwarsModeDetector.current();
-        List<SweatReportText.Entry> entries = new ArrayList<SweatReportText.Entry>();
+        Map<Character, List<SweatReportText.Entry>> byColor =
+                new LinkedHashMap<Character, List<SweatReportText.Entry>>();
+
         for (NetworkPlayerInfo info : enemies) {
             GameProfile prof = info.getGameProfile();
             char color = teamColor(board, prof.getName());
             if (color == 0 || color == myColor) continue;
-            entries.add(toEntry(prof, StatsCache.getCached(prof.getId()), mode, color, false));
+            List<SweatReportText.Entry> list = byColor.get(color);
+            if (list == null) {
+                list = new ArrayList<SweatReportText.Entry>();
+                byColor.put(color, list);
+            }
+            list.add(toEntry(prof, StatsCache.getCached(prof.getId()), mode));
         }
-        if (myColor != 0) {
+
+        if (myColor != 0 && !team.isEmpty()) {
+            List<SweatReportText.Entry> ours = new ArrayList<SweatReportText.Entry>();
             for (NetworkPlayerInfo info : team) {
                 GameProfile prof = info.getGameProfile();
-                entries.add(toEntry(prof, StatsCache.getCached(prof.getId()), mode, myColor, true));
+                ours.add(toEntry(prof, StatsCache.getCached(prof.getId()), mode));
             }
+            byColor.put(myColor, ours);
         }
-        return entries;
+
+        List<SweatReportText.Team> teams = new ArrayList<SweatReportText.Team>();
+        for (Map.Entry<Character, List<SweatReportText.Entry>> e : byColor.entrySet()) {
+            char color = e.getKey().charValue();
+            String label = teamName(color) + (color == myColor ? " (US)" : "");
+            teams.add(new SweatReportText.Team(label, e.getValue()));
+        }
+        return teams;
     }
 
-    private static SweatReportText.Entry toEntry(GameProfile prof, BedwarsStats stats, BedwarsMode mode,
-                                                 char color, boolean ours) {
-        String team = teamName(color);
+    private static SweatReportText.Entry toEntry(GameProfile prof, BedwarsStats stats, BedwarsMode mode) {
         if (stats != null && stats.state == BedwarsStats.State.OK) {
             double fkdr = stats.statsFor(mode).fkdr;
-            return new SweatReportText.Entry(team, ours, prof.getName(), SweatReportText.fmt1(fkdr), fkdr, true);
+            return new SweatReportText.Entry(prof.getName(), SweatReportText.fmt1(fkdr), fkdr, true);
         }
-        return new SweatReportText.Entry(team, ours, prof.getName(), tag(stats), 0.0, false);
+        return new SweatReportText.Entry(prof.getName(), tag(stats), 0.0, false);
     }
 
+    /** Short status for a player with no usable FKDR — each cause reads distinctly. */
     private static String tag(BedwarsStats stats) {
-        if (stats == null) return "?";
+        if (stats == null) return "..."; // still fetching when the report fired
         switch (stats.state) {
             case NICKED:       return "nick";
             case NEVER_PLAYED: return "new";
+            case ERROR:        return "err";
             default:           return "?";
         }
     }

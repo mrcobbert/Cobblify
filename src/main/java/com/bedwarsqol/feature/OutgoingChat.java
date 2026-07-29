@@ -56,8 +56,12 @@ public final class OutgoingChat {
         return core.sweatFlight();
     }
 
+    /** Resume a partly-sent report, or re-arm SweatReport to rebuild one. */
     public boolean consumeSweatRetry() {
-        return core.consumeSweatRetry();
+        long now = System.currentTimeMillis();
+        boolean consumed = core.consumeSweatRetry(now);
+        if (consumed) flush(now);
+        return consumed;
     }
 
     public void resetSweatForNewGame() {
@@ -109,9 +113,10 @@ public final class OutgoingChat {
         return true;
     }
 
-    public void submitSweat(String text) {
+    /** Submit a whole report; lines are delivered one per pacing slot. */
+    public void submitSweat(java.util.List<String> lines) {
         long now = System.currentTimeMillis();
-        core.submitSweat(text, liveContext(), now);
+        core.submitSweat(lines, liveContext(), now);
         flush(now);
     }
 
@@ -182,7 +187,8 @@ public final class OutgoingChat {
                 GameSessionTracker.currentSessionId(),
                 currentServerKey(),
                 HypixelContext.isInActiveBedwarsGame(),
-                partyEpoch.current());
+                partyEpoch.current(),
+                partyEpoch.inParty());
     }
 
     private static boolean featureEnabled(OutgoingChatKind kind) {

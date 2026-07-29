@@ -54,7 +54,7 @@ public class OutgoingChatCoreTest {
         core.tick(newParty, 4100L, false, allOn);
         // Party membership ended → Sweat is finalized (not retryable under a new party).
         assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
-        assertFalse(core.consumeSweatRetry());
+        assertFalse(core.consumeSweatRetry(0L));
         assertNull(core.queue().peekAuto());
         assertNotNull(core.queue().peekManual());
 
@@ -71,7 +71,7 @@ public class OutgoingChatCoreTest {
         assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
         core.onPartyEpochAdvanced();
         assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
-        assertFalse(core.consumeSweatRetry());
+        assertFalse(core.consumeSweatRetry(0L));
     }
 
     @Test
@@ -119,7 +119,7 @@ public class OutgoingChatCoreTest {
         assertEquals(OutgoingChatCore.SweatFlight.IN_FLIGHT, core.sweatFlight());
         core.onUserIntent(10L); // cancels optional → retryable
         assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
-        assertTrue(core.consumeSweatRetry());
+        assertTrue(core.consumeSweatRetry(0L));
         assertEquals(OutgoingChatCore.SweatFlight.IDLE, core.sweatFlight());
         core.submitSweat("/pc sweat", ctx, 20L);
         assertEquals(OutgoingChatCore.SweatFlight.IN_FLIGHT, core.sweatFlight());
@@ -131,6 +131,118 @@ public class OutgoingChatCoreTest {
         core.submitSweat("/pc again", ctx, 6000L);
         assertNull(core.queue().peekAuto());
         assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+    }
+
+    @Test
+    public void multiLineSweatDeliversEveryLineInOrder() {
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two", "/pc three"), ctx, 0L);
+        long now = 0L;
+        java.util.List<String> sent = new java.util.ArrayList<String>();
+        for (int i = 0; i < 3; i++) {
+            now += OutgoingChatPolicy.MIN_GAP_MS;
+            assertEquals(OutgoingChatCore.SweatFlight.IN_FLIGHT, core.sweatFlight());
+            OutgoingChatCore.Decision d = core.tick(ctx, now, false, allOn);
+            assertNotNull(d.send);
+            sent.add(d.send.text);
+            core.acknowledgeDelivered(d.send, now);
+        }
+        assertEquals(java.util.Arrays.asList("/pc one", "/pc two", "/pc three"), sent);
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+        assertNull(core.queue().peekAuto());
+    }
+
+    @Test
+    public void reportLinesAfterTheFirstUseTheOldHalfSecondCadence() {
+        // Prime a prior send so the first report line actually has a gap to wait out.
+        core.acknowledgeDelivered(core.newRequest(OutgoingChatKind.INC, "/pc INC", ctx, 0L), 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two"), ctx, 0L);
+
+        // The first line still pays the full gap.
+        assertNull(core.tick(ctx, OutgoingChatPolicy.MIN_GAP_MS - 1, false, allOn).send);
+        OutgoingChatCore.Decision first = core.tick(ctx, OutgoingChatPolicy.MIN_GAP_MS, false, allOn);
+        assertEquals("/pc one", first.send.text);
+        core.acknowledgeDelivered(first.send, OutgoingChatPolicy.MIN_GAP_MS);
+
+        // The rest follow at SWEAT_LINE_GAP_MS, not MIN_GAP_MS.
+        long tooSoon = OutgoingChatPolicy.MIN_GAP_MS + OutgoingChatPolicy.SWEAT_LINE_GAP_MS - 1;
+        assertNull(core.tick(ctx, tooSoon, false, allOn).send);
+        OutgoingChatCore.Decision second = core.tick(ctx, tooSoon + 1, false, allOn);
+        assertEquals("/pc two", second.send.text);
+    }
+
+    @Test
+    public void interruptMidBatchResumesRemainderWithoutRepeating() {
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two", "/pc three"), ctx, 0L);
+        OutgoingChatCore.Decision first = core.tick(ctx, 2500L, false, allOn);
+        assertEquals("/pc one", first.send.text);
+        core.acknowledgeDelivered(first.send, 2500L);
+
+        core.onUserIntent(2600L); // typed chat cancels the queued "/pc two"
+        assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
+
+        assertTrue(core.consumeSweatRetry(2700L));
+        assertEquals(OutgoingChatCore.SweatFlight.IN_FLIGHT, core.sweatFlight());
+        OutgoingChatCore.Decision resumed = core.tick(ctx, 9000L, false, allOn);
+        assertEquals("/pc two", resumed.send.text); // resumed, not restarted
+        core.acknowledgeDelivered(resumed.send, 9000L);
+        OutgoingChatCore.Decision last = core.tick(ctx, 12000L, false, allOn);
+        assertEquals("/pc three", last.send.text);
+        core.acknowledgeDelivered(last.send, 12000L);
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+    }
+
+    @Test
+    public void interruptBeforeAnyLineSentRebuildsFromScratch() {
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two"), ctx, 0L);
+        core.onUserIntent(10L);
+        assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
+        assertTrue(core.consumeSweatRetry(20L));
+        // Nothing reached the wire, so the stale batch is dropped and SweatReport may rebuild.
+        assertEquals(OutgoingChatCore.SweatFlight.IDLE, core.sweatFlight());
+        assertNull(core.queue().peekAuto());
+        core.submitSweat(java.util.Arrays.asList("/pc fresh"), ctx, 30L);
+        assertEquals("/pc fresh", core.queue().peekAuto().text);
+    }
+
+    @Test
+    public void partyEndMidBatchDropsTheRemainder() {
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two"), ctx, 0L);
+        OutgoingChatCore.Decision first = core.tick(ctx, 2500L, false, allOn);
+        core.acknowledgeDelivered(first.send, 2500L);
+        core.onPartyEpochAdvanced();
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+        assertFalse(core.consumeSweatRetry(2600L));
+        assertNull(core.queue().peekAuto());
+    }
+
+    @Test
+    public void knownPartylessDropsSweatBatchTail() {
+        core.submitSweat(java.util.Arrays.asList("/pc one", "/pc two", "/pc three"), ctx, 0L);
+        OutgoingChatCore.Decision first = core.tick(ctx, 2500L, false, allOn);
+        assertEquals("/pc one", first.send.text); // one line escapes, then Hypixel tells us
+        core.acknowledgeDelivered(first.send, 2500L);
+
+        OutgoingChatCore.LiveContext partyless =
+                new OutgoingChatCore.LiveContext(1, "hypixel.net", true, 0, false);
+        assertNull(core.tick(partyless, 5000L, false, allOn).send);
+        assertNull(core.queue().peekAuto());
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+        assertFalse(core.consumeSweatRetry(5100L));
+    }
+
+    @Test
+    public void knownPartylessDropsIncButSparesPublicAndAutoGg() {
+        OutgoingChatCore.LiveContext partyless =
+                new OutgoingChatCore.LiveContext(1, "hypixel.net", true, 0, false);
+        assertTrue(core.submitInc("/pc INC", partyless, 0L, 0L));
+        assertNull(core.tick(partyless, 5000L, false, allOn).send);
+        assertNull(core.queue().peekInc());
+        assertFalse(core.isIncInFlight());
+        assertTrue(core.canSubmitInc(5000L, 2000L)); // cooldown not burnt
+
+        // Non-party traffic is untouched by the gate.
+        core.submit(OutgoingChatKind.AUTOGG, "gg", partyless, 5000L);
+        assertNotNull(core.tick(partyless, 8000L, false, allOn).send);
     }
 
     @Test
