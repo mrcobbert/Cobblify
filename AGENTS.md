@@ -5,15 +5,19 @@
 - This is a Java 8 Minecraft 1.8.9 Forge mod built with Gradle.
 - Forge source lives under `src/main/`; Lunar (Weave) source under `lunar/src/main/`.
 - `common/src/` holds code that is identical on both platforms and imports no Minecraft, Forge,
-  Weave, LWJGL or Mixin type. **Both builds compile it** via one `srcDir` line each. Edit it once.
+  Weave, LWJGL or Mixin type. **Both builds compile it**, as additional main and test source
+  directories. Edit it once.
 - The two platform trees still mirror each other for 48 main files. Some differ on purpose, some
   are identical but touch `net.minecraft` and were left alone. Before changing a mirrored file,
   compare both trees and keep intentional equivalents synchronized.
 - `tools/tree-divergence.txt` declares every legitimate difference: pairs allowed to differ, and
   files that exist on one side only. `tools/check-tree-drift.sh` enforces it and runs in CI ahead
   of release publishing. If you make the trees differ, declare it there or CI fails.
-- Adding a file to `common/` is only correct if it is already byte-identical in both trees and has
-  no platform imports. If it needs an edit to compile on both, it does not belong there.
+- Writing **new** platform-neutral code? Put it straight in `common/`. Do not create a copy in each
+  tree first - that is the duplication this layout exists to prevent.
+- **Moving an existing mirrored file** into `common/` is only correct if the two copies are already
+  byte-identical and it has no platform imports. If it needs an edit to compile on both, it does
+  not belong there.
 - Build with `./gradlew build` (Forge, JDK 17-21) and `./gradlew build` in `lunar/`. Run narrower
   relevant checks first when available. Note `harness.LaneContrastTest` is a wall-clock benchmark,
   not a correctness test - it dominates the Forge suite runtime and is timing-sensitive.
