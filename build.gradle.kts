@@ -77,6 +77,15 @@ val modShade: Configuration by configurations.creating {
 sourceSets {
     main {
         output.setResourcesDir(java.classesDirectory)
+        // Code that is byte-identical between the Forge and Lunar trees and imports nothing
+        // platform-specific lives once in `common/` and is compiled by both builds. Added, not
+        // replaced: the multi-version plugin sets this source set's srcDirs during plugin
+        // application, so this runs after it. See tools/check-tree-drift.sh for what keeps the
+        // still-mirrored files honest.
+        java.srcDir(rootProject.file("common/src/main/java"))
+    }
+    test {
+        java.srcDir(rootProject.file("common/src/test/java"))
     }
 }
 

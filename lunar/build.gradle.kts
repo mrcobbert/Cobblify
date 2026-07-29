@@ -50,3 +50,11 @@ java {
         languageVersion.set(JavaLanguageVersion.of(8))
     }
 }
+
+// Code that is byte-identical between the Forge and Lunar trees and imports nothing
+// platform-specific lives once in `common/` (repo root, one level up from this build) and is
+// compiled by both. See tools/check-tree-drift.sh for what keeps the still-mirrored files honest.
+sourceSets {
+    main { java.srcDir(rootDir.parentFile.resolve("common/src/main/java")) }
+    test { java.srcDir(rootDir.parentFile.resolve("common/src/test/java")) }
+}
