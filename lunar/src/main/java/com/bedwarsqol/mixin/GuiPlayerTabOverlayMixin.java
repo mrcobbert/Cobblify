@@ -27,6 +27,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Keeps Minecraft's default tab player list, but adds client tweaks on top of it:
@@ -104,12 +106,30 @@ public abstract class GuiPlayerTabOverlayMixin {
         return HypixelContext.isInActiveBedwarsGame();
     }
 
+    /**
+     * Per-render-pass memo of each player's stats overlay text ("" = none), so the reserve math and the
+     * draw build it once per frame instead of three times per player — and agree on the same string even
+     * if a background fetch lands mid-frame. Cleared at the start of every {@code renderPlayerlist}.
+     */
+    private static final Map<NetworkPlayerInfo, String> bedwarsqol$statsMemo = new HashMap<>();
+
+    /** Memoized {@link TabListLookup#statsTextForPlayerInfo}, never null ("" = no overlay). */
+    private static String bedwarsqol$statsFor(NetworkPlayerInfo info) {
+        String s = bedwarsqol$statsMemo.get(info);
+        if (s == null) {
+            s = TabListLookup.statsTextForPlayerInfo(info);
+            if (s == null) s = "";
+            bedwarsqol$statsMemo.put(info, s);
+        }
+        return s;
+    }
+
     /** Width (px) the right-hand zone needs for one player: ping value (or vanilla bar) + stats overlay. */
     private static int bedwarsqol$rightReserveFor(FontRenderer fr, NetworkPlayerInfo info) {
         // Vanilla's 13px bar reserve; the ping element is hidden entirely in an active game (reserves nothing).
         int reserve = bedwarsqol$hidePing() ? 0 : VANILLA_PING_RESERVE;
-        String stats = TabListLookup.statsTextForPlayerInfo(info);
-        if (stats != null && !stats.isEmpty()) {
+        String stats = bedwarsqol$statsFor(info);
+        if (!stats.isEmpty()) {
             // Scaled stats width + 2px gap to the score column + 2px safety.
             reserve += (int) Math.ceil(fr.getStringWidth(stats) * bedwarsqol$statsScale()) + 4;
         }
@@ -213,6 +233,7 @@ public abstract class GuiPlayerTabOverlayMixin {
 
     @Inject(method = "renderPlayerlist", at = @At("HEAD"), require = 0)
     private void bedwarsqol$tabStart(int width, Scoreboard scoreboard, ScoreObjective objective, CallbackInfo ci) {
+        bedwarsqol$statsMemo.clear();
         if (BedwarsQol.config != null && BedwarsQol.config.tabHideHeaderFooter) {
             bedwarsqol$savedHeader = this.header;
             bedwarsqol$savedFooter = this.footer;
@@ -240,6 +261,7 @@ public abstract class GuiPlayerTabOverlayMixin {
 
     @Inject(method = "renderPlayerlist", at = @At("RETURN"), require = 0)
     private void bedwarsqol$tabEnd(int width, Scoreboard scoreboard, ScoreObjective objective, CallbackInfo ci) {
+        bedwarsqol$statsMemo.clear(); // don't hold NetworkPlayerInfo refs between frames
         GlStateManager.popMatrix();
         if (bedwarsqol$restoreHeaderFooter) {
             this.header = bedwarsqol$savedHeader;
@@ -279,8 +301,8 @@ public abstract class GuiPlayerTabOverlayMixin {
         // Stats / flags overlay, scaled down and right-aligned inside the reserved zone (left of the ping).
         // The reserve in bedwarsqol$widenPingReserve accounts for the vanilla sidebar-score column, so we
         // don't subtract it here — the score (when present) sits in its own column to the left of this zone.
-        String stats = TabListLookup.statsTextForPlayerInfo(info);
-        if (stats != null && !stats.isEmpty()) {
+        String stats = bedwarsqol$statsFor(info);
+        if (!stats.isEmpty()) {
             float statsScale = bedwarsqol$statsScale();
             float scaledWidth = fr.getStringWidth(stats) * statsScale;
             float drawX = rightEdge - scaledWidth;
