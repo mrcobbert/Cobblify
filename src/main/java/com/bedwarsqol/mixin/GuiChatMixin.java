@@ -5,16 +5,19 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.AlertCopyReason;
 import com.bedwarsqol.feature.ChatCopyAccess;
 import com.bedwarsqol.feature.ChatHoverStats;
+import com.bedwarsqol.feature.ChatLengthLimit;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiChat;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.GuiTextField;
 import net.minecraft.util.ChatStyle;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Mouse;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -35,6 +38,28 @@ import java.util.List;
 // correctly at runtime (a @Shadow can't see it — it lives on GuiChat's superclass, not GuiChat).
 @Mixin(GuiChat.class)
 public abstract class GuiChatMixin extends GuiScreen {
+
+    @Shadow protected GuiTextField inputField;
+    @Shadow private String defaultInputFieldText;
+
+    /**
+     * Lifts the typing/pasting half of the 1.8.9 chat length cap. Vanilla {@code initGui} ends with
+     * {@code inputField.setMaxStringLength(100)}, and {@code GuiTextField.writeText} clamps to it — so
+     * without this a pasted line (a copied alert plus its reason, say) is silently cut at 100.
+     *
+     * <p>The default text is re-applied when it was long enough to have been clipped by vanilla's own
+     * {@code setText} call, which ran while the field was still capped at 100.
+     */
+    @Inject(method = "initGui", at = @At("RETURN"))
+    private void bedwarsqol$extendInput(CallbackInfo ci) {
+        int limit = ChatLengthLimit.limit();
+        if (limit <= ChatLengthLimit.VANILLA || this.inputField == null) return;
+        this.inputField.setMaxStringLength(limit);
+        if (this.defaultInputFieldText != null
+                && this.defaultInputFieldText.length() > ChatLengthLimit.VANILLA) {
+            this.inputField.setText(ChatLengthLimit.clamp(this.defaultInputFieldText, limit));
+        }
+    }
 
     @Inject(method = "drawScreen", at = @At("RETURN"))
     private void bedwarsqol$chatHoverStats(int mouseX, int mouseY, float partialTicks, CallbackInfo ci) {

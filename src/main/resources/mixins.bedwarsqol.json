@@ -16,6 +16,7 @@
     "FontRendererMixin",
     "GuiScreenMixin",
     "EntityPlayerSPMixin",
+    "C01PacketChatMessageMixin",
     "ItemRendererMixin"
   ],
   "verbose": true

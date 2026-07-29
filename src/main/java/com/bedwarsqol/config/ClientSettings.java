@@ -123,6 +123,12 @@ public class ClientSettings {
     public boolean chatNotifyInc = true;
     /** Copy Chat: right-click a chat line while chat is open to copy the full message to the clipboard. */
     public boolean chatCopy = false;
+    /**
+     * Longer Messages: raise the 1.8.9 chat cap from 100 to 256 characters (the modern-vanilla limit)
+     * while connected to Hypixel. Applies to typing, pasting, and every message the mod sends.
+     * See {@link com.bedwarsqol.feature.ChatLengthLimit}.
+     */
+    public boolean chatLongMessages = false;
     /** Send INC keybind: the "Send /pc INC" key (Controls menu) sends /pc INC with a 2s cooldown. */
     public boolean pcIncKey = true;
 

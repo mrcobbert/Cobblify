@@ -85,6 +85,8 @@ public class SettingsGui extends GuiScreen {
             K_STACK_TIME = 96, K_STACK_WINDOW = 97, K_STACK_BLANKS = 98,
             K_CHAT_NOTIFY = 99, K_NOTIFY_MENTION = 100, K_NOTIFY_INC = 101,
             K_CHAT_COPY = 102, K_INC_KEY = 103;
+    // Longer Messages: 100 -> 256 character chat cap on Hypixel (Forge tree only).
+    private static final int K_CHAT_LONG = 117;
     // Urchin Tags module (master toggle) + its sub-settings (kind numbers shared with the Lunar tree).
     private static final int K_URCHIN = 104, K_URCHIN_BADGE_TAB = 105, K_URCHIN_CHAT_ALERT = 106,
             K_URCHIN_SOUND = 107, K_URCHIN_BADGE_NAMETAG = 108;
@@ -217,6 +219,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Mention Sound", K_NOTIFY_MENTION, null, K_CHAT_NOTIFY),
                     new RowDef(RowType.TOGGLE, "Inc Alert", K_NOTIFY_INC, null, K_CHAT_NOTIFY),
                     new RowDef(RowType.TOGGLE, "Copy Chat", "Right-click a message to copy it", K_CHAT_COPY),
+                    new RowDef(RowType.TOGGLE, "Longer Messages", "Hypixel only: 256-character chat cap", K_CHAT_LONG),
                     new RowDef(RowType.TOGGLE, "Send INC Keybind", "Key sends /pc INC (bind in Controls)", K_INC_KEY)),
             new Section("Hypixel",
                     new RowDef(RowType.TOGGLE, "Hypixel Stats", "BedWars stats on screen", K_STATS),
@@ -1660,6 +1663,7 @@ public class SettingsGui extends GuiScreen {
             case K_NOTIFY_MENTION: return cfg.chatNotifyMention;
             case K_NOTIFY_INC: return cfg.chatNotifyInc;
             case K_CHAT_COPY: return cfg.chatCopy;
+            case K_CHAT_LONG: return cfg.chatLongMessages;
             case K_INC_KEY: return cfg.pcIncKey;
             case K_URCHIN: return cfg.urchinTags;
             case K_URCHIN_BADGE_TAB: return cfg.urchinBadgeTab;
@@ -1723,6 +1727,7 @@ public class SettingsGui extends GuiScreen {
             case K_NOTIFY_MENTION: cfg.chatNotifyMention = !cfg.chatNotifyMention; break;
             case K_NOTIFY_INC: cfg.chatNotifyInc = !cfg.chatNotifyInc; break;
             case K_CHAT_COPY: cfg.chatCopy = !cfg.chatCopy; break;
+            case K_CHAT_LONG: cfg.chatLongMessages = !cfg.chatLongMessages; break;
             case K_INC_KEY: cfg.pcIncKey = !cfg.pcIncKey; break;
             case K_URCHIN: cfg.urchinTags = !cfg.urchinTags; StatsCache.invalidateUrchinResolution(); break;
             case K_URCHIN_BADGE_TAB: cfg.urchinBadgeTab = !cfg.urchinBadgeTab; break;
