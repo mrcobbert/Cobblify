@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("net.weavemc.gradle") version "1.3.3"
 }
@@ -51,10 +53,42 @@ java {
     }
 }
 
+// Bakes the optional owner backend into the jar as the `cobblify-backend.properties` resource read
+// by com.bedwarsqol.stats.BackendDefaults. Values come from ~/.gradle/gradle.properties
+// (cobblifyBackendUrl / cobblifyBackendToken) only — never the command line — and are never echoed.
+// With the properties unset the resource carries empty values and the jar behaves exactly as a
+// build without them (self-host / CI case).
+val backendPropsDir = layout.buildDirectory.dir("generated/backendProps")
+val generateBackendProperties by tasks.registering {
+    val url = providers.gradleProperty("cobblifyBackendUrl").orElse("")
+    val token = providers.gradleProperty("cobblifyBackendToken").orElse("")
+    inputs.property("cobblifyBackendUrl", url)
+    inputs.property("cobblifyBackendToken", token)
+    outputs.dir(backendPropsDir)
+    doLast {
+        val file = backendPropsDir.get().file("cobblify-backend.properties").asFile
+        file.parentFile.mkdirs()
+        val props = Properties()
+        props.setProperty("url", url.get())
+        props.setProperty("token", token.get())
+        file.outputStream().use { props.store(it, null) }
+    }
+}
+
+tasks.processResources {
+    dependsOn(generateBackendProperties)
+}
+
 // Code that is byte-identical between the Forge and Lunar trees and imports nothing
 // platform-specific lives once in `common/` (repo root, one level up from this build) and is
 // compiled by both. See tools/check-tree-drift.sh for what keeps the still-mirrored files honest.
 sourceSets {
-    main { java.srcDir(rootDir.parentFile.resolve("common/src/main/java")) }
-    test { java.srcDir(rootDir.parentFile.resolve("common/src/test/java")) }
+    main {
+        java.srcDir(rootDir.parentFile.resolve("common/src/main/java"))
+        resources.srcDir(backendPropsDir)
+    }
+    test {
+        java.srcDir(rootDir.parentFile.resolve("common/src/test/java"))
+        resources.srcDir(rootDir.parentFile.resolve("common/src/test/resources"))
+    }
 }

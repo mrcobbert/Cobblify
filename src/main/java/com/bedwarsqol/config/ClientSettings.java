@@ -1,6 +1,8 @@
 package com.bedwarsqol.config;
 
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.stats.BackendDefaults;
+import com.bedwarsqol.stats.BackendTarget;
 import org.lwjgl.input.Keyboard;
 
 import java.util.Locale;
@@ -197,18 +199,31 @@ public class ClientSettings {
      */
     public boolean queueNickAlert = false;
 
-    // Stats come from a Cloudflare Worker that each user self-hosts (see server/stats-worker). No
-    // public backend is shipped — never commit a real URL or token here. Users set their own via
-    // /bedwarsqol statsurl <url> and (optionally) /bedwarsqol statstoken <token>.
-    /** No default backend: empty until the user points the mod at their own self-hosted Worker. */
+    // A backend may be baked into the jar at build time via the cobblify-backend.properties
+    // resource (see BackendDefaults / the generateBackendProperties Gradle task) — never commit a
+    // real URL or token here. These fields hold only user overrides, set via
+    // /cobblify statsurl <url> and (optionally) /cobblify statstoken <token>; the baked pair is
+    // never written into them, so it is never persisted to cobblify.json, and the baked token
+    // never pairs with a non-baked URL (see backendTarget()).
+    /** No default in the field: empty = fall back to the baked backend, if any. */
     public static final String DEFAULT_STATS_BACKEND_URL = "";
-    /** Base URL of the user's stats Worker. Empty = stats disabled until set. */
+    /** User-override base URL of the stats Worker. Empty = use the baked backend (stats disabled
+     *  when none is baked either). */
     public String statsBackendUrl = DEFAULT_STATS_BACKEND_URL;
     /** No default token. */
     public static final String DEFAULT_STATS_BACKEND_TOKEN = "";
-    /** Optional secret sent as the {@code X-BedwarsQol-Token} header, matching the Worker's STATS_TOKEN
-     *  secret. Empty = send no token (open backend). */
+    /** Optional user secret sent as the {@code X-BedwarsQol-Token} header, matching the Worker's
+     *  STATS_TOKEN secret. Only ever accompanies a user-set URL. Empty = send no token. */
     public String statsBackendToken = DEFAULT_STATS_BACKEND_TOKEN;
+
+    /** The URL/token pair to use for the stats backend, resolved atomically.
+     *  User-set URL wins and is only ever paired with the user's own token;
+     *  the baked token is only ever paired with the baked URL. */
+    public BackendTarget backendTarget() {
+        String u = statsBackendUrl == null ? "" : statsBackendUrl.trim();
+        if (!u.isEmpty()) return new BackendTarget(u, statsBackendToken == null ? "" : statsBackendToken.trim());
+        return new BackendTarget(BackendDefaults.url(), BackendDefaults.token());
+    }
 
     public int settingsKeyCode = Keyboard.KEY_RSHIFT;
 

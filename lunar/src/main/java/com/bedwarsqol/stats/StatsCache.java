@@ -122,19 +122,15 @@ public final class StatsCache {
     private StatsCache() {}
 
     private static boolean useBackend() {
-        return statsBackendUrl() != null;
+        return backendTarget() != null;
     }
 
-    private static String statsBackendUrl() {
+    /** The resolved backend, or null when none is configured. Captured once per operation so the
+     *  URL and token can never come from two different resolutions (user vs baked). */
+    private static BackendTarget backendTarget() {
         if (BedwarsQol.config == null) return null;
-        String u = BedwarsQol.config.statsBackendUrl;
-        if (u == null) return null;
-        u = u.trim();
-        return u.isEmpty() ? null : u;
-    }
-
-    private static String statsBackendToken() {
-        return BedwarsQol.config == null ? null : BedwarsQol.config.statsBackendToken;
+        BackendTarget t = BedwarsQol.config.backendTarget();
+        return t.isConfigured() ? t : null;
     }
 
     public static BedwarsStats getCached(UUID uuid) {
@@ -390,7 +386,7 @@ public final class StatsCache {
         }
         LIMITER.awaitSlot();
 
-        String backend = statsBackendUrl();
+        BackendTarget backend = backendTarget();
         if (backend == null) {
             throw new ScraperBackendClient.BackendException("Stats backend not configured");
         }
@@ -401,7 +397,7 @@ public final class StatsCache {
             return BedwarsStats.nicked();
         }
         // /bw is the player waiting on a lookup they typed: high lane, same as PRIORITY_USER queue work.
-        BedwarsStats stats = ScraperBackendClient.fetch(name, backend, statsBackendToken(), force,
+        BedwarsStats stats = ScraperBackendClient.fetch(name, backend.url, backend.token, force,
                 null, null, null, null, true);
         put(uuid.toString(), stats);
         return stats;
@@ -474,13 +470,13 @@ public final class StatsCache {
             try {
                 Entry e = liveEntry(t.key);
                 if (e != null && !needsAnyRefresh(t, e, now)) return;
-                String backend = statsBackendUrl();
+                BackendTarget backend = backendTarget();
                 if (backend == null || t.playerName == null || t.playerName.isEmpty()) return;
                 String urchinUuid = urchinSendUuid(t); // null unless send-time recheck passes
                 String seraphUuid = seraphSendUuid(t);
                 UrchinResult[] uHolder = {null};
                 SeraphResult[] sHolder = {null};
-                BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend, statsBackendToken(),
+                BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend.url, backend.token,
                         false, urchinUuid, r -> uHolder[0] = r, seraphUuid, r -> sHolder[0] = r,
                         t.priority <= PRIORITY_VISIBLE);
                 putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
@@ -503,7 +499,9 @@ public final class StatsCache {
         final int uGen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops these results' tags
         final int sGen = SERAPH_GEN.get();
         FETCHERS.submit(() -> {
-            String backend = statsBackendUrl();
+            BackendTarget target = backendTarget(); // one capture for the batch + its fallback singles
+            String backend = target == null ? null : target.url;
+            String token = target == null ? null : target.token;
             long now = System.currentTimeMillis();
             // Map requested name -> task(s) (a name may back multiple keys); track who resolves.
             Map<String, List<Task>> byName = new HashMap<>();
@@ -576,7 +574,7 @@ public final class StatsCache {
             boolean high = batch.get(0).priority <= PRIORITY_VISIBLE;
             try {
                 DiagLog.log("BATCH n=" + nameList.size());
-                ScraperBackendClient.fetchBatchStreaming(nameList, backend, statsBackendToken(),
+                ScraperBackendClient.fetchBatchStreaming(nameList, backend, token,
                         (name, stats) -> {
                             List<Task> ts = byName.get(name);
                             if (ts == null) return;
@@ -659,7 +657,7 @@ public final class StatsCache {
                                         UrchinResult[] uHolder = {null};
                                         SeraphResult[] sHolder = {null};
                                         BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend,
-                                                statsBackendToken(), false, urchinUuid, r -> uHolder[0] = r,
+                                                token, false, urchinUuid, r -> uHolder[0] = r,
                                                 seraphUuid, r -> sHolder[0] = r,
                                                 t.priority <= PRIORITY_VISIBLE);
                                         putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,

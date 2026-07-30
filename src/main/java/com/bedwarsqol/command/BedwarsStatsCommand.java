@@ -39,8 +39,7 @@ public final class BedwarsStatsCommand {
             return;
         }
 
-        boolean backend = BedwarsQol.config.statsBackendUrl != null
-                && !BedwarsQol.config.statsBackendUrl.trim().isEmpty();
+        boolean backend = BedwarsQol.config.backendTarget().isConfigured();
         if (!backend) {
             sendChat("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
             return;

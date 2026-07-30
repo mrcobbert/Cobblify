@@ -1,5 +1,6 @@
 package com.bedwarsqol.config;
 
+import com.bedwarsqol.stats.BackendTarget;
 import com.google.gson.Gson;
 import org.junit.Test;
 
@@ -30,5 +31,58 @@ public class ClientSettingsStaleKeysTest {
         assertFalse("anticheat key is gone", out.contains("anticheat"));
         assertFalse("per-check keys are gone", out.contains("acAntiKb"));
         assertFalse("fusion key is gone", out.contains("urchinAcFusion"));
+    }
+
+    // Backend resolution (backendTarget()): the test classpath carries a canary
+    // cobblify-backend.properties (common/src/test/resources), so the "baked" pair is observable
+    // here without a real build-time injection. See BackendDefaultsTest for the parsing rules.
+    private static final String BAKED_URL = "https://baked-canary.test";
+    private static final String BAKED_TOKEN = "BAKED_CANARY_TOKEN_00000000";
+
+    @Test
+    public void emptyFieldsResolveTheBakedPair() {
+        ClientSettings s = new ClientSettings();
+        s.sanitize();
+        BackendTarget t = s.backendTarget();
+        assertEquals("a config predating the change picks up the baked URL", BAKED_URL, t.url);
+        assertEquals(BAKED_TOKEN, t.token);
+        assertTrue(t.isConfigured());
+    }
+
+    @Test
+    public void customUrlNeverPairsWithTheBakedToken() {
+        ClientSettings s = new ClientSettings();
+        s.statsBackendUrl = "https://my-own.example";
+        BackendTarget t = s.backendTarget();
+        assertEquals("https://my-own.example", t.url);
+        assertEquals("no user token set -> no token at all, never the baked one", "", t.token);
+        s.statsBackendToken = "user-token";
+        t = s.backendTarget();
+        assertEquals("https://my-own.example", t.url);
+        assertEquals("user-token", t.token);
+    }
+
+    @Test
+    public void clearingTheCustomUrlFallsBackToBaked() {
+        ClientSettings s = new ClientSettings();
+        s.statsBackendUrl = "https://my-own.example";
+        s.statsBackendToken = "user-token";
+        s.statsBackendUrl = ClientSettings.DEFAULT_STATS_BACKEND_URL; // what `statsurl clear` does
+        BackendTarget t = s.backendTarget();
+        assertEquals(BAKED_URL, t.url);
+        assertEquals(BAKED_TOKEN, t.token);
+    }
+
+    @Test
+    public void savedJsonNeverContainsBakedValues() {
+        ClientSettings s = new ClientSettings();
+        s.sanitize();
+        s.backendTarget(); // resolution must not write anything into the persisted fields
+        String out = GSON.toJson(s);
+        assertFalse("baked URL never persisted", out.contains(BAKED_URL));
+        assertFalse("baked token never persisted", out.contains(BAKED_TOKEN));
+        // The persisted key set is unchanged: the user-override fields still serialize, empty.
+        assertTrue(out.contains("\"statsBackendUrl\":\"\""));
+        assertTrue(out.contains("\"statsBackendToken\":\"\""));
     }
 }

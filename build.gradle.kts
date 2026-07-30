@@ -2,6 +2,7 @@
 
 import org.polyfrost.gradle.util.noServerRunConfigs
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import java.util.Properties
 
 // Adds support for kotlin, and adds the Polyfrost Gradle Toolkit
 // which we use to prepare the environment.
@@ -73,10 +74,33 @@ val modShade: Configuration by configurations.creating {
     configurations.modImplementation.get().extendsFrom(this)
 }
 
+// Bakes the optional owner backend into the jar as the `cobblify-backend.properties` resource read
+// by com.bedwarsqol.stats.BackendDefaults. Values come from ~/.gradle/gradle.properties
+// (cobblifyBackendUrl / cobblifyBackendToken) only — never the command line — and are never echoed.
+// With the properties unset the resource carries empty values and the jar behaves exactly as a
+// build without them (self-host / CI case).
+val backendPropsDir = layout.buildDirectory.dir("generated/backendProps")
+val generateBackendProperties by tasks.registering {
+    val url = providers.gradleProperty("cobblifyBackendUrl").orElse("")
+    val token = providers.gradleProperty("cobblifyBackendToken").orElse("")
+    inputs.property("cobblifyBackendUrl", url)
+    inputs.property("cobblifyBackendToken", token)
+    outputs.dir(backendPropsDir)
+    doLast {
+        val file = backendPropsDir.get().file("cobblify-backend.properties").asFile
+        file.parentFile.mkdirs()
+        val props = Properties()
+        props.setProperty("url", url.get())
+        props.setProperty("token", token.get())
+        file.outputStream().use { props.store(it, null) }
+    }
+}
+
 // Configures the output directory for when building from the `src/resources` directory.
 sourceSets {
     main {
         output.setResourcesDir(java.classesDirectory)
+        resources.srcDir(backendPropsDir)
         // Code that is byte-identical between the Forge and Lunar trees and imports nothing
         // platform-specific lives once in `common/` and is compiled by both builds. Added, not
         // replaced: the multi-version plugin sets this source set's srcDirs during plugin
@@ -86,6 +110,7 @@ sourceSets {
     }
     test {
         java.srcDir(rootProject.file("common/src/test/java"))
+        resources.srcDir(rootProject.file("common/src/test/resources"))
     }
 }
 
@@ -115,6 +140,7 @@ tasks {
     // Processes the `src/resources/mcmod.info`, `fabric.mod.json`, or `mixins.${mod_id}.json` and replaces
     // the mod id, name and version with the ones in `gradle.properties`
     processResources {
+        dependsOn(generateBackendProperties)
         inputs.property("id", mod_id)
         inputs.property("name", mod_name)
         val java = if (project.platform.mcMinor >= 18) {

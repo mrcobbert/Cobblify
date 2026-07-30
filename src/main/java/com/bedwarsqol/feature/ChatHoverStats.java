@@ -56,8 +56,8 @@ public final class ChatHoverStats {
         if (cfg == null || !cfg.playerStats || !cfg.playerStatsChatHover) return null;
         if (hovered == null) return null;
         if (!HypixelContext.isOnHypixel()) return null;
-        // No self-hosted backend configured -> we could never fill the card; leave vanilla alone.
-        if (cfg.statsBackendUrl == null || cfg.statsBackendUrl.trim().isEmpty()) return null;
+        // No backend configured (user-set or baked) -> we could never fill the card; leave vanilla alone.
+        if (!cfg.backendTarget().isConfigured()) return null;
 
         String name = ChatSender.extractName(hovered);
         if (name == null) return null;

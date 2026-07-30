@@ -2,6 +2,7 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.MojangNameResolver;
@@ -90,8 +91,9 @@ public final class QueueAlert {
         final boolean wantNick = cfg.queueNickAlert;
         final boolean urchin = cfg.urchinTags;
         final boolean seraph = cfg.seraphTags;
-        final String url = cfg.statsBackendUrl;
-        final String token = cfg.statsBackendToken;
+        final BackendTarget backend = cfg.backendTarget(); // one atomic capture per lookup
+        final String url = backend.url;
+        final String token = backend.token;
         final String name = sender;
         EXEC.submit(() -> lookup(name, wantTag, wantNick, urchin, seraph, url, token));
     }

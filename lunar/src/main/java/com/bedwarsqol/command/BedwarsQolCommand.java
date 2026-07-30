@@ -5,6 +5,7 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ModChat;
 import com.bedwarsqol.gui.SettingsGui;
+import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.ChatComponentText;
@@ -173,10 +174,13 @@ public class BedwarsQolCommand extends Command {
     private void handleStatsUrl(String[] args) {
         ClientSettings cfg = settings();
         if (args.length < 2 || "show".equalsIgnoreCase(args[1])) {
-            if (cfg.statsBackendUrl.isEmpty()) {
+            BackendTarget resolved = cfg.backendTarget();
+            if (!resolved.isConfigured()) {
                 send("§eNo stats backend URL set. Use §f/cobblify statsurl <url>§e.");
+            } else if (cfg.statsBackendUrl.isEmpty()) {
+                send("§aStats backend: §f" + resolved.url + " §7(built-in)");
             } else {
-                send("§aStats backend: §f" + cfg.statsBackendUrl);
+                send("§aStats backend: §f" + resolved.url);
             }
             return;
         }
@@ -252,9 +256,10 @@ public class BedwarsQolCommand extends Command {
             return;
         }
         final String name = args[1].trim();
-        final String url = cfg.statsBackendUrl;
-        final String token = cfg.statsBackendToken;
-        if (url == null || url.trim().isEmpty()) {
+        final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
+        final String url = backend.url;
+        final String token = backend.token;
+        if (url.isEmpty()) {
             send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
             return;
         }
@@ -312,9 +317,10 @@ public class BedwarsQolCommand extends Command {
             return;
         }
         final String name = args[1].trim();
-        final String url = cfg.statsBackendUrl;
-        final String token = cfg.statsBackendToken;
-        if (url == null || url.trim().isEmpty()) {
+        final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
+        final String url = backend.url;
+        final String token = backend.token;
+        if (url.isEmpty()) {
             send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
             return;
         }
@@ -373,9 +379,10 @@ public class BedwarsQolCommand extends Command {
                 return;
             }
             ClientSettings cfg = settings();
-            final String url = cfg.statsBackendUrl;
-            final String token = cfg.statsBackendToken;
-            if (url == null || url.trim().isEmpty()) {
+            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
+            final String url = backend.url;
+            final String token = backend.token;
+            if (url.isEmpty()) {
                 send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
                 return;
             }
@@ -464,9 +471,10 @@ public class BedwarsQolCommand extends Command {
                 return;
             }
             ClientSettings cfg = settings();
-            final String url = cfg.statsBackendUrl;
-            final String token = cfg.statsBackendToken;
-            if (url == null || url.trim().isEmpty()) {
+            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
+            final String url = backend.url;
+            final String token = backend.token;
+            if (url.isEmpty()) {
                 send("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
                 return;
             }
