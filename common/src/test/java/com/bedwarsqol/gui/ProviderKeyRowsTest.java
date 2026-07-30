@@ -5,6 +5,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -24,6 +25,16 @@ public class ProviderKeyRowsTest {
     public void seraphRowDispatchesToSeraph() {
         assertEquals(ProviderKeySubmitter.Provider.SERAPH,
                 ProviderKeyRows.providerFor(ProviderKeyRows.SERAPH_KEY_KIND));
+    }
+
+    @Test
+    public void cacheActionSelectionFollowsTheProvider() {
+        Runnable urchinAction = () -> { };
+        Runnable seraphAction = () -> { };
+        assertSame(urchinAction, ProviderKeyRows.cacheActionFor(
+                ProviderKeySubmitter.Provider.URCHIN, urchinAction, seraphAction));
+        assertSame(seraphAction, ProviderKeyRows.cacheActionFor(
+                ProviderKeySubmitter.Provider.SERAPH, urchinAction, seraphAction));
     }
 
     @Test

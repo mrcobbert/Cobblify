@@ -10,9 +10,11 @@ workers_dev = true
 preview_urls = true
 
 # STATS_TOKEN (secret): comma-separated token list, one entry per user
-# (charset ^[A-Za-z0-9_-]{16,64}$; the parser splits on ",", trims, drops empties, dedupes).
-# The FIRST entry is the OWNER: the URCHIN_KEY/SERAPH_KEY secrets, when set, manage the
-# owner's provider-key slot only; every other identity manages its own slot via the key
+# (the parser splits on ",", trims, drops empties, dedupes; every entry must match
+# ^[A-Za-z0-9_-]{16,64}$ - malformed entries are DROPPED and never authenticate; a list
+# with zero valid entries denies every authenticated route, it never falls open).
+# The FIRST valid entry is the OWNER: the URCHIN_KEY/SERAPH_KEY secrets, when set, manage
+# the owner's provider-key slot only; every other identity manages its own slot via the key
 # routes. Revocation = remove the entry and redeploy. Set: wrangler secret put STATS_TOKEN
 #
 # One-time owner steps after first deploying the multi-token Worker (provider state became
@@ -31,11 +33,11 @@ preview_urls = true
 [placement]
 mode = "off"
 
-# Namespace for the Urchin/Seraph API keys and the "origin blocked" breaker (player stats never
-# touch KV). OFF by default so anyone can deploy to their own Cloudflare account — a KV binding
-# must reference a namespace that exists in THAT account, and a hardcoded id from someone else's
-# account makes `wrangler deploy` fail. Without this binding those provider tags resolve
-# unavailable and the breaker keeps working off the per-colo caches.default alone.
+# Namespace for the per-identity Urchin/Seraph API keys + backoff/disabled state, the "origin
+# blocked" breaker, and the stats L2: positive and NICKED player results are cached in KV when
+# this binding exists (transient negatives stay per-colo L1 only). A deployment without the
+# binding loses provider tags (unavailable) and cross-colo stats reuse, but stats still work
+# off the per-colo caches.default alone - which is why the owner deploy must keep it.
 # To enable it on your own account, create a namespace and uncomment the three lines with your id:
 #   wrangler kv namespace create STATS_KV
 [[kv_namespaces]]

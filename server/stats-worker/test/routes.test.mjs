@@ -22,7 +22,7 @@ function lanAddress() {
   return null;
 }
 
-const TOKEN = "test-token";
+const TOKEN = "test-token_0123456789";
 const KEY = "unit-test-key-abcdef";
 const TAGGED = "069a79f444e94726a5befca90e38aaf5";
 const UNTAGGED = "11111111222233334444555566667777";

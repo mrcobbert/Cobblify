@@ -176,6 +176,42 @@ test("route matrix: owner/friend/second-friend accepted, bad callers rejected on
   }
 });
 
+test("token grammar: entries outside ^[A-Za-z0-9_-]{16,64}$ are dropped, never credentials", async () => {
+  const SHORT = "shorty_123"; // < 16 chars
+  const SPACED = "has an_internal_space_0123"; // internal whitespace
+  const LONG = "L".repeat(65); // > 64 chars
+  const env = baseEnv(makeKv(), `${SHORT},${SPACED},${LONG},${OWNER}`);
+  for (const bad of [SHORT, SPACED, LONG]) {
+    const r = await authenticate(reqFor("/x", { token: bad }), env);
+    assert.ok(r.denied, `invalid list entry ${JSON.stringify(bad)} must never authenticate`);
+    assert.equal(r.denied.status, 401);
+  }
+  // The surviving valid entry still works.
+  assert.equal((await authenticate(reqFor("/x", { token: OWNER }), env)).identity, idOf(OWNER));
+});
+
+test("token grammar: an invalid FIRST entry does not become owner - first VALID entry is", async () => {
+  const env = baseEnv(makeKv(), `bad token,${FRIEND},${OWNER}`);
+  const first = await authenticate(reqFor("/x", { token: FRIEND }), env);
+  assert.equal(first.isOwner, true, "the first VALID entry must be the owner");
+  const second = await authenticate(reqFor("/x", { token: OWNER }), env);
+  assert.equal(second.isOwner, false);
+  assert.ok((await authenticate(reqFor("/x", { token: "bad token" }), env)).denied);
+});
+
+test("token grammar fail-closed: an all-invalid list denies everything, never falls open", async () => {
+  const env = baseEnv(makeKv(), "x, y z ,!!!invalid!!!");
+  for (const attempt of [{ token: "x" }, { token: "y z" }, {}]) {
+    const r = await authenticate(reqFor("/x", attempt), env);
+    assert.ok(r.denied, `must deny ${JSON.stringify(attempt)}`);
+    assert.equal(r.denied.status, 401);
+  }
+  // Route level: even the plain stats route is closed (contrast with the open-when-unset test).
+  const w = makeCtx();
+  const res = await worker.fetch(reqFor("/bedwars/MatrixGuy", { token: "x" }), env, w.ctx);
+  assert.equal(res.status, 401);
+});
+
 test("provider data routes still demand the opt-in header on top of a valid token", async () => {
   const w = makeCtx();
   const res = await worker.fetch(reqFor("/urchin/MatrixGuy", { token: FRIEND }), baseEnv(makeKv()), w.ctx);

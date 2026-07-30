@@ -24,4 +24,13 @@ public final class ProviderKeyRows {
         if (kind == SERAPH_KEY_KIND) return ProviderKeySubmitter.Provider.SERAPH;
         return null;
     }
+
+    /** The cache action a submission dispatches for its provider: URCHIN selects
+     *  {@code urchinAction}, SERAPH selects {@code seraphAction}. Extracted from the former
+     *  SettingsGui ternary (the actions live in platform code) so the provider -&gt; action mapping
+     *  is pinned by {@code ProviderKeyRowsTest} in BOTH suites. */
+    public static Runnable cacheActionFor(ProviderKeySubmitter.Provider provider,
+            Runnable urchinAction, Runnable seraphAction) {
+        return provider == ProviderKeySubmitter.Provider.URCHIN ? urchinAction : seraphAction;
+    }
 }

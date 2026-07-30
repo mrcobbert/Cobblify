@@ -18,11 +18,14 @@ Tests: `npm test` (note: the route tests bind a local server and fail with
 entry per user:
 
 - Parsing: split on `,`, trim each entry, drop empties, dedupe preserving
-  order. The **first surviving entry is the owner**.
-- Each token must match `^[A-Za-z0-9_-]{16,64}$` (no commas or whitespace are
-  possible inside a token).
+  order. Each surviving entry must match `^[A-Za-z0-9_-]{16,64}$` (no commas
+  or whitespace are possible inside a token); entries that do not are
+  **dropped** and can never authenticate. The **first surviving valid entry
+  is the owner**.
 - Unset/empty secret = the Worker is open (self-host back-compat) and all
-  provider routes fail closed.
+  provider routes fail closed. A secret with entries but **zero valid ones**
+  means auth was intended and misconfigured: every authenticated route is
+  denied (fail closed), never fallen open.
 - Owner-only behavior: the `URCHIN_KEY`/`SERAPH_KEY` env secrets, when set,
   manage the owner identity's provider-key slot only. Every other identity
   manages its own slot via `POST /urchin/key` / `/seraph/key` (the in-game GUI

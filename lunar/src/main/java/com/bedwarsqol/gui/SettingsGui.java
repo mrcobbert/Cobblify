@@ -2091,9 +2091,9 @@ public class SettingsGui extends GuiScreen {
         focusedTextKind = 0;
         if (key.isEmpty()) return;
         setTextStatus(kind, "Saving...");
-        Runnable invalidate = provider == ProviderKeySubmitter.Provider.URCHIN
-                ? StatsCache::invalidateUrchinResolution
-                : StatsCache::invalidateSeraphResolution;
+        Runnable invalidate = ProviderKeyRows.cacheActionFor(provider,
+                StatsCache::invalidateUrchinResolution,
+                StatsCache::invalidateSeraphResolution);
         KEY_SUBMITTER.submitSet(provider, settings().backendTarget(), key, invalidate, res -> {
             if (mc == null || mc.currentScreen != this) return; // GUI closed: no feedback to show
             setTextStatus(kind, res.success ? "Saved" : "Failed: " + shortReason(res));

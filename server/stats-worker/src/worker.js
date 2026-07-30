@@ -236,10 +236,16 @@ export default {
 
 /**
  * Gate the data endpoints behind the STATS_TOKEN secret: a comma-separated token list
- * (split on ",", trim, drop empties, dedupe preserving order). The FIRST surviving entry
- * is the OWNER. If the secret is unset the Worker stays open (back-compat, and lets a
- * friend run their own no-auth deployment) - the open result carries a null identity, so
- * every provider route stays fail-closed exactly as before.
+ * (split on ",", trim, drop empties, dedupe preserving order). Every surviving entry must
+ * match TOKEN_RE (^[A-Za-z0-9_-]{16,64}$) - entries that don't are DROPPED and can never
+ * authenticate anything, so an accidental weak or malformed deployment secret never becomes
+ * a live credential. The FIRST surviving VALID entry is the OWNER.
+ *
+ * Fail-closed rule: an unset secret (or one containing only empty segments) leaves the
+ * Worker open (back-compat, and lets a friend run their own no-auth deployment) - the open
+ * result carries a null identity, so every provider route stays fail-closed exactly as
+ * before. But a secret that HAS non-empty entries yet yields zero valid ones means auth was
+ * intended and misconfigured: every authenticated route is DENIED, never fallen open.
  * Set it with: wrangler secret put STATS_TOKEN
  *
  * Returns {denied: Response} on mismatch, else {identity, isOwner} where `identity` is the
@@ -247,15 +253,20 @@ export default {
  * state. Parse and hashes are memoized per isolate, keyed by the raw secret string, so a
  * redeploy with a changed list invalidates the memo.
  */
-let tokenMemo = { raw: undefined, tokens: [], ids: new Map() };
+const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
+
+let tokenMemo = { raw: undefined, tokens: [], invalid: 0, ids: new Map() };
 
 function parseTokenList(raw) {
   const out = [];
+  let invalid = 0;
   for (const part of String(raw).split(",")) {
     const t = part.trim();
-    if (t && !out.includes(t)) out.push(t);
+    if (!t) continue; // empty segments are ignored, not counted as invalid
+    if (!TOKEN_RE.test(t)) { invalid++; continue; } // malformed: dropped, never a credential
+    if (!out.includes(t)) out.push(t);
   }
-  return out;
+  return { tokens: out, invalid };
 }
 
 async function tokenIdentity(token) {
@@ -265,8 +276,14 @@ async function tokenIdentity(token) {
 
 export async function authenticate(request, env) {
   const raw = (env && env.STATS_TOKEN) || "";
-  if (tokenMemo.raw !== raw) tokenMemo = { raw, tokens: parseTokenList(raw), ids: new Map() };
-  if (tokenMemo.tokens.length === 0) return { identity: null, isOwner: false }; // open worker
+  if (tokenMemo.raw !== raw) tokenMemo = { raw, ...parseTokenList(raw), ids: new Map() };
+  if (tokenMemo.tokens.length === 0) {
+    if (tokenMemo.invalid > 0) {
+      // Secret set but every entry malformed: auth was intended - deny, never fall open.
+      return { denied: jsonResponse({ success: false, state: "ERROR", error: "unauthorized" }, 401) };
+    }
+    return { identity: null, isOwner: false }; // open worker (secret unset/empty)
+  }
   const got = request.headers.get("X-BedwarsQol-Token");
   const idx = got == null ? -1 : tokenMemo.tokens.indexOf(got);
   if (idx < 0) {

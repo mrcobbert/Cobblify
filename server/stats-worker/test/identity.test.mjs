@@ -321,6 +321,17 @@ test("urchin batch, transient error under A: both omit, no backoff/disabled stat
   await assertBProceeds(r, "urchin");
 });
 
+test("urchin batch, upstream 5xx under A: both omit, no backoff/disabled state for anyone", async () => {
+  const r = await concurrentBatch({ provider: "urchin", upstream: () => new Response("{}", { status: 502 }) });
+  for (const f of URCHIN_ABSENT) {
+    assert.ok(!(f in r.a) && !(f in r.b), `${f} must be omitted for both (5xx is transient)`);
+  }
+  for (const k of r.kv.store.keys()) {
+    assert.ok(!k.includes(":cfg:backoff:") && !k.includes(":cfg:disabled:"), `unexpected state key ${k}`);
+  }
+  await assertBProceeds(r, "urchin");
+});
+
 test("seraph batch, A's key 401s: A gets its usual unavailable, B omits ALL seraph fields", async () => {
   const r = await concurrentBatch({ provider: "seraph", upstream: () => new Response("", { status: 401 }) });
   assert.equal(r.a.seraphUnavailable, true, "the executing identity keeps today's shape");
@@ -343,6 +354,18 @@ test("seraph batch, transient error under A: both omit (Seraph has no stale fall
   const r = await concurrentBatch({ provider: "seraph", upstream: () => { throw new Error("boom"); } });
   for (const f of SERAPH_ABSENT) {
     assert.ok(!(f in r.a), `A must omit ${f} (transient errors are retryable even executing)`);
+    assert.ok(!(f in r.b), `B must omit ${f}`);
+  }
+  for (const k of r.kv.store.keys()) {
+    assert.ok(!k.includes(":cfg:backoff:") && !k.includes(":cfg:disabled:"), `unexpected state key ${k}`);
+  }
+  await assertBProceeds(r, "seraph");
+});
+
+test("seraph batch, upstream 5xx under A: both omit, no backoff/disabled state for anyone", async () => {
+  const r = await concurrentBatch({ provider: "seraph", upstream: () => new Response("{}", { status: 502 }) });
+  for (const f of SERAPH_ABSENT) {
+    assert.ok(!(f in r.a), `A must omit ${f} (5xx is transient even executing)`);
     assert.ok(!(f in r.b), `B must omit ${f}`);
   }
   for (const k of r.kv.store.keys()) {

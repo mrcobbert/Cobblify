@@ -55,7 +55,10 @@ if [ ! -x "\$LUNAR" ]; then
 fi
 
 echo "If Lunar is already open, fully quit it (Cmd+Q) first, then run this again."
-export JAVA_TOOL_OPTIONS="-javaagent:\$HOME/.weave/$AGENT"
+# The quotes INSIDE the value are load-bearing: JAVA_TOOL_OPTIONS is tokenized by the
+# JVM on whitespace, so a home path containing a space (/Users/Jane Doe) must be wrapped
+# in embedded double quotes for the JVM to parse it as one -javaagent path.
+export JAVA_TOOL_OPTIONS="-javaagent:\"\$HOME/.weave/$AGENT\""
 exec "\$LUNAR" "\$@"
 LAUNCHEOF
   chmod +x "$1"

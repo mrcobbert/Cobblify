@@ -26,7 +26,7 @@ function lanAddress() {
   return null;
 }
 
-const TOKEN = "test-token";
+const TOKEN = "test-token_0123456789";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- Hypixel fixture -------------------------------------------------------

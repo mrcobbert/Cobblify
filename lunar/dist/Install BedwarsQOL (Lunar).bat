@@ -13,8 +13,14 @@ set "AGENT="
 set "MOD="
 set /a AGENTCOUNT=0
 set /a MODCOUNT=0
-for %%F in ("%DIR%Weave-Loader-Agent-*.jar") do set "AGENT=%%~nxF" & set /a AGENTCOUNT+=1
-for %%F in ("%DIR%Cobblify-Lunar-*.jar") do set "MOD=%%~nxF" & set /a MODCOUNT+=1
+for %%F in ("%DIR%Weave-Loader-Agent-*.jar") do (
+  set "AGENT=%%~nxF"
+  set /a AGENTCOUNT+=1
+)
+for %%F in ("%DIR%Cobblify-Lunar-*.jar") do (
+  set "MOD=%%~nxF"
+  set /a MODCOUNT+=1
+)
 
 if not "%AGENTCOUNT%"=="1" goto :badbundle
 if not "%MODCOUNT%"=="1" goto :badbundle

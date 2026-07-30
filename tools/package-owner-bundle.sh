@@ -27,23 +27,42 @@ set -euo pipefail
 # The agent is an external artifact the owner keeps locally; refuse to package
 # one that does not match the recorded hash.
 #
-# OWNER: fill in the real hash ONCE by running
-#   shasum -a 256 ~/.weave/Weave-Loader-Agent-1.3.3.jar
-# and pasting the 64-hex-char digest below. The script refuses to run while
-# the placeholder is in place.
+# On an agent UPGRADE: update the path, re-run
+#   shasum -a 256 ~/.weave/Weave-Loader-Agent-<new version>.jar
+# and paste the new 64-hex-char digest below (a public artifact hash, not a
+# secret). The script refuses to run while a placeholder is in place.
 WEAVE_AGENT_PATH="${WEAVE_AGENT_PATH:-$HOME/.weave/Weave-Loader-Agent-1.3.3.jar}"
-WEAVE_AGENT_SHA256="REPLACE_WITH_REAL_SHA256_FROM_shasum_-a_256"
+WEAVE_AGENT_SHA256="e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2"
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
 die() { echo "error: $*" >&2; exit 1; }
 
+forge_build="$repo_root/versions/1.8.9-forge/build"
+lunar_build="$repo_root/lunar/build"
+
+# Delete every on-disk plaintext copy of the baked backend properties in both
+# build trees (jar-internal copies are the product and are untouched). Known
+# copies: build/generated/backendProps/ (both builds), the Forge
+# processed-resource copy under build/classes/java/main, and Lunar's
+# build/resources/{main,test}. Called from the happy path AND from the EXIT
+# trap, so a run that fails after the builds generated resources still never
+# leaves the baked url/token behind. Best-effort by construction (must never
+# mask the script's real exit status).
+scrub_plaintext() {
+  find "$forge_build" "$lunar_build" -type f -name cobblify-backend.properties \
+    -exec rm -f {} + 2>/dev/null || true
+  rm -rf "$forge_build/generated/backendProps" "$lunar_build/generated/backendProps" 2>/dev/null || true
+}
+
 # One temp directory for grep patterns and zip staging, trapped immediately so
-# no secret-bearing pattern file can outlive the run.
+# no secret-bearing pattern file can outlive the run. The trap also scrubs the
+# build trees on ANY exit; on success dist-owner/ artifacts are already
+# assembled and are not touched by the scrub.
 tmpd=$(mktemp -d) || die "mktemp failed"
 chmod 700 "$tmpd"
-trap 'rm -rf "$tmpd"' EXIT
+trap 'scrub_plaintext; rm -rf "$tmpd"' EXIT
 
 # --- preflight: backend properties exist (values never read into output) -----
 
@@ -224,16 +243,12 @@ echo "hygiene check passed (no tracked file, no staged diff)"
 
 # --- scrub every plaintext intermediate from both builds ---------------------
 #
-# Known copies: build/generated/backendProps/ (both builds), the Forge
-# processed-resource copy under build/classes/java/main, and Lunar's
-# build/resources/{main,test}. The find below deletes ALL on-disk copies under
-# both build dirs (jar-internal copies are the product and are untouched),
-# then re-runs to assert none remain.
+# scrub_plaintext (also wired into the EXIT trap for failed runs) deletes ALL
+# on-disk copies under both build dirs; the find below re-runs to assert none
+# remain - the assertion belongs to the happy path only, the trap stays
+# best-effort.
 
-forge_build="$repo_root/versions/1.8.9-forge/build"
-lunar_build="$repo_root/lunar/build"
-find "$forge_build" "$lunar_build" -type f -name cobblify-backend.properties -exec rm -f {} +
-rm -rf "$forge_build/generated/backendProps" "$lunar_build/generated/backendProps"
+scrub_plaintext
 leftover=$(find "$forge_build" "$lunar_build" -type f -name cobblify-backend.properties | wc -l | tr -d '[:space:]')
 [ "$leftover" = "0" ] || die "plaintext cobblify-backend.properties still present under a build dir after scrub"
 echo "plaintext intermediates scrubbed"
