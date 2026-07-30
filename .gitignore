@@ -421,3 +421,6 @@ error.txt
 .agents/
 .claude/
 analysis/
+
+# Owner-baked distribution bundles (contain the private backend URL/token)
+dist-owner/
