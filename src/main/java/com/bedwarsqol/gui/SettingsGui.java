@@ -10,6 +10,8 @@ import com.bedwarsqol.gui.render.Theme;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.EligibilitySnapshot;
 import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.stats.ProviderKeySubmitter;
+import com.bedwarsqol.stats.ScraperBackendClient;
 import com.bedwarsqol.stats.StatsCache;
 import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.UrchinTag;
@@ -95,6 +97,10 @@ public class SettingsGui extends GuiScreen {
             K_SERAPH_SOUND = 113, K_SERAPH_BADGE_NAMETAG = 114;
     // Pregame-queue chat alerts (kind numbers shared with the Lunar tree).
     private static final int K_QUEUE_TAG_ALERT = 115, K_QUEUE_NICK_ALERT = 116;
+    // Provider API key TEXT rows. Kinds + the kind->provider mapping live in ProviderKeyRows (common)
+    // so the dispatch is unit-tested in both suites; submissions go through that mapping only.
+    private static final int K_URCHIN_KEY = ProviderKeyRows.URCHIN_KEY_KIND,
+            K_SERAPH_KEY = ProviderKeyRows.SERAPH_KEY_KIND;
 
     private static final String[] GUI_SIZES = {"Small", "Medium", "Large"};
     private static final String[] TEXT_SIZES = {"Small", "Medium", "Large"};
@@ -118,8 +124,8 @@ public class SettingsGui extends GuiScreen {
     private static final String EDIT_HUD_LABEL = "Edit HUD";
 
     // A GROUP header is a non-toggle container; its rows are always visible (no expander). Everything
-    // else is a normal control.
-    private enum RowType { TOGGLE, STEPPER, SLIDER, GROUP }
+    // else is a normal control. TEXT is a focusable free-text field (masked; Enter submits).
+    private enum RowType { TOGGLE, STEPPER, SLIDER, GROUP, TEXT }
 
     private static final class RowDef {
         final RowType type;
@@ -239,11 +245,13 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Chat Alert", K_URCHIN_CHAT_ALERT, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Alert Sound", K_URCHIN_SOUND, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Nametag Badge", K_URCHIN_BADGE_NAMETAG, null, K_URCHIN),
+                    new RowDef(RowType.TEXT, "Urchin API Key", K_URCHIN_KEY, null, K_URCHIN),
                     new RowDef(RowType.TOGGLE, "Seraph Tags", "Community blacklist/safelist from api.seraph.si", K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Tab Badge", K_SERAPH_BADGE_TAB, null, K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Chat Alert", K_SERAPH_CHAT_ALERT, null, K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Alert Sound", K_SERAPH_SOUND, null, K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Nametag Badge", K_SERAPH_BADGE_NAMETAG, null, K_SERAPH),
+                    new RowDef(RowType.TEXT, "Seraph API Key", K_SERAPH_KEY, null, K_SERAPH),
                     new RowDef(RowType.TOGGLE, "Queue Tag Alert", "Queue only: tags for players who type", K_QUEUE_TAG_ALERT),
                     new RowDef(RowType.TOGGLE, "Queue Nick Alert", "Queue only: nicks for players who type", K_QUEUE_NICK_ALERT)),
             // Settings: two always-open container GROUP cards (Appearance / HUD) stacked in the column.
@@ -280,6 +288,8 @@ public class SettingsGui extends GuiScreen {
     private static final int KNOB_RING = 0x4D000000; // soft shadow ring under a switch/slider knob
     // Text on the active (accent-filled) tab pill — a bright neutral that reads on any accent.
     private static final int TAB_ACTIVE_TEXT = 0xFFFFFFFF;
+    // TEXT key-row transient feedback ("Saved" / "Failed: ...").
+    private static final int KEY_STATUS_OK = 0xFF7CD98A, KEY_STATUS_FAIL = 0xFFFF7A6E;
     // ---- dropdown (<select>) menu surface ----
     private static final int DD_BG = 0xFF1E1A14;            // menu surface (fully opaque, slightly elevated)
     private static final int DD_ITEM_SELECTED = 0xFF3A342A; // subtle selection
@@ -446,6 +456,17 @@ public class SettingsGui extends GuiScreen {
     private int searchBarX1, searchBarX2, searchBarY1, searchBarY2;
     private int searchClearX1, searchClearX2; // clear-x hit zone
     private int searchListTop, searchListBottom;
+
+    // ---- TEXT key-row state (Urchin/Seraph API keys) ----
+    // Transient by design: the buffers never touch ClientSettings/disk (no new persisted field exists)
+    // and are cleared on submit and on GUI close. Submissions ride KEY_SUBMITTER; the provider is
+    // resolved ONLY through ProviderKeyRows so the wiring stays unit-tested.
+    private static final ProviderKeySubmitter KEY_SUBMITTER = new ProviderKeySubmitter(
+            r -> net.minecraft.client.Minecraft.getMinecraft().addScheduledTask(r));
+    private int focusedTextKind; // TEXT row holding the caret (0 = none)
+    private final StringBuilder urchinKeyBuf = new StringBuilder();
+    private final StringBuilder seraphKeyBuf = new StringBuilder();
+    private String urchinKeyStatus, seraphKeyStatus; // "Saving..." / "Saved" / "Failed: <reason>"
 
     // ---- Players tab state (fetch-on-click master-detail; see PlayersViewState for session persistence) ----
     /** The Players section index (the trailing placeholder tab). */
@@ -1061,9 +1082,57 @@ public class SettingsGui extends GuiScreen {
                 }
                 break;
             }
+            case TEXT: {
+                GuiRender.text(row.def.label, row.x + 2, labelY, lScale, labelColor, MED);
+                drawKeyField(row, enabled);
+                break;
+            }
             default:
                 break;
         }
+    }
+
+    /** One TEXT key row's field: masked value (dots, last 4 visible), placeholder, caret, and the
+     *  transient Saving/Saved/Failed feedback. The buffer is never rendered unmasked. */
+    private void drawKeyField(Row row, boolean enabled) {
+        float fScale = ddFontScale;
+        float fx1 = row.x + row.w * 0.45f;
+        float fx2 = row.x + row.w;
+        float fy1 = row.y + 2, fy2 = row.y + row.h - 2;
+        boolean focused = enabled && focusedTextKind == row.def.kind;
+        GuiRender.roundedRect(fx1, fy1, fx2, fy2, 3, SEARCH_BAR_BG);
+        GuiRender.roundedRectOutline(fx1, fy1, fx2, fy2, 3, 0.5f,
+                focused ? TAB_ACTIVE_TEXT : BTN_BORDER);
+        float tx = fx1 + 4;
+        float maxW = fx2 - 4 - tx;
+        float ty = vcenter(row.y, row.h, fScale);
+        StringBuilder buf = textBuf(row.def.kind);
+        String status = textStatus(row.def.kind);
+        String shown = "";
+        if (buf != null && buf.length() > 0) {
+            shown = fitTail(ProviderKeySubmitter.maskForDisplay(buf.toString()), fScale, maxW);
+            GuiRender.text(shown, tx, ty, fScale, enabled ? GuiTheme.TEXT_HI : GuiTheme.TEXT_LO);
+        } else if (status != null) {
+            int c = status.startsWith("Saved") ? KEY_STATUS_OK
+                    : status.startsWith("Failed") ? KEY_STATUS_FAIL : GuiTheme.TEXT_MID;
+            GuiRender.text(ellipsize(status, fScale, maxW), tx, ty, fScale, c);
+        } else {
+            GuiRender.text("Paste key...", tx, ty, fScale, GuiTheme.TEXT_LO);
+        }
+        if (focused && (caretBlink / 6) % 2 == 0) {
+            float cx = Math.min(tx + GuiRender.textWidth(shown, fScale), fx2 - 3);
+            GuiRender.rect(cx, ty - 1, cx + 1, ty + BedwarsQolFont.height(fScale), GuiTheme.TEXT_HI);
+        }
+    }
+
+    /** Trailing portion of {@code s} that fits {@code maxW} (a key field keeps its newest chars visible). */
+    private static String fitTail(String s, float scale, float maxW) {
+        if (GuiRender.textWidth(s, scale) <= maxW) return s;
+        for (int i = 1; i < s.length(); i++) {
+            String t = s.substring(i);
+            if (GuiRender.textWidth(t, scale) <= maxW) return t;
+        }
+        return "";
     }
 
     /** Compact accent switch: a rounded track with a circular knob. ON reads the resolved accent; OFF and
@@ -1269,6 +1338,7 @@ public class SettingsGui extends GuiScreen {
                 && GuiRender.inside(mouseX, mouseY, playerSearchX1, playerSearchY1, playerSearchX2, playerSearchY2);
         searchFocused = inHeaderSearch;
         playerSearchFocused = inPlayerSearch;
+        focusedTextKind = 0; // any click blurs a key field; a TEXT row hit below re-focuses it
         if (inHeaderSearch) {
             boolean clearHit = GuiRender.inside(mouseX, mouseY, searchClearX1, searchBarY1, searchClearX2, searchBarY2);
             if (searchQuery.length() > 0 && clearHit) {
@@ -1447,6 +1517,11 @@ public class SettingsGui extends GuiScreen {
             case STEPPER:
                 openDropdown(row, ddFontScale);
                 break;
+            case TEXT:
+                focusedTextKind = row.def.kind;
+                setTextStatus(row.def.kind, null); // typing again clears stale feedback
+                playClick();
+                break;
             case SLIDER: {
                 float[] vr = sliderValueRect(row);
                 if (GuiRender.inside(mouseX, mouseY, vr[0] - 3, vr[1] - 2, vr[2] + 2, vr[3] + 2)) {
@@ -1474,6 +1549,10 @@ public class SettingsGui extends GuiScreen {
     @Override
     public void onGuiClosed() {
         stopEditing();
+        // Key-row buffers are transient: drop them the moment the GUI closes.
+        urchinKeyBuf.setLength(0);
+        seraphKeyBuf.setLength(0);
+        focusedTextKind = 0;
         Keyboard.enableRepeatEvents(false);
         GuiBlur.end();
         // Persist the selected section so a normal reopen returns to the same tab (other Players view
@@ -1600,6 +1679,7 @@ public class SettingsGui extends GuiScreen {
             sliderEditKey(typedChar, keyCode);
             return;
         }
+        if (focusedTextKind != 0) { textRowKey(typedChar, keyCode); return; }      // TEXT key row
         if (searchFocused) { searchKey(typedChar, keyCode); return; }              // header: global search
         if (playerSearchFocused) { playersSearchKey(typedChar, keyCode); return; } // above-list: player filter
         super.keyTyped(typedChar, keyCode);
@@ -2076,6 +2156,92 @@ public class SettingsGui extends GuiScreen {
         scroll = 0;
         scrollRender = 0f;
         scrollAccum = 0f;
+    }
+
+    // ---------------------------------------------------------------- TEXT key rows
+
+    private StringBuilder textBuf(int kind) {
+        if (kind == K_URCHIN_KEY) return urchinKeyBuf;
+        if (kind == K_SERAPH_KEY) return seraphKeyBuf;
+        return null;
+    }
+
+    private String textStatus(int kind) {
+        return kind == K_URCHIN_KEY ? urchinKeyStatus : seraphKeyStatus;
+    }
+
+    private void setTextStatus(int kind, String s) {
+        if (kind == K_URCHIN_KEY) urchinKeyStatus = s;
+        else seraphKeyStatus = s;
+    }
+
+    /** Key handling while a TEXT key row is focused: type/paste (ChatAllowedCharacters-filtered,
+     *  capped), Backspace, Enter submits, Esc blurs. The raw key never reaches chat, logs, or
+     *  ClientSettings. */
+    private void textRowKey(char typedChar, int keyCode) {
+        StringBuilder buf = textBuf(focusedTextKind);
+        if (buf == null) { focusedTextKind = 0; return; }
+        if (keyCode == Keyboard.KEY_ESCAPE) {
+            focusedTextKind = 0;
+            return;
+        }
+        if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
+            submitKeyRow(focusedTextKind);
+            return;
+        }
+        if (keyCode == Keyboard.KEY_BACK) {
+            if (buf.length() > 0) buf.deleteCharAt(buf.length() - 1);
+            return;
+        }
+        if (isKeyComboCtrlV(keyCode)) { // Ctrl+V, or Cmd+V on Mac
+            appendFiltered(buf, getClipboardString());
+            return;
+        }
+        if (ChatAllowedCharacters.isAllowedCharacter(typedChar)
+                && buf.length() < ProviderKeySubmitter.MAX_KEY_LENGTH) {
+            buf.append(typedChar);
+        }
+    }
+
+    /** Pasted text rides the SAME character filter and length cap as typed characters. */
+    private static void appendFiltered(StringBuilder buf, String s) {
+        if (s == null) return;
+        for (int i = 0; i < s.length() && buf.length() < ProviderKeySubmitter.MAX_KEY_LENGTH; i++) {
+            char c = s.charAt(i);
+            if (ChatAllowedCharacters.isAllowedCharacter(c)) buf.append(c);
+        }
+    }
+
+    /** Enter on a key row: submit the buffer through the shared submitter and show transient row
+     *  feedback. The buffer is cleared immediately - it never outlives the submission. The result
+     *  callback drops the feedback if this screen is gone; the submit itself (and the post-set
+     *  invalidation inside the submitter) still completes either way. */
+    private void submitKeyRow(final int kind) {
+        final ProviderKeySubmitter.Provider provider = ProviderKeyRows.providerFor(kind);
+        StringBuilder buf = textBuf(kind);
+        if (provider == null || buf == null) return;
+        final String key = buf.toString().trim();
+        buf.setLength(0);
+        focusedTextKind = 0;
+        if (key.isEmpty()) return;
+        setTextStatus(kind, "Saving...");
+        Runnable invalidate = provider == ProviderKeySubmitter.Provider.URCHIN
+                ? StatsCache::invalidateUrchinResolution
+                : StatsCache::invalidateSeraphResolution;
+        KEY_SUBMITTER.submitSet(provider, settings().backendTarget(), key, invalidate, res -> {
+            if (mc == null || mc.currentScreen != this) return; // GUI closed: no feedback to show
+            setTextStatus(kind, res.success ? "Saved" : "Failed: " + shortReason(res));
+        });
+    }
+
+    /** Short human reason for a failed key POST (never includes key, token, or URL text). */
+    private static String shortReason(ScraperBackendClient.SecretPostResult res) {
+        if (res == null) return "error";
+        if ("invalid_key_length".equals(res.error)) return "key must be 8-200 chars";
+        if ("key_managed_by_secret".equals(res.error)) return "managed by wrangler secret";
+        if (res.status == 403) return "unauthorized";
+        if (res.status == 0) return "network";
+        return "HTTP " + res.status;
     }
 
     /** Search-box key handling while the Players tab is active — drives the (separate, session-persisted)
