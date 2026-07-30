@@ -1,3 +1,9 @@
+# Cobblify SELF-HOSTED stats backend setup (Windows helper, run by setup-windows.bat).
+# Only needed with a blank public-Release jar or a from-source build - official
+# (privately distributed) builds ship with the backend built in and skip this
+# entirely. Deploys your own free Cloudflare Worker and prints the
+# /cobblify statsurl + statstoken chat commands that point the mod at it.
+
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 

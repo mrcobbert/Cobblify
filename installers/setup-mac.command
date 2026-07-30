@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# Cobblify SELF-HOSTED stats backend setup (Mac).
+# Only needed with a blank public-Release jar or a from-source build - official
+# (privately distributed) builds ship with the backend built in and skip this
+# entirely. Deploys your own free Cloudflare Worker and prints the
+# /cobblify statsurl + statstoken chat commands that point the mod at it.
 
 set -euo pipefail
 

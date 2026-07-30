@@ -7,27 +7,42 @@ policy — no automation of player actions, no unfair advantages.
 
 ## Install
 
+Official builds have the maintainer's stats backend built in and are distributed
+privately by the maintainer - ask for the latest build. The public
+**[Releases](../../releases)** contain blank jars with no backend baked in; stats
+on those require self-hosting - see
+[Advanced: self-hosting the stats backend](#advanced-self-hosting-the-stats-backend).
+
 ### Forge
 
-1. Have a **Minecraft Forge 1.8.9** instance
-2. Download the latest `Cobblify-1.8.9-forge-<version>.jar` from the
-  **[Releases](../../releases/latest)** page.
-3. Drop it into your instance's `mods/` folder.
-4. Launch the game. Press **Right Shift** (or run `/cobblify`) to open the settings (bind can be changed in minecraft settings).
+1. Have a **Minecraft Forge 1.8.9** instance.
+2. Drop `Cobblify-1.8.9-forge-<version>.jar` into your instance's `mods/` folder. That's it - stats work out of the box.
+3. Launch the game. Press **Right Shift** (or run `/cobblify`) to open the settings (bind can be changed in minecraft settings).
 
 
 
 ### Lunar Client
 
-1. Download the `Cobblify-Lunar-<version>` bundle for your OS from the **[Releases](../../releases)** page (look for the latest `lunar-` release) and unzip it.
-2. Double-click the installer (`Install BedwarsQOL (Lunar).command` on Mac, `.bat` on Windows). It copies the Weave loader + mod into place and prints a `-javaagent:` line.
-3. In Lunar: Settings → turn on **Advanced Mode** → paste that line into **JVM Arguments** → save, pick **1.8.9**, and Play. Press **Right Shift** (or run `/cobblify`) in-game to open the settings.
+1. Extract the `Cobblify-Lunar-<version>.zip` bundle into a fresh, empty folder.
+2. Run the installer once (`Install BedwarsQOL (Lunar).command` on Mac, `.bat` on Windows). It copies the Weave loader + mod into place and creates a **Launch Lunar (Cobblify)** launcher next to it and on your Desktop.
+3. From then on, always start the game with **Launch Lunar (Cobblify)** (fully quit Lunar first if it is already open). No Lunar settings need changing.
+4. Remaining manual steps: log into Lunar, pick **1.8.9**, and turn **Waypoints OFF** inside your active Lunar settings profile. Press **Right Shift** (or run `/cobblify`) in-game to open the settings.
 
-**NOTE:** Stats and AntiSnipe need a one-time backend setup — see below (~5 minutes).
+## Optional: your own Urchin/Seraph API keys
 
-## Optional: enable Hypixel stats
+Cheater tags can use your own provider API keys (Urchin keys are free via the
+Urchin Discord bot's `/grant` command). Press **Right Shift**, open the
+**Urchin Tags** or **Seraph Tags** card, and paste your key into the masked
+**Urchin API Key** / **Seraph API Key** field, then press Enter. Keys are sent
+write-only to the backend and are never stored on your machine. The
+`/cobblify urchinkey` and `/cobblify seraphkey` chat commands still work too.
 
-Hypixel stats are served by a tiny **Cloudflare Worker you self-host** (free, private). Use the installer.
+## Advanced: self-hosting the stats backend
+
+Only for people running their own Worker - that is, using a blank public
+Release jar or a from-source build instead of an official build. Hypixel stats
+are served by a tiny **Cloudflare Worker you self-host** (free, private). Use
+the installer.
 
 1. Run the installer for your OS (clone/download this repo, or get it from **[Releases](../../releases/latest)**):
   - **Windows:** double-click `[installers/setup-windows.bat](installers/setup-windows.bat)`
@@ -35,9 +50,10 @@ Hypixel stats are served by a tiny **Cloudflare Worker you self-host** (free, pr
 2. Follow the prompts. A browser opens to log in or sign up for Cloudflare (free). If Cloudflare asks you to register a `workers.dev` name, type anything (e.g. your Minecraft name). The script deploys the Worker, locks it with a private token, and prints two chat commands (the first is copied to your clipboard).
 3. In Minecraft, paste both commands into chat (`/cobblify statsurl ...` and `/cobblify statstoken ...`), then enable **Hypixel Stats** in the mod GUI (Right Shift).
 
-That's it.
-
-**Optional - Urchin cheater tags:** get a free API key from the Urchin Discord bot (`/grant`), then run `/cobblify urchinkey <your key>` in chat. Your key stays on your own Worker; the mod never holds it.
+`/cobblify statsurl` and `/cobblify statstoken` point the mod at your own
+Worker; on official builds they are unnecessary (leave them unset to use the
+built-in backend). The provider key fields above work against your own Worker
+the same way. See `server/stats-worker/README.md` for Worker details.
 
 ## Features: Cobblify — Features
 

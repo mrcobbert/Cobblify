@@ -1,4 +1,9 @@
 @echo off
+REM Cobblify SELF-HOSTED stats backend setup (Windows).
+REM Only needed with a blank public-Release jar or a from-source build - official
+REM (privately distributed) builds ship with the backend built in and skip this
+REM entirely. Downloads and runs the PowerShell helper that deploys your own
+REM free Cloudflare Worker.
 title Cobblify stats backend setup
 echo Starting Cobblify stats backend setup...
 echo.
