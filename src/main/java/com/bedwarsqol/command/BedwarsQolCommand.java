@@ -6,6 +6,7 @@ import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ModChat;
 import com.bedwarsqol.gui.SettingsGui;
 import com.bedwarsqol.stats.BackendTarget;
+import com.bedwarsqol.stats.ProviderKeySubmitter;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.Minecraft;
 import net.minecraft.command.CommandBase;
@@ -199,6 +200,12 @@ public class BedwarsQolCommand extends CommandBase {
                 return t;
             });
 
+    /** Shared submit path for the urchinkey/seraphkey handlers: validation, JSON body, background
+     *  POST on {@link #URCHIN_EXEC}, client-thread result marshal, and the post-set invalidate /
+     *  pre-clear strip sequencing (see {@link ProviderKeySubmitter}). */
+    private static final ProviderKeySubmitter KEY_SUBMITTER =
+            new ProviderKeySubmitter(URCHIN_EXEC, BedwarsQolCommand::scheduled);
+
     /** {@code /cobblify urchin <name>} — on-demand community-tag lookup via the Worker's manual route. */
     private void handleUrchin(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
@@ -334,10 +341,8 @@ public class BedwarsQolCommand extends CommandBase {
                 return;
             }
             ClientSettings cfg = settings();
-            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
-            final String url = backend.url;
-            final String token = backend.token;
-            if (url.isEmpty()) {
+            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per submission
+            if (backend.url.isEmpty()) {
                 send(sender, "§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
                 return;
             }
@@ -347,20 +352,19 @@ public class BedwarsQolCommand extends CommandBase {
             }
             final boolean clear = "clear".equalsIgnoreCase(args[1].trim())
                     || "none".equalsIgnoreCase(args[1].trim());
-            final String body = clear ? "{\"key\":null}" : "{\"key\":\"" + jsonEscape(args[1].trim()) + "\"}";
-            if (clear) {
-                // Strip local tags BEFORE submitting, not on the response (I1): the Worker commits the
-                // key deletion before it replies, so a committed-but-response-lost clear must still leave
-                // the client display safe. finishUrchinKey then only confirms or warns about the server
-                // outcome; it never re-derives display safety from the network result.
-                StatsCache.stripUrchinTags();
-            }
             send(sender, "§7Submitting Urchin key...");
-            URCHIN_EXEC.submit(() -> {
-                com.bedwarsqol.stats.ScraperBackendClient.SecretPostResult res =
-                        com.bedwarsqol.stats.ScraperBackendClient.postSecret(url, "/urchin/key", token, body);
-                scheduled(() -> finishUrchinKey(res, clear));
-            });
+            if (clear) {
+                // The submitter strips local tags BEFORE the request goes out, not on the response
+                // (I1): the Worker commits the key deletion before it replies, so a committed-but-
+                // response-lost clear must still leave the client display safe. finishUrchinKey then
+                // only confirms or warns about the server outcome; it never re-derives display
+                // safety from the network result.
+                KEY_SUBMITTER.submitClear(ProviderKeySubmitter.Provider.URCHIN, backend,
+                        StatsCache::stripUrchinTags, res -> finishUrchinKey(res, true));
+            } else {
+                KEY_SUBMITTER.submitSet(ProviderKeySubmitter.Provider.URCHIN, backend, args[1].trim(),
+                        StatsCache::invalidateUrchinResolution, res -> finishUrchinKey(res, false));
+            }
         } catch (Throwable t) {
             try { send(sender, "§cUrchin key update failed."); } catch (Throwable ignored) { }
         }
@@ -382,13 +386,15 @@ public class BedwarsQolCommand extends CommandBase {
             return;
         }
         if (res != null && res.success) {
-            StatsCache.invalidateUrchinResolution();
+            // Provider resolution was already invalidated by the submitter (client thread, pre-callback).
             local("§aUrchin key updated.");
             return;
         }
         String err = res == null ? null : res.error;
         if ("key_managed_by_secret".equals(err)) {
             local("§cThe key is managed by a wrangler secret - use §fwrangler secret delete URCHIN_KEY§c first.");
+        } else if ("invalid_key_length".equals(err)) {
+            local("§cKey must be 8-200 characters.");
         } else if (res != null && res.status == 403) {
             local("§cUnauthorized. Set a matching §f/cobblify statstoken§c, or provision with §fwrangler secret put URCHIN_KEY§c.");
         } else {
@@ -426,10 +432,8 @@ public class BedwarsQolCommand extends CommandBase {
                 return;
             }
             ClientSettings cfg = settings();
-            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
-            final String url = backend.url;
-            final String token = backend.token;
-            if (url.isEmpty()) {
+            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per submission
+            if (backend.url.isEmpty()) {
                 send(sender, "§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
                 return;
             }
@@ -439,18 +443,17 @@ public class BedwarsQolCommand extends CommandBase {
             }
             final boolean clear = "clear".equalsIgnoreCase(args[1].trim())
                     || "none".equalsIgnoreCase(args[1].trim());
-            final String body = clear ? "{\"key\":null}" : "{\"key\":\"" + jsonEscape(args[1].trim()) + "\"}";
-            if (clear) {
-                // Strip local tags BEFORE submitting (I1): the Worker commits the deletion before it
-                // replies, so a committed-but-response-lost clear must still leave the display safe.
-                StatsCache.stripSeraphTags();
-            }
             send(sender, "§7Submitting Seraph key...");
-            URCHIN_EXEC.submit(() -> {
-                com.bedwarsqol.stats.ScraperBackendClient.SecretPostResult res =
-                        com.bedwarsqol.stats.ScraperBackendClient.postSecret(url, "/seraph/key", token, body);
-                scheduled(() -> finishSeraphKey(res, clear));
-            });
+            if (clear) {
+                // The submitter strips local tags BEFORE the request goes out (I1): the Worker
+                // commits the deletion before it replies, so a committed-but-response-lost clear
+                // must still leave the display safe.
+                KEY_SUBMITTER.submitClear(ProviderKeySubmitter.Provider.SERAPH, backend,
+                        StatsCache::stripSeraphTags, res -> finishSeraphKey(res, true));
+            } else {
+                KEY_SUBMITTER.submitSet(ProviderKeySubmitter.Provider.SERAPH, backend, args[1].trim(),
+                        StatsCache::invalidateSeraphResolution, res -> finishSeraphKey(res, false));
+            }
         } catch (Throwable t) {
             try { send(sender, "§cSeraph key update failed."); } catch (Throwable ignored) { }
         }
@@ -468,13 +471,15 @@ public class BedwarsQolCommand extends CommandBase {
             return;
         }
         if (res != null && res.success) {
-            StatsCache.invalidateSeraphResolution();
+            // Provider resolution was already invalidated by the submitter (client thread, pre-callback).
             local("§aSeraph key updated.");
             return;
         }
         String err = res == null ? null : res.error;
         if ("key_managed_by_secret".equals(err)) {
             local("§cThe key is managed by a wrangler secret - use §fwrangler secret delete SERAPH_KEY§c first.");
+        } else if ("invalid_key_length".equals(err)) {
+            local("§cKey must be 8-200 characters.");
         } else if (res != null && res.status == 403) {
             local("§cUnauthorized. Set a matching §f/cobblify statstoken§c, or provision with §fwrangler secret put SERAPH_KEY§c.");
         } else {
@@ -492,10 +497,6 @@ public class BedwarsQolCommand extends CommandBase {
             return false;
         }
         return SeraphKeyScrub.scrubKeyEntries(sent);
-    }
-
-    private static String jsonEscape(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /** Run {@code r} on the client thread (chat/cache mutations must land there). */
