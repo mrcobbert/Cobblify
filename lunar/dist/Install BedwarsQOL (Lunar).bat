@@ -2,50 +2,78 @@
 setlocal
 REM Cobblify - one-click installer for Lunar Client (Windows).
 REM Double-click this file. It copies the Weave loader + the mod into place and
-REM prints the exact line to paste into Lunar's JVM Arguments.
+REM creates a double-click launcher - no Lunar settings to touch.
 
 set "DIR=%~dp0"
-set "AGENT=Weave-Loader-Agent-1.3.3.jar"
-set "MOD=Cobblify-Lunar-0.6.0.jar"
 
 echo.
 echo   Installing Cobblify for Lunar Client...
 
-if not exist "%DIR%%AGENT%" goto :missing
-if not exist "%DIR%%MOD%" goto :missing
+set "AGENT="
+set "MOD="
+set /a AGENTCOUNT=0
+set /a MODCOUNT=0
+for %%F in ("%DIR%Weave-Loader-Agent-*.jar") do set "AGENT=%%~nxF" & set /a AGENTCOUNT+=1
+for %%F in ("%DIR%Cobblify-Lunar-*.jar") do set "MOD=%%~nxF" & set /a MODCOUNT+=1
+
+if not "%AGENTCOUNT%"=="1" goto :badbundle
+if not "%MODCOUNT%"=="1" goto :badbundle
 
 if not exist "%USERPROFILE%\.weave\mods" mkdir "%USERPROFILE%\.weave\mods"
 copy /Y "%DIR%%AGENT%" "%USERPROFILE%\.weave\%AGENT%" >nul
 copy /Y "%DIR%%MOD%"   "%USERPROFILE%\.weave\mods\%MOD%" >nul
 
+set "LAUNCHER=Launch Lunar (Cobblify).bat"
+call :writelauncher "%DIR%%LAUNCHER%"
+call :writelauncher "%USERPROFILE%\Desktop\%LAUNCHER%"
+
 echo   Done.
 echo.
 echo   ------------------------------------------------------------
-echo   ONE-TIME setup in Lunar (only needed the first time):
+echo   A launcher named "%LAUNCHER%" was placed
+echo   next to this installer AND on your Desktop.
+echo   Use it every time you play - it starts Lunar with Cobblify loaded.
 echo.
-echo    1. Open Lunar Client -^> Settings (gear icon).
-echo    2. Turn ON "Advanced Mode" (toggle next to the search box).
-echo    3. In the "JVM Arguments" box, paste EXACTLY this line:
+echo   Remaining steps (in Lunar, after launching):
 echo.
-echo       -javaagent:%USERPROFILE%\.weave\%AGENT%
-echo.
-echo    4. Save, choose version 1.8.9, and click Play.
-echo.
-echo   After it loads, set your stats backend once, in chat:
-echo       /cobblify statsurl ^<your-backend-url^>
-echo   Press Right Shift in-game to open the settings menu.
+echo    1. Log into Lunar Client.
+echo    2. Pick version 1.8.9 and click Play.
+echo    3. Turn Waypoints OFF inside your active Lunar settings profile.
+echo    4. Press Right Shift in-game to open the Cobblify settings menu.
 echo   ------------------------------------------------------------
-echo.
-echo   (If the path above contains spaces, wrap the path in quotes when pasting.)
 echo.
 pause
 exit /b 0
 
-:missing
-echo   ERROR: Couldn't find the bundled jars next to this installer.
-echo          Keep this file in the same folder as:
-echo            %AGENT%
-echo            %MOD%
+:badbundle
+echo   ERROR: Expected exactly one Weave-Loader-Agent-*.jar and exactly one
+echo          Cobblify-Lunar-*.jar next to this installer
+echo          (found %AGENTCOUNT% agent jar(s) and %MODCOUNT% mod jar(s)).
+echo          Extract the bundle into a fresh, empty folder and run this again.
 echo.
 pause
 exit /b 1
+
+:writelauncher
+set "L=%~1"
+>  "%L%" echo @echo off
+>> "%L%" echo REM Launch the official Lunar Client with Cobblify (Weave) injected.
+>> "%L%" echo REM Fully quit Lunar first, then double-click this file.
+>> "%L%" echo if not exist "%%USERPROFILE%%\.weave\%AGENT%" goto :noagent
+>> "%L%" echo if not exist "%%LOCALAPPDATA%%\Programs\lunarclient\Lunar Client.exe" goto :nolunar
+>> "%L%" echo echo If Lunar is already open, fully quit it first, then run this again.
+>> "%L%" echo set JAVA_TOOL_OPTIONS=-javaagent:"%%USERPROFILE%%\.weave\%AGENT%"
+>> "%L%" echo start "" "%%LOCALAPPDATA%%\Programs\lunarclient\Lunar Client.exe"
+>> "%L%" echo exit /b 0
+>> "%L%" echo :noagent
+>> "%L%" echo echo ERROR: Weave agent not found at: %%USERPROFILE%%\.weave\%AGENT%
+>> "%L%" echo echo Run the Cobblify installer again.
+>> "%L%" echo pause
+>> "%L%" echo exit /b 1
+>> "%L%" echo :nolunar
+>> "%L%" echo echo ERROR: Lunar Client not found at:
+>> "%L%" echo echo   %%LOCALAPPDATA%%\Programs\lunarclient\Lunar Client.exe
+>> "%L%" echo echo Install Lunar Client first, then run this again.
+>> "%L%" echo pause
+>> "%L%" echo exit /b 1
+goto :eof

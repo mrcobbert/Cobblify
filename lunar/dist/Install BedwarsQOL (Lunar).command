@@ -1,45 +1,82 @@
 #!/bin/bash
 # Cobblify — one-click installer for Lunar Client (macOS).
-# Double-click this file. It copies the Weave loader + the mod into place and prints the
-# exact line to paste into Lunar's JVM Arguments.
+# Double-click this file. It copies the Weave loader + the mod into place and
+# creates a double-click launcher — no Lunar settings to touch.
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-AGENT="Weave-Loader-Agent-1.3.3.jar"
-MOD="Cobblify-Lunar-0.6.0.jar"
 
 echo ""
 echo "  Installing Cobblify for Lunar Client..."
 
-if [ ! -f "$DIR/$AGENT" ] || [ ! -f "$DIR/$MOD" ]; then
-  echo "  ❌ Couldn't find the bundled jars next to this installer."
-  echo "     Keep this file in the same folder as $AGENT and $MOD."
+shopt -s nullglob
+agents=("$DIR"/Weave-Loader-Agent-*.jar)
+mods=("$DIR"/Cobblify-Lunar-*.jar)
+shopt -u nullglob
+
+if [ "${#agents[@]}" -ne 1 ] || [ "${#mods[@]}" -ne 1 ]; then
+  echo "  ❌ Expected exactly one Weave-Loader-Agent-*.jar and exactly one"
+  echo "     Cobblify-Lunar-*.jar next to this installer"
+  echo "     (found ${#agents[@]} agent jar(s) and ${#mods[@]} mod jar(s))."
+  echo "     Extract the bundle into a fresh, empty folder and run this again."
   echo ""
   read -p "  Press Return to close."
   exit 1
 fi
 
+AGENT="$(basename "${agents[0]}")"
+MOD="$(basename "${mods[0]}")"
+
 mkdir -p "$HOME/.weave/mods"
-cp -f "$DIR/$AGENT" "$HOME/.weave/$AGENT"
-cp -f "$DIR/$MOD"   "$HOME/.weave/mods/$MOD"
+cp -f "${agents[0]}" "$HOME/.weave/$AGENT"
+cp -f "${mods[0]}"   "$HOME/.weave/mods/$MOD"
+
+LAUNCHER="Launch Lunar (Cobblify).command"
+
+write_launcher() {
+  cat > "$1" <<LAUNCHEOF
+#!/bin/bash
+# Launch the official Lunar Client with Cobblify (Weave) injected.
+# Fully quit Lunar first (Cmd+Q), then double-click this file.
+
+AGENT="\$HOME/.weave/$AGENT"
+LUNAR="/Applications/Lunar Client.app/Contents/MacOS/Lunar Client"
+
+if [ ! -f "\$AGENT" ]; then
+  echo "❌ Weave agent not found at: \$AGENT"
+  echo "   Run the Cobblify installer again."
+  read -p "Press Return to close."
+  exit 1
+fi
+if [ ! -x "\$LUNAR" ]; then
+  echo "❌ Lunar Client not found at: \$LUNAR"
+  echo "   Install Lunar Client first, then run this again."
+  read -p "Press Return to close."
+  exit 1
+fi
+
+echo "If Lunar is already open, fully quit it (Cmd+Q) first, then run this again."
+export JAVA_TOOL_OPTIONS="-javaagent:\$HOME/.weave/$AGENT"
+exec "\$LUNAR" "\$@"
+LAUNCHEOF
+  chmod +x "$1"
+}
+
+write_launcher "$DIR/$LAUNCHER"
+write_launcher "$HOME/Desktop/$LAUNCHER"
 
 echo "  ✅ Done."
 echo ""
 echo "  ────────────────────────────────────────────────────────────"
-echo "  ONE-TIME setup in Lunar (only needed the first time):"
+echo "  A launcher named '$LAUNCHER' was placed"
+echo "  next to this installer AND on your Desktop."
+echo "  Use it every time you play — it starts Lunar with Cobblify loaded."
 echo ""
-echo "   1. Open Lunar Client → Settings (gear icon)."
-echo "   2. Turn ON 'Advanced Mode' (toggle next to the settings search box)."
-echo "   3. In the 'JVM Arguments' box, paste EXACTLY this line:"
+echo "  Remaining steps (in Lunar, after launching):"
 echo ""
-echo "      -javaagent:$HOME/.weave/$AGENT"
-echo ""
-echo "   4. Save, choose version 1.8.9, and click Play."
-echo ""
-echo "  After it loads, set your stats backend once, in chat:"
-echo "      /cobblify statsurl <your-backend-url>"
-echo "  Press Right Shift in-game to open the settings menu."
+echo "   1. Log into Lunar Client."
+echo "   2. Pick version 1.8.9 and click Play."
+echo "   3. Turn Waypoints OFF inside your active Lunar settings profile."
+echo "   4. Press Right Shift in-game to open the Cobblify settings menu."
 echo "  ────────────────────────────────────────────────────────────"
-echo ""
-echo "  (The -javaagent line above is filled in for THIS Mac — paste it as-is.)"
 echo ""
 read -p "  Press Return to close."
