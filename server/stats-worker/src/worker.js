@@ -57,10 +57,13 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // ONE auth derivation per request: every route consumes this object; nothing below
+    // re-reads the token header or the secret.
+    const auth = await authenticate(request, env);
+
     if (path === "/" || path === "/health") {
       if (path === "/health") {
-        const denied = checkAuth(request, env);
-        if (denied) return denied;
+        if (auth.denied) return auth.denied;
         const p = await probeHypixelPlayer("beepor", env);
         p.workerColo = (request.cf && request.cf.colo) || null; // where the Worker itself executes
         return jsonResponse(p);
@@ -70,18 +73,17 @@ export default {
 
     // Batch must be matched before the single /bedwars/<name> route ("batch" is a valid name pattern).
     if (path === "/bedwars/batch") {
-      const denied = checkAuth(request, env);
-      if (denied) return denied;
+      if (auth.denied) return auth.denied;
       const namesParam = url.searchParams.get("names") || "";
       const names = namesParam.split(",").map((s) => decodeURIComponent(s.trim())).filter(Boolean);
       if (names.length === 0) {
         return jsonResponse({ success: false, error: "no_names" }, 400);
       }
-      // Provider enrichment: owner token + per-provider opt-in header + KV, plus index-aligned
-      // uuids ("-" = ineligible member, never resolved). Anything off -> pure legacy stream.
-      // The uuid alignment is provider-independent, so it is built once and shared.
-      const uAllowed = urchinAllowed(request, env);
-      const sAllowed = seraphAllowed(request, env);
+      // Provider enrichment: authenticated identity + per-provider opt-in header + KV, plus
+      // index-aligned uuids ("-" = ineligible member, never resolved). Anything off -> pure
+      // legacy stream. The uuid alignment is provider-independent, so it is built once and shared.
+      const uAllowed = urchinAllowed(auth, request);
+      const sAllowed = seraphAllowed(auth, request);
       let urchinCtx = null;
       let seraphCtx = null;
       if (uAllowed || sAllowed) {
@@ -104,8 +106,8 @@ export default {
           // Without STATS_KV a provider makes zero upstream calls but still tells the owner
           // client "resolved unavailable" so it does not misdiagnose authentication.
           if (uuidByName.size > 0) {
-            if (uAllowed) urchinCtx = { uuidByName, unavailableOnly: !urchinCapable(env) };
-            if (sAllowed) seraphCtx = { uuidByName, unavailableOnly: !seraphCapable(env) };
+            if (uAllowed) urchinCtx = { uuidByName, unavailableOnly: !urchinCapable(env), auth };
+            if (sAllowed) seraphCtx = { uuidByName, unavailableOnly: !seraphCapable(env), auth };
           }
         }
       }
@@ -115,8 +117,7 @@ export default {
 
     const bedwars = path.match(/^\/bedwars\/([^/]+)$/);
     if (bedwars) {
-      const denied = checkAuth(request, env);
-      if (denied) return denied;
+      if (auth.denied) return auth.denied;
       const player = decodeURIComponent(bedwars[1]);
       if (!NAME_RE.test(player)) {
         return jsonResponse({ success: false, error: "invalid_player_name", player }, 400);
@@ -125,28 +126,28 @@ export default {
       const body = await getBedwars(player, env, ctx, fresh, laneFor(url));
       // Automatic-single Urchin enrichment is UUID-only: the eligible client sends
       // ?uuid=<canonical>; missing/invalid uuid -> no Coral lookup, no resolution metadata.
-      if (urchinAllowed(request, env)) {
+      if (urchinAllowed(auth, request)) {
         const uuid = normalizeUuid(url.searchParams.get("uuid") || "");
         if (uuid) {
           if (!urchinCapable(env)) {
             body.urchinUnavailable = true;
           } else {
             try {
-              const results = await tagsForUuids([uuid], env, ctx);
+              const results = await tagsForUuids([uuid], env, ctx, auth);
               Object.assign(body, resultFields(results.get(uuid), uuid));
             } catch (_) { /* silent degradation */ }
           }
         }
       }
       // Automatic-single Seraph enrichment is likewise UUID-only, gated by its own opt-in header.
-      if (seraphAllowed(request, env)) {
+      if (seraphAllowed(auth, request)) {
         const uuid = normalizeUuid(url.searchParams.get("uuid") || "");
         if (uuid) {
           if (!seraphCapable(env)) {
             body.seraphUnavailable = true;
           } else {
             try {
-              const results = await seraphTagsForUuids([uuid], env, ctx);
+              const results = await seraphTagsForUuids([uuid], env, ctx, auth);
               Object.assign(body, seraphResultFields(results.get(uuid), uuid));
             } catch (_) { /* silent degradation */ }
           }
@@ -156,17 +157,17 @@ export default {
     }
 
     if (path === "/urchin/key" && request.method === "POST") {
-      return handleKeySet(request, env, ctx);
+      return handleKeySet(request, env, ctx, auth);
     }
 
     if (path === "/seraph/key" && request.method === "POST") {
-      return seraphHandleKeySet(request, env, ctx);
+      return seraphHandleKeySet(request, env, ctx, auth);
     }
 
     // Manual lookup: the only name-resolving Coral path.
     const urchin = path.match(/^\/urchin\/([^/]+)$/);
     if (urchin && request.method === "GET") {
-      if (!urchinAllowed(request, env)) {
+      if (!urchinAllowed(auth, request)) {
         return jsonResponse({ success: false, error: "unauthorized" }, 403);
       }
       const player = decodeURIComponent(urchin[1]);
@@ -178,7 +179,7 @@ export default {
           success: true, player, uuid: null, tags: [], stale: false, notFound: false, unavailable: true,
         });
       }
-      const r = await tagsForName(player, env, ctx);
+      const r = await tagsForName(player, env, ctx, auth);
       return jsonResponse({
         success: true,
         player,
@@ -196,7 +197,7 @@ export default {
     // name->uuid before calling; the route otherwise mirrors the urchin manual route's gating/shape.
     const seraph = path.match(/^\/seraph\/([^/]+)$/);
     if (seraph && request.method === "GET") {
-      if (!seraphAllowed(request, env)) {
+      if (!seraphAllowed(auth, request)) {
         return jsonResponse({ success: false, error: "unauthorized" }, 403);
       }
       const uuid = normalizeUuid(decodeURIComponent(seraph[1]));
@@ -206,7 +207,7 @@ export default {
       if (!seraphCapable(env)) {
         return jsonResponse({ success: true, uuid, tags: [], notFound: false, unavailable: true });
       }
-      const results = await seraphTagsForUuids([uuid], env, ctx);
+      const results = await seraphTagsForUuids([uuid], env, ctx, auth);
       const r = results.get(uuid) || { state: "unavailable", tags: [] };
       return jsonResponse({
         success: true,
@@ -221,8 +222,7 @@ export default {
 
     const test = path.match(/^\/test\/([^/]+)$/);
     if (test) {
-      const denied = checkAuth(request, env);
-      if (denied) return denied;
+      if (auth.denied) return auth.denied;
       const player = decodeURIComponent(test[1]);
       if (!NAME_RE.test(player)) {
         return jsonResponse({ error: "invalid_player_name", player }, 400);
@@ -235,18 +235,49 @@ export default {
 };
 
 /**
- * Gate the data endpoints behind a shared secret. If the STATS_TOKEN secret is unset the
- * Worker stays open (back-compat, and lets a friend run their own no-auth deployment).
+ * Gate the data endpoints behind the STATS_TOKEN secret: a comma-separated token list
+ * (split on ",", trim, drop empties, dedupe preserving order). The FIRST surviving entry
+ * is the OWNER. If the secret is unset the Worker stays open (back-compat, and lets a
+ * friend run their own no-auth deployment) - the open result carries a null identity, so
+ * every provider route stays fail-closed exactly as before.
  * Set it with: wrangler secret put STATS_TOKEN
+ *
+ * Returns {denied: Response} on mismatch, else {identity, isOwner} where `identity` is the
+ * first 16 hex chars of SHA-256(token) - the suffix that scopes all per-user provider
+ * state. Parse and hashes are memoized per isolate, keyed by the raw secret string, so a
+ * redeploy with a changed list invalidates the memo.
  */
-function checkAuth(request, env) {
-  const expected = env && env.STATS_TOKEN;
-  if (!expected) return null; // no secret configured → open
-  const got = request.headers.get("X-BedwarsQol-Token");
-  if (got !== expected) {
-    return jsonResponse({ success: false, state: "ERROR", error: "unauthorized" }, 401);
+let tokenMemo = { raw: undefined, tokens: [], ids: new Map() };
+
+function parseTokenList(raw) {
+  const out = [];
+  for (const part of String(raw).split(",")) {
+    const t = part.trim();
+    if (t && !out.includes(t)) out.push(t);
   }
-  return null;
+  return out;
+}
+
+async function tokenIdentity(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function authenticate(request, env) {
+  const raw = (env && env.STATS_TOKEN) || "";
+  if (tokenMemo.raw !== raw) tokenMemo = { raw, tokens: parseTokenList(raw), ids: new Map() };
+  if (tokenMemo.tokens.length === 0) return { identity: null, isOwner: false }; // open worker
+  const got = request.headers.get("X-BedwarsQol-Token");
+  const idx = got == null ? -1 : tokenMemo.tokens.indexOf(got);
+  if (idx < 0) {
+    return { denied: jsonResponse({ success: false, state: "ERROR", error: "unauthorized" }, 401) };
+  }
+  let id = tokenMemo.ids.get(got);
+  if (!id) {
+    id = tokenIdentity(got); // memoized promise: one hash per token per isolate lifetime
+    tokenMemo.ids.set(got, id);
+  }
+  return { identity: await id, isOwner: idx === 0 };
 }
 
 /** Diagnostic egress probe (full read, no cache) — used by /test, /health and the cron. */

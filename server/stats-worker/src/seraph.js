@@ -2,7 +2,14 @@
  * Seraph blacklist integration (https://api.seraph.si).
  *
  * Sibling provider to urchin.js, cloned from its structure but adapted to the Seraph contract
- * (approved plan §7a, §7d). Read-only, owner-only, fail-closed.
+ * (approved plan §7a, §7d). Read-only, per-identity, fail-closed: each authenticated identity
+ * (worker.js authenticate) has its OWN key slot (`seraph:cfg:key:<identity>`; the SERAPH_KEY
+ * secret covers the OWNER identity only) and its OWN backoff/disabled/breaker state - one
+ * user's bad key or 429 never suppresses another user's lookups. Nothing reads the legacy
+ * unsuffixed `seraph:cfg:*` names. The per-isolate in-flight dedupe stays keyed by UUID only
+ * (shared by policy, like urchin's caches); the in-flight promise records the EXECUTING
+ * identity and a piggybacking requester shares success-class results only - Seraph has no
+ * stale cache, so a piggybacked failure is always full omission (retryable).
  *
  * Endpoint (UUID-only): GET https://api.seraph.si/{uuid}/blacklist. Seraph has NO batch and NO
  * name-lookup endpoint, so - unlike urchin.js - this module resolves each canonical UUID with its
@@ -13,14 +20,14 @@
  * "Invalid API Key". The header NAME ("key") was confirmed live 2026-07-21 and can still be
  * overridden with the SERAPH_AUTH_HEADER env var if the spelling ever changes.
  *
- * The key lives ONLY in this Worker (SERAPH_KEY secret, else KV "seraph:cfg:key"); redirects are
- * disabled so the keyed request is never replayed off-origin, and the key never appears in URLs,
- * logs, responses, or client config.
+ * Keys live ONLY in this Worker (SERAPH_KEY secret for the owner, else the caller's KV slot);
+ * redirects are disabled so the keyed request is never replayed off-origin, and the key never
+ * appears in URLs, logs, responses, or client config.
  *
  * Gating (all must hold before any Seraph traffic):
- *   - STATS_TOKEN configured AND matched (owner-only; a personal key must not serve strangers)
+ *   - STATS_TOKEN configured AND matched (a personal key must not serve strangers)
  *   - X-BWQOL-Seraph: 1 opt-in header (client sends it only for identity-confirmed tasks)
- *   - a key source available (SERAPH_KEY secret, or STATS_KV holding "seraph:cfg:key")
+ *   - a key source available (SERAPH_KEY secret, or STATS_KV holding the caller's key slot)
  *
  * NO PERSISTENT CACHE (§7d): unlike urchin.js's shared 6 h/24 h per-UUID KV cache, Seraph is
  * single-owner with no cross-user fanout, so tag results are NEVER written to KV or caches.default.
@@ -47,10 +54,33 @@ const LOOKUP_CONCURRENCY = 4; // bounded per-UUID fan-out (well under RL_LIMIT f
 
 const UUID_RE = /^[0-9a-f]{32}$/;
 
-// Per-isolate in-flight dedupe: uuid -> Promise<result>. The ONLY reuse (§7d: no persistent cache).
+// Per-isolate in-flight dedupe: uuid -> { identity, promise }. The ONLY reuse (§7d: no
+// persistent cache); `identity` is the requester whose key executes the upstream call.
 const inflight = new Map();
-let isolateKeyRejectedAt = 0; // time-bounded: re-consult after DISABLED_RETRY_MS
-let isolateBackoffUntil = 0; // armed from x-ratelimit / 429; KV write is best-effort cross-isolate
+
+/**
+ * Per-identity isolate state (bounded by the token-list length, <= ~5). Success resets and
+ * key-change resets apply ONLY to the identity that earned them.
+ */
+const isoState = new Map(); // identity -> mutable record below
+function iso(identity) {
+  let s = isoState.get(identity);
+  if (!s) {
+    s = {
+      keyRejectedAt: 0, // time-bounded: re-consult after DISABLED_RETRY_MS
+      backoffUntil: 0, // armed from x-ratelimit / 429; KV write is best-effort cross-isolate
+      failStreak: 0,
+      breakerUntil: 0,
+      lastFailAt: 0,
+    };
+    isoState.set(identity, s);
+  }
+  return s;
+}
+
+const cfgKeyName = (identity) => `seraph:cfg:key:${identity}`;
+const cfgBackoffName = (identity) => `seraph:cfg:backoff:${identity}`;
+const cfgDisabledName = (identity) => `seraph:cfg:disabled:${identity}`;
 
 function seraphBase(env) {
   return (env && env.SERAPH_BASE) || SERAPH_BASE_DEFAULT;
@@ -153,16 +183,13 @@ export function mapStatistics(data) {
 
 // ---- gating ---------------------------------------------------------------
 
-/** Owner token valid AND configured (never open). */
-function hasValidToken(request, env) {
-  const expected = env && env.STATS_TOKEN;
-  if (!expected) return false;
-  return request.headers.get("X-BedwarsQol-Token") === expected;
-}
-
-/** Owner authentication + explicit opt-in for Seraph DATA routes (capability is separate). */
-export function seraphAllowed(request, env) {
-  return Boolean(hasValidToken(request, env) && request.headers.get("X-BWQOL-Seraph") === "1");
+/**
+ * Authenticated identity + explicit opt-in for Seraph DATA routes (capability is separate).
+ * Pure function of the route-level auth result: it never re-derives authentication, and an
+ * open worker (null identity) stays fail-closed exactly as the unset-secret case always was.
+ */
+export function seraphAllowed(auth, request) {
+  return Boolean(auth && auth.identity && request.headers.get("X-BWQOL-Seraph") === "1");
 }
 
 /**
@@ -174,16 +201,18 @@ export function seraphCapable(env) {
   return Boolean(env && (env.SERAPH_KEY || env.STATS_KV));
 }
 
-/** Gate for the set-key route: token + KV only (no opt-in, no master dependency). */
-export function keyRouteAllowed(request, env) {
-  return Boolean(hasValidToken(request, env) && env && env.STATS_KV);
+/** Gate for the set-key route: authenticated identity + KV only (no opt-in, no master dependency). */
+export function keyRouteAllowed(auth, env) {
+  return Boolean(auth && auth.identity && env && env.STATS_KV);
 }
 
-async function activeKey(env) {
-  if (env && env.SERAPH_KEY) return { key: env.SERAPH_KEY, fromSecret: true };
+/** The calling identity's key: the SERAPH_KEY secret for the OWNER only, else its KV slot. */
+async function activeKey(env, auth) {
+  if (!auth || !auth.identity) return { key: null, fromSecret: false };
+  if (auth.isOwner && env && env.SERAPH_KEY) return { key: env.SERAPH_KEY, fromSecret: true };
   if (env && env.STATS_KV) {
     try {
-      const k = await env.STATS_KV.get("seraph:cfg:key");
+      const k = await env.STATS_KV.get(cfgKeyName(auth.identity));
       if (k) return { key: k, fromSecret: false };
     } catch (_) { /* ignore */ }
   }
@@ -195,41 +224,44 @@ async function activeKey(env) {
 // directly. Backoff/disabled are isolate-local first; a tiny protective flag is mirrored to KV when
 // bound (single-owner config, NOT the per-user fanout cache §7d forbids).
 
-async function isBlocked(env, nowMs) {
-  if (isolateKeyRejectedAt && nowMs - isolateKeyRejectedAt < DISABLED_RETRY_MS) return true;
-  if (nowMs < isolateBackoffUntil) return true;
+async function isBlocked(env, nowMs, auth) {
+  const st = iso(auth.identity);
+  if (st.keyRejectedAt && nowMs - st.keyRejectedAt < DISABLED_RETRY_MS) return true;
+  if (nowMs < st.backoffUntil) return true;
   if (!(env && env.STATS_KV)) return false;
   try {
     const [backoff, disabled] = await Promise.all([
-      env.STATS_KV.get("seraph:cfg:backoff"),
-      env.STATS_KV.get("seraph:cfg:disabled"),
+      env.STATS_KV.get(cfgBackoffName(auth.identity)),
+      env.STATS_KV.get(cfgDisabledName(auth.identity)),
     ]);
     if (backoff && Number(backoff) > nowMs) return true;
     if (disabled && nowMs - Number(disabled) < DISABLED_RETRY_MS) return true;
   } catch (_) {
     // Cannot read the shared block state -> fail closed for one backoff interval.
-    isolateBackoffUntil = Math.max(isolateBackoffUntil, nowMs + BACKOFF_MS);
+    st.backoffUntil = Math.max(st.backoffUntil, nowMs + BACKOFF_MS);
     return true;
   }
   return false;
 }
 
-/** Arm backoff until `untilMs` (from x-ratelimit-reset, else a fallback window). */
-function noteBackoff(env, ctx, untilMs) {
-  isolateBackoffUntil = Math.max(isolateBackoffUntil, untilMs);
+/** Arm the calling identity's backoff until `untilMs` (from x-ratelimit-reset, else a fallback window). */
+function noteBackoff(env, ctx, untilMs, auth) {
+  const st = iso(auth.identity);
+  st.backoffUntil = Math.max(st.backoffUntil, untilMs);
   if (env && env.STATS_KV) {
-    const put = env.STATS_KV.put("seraph:cfg:backoff", String(untilMs), {
+    const put = env.STATS_KV.put(cfgBackoffName(auth.identity), String(untilMs), {
       expirationTtl: Math.ceil((RL_WINDOW_MS * 2) / 1000),
     });
     if (ctx) ctx.waitUntil(put.catch(() => {}));
   }
 }
 
-function noteKeyRejected(env, ctx, nowMs) {
-  if (!isolateKeyRejectedAt) console.log("SERAPH_KEY_REJECTED");
-  isolateKeyRejectedAt = nowMs;
+function noteKeyRejected(env, ctx, nowMs, auth) {
+  const st = iso(auth.identity);
+  if (!st.keyRejectedAt) console.log("SERAPH_KEY_REJECTED");
+  st.keyRejectedAt = nowMs;
   if (env && env.STATS_KV) {
-    const put = env.STATS_KV.put("seraph:cfg:disabled", String(nowMs), { expirationTtl: 7200 });
+    const put = env.STATS_KV.put(cfgDisabledName(auth.identity), String(nowMs), { expirationTtl: 7200 });
     if (ctx) ctx.waitUntil(put.catch(() => {}));
   }
 }
@@ -255,27 +287,25 @@ function noteKeyRejected(env, ctx, nowMs) {
  */
 const FAIL_STREAK_TRIP = 3;
 const FAIL_COOLDOWN_MS = 60 * 1000;
-let isolateFailStreak = 0;
-let isolateBreakerUntil = 0;
-let isolateLastFailAt = 0;
 
-function noteFail(nowMs) {
+function noteFail(nowMs, st) {
   // Decay: "3 consecutive failures" is only evidence of an outage when they are close together.
   // Without this, three unrelated blips hours apart trip a 60 s suppression for no reason.
-  if (isolateLastFailAt && nowMs - isolateLastFailAt > FAIL_COOLDOWN_MS) isolateFailStreak = 0;
-  isolateLastFailAt = nowMs;
-  if (++isolateFailStreak >= FAIL_STREAK_TRIP) {
-    isolateFailStreak = 0;
-    isolateBreakerUntil = nowMs + FAIL_COOLDOWN_MS;
+  if (st.lastFailAt && nowMs - st.lastFailAt > FAIL_COOLDOWN_MS) st.failStreak = 0;
+  st.lastFailAt = nowMs;
+  if (++st.failStreak >= FAIL_STREAK_TRIP) {
+    st.failStreak = 0;
+    st.breakerUntil = nowMs + FAIL_COOLDOWN_MS;
     console.log("SERAPH_BREAKER_TRIPPED cooldown_ms=" + FAIL_COOLDOWN_MS);
   }
 }
 
-/** Any completed round trip proves the upstream is answering, so it clears the streak. */
-function noteOk() {
-  isolateFailStreak = 0;
-  isolateBreakerUntil = 0;
-  isolateLastFailAt = 0;
+/** Any completed round trip proves the upstream is answering, so it clears the calling
+ *  identity's streak. */
+function noteOk(st) {
+  st.failStreak = 0;
+  st.breakerUntil = 0;
+  st.lastFailAt = 0;
 }
 
 // ---- Seraph calls ---------------------------------------------------------
@@ -296,8 +326,8 @@ function readRateLimit(res, nowMs) {
  * supports "follow"/"manual"; "manual" + explicit 3xx failure means the keyed request is never
  * replayed off-origin. The upstream URL is never logged.
  */
-async function seraphFetch(env, uuid, nowMs) {
-  const { key } = await activeKey(env);
+async function seraphFetch(env, uuid, nowMs, auth) {
+  const { key } = await activeKey(env, auth);
   if (!key) return { status: "nokey" };
   let res;
   try {
@@ -334,49 +364,60 @@ async function seraphFetch(env, uuid, nowMs) {
   return { status: "ok", data, rl };
 }
 
-/** Feed a response's rate-limit signal into the shared backoff (proactive when remaining hits 0). */
-function absorbRateLimit(env, ctx, rl, nowMs) {
+/** Feed a response's rate-limit signal into the calling identity's backoff (proactive when
+ *  remaining hits 0). */
+function absorbRateLimit(env, ctx, rl, nowMs, auth) {
   if (rl && rl.remaining != null && rl.remaining <= 0 && rl.resetMs) {
-    noteBackoff(env, ctx, rl.resetMs);
+    noteBackoff(env, ctx, rl.resetMs, auth);
   }
 }
 
-/** Resolve one canonical UUID to a per-player result, with isolate in-flight dedupe. */
-function lookupOne(uuid, env, ctx, nowMs) {
-  // Tripped breaker: report the same transient failure the callers already handle, without
-  // spending a subrequest. Not counted as a failure - it never reached the upstream.
-  if (Date.now() < isolateBreakerUntil) return Promise.resolve(null);
+/**
+ * Resolve one canonical UUID with isolate in-flight dedupe. Returns { identity, promise }
+ * where `identity` is the EXECUTING requester - the caller compares it against its own to
+ * apply per-requester settlement (a piggybacked failure must not inherit the executing key's
+ * "unavailable" shape). All state notes inside the promise attribute to the executing
+ * identity, which created it.
+ */
+function lookupOne(uuid, env, ctx, nowMs, auth) {
   const existing = inflight.get(uuid);
   if (existing) return existing;
-  const p = (async () => {
-    const r = await seraphFetch(env, uuid, nowMs);
-    if (r.status === "ok") {
-      noteOk();
-      absorbRateLimit(env, ctx, r.rl, nowMs);
-      const stats = mapStatistics(r.data);
-      return { state: "ok", tags: mapTags(r.data, nowMs), threatLevel: stats.threatLevel, encounters: stats.encounters };
-    }
-    if (r.status === "notfound") {
-      noteOk();
-      absorbRateLimit(env, ctx, r.rl, nowMs);
-      return { state: "notfound", tags: [] };
-    }
-    if (r.status === "ratelimited") {
-      noteBackoff(env, ctx, (r.rl && r.rl.resetMs) || nowMs + BACKOFF_MS);
-      return { state: "unavailable", tags: [] };
-    }
-    if (r.status === "rejected") {
-      noteKeyRejected(env, ctx, nowMs);
-      return { state: "unavailable", tags: [] };
-    }
-    if (r.status === "nokey") return { state: "unavailable", tags: [] };
-    // Transient error: omit so the client may retry later (no cache to fall back on), and feed the
-    // outage breaker so a sustained failure stops re-issuing one GET per player per lobby.
-    noteFail(nowMs);
-    return null;
-  })().finally(() => inflight.delete(uuid));
-  inflight.set(uuid, p);
-  return p;
+  const st = iso(auth.identity);
+  // Tripped breaker: report the same transient failure the callers already handle, without
+  // spending a subrequest. Not counted as a failure - it never reached the upstream.
+  if (Date.now() < st.breakerUntil) return { identity: auth.identity, promise: Promise.resolve(null) };
+  const entry = {
+    identity: auth.identity,
+    promise: (async () => {
+      const r = await seraphFetch(env, uuid, nowMs, auth);
+      if (r.status === "ok") {
+        noteOk(st);
+        absorbRateLimit(env, ctx, r.rl, nowMs, auth);
+        const stats = mapStatistics(r.data);
+        return { state: "ok", tags: mapTags(r.data, nowMs), threatLevel: stats.threatLevel, encounters: stats.encounters };
+      }
+      if (r.status === "notfound") {
+        noteOk(st);
+        absorbRateLimit(env, ctx, r.rl, nowMs, auth);
+        return { state: "notfound", tags: [] };
+      }
+      if (r.status === "ratelimited") {
+        noteBackoff(env, ctx, (r.rl && r.rl.resetMs) || nowMs + BACKOFF_MS, auth);
+        return { state: "unavailable", tags: [] };
+      }
+      if (r.status === "rejected") {
+        noteKeyRejected(env, ctx, nowMs, auth);
+        return { state: "unavailable", tags: [] };
+      }
+      if (r.status === "nokey") return { state: "unavailable", tags: [] };
+      // Transient error: omit so the client may retry later (no cache to fall back on), and feed the
+      // outage breaker so a sustained failure stops re-issuing one GET per player per lobby.
+      noteFail(nowMs, st);
+      return null;
+    })().finally(() => { if (inflight.get(uuid) === entry) inflight.delete(uuid); }),
+  };
+  inflight.set(uuid, entry);
+  return entry;
 }
 
 /**
@@ -386,7 +427,7 @@ function lookupOne(uuid, env, ctx, nowMs) {
  * map entries mean transient failure (client may retry later). NO cache: every eligible UUID is a
  * fresh per-encounter lookup (§7d), fanned out with bounded concurrency under the rate limit.
  */
-export async function tagsForUuids(rawUuids, env, ctx) {
+export async function tagsForUuids(rawUuids, env, ctx, auth) {
   const nowMs = Date.now();
   const out = new Map();
   const uuids = [];
@@ -396,29 +437,37 @@ export async function tagsForUuids(rawUuids, env, ctx) {
   }
   if (uuids.length === 0) return out;
 
-  const { key } = await activeKey(env);
+  const { key } = await activeKey(env, auth);
   if (!key) {
     // No key -> Seraph is off entirely: resolved unavailable (no cache to leak from anyway).
     for (const u of uuids) out.set(u, { state: "unavailable", tags: [] });
     return out;
   }
-  if (await isBlocked(env, nowMs)) {
+  if (await isBlocked(env, nowMs, auth)) {
     for (const u of uuids) out.set(u, { state: "unavailable", tags: [] });
     return out;
   }
+  const st = iso(auth.identity);
 
   // Bounded fan-out: one keyed GET per UUID, LOOKUP_CONCURRENCY in flight at a time.
   let idx = 0;
   const runNext = async () => {
     while (idx < uuids.length) {
       const u = uuids[idx++];
-      // A backoff armed mid-batch (429 / remaining==0) short-circuits the rest as unavailable.
-      if (isolateBackoffUntil > Date.now() || (isolateKeyRejectedAt && Date.now() - isolateKeyRejectedAt < DISABLED_RETRY_MS)) {
+      // The CALLER's backoff armed mid-batch (429 / remaining==0) short-circuits the rest
+      // as unavailable - another identity's state never short-circuits this batch.
+      if (st.backoffUntil > Date.now() || (st.keyRejectedAt && Date.now() - st.keyRejectedAt < DISABLED_RETRY_MS)) {
         out.set(u, { state: "unavailable", tags: [] });
         continue;
       }
-      const r = await lookupOne(u, env, ctx, nowMs);
-      if (r) out.set(u, r);
+      const held = lookupOne(u, env, ctx, nowMs, auth);
+      const r = await held.promise;
+      if (!r) continue;
+      // Per-requester settlement (D4): success-class results are shared facts; a failure-class
+      // result ("unavailable") belongs to the EXECUTING identity's key, so a piggybacking
+      // requester gets full omission instead (Seraph has no stale cache) - retryable, never
+      // pinned resolved by someone else's failure.
+      if (held.identity === auth.identity || r.state === "ok" || r.state === "notfound") out.set(u, r);
     }
   };
   const n = Math.min(LOOKUP_CONCURRENCY, uuids.length);
@@ -451,15 +500,17 @@ export function resultFields(result, uuid) {
   return fields;
 }
 
-/** POST /seraph/key: {key: "..."} sets, {key: null} clears. Never echoes the key. */
-export async function handleKeySet(request, env, ctx) {
+/** POST /seraph/key: {key: "..."} sets, {key: null} clears - the CALLER's slot only, so a
+ *  cross-user overwrite is impossible by construction. Never echoes the key. */
+export async function handleKeySet(request, env, ctx, auth) {
   if (!env || !env.STATS_KV) {
     return json({ success: false, error: "kv_required" }, 503);
   }
-  if (!keyRouteAllowed(request, env)) {
+  if (!keyRouteAllowed(auth, env)) {
     return json({ success: false, error: "unauthorized" }, 403);
   }
-  if (env.SERAPH_KEY) {
+  // The SERAPH_KEY secret manages the OWNER's slot only; other identities keep KV slots.
+  if (auth.isOwner && env.SERAPH_KEY) {
     return json({ success: false, error: "key_managed_by_secret" }, 409);
   }
   let body;
@@ -474,19 +525,20 @@ export async function handleKeySet(request, env, ctx) {
   // mutation, so a failure response always means the key itself is unchanged - the client
   // can trust "failure = nothing happened" and "success = key state + cleanup committed".
   try {
-    await env.STATS_KV.delete("seraph:cfg:backoff");
-    await env.STATS_KV.delete("seraph:cfg:disabled");
-    if (key === null) await env.STATS_KV.delete("seraph:cfg:key");
-    else await env.STATS_KV.put("seraph:cfg:key", key);
+    await env.STATS_KV.delete(cfgBackoffName(auth.identity));
+    await env.STATS_KV.delete(cfgDisabledName(auth.identity));
+    if (key === null) await env.STATS_KV.delete(cfgKeyName(auth.identity));
+    else await env.STATS_KV.put(cfgKeyName(auth.identity), key);
   } catch (_) {
     return json({ success: false, error: "kv_write_failed" }, 503);
   }
-  isolateKeyRejectedAt = 0;
-  isolateBackoffUntil = 0;
-  // A key change is an explicit "try again now": clear the outage breaker too.
-  isolateFailStreak = 0;
-  isolateBreakerUntil = 0;
-  isolateLastFailAt = 0;
+  // A key change is an explicit "try again now" - for the CALLING identity only.
+  const st = iso(auth.identity);
+  st.keyRejectedAt = 0;
+  st.backoffUntil = 0;
+  st.failStreak = 0;
+  st.breakerUntil = 0;
+  st.lastFailAt = 0;
   return json({ success: true });
 }
 

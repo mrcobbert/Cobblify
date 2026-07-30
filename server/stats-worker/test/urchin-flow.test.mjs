@@ -13,6 +13,14 @@ import {
 const UUID = "069a79f444e94726a5befca90e38aaf5";
 const uuidN = (n) => n.toString(16).padStart(32, "0");
 
+// Provider state is per-identity now: these tests run as one fixed identity, whose KV slots
+// carry the `:<identity>` suffix (cross-identity behavior lives in identity.test.mjs).
+const ID = "aaaabbbbccccdddd";
+const AUTH = { identity: ID, isOwner: false };
+const CFG_KEY = `urchin:cfg:key:${ID}`;
+const CFG_BACKOFF = `urchin:cfg:backoff:${ID}`;
+const CFG_DISABLED = `urchin:cfg:disabled:${ID}`;
+
 function makeKv(seed = {}) {
   const store = new Map(Object.entries(seed));
   return {
@@ -54,7 +62,7 @@ async function resetIsolate() {
     headers: { "X-BedwarsQol-Token": "t" },
     body: JSON.stringify({ key: null }),
   });
-  await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: makeKv() }, ctx);
+  await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: makeKv() }, ctx, AUTH);
 }
 
 test.beforeEach(async () => {
@@ -66,7 +74,7 @@ test.beforeEach(async () => {
 
 test("keyless: cached tags are NEVER shown (clear must fully disable display)", async () => {
   const kv = makeKv({ [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "", addedOn: 1, expiresAt: null }]) });
-  const res = await tagsForUuids([UUID], env(kv), ctx);
+  const res = await tagsForUuids([UUID], env(kv), ctx, AUTH);
   const r = res.get(UUID);
   assert.equal(r.state, "unavailable");
   assert.equal(r.tags.length, 0);
@@ -75,7 +83,7 @@ test("keyless: cached tags are NEVER shown (clear must fully disable display)", 
 test("keyless: no cache -> unavailable-empty, zero upstream fetches", async () => {
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; throw new Error("no"); };
-  const res = await tagsForUuids([UUID], env(makeKv()), ctx);
+  const res = await tagsForUuids([UUID], env(makeKv()), ctx, AUTH);
   assert.equal(res.get(UUID).state, "unavailable");
   assert.equal(fetches, 0);
 });
@@ -89,10 +97,10 @@ test("expiry-after-cache: an expired stored tag ENDS freshness and forces a refe
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (...a) => { fetches++; return origFetch(...a); };
   const kv = makeKv({
-    "urchin:cfg:key": "k".repeat(16),
+    [CFG_KEY]: "k".repeat(16),
     [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "", addedOn: 1, expiresAt: Date.now() - 5 }]),
   });
-  const res = await tagsForUuids([UUID], env(kv), ctx);
+  const res = await tagsForUuids([UUID], env(kv), ctx, AUTH);
   const r = res.get(UUID);
   assert.equal(fetches, 1); // entry is young but its tag expired -> no longer fresh
   assert.equal(r.state, "ok");
@@ -109,16 +117,17 @@ test("batch omits a uuid: no stale -> NO map entry; stale -> tags with NO flag (
   globalThis.fetch = async () => new Response(JSON.stringify({ players: {} }), {
     headers: { "content-type": "application/json" },
   });
-  const bare = await tagsForUuids([UUID], env(makeKv({ "urchin:cfg:key": "k".repeat(16) })), ctx);
+  const bare = await tagsForUuids([UUID], env(makeKv({ [CFG_KEY]: "k".repeat(16) })), ctx, AUTH);
   assert.equal(bare.has(UUID), false);
 
   const withStale = await tagsForUuids(
     [UUID],
     env(makeKv({
-      "urchin:cfg:key": "k".repeat(16),
+      [CFG_KEY]: "k".repeat(16),
       [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "s", addedOn: 1, expiresAt: null }], 7 * 3600 * 1000),
     })),
-    ctx
+    ctx,
+    AUTH
   );
   const fields = resultFields(withStale.get(UUID), UUID);
   assert.equal(fields.urchinUnavailable, undefined); // sticky client-side - never for a transient miss
@@ -134,11 +143,11 @@ test("mapTags: v3 tag_type wins over the legacy `type` spelling", () => {
 
 test("stale + transient 5xx -> stale tags with NO flag (retryable); 429 sets backoff flag", async () => {
   const kv = makeKv({
-    "urchin:cfg:key": "k".repeat(16),
+    [CFG_KEY]: "k".repeat(16),
     [`urchin:v2:${UUID}`]: freshEntry([{ type: "caution", reason: "", addedOn: 1, expiresAt: null }], 7 * 3600 * 1000),
   });
   globalThis.fetch = async () => new Response("{}", { status: 502 });
-  const res = await tagsForUuids([UUID], env(kv), ctx);
+  const res = await tagsForUuids([UUID], env(kv), ctx, AUTH);
   // A 5xx is transient by definition, so the stale tags must ship flagless: displayed, and the
   // client keeps retrying. urchinUnavailable would end retries for the entry's whole lifetime.
   const fields = resultFields(res.get(UUID), UUID);
@@ -147,20 +156,20 @@ test("stale + transient 5xx -> stale tags with NO flag (retryable); 429 sets bac
   assert.equal(fields.urchin.tags[0].type, "caution");
 
   globalThis.fetch = async () => new Response("{}", { status: 429 });
-  const kv2 = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  await tagsForUuids([UUID], env(kv2), ctx);
-  assert.ok(kv2.store.has("urchin:cfg:backoff"));
+  const kv2 = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  await tagsForUuids([UUID], env(kv2), ctx, AUTH);
+  assert.ok(kv2.store.has(CFG_BACKOFF));
 });
 
 test("manual: fresh alias cache reuse spends no Coral request", async () => {
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; throw new Error("no"); };
   const kv = makeKv({
-    "urchin:cfg:key": "k".repeat(16),
+    [CFG_KEY]: "k".repeat(16),
     "urchin:name:v1:someguy": UUID,
     [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "q", addedOn: 1, expiresAt: null }]),
   });
-  const r = await tagsForName("SomeGuy", env(kv), ctx);
+  const r = await tagsForName("SomeGuy", env(kv), ctx, AUTH);
   assert.equal(r.state, "ok");
   assert.equal(r.tags[0].type, "sniper");
   assert.equal(fetches, 0);
@@ -172,14 +181,15 @@ test("manual: keyless is fully off; backoff falls back to stale alias data", asy
     [`urchin:v2:${UUID}`]: freshEntry([{ type: "caution", reason: "", addedOn: 1, expiresAt: null }], 7 * 3600 * 1000),
   };
   // Keyless: fully off - not even stale tags (clear contract).
-  const keyless = await tagsForName("SomeGuy", env(makeKv(seed)), ctx);
+  const keyless = await tagsForName("SomeGuy", env(makeKv(seed)), ctx, AUTH);
   assert.equal(keyless.state, "unavailable");
   assert.equal(keyless.tags.length, 0);
 
   const backed = await tagsForName(
     "SomeGuy",
-    env(makeKv({ ...seed, "urchin:cfg:key": "k".repeat(16), "urchin:cfg:backoff": String(Date.now()) })),
-    ctx
+    env(makeKv({ ...seed, [CFG_KEY]: "k".repeat(16), [CFG_BACKOFF]: String(Date.now()) })),
+    ctx,
+    AUTH
   );
   assert.equal(backed.state, "unavailable");
   assert.equal(backed.tags.length, 1);
@@ -190,17 +200,18 @@ test("manual: timeout with stale -> unavailable+stale; without stale -> unavaila
   const withStale = await tagsForName(
     "SomeGuy",
     env(makeKv({
-      "urchin:cfg:key": "k".repeat(16),
+      [CFG_KEY]: "k".repeat(16),
       "urchin:name:v1:someguy": UUID,
       [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "", addedOn: 1, expiresAt: null }], 7 * 3600 * 1000),
     })),
-    ctx
+    ctx,
+    AUTH
   );
   assert.equal(withStale.state, "unavailable");
   assert.equal(withStale.stale, true);
   assert.equal(withStale.tags.length, 1);
 
-  const without = await tagsForName("Fresh", env(makeKv({ "urchin:cfg:key": "k".repeat(16) })), ctx);
+  const without = await tagsForName("Fresh", env(makeKv({ [CFG_KEY]: "k".repeat(16) })), ctx, AUTH);
   assert.equal(without.state, "unavailable");
   assert.equal(without.tags.length, 0);
 });
@@ -254,9 +265,9 @@ test("no-KV capability: allowed but not capable; key route 503s", async () => {
     body: JSON.stringify({ key: "k".repeat(16) }),
   });
   const envNoKv = { STATS_TOKEN: "t" };
-  assert.equal(urchinAllowed(req, envNoKv), true); // auth is separate from capability
+  assert.equal(urchinAllowed(AUTH, req), true); // auth is separate from capability
   assert.equal(urchinCapable(envNoKv), false);
-  const res = await handleKeySet(req, envNoKv, ctx);
+  const res = await handleKeySet(req, envNoKv, ctx, AUTH);
   assert.equal(res.status, 503);
 });
 
@@ -269,13 +280,13 @@ test("an unreadable block state fails OPEN - a KV blip must not mark players cle
   // control we already trust.
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 429 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
   const origGet = kv.get.bind(kv);
   kv.get = async (k, type) => {
-    if (k === "urchin:cfg:backoff" || k === "urchin:cfg:disabled") throw new Error("kv down");
+    if (k === CFG_BACKOFF || k === CFG_DISABLED) throw new Error("kv down");
     return origGet(k, type);
   };
-  const first = await tagsForUuids([UUID], env(kv), ctx);
+  const first = await tagsForUuids([UUID], env(kv), ctx, AUTH);
   assert.equal(fetches, 1, "the call must still be attempted");
   // And the 429 that comes back is transient with nothing stale to show: omitted, retryable.
   assert.equal(first.has(UUID), false);
@@ -287,11 +298,11 @@ test("blocked (KV backoff): stale ships flagless; nothing stale ships nothing at
   globalThis.fetch = async () => { fetches++; throw new Error("no"); };
   const bare = uuidN(41);
   const kv = makeKv({
-    "urchin:cfg:key": "k".repeat(16),
-    "urchin:cfg:backoff": String(Date.now()),
+    [CFG_KEY]: "k".repeat(16),
+    [CFG_BACKOFF]: String(Date.now()),
     [`urchin:v2:${UUID}`]: freshEntry([{ type: "sniper", reason: "s", addedOn: 1, expiresAt: null }], 7 * 3600 * 1000),
   });
-  const res = await tagsForUuids([UUID, bare], env(kv), ctx);
+  const res = await tagsForUuids([UUID, bare], env(kv), ctx, AUTH);
   assert.equal(fetches, 0); // the block still suppresses upstream traffic
   // A backoff/disable is TRANSIENT, so neither uuid may be reported as resolved.
   const stale = resultFields(res.get(UUID), UUID);
@@ -307,12 +318,12 @@ test("429 triggers isolate-local backoff even if the KV write is lost", async ()
   // asserts the observable contract: after a 429, an immediate second lookup makes no call.
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 429 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
   const origPut = kv.put.bind(kv);
-  kv.put = async (k, v) => { if (k === "urchin:cfg:backoff") throw new Error("lost"); return origPut(k, v); };
-  await tagsForUuids(["11111111222233334444555566667778"], env(kv), ctx);
+  kv.put = async (k, v) => { if (k === CFG_BACKOFF) throw new Error("lost"); return origPut(k, v); };
+  await tagsForUuids(["11111111222233334444555566667778"], env(kv), ctx, AUTH);
   const before = fetches;
-  await tagsForUuids(["11111111222233334444555566667779"], env(kv), ctx);
+  await tagsForUuids(["11111111222233334444555566667779"], env(kv), ctx, AUTH);
   assert.equal(fetches, before); // isolate-local backoff blocks the second call
 });
 
@@ -321,18 +332,18 @@ test("breaker: 3 consecutive non-429 failures suppress the next call, with ZERO 
   // without this every lobby re-issues a fresh POST /v3/players for the whole outage.
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 503 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  for (let i = 1; i <= 3; i++) await tagsForUuids([uuidN(i)], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  for (let i = 1; i <= 3; i++) await tagsForUuids([uuidN(i)], env(kv), ctx, AUTH);
   assert.equal(fetches, 3);
 
-  const res = await tagsForUuids([uuidN(4)], env(kv), ctx);
+  const res = await tagsForUuids([uuidN(4)], env(kv), ctx, AUTH);
   assert.equal(fetches, 3, "the 4th call must not reach upstream");
   // Fails OPEN in shape too: a suppressed call is the ordinary transient failure, so the uuid
   // is OMITTED (client retries) rather than resolved-unavailable (which sticks forever).
   assert.equal(res.has(uuidN(4)), false);
   // The regression this must never repeat: the deleted reserveBudget wrote one hot KV key per
   // lookup. The breaker is two module numbers - it may touch no KV key at all.
-  assert.deepEqual([...kv.store.keys()], ["urchin:cfg:key"]);
+  assert.deepEqual([...kv.store.keys()], [CFG_KEY]);
 });
 
 test("a 404 is upstream health ONLY on the name route; on the batch route it is a failure", async () => {
@@ -343,17 +354,17 @@ test("a 404 is upstream health ONLY on the name route; on the batch route it is 
   // every one comes back retryable and nothing ever caches.
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response(JSON.stringify({ error: "not found" }), { status: 404 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  for (let i = 61; i <= 63; i++) await tagsForUuids([uuidN(i)], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  for (let i = 61; i <= 63; i++) await tagsForUuids([uuidN(i)], env(kv), ctx, AUTH);
   assert.equal(fetches, 3);
-  const res = await tagsForUuids([uuidN(64)], env(kv), ctx);
+  const res = await tagsForUuids([uuidN(64)], env(kv), ctx, AUTH);
   assert.equal(fetches, 3, "3 batch 404s are an outage: the breaker must have tripped");
   assert.equal(res.has(uuidN(64)), false); // and never "checked"/"notfound"
   assert.equal(kv.store.has(`urchin:v2:${uuidN(61)}`), false, "a 404 must cache nothing");
 
   // The name route is the one place a 404 IS the answer, and it still proves the key works.
   await resetIsolate();
-  const named = await tagsForName("Ghost", env(makeKv({ "urchin:cfg:key": "k".repeat(16) })), ctx);
+  const named = await tagsForName("Ghost", env(makeKv({ [CFG_KEY]: "k".repeat(16) })), ctx, AUTH);
   assert.equal(named.state, "notfound");
 });
 
@@ -371,8 +382,8 @@ test("in-flight: a canceled request cannot poison a uuid for the isolate's lifet
       headers: { "content-type": "application/json" },
     });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  const abandoned = tagsForUuids([UUID], env(kv), ctx); // deliberately never awaited
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  const abandoned = tagsForUuids([UUID], env(kv), ctx, AUTH); // deliberately never awaited
   abandoned.catch(() => {});
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(fetches, 1);
@@ -381,7 +392,7 @@ test("in-flight: a canceled request cannot poison a uuid for the isolate's lifet
   hang = false;
   // Past INFLIGHT_TTL_MS: the orphan must read as absent so the lookup self-heals.
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 31_000 });
-  const res = await tagsForUuids([UUID], env(kv), ctx);
+  const res = await tagsForUuids([UUID], env(kv), ctx, AUTH);
   assert.equal(fetches, 2, "a stale in-flight entry must not swallow a later lookup");
   assert.equal(res.get(UUID).tags[0].type, "sniper");
 });
@@ -389,14 +400,14 @@ test("in-flight: a canceled request cannot poison a uuid for the isolate's lifet
 test("breaker: the failure streak decays, so blips far apart never trip it", async (t) => {
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 502 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await tagsForUuids([uuidN(71)], env(kv), ctx);
-  await tagsForUuids([uuidN(72)], env(kv), ctx);
+  await tagsForUuids([uuidN(71)], env(kv), ctx, AUTH);
+  await tagsForUuids([uuidN(72)], env(kv), ctx, AUTH);
   t.mock.timers.tick(61_000); // older than FAIL_COOLDOWN_MS: not the same incident
-  await tagsForUuids([uuidN(73)], env(kv), ctx);
+  await tagsForUuids([uuidN(73)], env(kv), ctx, AUTH);
   assert.equal(fetches, 3);
-  await tagsForUuids([uuidN(74)], env(kv), ctx);
+  await tagsForUuids([uuidN(74)], env(kv), ctx, AUTH);
   assert.equal(fetches, 4, "a decayed streak must not trip on the 3rd cumulative failure");
 });
 
@@ -409,14 +420,14 @@ test("breaker: any successful round trip resets the streak (never latches)", asy
       ? new Response("{}", { status: 502 })
       : new Response(JSON.stringify({ players: {} }), { headers: { "content-type": "application/json" } });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  await tagsForUuids([uuidN(11)], env(kv), ctx);
-  await tagsForUuids([uuidN(12)], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  await tagsForUuids([uuidN(11)], env(kv), ctx, AUTH);
+  await tagsForUuids([uuidN(12)], env(kv), ctx, AUTH);
   fail = false;
-  await tagsForUuids([uuidN(13)], env(kv), ctx); // success clears the 2-failure streak
+  await tagsForUuids([uuidN(13)], env(kv), ctx, AUTH); // success clears the 2-failure streak
   fail = true;
-  await tagsForUuids([uuidN(14)], env(kv), ctx);
-  await tagsForUuids([uuidN(15)], env(kv), ctx);
+  await tagsForUuids([uuidN(14)], env(kv), ctx, AUTH);
+  await tagsForUuids([uuidN(15)], env(kv), ctx, AUTH);
   assert.equal(fetches, 5, "a reset streak must not trip at the 3rd cumulative failure");
 });
 
@@ -428,9 +439,9 @@ test("a trailing slash on URCHIN_BASE cannot turn every player into urchinNotFou
     urls.push(String(u));
     return new Response(JSON.stringify({ players: {} }), { headers: { "content-type": "application/json" } });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  await tagsForUuids([UUID], env(kv, { URCHIN_BASE: "https://coral.test//" }), ctx);
-  await tagsForName("SomeGuy", env(kv, { URCHIN_BASE: "https://coral.test/" }), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  await tagsForUuids([UUID], env(kv, { URCHIN_BASE: "https://coral.test//" }), ctx, AUTH);
+  await tagsForName("SomeGuy", env(kv, { URCHIN_BASE: "https://coral.test/" }), ctx, AUTH);
   assert.equal(urls[0], "https://coral.test/v3/players");
   assert.equal(urls[1], "https://coral.test/v3/player/tags?player=SomeGuy");
 });
@@ -444,13 +455,13 @@ test("a null / non-array tag list is treated as absent, never cached as a clean 
       headers: { "content-type": "application/json" },
     });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  const res = await tagsForUuids([UUID, other], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  const res = await tagsForUuids([UUID, other], env(kv), ctx, AUTH);
   // Present-with-[] means checked-and-clean; present-with-garbage means nothing at all.
   assert.equal(res.has(UUID), false);
   assert.equal(res.has(other), false);
   assert.equal(kv.store.has(`urchin:v2:${UUID}`), false, "malformed data must never be stored as clean");
-  await tagsForUuids([UUID, other], env(kv), ctx);
+  await tagsForUuids([UUID, other], env(kv), ctx, AUTH);
   assert.equal(fetches, 2, "nothing was cached, so the lookup is retried");
 });
 
@@ -475,8 +486,8 @@ test("name route: a 200 whose uuid will not normalize -> checked, no urchinUuid,
     new Response(JSON.stringify({ uuid: "not-a-uuid", displayname: "Ghost", tags: [{ tag_type: "sniper", reason: "q", added_on: 5 }] }), {
       headers: { "content-type": "application/json" },
     });
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  const r = await tagsForName("Ghost", env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  const r = await tagsForName("Ghost", env(kv), ctx, AUTH);
   assert.equal(r.state, "ok");
   assert.equal(r.uuid, null);
   assert.deepEqual(resultFields(r, r.uuid), {
@@ -493,21 +504,21 @@ test("401: ONE rejection never disables; two in a row arm the SHARED KV flag", a
   // of suppressed lookups. Two consecutive rejections is still a bad key; one is noise.
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("", { status: 401 }); };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  await tagsForUuids([UUID], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  await tagsForUuids([UUID], env(kv), ctx, AUTH);
   assert.equal(fetches, 1);
-  assert.equal(kv.store.has("urchin:cfg:disabled"), false, "one rejection must not disable");
+  assert.equal(kv.store.has(CFG_DISABLED), false, "one rejection must not disable");
 
-  await tagsForUuids([uuidN(51)], env(kv), ctx);
+  await tagsForUuids([uuidN(51)], env(kv), ctx, AUTH);
   assert.equal(fetches, 2, "a single rejection must not have blocked the retry either");
-  assert.ok(kv.store.has("urchin:cfg:disabled"), "the cross-isolate disable must be persisted");
+  assert.ok(kv.store.has(CFG_DISABLED), "the cross-isolate disable must be persisted");
 
   // Isolate flags cleared = a different isolate: only the KV value can block now. The route
   // test runs in ONE process, where isolateKeyRejectedAt alone would explain what it sees.
-  const disabled = kv.store.get("urchin:cfg:disabled");
+  const disabled = kv.store.get(CFG_DISABLED);
   await resetIsolate();
-  const kv2 = makeKv({ "urchin:cfg:key": "k".repeat(16), "urchin:cfg:disabled": disabled });
-  const res = await tagsForUuids([UUID], env(kv2), ctx);
+  const kv2 = makeKv({ [CFG_KEY]: "k".repeat(16), [CFG_DISABLED]: disabled });
+  const res = await tagsForUuids([UUID], env(kv2), ctx, AUTH);
   assert.equal(fetches, 2, "the KV disabled flag alone must stop a fresh isolate");
   assert.equal(res.has(UUID), false); // blocked + no stale -> retryable, not sticky
 });
@@ -519,13 +530,13 @@ test("401: any successful round trip resets the rejection streak", async () => {
     mode === 401
       ? new Response("", { status: 401 })
       : new Response(JSON.stringify({ players: {} }), { headers: { "content-type": "application/json" } });
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  await tagsForUuids([uuidN(52)], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  await tagsForUuids([uuidN(52)], env(kv), ctx, AUTH);
   mode = 200;
-  await tagsForUuids([uuidN(53)], env(kv), ctx);
+  await tagsForUuids([uuidN(53)], env(kv), ctx, AUTH);
   mode = 401;
-  await tagsForUuids([uuidN(54)], env(kv), ctx);
-  assert.equal(kv.store.has("urchin:cfg:disabled"), false, "the streak must have been cleared by the success");
+  await tagsForUuids([uuidN(54)], env(kv), ctx, AUTH);
+  assert.equal(kv.store.has(CFG_DISABLED), false, "the streak must have been cleared by the success");
 });
 
 test("batch cap: at most 100 uuids per upstream request; the remainder stays retryable", async () => {
@@ -537,9 +548,9 @@ test("batch cap: at most 100 uuids per upstream request; the remainder stays ret
       headers: { "content-type": "application/json" },
     });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
   const many = Array.from({ length: 120 }, (_, i) => uuidN(i + 101));
-  const res = await tagsForUuids(many, env(kv), ctx);
+  const res = await tagsForUuids(many, env(kv), ctx, AUTH);
   assert.equal(bodies.length, 1);
   assert.deepEqual(bodies[0], many.slice(0, 100)); // the only ceiling on one upstream request
   for (const u of many.slice(0, 100)) assert.equal(res.get(u).state, "ok");
@@ -558,10 +569,10 @@ test("in-flight dedupe: a concurrent lookup piggybacks instead of issuing a seco
       headers: { "content-type": "application/json" },
     });
   };
-  const kv = makeKv({ "urchin:cfg:key": "k".repeat(16) });
-  const first = tagsForUuids([UUID], env(kv), ctx);
+  const kv = makeKv({ [CFG_KEY]: "k".repeat(16) });
+  const first = tagsForUuids([UUID], env(kv), ctx, AUTH);
   await new Promise((r) => setTimeout(r, 0));
-  const second = tagsForUuids([UUID], env(kv), ctx); // must join the pending batch
+  const second = tagsForUuids([UUID], env(kv), ctx, AUTH); // must join the pending batch
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(fetches, 1);
   release();
@@ -572,16 +583,16 @@ test("in-flight dedupe: a concurrent lookup piggybacks instead of issuing a seco
 });
 
 test("key mutation contract: cleanup failure -> 503 AND key unchanged", async () => {
-  const kv = makeKv({ "urchin:cfg:key": "oldkey-0123456789", "urchin:cfg:disabled": String(Date.now()) });
+  const kv = makeKv({ [CFG_KEY]: "oldkey-0123456789", [CFG_DISABLED]: String(Date.now()) });
   const origDelete = kv.delete.bind(kv);
-  kv.delete = async (k) => { if (k === "urchin:cfg:disabled") throw new Error("kv down"); return origDelete(k); };
+  kv.delete = async (k) => { if (k === CFG_DISABLED) throw new Error("kv down"); return origDelete(k); };
   const req = new Request("https://x/urchin/key", {
     method: "POST",
     headers: { "X-BedwarsQol-Token": "t" },
     body: JSON.stringify({ key: null }),
   });
-  const res = await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: kv }, ctx);
+  const res = await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: kv }, ctx, AUTH);
   assert.equal(res.status, 503);
   // Failure means NOTHING happened to the key: it is still set.
-  assert.equal(kv.store.get("urchin:cfg:key"), "oldkey-0123456789");
+  assert.equal(kv.store.get(CFG_KEY), "oldkey-0123456789");
 });

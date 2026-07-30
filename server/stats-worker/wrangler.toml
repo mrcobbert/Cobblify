@@ -4,6 +4,13 @@ compatibility_date = "2024-11-01"
 workers_dev = true
 preview_urls = true
 
+# STATS_TOKEN (secret, optional): comma-separated token list, one entry per user
+# (charset ^[A-Za-z0-9_-]{16,64}$; the parser splits on ",", trims, drops empties, dedupes).
+# The FIRST entry is the OWNER: the URCHIN_KEY/SERAPH_KEY secrets, when set, manage the
+# owner's provider-key slot only. Every other identity manages its own slot via the key
+# routes. Unset => the Worker is open (self-host back-compat) and all provider routes stay
+# fail-closed. Set it with: wrangler secret put STATS_TOKEN
+
 # Run the Worker near hypixel.net (it makes many same-origin subrequests), trimming per-scrape
 # latency. Takes ~15 min to take effect after deploy and only routes to colos it has run in.
 [placement]

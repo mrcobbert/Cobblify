@@ -13,6 +13,12 @@ import { tagsForUuids, resultFields, handleKeySet } from "../src/seraph.js";
 const uuidN = (n) => n.toString(16).padStart(32, "0");
 const KEY = "k".repeat(16);
 
+// Provider state is per-identity now: these tests run as one fixed identity, whose KV slots
+// carry the `:<identity>` suffix (cross-identity behavior lives in identity.test.mjs).
+const ID = "eeeeffff00001111";
+const AUTH = { identity: ID, isOwner: false };
+const CFG_KEY = `seraph:cfg:key:${ID}`;
+
 function makeKv(seed = {}) {
   const store = new Map(Object.entries(seed));
   return {
@@ -28,7 +34,7 @@ function makeKv(seed = {}) {
 }
 
 const ctx = { waitUntil() {} };
-const keyed = () => ({ STATS_KV: makeKv({ "seraph:cfg:key": KEY }) });
+const keyed = () => ({ STATS_KV: makeKv({ [CFG_KEY]: KEY }) });
 
 /**
  * seraph.js keeps its backoff / key-rejected / breaker state in module-level variables, which
@@ -42,7 +48,7 @@ async function resetIsolate() {
     headers: { "X-BedwarsQol-Token": "t" },
     body: JSON.stringify({ key: null }),
   });
-  await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: makeKv() }, ctx);
+  await handleKeySet(req, { STATS_TOKEN: "t", STATS_KV: makeKv() }, ctx, AUTH);
 }
 
 test.beforeEach(async () => {
@@ -54,10 +60,10 @@ test("breaker: 3 consecutive 5xx suppress the next lookup, with ZERO KV state", 
   let fetches = 0;
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 503 }); };
   const env = keyed();
-  for (let i = 1; i <= 3; i++) await tagsForUuids([uuidN(i)], env, ctx);
+  for (let i = 1; i <= 3; i++) await tagsForUuids([uuidN(i)], env, ctx, AUTH);
   assert.equal(fetches, 3);
 
-  const res = await tagsForUuids([uuidN(4)], env, ctx);
+  const res = await tagsForUuids([uuidN(4)], env, ctx, AUTH);
   assert.equal(fetches, 3, "the 4th lookup must not reach upstream");
   // Fails OPEN in shape too: a suppressed lookup is the ordinary transient failure, so the uuid
   // is OMITTED (client retries) rather than resolved-unavailable (which sticks forever).
@@ -65,7 +71,7 @@ test("breaker: 3 consecutive 5xx suppress the next lookup, with ZERO KV state", 
   assert.deepEqual(resultFields(res.get(uuidN(4)), uuidN(4)), {});
   // The breaker is three module numbers - it may touch no KV key at all (§7d: no result data
   // is stored anywhere either).
-  assert.deepEqual([...env.STATS_KV.store.keys()], ["seraph:cfg:key"]);
+  assert.deepEqual([...env.STATS_KV.store.keys()], [CFG_KEY]);
 });
 
 test("breaker: any successful round trip resets the streak (never latches)", async () => {
@@ -78,13 +84,13 @@ test("breaker: any successful round trip resets the streak (never latches)", asy
       : new Response(JSON.stringify({ data: {} }), { headers: { "content-type": "application/json" } });
   };
   const env = keyed();
-  await tagsForUuids([uuidN(11)], env, ctx);
-  await tagsForUuids([uuidN(12)], env, ctx);
+  await tagsForUuids([uuidN(11)], env, ctx, AUTH);
+  await tagsForUuids([uuidN(12)], env, ctx, AUTH);
   fail = false;
-  await tagsForUuids([uuidN(13)], env, ctx); // success clears the 2-failure streak
+  await tagsForUuids([uuidN(13)], env, ctx, AUTH); // success clears the 2-failure streak
   fail = true;
-  await tagsForUuids([uuidN(14)], env, ctx);
-  await tagsForUuids([uuidN(15)], env, ctx);
+  await tagsForUuids([uuidN(14)], env, ctx, AUTH);
+  await tagsForUuids([uuidN(15)], env, ctx, AUTH);
   assert.equal(fetches, 5, "a reset streak must not trip at the 3rd cumulative failure");
 });
 
@@ -93,12 +99,12 @@ test("breaker: the failure streak decays, so blips far apart never trip it", asy
   globalThis.fetch = async () => { fetches++; return new Response("{}", { status: 502 }); };
   const env = keyed();
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await tagsForUuids([uuidN(21)], env, ctx);
-  await tagsForUuids([uuidN(22)], env, ctx);
+  await tagsForUuids([uuidN(21)], env, ctx, AUTH);
+  await tagsForUuids([uuidN(22)], env, ctx, AUTH);
   t.mock.timers.tick(61_000); // older than FAIL_COOLDOWN_MS: not the same incident
-  await tagsForUuids([uuidN(23)], env, ctx);
+  await tagsForUuids([uuidN(23)], env, ctx, AUTH);
   assert.equal(fetches, 3);
-  await tagsForUuids([uuidN(24)], env, ctx);
+  await tagsForUuids([uuidN(24)], env, ctx, AUTH);
   assert.equal(fetches, 4, "a decayed streak must not trip on the 3rd cumulative failure");
 });
 
@@ -115,14 +121,14 @@ test("breaker: the trip expires after the cooldown and lookups resume", async (t
   };
   const env = keyed();
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  for (let i = 31; i <= 33; i++) await tagsForUuids([uuidN(i)], env, ctx);
+  for (let i = 31; i <= 33; i++) await tagsForUuids([uuidN(i)], env, ctx, AUTH);
   assert.equal(fetches, 3);
-  await tagsForUuids([uuidN(34)], env, ctx);
+  await tagsForUuids([uuidN(34)], env, ctx, AUTH);
   assert.equal(fetches, 3, "tripped");
 
   fail = false;
   t.mock.timers.tick(61_000); // past FAIL_COOLDOWN_MS
-  const res = await tagsForUuids([uuidN(35)], env, ctx);
+  const res = await tagsForUuids([uuidN(35)], env, ctx, AUTH);
   assert.equal(fetches, 4, "an expired breaker must let traffic through again");
   assert.equal(res.get(uuidN(35)).state, "ok");
   assert.equal(res.get(uuidN(35)).tags[0].kind, "blacklist");
@@ -140,10 +146,10 @@ test("breaker: a concurrent batch of mixed successes and failures does not trip"
   };
   const env = keyed();
   const many = Array.from({ length: 8 }, (_, i) => uuidN(41 + i));
-  const res = await tagsForUuids(many, env, ctx);
+  const res = await tagsForUuids(many, env, ctx, AUTH);
   assert.equal(fetches, 8, "every uuid in the batch must reach upstream");
   // Half concluded, half omitted (transient) - and the breaker must still be open afterwards.
   assert.equal([...res.values()].filter((r) => r.state === "ok").length, 4);
-  await tagsForUuids([uuidN(60)], env, ctx);
+  await tagsForUuids([uuidN(60)], env, ctx, AUTH);
   assert.equal(fetches, 9, "a mixed batch is not an outage: the next lookup must still fetch");
 });

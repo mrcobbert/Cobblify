@@ -9,6 +9,20 @@ compatibility_date = "2024-11-01"
 workers_dev = true
 preview_urls = true
 
+# STATS_TOKEN (secret): comma-separated token list, one entry per user
+# (charset ^[A-Za-z0-9_-]{16,64}$; the parser splits on ",", trims, drops empties, dedupes).
+# The FIRST entry is the OWNER: the URCHIN_KEY/SERAPH_KEY secrets, when set, manage the
+# owner's provider-key slot only; every other identity manages its own slot via the key
+# routes. Revocation = remove the entry and redeploy. Set: wrangler secret put STATS_TOKEN
+#
+# One-time owner steps after first deploying the multi-token Worker (provider state became
+# per-identity - nothing reads the legacy unsuffixed KV entries anymore):
+#   1. Re-paste your Urchin and Seraph keys once (POST /urchin/key + /seraph/key, or the GUI).
+#   2. Delete the legacy unsuffixed entries:
+#        wrangler kv key delete --namespace-id 16fd5eea0e37475c91e5f255d45d82ce "urchin:cfg:key"
+#      and likewise urchin:cfg:backoff, urchin:cfg:disabled, seraph:cfg:key,
+#      seraph:cfg:backoff, seraph:cfg:disabled.
+
 # Run the Worker near hypixel.net (it makes many same-origin subrequests), trimming per-scrape
 # latency. Takes ~15 min to take effect after deploy and only routes to colos it has run in.
 # TEMPORARILY DISABLED 2026-07-23: smart placement pinned egress to the Miami (SMF) colo whose IP

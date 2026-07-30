@@ -275,7 +275,7 @@ async function scrapeAndCache(player, env, ctx) {
 export async function getBedwars(player, env, ctx, fresh, lane = LANE_LOW) {
   let body;
   if (!fresh) {
-    const cached = await readCached(player, env);
+    const cached = await readCached(player, env, ctx);
     if (cached) body = { ...cached, cached: true };
   }
   if (!body) {
@@ -354,9 +354,12 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
   // eligible uuids); results attach inline when already settled, otherwise as
   // "urchinUpdate" follow-up lines AFTER the counter pass so a follow-up can never
   // precede its base line. Errors -> no lines (silent degradation).
+  // The requester's auth identity rides in each provider ctx and is threaded into every
+  // lookup: it selects the key, receives failure attribution, and drives the per-requester
+  // settlement when this request piggybacks another identity's in-flight upstream call.
   const urchinPromise =
     urchinCtx && urchinCtx.uuidByName && urchinCtx.uuidByName.size > 0 && !urchinCtx.unavailableOnly
-      ? tagsForUuids([...urchinCtx.uuidByName.values()], env, ctx).catch(() => new Map())
+      ? tagsForUuids([...urchinCtx.uuidByName.values()], env, ctx, urchinCtx.auth).catch(() => new Map())
       : null;
   let urchinResults = null;
   if (urchinPromise) {
@@ -378,7 +381,7 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
   // inline when settled or as "seraphUpdate" follow-up lines after the counter pass.
   const seraphPromise =
     seraphCtx && seraphCtx.uuidByName && seraphCtx.uuidByName.size > 0 && !seraphCtx.unavailableOnly
-      ? seraphTagsForUuids([...seraphCtx.uuidByName.values()], env, ctx).catch(() => new Map())
+      ? seraphTagsForUuids([...seraphCtx.uuidByName.values()], env, ctx, seraphCtx.auth).catch(() => new Map())
       : null;
   let seraphResults = null;
   if (seraphPromise) {
@@ -421,7 +424,7 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
         // 1) Emit cache hits immediately.
         const misses = [];
         for (const name of valid) {
-          const cached = await readCached(name, env);
+          const cached = await readCached(name, env, ctx);
           if (cached) await emitLine(name, { ...cached, cached: true });
           else misses.push(name);
         }

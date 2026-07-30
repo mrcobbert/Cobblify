@@ -9,14 +9,25 @@
  * clean is PRESENT with an empty tag list; an entry the upstream skipped is OMITTED entirely
  * - those two must never be conflated (absent is "unknown", not "clean").
  *
- * Read-only, owner-only, fail-closed. The API key lives ONLY in this Worker (URCHIN_KEY
- * secret, else KV "urchin:cfg:key"); redirects are disabled so a keyed request is never
- * replayed off-origin, and upstream URLs are never logged.
+ * Read-only, per-identity, fail-closed. Each authenticated identity (worker.js authenticate)
+ * has its OWN key slot and its OWN backoff/disabled/breaker state: KV keys are suffixed
+ * `urchin:cfg:key:<identity>` (backoff/disabled likewise; the URCHIN_KEY secret covers the
+ * OWNER identity only), and the isolate scalars live in per-identity Maps - one user's bad
+ * key or 429 never suppresses another user's lookups. Nothing reads the legacy unsuffixed
+ * `urchin:cfg:*` names. Keys live ONLY in this Worker; redirects are disabled so a keyed
+ * request is never replayed off-origin, and upstream URLs are never logged.
+ *
+ * SHARED BY POLICY: the tag result cache (L1/L2), the name alias, and the in-flight map
+ * stay keyed by UUID/name only - provider tags are identical facts regardless of which
+ * account fetched them, and cross-identity result reuse is the point of a shared Worker.
+ * The in-flight promise records the EXECUTING identity; settlement is per-requester (see
+ * tagsForUuids): a piggybacking identity shares success-class results, but a failure of
+ * someone else's key gives it only the stale fallback / omission - always retryable.
  *
  * Gating (all must hold before any Coral traffic):
- *   - STATS_TOKEN configured AND matched (owner-only; a personal key must not serve strangers)
+ *   - STATS_TOKEN configured AND matched (a personal key must not serve strangers)
  *   - X-BWQOL-Urchin: 1 opt-in header (client sends it only for identity-confirmed tasks)
- *   - STATS_KV bound (the backoff/disabled state lives there; no KV -> inert)
+ *   - STATS_KV bound (the key + backoff/disabled state lives there; no KV -> inert)
  *
  * Cache: 24 h retention / 6 h freshness per player UUID; stale entries are served only when
  * a refetch cannot run (backoff/disabled/failure). Negative results cache the same way.
@@ -42,7 +53,8 @@ const MAX_BATCH_UUIDS = 100; // v3's documented cap for POST /v3/players
 const UUID_RE = /^[0-9a-f]{32}$/;
 
 /**
- * Per-isolate in-flight dedupe: uuid -> { promise, startedAt }.
+ * Per-isolate in-flight dedupe: uuid -> { promise, startedAt, identity } (identity = the
+ * requester whose key EXECUTES the upstream call; settlement compares it per requester).
  *
  * Entries carry a creation time because they can be ORPHANED. workerd may cancel a request
  * mid-flight (the single-player route awaits tagsForUuids WITHOUT ctx.waitUntil, and the Java
@@ -64,7 +76,7 @@ function inflightGet(uuid, nowMs) {
     console.log("URCHIN_INFLIGHT_STALE_EVICTED");
     return null;
   }
-  return e.promise;
+  return e; // { promise, startedAt, identity } - identity = who EXECUTES the upstream call
 }
 
 /** Test-only inspection of the in-flight map - the one piece of module state where a leak is a
@@ -76,8 +88,31 @@ export function resetInflight() {
   inflight.clear();
 }
 
-let isolateKeyRejectedAt = 0; // time-bounded: re-consult KV after DISABLED_RETRY_MS
-let isolateKeyRejectStreak = 0; // consecutive rejections; any success resets it
+/**
+ * Per-identity isolate state (bounded by the token-list length, <= ~5). Success resets and
+ * key-change resets apply ONLY to the identity that earned them - the old module scalars
+ * reset globally on any success, letting one user's traffic mask another's dead key.
+ */
+const isoState = new Map(); // identity -> mutable record below
+function iso(identity) {
+  let s = isoState.get(identity);
+  if (!s) {
+    s = {
+      keyRejectedAt: 0, // time-bounded: re-consult KV after DISABLED_RETRY_MS
+      keyRejectStreak: 0, // consecutive rejections; any success resets it
+      backoffUntil: 0, // immediate local record; KV write is best-effort cross-isolate
+      failStreak: 0,
+      breakerUntil: 0,
+      lastFailAt: 0,
+    };
+    isoState.set(identity, s);
+  }
+  return s;
+}
+
+const cfgKeyName = (identity) => `urchin:cfg:key:${identity}`;
+const cfgBackoffName = (identity) => `urchin:cfg:backoff:${identity}`;
+const cfgDisabledName = (identity) => `urchin:cfg:disabled:${identity}`;
 
 // A trailing slash on the configured base would produce "//v3/..." - which Coral answers with
 // a 404, i.e. the worker would report urchinNotFound for EVERY player instead of surfacing a
@@ -191,16 +226,13 @@ export function entryFresh(entry, nowMs) {
 
 // ---- gating ---------------------------------------------------------------
 
-/** Owner token valid AND configured (never open). */
-function hasValidToken(request, env) {
-  const expected = env && env.STATS_TOKEN;
-  if (!expected) return false;
-  return request.headers.get("X-BedwarsQol-Token") === expected;
-}
-
-/** Owner authentication + explicit opt-in for Urchin DATA routes (capability is separate). */
-export function urchinAllowed(request, env) {
-  return Boolean(hasValidToken(request, env) && request.headers.get("X-BWQOL-Urchin") === "1");
+/**
+ * Authenticated identity + explicit opt-in for Urchin DATA routes (capability is separate).
+ * Pure function of the route-level auth result: it never re-derives authentication, and an
+ * open worker (null identity) stays fail-closed exactly as the unset-secret case always was.
+ */
+export function urchinAllowed(auth, request) {
+  return Boolean(auth && auth.identity && request.headers.get("X-BWQOL-Urchin") === "1");
 }
 
 /**
@@ -212,16 +244,18 @@ export function urchinCapable(env) {
   return Boolean(env && env.STATS_KV);
 }
 
-/** Gate for the set-key route: token + KV only (no opt-in, no master dependency). */
-export function keyRouteAllowed(request, env) {
-  return Boolean(hasValidToken(request, env) && env && env.STATS_KV);
+/** Gate for the set-key route: authenticated identity + KV only (no opt-in, no master dependency). */
+export function keyRouteAllowed(auth, env) {
+  return Boolean(auth && auth.identity && env && env.STATS_KV);
 }
 
-async function activeKey(env) {
-  if (env && env.URCHIN_KEY) return { key: env.URCHIN_KEY, fromSecret: true };
+/** The calling identity's key: the URCHIN_KEY secret for the OWNER only, else its KV slot. */
+async function activeKey(env, auth) {
+  if (!auth || !auth.identity) return { key: null, fromSecret: false };
+  if (auth.isOwner && env && env.URCHIN_KEY) return { key: env.URCHIN_KEY, fromSecret: true };
   if (env && env.STATS_KV) {
     try {
-      const k = await env.STATS_KV.get("urchin:cfg:key");
+      const k = await env.STATS_KV.get(cfgKeyName(auth.identity));
       if (k) return { key: k, fromSecret: false };
     } catch (_) { /* ignore */ }
   }
@@ -289,8 +323,7 @@ function writeEntry(uuid, entry, env, ctx) {
 }
 
 // ---- backoff / disabled state ----------------------------------------------
-
-let isolateBackoffUntil = 0; // immediate local record; KV write is best-effort cross-isolate
+// All per-identity: one user's 429 or dead key must never suppress another user's lookups.
 
 /**
  * Every path that stops a Coral call says so, once per call, with a one-word reason. Anything
@@ -303,13 +336,14 @@ function suppressed(reason) {
   return true;
 }
 
-async function isBlocked(env, nowMs) {
-  if (isolateKeyRejectedAt && nowMs - isolateKeyRejectedAt < DISABLED_RETRY_MS) return suppressed("key_rejected");
-  if (nowMs < isolateBackoffUntil) return suppressed("isolate_backoff");
+async function isBlocked(env, nowMs, auth) {
+  const st = iso(auth.identity);
+  if (st.keyRejectedAt && nowMs - st.keyRejectedAt < DISABLED_RETRY_MS) return suppressed("key_rejected");
+  if (nowMs < st.backoffUntil) return suppressed("isolate_backoff");
   try {
     const [backoff, disabled] = await Promise.all([
-      env.STATS_KV.get("urchin:cfg:backoff"),
-      env.STATS_KV.get("urchin:cfg:disabled"),
+      env.STATS_KV.get(cfgBackoffName(auth.identity)),
+      env.STATS_KV.get(cfgDisabledName(auth.identity)),
     ]);
     if (backoff && nowMs - Number(backoff) < BACKOFF_MS) return suppressed("kv_backoff");
     if (disabled && nowMs - Number(disabled) < DISABLED_RETRY_MS) return suppressed("kv_disabled");
@@ -326,9 +360,10 @@ async function isBlocked(env, nowMs) {
   return false;
 }
 
-function noteBackoff(env, ctx, nowMs) {
-  isolateBackoffUntil = Math.max(isolateBackoffUntil, nowMs + BACKOFF_MS);
-  const put = env.STATS_KV.put("urchin:cfg:backoff", String(nowMs), { expirationTtl: 600 });
+function noteBackoff(env, ctx, nowMs, auth) {
+  const st = iso(auth.identity);
+  st.backoffUntil = Math.max(st.backoffUntil, nowMs + BACKOFF_MS);
+  const put = env.STATS_KV.put(cfgBackoffName(auth.identity), String(nowMs), { expirationTtl: 600 });
   if (ctx) ctx.waitUntil(put.catch(() => {}));
 }
 
@@ -344,12 +379,13 @@ function noteBackoff(env, ctx, nowMs) {
  */
 const KEY_REJECT_TRIP = 2;
 
-function noteKeyRejected(env, ctx, nowMs) {
-  isolateKeyRejectStreak++;
-  console.log("URCHIN_KEY_REJECTED streak=" + isolateKeyRejectStreak);
-  if (isolateKeyRejectStreak < KEY_REJECT_TRIP) return;
-  isolateKeyRejectedAt = nowMs;
-  const put = env.STATS_KV.put("urchin:cfg:disabled", String(nowMs), { expirationTtl: 7200 });
+function noteKeyRejected(env, ctx, nowMs, auth) {
+  const st = iso(auth.identity);
+  st.keyRejectStreak++;
+  console.log("URCHIN_KEY_REJECTED streak=" + st.keyRejectStreak);
+  if (st.keyRejectStreak < KEY_REJECT_TRIP) return;
+  st.keyRejectedAt = nowMs;
+  const put = env.STATS_KV.put(cfgDisabledName(auth.identity), String(nowMs), { expirationTtl: 7200 });
   if (ctx) ctx.waitUntil(put.catch(() => {}));
 }
 
@@ -380,31 +416,28 @@ function noteKeyRejected(env, ctx, nowMs) {
  */
 const FAIL_STREAK_TRIP = 3;
 const FAIL_COOLDOWN_MS = 60 * 1000;
-let isolateFailStreak = 0;
-let isolateBreakerUntil = 0;
-let isolateLastFailAt = 0;
 
-function breakerFailure(nowMs) {
+function breakerFailure(nowMs, st) {
   // Decay: "3 consecutive failures" is only evidence of an outage when they are close
   // together. Without this, three unrelated blips hours apart trip a 60 s suppression for no
   // reason - and the streak survives across every request the isolate ever serves.
-  if (isolateLastFailAt && nowMs - isolateLastFailAt > FAIL_COOLDOWN_MS) isolateFailStreak = 0;
-  isolateLastFailAt = nowMs;
-  if (++isolateFailStreak >= FAIL_STREAK_TRIP) {
-    isolateFailStreak = 0;
-    isolateBreakerUntil = nowMs + FAIL_COOLDOWN_MS;
+  if (st.lastFailAt && nowMs - st.lastFailAt > FAIL_COOLDOWN_MS) st.failStreak = 0;
+  st.lastFailAt = nowMs;
+  if (++st.failStreak >= FAIL_STREAK_TRIP) {
+    st.failStreak = 0;
+    st.breakerUntil = nowMs + FAIL_COOLDOWN_MS;
     console.log("URCHIN_BREAKER_TRIPPED cooldown_ms=" + FAIL_COOLDOWN_MS);
   }
   return { status: "error" };
 }
 
 /** Any completed round trip (including a name-route 404) proves the upstream is answering AND
- *  that the key was accepted, so it clears both streaks. */
-function breakerSuccess() {
-  isolateFailStreak = 0;
-  isolateBreakerUntil = 0;
-  isolateLastFailAt = 0;
-  isolateKeyRejectStreak = 0;
+ *  that the CALLING identity's key was accepted, so it clears that identity's streaks only. */
+function breakerSuccess(st) {
+  st.failStreak = 0;
+  st.breakerUntil = 0;
+  st.lastFailAt = 0;
+  st.keyRejectStreak = 0;
 }
 
 // ---- Coral calls ----------------------------------------------------------
@@ -418,14 +451,15 @@ function breakerSuccess() {
  * caches, and the breaker is RESET on each call so it can never engage. That is the exact user
  * experience of the outage this integration already shipped once, and Coral is versioned 0.1.0.
  */
-async function coralFetch(env, path, init, opts) {
+async function coralFetch(env, path, init, opts, auth) {
+  const st = iso(auth.identity);
   // Tripped breaker: report the same transient failure the callers already handle, without
   // spending a subrequest. Not counted as a failure - it never reached the upstream.
-  if (Date.now() < isolateBreakerUntil) {
+  if (Date.now() < st.breakerUntil) {
     suppressed("breaker");
     return { status: "error" };
   }
-  const { key } = await activeKey(env);
+  const { key } = await activeKey(env, auth);
   if (!key) return { status: "nokey" };
   let res;
   try {
@@ -438,11 +472,11 @@ async function coralFetch(env, path, init, opts) {
       redirect: "manual",
     });
   } catch (e) {
-    return breakerFailure(Date.now());
+    return breakerFailure(Date.now(), st);
   }
   if (res.status >= 300 && res.status < 400) {
     try { await res.body?.cancel(); } catch (_) {}
-    return breakerFailure(Date.now());
+    return breakerFailure(Date.now(), st);
   }
   // Status is classified BEFORE any parse: v3's 401 body is empty, not JSON. Every non-2xx
   // branch cancels the body it will never read - v3 routes far more traffic through these
@@ -458,20 +492,20 @@ async function coralFetch(env, path, init, opts) {
   if (res.status === 404) {
     try { await res.body?.cancel(); } catch (_) {}
     if (opts && opts.nameRoute) {
-      breakerSuccess();
+      breakerSuccess(st);
       return { status: "notfound" };
     }
     // Batch route: the endpoint moved or the path is wrong. A real failure, never "clean".
     console.log("URCHIN_BATCH_404 endpoint_moved_or_path_wrong");
-    return breakerFailure(Date.now());
+    return breakerFailure(Date.now(), st);
   }
   if (!res.ok) {
     try { await res.body?.cancel(); } catch (_) {}
-    return breakerFailure(Date.now());
+    return breakerFailure(Date.now(), st);
   }
   let json;
-  try { json = await res.json(); } catch (_) { return breakerFailure(Date.now()); }
-  breakerSuccess();
+  try { json = await res.json(); } catch (_) { return breakerFailure(Date.now(), st); }
+  breakerSuccess(st);
   return { status: "ok", json };
 }
 
@@ -490,8 +524,12 @@ async function coralFetch(env, path, init, opts) {
  * must therefore end in "stale" or absence. Emitting urchinUnavailable there makes
  * UrchinResult.resolved() true, StatsCache pins urchinResolved for the entry's lifetime, and
  * the player reads as clean in the GUI forever - a permanent false-clean from a momentary blip.
+ *
+ * `auth` is the REQUESTER's identity ({identity, isOwner} from worker.js authenticate): it
+ * selects the key, receives any failure attribution, and decides the settlement shape when
+ * this call piggybacks another identity's in-flight batch (see settle below).
  */
-export async function tagsForUuids(rawUuids, env, ctx) {
+export async function tagsForUuids(rawUuids, env, ctx, auth) {
   const nowMs = Date.now();
   const out = new Map();
   const uuids = [];
@@ -501,8 +539,8 @@ export async function tagsForUuids(rawUuids, env, ctx) {
   }
   if (uuids.length === 0) return out;
 
-  const { key } = await activeKey(env);
-  const blocked = key ? await isBlocked(env, nowMs) : true;
+  const { key } = await activeKey(env, auth);
+  const blocked = key ? await isBlocked(env, nowMs, auth) : true;
 
   const misses = [];
   for (const u of uuids) {
@@ -527,7 +565,7 @@ export async function tagsForUuids(rawUuids, env, ctx) {
   // In-flight dedupe within the isolate. The promise each miss will await is bound HERE,
   // synchronously, so a later `inflight` mutation can never leave a miss promise-less (which
   // would fabricate a failure that never happened).
-  const awaiting = new Map(); // uuid -> promise this invocation will settle against
+  const awaiting = new Map(); // uuid -> in-flight entry this invocation will settle against
   const toFetch = [];
   for (const m of misses) {
     const existing = inflightGet(m.uuid, nowMs);
@@ -539,24 +577,31 @@ export async function tagsForUuids(rawUuids, env, ctx) {
   let batchPromise = null;
   if (toFetch.length > 0) {
     // v3 batch: UUIDs travel inside the `uuids` array (100 max) and are echoed back
-    // undashed-lowercase as the response keys.
+    // undashed-lowercase as the response keys. Failure notes are recorded HERE, once, against
+    // the EXECUTING identity - a piggybacking requester awaiting this promise must never arm
+    // its own backoff/disable off someone else's key.
     batchPromise = coralFetch(env, "/v3/players", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ uuids: toFetch.map((m) => m.uuid) }),
+    }, undefined, auth).then((r) => {
+      if (r.status === "ratelimited") noteBackoff(env, ctx, nowMs, auth);
+      if (r.status === "rejected") noteKeyRejected(env, ctx, nowMs, auth);
+      return r;
     });
+    const entry = { promise: batchPromise, startedAt: nowMs, identity: auth.identity };
     for (const m of toFetch) {
-      inflight.set(m.uuid, { promise: batchPromise, startedAt: nowMs });
-      awaiting.set(m.uuid, batchPromise);
+      inflight.set(m.uuid, entry);
+      awaiting.set(m.uuid, entry);
     }
   }
 
   const settle = async (m) => {
-    const p = awaiting.get(m.uuid);
-    // No promise = this uuid was never sent (over the batch cap). "Unknown", not a failure:
+    const held = awaiting.get(m.uuid);
+    // No entry = this uuid was never sent (over the batch cap). "Unknown", not a failure:
     // omit it so the client retries instead of caching or reporting a resolution.
-    if (!p) return null;
-    const r = await p;
+    if (!held) return null;
+    const r = await held.promise;
     if (r.status === "ok") {
       const players = (r.json && r.json.players) || {};
       // Response keys re-normalized before matching (casing/dashes undocumented).
@@ -579,11 +624,17 @@ export async function tagsForUuids(rawUuids, env, ctx) {
       writeEntry(m.uuid, { tags, fetchedAt: nowMs }, env, ctx);
       return { state: "ok", tags: filterActive(tags, nowMs) };
     }
+    // Per-requester settlement (D4): success-class results above are shared facts; every
+    // failure-class state below belongs to the EXECUTING identity's key. A PIGGYBACKING
+    // requester therefore gets the normal stale fallback (flagless - today's stale contract)
+    // or omission, never the executing key's "nokey" unavailable shape, and the failure notes
+    // were already attributed to the executing identity where the batch settled.
+    if (held.identity !== auth.identity) {
+      return m.stale ? { state: "stale", tags: filterActive(m.stale.tags, nowMs) } : null;
+    }
     // The key vanished between the pre-check and the call: a DURABLE off-state, and the clear
     // contract says a keyless worker displays nothing, not even stale tags.
     if (r.status === "nokey") return { state: "unavailable", tags: [] };
-    if (r.status === "ratelimited") noteBackoff(env, ctx, nowMs);
-    if (r.status === "rejected") noteKeyRejected(env, ctx, nowMs);
     // Everything left is transient - a 429, a rejection that may well be a Cloudflare WAF 403,
     // a 5xx/timeout, or a tripped breaker. Never sticky: stale tags flagless (shown AND
     // retried), no stale -> omitted (retried, nothing shown).
@@ -622,10 +673,11 @@ async function staleForName(name, env, ctx) {
   return null;
 }
 
-/** Manual name lookup (GET /v3/player/tags?player=) - the ONLY name-resolving upstream path. */
-export async function tagsForName(name, env, ctx) {
+/** Manual name lookup (GET /v3/player/tags?player=) - the ONLY name-resolving upstream path.
+ *  No in-flight sharing here, so the caller is always the executing identity. */
+export async function tagsForName(name, env, ctx, auth) {
   const nowMs = Date.now();
-  const { key } = await activeKey(env);
+  const { key } = await activeKey(env, auth);
   const cached = await staleForName(name, env, ctx);
 
   if (!key) {
@@ -636,12 +688,12 @@ export async function tagsForName(name, env, ctx) {
   if (cached && entryFresh(cached.entry, nowMs)) {
     return { state: "ok", tags: filterActive(cached.entry.tags, nowMs), uuid: cached.uuid };
   }
-  if (await isBlocked(env, nowMs)) {
+  if (await isBlocked(env, nowMs, auth)) {
     return { state: "unavailable", tags: cached ? filterActive(cached.entry.tags, nowMs) : [], stale: !!cached };
   }
 
   // nameRoute: the only path where a 404 means "no such player" rather than "wrong endpoint".
-  const r = await coralFetch(env, `/v3/player/tags?player=${encodeURIComponent(name)}`, { method: "GET" }, { nameRoute: true });
+  const r = await coralFetch(env, `/v3/player/tags?player=${encodeURIComponent(name)}`, { method: "GET" }, { nameRoute: true }, auth);
   if (r.status === "ok") {
     // v3 answers an unknown name with a real 404 (-> "notfound" below), so a 2xx here is a
     // tag result; a uuid that fails to normalize just means it cannot be cached/aliased.
@@ -655,8 +707,8 @@ export async function tagsForName(name, env, ctx) {
     return { state: "ok", tags: filterActive(tags, nowMs), uuid };
   }
   if (r.status === "notfound") return { state: "notfound", tags: [] };
-  if (r.status === "ratelimited") noteBackoff(env, ctx, nowMs);
-  if (r.status === "rejected") noteKeyRejected(env, ctx, nowMs);
+  if (r.status === "ratelimited") noteBackoff(env, ctx, nowMs, auth);
+  if (r.status === "rejected") noteKeyRejected(env, ctx, nowMs, auth);
 
   // Failure (timeout/5xx/429/rejected): serve stale via the name alias when possible.
   if (cached) return { state: "unavailable", tags: filterActive(cached.entry.tags, nowMs), stale: true };
@@ -689,15 +741,17 @@ export function resultFields(result, uuid) {
   return fields;
 }
 
-/** POST /urchin/key: {key: "..."} sets, {key: null} clears. Never echoes the key. */
-export async function handleKeySet(request, env, ctx) {
+/** POST /urchin/key: {key: "..."} sets, {key: null} clears - the CALLER's slot only, so a
+ *  cross-user overwrite is impossible by construction. Never echoes the key. */
+export async function handleKeySet(request, env, ctx, auth) {
   if (!env || !env.STATS_KV) {
     return json({ success: false, error: "kv_required" }, 503);
   }
-  if (!keyRouteAllowed(request, env)) {
+  if (!keyRouteAllowed(auth, env)) {
     return json({ success: false, error: "unauthorized" }, 403);
   }
-  if (env.URCHIN_KEY) {
+  // The URCHIN_KEY secret manages the OWNER's slot only; other identities keep KV slots.
+  if (auth.isOwner && env.URCHIN_KEY) {
     return json({ success: false, error: "key_managed_by_secret" }, 409);
   }
   let body;
@@ -712,19 +766,21 @@ export async function handleKeySet(request, env, ctx) {
   // mutation, so a failure response always means the key itself is unchanged - the client
   // can trust "failure = nothing happened" and "success = key state + cleanup committed".
   try {
-    await env.STATS_KV.delete("urchin:cfg:backoff");
-    await env.STATS_KV.delete("urchin:cfg:disabled");
-    if (key === null) await env.STATS_KV.delete("urchin:cfg:key");
-    else await env.STATS_KV.put("urchin:cfg:key", key);
+    await env.STATS_KV.delete(cfgBackoffName(auth.identity));
+    await env.STATS_KV.delete(cfgDisabledName(auth.identity));
+    if (key === null) await env.STATS_KV.delete(cfgKeyName(auth.identity));
+    else await env.STATS_KV.put(cfgKeyName(auth.identity), key);
   } catch (_) {
     return json({ success: false, error: "kv_write_failed" }, 503);
   }
-  isolateKeyRejectedAt = 0;
-  isolateKeyRejectStreak = 0;
-  isolateBackoffUntil = 0;
-  isolateBreakerUntil = 0; // a key change is an explicit "try again now"
-  isolateFailStreak = 0;
-  isolateLastFailAt = 0;
+  // A key change is an explicit "try again now" - for the CALLING identity only.
+  const st = iso(auth.identity);
+  st.keyRejectedAt = 0;
+  st.keyRejectStreak = 0;
+  st.backoffUntil = 0;
+  st.breakerUntil = 0;
+  st.failStreak = 0;
+  st.lastFailAt = 0;
   return json({ success: true });
 }
 
