@@ -37,7 +37,7 @@ public class BedwarsQol implements ModInitializer {
 
     public static final String MODID = "bedwarsqol";
     public static final String NAME = "Cobblify";
-    public static final String VERSION = "0.6.0";
+    public static final String VERSION = "0.8.0";
 
     public static ClientSettings config;
 

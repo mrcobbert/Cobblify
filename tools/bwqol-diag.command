@@ -5,13 +5,13 @@
 #
 #   bash ~/Downloads/bwqol-diag.command
 #
-# Reference values below are from Jacob's known-good machine (Jul 2, 2026).
+# Reference values below are from Jacob's known-good machine (Jul 30, 2026).
 
-GOOD_JAR_SHA="d0a3e8ea255692739d57336285fa4ffcc3e0b4d738293dbeff3fa24fecda5a8b"
-GOOD_JAR_NAME="Cobblify-Lunar-0.6.0.jar (built Jul 20, 456115 bytes)"
+GOOD_JAR_SHA="e354829d2c7390303df38cdab9cf2fbb9deee65e3f9c9d3ba3453492db49199c"
+GOOD_JAR_NAME="Cobblify-Lunar-0.8.0.jar (built Jul 30, 542680 bytes)"
 # Forge counterpart (Prism instance mods folder), for reference:
-GOOD_FORGE_JAR_SHA="9858b657d68bbd6a5e25563f29f03c99a5ee1facd1c6a7458c7e7982cb4c6d87"
-GOOD_FORGE_JAR_NAME="Cobblify-1.8.9-forge-0.6.0.jar"
+GOOD_FORGE_JAR_SHA="095a9a8fa0a180b369bd6d600de6339b4c266028a1b20d74713b2499fac109f0"
+GOOD_FORGE_JAR_NAME="Cobblify-1.8.9-forge-0.8.0.jar"
 GOOD_LOADER_SHA="e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2"
 GOOD_LOADER_NAME="Weave-Loader-Agent-1.3.3.jar"
 
