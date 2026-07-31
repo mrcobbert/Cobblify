@@ -1,7 +1,11 @@
 // Characterize hypixel's origin rate limit AS SEEN FROM THIS WORKER'S egress IP.
 // Hits the single endpoint with fresh=1 (one direct scrape, bypasses the politeness pool)
 // at controlled intervals, counts 429s. Minimal volume (~one Bedwars game's worth).
-const URL = process.env.WORKER_URL || "https://bedwarsqol-stats.mrcobbert.workers.dev";
+const URL = process.env.WORKER_URL;
+if (!URL) {
+  console.error("set WORKER_URL to your deployed Worker's base url");
+  process.exit(1);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function hit(name) {
