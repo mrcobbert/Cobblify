@@ -190,6 +190,7 @@ test("rank map covers exactly the proven forum codes", () => {
   const cases = [
     ["None", null], ["VIP", "vip"], ["VIP+", "vip_plus"], ["MVP", "mvp"],
     ["MVP+", "mvp_plus"], ["MVP++", "superstar"], ["YOUTUBE", "youtuber"],
+    ["YOUTUBER", "youtuber"],
   ];
   for (const [raw, code] of cases) {
     const r = parseShmeadoPlayer(page({ rank: "rank:{rank:`" + raw + "`,rankPlusColor:`None`}," }), "TestGuy");

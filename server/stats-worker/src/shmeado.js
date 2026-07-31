@@ -42,6 +42,7 @@ const RANK_MAP = {
   "MVP+": "mvp_plus",
   "MVP++": "superstar",
   "YOUTUBE": "youtuber",
+  "YOUTUBER": "youtuber", // shmeado's raw API string (observed live on gamerboy80)
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
