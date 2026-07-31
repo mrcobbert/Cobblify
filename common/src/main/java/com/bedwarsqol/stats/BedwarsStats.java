@@ -48,6 +48,8 @@ public final class BedwarsStats {
 
     public final State state;
     public final String displayName;
+    /** Real Bedwars star (level); 0 when not known. Present only on fallback-served lookups. */
+    public final int bedwarsLevel;
     /** Pre-colored §-prefixed rank label, e.g. {@code §b[MVP§c+§b]}; empty for no rank. */
     public final String rankPrefix;
     /**
@@ -84,7 +86,7 @@ public final class BedwarsStats {
     public final int seraphThreat;
     public final int seraphEncounters;
 
-    private BedwarsStats(State state, String displayName,
+    private BedwarsStats(State state, String displayName, int bedwarsLevel,
                          String rankPrefix, String rankCode, ModeStats overall, ModeStats solo,
                          ModeStats doubles, ModeStats threes, ModeStats fours, List<UrchinTag> urchinTags,
                          List<SeraphTag> seraphTags, int seraphThreat, int seraphEncounters) {
@@ -98,6 +100,7 @@ public final class BedwarsStats {
         this.seraphEncounters = seraphEncounters < 0 ? -1 : seraphEncounters;
         this.state = state;
         this.displayName = displayName;
+        this.bedwarsLevel = Math.max(0, bedwarsLevel);
         this.rankPrefix = rankPrefix == null ? "" : rankPrefix;
         this.rankCode = rankCode;
         this.overall = overall == null ? ModeStats.EMPTY : overall;
@@ -118,21 +121,21 @@ public final class BedwarsStats {
     }
 
     public static BedwarsStats nicked() {
-        return new BedwarsStats(State.NICKED, null, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.NICKED, null, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats error() {
-        return new BedwarsStats(State.ERROR, null, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.ERROR, null, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats neverPlayed(String displayName) {
-        return new BedwarsStats(State.NEVER_PLAYED, displayName, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.NEVER_PLAYED, displayName, 0, "", null, null, null, null, null, null, null, null, -1, -1);
     }
 
     public static BedwarsStats ok(String displayName, String rankPrefix,
                                   String rankCode, ModeStats overall, ModeStats solo, ModeStats doubles,
                                   ModeStats threes, ModeStats fours) {
-        return new BedwarsStats(State.OK, displayName, rankPrefix, rankCode,
+        return new BedwarsStats(State.OK, displayName, 0, rankPrefix, rankCode,
                 overall, solo, doubles, threes, fours, null, null, -1, -1);
     }
 
@@ -151,15 +154,26 @@ public final class BedwarsStats {
 
     /** A copy carrying {@code tags} (Urchin resolution merge). Preserves all stats fields. */
     public BedwarsStats withUrchinTags(List<UrchinTag> tags) {
-        return new BedwarsStats(state, displayName, rankPrefix, rankCode,
+        return new BedwarsStats(state, displayName, bedwarsLevel, rankPrefix, rankCode,
                 overall, solo, doubles, threes, fours, tags, seraphTags, seraphThreat, seraphEncounters);
     }
 
     /** A copy carrying Seraph {@code tags} + statistics (Seraph resolution merge). {@code threat} /
      *  {@code encounters} are {@code -1} when absent. Preserves all stats fields. */
     public BedwarsStats withSeraph(List<SeraphTag> tags, int threat, int encounters) {
-        return new BedwarsStats(state, displayName, rankPrefix, rankCode,
+        return new BedwarsStats(state, displayName, bedwarsLevel, rankPrefix, rankCode,
                 overall, solo, doubles, threes, fours, urchinTags, tags, threat, encounters);
+    }
+
+    /**
+     * A copy with the Bedwars star filled in - present only when the backend served the lookup from
+     * the fallback source, whose embedded data includes the star for free. A no-op for non-OK
+     * states or a non-positive/unchanged level.
+     */
+    public BedwarsStats withLevel(int level) {
+        if (state != State.OK || level <= 0 || level == bedwarsLevel) return this;
+        return new BedwarsStats(state, displayName, level, rankPrefix, rankCode,
+                overall, solo, doubles, threes, fours, urchinTags, seraphTags, seraphThreat, seraphEncounters);
     }
 
     /** The highest-severity active Urchin tag at {@code nowMs}, or null when there is none. */
@@ -256,6 +270,7 @@ public final class BedwarsStats {
         StringBuilder header = new StringBuilder("§6§lBedWars");
         String modeTag = hoverModeTag(mode);
         if (modeTag != null) header.append(" §r§7(").append(modeTag).append("§7)");
+        if (bedwarsLevel > 0) header.append(" §r").append(starTag(bedwarsLevel));
         if (showRank && !rankPrefix.isEmpty()) header.append(" §r").append(rankPrefix);
         out.add(header.toString());
         out.add("§7FKDR: " + fkdrColor(m.fkdr) + fmt2(m.fkdr) + " §r§8| §7Finals: §f" + num(m.finalKills) + "§7/§f" + num(m.finalDeaths));
@@ -294,8 +309,34 @@ public final class BedwarsStats {
     }
 
     private void appendPrefix(StringBuilder sb, boolean showRank) {
+        // Unconditional when known: the star only arrives on fallback-served lookups, and its
+        // absence (bedwarsLevel 0) renders byte-identically to before the field existed.
+        if (bedwarsLevel > 0) {
+            sb.append(starTag(bedwarsLevel)).append("§r ");
+        }
         if (showRank && !rankPrefix.isEmpty()) {
             sb.append(rankPrefix).append("§r ");
+        }
+    }
+
+    /** {@code [<star>✫]} colored by prestige tier (simplified to one color per 100 levels). */
+    public static String starTag(int star) {
+        return starColor(star) + "[" + star + "✫]§r";
+    }
+
+    private static String starColor(int star) {
+        switch (star / 100) {
+            case 0:  return "§7"; // Stone
+            case 1:  return "§f"; // Iron
+            case 2:  return "§6"; // Gold
+            case 3:  return "§b"; // Diamond
+            case 4:  return "§2"; // Emerald
+            case 5:  return "§3"; // Sapphire
+            case 6:  return "§4"; // Ruby
+            case 7:  return "§d"; // Crystal
+            case 8:  return "§9"; // Opal
+            case 9:  return "§5"; // Amethyst
+            default: return "§c"; // Rainbow (1000+) — single stand-in color
         }
     }
 

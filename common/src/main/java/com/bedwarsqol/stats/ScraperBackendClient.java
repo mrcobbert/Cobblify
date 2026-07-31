@@ -328,7 +328,7 @@ public final class ScraperBackendClient {
         // Coerce null → "" so a successfully-fetched rankless (Default) account is KNOWN non-elevated,
         // distinct from a null code (old cache / unknown) which forces a denick refetch.
         JsonObject modes = obj(root, "modes");
-        return BedwarsStats.ok(
+        BedwarsStats stats = BedwarsStats.ok(
                 displayName,
                 rankPrefix,
                 rankCode == null ? "" : rankCode,
@@ -337,6 +337,10 @@ public final class ScraperBackendClient {
                 readMode(modes, "doubles"),
                 readMode(modes, "threes"),
                 readMode(modes, "fours"));
+        // Optional star, sent only on fallback-served bodies; absent (0) renders exactly as today.
+        int level = number(root, "bedwarsLevel");
+        if (level > 0) stats = stats.withLevel(level);
+        return stats;
     }
 
     private static JsonObject obj(JsonObject root, String key) {

@@ -16,6 +16,7 @@ import {
 } from "./cache.js";
 import { tagsForUuids, resultFields } from "./urchin.js";
 import { tagsForUuids as seraphTagsForUuids, resultFields as seraphResultFields } from "./seraph.js";
+import { shmeadoScrapeAndCache } from "./shmeado.js";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -242,11 +243,12 @@ export async function scrapePlayerHtml(player, env) {
 
 /** Scrape one player, parse, merge profile header, and cache the outcome. Returns { body, retry429? }. */
 async function scrapeAndCache(player, env, ctx) {
-  // Circuit breaker: while the origin is serving challenge pages every scrape is doomed, so
-  // fail instantly without touching hypixel. The short-circuit body is NOT cached (the flag
-  // already throttles; caching it would outlive the flag's own TTL per player).
+  // Circuit breaker: while the origin is serving challenge pages every hypixel scrape is doomed,
+  // so lookups fall back to shmeado instead of failing. This is the single source fork - one
+  // source per request, never both - and the shmeado path never feeds the origin gate, never
+  // trips this breaker, and never sets retry429.
   if (await readBlocked(env)) {
-    return { body: errBody(player, "blocked_by_cloudflare") };
+    return await shmeadoScrapeAndCache(player, env, ctx);
   }
   const scraped = await scrapePlayerHtml(player, env);
   if (!scraped.ok) {
@@ -271,6 +273,51 @@ async function scrapeAndCache(player, env, ctx) {
   return { body: parsed };
 }
 
+/**
+ * Per-isolate per-player single-flight around the origin claim + scrape + retry loop.
+ *
+ * The entry is registered BEFORE the origin-slot wait, so a client fallback single that races a
+ * still-running batch fetch of the same player joins that fetch instead of missing it while the
+ * batch worker is still queued at the gate - one upstream call, one source, regardless of which
+ * source the call chose. The entry clears only AFTER the result's cache writes commit, so a
+ * lookup landing in the gap finds either the in-flight entry or the cache, never neither; the
+ * cleanup chain rides ctx.waitUntil so a joiner is never orphaned by the initiating request
+ * ending first. Joiners share the initiator's terminal result (retries included); 429 retries
+ * re-claim at the initiator's lane exactly as each caller's own loop did before.
+ */
+const IN_FLIGHT = new Map(); // playerLower -> promise of { body, retry429? } (terminal, post-retries)
+
+function scrapeShared(player, env, ctx, lane, maxAttempts) {
+  const key = player.toLowerCase();
+  const existing = IN_FLIGHT.get(key);
+  if (existing) return existing;
+  const writes = [];
+  const trackedCtx = {
+    waitUntil(p) {
+      writes.push(Promise.resolve(p).catch(() => {}));
+      ctx.waitUntil(p);
+    },
+  };
+  const promise = (async () => {
+    let r;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await claimOrigin(lane); // a retry re-claims at the SAME lane
+      r = await scrapeAndCache(player, env, trackedCtx);
+      if (!r.retry429) break;
+      noteOrigin429(attempt); // throttles every origin path, not just this caller
+    }
+    return r;
+  })();
+  IN_FLIGHT.set(key, promise);
+  ctx.waitUntil(
+    promise
+      .catch(() => {})
+      .then(() => Promise.all(writes))
+      .finally(() => { if (IN_FLIGHT.get(key) === promise) IN_FLIGHT.delete(key); })
+  );
+  return promise;
+}
+
 /** Single-player resolution: cache (unless fresh) then scrape. */
 export async function getBedwars(player, env, ctx, fresh, lane = LANE_LOW) {
   let body;
@@ -282,33 +329,22 @@ export async function getBedwars(player, env, ctx, fresh, lane = LANE_LOW) {
     // The single route claims origin slots from the same gate as the batch pool, so it never
     // increases throughput - the lane only decides who is served first. 429s retry (they are never
     // negatively cached); the terminal body is whatever the last attempt produced, exactly as before.
-    for (let attempt = 1; attempt <= SINGLE_MAX_ATTEMPTS; attempt++) {
-      await claimOrigin(lane);
-      const r = await scrapeAndCache(player, env, ctx);
-      body = r.body;
-      if (!r.retry429) break;
-      noteOrigin429(attempt);
-    }
+    const r = await scrapeShared(player, env, ctx, lane, SINGLE_MAX_ATTEMPTS);
+    body = r.body;
   }
   return body;
 }
 
 /**
- * Run items through fn with bounded concurrency, pacing every start through the shared origin gate
- * in `lane` (so the pool never races the single route), and shared 429 backoff.
- * Calls onResult(item, terminalResult) exactly once per item (after retries settle).
+ * Run items through fn with bounded concurrency. fn returns a TERMINAL result - origin pacing,
+ * 429 retries and single-flight all live in scrapeShared. Calls onResult(item, terminalResult)
+ * exactly once per item.
  */
-async function scrapePool(items, fn, onResult, lane) {
+async function scrapePool(items, fn, onResult) {
   let idx = 0;
 
   async function runOne(name) {
-    let r;
-    for (let attempt = 1; attempt <= BATCH_CFG.maxAttempts; attempt++) {
-      await claimOrigin(lane); // a retry re-claims at the SAME lane
-      r = await fn(name);
-      if (!r || !r.retry429) break;
-      noteOrigin429(attempt); // throttles every origin path, not just this pool
-    }
+    const r = await fn(name);
     if (onResult) await onResult(name, r);
     return r;
   }
@@ -431,10 +467,9 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
         // 2) Scrape counter misses politely, emitting each as it terminally resolves.
         await scrapePool(
           misses,
-          (name) => scrapeAndCache(name, env, ctx),
+          (name) => scrapeShared(name, env, ctx, lane, BATCH_CFG.maxAttempts),
           async (name, r) =>
-            emitLine(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name }),
-          lane
+            emitLine(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name })
         );
         // 3) Urchin follow-ups: every base line has been emitted, so an urchinUpdate can
         //    never precede its base. Wait up to 3 s for the Coral batch; a timed-out

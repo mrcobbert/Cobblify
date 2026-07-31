@@ -51,13 +51,29 @@ const NICKED_HTML = "<html><body><h1>Some profile without stats</h1></body></htm
 const PARSE_FAIL_HTML = '<html><body><div id="stats-content-bedwars">markup changed</div></body></html>';
 // Challenge page (under 50 KB + challenge words) -> blocked_by_cloudflare.
 const CHALLENGE_HTML = "<html><head><title>Just a moment...</title></head><body></body></html>";
+// Minimal shmeado page shape (SHMEADO_BASE also points at this fixture): the blocked state now
+// forks to the shmeado fallback instead of short-circuiting, and tests must never touch the
+// real site.
+const SHMEADO_HTML =
+  "<html><body><script>window.player={name:`PlayerB`,rank:{rank:`None`},stats:{bedwars:" +
+  "{wins_bedwars:3,losses_bedwars:1,kills_bedwars:5,deaths_bedwars:2,final_kills_bedwars:4," +
+  "final_deaths_bedwars:1}},achievements:{bedwars_level:12}}</script></body></html>";
 
 const hits = new Map(); // player -> exact /player/<name> hit count (achievements hits ignored)
 const hitCount = (name) => hits.get(name) || 0;
+const shmeadoHits = new Map(); // player -> /player/stats/<name>/ hit count (the fallback origin)
+const shmeadoHitCount = (name) => shmeadoHits.get(name) || 0;
 
 const fixture = http.createServer((req, res) => {
-  const m = new URL(req.url, "http://x").pathname.match(/^\/player\/([^/]+)$/);
   res.setHeader("content-type", "text/html; charset=utf-8");
+  const sm = new URL(req.url, "http://x").pathname.match(/^\/player\/stats\/([^/]+)\/$/);
+  if (sm) {
+    const name = decodeURIComponent(sm[1]);
+    shmeadoHits.set(name, shmeadoHitCount(name) + 1);
+    res.end(SHMEADO_HTML);
+    return;
+  }
+  const m = new URL(req.url, "http://x").pathname.match(/^\/player\/([^/]+)$/);
   if (!m) { res.end("<html><body>no achievements here</body></html>"); return; }
   const name = decodeURIComponent(m[1]);
   hits.set(name, hitCount(name) + 1);
@@ -81,6 +97,7 @@ test.before(async () => {
     vars: {
       STATS_TOKEN: TOKEN,
       HYPIXEL_BASE: `http://${lan}:${fixture.address().port}`,
+      SHMEADO_BASE: `http://${lan}:${fixture.address().port}`,
     },
     kv: [{ binding: "STATS_KV" }],
     local: true,
@@ -151,7 +168,7 @@ test("batch serves a cached NICKED line with zero origin traffic", async () => {
 });
 
 // LAST: trips the global blocked flag for this worker instance.
-test("challenge page trips the blocked flag: next player short-circuits with zero origin traffic", async () => {
+test("challenge page trips the blocked flag: next player falls back to shmeado with zero hypixel traffic", async () => {
   const bA = await (await req("/bedwars/PlayerA")).json();
   assert.equal(bA.success, false);
   assert.equal(bA.state, "ERROR");
@@ -159,8 +176,10 @@ test("challenge page trips the blocked flag: next player short-circuits with zer
   assert.equal(hitCount("PlayerA"), 1);
   await sleep(200); // let the waitUntil blocked-flag writes commit
   const bB = await (await req("/bedwars/PlayerB")).json();
-  assert.equal(bB.success, false);
-  assert.equal(bB.state, "ERROR");
-  assert.equal(bB.error, "blocked_by_cloudflare");
-  assert.equal(hitCount("PlayerB"), 0); // short-circuited before any fetch
+  assert.equal(bB.success, true);
+  assert.equal(bB.state, "OK");
+  assert.equal(bB.wins, 3);
+  assert.equal(bB.bedwarsLevel, 12); // the star rides only fallback-served bodies
+  assert.equal(hitCount("PlayerB"), 0); // hypixel is never touched while blocked
+  assert.equal(shmeadoHitCount("PlayerB"), 1);
 });
