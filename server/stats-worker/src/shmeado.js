@@ -156,27 +156,36 @@ export function parseShmeadoPlayer(html, requestedName) {
   if (!idm || idm[1].toLowerCase() !== requestedName.toLowerCase()) return failed;
   const displayName = idm[1];
 
-  const outer = scanObject(slice, 0, new Set(["rank", "bedwars", "bedwars_level"]));
+  const outer = scanObject(slice, 0, new Set(["rank", "stats", "bedwars", "bedwars_level"]));
   if (!outer) return failed;
 
-  // Exactly one bedwars object anywhere in the player object (string-context anchors were
-  // already excluded by the scan). Absent is NEVER never-played: Notch proves never-played
-  // accounts still render the object, so absence means layout drift.
-  const containers = outer.entries.filter((e) => e.key === "bedwars");
-  if (containers.length !== 1 || containers[0].open < 0) return failed;
+  // The stats container: exactly one, a DIRECT field of the player object (the fixture shape
+  // is window.player -> stats -> bedwars).
+  const statsEntries = outer.entries.filter((e) => e.key === "stats" && e.depth === 1);
+  if (statsEntries.length !== 1 || statsEntries[0].open < 0) return failed;
 
-  // Rank: `rank:{rank:`X`,...}` as a DIRECT field of the player object. Absent = proven
-  // rankless, like `None`. hasOwnProperty guards against prototype-key strings ("constructor").
-  const ranks = outer.entries.filter((e) => e.key === "rank" && e.depth === 1);
-  let rank = null;
-  if (ranks.length === 1) {
-    if (ranks[0].open < 0) return failed;
-    const rm = /^\{rank:`([^`]{0,40})`/.exec(slice.slice(ranks[0].open, ranks[0].open + 64));
-    if (!rm || !Object.prototype.hasOwnProperty.call(RANK_MAP, rm[1])) return failed;
-    rank = RANK_MAP[rm[1]];
-  } else if (ranks.length > 1) {
+  // The bedwars object: exactly one anywhere in the player object (string-context anchors were
+  // already excluded by the scan), AND it must be the direct child of stats - a same-named
+  // object at any other location (wrapper:{bedwars:{...}}) is layout drift, not the projection.
+  // Absent is NEVER never-played: Notch proves never-played accounts still render the object.
+  const containers = outer.entries.filter((e) => e.key === "bedwars");
+  const statsScan = scanObject(slice, statsEntries[0].open, new Set(["bedwars"]));
+  if (!statsScan) return failed;
+  const direct = statsScan.entries.filter((e) => e.key === "bedwars" && e.depth === 1);
+  if (containers.length !== 1 || direct.length !== 1 || direct[0].open !== containers[0].open) {
     return failed;
   }
+
+  // Rank: `rank:{rank:`X`,...}` as a DIRECT field of the player object, required. Only the
+  // explicit `None` string proves rankless (Notch fixture); an ABSENT rank structure proves
+  // layout drift and fails the lookup - a success body with a fabricated rankless would let
+  // already-shipped clients drop a genuine elevated-rank denick. hasOwnProperty guards against
+  // prototype-key strings ("constructor").
+  const ranks = outer.entries.filter((e) => e.key === "rank" && e.depth === 1);
+  if (ranks.length !== 1 || ranks[0].open < 0) return failed;
+  const rm = /^\{rank:`([^`]{0,40})`/.exec(slice.slice(ranks[0].open, ranks[0].open + 64));
+  if (!rm || !Object.prototype.hasOwnProperty.call(RANK_MAP, rm[1])) return failed;
+  const rank = RANK_MAP[rm[1]];
 
   // The six counters must each appear EXACTLY ONCE as a DIRECT (depth-1) numeric field of the
   // bedwars object. Nested objects inside it (a hypothetical historical:{...}) contribute

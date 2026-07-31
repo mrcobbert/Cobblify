@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getBedwars, streamBedwarsBatch, LANE_HIGH } from "../src/scrape.js";
+import { writeBlocked } from "../src/cache.js";
 
 const BEEPOR_HTML = readFileSync(
   fileURLToPath(new URL("./fixtures/shmeado-ok-beepor.html", import.meta.url)), "utf8");
@@ -221,6 +222,76 @@ test("structural parse_failed while blocked: 90 s L1-only negative, never KV", a
   const again = await runMocked(t, () => getBedwars("DriftGuy", env, w.ctx, false));
   assert.equal(again.error, "parse_failed");
   assert.equal(again.cached, true);
+  assert.equal(hits.shmeado(), 1);
+});
+
+/** Commit the blocked flag SYNCHRONOUSLY (all writes awaited), as a concurrent request would. */
+async function armBreaker(env) {
+  const commits = [];
+  writeBlocked(env, { waitUntil: (p) => commits.push(Promise.resolve(p).catch(() => {})) });
+  await Promise.all(commits);
+}
+
+test("breaker armed during a 429 retry: the request stays pinned to hypixel", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: nextClock() });
+  stubCaches();
+  const env = {};
+  let retryCalls = 0;
+  const hits = routeFetch([
+    ["hypixel.net/player/RetryGuy", async () => {
+      retryCalls++;
+      if (retryCalls === 1) {
+        // A concurrent request commits the blocked flag between the 429 and the retry (the
+        // B1 race): this request already pinned hypixel and must NOT flip mid-retry.
+        await armBreaker(env);
+        return new Response("", { status: 429 });
+      }
+      return new Response(HYP_OK_HTML);
+    }],
+    ["shmeado.club/player/stats/beepor/", () => new Response(BEEPOR_HTML)],
+  ]);
+  const w = makeCtx();
+  const body = await runMocked(t, () => getBedwars("RetryGuy", env, w.ctx, false));
+  await w.settle();
+  assert.equal(body.state, "OK");
+  assert.equal(hits.hypixel(), 2, "the 429 retry re-fetched hypixel despite the freshly armed breaker");
+  assert.equal(hits.shmeado(), 0, "a request pinned to hypixel never touches shmeado");
+  // The flag is real: the NEXT request pins to shmeado.
+  const next = await runMocked(t, () => getBedwars("beepor", env, w.ctx, false));
+  await w.settle();
+  assert.equal(next.state, "OK");
+  assert.equal(hits.hypixel(), 2);
+  assert.equal(hits.shmeado(), 1);
+});
+
+test("breaker armed mid-batch: later misses in the same request stay on hypixel", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: nextClock() });
+  stubCaches();
+  const env = {};
+  let armed = false;
+  const hits = routeFetch([
+    ["hypixel.net/player/", async () => {
+      if (!armed) {
+        armed = true;
+        await armBreaker(env); // the flag lands while the pool is still processing
+      }
+      return new Response(HYP_OK_HTML);
+    }],
+    ["shmeado.club/player/stats/beepor/", () => new Response(BEEPOR_HTML)],
+  ]);
+  const w = makeCtx();
+  await runMocked(t, async () => {
+    const res = streamBedwarsBatch(["ColdA", "ColdB", "ColdC"], env, w.ctx, undefined, undefined);
+    const text = res.text();
+    await w.settle();
+    await text;
+  });
+  assert.equal(hits.hypixel(), 3, "every miss in the batch used the request's pinned source");
+  assert.equal(hits.shmeado(), 0);
+  // The flag armed by the first reply governs the NEXT request.
+  const next = await runMocked(t, () => getBedwars("beepor", env, w.ctx, false));
+  await w.settle();
+  assert.equal(next.bedwarsLevel, 29);
   assert.equal(hits.shmeado(), 1);
 });
 

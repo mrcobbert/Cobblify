@@ -148,6 +148,23 @@ test("quoted keys (a JSON-ification redesign) -> parse_failed", () => {
   failed(parseShmeadoPlayer(page({ bedwars: `{${quoted}}` }), "TestGuy"));
 });
 
+test("the sole bedwars container outside stats (wrapper:{bedwars:{...}}) -> parse_failed", () => {
+  failed(parseShmeadoPlayer(
+    "<script>window.player={name:`TestGuy`,rank:{rank:`None`},wrapper:{bedwars:{" + SIX + "}}}</script>",
+    "TestGuy"));
+});
+
+test("a second bedwars object outside stats makes the projection ambiguous -> parse_failed", () => {
+  failed(parseShmeadoPlayer(
+    page({ achievements: ",wrapper:{bedwars:{" + SIX + "}}" }), "TestGuy"));
+});
+
+test("bedwars nested deeper inside stats (not its direct child) -> parse_failed", () => {
+  failed(parseShmeadoPlayer(
+    "<script>window.player={name:`TestGuy`,rank:{rank:`None`},stats:{legacy:{bedwars:{" + SIX +
+    "}}}}</script>", "TestGuy"));
+});
+
 test("renamed/absent bedwars container -> parse_failed, NEVER never-played", () => {
   const r = parseShmeadoPlayer(
     page({ bedwars: `{${SIX}}` }).replace("bedwars:{", "bedwars_v2:{"), "TestGuy");
@@ -187,11 +204,11 @@ test("an unmapped rank fails the WHOLE lookup (denick safety for already-shipped
   }
 });
 
-test("a malformed rank structure fails the lookup; a fully absent one is proven rankless", () => {
+test("a malformed OR absent rank structure fails the lookup: only the explicit `None` proves rankless", () => {
   failed(parseShmeadoPlayer(page({ rank: "rank:7," }), "TestGuy"));
-  const r = parseShmeadoPlayer(page({ rank: "" }), "TestGuy");
-  assert.equal(r.success, true);
-  assert.equal(r.rank, null);
+  // Absence proves layout drift, never ranklessness - a fabricated rankless success would let
+  // already-shipped clients drop a genuine elevated-rank denick.
+  failed(parseShmeadoPlayer(page({ rank: "" }), "TestGuy"));
 });
 
 // ---- star ------------------------------------------------------------------

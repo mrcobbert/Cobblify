@@ -241,13 +241,13 @@ export async function scrapePlayerHtml(player, env) {
   return { ok: true, html };
 }
 
-/** Scrape one player, parse, merge profile header, and cache the outcome. Returns { body, retry429? }. */
-async function scrapeAndCache(player, env, ctx) {
-  // Circuit breaker: while the origin is serving challenge pages every hypixel scrape is doomed,
-  // so lookups fall back to shmeado instead of failing. This is the single source fork - one
-  // source per request, never both - and the shmeado path never feeds the origin gate, never
-  // trips this breaker, and never sets retry429.
-  if (await readBlocked(env)) {
+/** Scrape one player from the request's pinned source, parse, and cache. Returns { body, retry429? }. */
+async function scrapeAndCache(player, env, ctx, source) {
+  // The source was pinned ONCE at request entry (getBedwars / streamBedwarsBatch read the
+  // breaker there), so a 429-retry loop or a batch's later misses can never flip sources
+  // mid-request - one source per HTTP request, never both. The shmeado path never feeds the
+  // origin gate, never trips the breaker, and never sets retry429.
+  if (source === "shmeado") {
     return await shmeadoScrapeAndCache(player, env, ctx);
   }
   const scraped = await scrapePlayerHtml(player, env);
@@ -284,10 +284,15 @@ async function scrapeAndCache(player, env, ctx) {
  * cleanup chain rides ctx.waitUntil so a joiner is never orphaned by the initiating request
  * ending first. Joiners share the initiator's terminal result (retries included); 429 retries
  * re-claim at the initiator's lane exactly as each caller's own loop did before.
+ *
+ * The map is keyed per player, NOT per source: a joiner shares the in-flight result even when
+ * its own request pinned the other source. Each individual upstream fetch still uses exactly
+ * one source - the invariant - and the joiner merely reuses a result that already exists
+ * instead of issuing a second fetch.
  */
 const IN_FLIGHT = new Map(); // playerLower -> promise of { body, retry429? } (terminal, post-retries)
 
-function scrapeShared(player, env, ctx, lane, maxAttempts) {
+function scrapeShared(player, env, ctx, lane, maxAttempts, source) {
   const key = player.toLowerCase();
   const existing = IN_FLIGHT.get(key);
   if (existing) return existing;
@@ -302,7 +307,7 @@ function scrapeShared(player, env, ctx, lane, maxAttempts) {
     let r;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       await claimOrigin(lane); // a retry re-claims at the SAME lane
-      r = await scrapeAndCache(player, env, trackedCtx);
+      r = await scrapeAndCache(player, env, trackedCtx, source);
       if (!r.retry429) break;
       noteOrigin429(attempt); // throttles every origin path, not just this caller
     }
@@ -326,10 +331,14 @@ export async function getBedwars(player, env, ctx, fresh, lane = LANE_LOW) {
     if (cached) body = { ...cached, cached: true };
   }
   if (!body) {
-    // The single route claims origin slots from the same gate as the batch pool, so it never
-    // increases throughput - the lane only decides who is served first. 429s retry (they are never
-    // negatively cached); the terminal body is whatever the last attempt produced, exactly as before.
-    const r = await scrapeShared(player, env, ctx, lane, SINGLE_MAX_ATTEMPTS);
+    // Source pinned ONCE per HTTP request: while the breaker is set (hypixel serving challenge
+    // pages) the whole lookup goes to shmeado; otherwise it is hypixel for the request's full
+    // retry loop - the breaker is never re-read mid-request. The single route claims origin
+    // slots from the same gate as the batch pool, so it never increases throughput - the lane
+    // only decides who is served first. 429s retry (they are never negatively cached); the
+    // terminal body is whatever the last attempt produced, exactly as before.
+    const source = (await readBlocked(env)) ? "shmeado" : "hypixel";
+    const r = await scrapeShared(player, env, ctx, lane, SINGLE_MAX_ATTEMPTS, source);
     body = r.body;
   }
   return body;
@@ -464,13 +473,18 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
           if (cached) await emitLine(name, { ...cached, cached: true });
           else misses.push(name);
         }
-        // 2) Scrape counter misses politely, emitting each as it terminally resolves.
-        await scrapePool(
-          misses,
-          (name) => scrapeShared(name, env, ctx, lane, BATCH_CFG.maxAttempts),
-          async (name, r) =>
-            emitLine(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name })
-        );
+        // 2) Scrape counter misses politely, emitting each as it terminally resolves. The
+        //    source is pinned ONCE for the whole request: a breaker transition mid-batch never
+        //    flips the remaining misses to the other source.
+        if (misses.length > 0) {
+          const source = (await readBlocked(env)) ? "shmeado" : "hypixel";
+          await scrapePool(
+            misses,
+            (name) => scrapeShared(name, env, ctx, lane, BATCH_CFG.maxAttempts, source),
+            async (name, r) =>
+              emitLine(name, r && r.body ? r.body : { success: false, state: "ERROR", displayName: name })
+          );
+        }
         // 3) Urchin follow-ups: every base line has been emitted, so an urchinUpdate can
         //    never precede its base. Wait up to 3 s for the Coral batch; a timed-out
         //    lookup still caches (its promise was launched under ctx.waitUntil-covered
