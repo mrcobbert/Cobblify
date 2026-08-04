@@ -122,8 +122,6 @@ public class BedwarsQolCommand extends Command {
         send("§f/cobblify statstoken <token> §7— set the backend token");
         send("§f/cobblify urchin <player> §7— community Urchin tags for a player");
         send("§f/cobblify seraph <player> §7— Seraph tags for a player");
-        send("§f/cobblify urchinkey <key|clear> §7— set the server-side Urchin key");
-        send("§f/cobblify seraphkey <key|clear> §7— set the server-side Seraph key");
         send("§f/cobblify help §7— this page");
         send("§7§m------------------------------");
     }

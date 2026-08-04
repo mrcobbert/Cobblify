@@ -10,7 +10,7 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * Pins the Gson-driven compatibility path for configs written by builds that still had the anticheat
- * module + Urchin fusion toggle: unknown members are ignored on load, surviving settings are honored,
+ * module, the Urchin fusion toggle, or Chat Heads: unknown members are ignored on load, surviving settings are honored,
  * and the stale keys drop on the next save.
  */
 public class ClientSettingsStaleKeysTest {
@@ -19,7 +19,7 @@ public class ClientSettingsStaleKeysTest {
 
     private static final String ANTICHEAT_JSON = "{\"anticheat\":true,\"acAntiKb\":false,"
             + "\"acThroughWall\":true,\"acAutoblock\":false,\"acEating\":true,\"acNoSlow\":false,"
-            + "\"urchinAcFusion\":true,\"guiSize\":1,\"urchinTags\":true}";
+            + "\"urchinAcFusion\":true,\"chatPlayerHeads\":true,\"guiSize\":1,\"urchinTags\":true}";
 
     @Test
     public void staleAnticheatKeysAreIgnoredAndDropOnSave() {
@@ -31,6 +31,7 @@ public class ClientSettingsStaleKeysTest {
         assertFalse("anticheat key is gone", out.contains("anticheat"));
         assertFalse("per-check keys are gone", out.contains("acAntiKb"));
         assertFalse("fusion key is gone", out.contains("urchinAcFusion"));
+        assertFalse("the removed Chat Heads key is gone", out.contains("chatPlayerHeads"));
     }
 
     // Backend resolution (backendTarget()): the test classpath carries a canary

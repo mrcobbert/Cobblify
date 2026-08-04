@@ -216,8 +216,6 @@ Write-Host "   $cmdToken" -ForegroundColor Yellow
 Write-Host ''
 Write-Host 'Then turn on Hypixel Stats in the mod settings (press Right Shift).'
 Write-Host ''
-Write-Host 'Optional - community cheater tags from Urchin: get a free API key from the'
-Write-Host 'Urchin Discord bot (/grant), then run in chat:  /cobblify urchinkey <your key>'
 Write-Host ''
 if ($cmdFile) { Write-Host "Both commands are also saved to:  $cmdFile" }
 Write-Host ''

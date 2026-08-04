@@ -148,7 +148,5 @@ printf 'In Minecraft, paste BOTH commands into chat (the first is on your clipbo
 printf '   \033[1;33m%s\033[0m\n' "$CMD_URL"
 printf '   \033[1;33m%s\033[0m\n\n' "$CMD_TOKEN"
 printf 'Then turn on Hypixel Stats in the mod settings (press Right Shift).\n\n'
-printf 'Optional — community cheater tags from Urchin: get a free API key from the\n'
-printf 'Urchin Discord bot (/grant), then run in chat:  /cobblify urchinkey <your key>\n\n'
 [[ -n "$CMD_FILE" ]] && printf 'Both commands are also saved to:  %s\n\n' "$CMD_FILE"
 printf 'You can close this window.\n\n'

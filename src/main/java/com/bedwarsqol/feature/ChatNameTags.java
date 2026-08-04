@@ -12,7 +12,6 @@ import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.GuiNewChat;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IChatComponent;
-import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.event.world.WorldEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
@@ -109,9 +108,6 @@ public final class ChatNameTags {
         tracked.clear();
         byName.clear();
         ticks = 0;
-        // Head sentinels deliberately outlive this wipe: Minecraft's chat lines survive a server switch,
-        // so the surviving lines still carry their codepoints and would lose (or alias onto) their heads
-        // if the registry were cleared here. It recycles least-recently-used slots on its own instead.
         ChatHoverStats.clearPins(); // tab identities reset with the world; drop name->UUID pins
     }
 
@@ -164,14 +160,9 @@ public final class ChatNameTags {
         ChatComponentText suffix = new ChatComponentText("");
         String hoist = prependSibling(event.message, prefix);
         event.message.appendSibling(suffix);
-        // Chat Heads: splice only while enabled. Replacing the sender leaf unnecessarily when heads
-        // are off loses Lunar's client-side name styling during its copy-on-add conversion.
-        ChatComponentText head = cfg.chatPlayerHeads ? new ChatComponentText("") : null;
-        boolean hasHead = head != null && ChatPlayerHeads.spliceHeadHolder(event.message, sender, head);
-        DiagLog.log("RECV sender=" + sender + " typed=" + typedShape + " hoist=" + hoist + " head=" + hasHead);
+        DiagLog.log("RECV sender=" + sender + " typed=" + typedShape + " hoist=" + hoist);
 
-        Holder h = new Holder(sender, typedShape, System.currentTimeMillis(), event.message, prefix, suffix,
-                hasHead ? head : null);
+        Holder h = new Holder(sender, typedShape, System.currentTimeMillis(), event.message, prefix, suffix);
         track(h);
         // With the context already settled (the common case), decide and render immediately so the
         // first frame isn't blank when the stats are cached.
@@ -185,8 +176,8 @@ public final class ChatNameTags {
     /**
      * Track a {@code /party list} roster line: one FKDR bracket in front of <i>each</i> member, ahead of
      * the rank tag they wear ({@code "[1.25] [MVP++] Dewier"}) so it reads in the same order as every
-     * other chat line. Placement reuses the Chat Heads splice, which already inserts a mutable holder
-     * ahead of a named player, splitting the covering leaf and preserving its style and rank-card hover.
+     * other chat line. Placement goes through {@link ChatSplice}, which inserts a mutable holder ahead
+     * of a named player, splitting the covering leaf and preserving its style and rank-card hover.
      * The holders are empty when spliced, so the line's text — and therefore every later member's
      * offset — is unchanged by the ones before it. Your own name is skipped, as everywhere else in chat.
      *
@@ -201,7 +192,7 @@ public final class ChatNameTags {
         for (String name : members) {
             if (isSelf(name)) continue;
             ChatComponentText tag = new ChatComponentText("");
-            if (ChatPlayerHeads.spliceBeforeRankedName(message, name, tag)) {
+            if (ChatSplice.spliceBeforeRankedName(message, name, tag)) {
                 slots.add(new Holder.Slot(name, tag));
             }
         }
@@ -209,7 +200,7 @@ public final class ChatNameTags {
         if (slots.isEmpty()) return; // a party of just you, or a line we couldn't splice
         // Trusted like typed chat: a roster is your own party's state, which Hypixel never anonymizes.
         Holder h = new Holder(ROSTER_SENDER, true, System.currentTimeMillis(), message,
-                new ChatComponentText(""), new ChatComponentText(""), null);
+                new ChatComponentText(""), new ChatComponentText(""));
         h.roster = slots;
         track(h);
         decide(h, operate(), typedChatContext());
@@ -361,8 +352,8 @@ public final class ChatNameTags {
 
     private void repaintTracked() {
         ClientSettings cfg = BedwarsQol.config;
-        // No enabled() gate: a Chat Heads toggle-OFF must reach here to clear the head sentinels even when
-        // that toggle was the only thing keeping the module armed (applyHead writes "" when the feature off).
+        // No enabled() gate: a toggle-OFF must still reach the holders to clear what they last wrote,
+        // even when that toggle was the only thing keeping the module armed.
         if (cfg == null) return;
         boolean changed = false;
         for (Holder h : tracked) {
@@ -490,10 +481,9 @@ public final class ChatNameTags {
     private static boolean enabled(ClientSettings cfg) {
         if (cfg == null) return false;
         // The leading FKDR/[New] bracket is the Chat Stats sub-toggle of Hypixel Stats; the trailing
-        // name-reveal / (Nicked) tags need Nick Utils; Chat Heads rides the same tracked-line pipeline,
-        // so it also arms this path (its head holder stays empty until a line is trusted + a skin resolves).
+        // name-reveal / (Nicked) tags need Nick Utils.
         boolean nickTags = cfg.nickUtils && (cfg.autoDenick || cfg.nickNotify);
-        return chatStatsEnabled(cfg) || nickTags || cfg.chatPlayerHeads;
+        return chatStatsEnabled(cfg) || nickTags;
     }
 
     /** Chat Stats: the Hypixel Stats sub-toggle for the leading in-chat FKDR/[New] bracket. */
@@ -728,8 +718,6 @@ public final class ChatNameTags {
         final IChatComponent root; // the whole received line — re-attached when Lunar stored a copy
         final ChatComponentText prefix;
         final ChatComponentText suffix;
-        /** The head slot spliced before the name, or null until enabled/locatable. */
-        ChatComponentText head;
         /** Per-member tag slots on a {@code /party list} roster line; null on single-sender lines. */
         List<Slot> roster;
         boolean decided;           // verdict reached (final either way)
@@ -740,13 +728,12 @@ public final class ChatNameTags {
         boolean storedVerified;
         String lastPrefix = "";
         String lastSuffix = "";
-        char lastHeadSentinel;     // the sentinel currently in the head slot (0 = empty)
         /** Last tab UUID resolved for the sender — the FKDR cache key, held through tab churn. */
         UUID tabUuid;
         boolean pinLogged;         // one PIN diag per line, not one per blipped tick
 
         Holder(String sender, boolean typedShape, long receivedMs, IChatComponent root,
-               ChatComponentText prefix, ChatComponentText suffix, ChatComponentText head) {
+               ChatComponentText prefix, ChatComponentText suffix) {
             this.key = sender.toLowerCase();
             this.sender = sender;
             this.typedShape = typedShape;
@@ -754,7 +741,6 @@ public final class ChatNameTags {
             this.root = root;
             this.prefix = prefix;
             this.suffix = suffix;
-            this.head = head;
         }
 
         /** Recompute all parts and, where any differs from what's drawn, rewrite it. Returns true on change. */
@@ -776,7 +762,6 @@ public final class ChatNameTags {
                 writeChild(suffix, parts[1]);
                 changed = true;
             }
-            if (applyHead(cfg)) changed = true;
             return changed;
         }
 
@@ -827,29 +812,6 @@ public final class ChatNameTags {
                 else uuid = tabUuid;
                 return resolveStats(name, uuid);
             }
-        }
-
-        /**
-         * Fill (or clear) the head slot with the invisible per-skin sentinel: only when Chat Heads is on
-         * and the sender's tab skin — what the client already shows, a nick's included — has resolved.
-         * Same async pattern as the FKDR bracket: empty until the skin lands, back-patched on a later tick.
-         */
-        private boolean applyHead(ClientSettings cfg) {
-            if (head == null && cfg.chatPlayerHeads) {
-                ChatComponentText candidate = new ChatComponentText("");
-                if (ChatPlayerHeads.spliceHeadHolder(root, sender, candidate)) head = candidate;
-            }
-            if (head == null) return false;
-            char want = 0;
-            if (cfg.chatPlayerHeads) {
-                ResourceLocation skin = ChatPlayerHeads.skinForSender(sender);
-                if (skin != null) want = ChatPlayerHeads.sentinelFor(skin);
-            }
-            if (want == lastHeadSentinel) return false;
-            lastHeadSentinel = want;
-            // Sentinel (zero-width position/skin marker) + real spaces that reserve the visible slot.
-            writeChild(head, want == 0 ? "" : String.valueOf(want) + ChatPlayerHeads.slotGap());
-            return true;
         }
 
         /** Replace a holder component's single text child with {@code text} (or empty it out). */

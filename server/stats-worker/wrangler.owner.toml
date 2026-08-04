@@ -19,7 +19,8 @@ preview_urls = true
 #
 # One-time owner steps after first deploying the multi-token Worker (provider state became
 # per-identity - nothing reads the legacy unsuffixed KV entries anymore):
-#   1. Re-paste your Urchin and Seraph keys once (POST /urchin/key + /seraph/key, or the GUI).
+#   1. Re-paste your Urchin and Seraph keys once (POST /urchin/key + /seraph/key, via the
+#      owner-only /cobblify urchinkey|seraphkey commands).
 #   2. Delete the legacy unsuffixed entries:
 #        wrangler kv key delete --namespace-id 16fd5eea0e37475c91e5f255d45d82ce "urchin:cfg:key"
 #      and likewise urchin:cfg:backoff, urchin:cfg:disabled, seraph:cfg:key,

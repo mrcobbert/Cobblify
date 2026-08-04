@@ -28,15 +28,6 @@ on those require self-hosting - see
 3. From then on, always start the game with **Launch Lunar (Cobblify)** (fully quit Lunar first if it is already open). No Lunar settings need changing.
 4. Remaining manual steps: log into Lunar, pick **1.8.9**, and turn **Waypoints OFF** inside your active Lunar settings profile. Press **Right Shift** (or run `/cobblify`) in-game to open the settings.
 
-## Optional: your own Urchin/Seraph API keys
-
-Cheater tags can use your own provider API keys (Urchin keys are free via the
-Urchin Discord bot's `/grant` command). Press **Right Shift**, open the
-**Urchin Tags** or **Seraph Tags** card, and paste your key into the masked
-**Urchin API Key** / **Seraph API Key** field, then press Enter. Keys are sent
-write-only to the backend and are never stored on your machine. The
-`/cobblify urchinkey` and `/cobblify seraphkey` chat commands still work too.
-
 ## Advanced: self-hosting the stats backend
 
 Only for people running their own Worker - that is, using a blank public
@@ -52,8 +43,7 @@ the installer.
 
 `/cobblify statsurl` and `/cobblify statstoken` point the mod at your own
 Worker; on official builds they are unnecessary (leave them unset to use the
-built-in backend). The provider key fields above work against your own Worker
-the same way. See `server/stats-worker/README.md` for Worker details.
+built-in backend). See `server/stats-worker/README.md` for Worker details.
 
 ## Features: Cobblify — Features
 

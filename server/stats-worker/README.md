@@ -28,8 +28,9 @@ entry per user:
   denied (fail closed), never fallen open.
 - Owner-only behavior: the `URCHIN_KEY`/`SERAPH_KEY` env secrets, when set,
   manage the owner identity's provider-key slot only. Every other identity
-  manages its own slot via `POST /urchin/key` / `/seraph/key` (the in-game GUI
-  fields or `/cobblify urchinkey|seraphkey`).
+  manages its own slot via `POST /urchin/key` / `/seraph/key`, reachable only
+  through the owner-facing `/cobblify urchinkey|seraphkey` commands (there is no
+  in-game UI for provider keys).
 
 Each token maps to an **identity**: the first 16 hex chars of SHA-256(token).
 All per-user provider state (stored key, backoff, disabled flag, breaker) is
@@ -54,8 +55,8 @@ and redeploy. The revoked token stops authenticating; everyone else's identity
 Provider state became per-identity; nothing reads the legacy unsuffixed KV
 entries anymore. After the first deploy of the multi-token Worker:
 
-1. Re-paste your Urchin and Seraph keys once (the in-game GUI fields under the
-   Urchin/Seraph Tags cards, or `/cobblify urchinkey` / `/cobblify seraphkey`).
+1. Re-paste your Urchin and Seraph keys once (`/cobblify urchinkey` /
+   `/cobblify seraphkey`).
 2. Delete the six legacy unsuffixed KV entries (use the namespace id from
    `wrangler.owner.toml`):
 

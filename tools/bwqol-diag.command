@@ -7,11 +7,11 @@
 #
 # Reference values below are from Jacob's known-good machine (Jul 30, 2026).
 
-GOOD_JAR_SHA="e354829d2c7390303df38cdab9cf2fbb9deee65e3f9c9d3ba3453492db49199c"
-GOOD_JAR_NAME="Cobblify-Lunar-0.8.0.jar (built Jul 30, 542680 bytes)"
+GOOD_JAR_SHA="97d91d866a00e490d538dd979e4cb61a4138b2de753738a2d7fe10e741de80dc"
+GOOD_JAR_NAME="Cobblify-Lunar-0.8.1.jar (built Aug 4, 534052 bytes)"
 # Forge counterpart (Prism instance mods folder), for reference:
-GOOD_FORGE_JAR_SHA="095a9a8fa0a180b369bd6d600de6339b4c266028a1b20d74713b2499fac109f0"
-GOOD_FORGE_JAR_NAME="Cobblify-1.8.9-forge-0.8.0.jar"
+GOOD_FORGE_JAR_SHA="29c13f6a0e77257cc4cf34d81a349ebac2f17c3162034a8d5d2d9562a1af2efa"
+GOOD_FORGE_JAR_NAME="Cobblify-1.8.9-forge-0.8.1.jar"
 GOOD_LOADER_SHA="e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2"
 GOOD_LOADER_NAME="Weave-Loader-Agent-1.3.3.jar"
 

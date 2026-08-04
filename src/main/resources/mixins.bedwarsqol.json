@@ -13,7 +13,6 @@
     "MinecraftEscMixin",
     "GuiPlayerTabOverlayMixin",
     "GuiChatMixin",
-    "FontRendererMixin",
     "GuiScreenMixin",
     "EntityPlayerSPMixin",
     "C01PacketChatMessageMixin",

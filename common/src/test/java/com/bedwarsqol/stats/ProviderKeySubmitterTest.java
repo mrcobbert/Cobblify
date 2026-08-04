@@ -372,13 +372,6 @@ public class ProviderKeySubmitterTest {
 
     // ---- mask helper ---------------------------------------------------------
 
-    @Test
-    public void masksAllButTheLastFourChars() {
-        assertEquals("••••••••cdef", ProviderKeySubmitter.maskForDisplay("0123456-cdef"));
-        assertEquals("••••", ProviderKeySubmitter.maskForDisplay("abcd"));
-        assertEquals("", ProviderKeySubmitter.maskForDisplay(""));
-        assertEquals("", ProviderKeySubmitter.maskForDisplay(null));
-    }
 
     @Test
     public void providerPathsAreFixed() {

@@ -66,7 +66,6 @@ divergent main com/bedwarsqol/gui/render/Icons.java
 divergent main com/bedwarsqol/gui/render/GuiBlur.java
 
 # Mixins: Lunar adds require = 0 so a mapping miss degrades to a no-op.
-divergent main com/bedwarsqol/mixin/FontRendererMixin.java
 divergent main com/bedwarsqol/mixin/GuiChatMixin.java
 divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
 divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
@@ -102,8 +101,8 @@ one-sided main lunar com/bedwarsqol/gui/render/ClasspathTexture.java
 one-sided test forge com/bedwarsqol/config/ClientSettingsConfigTest.java
 one-sided test forge com/bedwarsqol/feature/AlertCopyReasonTest.java
 one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
-one-sided test forge com/bedwarsqol/feature/ChatPlayerHeadsTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
+one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
 one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java

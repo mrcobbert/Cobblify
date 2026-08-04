@@ -91,14 +91,6 @@ public class ClientSettings {
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
     public boolean partyJoinAlert = false;
 
-    /**
-     * Chat Heads: draw a small player head immediately left of the sender's name on chat lines, using
-     * the skin the client already shows for that player (nicks keep the nick skin). Works on any server.
-     * Off by default. Draws only for senders present in the tab list (see
-     * {@link com.bedwarsqol.feature.ChatPlayerHeads}).
-     */
-    public boolean chatPlayerHeads = false;
-
     // --- Chat module ---
 
     /** Unlimited Chat: raise the vanilla 100-line chat history cap to 32,767 lines. */

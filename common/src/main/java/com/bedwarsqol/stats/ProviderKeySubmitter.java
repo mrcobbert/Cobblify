@@ -126,15 +126,4 @@ public final class ProviderKeySubmitter {
         }
         return sb.toString();
     }
-
-    /** Masked form for on-screen rendering: every char a dot except the last 4 (all dots when the
-     *  value is too short for a tail to be safe to show). */
-    public static String maskForDisplay(String s) {
-        if (s == null || s.isEmpty()) return "";
-        int keep = s.length() > 4 ? 4 : 0;
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length() - keep; i++) sb.append('•');
-        sb.append(s, s.length() - keep, s.length());
-        return sb.toString();
-    }
 }
