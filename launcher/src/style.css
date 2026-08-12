@@ -1,0 +1,876 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Cobblify launcher - "arcade cabinet at 2am"
+   Bedwars team colours (bed red, wool aqua, torch gold) run through a CRT.
+   Retune the whole app from this one block.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --bg: #000000;
+  --bg-lift: #000000;
+  --surface: rgba(17, 24, 36, 0.78);
+  --line: rgba(150, 178, 214, 0.14);
+  --line-strong: rgba(150, 178, 214, 0.3);
+
+  --text: #e9eefa;
+  --text-dim: #98a6bd;
+  --text-faint: #62708a;
+
+  --red: #ff3b5f; /* the bed. the one action colour. */
+  --red-lit: #ff5c7a;
+  --red-deep: #9d1730;
+  --aqua: #2ff0d4; /* wool, veins, "everything is fine" */
+  --gold: #ffc247; /* torches, caution */
+  --blue: #4d8cff;
+
+  --state: var(--text-faint); /* recoloured per status, see below */
+
+  --font-display: "Unbounded", "Avenir Next", system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Vertical rhythm for the centered stack (hero → title → chip → action). */
+  --space-xs: 10px;
+  --space-sm: 18px;
+  --space-md: 28px;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  overflow-y: auto;
+  user-select: none;
+  cursor: default;
+}
+
+.selectable,
+.selectable * {
+  user-select: text;
+  cursor: text;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 178, 214, 0.16);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* ── atmosphere ─────────────────────────────────────────────────────────── */
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/></filter><rect width='140' height='140' filter='url(%23n)'/></svg>");
+}
+
+/* ── layout ─────────────────────────────────────────────────────────────── */
+.stage {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  align-items: stretch;
+}
+
+.stage[data-state="ready"] {
+  --state: var(--aqua);
+}
+.stage[data-state="blocked"] {
+  --state: var(--gold);
+}
+.stage[data-state="error"] {
+  --state: var(--red);
+}
+
+/* Left third: title, version, action — left-aligned with edge padding. */
+.copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: 48px 28px 48px 52px;
+  text-align: left;
+  min-width: 0;
+}
+
+/* Right two-thirds: voxel art centered in its section. */
+.hero {
+  position: relative;
+  min-height: 100%;
+  min-width: 0;
+}
+
+#hero-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* ── identity ───────────────────────────────────────────────────────────── */
+.id {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+}
+
+.wordmark {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(1.85rem, 5.2vw, 2.6rem);
+  line-height: 1;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.chip {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ── status panel ───────────────────────────────────────────────────────── */
+.panel {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.state {
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  width: 100%;
+}
+
+.stage[data-state="loading"] .state-loading,
+.stage[data-state="ready"] .state-ready,
+.stage[data-state="blocked"] .state-blocked,
+.stage[data-state="error"] .state-error {
+  display: flex;
+  animation: fade 0.45s var(--ease) both;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.lede {
+  margin: 0;
+  max-width: 44ch;
+  color: var(--text-dim);
+}
+
+.hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* What to do about it is not a footnote. */
+.state-blocked .hint,
+.state-error .hint {
+  color: var(--text-dim);
+  max-width: 46ch;
+}
+
+kbd {
+  font: inherit;
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-bottom-color: var(--line-strong);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-dim);
+}
+
+.alert {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--red-lit);
+}
+
+/* ── the button ─────────────────────────────────────────────────────────── */
+.btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--text);
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 17px;
+  cursor: pointer;
+  box-shadow:
+    0 2px 0 rgba(233, 238, 250, 0.35),
+    0 8px 18px -10px rgba(233, 238, 250, 0.55);
+  transition:
+    transform 0.12s var(--ease),
+    box-shadow 0.12s var(--ease),
+    filter 0.2s var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 3px 0 rgba(233, 238, 250, 0.4),
+    0 12px 22px -10px rgba(233, 238, 250, 0.7);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    0 1px 0 rgba(233, 238, 250, 0.3),
+    0 6px 12px -10px rgba(233, 238, 250, 0.45);
+}
+
+.btn:disabled {
+  cursor: default;
+  filter: brightness(0.7);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 3px;
+}
+
+/* Loading: greyed (via :disabled) with a slow highlight sweeping across. */
+.btn.is-loading {
+  position: relative;
+  overflow: hidden;
+}
+.btn.is-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: btn-shimmer 1.5s var(--ease) infinite;
+}
+
+@keyframes btn-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ── blocked / error ────────────────────────────────────────────────────── */
+.notice {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--state);
+}
+
+.notice-mark {
+  width: 6px;
+  height: 6px;
+  background: var(--state);
+  box-shadow: 0 0 12px var(--state);
+}
+
+.paths {
+  margin: 0;
+  padding: 12px 14px;
+  list-style: none;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--state);
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  word-break: break-all;
+  max-height: 118px;
+  overflow-y: auto;
+}
+
+.paths li + li {
+  margin-top: 6px;
+}
+
+/* ── entrance ───────────────────────────────────────────────────────────── */
+.reveal {
+  opacity: 0;
+  animation: rise 0.75s var(--ease) forwards;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+  .reveal {
+    opacity: 1;
+  }
+  .btn:hover:not(:disabled),
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   In-game dashboard (the overlay shown after Launch)
+   Greyscale, minimal, compact. The only colour is the voxel hero in its corner.
+   Every rule below is scoped under .dash / .joining so it can never restyle the
+   arcade homepage (which shares generic class names like .chip and .state).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dash,
+.joining {
+  --ink-1: #f4f5f6;
+  --ink-2: #aeb0b4;
+  --ink-3: #74767b;
+  --ink-4: #484a4e;
+  --surf-1: #161719;
+  --surf-2: #1b1d1f;
+  --surf-3: #232527;
+  --line-2: rgba(255, 255, 255, 0.11);
+  --load-a: #567833;
+  --load-b: #86b24a;
+  --num: "DM Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --ease-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --r-sm: 6px;
+  --r-md: 9px;
+  --content: 780px; /* roster + header cap so wide windows don't stretch rows */
+  --header-band: 140px; /* clears the shrunken corner voxel */
+  --bg-0: #000000;
+}
+
+/* ── joining interstitial ───────────────────────────────────────────────── */
+.joining {
+  position: absolute;
+  inset: var(--header-band) 0 0 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+.joining.on {
+  opacity: 1;
+}
+.joining .ring {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--line-2);
+  border-top-color: var(--load-b);
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.joining .jt {
+  font-weight: 600;
+  font-size: 20px;
+  color: var(--ink-1);
+}
+.joining .js {
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.joining .js .dots::after {
+  content: "";
+  animation: dots 1.4s steps(4, end) infinite;
+}
+@keyframes dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
+/* ── dashboard scroll region ────────────────────────────────────────────── */
+.dash {
+  position: absolute;
+  inset: var(--header-band) 0 0 0;
+  padding: 0 18px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+.dash.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+.dash::-webkit-scrollbar {
+  width: 8px;
+}
+.dash::-webkit-scrollbar-thumb {
+  background: var(--surf-3);
+  border-radius: 8px;
+}
+
+/* context header — one slim line, sticky at the top of the scroll region */
+.ctx-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px 10px;
+  background: linear-gradient(180deg, var(--bg-0) 62%, transparent);
+}
+.live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-1);
+  flex: none;
+  box-shadow: 0 0 0 0 rgba(244, 245, 246, 0.5);
+  animation: pulse 2.4s infinite;
+}
+@keyframes pulse {
+  70% {
+    box-shadow: 0 0 0 6px rgba(244, 245, 246, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(244, 245, 246, 0);
+  }
+}
+.ctx-title {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.ctx-sub {
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.ctx-head .spacer {
+  flex: 1;
+}
+.ctx-note {
+  font-size: 10px;
+  color: var(--ink-4);
+  letter-spacing: 0.03em;
+}
+
+/* section label */
+.sect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 2px 6px;
+}
+.sect h3 {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.sect .rule {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.sect .n {
+  font-size: 10px;
+  color: var(--ink-4);
+  letter-spacing: 0.08em;
+}
+
+/* team header — greyscale, name only */
+.team-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 2px 6px;
+}
+.team-head h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.team-head .agg {
+  font-size: 10px;
+  color: var(--ink-4);
+  letter-spacing: 0.04em;
+}
+.team-head .rule {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.team-head.targeted h3 {
+  color: var(--ink-1);
+}
+.target-badge {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--bg-0);
+  background: var(--ink-1);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+/* headers + roster share the content cap so columns line up and never stretch */
+.ctx-head,
+.sect,
+.team-head,
+.roster,
+.empty-note {
+  max-width: var(--content);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* roster: name left, stats hug right */
+.roster {
+  --cols: minmax(0, 1fr) 58px 52px 64px 46px;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.col-head {
+  display: grid;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 12px 5px;
+  grid-template-columns: var(--cols);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.col-head span:nth-child(n + 2) {
+  text-align: right;
+}
+.prow {
+  display: grid;
+  align-items: center;
+  gap: 14px;
+  grid-template-columns: var(--cols);
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition:
+    background 0.14s,
+    border-color 0.14s;
+}
+.prow:hover {
+  background: var(--surf-1);
+  border-color: var(--line);
+}
+
+/* name cell (holds the inline flags) */
+.pname {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.sweat-bar {
+  width: 3px;
+  align-self: stretch;
+  min-height: 18px;
+  border-radius: 2px;
+  background: transparent;
+  flex: none;
+}
+.identity {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex: 0 1 auto;
+}
+.rank {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+.pn {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flags-inline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+/* stats */
+.stat {
+  font-family: var(--num);
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.stat.muted {
+  color: var(--ink-4);
+}
+.fkdr {
+  color: var(--ink-1);
+  font-weight: 500;
+}
+
+/* greyscale sweat tiers — brighter/heavier = sweatier */
+.t0 .fkdr {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+.t0 .sweat-bar {
+  background: transparent;
+}
+.t1 .fkdr {
+  color: var(--ink-1);
+}
+.t1 .sweat-bar {
+  background: rgba(255, 255, 255, 0.22);
+}
+.t2 .fkdr {
+  color: #fff;
+  font-weight: 600;
+}
+.t2 .sweat-bar {
+  background: rgba(255, 255, 255, 0.5);
+}
+.t3 .fkdr {
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.35);
+}
+.t3 .sweat-bar {
+  background: rgba(255, 255, 255, 0.88);
+}
+.t3 .pn {
+  color: #fff;
+}
+
+/* inline flags — scoped under .dash so they never hit the homepage .chip */
+.dash .chip {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.dash .chip.nick {
+  color: var(--ink-2);
+  border: 1px dashed var(--line-2);
+}
+.dash .chip.cheat {
+  color: var(--bg-0);
+  background: var(--ink-1);
+} /* inverted = alarm, no red */
+.dash .chip.state {
+  color: var(--ink-3);
+  border: 1px solid var(--line-2);
+}
+
+/* confirmed cheater row — inverted accent bar + faint wash */
+.prow.cheater {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line-2);
+}
+.prow.cheater .sweat-bar {
+  background: #fff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+.prow.cheater .pn {
+  color: #fff;
+}
+
+/* loading skeleton */
+.skel {
+  display: inline-block;
+  height: 10px;
+  border-radius: 3px;
+  vertical-align: middle;
+  background: linear-gradient(
+    90deg,
+    var(--surf-3),
+    var(--surf-1),
+    var(--surf-3)
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.prow.loading .pn {
+  color: var(--ink-3);
+}
+
+.empty-note {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  padding: 6px 4px;
+}
+
+/* responsive: drop the lowest-signal stats before things get cramped */
+@container (max-width: 520px) {
+  .roster {
+    --cols: minmax(0, 1fr) 58px 52px;
+  }
+  .col-head span:nth-child(4),
+  .col-head span:nth-child(5),
+  .cell-finals,
+  .cell-kd {
+    display: none;
+  }
+}
+@container (max-width: 360px) {
+  .roster {
+    --cols: minmax(0, 1fr) 58px;
+  }
+  .col-head span:nth-child(3),
+  .cell-wlr {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   View switch — homepage vs dashboard. A clean swap, not a morph: on launch the
+   homepage copy leaves entirely and the voxel drops to a small corner; the
+   dashboard overlay fades in below the reserved header band.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.joining,
+.dash {
+  display: none;
+}
+.stage[data-view="dash"] {
+  display: block;
+}
+.stage[data-view="dash"] .copy {
+  display: none;
+}
+.stage[data-view="dash"] .hero {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  width: 190px;
+  height: 120px;
+  min-height: 0;
+  z-index: 5;
+}
+.stage[data-view="dash"] .joining {
+  display: flex;
+}
+.stage[data-view="dash"] .dash {
+  display: block;
+}

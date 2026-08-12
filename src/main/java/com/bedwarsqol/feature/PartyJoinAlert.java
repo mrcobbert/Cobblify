@@ -57,6 +57,14 @@ public final class PartyJoinAlert {
     private final Burst leaves = new Burst(); // same-instant departures
     private int partiesInLobby;               // net enemy parties currently in this lobby (reset on teleport/world load)
 
+    /** Mirror of {@link #partiesInLobby} for out-of-instance readers (the lobby dashboard export). */
+    private static volatile int lobbyPartyCount;
+
+    /** The net enemy-party count in the current lobby; 0 when not in a pregame lobby. */
+    public static int partiesInLobby() {
+        return lobbyPartyCount;
+    }
+
     @SubscribeEvent
     public void onWorldLoad(WorldEvent.Load event) {
         reset();
@@ -105,6 +113,7 @@ public final class PartyJoinAlert {
         // partiesInLobby is a net count: a joining party adds one, a leaving party removes one (floored at 0).
         if (joins.closedAsParty()) announce("Party Joined", ++partiesInLobby);
         if (leaves.closedAsParty()) announce("Party Left", partiesInLobby = Math.max(0, partiesInLobby - 1));
+        lobbyPartyCount = partiesInLobby;
     }
 
     private static String selfName() {
@@ -124,6 +133,7 @@ public final class PartyJoinAlert {
         joins.reset();
         leaves.reset();
         partiesInLobby = 0;
+        lobbyPartyCount = 0;
     }
 
     /**

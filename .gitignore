@@ -424,3 +424,15 @@ analysis/
 
 # Owner-baked distribution bundles (contain the private backend URL/token)
 dist-owner/
+
+### Cobblify Launcher (Tauri) ###
+launcher/src-tauri/target/
+launcher/src-tauri/gen/schemas/
+launcher/node_modules/
+launcher/dist/
+# Defence in depth: jars are injected into the bundle at package time and are
+# token-baked. One must never become committable. (*.jar is ignored globally above.)
+launcher/src-tauri/resources/*.jar
+# Parked pre-existing resource artifacts (see .ai/PLAN.md rev 3, blank-build
+# isolation) - holds a presumed-token-baked jar; never committable.
+launcher/src-tauri/resources.aside/

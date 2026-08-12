@@ -728,6 +728,8 @@ public final class StatsCache {
         });
         noteErrorStreak(key, stats.state);
         if (stats.state != BedwarsStats.State.ERROR) dirty = true;
+        // A newly-resolved stat should re-emit the lobby dashboard promptly (LOADING -> real value).
+        com.bedwarsqol.feature.LobbyExport.markDirty();
     }
 
     /**

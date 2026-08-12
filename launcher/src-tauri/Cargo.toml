@@ -1,0 +1,23 @@
+[package]
+name = "cobblify-launcher"
+version = "0.1.0"
+description = "Cobblify Launcher"
+edition = "2021"
+# Verified toolchain. sysinfo 0.39 needs 1.95, which is not installed, hence the 0.38 pin below.
+rust-version = "1.94"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps Lunar's own launcher.json key order intact when we rewrite it.
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+# Pinned to 0.38: 0.39 requires Rust 1.95. Only src/proc.rs may use this crate.
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+tauri = { version = "2.11", features = [] }
+
+[dev-dependencies]
+tempfile = "3"

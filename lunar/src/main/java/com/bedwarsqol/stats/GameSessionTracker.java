@@ -111,5 +111,8 @@ public final class GameSessionTracker {
         EligibilitySnapshot.publish(new EligibilitySnapshot(
                 id, exactHost, activeGame, masterOn, seraphOn,
                 NickUtils.identitySnapshot()));
+
+        // Feed the Cobblify lobby-dashboard export (throttled + written off-thread).
+        com.bedwarsqol.feature.LobbySnapshot.capture(mc);
     }
 }

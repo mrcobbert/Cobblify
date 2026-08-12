@@ -86,5 +86,6 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new UrchinAlert());
         MinecraftForge.EVENT_BUS.register(new SeraphAlert());
         MinecraftForge.EVENT_BUS.register(new QueueAlert());
+        MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.LobbyChatWatch());
     }
 }

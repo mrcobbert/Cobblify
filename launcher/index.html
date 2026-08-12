@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:," />
+    <title>Cobblify</title>
+  </head>
+  <body>
+    <main class="stage" id="stage" data-state="loading" data-view="home">
+      <!-- ── homepage (arcade): title + status/action on the left, voxel on the right ── -->
+      <section class="copy">
+        <header class="id">
+          <h1 class="wordmark reveal" style="--d: 90ms">Cobblify</h1>
+          <p class="chip reveal" style="--d: 150ms">
+            <span id="chip-text">checking setup</span>
+          </p>
+        </header>
+
+        <div class="panel reveal" style="--d: 210ms" aria-live="polite">
+          <div class="state state-loading">
+            <p class="lede">Checking your Lunar Client setup.</p>
+          </div>
+
+          <div class="state state-ready">
+            <button class="btn" id="launch" type="button">
+              <span id="launch-label">Launch Lunar</span>
+            </button>
+            <p class="alert" id="launch-error" role="alert" hidden></p>
+          </div>
+
+          <div class="state state-blocked">
+            <p class="notice">
+              <span class="notice-mark" aria-hidden="true"></span>
+              <span id="blocked-title">Setup paused</span>
+            </p>
+            <p class="lede selectable" id="blocked-message"></p>
+            <ul class="paths selectable" id="blocked-paths" hidden></ul>
+            <p class="hint" id="blocked-hint"></p>
+          </div>
+
+          <div class="state state-error">
+            <p class="notice">
+              <span class="notice-mark" aria-hidden="true"></span>
+              <span>Cobblify could not finish setup</span>
+            </p>
+            <p class="lede selectable" id="error-message"></p>
+            <p class="hint">Cobblify checks again every time you open it.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="hero reveal" style="--d: 0ms">
+        <canvas id="hero-canvas" aria-hidden="true"></canvas>
+      </div>
+
+      <!-- ── in-game dashboard overlay: hidden until launch, then swapped in ── -->
+      <div class="joining" id="joining">
+        <div class="ring"></div>
+        <div class="jt">Joining Hypixel</div>
+        <div class="js">Connecting to network<span class="dots"></span></div>
+      </div>
+      <div class="dash" id="dash"></div>
+    </main>
+
+    <div class="grain" aria-hidden="true"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

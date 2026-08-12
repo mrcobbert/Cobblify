@@ -1,0 +1,113 @@
+COBBLIFY FOR LUNAR CLIENT - macOS
+=================================
+
+You only do this once.
+
+
+1. INSTALL
+----------
+
+Drag "Cobblify Launcher.app" into your Applications folder.
+
+Do NOT run it from your Downloads folder or from a temporary folder -
+move it to Applications first, or it may fail to start.
+
+
+2. FIRST OPEN - macOS WILL BLOCK IT
+-----------------------------------
+
+Cobblify isn't signed with a paid Apple developer certificate, so macOS
+stops it the first time. This is normal. It is not a virus warning -
+macOS says this about every app that hasn't paid Apple's yearly fee.
+
+Double-click the app. You'll get a message saying macOS "cannot check it
+for malicious software". Click Done / Cancel, then:
+
+    Apple menu > System Settings > Privacy & Security
+    scroll down to Security
+    next to "Cobblify Launcher was blocked", click  Open Anyway
+    confirm with your password or Touch ID
+
+The app opens. You never have to do this again.
+
+NOTE: On older Macs people used to right-click an app and choose Open.
+Apple removed that in macOS 15, so use the System Settings steps above.
+
+
+3. WHAT IT DOES
+---------------
+
+Quit Lunar Client first, then open Cobblify Launcher. It will:
+
+  - install Cobblify and the Weave loader
+  - register them with Lunar Client
+  - say "Cobblify vX.X.X ready"
+
+Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself -
+you never touch the Lunar launcher window. Cobblify hides it for you;
+Lunar keeps running in the background, which is normal.
+
+Give Cobblify a few seconds after clicking before you quit it - the
+hiding happens from inside Cobblify. If you close it the instant you
+click, the Lunar window may stay on screen (the game still launches
+fine either way).
+
+The very first time, Lunar may ask you to log in - that window is real,
+log in like you always do. Same goes for Lunar updates.
+
+The button works once per open. To launch again later, reopen Cobblify -
+or just start Lunar from the Dock or Spotlight; Cobblify loads either
+way, you only miss the auto-join.
+
+
+4. IN GAME
+----------
+
+  - ONE TIME: open Lunar once and make 1.8.9 your selected version.
+    The Launch Lunar button launches whatever version Lunar has selected,
+    and Cobblify only works on 1.8.9.
+  - press RIGHT SHIFT in game to open Cobblify's settings
+
+IMPORTANT: turn Lunar's "Waypoints" module OFF in the settings profile
+you actually play on. Leaving it on can make Cobblify's stats go
+missing. This is per-profile, so if you switch profiles, check again.
+
+
+5. IF SOMETHING GOES WRONG
+--------------------------
+
+"Quit Lunar Client so Cobblify can finish setup"
+    Lunar is still running. Quit it fully with Cmd+Q, then reopen the
+    launcher. Lunar overwrites its own settings when it closes, so
+    Cobblify waits rather than fighting it.
+
+"Another Cobblify jar is in ~/.weave/mods/"
+    You have more than one version installed. The launcher lists them
+    and will not delete anything it didn't put there. Remove the one you
+    don't want, then reopen the launcher.
+
+"This copy of Cobblify is incomplete"
+    The download didn't finish or got corrupted. Download it again.
+
+The app opens but nothing happens in game
+    Make sure 1.8.9 is your selected version in Lunar, and that you quit
+    Lunar completely before running the launcher the first time.
+
+The Launch Lunar button is greyed out
+    It works once per open. Quit Cobblify and reopen it to launch again.
+
+
+6. UNINSTALLING
+---------------
+
+The launcher saved a copy of your Lunar settings before touching
+anything. To undo everything it changed, paste this into Terminal:
+
+    cp ~/.lunarclient/settings/launcher.json.bak-cobblify \
+       ~/.lunarclient/settings/launcher.json
+
+Then delete Cobblify Launcher.app, and delete the ~/.weave folder if you
+don't use any other Weave mods.
+
+
+Questions: message Jacob.

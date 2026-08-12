@@ -4,7 +4,13 @@
 #
 # Owner-run, local, Mac. Produces dist-owner/ (gitignored) containing:
 #   * the baked Forge jar, copied as-is
-#   * Cobblify-Lunar-<version>.zip: Weave agent + Lunar jar + both installers
+#   * Cobblify-Lunar-<version>.zip: the Cobblify Launcher .app with the agent
+#     and Lunar jar injected into it, plus those two jars and both installers
+#     loose for anyone who prefers the manual route
+#
+# The launcher is built BLANK - never with a jar inside it - so no build artifact
+# can ever carry the token. This script injects into a COPY in $tmpd, ad-hoc
+# signs that copy, and leaves the build output untouched.
 #
 # The backend URL/token come from ~/.gradle/gradle.properties
 # (cobblifyBackendUrl / cobblifyBackendToken) and are NEVER echoed by this
@@ -38,6 +44,14 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# Launcher injection lives beside the launcher and is shared with
+# launcher/tools/test-injection.sh, which drives it with fake jars so the logic
+# can be proven without a token and without running this script.
+inject_lib="$repo_root/launcher/tools/app-inject-lib.sh"
+[ -f "$inject_lib" ] || die "missing $inject_lib"
+# shellcheck source=../launcher/tools/app-inject-lib.sh
+. "$inject_lib"
 
 forge_build="$repo_root/versions/1.8.9-forge/build"
 lunar_build="$repo_root/lunar/build"
@@ -110,6 +124,34 @@ agent_sha=$(shasum -a 256 "$WEAVE_AGENT_PATH" | awk '{print $1}')
   || die "Weave agent SHA-256 mismatch at $WEAVE_AGENT_PATH - refusing to package an unverified agent"
 echo "weave agent verified: $WEAVE_AGENT_PATH"
 
+# --- preflight: a blank launcher .app has already been built -----------------
+#
+# Deliberately a CHECK, not a build. `npm run tauri build` is a multi-minute
+# release compile with its own toolchain requirements (node, the Tauri CLI, a
+# vite build), and burying it here would make every packaging run pay for it and
+# would report its failures as packaging failures. The owner builds the launcher
+# when the launcher changes; this script refuses to run against a missing one.
+
+app_src="$repo_root/$COBBLIFY_APP_BUILD_DIR/$COBBLIFY_APP_NAME"
+if [ ! -d "$app_src" ]; then
+  die "no launcher build at $app_src
+Build it first:
+  cd \"$repo_root/launcher\" && npm run tauri build -- --bundles app
+(--bundles app skips the .dmg step, which needs Finder automation and is not
+part of this bundle.)"
+fi
+# The build must contain no jar and no manifest: those are injected into a copy
+# below, and a jar inside the checked-out resources dir would be a token-baked
+# artifact sitting in the working tree.
+cobblify_assert_blank_app "$app_src"
+launcher_resources="$repo_root/launcher/src-tauri/resources"
+[ -d "$launcher_resources" ] || die "$launcher_resources is missing - the launcher tree is incomplete"
+checked_out_jars=$(find "$launcher_resources" -type f -name '*.jar' -print)
+[ -z "$checked_out_jars" ] || die "launcher/src-tauri/resources/ contains jar(s):
+$checked_out_jars
+Those are injected at package time and must never sit in the working tree."
+echo "launcher build verified blank: $app_src"
+
 # --- version (read from the Gradle projects, so filenames cannot drift) ------
 
 forge_version=$(sed -n 's/^mod_version=//p' "$repo_root/gradle.properties" | head -1)
@@ -154,6 +196,14 @@ installer_bat="$repo_root/lunar/dist/Install BedwarsQOL (Lunar).bat"
 [ -f "$installer_cmd" ] || die "missing installer: $installer_cmd"
 [ -f "$installer_bat" ] || die "missing installer: $installer_bat"
 
+# The friend-facing instructions ride INSIDE the bundle. A README that only
+# exists in the repo is useless to someone who was DM'd a zip - and the first
+# thing they hit is Gatekeeper blocking the app, which needs the System Settings
+# steps this file spells out.
+# Lives OUTSIDE launcher/dist: Vite's emptyOutDir wipes that dir on every build.
+readme_txt="$repo_root/launcher/friend/READ ME FIRST.txt"
+[ -f "$readme_txt" ] || die "missing friend instructions: $readme_txt"
+
 # --- assemble dist-owner/ ----------------------------------------------------
 
 dist="$repo_root/dist-owner"
@@ -165,30 +215,60 @@ cp "$forge_jar" "$dist/"
 bundle="$dist/Cobblify-Lunar-$version.zip"
 stage="$tmpd/stage"
 mkdir "$stage"
-cp "$WEAVE_AGENT_PATH" "$lunar_jar" "$installer_cmd" "$installer_bat" "$stage/"
-( cd "$stage" && zip -q -X "$bundle" \
+cp "$WEAVE_AGENT_PATH" "$lunar_jar" "$installer_cmd" "$installer_bat" "$readme_txt" "$stage/"
+
+# --- launcher: stage, inject, sign - all inside $tmpd ------------------------
+#
+# The build output is READ ONLY here. Everything below happens to the copy, so a
+# failed run can never leave a token-baked jar inside the tracked-adjacent build
+# tree, and the next `npm run tauri build` is not required to clean up after us.
+
+staged_app="$stage/$COBBLIFY_APP_NAME"
+cp -R "$app_src" "$stage/" || die "could not stage $COBBLIFY_APP_NAME"
+cobblify_assert_blank_app "$staged_app"
+cobblify_inject_app "$staged_app" "$lunar_jar" "$WEAVE_AGENT_PATH" "$version"
+# After injection, never before: adding files invalidates whatever signature the
+# build carried. cobblify_sign_app validates with --verify --deep --strict.
+cobblify_sign_app "$staged_app"
+echo "launcher bundle injected and ad-hoc signed (signature validated)"
+
+# -y stores symlinks instead of following them, -D omits directory entries so
+# the archive listing is exactly the file list compared below.
+( cd "$stage" && zip -q -r -X -y -D "$bundle" \
+    "$COBBLIFY_APP_NAME" \
     "$(basename "$WEAVE_AGENT_PATH")" \
     "$(basename "$lunar_jar")" \
     "Install BedwarsQOL (Lunar).command" \
-    "Install BedwarsQOL (Lunar).bat" ) \
+    "Install BedwarsQOL (Lunar).bat" \
+    "READ ME FIRST.txt" ) \
   || die "zip failed"
 
-# --- assertion: bundle lists exactly the 4 expected entries ------------------
+# --- assertion: the bundle holds exactly the expected paths, no more ---------
+#
+# The expected side is built from the known artifact list (the two installers,
+# the two jars, and the literal blank-bundle layout in app-inject-lib.sh) - NOT
+# by walking $stage. Generating both sides from the staging tree would compare
+# it against itself and accept any unexpected file that got in there.
 
 zipinfo -1 "$bundle" | LC_ALL=C sort > "$tmpd/got_entries" \
   || die "could not list the bundle contents"
-LC_ALL=C sort > "$tmpd/want_entries" <<EOF
-$(basename "$WEAVE_AGENT_PATH")
-$(basename "$lunar_jar")
-Install BedwarsQOL (Lunar).command
-Install BedwarsQOL (Lunar).bat
-EOF
+{
+  printf '%s\n' \
+    "$(basename "$WEAVE_AGENT_PATH")" \
+    "$(basename "$lunar_jar")" \
+    "Install BedwarsQOL (Lunar).command" \
+    "Install BedwarsQOL (Lunar).bat" \
+    "READ ME FIRST.txt"
+  cobblify_app_zip_entries "$COBBLIFY_APP_NAME" \
+    "$(basename "$lunar_jar")" "$(basename "$WEAVE_AGENT_PATH")"
+} | LC_ALL=C sort > "$tmpd/want_entries"
 if ! cmp -s "$tmpd/got_entries" "$tmpd/want_entries"; then
-  echo "error: bundle entry list is not the expected 4 entries:" >&2
+  echo "error: the bundle does not hold exactly the expected paths" >&2
+  echo "  (< expected, > actually in the zip)" >&2
   diff "$tmpd/want_entries" "$tmpd/got_entries" >&2 || true
   exit 1
 fi
-echo "bundle entries verified (4/4)"
+echo "bundle entries verified ($(wc -l < "$tmpd/want_entries" | tr -d '[:space:]') paths, exact match)"
 
 # --- assertion: both jars carry the same non-empty baked url + token ---------
 #
@@ -239,7 +319,33 @@ case "$grep_status" in
   1) ;;
   *) die "grep over the staged diff failed (status $grep_status); refusing to package" ;;
 esac
-echo "hygiene check passed (no tracked file, no staged diff)"
+
+# --- hygiene: no jar under launcher/ is tracked or staged --------------------
+#
+# The two content greps above CANNOT see this. `git grep -I` skips binary files
+# entirely, and `git diff --cached` renders a jar as "Binary files ... differ"
+# with no content to match. A force-added (`git add -f`) token-baked jar would
+# therefore pass both and end up in a public push. Only a PATH check closes it,
+# so this asks the index and the staged name list directly.
+
+git ls-files -- launcher > "$tmpd/tracked_launcher" \
+  || die "git ls-files failed; cannot establish hygiene"
+if grep -Ei '\.jar$' "$tmpd/tracked_launcher" > "$tmpd/tracked_jars"; then
+  echo "error: jar file(s) under launcher/ are TRACKED by git:" >&2
+  sed 's/^/  /' "$tmpd/tracked_jars" >&2
+  echo "  These are token-baked. Run: git rm --cached <path>" >&2
+  exit 1
+fi
+
+git diff --cached --name-only -- launcher > "$tmpd/staged_launcher" \
+  || die "git diff --cached --name-only failed; cannot establish hygiene"
+if grep -Ei '\.jar$' "$tmpd/staged_launcher" > "$tmpd/staged_jars"; then
+  echo "error: jar file(s) under launcher/ are STAGED for commit:" >&2
+  sed 's/^/  /' "$tmpd/staged_jars" >&2
+  exit 1
+fi
+
+echo "hygiene check passed (no tracked file, no staged diff, no jar under launcher/)"
 
 # --- scrub every plaintext intermediate from both builds ---------------------
 #
@@ -258,7 +364,7 @@ echo "plaintext intermediates scrubbed"
 echo
 echo "owner bundle ready:"
 echo "  $dist/$(basename "$forge_jar")"
-echo "  $bundle"
+echo "  $bundle  (contains $COBBLIFY_APP_NAME, both jars, both installers)"
 echo
 echo "Distribute these PRIVATELY (DM). Never attach them to a public GitHub"
 echo "Release - public releases carry only the blank CI jars."
