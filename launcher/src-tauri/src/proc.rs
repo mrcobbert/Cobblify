@@ -42,6 +42,29 @@ pub fn lunar_launcher_pid() -> Option<u32> {
         .map(|(pid, _)| pid.as_u32())
 }
 
+/// True when Lunar's GAME JVM is running: any process whose executable lives
+/// under `~/.lunarclient/jre/` and whose final components are `bin/java`
+/// (component-wise, so `notjava` can never match). Identity comes from the
+/// executable path alone - the game argv carries the live access token and is
+/// never requested, per this file's privacy contract. Consumed by
+/// `lobby_state`: once the game quits, the mod stops writing `lobby.json`, so
+/// the last roster on disk describes a world that no longer exists and must
+/// not be rendered.
+pub fn game_jvm_running(home: &Path) -> bool {
+    let jre_root = home.join(".lunarclient/jre");
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
+    system.processes().iter().any(|(_, process)| {
+        process
+            .exe()
+            .is_some_and(|exe| exe.starts_with(&jre_root) && exe.ends_with("bin/java"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +133,13 @@ mod tests {
     #[test]
     fn pid_lookup_agrees_with_the_boolean() {
         assert_eq!(is_lunar_running(), lunar_launcher_pid().is_some());
+    }
+
+    #[test]
+    fn game_jvm_detection_is_side_effect_free_and_false_off_lunar_jres() {
+        // A home dir that owns no ~/.lunarclient/jre can never host the game
+        // JVM, whatever else runs on this machine.
+        let empty = std::env::temp_dir().join("cobblify-no-such-home");
+        assert!(!game_jvm_running(&empty));
     }
 }

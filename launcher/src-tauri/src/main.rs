@@ -104,13 +104,40 @@ fn status(state: tauri::State<'_, Status>) -> Status {
 /// launcher shows the "Joining Hypixel" interstitial and never an error. The
 /// writer renames a temp file into place, so a partial read is transient and
 /// simply resolves on the next poll.
+///
+/// Staleness, two independent gates, because lobby.json outlives the world it
+/// describes in two ways:
+///  - Between sessions: the file survives on disk, so anything whose mtime
+///    predates this session's launch baseline is a PRIOR session's roster -
+///    the same defence `launch_progress` applies to the hard-linked
+///    `latest.log`. No baseline (launch never fired) is idle too.
+///  - After a quit: the mod only writes on change, so when the game dies the
+///    last roster stays on disk looking fresh. A roster is only real while
+///    Lunar's game JVM is actually running.
 #[tauri::command]
-fn lobby_state() -> serde_json::Value {
+fn lobby_state(state: tauri::State<'_, Mutex<ProgressState>>) -> serde_json::Value {
     let idle = || serde_json::json!({ "context": "MENU", "inHypixel": false });
+    let baseline = {
+        let st = state.lock().unwrap_or_else(|e| e.into_inner());
+        st.baseline
+    };
+    let Some(baseline) = baseline else {
+        return idle();
+    };
     let Ok(home) = home() else {
         return idle();
     };
+    if !proc::game_jvm_running(&home) {
+        return idle();
+    }
     let path = home.join(".cobblify/lobby.json");
+    let fresh = matches!(
+        std::fs::metadata(&path).and_then(|m| m.modified()),
+        Ok(m) if m >= baseline
+    );
+    if !fresh {
+        return idle();
+    }
     let Ok(text) = std::fs::read_to_string(&path) else {
         return idle();
     };

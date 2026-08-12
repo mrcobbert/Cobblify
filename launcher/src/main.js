@@ -159,10 +159,24 @@ function previewInvoke(command) {
     return Promise.resolve();
   }
 
+  if (command === "launch_progress") {
+    const t = previewLaunchAt ? Date.now() - previewLaunchAt : 0;
+    const steps = [
+      [3000, "settled", 100],
+      [2300, "mixing", 85],
+      [1600, "discovered", 60],
+      [900, "attached", 35],
+    ];
+    for (const [ms, s, percent] of steps) {
+      if (t >= ms) return Promise.resolve({ stage: s, percent });
+    }
+    return Promise.resolve({ stage: "fired", percent: 10 });
+  }
+
   if (command === "lobby_state") {
     const t = previewLaunchAt ? Date.now() - previewLaunchAt : 0;
-    // Hold on MENU for a moment after launch so the interstitial shows.
-    if (t < 4000) return Promise.resolve({ context: "MENU", inHypixel: false });
+    // Idle until well after the bar settles, so the homepage-wait shows.
+    if (t < 6000) return Promise.resolve({ context: "MENU", inHypixel: false });
     const which = new URLSearchParams(location.search).get("ctx") || "lobby";
     return Promise.resolve(PREVIEW_LOBBY[which] ?? PREVIEW_LOBBY.lobby);
   }
@@ -209,11 +223,24 @@ function render(status) {
   scene?.setMood(state);
 }
 
-// ── launch → swap the homepage out for the dashboard ────────────────────────
+// ── launch: stay on the homepage, narrate the boot, wait for the server ─────
 // Fires Lunar's official play deep link: the game boots on the active 1.8.9
 // profile and auto-joins Hypixel. The agent lives in Lunar's own config, so
-// Cobblify loads either way. Once fired, the homepage leaves and the dashboard
-// takes over, watching ~/.cobblify/lobby.json for the live roster.
+// Cobblify loads either way. The homepage STAYS - the stepped bar advances off
+// real weave-log milestones - and the dashboard is entered only by applyLobby,
+// the moment lobby.json reports we are actually inside Hypixel. The backend
+// ignores any lobby.json older than this launch, so a stale roster from a
+// prior session can never be what flips the view.
+const STAGE_LABEL = {
+  fired: "Preparing Lunar…",
+  attached: "Weave attached",
+  discovered: "Mods found",
+  mixing: "Loading Cobblify",
+  settled: "In game - joining Hypixel…",
+};
+const PROGRESS_POLL_MS = 600;
+let progressTimer = null;
+
 const launch = el("launch");
 launch.addEventListener("click", async () => {
   const label = el("launch-label");
@@ -233,15 +260,38 @@ launch.addEventListener("click", async () => {
     return;
   }
   label.textContent = "See you in game";
-  enterDashboard();
+  launch.classList.remove("is-loading");
+
+  const progress = el("launch-progress");
+  const fill = el("launch-bar-fill");
+  const stageLabel = el("launch-stage");
+  progress.hidden = false;
+  fill.style.width = "10%";
+  stageLabel.textContent = STAGE_LABEL.fired;
+  progressTimer = setInterval(async () => {
+    let p;
+    try {
+      p = await invoke("launch_progress");
+    } catch {
+      return; // never surface a progress error; try again next tick
+    }
+    if (!p) return;
+    fill.style.width = `${p.percent}%`;
+    stageLabel.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.fired;
+  }, PROGRESS_POLL_MS);
+
+  startLobbyPolling();
 });
 
 // Swap views: the CSS on data-view="dash" hides the homepage copy, drops the
 // voxel to its corner, and reveals the dashboard overlay below the header band.
+// Called exactly once, by applyLobby, on the first FRESH in-Hypixel snapshot.
 function enterDashboard() {
   stage.dataset.view = "dash";
-  joining.classList.add("on");
-  startLobbyPolling();
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
 }
 
 // ── lobby polling ───────────────────────────────────────────────────────────
@@ -269,14 +319,21 @@ async function pollLobby() {
 function applyLobby(d) {
   const ctx = d.context;
   const live = d.inHypixel === true && (ctx === "LOBBY" || ctx === "QUEUE" || ctx === "GAME");
+  const inDash = stage.dataset.view === "dash";
 
   if (!live) {
-    dash.classList.remove("on");
-    joining.classList.add("on");
-    lastKey = null;
+    // Before the first live snapshot the homepage keeps narrating the boot;
+    // after it, a gap (left to the menu, changing lobbies) shows the
+    // interstitial over the dashboard rather than a stale roster.
+    if (inDash) {
+      dash.classList.remove("on");
+      joining.classList.add("on");
+      lastKey = null;
+    }
     return;
   }
 
+  if (!inDash) enterDashboard();
   joining.classList.remove("on");
   const key = `${ctx}:${d.seq ?? ""}`;
   if (key !== lastKey) {
