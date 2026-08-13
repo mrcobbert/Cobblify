@@ -171,6 +171,12 @@ jobs:
           if [ -n "$hits" ]; then
             echo "sysinfo reached outside launcher/src-tauri/src/proc.rs:"; echo "$hits"; exit 1
           fi
+          # A dependency alias (`somename = { package = "sysinfo" }`) would let
+          # code import sysinfo without the literal text - the alias itself
+          # cannot avoid the literal in Cargo.toml, so ban it there.
+          if grep -En 'package\s*=\s*"sysinfo"' launcher/src-tauri/Cargo.toml; then
+            echo "sysinfo must not be aliased in Cargo.toml"; exit 1
+          fi
 
       - name: Update Rust
         run: rustup update --no-self-update stable

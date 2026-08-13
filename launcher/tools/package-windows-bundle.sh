@@ -91,8 +91,10 @@ local_sha=$(git rev-parse HEAD)
 # identify. Scoped to the inputs of the Lunar build (build outputs and the
 # local secret-properties generation live under gitignored build/ and cannot
 # appear here); both tracked modifications and untracked files fail.
+# lunar/gradlew is in the set because this script EXECUTES it - a dirty
+# wrapper could replace the whole build while HEAD still matches.
 jar_input_paths=(lunar/src lunar/build.gradle.kts lunar/settings.gradle.kts \
-  lunar/gradle.properties lunar/gradle common/src)
+  lunar/gradle.properties lunar/gradle lunar/gradlew common/src)
 dirty=$(git status --porcelain -- "${jar_input_paths[@]}")
 [ -z "$dirty" ] || die "jar source inputs differ from the trusted commit:
 $dirty
@@ -210,6 +212,10 @@ bundle="$dist/Cobblify-Windows-$version.zip"
 rm -f "$bundle"
 staged_zip="$tmpd/Cobblify-Windows-$version.zip"
 
+publish_tmp="$dist/.Cobblify-Windows-$version.zip.tmp"
+rm -f "$publish_tmp"
+trap 'scrub_plaintext; rm -rf "$tmpd"; rm -f "$publish_tmp"' EXIT
+
 ( cd "$tmpd/stage" && zip -q -r -X -D "$staged_zip" "$BUNDLE_DIR_NAME" ) || die "zip failed"
 
 zipinfo -1 "$staged_zip" | LC_ALL=C sort > "$tmpd/got_entries" \
@@ -227,7 +233,12 @@ if ! cmp -s "$tmpd/got_entries" "$tmpd/want_entries"; then
   diff "$tmpd/want_entries" "$tmpd/got_entries" >&2 || true
   exit 1
 fi
-mv "$staged_zip" "$bundle" || die "could not publish the verified bundle"
+# mv across filesystems is copy-then-unlink, not atomic - a failure could
+# leave a partial file at the final name. Copy into dist-owner under a temp
+# name (removed by the trap on any failure), then rename on the SAME
+# filesystem, which is atomic.
+cp "$staged_zip" "$publish_tmp" || die "could not stage the verified bundle for publication"
+mv "$publish_tmp" "$bundle" || die "could not publish the verified bundle"
 echo "bundle entries verified (6 paths, exact match)"
 
 # --- done --------------------------------------------------------------------

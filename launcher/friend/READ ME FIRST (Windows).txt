@@ -50,7 +50,8 @@ Quit Lunar Client first, then open Cobblify Launcher. It will:
   - register them with Lunar Client
   - say "Cobblify vX.X.X ready"
 
-Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself.
+Then click LAUNCH LUNAR. It should start the game and join Hypixel by
+itself.
 
 Unlike on Mac, the Lunar launcher window STAYS ON SCREEN on Windows -
 that's expected for now, just ignore it or minimize it.
@@ -59,8 +60,8 @@ The very first time, Lunar may ask you to log in - that window is real,
 log in like you always do. Same goes for Lunar updates.
 
 The button works once per open. To launch again later, reopen Cobblify -
-or just start Lunar normally; Cobblify loads either way, you only miss
-the auto-join.
+or just start Lunar normally; Cobblify should load either way, you only
+miss the auto-join.
 
 
 5. IN GAME
