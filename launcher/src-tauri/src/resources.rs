@@ -32,8 +32,7 @@ pub struct Resources {
 /// internal detail is anything they can act on. A debug build has no non-test reader for
 /// it, which is the whole point of the split.
 #[cfg_attr(debug_assertions, allow(dead_code))]
-const INCOMPLETE_COPY: &str =
-    "This copy of Cobblify is incomplete. Re-download it, and message Jacob if it happens again.";
+const INCOMPLETE_COPY: &str = "This copy is incomplete. Re-download Cobblify.";
 
 /// Debug builds keep the exact path and OS error: that detail is the whole value of the
 /// message to whoever is developing or packaging the app.

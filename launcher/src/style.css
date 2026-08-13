@@ -32,6 +32,8 @@
   --space-xs: 10px;
   --space-sm: 18px;
   --space-md: 28px;
+  /* Homepage edge inset: wordmark on the left, island silhouette on the right. */
+  --page-inset: 52px;
 
   color-scheme: dark;
 }
@@ -102,7 +104,11 @@ body {
   padding: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "copy hero";
   align-items: stretch;
+  container-type: size;
+  background: var(--bg);
 }
 
 .stage[data-state="ready"] {
@@ -115,25 +121,32 @@ body {
   --state: var(--red);
 }
 
-/* Left third: title, version, action — left-aligned with edge padding. */
+/* Left: title, version, action. Transparent so the island and the copy
+   share the stage's black — no clip wall between the two. */
 .copy {
+  grid-area: copy;
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: flex-start;
   gap: var(--space-md);
-  padding: 48px 28px 48px 52px;
+  padding: 48px 24px 48px var(--page-inset);
   text-align: left;
   min-width: 0;
+  background: transparent;
 }
 
-/* Right two-thirds: voxel art centered in its section. */
+/* Voxel fills the whole stage. Copy sits on top; the island may pass
+   behind the words instead of disappearing into a second black box. */
 .hero {
+  grid-area: 1 / 1 / -1 / -1;
   position: relative;
-  min-height: 100%;
+  z-index: 0;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 #hero-canvas {
@@ -143,6 +156,39 @@ body {
   height: 100%;
   display: block;
   pointer-events: none;
+}
+
+/* Tall or narrow window: island on top, copy below. Separate boxes, no overlap. */
+.stage[data-layout="stack"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "hero"
+    "copy";
+}
+.stage[data-layout="stack"] .copy {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 24px 32px 32px;
+}
+.stage[data-layout="stack"] .id,
+.stage[data-layout="stack"] .panel,
+.stage[data-layout="stack"] .state {
+  align-items: center;
+  width: auto;
+  max-width: 100%;
+}
+.stage[data-layout="stack"] .lede,
+.stage[data-layout="stack"] .hint {
+  margin-left: auto;
+  margin-right: auto;
+}
+.stage[data-layout="stack"] .paths {
+  width: min(100%, 42ch);
+}
+.stage[data-layout="stack"] .hero {
+  min-height: 0;
 }
 
 /* ── identity ───────────────────────────────────────────────────────────── */
@@ -157,7 +203,7 @@ body {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(1.85rem, 5.2vw, 2.6rem);
+  font-size: clamp(1.65rem, 6.5cqi, 2.6rem);
   line-height: 1;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -409,8 +455,8 @@ kbd {
 .joining {
   --ink-1: #f4f5f6;
   --ink-2: #aeb0b4;
-  --ink-3: #74767b;
-  --ink-4: #484a4e;
+  --ink-3: #9aa0a8;
+  --ink-4: #8a9098;
   --surf-1: #161719;
   --surf-2: #1b1d1f;
   --surf-3: #232527;
@@ -424,6 +470,17 @@ kbd {
   --content: 780px; /* roster + header cap so wide windows don't stretch rows */
   --header-band: 140px; /* clears the shrunken corner voxel */
   --bg-0: #000000;
+  --mc-red: #ff5555;
+  --mc-blue: #5555ff;
+  --mc-green: #55ff55;
+  --mc-yellow: #ffff55;
+  --mc-aqua: #55ffff;
+  --mc-white: #ffffff;
+  --mc-pink: #ff55ff;
+  --mc-gray: #aaaaaa;
+  --mc-gold: #ffaa00;
+  --mc-darkgreen: #00aa00;
+  --name-shadow: 0 1px 2px #000, 0 0 6px rgba(0, 0, 0, 0.75);
 }
 
 /* ── joining interstitial ───────────────────────────────────────────────── */
@@ -507,16 +564,21 @@ kbd {
   border-radius: 8px;
 }
 
-/* context header — one slim line, sticky at the top of the scroll region */
-.ctx-head {
+/* one sticky row: mode on the left, stat labels aligned with the columns */
+.dash-sticky {
   position: sticky;
   top: 0;
   z-index: 4;
+  background: var(--bg-0);
+}
+.dash-sticky.col-head {
+  padding: 8px 12px 6px;
+}
+.col-head .ctx {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 2px 10px;
-  background: linear-gradient(180deg, var(--bg-0) 62%, transparent);
+  gap: 8px;
+  min-width: 0;
 }
 .live {
   width: 6px;
@@ -541,19 +603,13 @@ kbd {
   text-transform: uppercase;
   color: var(--ink-1);
   font-weight: 600;
+  white-space: nowrap;
 }
 .ctx-sub {
   font-size: 11px;
   color: var(--ink-3);
   letter-spacing: 0.02em;
-}
-.ctx-head .spacer {
-  flex: 1;
-}
-.ctx-note {
-  font-size: 10px;
-  color: var(--ink-4);
-  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 /* section label */
@@ -570,11 +626,6 @@ kbd {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--ink-3);
-}
-.sect .rule {
-  flex: 1;
-  height: 1px;
-  background: var(--line);
 }
 .sect .n {
   font-size: 10px;
@@ -602,31 +653,21 @@ kbd {
   color: var(--ink-4);
   letter-spacing: 0.04em;
 }
-.team-head .rule {
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-}
-.team-head.targeted h3 {
-  color: var(--ink-1);
-}
 .target-badge {
+  margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   font-weight: 700;
-  color: var(--bg-0);
-  background: var(--ink-1);
-  border-radius: 4px;
-  padding: 3px 8px;
+  color: var(--mc-red);
+  background: none;
+  padding: 0;
 }
 
-/* headers + roster share the content cap so columns line up and never stretch */
-.ctx-head,
-.sect,
-.team-head,
-.roster,
-.empty-note {
+/* one content column: header, party, teams/lists all share the same width */
+.sheet {
+  --cols: minmax(0, 1fr) 58px 52px 64px 46px;
+  container-type: inline-size;
   max-width: var(--content);
   margin-left: auto;
   margin-right: auto;
@@ -634,8 +675,6 @@ kbd {
 
 /* roster: name left, stats hug right */
 .roster {
-  --cols: minmax(0, 1fr) 58px 52px 64px 46px;
-  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -695,10 +734,16 @@ kbd {
 }
 .rank {
   font-size: 11px;
-  color: var(--ink-3);
   white-space: nowrap;
   letter-spacing: 0.01em;
 }
+.rank .r-gold { color: var(--mc-gold); text-shadow: var(--name-shadow); }
+.rank .r-red { color: var(--mc-red); text-shadow: var(--name-shadow); }
+.rank .r-aqua { color: var(--mc-aqua); text-shadow: var(--name-shadow); }
+.rank .r-green { color: var(--mc-green); text-shadow: var(--name-shadow); }
+.rank .r-white { color: var(--mc-white); text-shadow: var(--name-shadow); }
+.rank .r-blue { color: var(--mc-blue); text-shadow: var(--name-shadow); }
+.rank .r-darkgreen { color: var(--mc-darkgreen); text-shadow: var(--name-shadow); }
 .pn {
   font-weight: 600;
   font-size: 13.5px;
@@ -796,9 +841,31 @@ kbd {
   background: #fff;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
 }
-.prow.cheater .pn {
-  color: #fff;
-}
+
+/* Hypixel-accurate team colors — names + headers, dark shadow so they hold on black */
+.team-red .team-head h3,
+.team-red .pn { color: var(--mc-red); text-shadow: var(--name-shadow); }
+
+.team-blue .team-head h3,
+.team-blue .pn { color: var(--mc-blue); text-shadow: var(--name-shadow); }
+
+.team-green .team-head h3,
+.team-green .pn { color: var(--mc-green); text-shadow: var(--name-shadow); }
+
+.team-yellow .team-head h3,
+.team-yellow .pn { color: var(--mc-yellow); text-shadow: var(--name-shadow); }
+
+.team-aqua .team-head h3,
+.team-aqua .pn { color: var(--mc-aqua); text-shadow: var(--name-shadow); }
+
+.team-white .team-head h3,
+.team-white .pn { color: var(--mc-white); text-shadow: var(--name-shadow); }
+
+.team-pink .team-head h3,
+.team-pink .pn { color: var(--mc-pink); text-shadow: var(--name-shadow); }
+
+.team-gray .team-head h3,
+.team-gray .pn { color: var(--mc-gray); text-shadow: var(--name-shadow); }
 
 /* loading skeleton */
 .skel {
@@ -832,7 +899,7 @@ kbd {
 
 /* responsive: drop the lowest-signal stats before things get cramped */
 @container (max-width: 520px) {
-  .roster {
+  .sheet {
     --cols: minmax(0, 1fr) 58px 52px;
   }
   .col-head span:nth-child(4),
@@ -843,7 +910,7 @@ kbd {
   }
 }
 @container (max-width: 360px) {
-  .roster {
+  .sheet {
     --cols: minmax(0, 1fr) 58px;
   }
   .col-head span:nth-child(3),
@@ -853,76 +920,18 @@ kbd {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Fit mode — queue + in-game views land on ONE 620px screen, never scrolling.
-   applyLobby stamps data-ctx on .dash, renders, then steps data-density
-   cozy → compact → dense until the content measures inside the window. The
-   lobby view carries neither attribute and keeps its scroll region.
+   Fit mode — every view is one column. applyLobby stamps data-ctx, renders,
+   then steps data-density cozy → compact → dense. If it still doesn't fit,
+   the dash scrolls. Container queries may drop low-signal stats when narrow.
    ═══════════════════════════════════════════════════════════════════════════ */
-.dash[data-ctx="queue"],
-.dash[data-ctx="game"] {
-  overflow-y: hidden;
-  --content: 100%; /* fitting beats the wide-window cap: use the full width */
-}
-
-/* Every stat column stays: fit mode narrows them instead of dropping them,
-   overriding the container-query fallbacks above. */
-.dash[data-ctx="queue"] .col-head span,
-.dash[data-ctx="game"] .col-head span {
-  display: inline;
-}
-.dash[data-ctx="queue"] .stat,
-.dash[data-ctx="game"] .stat {
-  display: block;
-}
-
-/* Two-up layouts: a >8-player queue roster splits in half, and game teams sit
-   in a 2-col grid. Sweat order still reads top-to-bottom, left column first. */
-.roster-duo,
-.team-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  column-gap: 18px;
-  align-items: start;
-}
-.team-grid > .team {
-  min-width: 0;
-}
-.team-grid > .team:only-child {
-  grid-column: 1 / -1;
-}
-
-/* Half-width rosters: tighter stat columns, and flags wrap under the name
-   instead of squeezing it out. width: 100% keeps the duo's grid items from
-   shrink-wrapping under the content cap's auto margins. */
-.roster-duo .roster,
-.team-grid .roster {
-  --cols: minmax(0, 1fr) 44px 40px 52px 34px;
-  width: 100%;
-}
-.roster-duo .prow,
-.roster-duo .col-head,
-.team-grid .prow,
-.team-grid .col-head {
-  gap: 8px;
-}
-.roster-duo .pname,
-.team-grid .pname,
-.roster-duo .flags-inline,
-.team-grid .flags-inline {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
 
 /* density step 1: compact */
-.dash[data-density="compact"] .ctx-head {
-  padding: 5px 2px 7px;
+.dash[data-density="compact"] .dash-sticky.col-head {
+  padding: 5px 10px 4px;
 }
 .dash[data-density="compact"] .sect,
 .dash[data-density="compact"] .team-head {
   margin: 8px 2px 3px;
-}
-.dash[data-density="compact"] .col-head {
-  padding: 2px 10px 4px;
 }
 .dash[data-density="compact"] .prow {
   padding: 4px 10px;
@@ -945,8 +954,8 @@ kbd {
 }
 
 /* density step 2: dense — the 16-player worst case */
-.dash[data-density="dense"] .ctx-head {
-  padding: 4px 2px 6px;
+.dash[data-density="dense"] .dash-sticky.col-head {
+  padding: 4px 8px 2px;
 }
 .dash[data-density="dense"] .sect,
 .dash[data-density="dense"] .team-head {
@@ -994,7 +1003,6 @@ kbd {
 }
 .dash[data-density="dense"] .target-badge {
   font-size: 8px;
-  padding: 2px 6px;
 }
 .dash[data-density="dense"] .skel {
   height: 8px;
@@ -1037,13 +1045,8 @@ kbd {
   --tuck-dx: -4px; /* homepage title x (52px) minus the pin, so the fly-in starts in place */
   height: 120px; /* the hero's corner box: justify-content centers the wordmark on it */
   padding: 0;
+  background: transparent;
   transition: left 0.45s var(--ease); /* glide when the context switches the pin */
-}
-/* Fit views span the full window, so their text edge sits further left. */
-.stage[data-view="dash"]:has(.dash[data-ctx="queue"]) .copy,
-.stage[data-view="dash"]:has(.dash[data-ctx="game"]) .copy {
-  left: 20px;
-  --tuck-dx: 32px;
 }
 /* The wordmark's corner tuck: flies in from its homepage spot and shrinks,
    on the same clip as the state fades. */
@@ -1077,8 +1080,9 @@ kbd {
   from {
     top: 0;
     right: 0;
-    width: 66.667vw;
-    height: 100vh;
+    left: 0;
+    width: 100%;
+    height: 100%;
   }
 }
 .stage[data-view="dash"] .joining {
@@ -1086,4 +1090,152 @@ kbd {
 }
 .stage[data-view="dash"] .dash {
   display: block;
+}
+
+/* ── browser preview chrome (injected only when Tauri is absent) ─────────── */
+.preview-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 12px;
+  background: #0e1116;
+  border-bottom: 1px solid rgba(150, 178, 214, 0.18);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.preview-bar .preview-size,
+.preview-bar .preview-group {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 9px;
+}
+.preview-bar .preview-size {
+  color: var(--aqua);
+}
+.preview-bar .preview-group {
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(150, 178, 214, 0.18);
+}
+.preview-bar button {
+  appearance: none;
+  border: 1px solid rgba(150, 178, 214, 0.22);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  cursor: pointer;
+}
+.preview-bar button:hover {
+  color: var(--text);
+  border-color: rgba(150, 178, 214, 0.45);
+}
+.preview-bar button.on {
+  color: #04120f;
+  background: var(--aqua);
+  border-color: var(--aqua);
+}
+body.previewing {
+  background: #07080a;
+  overflow: hidden;
+}
+body.previewing .stage {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  outline: 1px solid rgba(150, 178, 214, 0.22);
+}
+
+.preview-window {
+  position: absolute;
+  z-index: 45;
+  width: 900px;
+  height: 620px;
+  overflow: visible;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.55);
+}
+.preview-move {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: #0e1116;
+  border: 1px solid rgba(150, 178, 214, 0.2);
+  border-bottom: none;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.preview-move:active {
+  cursor: grabbing;
+}
+.preview-move .preview-size {
+  color: var(--aqua);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.preview-resize {
+  position: absolute;
+  right: -11px;
+  bottom: -11px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(47, 240, 212, 0.4);
+  border-radius: 10px 2px 10px 4px;
+  background: #0e1116;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  cursor: nwse-resize;
+  z-index: 8;
+  touch-action: none;
+  outline: none;
+}
+.preview-resize:hover,
+.preview-window.is-resizing .preview-resize {
+  border-color: var(--aqua);
+  background: #12201c;
+}
+.preview-resize::before,
+.preview-resize::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  border: solid rgba(47, 240, 212, 0.75);
+  border-width: 0 2px 2px 0;
+  pointer-events: none;
+}
+.preview-resize::before {
+  width: 14px;
+  height: 14px;
+}
+.preview-resize::after {
+  width: 7px;
+  height: 7px;
+  opacity: 0.7;
+}
+body.previewing.is-dragging {
+  cursor: grabbing;
+  user-select: none;
 }

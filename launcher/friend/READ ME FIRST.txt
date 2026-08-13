@@ -76,17 +76,17 @@ missing. This is per-profile, so if you switch profiles, check again.
 5. IF SOMETHING GOES WRONG
 --------------------------
 
-"Quit Lunar Client so Cobblify can finish setup"
+"Quit Lunar"
     Lunar is still running. Quit it fully with Cmd+Q, then reopen the
     launcher. Lunar overwrites its own settings when it closes, so
     Cobblify waits rather than fighting it.
 
-"Another Cobblify jar is in ~/.weave/mods/"
+"Conflicting jars"
     You have more than one version installed. The launcher lists them
-    and will not delete anything it didn't put there. Remove the one you
-    don't want, then reopen the launcher.
+    and will not delete anything it didn't put there. Remove the extra
+    one, then reopen the launcher.
 
-"This copy of Cobblify is incomplete"
+"This copy is incomplete"
     The download didn't finish or got corrupted. Download it again.
 
 The app opens but nothing happens in game

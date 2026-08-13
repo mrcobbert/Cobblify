@@ -13,10 +13,8 @@ import island from "./island.json";
  * is modelled finer than a block - so the whole island costs three draw calls.
  */
 
-// One Minecraft block, in world units. Hand-tuned so the island fills the
-// window's height at every angle it turns through. The frustum is 5.9 units
-// tall; the model reads as ~43 blocks tall once the isometric tilt folds its
-// 24-block footprint into the silhouette.
+// One Minecraft block, in world units. Homepage framing measures the rotating
+// silhouette and pins it to --page-inset; VIEW below is only the dash corner.
 const CELL = 0.13;
 // Cubes meet exactly. They used to be inset slightly to leave a seam, but a
 // real island is one block thick almost everywhere - 82% of it is thin along
@@ -166,9 +164,46 @@ function glowTexture() {
   return texture;
 }
 
+const BOB = 0.07;
+
+/** World-space points that define the island silhouette: voxel centres + bed corners. */
+function islandPoints() {
+  const pts = [];
+  const pack = (src) => {
+    for (let i = 0; i < src.length; i += 4) {
+      pts.push(src[i] * CELL, src[i + 1] * CELL, src[i + 2] * CELL);
+    }
+  };
+  pack(island.solid);
+  pack(island.glow);
+  const bedUnit = CELL / island.bedScale;
+  for (const box of island.bedBoxes) {
+    const cx = (box.min[0] + (box.size[0] - 1) / 2) * bedUnit;
+    const cy = (box.min[1] + (box.size[1] - 1) / 2) * bedUnit;
+    const cz = (box.min[2] + (box.size[2] - 1) / 2) * bedUnit;
+    const hw = (box.size[0] * bedUnit) / 2;
+    const hh = (box.size[1] * bedUnit) / 2;
+    const hd = (box.size[2] * bedUnit) / 2;
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          pts.push(cx + sx * hw, cy + sy * hh, cz + sz * hd);
+        }
+      }
+    }
+  }
+  return pts;
+}
+
+function pageInsetPx(el) {
+  const raw = getComputedStyle(el).getPropertyValue("--page-inset");
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : 52;
+}
+
 /**
  * @param {HTMLCanvasElement} canvas
- * @returns {{ setMood(name: string): void, dispose(): void }|null} null if WebGL is unavailable
+ * @returns {{ setMood(name: string): void, relayout(): void, dispose(): void }|null} null if WebGL is unavailable
  */
 export function createHeroScene(canvas) {
   let renderer;
@@ -197,10 +232,56 @@ export function createHeroScene(canvas) {
   const scene = new THREE.Scene();
 
   // Orthographic: a true isometric read, and nothing warps as the window resizes.
-  const VIEW = 2.95; // half-height of the frustum, in world units
+  const VIEW = 2.95; // dash corner only: half-height of the frustum, in world units
   const camera = new THREE.OrthographicCamera(-VIEW, VIEW, VIEW, -VIEW, 0.1, 60);
   camera.position.set(9, 7.4, 9);
   camera.lookAt(0, 0, 0); // the extractor centres the model on the origin
+  camera.updateMatrixWorld(true);
+
+  const points = islandPoints();
+  const inv = camera.matrixWorldInverse.elements;
+  const axes = camera.matrixWorld.elements;
+  const cornerPadX =
+    (CELL / 2) * (Math.abs(axes[0]) + Math.abs(axes[1]) + Math.abs(axes[2]));
+  const cornerPadY =
+    (CELL / 2) * (Math.abs(axes[4]) + Math.abs(axes[5]) + Math.abs(axes[6]));
+
+  function measure(yaw) {
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < points.length; i += 3) {
+      const x = points[i] * cos + points[i + 2] * sin;
+      const y = points[i + 1];
+      const z = -points[i] * sin + points[i + 2] * cos;
+      const vx = inv[0] * x + inv[4] * y + inv[8] * z + inv[12];
+      const vy = inv[1] * x + inv[5] * y + inv[9] * z + inv[13];
+      if (vx < minX) minX = vx;
+      if (vx > maxX) maxX = vx;
+      if (vy < minY) minY = vy;
+      if (vy > maxY) maxY = vy;
+    }
+    return {
+      minX: minX - cornerPadX,
+      maxX: maxX + cornerPadX,
+      minY: minY - cornerPadY,
+      maxY: maxY + cornerPadY,
+    };
+  }
+
+  let sweepW = 0;
+  let sweepH = 0;
+  let sweepMaxX = -Infinity;
+  for (let i = 0; i < 48; i++) {
+    const b = measure((i / 48) * Math.PI * 2);
+    sweepW = Math.max(sweepW, b.maxX - b.minX);
+    sweepH = Math.max(sweepH, b.maxY - b.minY);
+    sweepMaxX = Math.max(sweepMaxX, b.maxX);
+  }
+  sweepH += 2 * BOB;
 
   const world = new THREE.Group();
   scene.add(world);
@@ -324,10 +405,59 @@ export function createHeroScene(canvas) {
 
   function frame() {
     world.rotation.y = t * 0.11;
-    world.position.y = Math.sin(t * 0.62) * 0.07;
+    world.position.y = Math.sin(t * 0.62) * BOB;
     world.rotation.z = Math.sin(t * 0.37) * 0.011;
     bedGlow.material.opacity = 0.32 + Math.sin(t * 1.1) * 0.05;
     renderer.render(scene, camera);
+  }
+
+  function applyFrame() {
+    const w = canvas.clientWidth || 1;
+    const h = canvas.clientHeight || 1;
+    const stage = canvas.closest(".stage");
+    const view = stage?.dataset.view;
+    const layout = stage?.dataset.layout;
+
+    if (view === "dash") {
+      const aspect = w / h;
+      camera.left = -VIEW * aspect;
+      camera.right = VIEW * aspect;
+      camera.top = VIEW;
+      camera.bottom = -VIEW;
+      camera.updateProjectionMatrix();
+      return;
+    }
+
+    if (layout === "stack") {
+      const copy = stage?.querySelector(".copy");
+      const copyH = copy?.offsetHeight ?? 0;
+      const slotH = Math.max(1, h - copyH);
+      const pad = 16;
+      const pxPerWorld = Math.max(
+        1e-6,
+        Math.min((w - 2 * pad) / sweepW, (slotH - 2 * pad) / sweepH),
+      );
+      const worldW = w / pxPerWorld;
+      const worldH = h / pxPerWorld;
+      camera.left = -worldW / 2;
+      camera.right = worldW / 2;
+      camera.top = ((slotH / 2) / h) * worldH;
+      camera.bottom = camera.top - worldH;
+    } else {
+      const inset = pageInsetPx(stage || document.documentElement);
+      const vPad = 16;
+      const pxPerWorld = Math.max(
+        1e-6,
+        Math.min((h - 2 * vPad) / sweepH, Math.max(1, w - inset) / sweepW),
+      );
+      const worldW = w / pxPerWorld;
+      const worldH = h / pxPerWorld;
+      camera.top = worldH / 2;
+      camera.bottom = -worldH / 2;
+      camera.right = sweepMaxX + inset / pxPerWorld;
+      camera.left = camera.right - worldW;
+    }
+    camera.updateProjectionMatrix();
   }
 
   function tick() {
@@ -348,17 +478,21 @@ export function createHeroScene(canvas) {
   }
 
   function resize() {
-    const w = canvas.clientWidth || 1;
-    const h = canvas.clientHeight || 1;
-    const aspect = w / h;
-    camera.left = -VIEW * aspect;
-    camera.right = VIEW * aspect;
-    camera.top = VIEW;
-    camera.bottom = -VIEW;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
+    const w = Math.max(1, Math.round(canvas.clientWidth));
+    const h = Math.max(1, Math.round(canvas.clientHeight));
+    if (w !== lastW || h !== lastH) {
+      lastW = w;
+      lastH = h;
+      renderer.setSize(w, h, false);
+    }
+    applyFrame();
+    // Paint before the browser composites. setSize clears the drawing buffer;
+    // waiting for the animation loop is the resize flash.
     frame();
   }
+
+  let lastW = 0;
+  let lastH = 0;
 
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
@@ -379,6 +513,9 @@ export function createHeroScene(canvas) {
       if (!mood) return;
       rim.color.setHex(mood.rim);
       if (!running) frame();
+    },
+    relayout() {
+      resize();
     },
     dispose() {
       stop();

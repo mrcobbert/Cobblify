@@ -16,7 +16,9 @@
         "title": "Cobblify",
         "width": 900,
         "height": 620,
-        "resizable": false
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true
       }
     ],
     "security": {

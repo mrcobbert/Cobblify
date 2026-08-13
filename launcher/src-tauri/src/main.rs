@@ -63,7 +63,7 @@ fn start_up(app: &tauri::AppHandle) -> Status {
     if !installed.conflicts.is_empty() {
         return Status {
             state: "blocked",
-            message: "Another Cobblify jar is in ~/.weave/mods/. Remove the one you do not want, then reopen Cobblify.".to_string(),
+            message: "Remove the extra one, then reopen.".to_string(),
             mod_version: Some(version),
             conflicts: installed
                 .conflicts
@@ -83,8 +83,7 @@ fn start_up(app: &tauri::AppHandle) -> Status {
         },
         Err(lunar_config::RegisterError::LunarRunning) => Status {
             state: "blocked",
-            message: "Quit Lunar Client so Cobblify can finish setup, then reopen this app."
-                .to_string(),
+            message: "Then reopen Cobblify.".to_string(),
             mod_version: Some(version),
             conflicts: Vec::new(),
         },
