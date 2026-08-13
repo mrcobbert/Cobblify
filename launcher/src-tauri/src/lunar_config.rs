@@ -112,12 +112,19 @@ fn not_an_object(path: &Path) -> String {
     )
 }
 
-/// Fail-closed pre-write gate for the never-observed Windows schema. The Mac
-/// writer tolerates absent `settings`/keys because that shape was VERIFIED
-/// there; on Windows the same tolerance would rewrite an unknown schema and
-/// report ready. Defined on every platform so its tests run everywhere;
-/// called only on Windows, before `back_up_once` and `write_atomic`, so a
-/// refusal provably leaves the file and any backup state untouched.
+/// Fail-closed pre-write gate for the Windows schema. Defined on every
+/// platform so its tests run everywhere; called only on Windows, before
+/// `back_up_once` and `write_atomic`, so a refusal provably leaves the file
+/// and any backup state untouched.
+///
+/// OBSERVED on a real Windows machine 2026-08-13 (the first sighting): the
+/// file exists at the expected path, parses, and holds a populated `settings`
+/// object - but a fresh install has NO jvm keys at all; Lunar's launcher UI
+/// creates `jvmArgs` (camelCase only) the first time arguments are set.
+/// Absent keys are therefore a verified-legitimate state and are accepted
+/// exactly as on the Mac (the writer creates both spellings). A missing
+/// `settings` object, non-string keys, and divergent values remain refused -
+/// those shapes have still never been seen.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
     let obj = root.as_object().ok_or_else(|| not_an_object(path))?;
@@ -146,12 +153,6 @@ fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
                 ))
             }
         }
-    }
-    if values.is_empty() {
-        return Err(format!(
-            "{} has no jvm-args or jvmArgs entry, which this version of Cobblify has never seen on Windows. Cobblify will not overwrite it - send a screenshot of this message.",
-            path.display()
-        ));
     }
     let nonempty: Vec<&&str> = values.iter().filter(|s| !s.is_empty()).collect();
     if nonempty.len() == 2 && nonempty[0] != nonempty[1] {
@@ -309,10 +310,10 @@ mod tests {
 
     const AGENT: &str = "/Users/tester/.weave/Weave-Loader-Agent-1.3.3.jar";
 
-    /// Mac semantics, VERIFIED 2026-08-04: absent keys are valid empty input.
-    /// On Windows the schema guard refuses this same shape (never observed
-    /// there); the twin below locks that refusal.
-    #[cfg(not(windows))]
+    /// Absent keys are valid empty input on BOTH platforms: verified on Mac
+    /// 2026-08-04, and observed as the normal fresh-install state on a real
+    /// Windows machine 2026-08-13 (Lunar creates `jvmArgs` only when args
+    /// are first set).
     #[test]
     fn absent_jvm_args_gets_only_our_agent() {
         let f = Fixture::new(r#"{"settings":{"resolution":"1920x1080"}}"#);
@@ -323,17 +324,6 @@ mod tests {
         // Unrelated settings survive.
         let value: Value = serde_json::from_str(&fs::read_to_string(&f.json).unwrap()).unwrap();
         assert_eq!(value["settings"]["resolution"], "1920x1080");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_refuses_absent_jvm_keys_and_changes_nothing() {
-        let original = r#"{"settings":{"resolution":"1920x1080"}}"#;
-        let f = Fixture::new(original);
-        let err = apply(&f.json, Path::new(AGENT)).unwrap_err();
-        assert!(err.contains("no jvm-args or jvmArgs"), "{err}");
-        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
-        assert!(!f.backup().exists(), "a refused file must not be backed up");
     }
 
     #[cfg(not(windows))]
@@ -465,37 +455,9 @@ mod tests {
         assert_eq!(dashed, format!("-Xmx4G -javaagent:{AGENT}"));
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn no_temp_file_is_left_behind() {
         let f = Fixture::new(r#"{"settings":{}}"#);
-        apply(&f.json, Path::new(AGENT)).unwrap();
-        assert!(!f
-            .json
-            .with_file_name(".launcher.json.cobblify-tmp")
-            .exists());
-    }
-
-    /// The exact bytes of the Mac `no_temp_file_is_left_behind` fixture,
-    /// through the guarded `apply` path: `{"settings":{}}` has both keys
-    /// absent, so Windows must refuse it, changing nothing.
-    #[cfg(windows)]
-    #[test]
-    fn windows_refuses_an_empty_settings_object_and_changes_nothing() {
-        let original = r#"{"settings":{}}"#;
-        let f = Fixture::new(original);
-        let err = apply(&f.json, Path::new(AGENT)).unwrap_err();
-        assert!(err.contains("no jvm-args or jvmArgs"), "{err}");
-        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
-        assert!(!f.backup().exists(), "a refused file must not be backed up");
-    }
-
-    /// The Windows guard refuses `{"settings":{}}` (both keys absent), so the
-    /// no-temp invariant is asserted on an ACCEPTED shape instead.
-    #[cfg(windows)]
-    #[test]
-    fn no_temp_file_is_left_behind_on_an_accepted_shape() {
-        let f = Fixture::new(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx4G"}}"#);
         apply(&f.json, Path::new(AGENT)).unwrap();
         assert!(!f
             .json
@@ -515,11 +477,6 @@ mod tests {
     fn schema_guard_refuses_every_unverified_shape() {
         assert!(guard(r#"{"version":3}"#).is_err(), "absent settings");
         assert!(guard(r#"{"settings":"nope"}"#).is_err(), "non-object settings");
-        assert!(guard(r#"{"settings":{}}"#).is_err(), "both keys absent");
-        assert!(
-            guard(r#"{"settings":{"jvm-args":null,"jvmArgs":null}}"#).is_err(),
-            "null-only keys are absent keys"
-        );
         assert!(
             guard(r#"{"settings":{"jvm-args":["-Xmx4G"]}}"#).is_err(),
             "non-string key"
@@ -539,6 +496,14 @@ mod tests {
             "empty-vs-value matches the Mac read semantics"
         );
         assert!(guard(r#"{"settings":{"jvm-args":"","jvmArgs":""}}"#).is_ok());
+        assert!(
+            guard(r#"{"settings":{}}"#).is_ok(),
+            "fresh install: no jvm keys yet - OBSERVED on real Windows 2026-08-13"
+        );
+        assert!(
+            guard(r#"{"settings":{"jvm-args":null,"jvmArgs":null}}"#).is_ok(),
+            "null keys read as absent"
+        );
     }
 
     // The register seam: refusal ORDER is the contract. An undeterminable
