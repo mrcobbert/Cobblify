@@ -163,11 +163,13 @@ jobs:
       # in the crate allowed to touch sysinfo (the game JVM's argv carries a
       # live Minecraft access token; see launcher/src-tauri/src/proc.rs).
       # Exact full-path allowlist: a nested proc.rs or a notproc.rs must NOT
-      # slip through a suffix match.
+      # slip through a suffix match. Matches USAGE (use/extern/path syntax),
+      # not prose - doc comments elsewhere may mention the crate by name.
       - name: Enforce the sysinfo containment boundary
         shell: bash
         run: |
-          hits=$(grep -rl sysinfo launcher/src-tauri/src --include='*.rs' | grep -vx 'launcher/src-tauri/src/proc.rs' || true)
+          hits=$(grep -rlE 'use[[:space:]]+(::)?sysinfo|extern[[:space:]]+crate[[:space:]]+sysinfo|sysinfo[[:space:]]*::' \
+              launcher/src-tauri/src --include='*.rs' | grep -vx 'launcher/src-tauri/src/proc.rs' || true)
           if [ -n "$hits" ]; then
             echo "sysinfo reached outside launcher/src-tauri/src/proc.rs:"; echo "$hits"; exit 1
           fi

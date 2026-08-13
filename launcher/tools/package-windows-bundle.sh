@@ -72,13 +72,16 @@ trap 'scrub_plaintext; rm -rf "$tmpd"' EXIT
 trusted_sha=$(git rev-parse --verify --quiet "${trusted_ref}^{commit}") \
   || die "'$trusted_ref' is not a commit this checkout knows"
 
-run_status=$(gh run view "$run_id" --json status --jq .status) \
+# Gate on the job that PRODUCES the exe, not the whole run: the mod-build
+# jobs in the same workflow take 20+ minutes (LaneContrastTest) and are
+# irrelevant to this artifact's provenance.
+job_state=$(gh run view "$run_id" --json jobs \
+    --jq '.jobs[] | select(.name == "Launcher (Windows)") | "\(.status) \(.conclusion)"') \
   || die "could not read CI run $run_id (is the run id right, and gh logged in?)"
-run_conclusion=$(gh run view "$run_id" --json conclusion --jq .conclusion)
+[ -n "$job_state" ] || die "CI run $run_id has no 'Launcher (Windows)' job"
+[ "$job_state" = "completed success" ] \
+  || die "CI run $run_id: Launcher (Windows) job is '$job_state', not 'completed success'"
 run_sha=$(gh run view "$run_id" --json headSha --jq .headSha)
-
-[ "$run_status" = "completed" ] || die "CI run $run_id has status '$run_status', not completed"
-[ "$run_conclusion" = "success" ] || die "CI run $run_id concluded '$run_conclusion', not success"
 [ "$run_sha" = "$trusted_sha" ] \
   || die "CI run $run_id built $run_sha but the trusted commit is $trusted_sha - refusing"
 
