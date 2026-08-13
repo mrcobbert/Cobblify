@@ -304,6 +304,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn undeletable_crash_leftover_fails_loudly_not_silently() {
+        use std::os::windows::fs::OpenOptionsExt;
+
         let src = tempfile::tempdir().unwrap();
         let weave = tempfile::tempdir().unwrap();
         let res = bundle(src.path(), b"mod", b"agent");
@@ -313,16 +315,19 @@ mod tests {
             .path()
             .join("mods/.Cobblify-Lunar-0.8.1.jar.cobblify-tmp");
         fs::write(&tmp, b"crash leftover").unwrap();
-        let mut perms = fs::metadata(&tmp).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&tmp, perms.clone()).unwrap();
+        // A read-only attribute no longer blocks deletion (modern Rust uses
+        // POSIX delete semantics on Windows 10+ and clears it - measured on
+        // the CI runner), so simulate the REAL undeletable case: a handle
+        // held open with no share access, like a file another process owns.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&tmp)
+            .unwrap();
 
         let err = install(&res, weave.path()).unwrap_err();
         assert!(err.contains("cobblify-tmp"), "{err}");
-
-        // Restore so the temp dir can clean itself up.
-        perms.set_readonly(false);
-        fs::set_permissions(&tmp, perms).unwrap();
+        drop(lock);
     }
 
     #[cfg(windows)]
