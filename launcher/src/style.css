@@ -358,8 +358,16 @@ kbd {
 }
 
 /* ── entrance ───────────────────────────────────────────────────────────── */
+/* Held until main.js stamps .lit, right after the voxel scene boots. The boot
+   compiles every shader synchronously - ~0.5s on WKWebView with a cold Metal
+   shader cache - and the static page can paint before that module runs, so
+   unconditional animations would visibly freeze mid-rise. Nothing moves until
+   the expensive part is behind us. */
 .reveal {
   opacity: 0;
+}
+
+.stage.lit .reveal {
   animation: rise 0.75s var(--ease) forwards;
   animation-delay: var(--d, 0ms);
 }
@@ -845,9 +853,162 @@ kbd {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Fit mode — queue + in-game views land on ONE 620px screen, never scrolling.
+   applyLobby stamps data-ctx on .dash, renders, then steps data-density
+   cozy → compact → dense until the content measures inside the window. The
+   lobby view carries neither attribute and keeps its scroll region.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dash[data-ctx="queue"],
+.dash[data-ctx="game"] {
+  overflow-y: hidden;
+  --content: 100%; /* fitting beats the wide-window cap: use the full width */
+}
+
+/* Every stat column stays: fit mode narrows them instead of dropping them,
+   overriding the container-query fallbacks above. */
+.dash[data-ctx="queue"] .col-head span,
+.dash[data-ctx="game"] .col-head span {
+  display: inline;
+}
+.dash[data-ctx="queue"] .stat,
+.dash[data-ctx="game"] .stat {
+  display: block;
+}
+
+/* Two-up layouts: a >8-player queue roster splits in half, and game teams sit
+   in a 2-col grid. Sweat order still reads top-to-bottom, left column first. */
+.roster-duo,
+.team-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 18px;
+  align-items: start;
+}
+.team-grid > .team {
+  min-width: 0;
+}
+.team-grid > .team:only-child {
+  grid-column: 1 / -1;
+}
+
+/* Half-width rosters: tighter stat columns, and flags wrap under the name
+   instead of squeezing it out. width: 100% keeps the duo's grid items from
+   shrink-wrapping under the content cap's auto margins. */
+.roster-duo .roster,
+.team-grid .roster {
+  --cols: minmax(0, 1fr) 44px 40px 52px 34px;
+  width: 100%;
+}
+.roster-duo .prow,
+.roster-duo .col-head,
+.team-grid .prow,
+.team-grid .col-head {
+  gap: 8px;
+}
+.roster-duo .pname,
+.team-grid .pname,
+.roster-duo .flags-inline,
+.team-grid .flags-inline {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+/* density step 1: compact */
+.dash[data-density="compact"] .ctx-head {
+  padding: 5px 2px 7px;
+}
+.dash[data-density="compact"] .sect,
+.dash[data-density="compact"] .team-head {
+  margin: 8px 2px 3px;
+}
+.dash[data-density="compact"] .col-head {
+  padding: 2px 10px 4px;
+}
+.dash[data-density="compact"] .prow {
+  padding: 4px 10px;
+  line-height: 1.45;
+}
+.dash[data-density="compact"] .pn {
+  font-size: 12.5px;
+}
+.dash[data-density="compact"] .rank {
+  font-size: 10px;
+}
+.dash[data-density="compact"] .stat {
+  font-size: 11.5px;
+}
+.dash[data-density="compact"] .sweat-bar {
+  min-height: 15px;
+}
+.dash[data-density="compact"] .empty-note {
+  padding: 4px;
+}
+
+/* density step 2: dense — the 16-player worst case */
+.dash[data-density="dense"] .ctx-head {
+  padding: 4px 2px 6px;
+}
+.dash[data-density="dense"] .sect,
+.dash[data-density="dense"] .team-head {
+  margin: 6px 2px 2px;
+}
+.dash[data-density="dense"] .sect h3 {
+  font-size: 9px;
+}
+.dash[data-density="dense"] .team-head h3 {
+  font-size: 10px;
+}
+.dash[data-density="dense"] .sect .n,
+.dash[data-density="dense"] .team-head .agg {
+  font-size: 9px;
+}
+.dash[data-density="dense"] .col-head {
+  font-size: 8.5px;
+  padding: 0 8px 2px;
+}
+.dash[data-density="dense"] .roster {
+  gap: 1px;
+}
+.dash[data-density="dense"] .prow {
+  padding: 2px 8px;
+  line-height: 1.35;
+}
+.dash[data-density="dense"] .pn {
+  font-size: 11.5px;
+}
+.dash[data-density="dense"] .rank {
+  font-size: 9.5px;
+}
+.dash[data-density="dense"] .identity {
+  gap: 5px;
+}
+.dash[data-density="dense"] .stat {
+  font-size: 10.5px;
+}
+.dash[data-density="dense"] .sweat-bar {
+  min-height: 13px;
+}
+.dash[data-density="dense"] .chip {
+  font-size: 8px;
+  padding: 1px 4px;
+}
+.dash[data-density="dense"] .target-badge {
+  font-size: 8px;
+  padding: 2px 6px;
+}
+.dash[data-density="dense"] .skel {
+  height: 8px;
+}
+.dash[data-density="dense"] .empty-note {
+  font-size: 10px;
+  padding: 2px 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    View switch — homepage vs dashboard. A clean swap, not a morph: on launch the
-   homepage copy leaves entirely and the voxel drops to a small corner; the
-   dashboard overlay fades in below the reserved header band.
+   homepage copy leaves, the wordmark tucks itself into the top-left corner as
+   the voxel drops to the top-right, and the dashboard overlay fades in below
+   the reserved header band.
    ═══════════════════════════════════════════════════════════════════════════ */
 .joining,
 .dash {
@@ -856,9 +1017,51 @@ kbd {
 .stage[data-view="dash"] {
   display: block;
 }
-.stage[data-view="dash"] .copy {
+.stage[data-view="dash"] .panel {
   display: none;
 }
+/* The version chip rides shotgun: the id header turns into a row so the chip
+   sits beside the wordmark, fading in as the tuck settles. */
+.stage[data-view="dash"] .id {
+  flex-direction: row;
+  align-items: center;
+}
+.stage[data-view="dash"] .id .chip {
+  opacity: 1;
+  animation: fade 0.45s var(--ease) 0.2s both;
+}
+.stage[data-view="dash"] .copy {
+  position: absolute;
+  top: 12px;
+  left: 56px; /* the lobby's capped content edge, so the wordmark lines up with it */
+  --tuck-dx: -4px; /* homepage title x (52px) minus the pin, so the fly-in starts in place */
+  height: 120px; /* the hero's corner box: justify-content centers the wordmark on it */
+  padding: 0;
+  transition: left 0.45s var(--ease); /* glide when the context switches the pin */
+}
+/* Fit views span the full window, so their text edge sits further left. */
+.stage[data-view="dash"]:has(.dash[data-ctx="queue"]) .copy,
+.stage[data-view="dash"]:has(.dash[data-ctx="game"]) .copy {
+  left: 20px;
+  --tuck-dx: 32px;
+}
+/* The wordmark's corner tuck: flies in from its homepage spot and shrinks,
+   on the same clip as the state fades. */
+.stage[data-view="dash"] .wordmark {
+  font-size: 22px;
+  opacity: 1;
+  transform-origin: top left;
+  animation: tuck 0.45s var(--ease) both;
+}
+@keyframes tuck {
+  from {
+    transform: translate(var(--tuck-dx, -4px), 29vh) scale(1.9);
+  }
+}
+/* The voxel's corner drop: same clip as the tuck, but layout keyframes rather
+   than a transform - the ResizeObserver re-renders the canvas crisp at every
+   size, where a scale() would stretch the tiny corner render ~5x and blur the
+   island for the whole flight. The from pose is the homepage grid column. */
 .stage[data-view="dash"] .hero {
   position: absolute;
   top: 12px;
@@ -867,6 +1070,16 @@ kbd {
   height: 120px;
   min-height: 0;
   z-index: 5;
+  opacity: 1;
+  animation: drop 0.45s var(--ease) both;
+}
+@keyframes drop {
+  from {
+    top: 0;
+    right: 0;
+    width: 66.667vw;
+    height: 100vh;
+  }
 }
 .stage[data-view="dash"] .joining {
   display: flex;

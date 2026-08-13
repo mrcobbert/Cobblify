@@ -10,6 +10,8 @@ const stage = el("stage");
 const joining = el("joining");
 const dash = el("dash");
 const scene = createHeroScene(el("hero-canvas"));
+// Scene boot (shader compile included) is behind us - let the entrance run.
+stage.classList.add("lit");
 
 /**
  * The Tauri bridge is injected by the app shell (withGlobalTauri). Outside it -
@@ -17,6 +19,7 @@ const scene = createHeroScene(el("hero-canvas"));
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=ready|lunar|jars|error  picks the initial status case
  *   ?ctx=lobby|queue|game          picks which dashboard the preview renders
+ *   ?ctx=queue16|game16            16-player worst case for the no-scroll views
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
 
@@ -43,6 +46,11 @@ const PREVIEW_PARTY = [
   pp({ name: "you_", rank: "[MVP+]", fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
   pp({ name: "duo_diff", rank: "[VIP+]", fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
 ];
+
+const PREVIEW_PARTY4 = PREVIEW_PARTY.concat([
+  pp({ name: "third_wheeler", rank: "[MVP]", fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
+  pp({ name: "clutch_or_kick", rank: "[VIP]", fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
+]);
 
 const PREVIEW_LOBBY = {
   lobby: {
@@ -86,6 +94,34 @@ const PREVIEW_LOBBY = {
       pp({ name: "sniped_u", rank: "", state: "LOADING" }),
     ],
   },
+  queue16: {
+    v: 1,
+    seq: 1004,
+    context: "QUEUE",
+    inHypixel: true,
+    self: "you_",
+    partyCount: 6,
+    yourParty: PREVIEW_PARTY4,
+    teams: [],
+    players: [
+      pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, seraphTags: ["REACH"], urchinTags: ["BLATANT"] }),
+      pp({ name: "wallhax_", rank: "[VIP]", fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, urchinTags: ["GHOST"] }),
+      pp({ name: "Tenko", rank: "[MVP++]", fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
+      pp({ name: "ok_zenith", rank: "[MVP+]", fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
+      pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
+      pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
+      pp({ name: "mossling", rank: "[MVP]", fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
+      pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
+      pp({ name: "aqua_gg", rank: "[VIP+]", fkdr: 2.1, wlr: 1.4, finalKills: 3120, kd: 1.6 }),
+      pp({ name: "notavirus_exe", rank: "[VIP+]", fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, urchinTags: ["AUTOCLICK"] }),
+      pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
+      pp({ name: "coolkid2013", rank: "", fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
+      pp({ name: "iToxicWaffle", rank: "", state: "NICKED", nicked: true }),
+      pp({ name: "Grandpa_Joe", rank: "", state: "NEVER_PLAYED" }),
+      pp({ name: "lagswitch99", rank: "[VIP]", state: "LOADING" }),
+      pp({ name: "sniped_u", rank: "", state: "LOADING" }),
+    ],
+  },
   game: {
     v: 1,
     seq: 1003,
@@ -124,6 +160,54 @@ const PREVIEW_LOBBY = {
         name: "Yellow",
         players: [
           pp({ name: "aqua_gg", rank: "[VIP+]", fkdr: 2.1, wlr: 1.4, finalKills: 3120, kd: 1.6 }),
+          pp({ name: "iNicked", rank: "", state: "NICKED", nicked: true }),
+          pp({ name: "Prot_IV_Dia", rank: "[MVP+]", state: "LOADING" }),
+        ],
+      },
+    ],
+  },
+  game16: {
+    v: 1,
+    seq: 1005,
+    context: "GAME",
+    inHypixel: true,
+    self: "you_",
+    partyCount: null,
+    yourParty: PREVIEW_PARTY4,
+    players: [],
+    teams: [
+      {
+        name: "Red",
+        players: [
+          pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, seraphTags: ["REACH"], urchinTags: ["BLATANT"] }),
+          pp({ name: "wallhax_", rank: "[VIP]", fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, urchinTags: ["GHOST"] }),
+          pp({ name: "Tenko", rank: "[MVP++]", fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
+          pp({ name: "ok_zenith", rank: "[MVP+]", fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
+        ],
+      },
+      {
+        name: "Blue",
+        players: [
+          pp({ name: "you_", rank: "[MVP+]", fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
+          pp({ name: "duo_diff", rank: "[VIP+]", fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
+          pp({ name: "third_wheeler", rank: "[MVP]", fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
+          pp({ name: "clutch_or_kick", rank: "[VIP]", fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
+        ],
+      },
+      {
+        name: "Green",
+        players: [
+          pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
+          pp({ name: "mossling", rank: "[MVP]", fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
+          pp({ name: "coolkid2013", rank: "", fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
+          pp({ name: "Grandpa_Joe", rank: "", state: "NEVER_PLAYED" }),
+        ],
+      },
+      {
+        name: "Yellow",
+        players: [
+          pp({ name: "notavirus_exe", rank: "[VIP+]", fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, urchinTags: ["AUTOCLICK"] }),
+          pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
           pp({ name: "iNicked", rank: "", state: "NICKED", nicked: true }),
           pp({ name: "Prot_IV_Dia", rank: "[MVP+]", state: "LOADING" }),
         ],
@@ -226,11 +310,11 @@ function render(status) {
 // ── launch: stay on the homepage, narrate the boot, wait for the server ─────
 // Fires Lunar's official play deep link: the game boots on the active 1.8.9
 // profile and auto-joins Hypixel. The agent lives in Lunar's own config, so
-// Cobblify loads either way. The homepage STAYS - the stepped bar advances off
-// real weave-log milestones - and the dashboard is entered only by applyLobby,
-// the moment lobby.json reports we are actually inside Hypixel. The backend
-// ignores any lobby.json older than this launch, so a stale roster from a
-// prior session can never be what flips the view.
+// Cobblify loads either way. The homepage STAYS - the button itself narrates
+// the boot off real weave-log milestones - and the dashboard is entered only
+// by applyLobby, the moment lobby.json reports we are actually inside Hypixel.
+// The backend ignores any lobby.json older than this launch, so a stale roster
+// from a prior session can never be what flips the view.
 const STAGE_LABEL = {
   fired: "Preparing Lunar…",
   attached: "Weave attached",
@@ -259,15 +343,7 @@ launch.addEventListener("click", async () => {
     label.textContent = "Launch Lunar";
     return;
   }
-  label.textContent = "See you in game";
-  launch.classList.remove("is-loading");
-
-  const progress = el("launch-progress");
-  const fill = el("launch-bar-fill");
-  const stageLabel = el("launch-stage");
-  progress.hidden = false;
-  fill.style.width = "10%";
-  stageLabel.textContent = STAGE_LABEL.fired;
+  label.textContent = STAGE_LABEL.fired;
   progressTimer = setInterval(async () => {
     let p;
     try {
@@ -276,15 +352,15 @@ launch.addEventListener("click", async () => {
       return; // never surface a progress error; try again next tick
     }
     if (!p) return;
-    fill.style.width = `${p.percent}%`;
-    stageLabel.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.fired;
+    label.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.fired;
   }, PROGRESS_POLL_MS);
 
   startLobbyPolling();
 });
 
-// Swap views: the CSS on data-view="dash" hides the homepage copy, drops the
-// voxel to its corner, and reveals the dashboard overlay below the header band.
+// Swap views: the CSS on data-view="dash" hides the homepage copy, tucks the
+// wordmark into the top-left, drops the voxel to its corner, and reveals the
+// dashboard overlay below the header band.
 // Called exactly once, by applyLobby, on the first FRESH in-Hypixel snapshot.
 function enterDashboard() {
   stage.dataset.view = "dash";
@@ -343,8 +419,25 @@ function applyLobby(d) {
     } catch {
       return; // a malformed roster must not blank the dashboard
     }
+    dash.dataset.ctx = ctx.toLowerCase();
+    fitDash(ctx);
   }
   dash.classList.add("on");
+}
+
+// Queue and game views must never scroll: after each render, step the density
+// down (cozy → compact → dense) until the content measures inside the fixed
+// 620px window. The lobby view keeps its scroll region and skips this.
+function fitDash(ctx) {
+  if (ctx !== "QUEUE" && ctx !== "GAME") {
+    delete dash.dataset.density;
+    return;
+  }
+  dash.dataset.density = "cozy";
+  for (const step of ["compact", "dense"]) {
+    if (dash.scrollHeight <= dash.clientHeight) return;
+    dash.dataset.density = step;
+  }
 }
 
 // ── dashboard rendering (from ~/.cobblify/lobby.json) ───────────────────────
@@ -432,6 +525,15 @@ function roster(players) {
   return `<div class="roster">${colHead}${players.map(row).join("")}</div>`;
 }
 
+// A long queue roster splits into two side-by-side columns so 16 players fit
+// on the one no-scroll screen. Sweat order keeps reading down the left column
+// first, then the right.
+function rosterSplit(players) {
+  if (players.length <= 8) return roster(players);
+  const mid = Math.ceil(players.length / 2);
+  return `<div class="roster-duo">${roster(players.slice(0, mid))}${roster(players.slice(mid))}</div>`;
+}
+
 function partySection(list) {
   if (!list || !list.length) return "";
   return `<div class="sect"><h3>Your Party</h3><div class="rule"></div><span class="n">${list.length}</span></div>
@@ -472,7 +574,7 @@ function renderQueue(d) {
       <span class="ctx-note">names hidden until they type</span></div>
     ${partySection(d.yourParty)}
     <div class="sect"><h3>Chatted</h3><div class="rule"></div><span class="n">only typed players resolve</span></div>
-    ${roster(players)}
+    ${rosterSplit(players)}
     <div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>`;
 }
 
@@ -484,10 +586,10 @@ function renderGame(d) {
   const teamsHtml = teams
     .map(({ t, agg }) => {
       const target = teams.length > 0 && agg === maxAgg;
-      return `<div class="team-head ${target ? "targeted" : ""}"><h3>${esc(t.name)}</h3>
+      return `<div class="team"><div class="team-head ${target ? "targeted" : ""}"><h3>${esc(t.name)}</h3>
         <span class="agg">avg FKDR ${agg.toFixed(1)}</span><div class="rule"></div>
         ${target ? '<span class="target-badge">Target</span>' : ""}</div>
-        ${roster(bySweat(t.players))}`;
+        ${roster(bySweat(t.players))}</div>`;
     })
     .join("");
   return `
@@ -495,7 +597,7 @@ function renderGame(d) {
       <span class="ctx-title">Live Match</span>
       <span class="ctx-sub">· ${teams.length} teams</span><div class="spacer"></div>
       <span class="ctx-note">your party first, then sweatiest team</span></div>
-    ${partySection(d.yourParty)}${teamsHtml}`;
+    ${partySection(d.yourParty)}<div class="team-grid">${teamsHtml}</div>`;
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
