@@ -1,10 +1,16 @@
 //! Atomic, idempotent installation of the verified jars into `~/.weave/`.
 //!
-//! Unconditional by design (TASK.md expected outcome 4): there is no detect-and-skip, so a
-//! stale or corrupt install self-heals. Writes go to a temporary file in the SAME directory
-//! as the destination, are hash-checked, and only then `rename()`d into place - a running
-//! game may be lazily reading classes out of the jar we are replacing, and a truncating
-//! write would corrupt it (acceptance criterion 11).
+//! Unconditional by design on macOS (original TASK.md expected outcome 4): there is no
+//! detect-and-skip, so a stale or corrupt install self-heals. Writes go to a temporary file
+//! in the SAME directory as the destination, are hash-checked, and only then `rename()`d
+//! into place - a running game may be lazily reading classes out of the jar we are
+//! replacing, and a truncating write would corrupt it (acceptance criterion 11).
+//!
+//! Windows exception (Windows-port PLAN Phase 3): `rename()` over a file the running game
+//! holds open FAILS on Windows, so a destination whose hash already equals the manifest is
+//! skipped - not a blind skip, a hash-verified identity. Any mismatch still takes the full
+//! staging path, and a mismatched-but-locked jar still errors, correctly: the game must be
+//! closed to update.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,6 +53,29 @@ fn install_jar(src: &Path, dest: &Path, expected_sha256: &str) -> Result<(), Str
         .into_owned();
     let tmp = dest.with_file_name(format!(".{name}.cobblify-tmp"));
 
+    // Windows: skip on hash-verified identity (see module doc). The crash-
+    // leftover temp is cleared FIRST, and only NotFound is ignored - any
+    // other failure (locked, read-only) must surface, or the leftover would
+    // become permanent-but-silent behind the skip.
+    #[cfg(windows)]
+    {
+        match fs::remove_file(&tmp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Cannot clear the stale temp file {}: {e}. Delete it, then reopen Cobblify.",
+                    tmp.display()
+                ))
+            }
+        }
+        if let Ok(actual) = sha256_file(dest) {
+            if actual.eq_ignore_ascii_case(expected_sha256) {
+                return Ok(());
+            }
+        }
+    }
+
     let result = (|| {
         fs::copy(src, &tmp).map_err(|e| {
             format!(
@@ -79,12 +108,32 @@ fn conflicting_mod_jars(mods_dir: &Path, ours: &str) -> Result<Vec<PathBuf>, Str
     for entry in entries {
         let entry = entry.map_err(|e| format!("Cannot read {}: {e}", mods_dir.display()))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(MOD_JAR_PREFIX) && name.ends_with(".jar") && name != ours {
+        if is_conflicting_name(&name, ours) {
             conflicts.push(entry.path());
         }
     }
     conflicts.sort();
     Ok(conflicts)
+}
+
+/// Filename identity is per-platform. NTFS is case-insensitive, so on Windows
+/// `cobblify-lunar-0.7.0.jar` and `Cobblify-Lunar-0.7.0.JAR` are Cobblify
+/// jars Weave WILL load, and a case-only spelling of the current name is the
+/// same file as the destination, not a conflict. (A per-directory
+/// case-sensitive NTFS layout can break that identity - accepted residual,
+/// PLAN Phase 3.) Jar names are ASCII by construction, so ASCII folding is
+/// exact.
+#[cfg(not(windows))]
+fn is_conflicting_name(name: &str, ours: &str) -> bool {
+    name.starts_with(MOD_JAR_PREFIX) && name.ends_with(".jar") && name != ours
+}
+
+#[cfg(windows)]
+fn is_conflicting_name(name: &str, ours: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with(&MOD_JAR_PREFIX.to_ascii_lowercase())
+        && lower.ends_with(".jar")
+        && !name.eq_ignore_ascii_case(ours)
 }
 
 #[cfg(test)]
@@ -163,6 +212,12 @@ mod tests {
         );
     }
 
+    /// Mac semantics: the install is unconditional, so a hash-equal
+    /// destination plus a tampered source must still stage, fail the hash,
+    /// and leave the previous jar. On Windows the same input legitimately
+    /// SKIPS (hash-verified identity); the Windows twin below covers the
+    /// staging boundary with a non-matching destination instead.
+    #[cfg(not(windows))]
     #[test]
     fn corrupt_source_leaves_the_previous_jar_intact() {
         let src = tempfile::tempdir().unwrap();
@@ -184,6 +239,102 @@ mod tests {
             .path()
             .join("mods/.Cobblify-Lunar-0.8.1.jar.cobblify-tmp")
             .exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn corrupt_source_with_a_stale_destination_still_errors_and_keeps_it() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        // Manifest expects "new mod" but the source bytes are tampered; the
+        // stale destination cannot hash-match, so staging must run and fail.
+        let mut res = bundle(src.path(), b"new mod", b"agent");
+        fs::write(&res.mod_jar, b"tampered").unwrap();
+        res.manifest.mod_sha256 = sha(b"new mod");
+        fs::create_dir_all(weave.path().join("mods")).unwrap();
+        fs::write(weave.path().join("mods/Cobblify-Lunar-0.8.1.jar"), b"stale").unwrap();
+
+        let err = install(&res, weave.path()).unwrap_err();
+        assert!(err.contains("is corrupt"), "{err}");
+        assert_eq!(
+            fs::read(weave.path().join("mods/Cobblify-Lunar-0.8.1.jar")).unwrap(),
+            b"stale"
+        );
+        assert!(!weave
+            .path()
+            .join("mods/.Cobblify-Lunar-0.8.1.jar.cobblify-tmp")
+            .exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hash_equal_destination_is_skipped_untouched() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        install(&res, weave.path()).unwrap();
+
+        let dest = weave.path().join("mods/Cobblify-Lunar-0.8.1.jar");
+        let before = fs::metadata(&dest).unwrap().modified().unwrap();
+        install(&res, weave.path()).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"mod");
+        assert_eq!(
+            fs::metadata(&dest).unwrap().modified().unwrap(),
+            before,
+            "a hash-equal destination must not be rewritten"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removable_crash_leftover_is_cleaned_on_the_skip_path() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        install(&res, weave.path()).unwrap();
+
+        let tmp = weave
+            .path()
+            .join("mods/.Cobblify-Lunar-0.8.1.jar.cobblify-tmp");
+        fs::write(&tmp, b"crash leftover").unwrap();
+        install(&res, weave.path()).unwrap();
+        assert!(!tmp.exists(), "the leftover must be cleared before the skip");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn undeletable_crash_leftover_fails_loudly_not_silently() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        install(&res, weave.path()).unwrap();
+
+        let tmp = weave
+            .path()
+            .join("mods/.Cobblify-Lunar-0.8.1.jar.cobblify-tmp");
+        fs::write(&tmp, b"crash leftover").unwrap();
+        let mut perms = fs::metadata(&tmp).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&tmp, perms.clone()).unwrap();
+
+        let err = install(&res, weave.path()).unwrap_err();
+        assert!(err.contains("cobblify-tmp"), "{err}");
+
+        // Restore so the temp dir can clean itself up.
+        perms.set_readonly(false);
+        fs::set_permissions(&tmp, perms).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_conflict_identity_is_ascii_caseless() {
+        const OURS: &str = "Cobblify-Lunar-0.8.1.jar";
+        // Mixed-case prefix and extension are still Cobblify jars Weave loads.
+        assert!(is_conflicting_name("cobblify-lunar-0.7.0.jar", OURS));
+        assert!(is_conflicting_name("Cobblify-Lunar-0.7.0.JAR", OURS));
+        // A case-only spelling of the current name is the destination itself.
+        assert!(!is_conflicting_name("COBBLIFY-Lunar-0.8.1.JAR", OURS));
+        assert!(!is_conflicting_name("SomeOtherMod.jar", OURS));
     }
 
     #[test]

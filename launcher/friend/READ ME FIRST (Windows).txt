@@ -1,0 +1,115 @@
+COBBLIFY FOR LUNAR CLIENT - Windows
+===================================
+
+You only do this once.
+
+
+1. INSTALL
+----------
+
+Unzip the whole "Cobblify (Windows)" folder anywhere you like
+(Desktop, Documents, wherever). Keep the folder together -
+"Cobblify Launcher.exe" needs the "resources" folder sitting
+next to it.
+
+
+2. FIRST OPEN - WINDOWS WILL BLOCK IT
+-------------------------------------
+
+Cobblify isn't signed with a paid Microsoft certificate, so Windows
+shows a blue "Windows protected your PC" screen the first time. This is
+normal - Windows says this about every app that hasn't paid for a
+certificate.
+
+On that screen:
+
+    click  More info
+    then   Run anyway
+
+You never have to do this again.
+
+
+3. BEFORE THE FIRST RUN
+-----------------------
+
+Open Lunar Client normally ONCE and log in, then quit it. Cobblify
+registers itself with Lunar's own settings, so Lunar has to exist
+before Cobblify can do that.
+
+While you're in there: make 1.8.9 your selected version. The Launch
+button starts whatever version Lunar has selected, and Cobblify only
+works on 1.8.9.
+
+
+4. WHAT IT DOES
+---------------
+
+Quit Lunar Client first, then open Cobblify Launcher. It will:
+
+  - install Cobblify and the Weave loader
+  - register them with Lunar Client
+  - say "Cobblify vX.X.X ready"
+
+Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself.
+
+Unlike on Mac, the Lunar launcher window STAYS ON SCREEN on Windows -
+that's expected for now, just ignore it or minimize it.
+
+The very first time, Lunar may ask you to log in - that window is real,
+log in like you always do. Same goes for Lunar updates.
+
+The button works once per open. To launch again later, reopen Cobblify -
+or just start Lunar normally; Cobblify loads either way, you only miss
+the auto-join.
+
+
+5. IN GAME
+----------
+
+  - press RIGHT SHIFT in game to open Cobblify's settings
+
+IMPORTANT: turn Lunar's "Waypoints" module OFF in the settings profile
+you actually play on. Leaving it on can make Cobblify's stats go
+missing. This is per-profile, so if you switch profiles, check again.
+
+
+6. IF SOMETHING GOES WRONG
+--------------------------
+
+"Quit Lunar"
+    Lunar is still running. Quit it fully, then reopen the launcher.
+    Lunar overwrites its own settings when it closes, so Cobblify waits
+    rather than fighting it.
+
+"Conflicting jars"
+    You have more than one version installed. The launcher lists them
+    and will not delete anything it didn't put there. Remove the extra
+    one, then reopen the launcher.
+
+"This copy is incomplete"
+    The download didn't finish or got corrupted. Download it again.
+
+Any message that mentions "launcher.json"
+    Take a screenshot and send it to Jacob. This is the launcher being
+    careful with Lunar's settings file rather than guessing - nothing
+    on your machine was changed.
+
+The app opens but nothing happens in game
+    Make sure 1.8.9 is your selected version in Lunar, and that you
+    quit Lunar completely before running the launcher the first time.
+
+
+7. UNINSTALLING
+---------------
+
+The launcher saved a copy of your Lunar settings before touching
+anything. To undo everything it changed, paste this into
+Command Prompt (Win+R, type cmd, Enter):
+
+    copy /Y "%USERPROFILE%\.lunarclient\settings\launcher.json.bak-cobblify" "%USERPROFILE%\.lunarclient\settings\launcher.json"
+
+Then delete the "Cobblify (Windows)" folder, and delete the
+%USERPROFILE%\.weave folder if you don't use any other Weave mods.
+
+
+Questions: message Jacob.

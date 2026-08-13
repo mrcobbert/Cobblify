@@ -19,5 +19,10 @@ sha2 = "0.10"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 tauri = { version = "2.11", features = [] }
 
+[target.'cfg(windows)'.dependencies]
+# ShellExecute-based deep-link open; `cmd /C start` is banned (console flash,
+# breaks on `&` in the URL).
+tauri-plugin-opener = "2"
+
 [dev-dependencies]
 tempfile = "3"

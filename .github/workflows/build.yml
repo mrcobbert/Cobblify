@@ -139,3 +139,78 @@ jobs:
         with:
           name: BedwarsQOL-Lunar-jar
           path: lunar/build/libs/*.jar
+
+  # Builds and tests the Cobblify launcher on real Windows - the automated
+  # substitute for having no Windows machine (Windows-port PLAN Phase 5). The
+  # exe it uploads is naked: the owner zip is assembled locally with the
+  # secret-bearing jars, never in CI, so this job needs no secrets at all.
+  launcher-windows:
+    name: Launcher (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # The workflow-level write grant exists for release publishing; this job
+    # runs npm lifecycle scripts and must not inherit it.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The privacy contract, enforced mechanically: proc.rs is the only file
+      # in the crate allowed to touch sysinfo (the game JVM's argv carries a
+      # live Minecraft access token; see launcher/src-tauri/src/proc.rs).
+      # Exact full-path allowlist: a nested proc.rs or a notproc.rs must NOT
+      # slip through a suffix match.
+      - name: Enforce the sysinfo containment boundary
+        shell: bash
+        run: |
+          hits=$(grep -rl sysinfo launcher/src-tauri/src --include='*.rs' | grep -vx 'launcher/src-tauri/src/proc.rs' || true)
+          if [ -n "$hits" ]; then
+            echo "sysinfo reached outside launcher/src-tauri/src/proc.rs:"; echo "$hits"; exit 1
+          fi
+
+      - name: Update Rust
+        run: rustup update --no-self-update stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            launcher/src-tauri/target
+          key: ${{ runner.os }}-launcher-cargo-${{ hashFiles('launcher/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-launcher-cargo-
+
+      - name: npm ci
+        working-directory: launcher
+        run: npm ci
+
+      # The Windows automated gate: the whole suite on real Windows, including
+      # the argv-canary privacy test and the cfg(windows) semantics tests.
+      - name: cargo test
+        run: cargo test --manifest-path launcher/src-tauri/Cargo.toml
+
+      # Naked exe only - the bundler never runs on Windows (portable zip
+      # packaging happens owner-side).
+      - name: Build the launcher exe
+        working-directory: launcher
+        run: npx tauri build --no-bundle
+
+      - name: Upload the exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cobblify-Launcher-Windows
+          path: launcher/src-tauri/target/release/*.exe
+          retention-days: 7

@@ -1,4 +1,11 @@
+#[cfg(target_os = "macos")]
 mod hide;
+/// Windows first cut ships without launcher hiding (TASK decision 2, PLAN
+/// Phase 2); the no-op keeps the launch path's call site clean.
+#[cfg(not(target_os = "macos"))]
+mod hide {
+    pub fn spawn_worker() {}
+}
 mod install;
 mod lunar_config;
 mod proc;
@@ -35,10 +42,19 @@ impl Status {
     }
 }
 
+#[cfg(not(windows))]
 fn home() -> Result<PathBuf, String> {
     std::env::var("HOME")
         .map(PathBuf::from)
         .map_err(|_| "HOME is not set.".to_string())
+}
+
+/// `HOME` is unset on Windows; the profile directory lives in `USERPROFILE`.
+#[cfg(windows)]
+fn home() -> Result<PathBuf, String> {
+    std::env::var("USERPROFILE")
+        .map(PathBuf::from)
+        .map_err(|_| "USERPROFILE is not set.".to_string())
 }
 
 fn start_up(app: &tauri::AppHandle) -> Status {
@@ -164,10 +180,12 @@ struct ProgressState {
 /// Docs: https://lunarclient.dev/deep-links/play
 const PLAY: &str = "lunarclient://play?serverAddress=play.hypixel.net";
 
-/// Fires the play deep link via `open -g` (no focus steal), then hides the
-/// launcher window as soon as it appears. The link drives Lunar's OWN
-/// launcher - cold start, an already-running instance, login, and the agent
-/// registered in `launcher.json` all behave exactly as a manual launch.
+/// Fires the play deep link (on macOS via `open -g`, no focus steal; on
+/// Windows via ShellExecute, which has no no-focus equivalent), then hides
+/// the launcher window as soon as it appears (macOS only). The link drives
+/// Lunar's OWN launcher - cold start, an already-running instance, login, and
+/// the agent registered in `launcher.json` all behave exactly as a manual
+/// launch.
 #[tauri::command]
 fn launch_lunar(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), String> {
     // Stamp the freshness baseline the instant we fire, before anything can
@@ -178,6 +196,13 @@ fn launch_lunar(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), Str
         st.last_mtime = None;
         st.steady_polls = 0;
     }
+    open_play()?;
+    hide::spawn_worker();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_play() -> Result<(), String> {
     let status = std::process::Command::new("/usr/bin/open")
         .args(["-g", PLAY])
         .status()
@@ -185,8 +210,16 @@ fn launch_lunar(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), Str
     if !status.success() {
         return Err("Cannot start Lunar Client - is Lunar installed?".to_string());
     }
-    hide::spawn_worker();
     Ok(())
+}
+
+/// ShellExecute-based open: no console flash and `&`-safe, the two reasons
+/// `cmd /C start` is banned here. Fails when no `lunarclient://` handler is
+/// registered - i.e. Lunar was never installed on this machine.
+#[cfg(windows)]
+fn open_play() -> Result<(), String> {
+    tauri_plugin_opener::open_url(PLAY, None::<&str>)
+        .map_err(|_| "Cannot start Lunar Client - is Lunar installed?".to_string())
 }
 
 /// Cosmetic, fail-soft stepped progress for the launch button. Stats the weave

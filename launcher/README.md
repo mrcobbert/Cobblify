@@ -1,10 +1,11 @@
 # Cobblify Launcher
 
-A small macOS app that installs Cobblify for Lunar Client and registers it so
-the mod loads however Lunar is started.
+A small desktop app (macOS and Windows) that installs Cobblify for Lunar
+Client and registers it so the mod loads however Lunar is started.
 
-macOS only. Windows friends keep using
-`lunar/dist/Install BedwarsQOL (Lunar).bat`, which is untouched.
+macOS is the proven platform. The Windows build is new and its live gates are
+still open (see "Ship it for Windows"); `lunar/dist/Install BedwarsQOL
+(Lunar).bat` remains the manual fallback route on Windows.
 
 ## How it works
 
@@ -99,6 +100,32 @@ contains exactly the expected paths and nothing else.
 Output lands in `dist-owner/`. **DM it. Never attach it to a public GitHub
 Release** - public releases carry only the blank CI jars.
 
+### Ship it for Windows
+
+```sh
+launcher/tools/package-windows-bundle.sh <ci run id> <trusted commit>
+```
+
+This Mac cannot build Windows binaries, so the exe comes from the
+`launcher-windows` CI job (it runs the whole cargo suite on a real Windows
+runner, then builds a naked exe with `tauri build --no-bundle` - no secrets in
+CI, ever). The script is fail-closed about provenance: the named run must have
+completed successfully, its `headSha` must equal the trusted commit you name,
+and your checkout must be sitting on that commit so the locally built, baked
+Lunar jar matches the exe. It then assembles and verifies
+`dist-owner/Cobblify-Windows-<version>.zip`: a portable folder with the exe,
+`resources/` (jars + manifest) beside it, and the Windows friend README. Same
+distribution rule: DM only.
+
+Verification honesty: the CI job runs the cargo suite (including the
+argv-canary privacy test) on a Windows runner on every push, but until those
+runs and a live smoke test have actually happened, the Windows build is
+UNVERIFIED - it has never been run against a live Lunar on a real Windows
+machine. The open gates live in `.ai/HANDOFF.md`. In particular, the launcher
+refuses (with a screenshot-able message, changing nothing) if Windows Lunar's
+`launcher.json` does not match the schema verified on Mac, because no real
+Windows copy of that file has been observed yet.
+
 ## Gotchas worth knowing
 
 **Never run the `.app` from `/tmp`.** Tauri refuses to resolve its bundled
@@ -139,6 +166,9 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 - The button disables for the rest of the session after a successful
   dispatch (a second play request mid-boot has no defined meaning);
   reopening Cobblify resets it.
+- On Windows there is no hiding at all (first cut, by decision): the Lunar
+  window stays visible, and the deep link goes through ShellExecute
+  (never `cmd /C start` - it breaks on `&` and flashes a console).
 
 ## Layout
 

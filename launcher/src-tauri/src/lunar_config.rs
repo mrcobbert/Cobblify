@@ -26,22 +26,52 @@ pub enum RegisterError {
 }
 
 pub fn register(launcher_json: &Path, agent_path: &Path) -> Result<(), RegisterError> {
-    if crate::proc::is_lunar_running() {
-        return Err(RegisterError::LunarRunning);
+    register_with(crate::proc::lunar_running_checked, launcher_json, agent_path)
+}
+
+/// The running-state checker is injected so tests can prove the refusal
+/// ORDER: an undeterminable state (`Err` - e.g. Windows without a usable
+/// `LOCALAPPDATA`) must block before any read or write, exactly like a
+/// running Lunar. `Ok(false)` alone reaches `apply`.
+fn register_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    launcher_json: &Path,
+    agent_path: &Path,
+) -> Result<(), RegisterError> {
+    match lunar_running() {
+        Err(e) => return Err(RegisterError::Failed(e)),
+        Ok(true) => return Err(RegisterError::LunarRunning),
+        Ok(false) => {}
     }
     apply(launcher_json, agent_path).map_err(RegisterError::Failed)
 }
 
 /// The write itself, with no process check, so it can be unit tested against temp files.
 fn apply(launcher_json: &Path, agent_path: &Path) -> Result<(), String> {
-    let raw = fs::read_to_string(launcher_json)
-        .map_err(|e| format!("Cannot read {}: {e}", launcher_json.display()))?;
+    let raw = match fs::read_to_string(launcher_json) {
+        Ok(raw) => raw,
+        #[cfg(windows)]
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "{} does not exist. Lunar has never been run on this computer - open Lunar Client, log in once, then reopen Cobblify.",
+                launcher_json.display()
+            ))
+        }
+        Err(e) => return Err(format!("Cannot read {}: {e}", launcher_json.display())),
+    };
     let mut root: Value = serde_json::from_str(&raw).map_err(|e| {
         format!(
             "{} is not valid JSON ({e}). Cobblify will not overwrite it - restore or fix the file, then reopen Cobblify.",
             launcher_json.display()
         )
     })?;
+
+    // The Windows launcher.json schema has never been observed on a real
+    // machine (the Mac schema was verified 2026-08-04). Refuse ANY shape that
+    // premise does not cover BEFORE the first mutation, backup, or write -
+    // the messages are the field diagnostic a friend can screenshot.
+    #[cfg(windows)]
+    windows_schema_guard(&root, launcher_json)?;
 
     let updated = {
         let obj = root
@@ -80,6 +110,57 @@ fn not_an_object(path: &Path) -> String {
         "{} does not have the expected shape. Cobblify will not overwrite it.",
         path.display()
     )
+}
+
+/// Fail-closed pre-write gate for the never-observed Windows schema. The Mac
+/// writer tolerates absent `settings`/keys because that shape was VERIFIED
+/// there; on Windows the same tolerance would rewrite an unknown schema and
+/// report ready. Defined on every platform so its tests run everywhere;
+/// called only on Windows, before `back_up_once` and `write_atomic`, so a
+/// refusal provably leaves the file and any backup state untouched.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
+    let obj = root.as_object().ok_or_else(|| not_an_object(path))?;
+    let settings = obj.get("settings").ok_or_else(|| {
+        format!(
+            "{} has no settings section, which this version of Cobblify has never seen on Windows. Cobblify will not overwrite it - send a screenshot of this message.",
+            path.display()
+        )
+    })?;
+    let settings = settings.as_object().ok_or_else(|| {
+        format!(
+            "settings in {} is not an object. Cobblify will not overwrite it - send a screenshot of this message.",
+            path.display()
+        )
+    })?;
+
+    let mut values: Vec<&str> = Vec::new();
+    for key in JVM_ARGS_KEYS {
+        match settings.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) => values.push(s),
+            Some(_) => {
+                return Err(format!(
+                    "settings.{key} in {} is not a string. Cobblify will not overwrite it.",
+                    path.display()
+                ))
+            }
+        }
+    }
+    if values.is_empty() {
+        return Err(format!(
+            "{} has no jvm-args or jvmArgs entry, which this version of Cobblify has never seen on Windows. Cobblify will not overwrite it - send a screenshot of this message.",
+            path.display()
+        ));
+    }
+    let nonempty: Vec<&&str> = values.iter().filter(|s| !s.is_empty()).collect();
+    if nonempty.len() == 2 && nonempty[0] != nonempty[1] {
+        return Err(format!(
+            "jvm-args and jvmArgs disagree in {}. Cobblify will not overwrite it - send a screenshot of this message.",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn read_jvm_args(settings: &Map<String, Value>, path: &Path) -> Result<String, String> {
@@ -228,6 +309,10 @@ mod tests {
 
     const AGENT: &str = "/Users/tester/.weave/Weave-Loader-Agent-1.3.3.jar";
 
+    /// Mac semantics, VERIFIED 2026-08-04: absent keys are valid empty input.
+    /// On Windows the schema guard refuses this same shape (never observed
+    /// there); the twin below locks that refusal.
+    #[cfg(not(windows))]
     #[test]
     fn absent_jvm_args_gets_only_our_agent() {
         let f = Fixture::new(r#"{"settings":{"resolution":"1920x1080"}}"#);
@@ -240,11 +325,34 @@ mod tests {
         assert_eq!(value["settings"]["resolution"], "1920x1080");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_absent_jvm_keys_and_changes_nothing() {
+        let original = r#"{"settings":{"resolution":"1920x1080"}}"#;
+        let f = Fixture::new(original);
+        let err = apply(&f.json, Path::new(AGENT)).unwrap_err();
+        assert!(err.contains("no jvm-args or jvmArgs"), "{err}");
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
+        assert!(!f.backup().exists(), "a refused file must not be backed up");
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn missing_settings_object_is_created() {
         let f = Fixture::new(r#"{"version":3}"#);
         apply(&f.json, Path::new(AGENT)).unwrap();
         assert_eq!(f.jvm_args().0, format!("-javaagent:{AGENT}"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_a_missing_settings_object_and_changes_nothing() {
+        let original = r#"{"version":3}"#;
+        let f = Fixture::new(original);
+        let err = apply(&f.json, Path::new(AGENT)).unwrap_err();
+        assert!(err.contains("no settings section"), "{err}");
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
+        assert!(!f.backup().exists(), "a refused file must not be backed up");
     }
 
     #[test]
@@ -357,6 +465,7 @@ mod tests {
         assert_eq!(dashed, format!("-Xmx4G -javaagent:{AGENT}"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn no_temp_file_is_left_behind() {
         let f = Fixture::new(r#"{"settings":{}}"#);
@@ -365,5 +474,107 @@ mod tests {
             .json
             .with_file_name(".launcher.json.cobblify-tmp")
             .exists());
+    }
+
+    /// The exact bytes of the Mac `no_temp_file_is_left_behind` fixture,
+    /// through the guarded `apply` path: `{"settings":{}}` has both keys
+    /// absent, so Windows must refuse it, changing nothing.
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_an_empty_settings_object_and_changes_nothing() {
+        let original = r#"{"settings":{}}"#;
+        let f = Fixture::new(original);
+        let err = apply(&f.json, Path::new(AGENT)).unwrap_err();
+        assert!(err.contains("no jvm-args or jvmArgs"), "{err}");
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
+        assert!(!f.backup().exists(), "a refused file must not be backed up");
+    }
+
+    /// The Windows guard refuses `{"settings":{}}` (both keys absent), so the
+    /// no-temp invariant is asserted on an ACCEPTED shape instead.
+    #[cfg(windows)]
+    #[test]
+    fn no_temp_file_is_left_behind_on_an_accepted_shape() {
+        let f = Fixture::new(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx4G"}}"#);
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        assert!(!f
+            .json
+            .with_file_name(".launcher.json.cobblify-tmp")
+            .exists());
+    }
+
+    // The Windows schema guard's refusal matrix, testable on every platform
+    // because the guard itself is platform-neutral pure logic.
+
+    fn guard(json: &str) -> Result<(), String> {
+        let root: Value = serde_json::from_str(json).unwrap();
+        windows_schema_guard(&root, Path::new("launcher.json"))
+    }
+
+    #[test]
+    fn schema_guard_refuses_every_unverified_shape() {
+        assert!(guard(r#"{"version":3}"#).is_err(), "absent settings");
+        assert!(guard(r#"{"settings":"nope"}"#).is_err(), "non-object settings");
+        assert!(guard(r#"{"settings":{}}"#).is_err(), "both keys absent");
+        assert!(
+            guard(r#"{"settings":{"jvm-args":null,"jvmArgs":null}}"#).is_err(),
+            "null-only keys are absent keys"
+        );
+        assert!(
+            guard(r#"{"settings":{"jvm-args":["-Xmx4G"]}}"#).is_err(),
+            "non-string key"
+        );
+        assert!(
+            guard(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx8G"}}"#).is_err(),
+            "divergent non-empty keys must not be silently collapsed"
+        );
+    }
+
+    #[test]
+    fn schema_guard_accepts_the_verified_shapes() {
+        assert!(guard(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx4G"}}"#).is_ok());
+        assert!(guard(r#"{"settings":{"jvm-args":"-Xmx4G"}}"#).is_ok(), "one key");
+        assert!(
+            guard(r#"{"settings":{"jvm-args":"","jvmArgs":"-Xmx4G"}}"#).is_ok(),
+            "empty-vs-value matches the Mac read semantics"
+        );
+        assert!(guard(r#"{"settings":{"jvm-args":"","jvmArgs":""}}"#).is_ok());
+    }
+
+    // The register seam: refusal ORDER is the contract. An undeterminable
+    // running state must block before any read or write.
+
+    #[test]
+    fn an_undeterminable_lunar_state_blocks_before_any_write() {
+        let original = r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx4G"}}"#;
+        let f = Fixture::new(original);
+        let result = register_with(
+            || Err("Cannot tell whether Lunar is running.".to_string()),
+            &f.json,
+            Path::new(AGENT),
+        );
+        assert!(matches!(
+            result,
+            Err(RegisterError::Failed(ref e)) if e.contains("Cannot tell")
+        ));
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), original);
+        assert!(!f.backup().exists());
+    }
+
+    #[test]
+    fn a_running_lunar_still_blocks_and_a_clean_check_still_applies() {
+        let f = Fixture::new(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx4G"}}"#);
+        assert!(matches!(
+            register_with(|| Ok(true), &f.json, Path::new(AGENT)),
+            Err(RegisterError::LunarRunning)
+        ));
+        assert!(matches!(
+            register_with(|| Ok(false), &f.json, Path::new(AGENT)),
+            Ok(())
+        ));
+        assert_eq!(
+            f.jvm_args().0,
+            format!("-Xmx4G -javaagent:{AGENT}")
+        );
     }
 }
