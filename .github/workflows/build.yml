@@ -140,6 +140,42 @@ jobs:
           name: BedwarsQOL-Lunar-jar
           path: lunar/build/libs/*.jar
 
+  # The stats Worker's own suite. It had never run in CI, which is how a nicked
+  # player (a 404 on hypixel.net/player/) shipped misclassified as a Cloudflare
+  # block for weeks: the bug lived entirely in server/, so the mod builds above
+  # stayed green. Two of these files drive a real Worker through wrangler's
+  # unstable_dev, so this job needs Node but no secrets and no outbound network
+  # (every origin is a local fixture server).
+  stats-worker:
+    name: Stats Worker (tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The workflow-level write grant exists for release publishing; this job
+    # runs npm lifecycle scripts and must not inherit it.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/stats-worker/package-lock.json
+
+      - name: npm ci
+        working-directory: server/stats-worker
+        run: npm ci
+
+      - name: npm test
+        working-directory: server/stats-worker
+        run: npm test
+
   # Builds and tests the Cobblify launcher on real Windows - the automated
   # substitute for having no Windows machine (Windows-port PLAN Phase 5). The
   # exe it uploads is naked: the owner zip is assembled locally with the
