@@ -24,6 +24,29 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 #[cfg(target_os = "macos")]
 pub const LUNAR_EXE: &str = "/Applications/Lunar Client.app/Contents/MacOS/Lunar Client";
 
+/// The one process snapshot shape this crate may take: executable path only.
+/// Never widen the refresh kind - argv carries the game's live access token
+/// (see the module header and `exe_only_snapshot_leaves_argv_empty`).
+fn exe_snapshot() -> System {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
+    system
+}
+
+/// Every pid whose executable path satisfies `matches`, from one snapshot.
+fn pids_where(matches: impl Fn(&Path) -> bool) -> Vec<u32> {
+    exe_snapshot()
+        .processes()
+        .iter()
+        .filter(|(_, process)| process.exe().is_some_and(&matches))
+        .map(|(pid, _)| pid.as_u32())
+        .collect()
+}
+
 /// True when the Lunar Client Electron app is running. Lunar rewrites
 /// `launcher.json` on exit, so setup must not touch that file while it is up.
 #[cfg(target_os = "macos")]
@@ -37,14 +60,8 @@ pub fn is_lunar_running() -> bool {
 /// returned here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
 #[cfg(target_os = "macos")]
 pub fn lunar_launcher_pid() -> Option<u32> {
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-    );
     let wanted = Path::new(LUNAR_EXE);
-    system
+    exe_snapshot()
         .processes()
         .iter()
         .find(|(_, process)| process.exe() == Some(wanted))
@@ -64,27 +81,32 @@ pub fn lunar_running_checked() -> Result<bool, String> {
 
 #[cfg(windows)]
 pub fn lunar_running_checked() -> Result<bool, String> {
-    let wanted = lunar_exe_from(std::env::var_os("LOCALAPPDATA").as_deref())
-        .map_err(|e| format!("Cannot tell whether Lunar is running: {e}"))?;
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-    );
-    Ok(system
-        .processes()
-        .iter()
-        .any(|(_, process)| process.exe().is_some_and(|exe| paths_equal(exe, &wanted))))
+    Ok(!lunar_launcher_pids()?.is_empty())
 }
 
-/// Resolves the Lunar launcher executable under `%LOCALAPPDATA%`, rejecting
-/// every UNUSABLE value rather than only an absent one: an empty or relative
-/// base would join into a path that can never match a real process, the scan
-/// would complete as `false`, and the config writer would fail open. Pure and
-/// injectable so the refusal matrix is unit-testable on any platform.
+/// Every Lunar launcher pid: the Electron main process AND its helpers, which
+/// on Windows all run from the SAME executable path (unlike macOS, where the
+/// helpers have their own binaries). The hide worker wants all of them - any
+/// one of them can own a top-level window.
+///
+/// `Err` means "cannot determine", never "not running": `lunar_config::register`
+/// refuses to touch `launcher.json` on `Err`, because an undeterminable state
+/// collapsed into "not running" would let the writer race Lunar's own exit-time
+/// rewrite of that file.
+#[cfg(windows)]
+pub fn lunar_launcher_pids() -> Result<Vec<u32>, String> {
+    let root = lunar_programs_root(std::env::var_os("LOCALAPPDATA").as_deref())
+        .map_err(|e| format!("Cannot tell whether Lunar is running: {e}"))?;
+    Ok(pids_where(|exe| is_lunar_launcher_exe(exe, &root)))
+}
+
+/// `%LOCALAPPDATA%\Programs`, rejecting every UNUSABLE value rather than only
+/// an absent one: an empty or relative base would join into a path that can
+/// never match a real process, the scan would complete as `false`, and the
+/// config writer would fail open. Pure and injectable so the refusal matrix is
+/// unit-testable on any platform.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn lunar_exe_from(local_app_data: Option<&OsStr>) -> Result<PathBuf, String> {
+fn lunar_programs_root(local_app_data: Option<&OsStr>) -> Result<PathBuf, String> {
     let base = local_app_data.ok_or("LOCALAPPDATA is not set.")?;
     if base.is_empty() {
         return Err("LOCALAPPDATA is empty.".to_string());
@@ -96,10 +118,25 @@ fn lunar_exe_from(local_app_data: Option<&OsStr>) -> Result<PathBuf, String> {
             base.display()
         ));
     }
-    Ok(base
-        .join("Programs")
-        .join("lunarclient")
-        .join("Lunar Client.exe"))
+    Ok(base.join("Programs"))
+}
+
+/// Lunar's install DIRECTORY is not stable, so identity is
+/// "`Lunar Client.exe` somewhere under `%LOCALAPPDATA%\Programs`" rather than
+/// one hard-coded path. Measured 2026-08-14 on a live Windows 11 machine:
+/// Lunar 3.7.15-ow installs to `...\Programs\Lunar Client\Lunar Client.exe`,
+/// while this code previously required `...\Programs\lunarclient\...` - a
+/// folder that did not exist, so the scan always completed as "not running"
+/// and the `launcher.json` guard never fired.
+///
+/// The file name is still exact (caseless): `Uninstall Lunar Client.exe` and
+/// `resources\elevate.exe` sit in that same folder and must never match.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_lunar_launcher_exe(exe: &Path, programs_root: &Path) -> bool {
+    caseless_has_prefix(exe, programs_root)
+        && exe
+            .file_name()
+            .is_some_and(|name| caseless_component_eq(name, OsStr::new("Lunar Client.exe")))
 }
 
 /// True when Lunar's GAME JVM is running: any process whose executable lives
@@ -112,27 +149,20 @@ fn lunar_exe_from(local_app_data: Option<&OsStr>) -> Result<PathBuf, String> {
 /// the last roster on disk describes a world that no longer exists and must
 /// not be rendered.
 pub fn game_jvm_running(home: &Path) -> bool {
+    !game_jvm_pids(home).is_empty()
+}
+
+/// The game JVM's pids, by the identity `game_jvm_running` describes. The
+/// Windows hide worker uses them to recognise a CONSOLE window that belongs to
+/// the game - and, just as importantly, to leave every OTHER window of that
+/// same process (the Minecraft window itself) alone.
+pub fn game_jvm_pids(home: &Path) -> Vec<u32> {
     let jre_root = home.join(".lunarclient/jre");
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-    );
-    system.processes().iter().any(|(_, process)| {
-        process
-            .exe()
-            .is_some_and(|exe| path_has_prefix(exe, &jre_root) && is_game_java_tail(exe))
-    })
+    pids_where(move |exe| path_has_prefix(exe, &jre_root) && is_game_java_tail(exe))
 }
 
 // Per-platform path identity. macOS keeps the exact std comparisons it has
 // always used; Windows dispatches to the caseless component logic below.
-
-#[cfg(windows)]
-fn paths_equal(a: &Path, b: &Path) -> bool {
-    caseless_paths_equal(a, b)
-}
 
 #[cfg(not(windows))]
 fn path_has_prefix(path: &Path, prefix: &Path) -> bool {
@@ -163,18 +193,6 @@ fn is_game_java_tail(exe: &Path) -> bool {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn caseless_component_eq(a: &OsStr, b: &OsStr) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn caseless_paths_equal(a: &Path, b: &Path) -> bool {
-    let (mut ca, mut cb) = (a.components(), b.components());
-    loop {
-        match (ca.next(), cb.next()) {
-            (None, None) => return true,
-            (Some(x), Some(y)) if caseless_component_eq(x.as_os_str(), y.as_os_str()) => {}
-            _ => return false,
-        }
-    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -346,31 +364,65 @@ mod tests {
     }
 
     #[test]
-    fn lunar_exe_rejects_every_unusable_localappdata() {
+    fn lunar_root_rejects_every_unusable_localappdata() {
         // None, empty, and relative are all "cannot determine", never a
         // completed lookup - the fail-open the config writer must never see.
-        assert!(lunar_exe_from(None).is_err());
-        assert!(lunar_exe_from(Some(OsStr::new(""))).is_err());
-        assert!(lunar_exe_from(Some(OsStr::new("AppData/Local"))).is_err());
+        assert!(lunar_programs_root(None).is_err());
+        assert!(lunar_programs_root(Some(OsStr::new(""))).is_err());
+        assert!(lunar_programs_root(Some(OsStr::new("AppData/Local"))).is_err());
     }
 
     #[test]
-    fn lunar_exe_joins_an_absolute_base() {
+    fn lunar_root_joins_an_absolute_base() {
         #[cfg(windows)]
         let base = "C:\\Users\\Jane\\AppData\\Local";
         #[cfg(not(windows))]
         let base = "/Users/jane/AppData/Local";
-        let exe = lunar_exe_from(Some(OsStr::new(base))).unwrap();
-        assert!(exe.ends_with("Lunar Client.exe"), "{}", exe.display());
+        let root = lunar_programs_root(Some(OsStr::new(base))).unwrap();
+        assert!(root.ends_with("Programs"), "{}", root.display());
+    }
+
+    /// Lunar's install folder name is not stable, so identity is the exe NAME
+    /// under `%LOCALAPPDATA%\Programs`. Both observed layouts must match, and
+    /// the neighbours that share that folder must not.
+    #[test]
+    fn lunar_launcher_exe_matches_every_observed_install_layout() {
+        let root = Path::new("C:\\Users\\Jane\\AppData\\Local\\Programs");
+        // Measured on a live machine, Lunar 3.7.15-ow:
+        assert!(is_lunar_launcher_exe(
+            Path::new("C:\\Users\\JANE\\AppData\\Local\\Programs\\Lunar Client\\Lunar Client.exe"),
+            root
+        ));
+        // The older lowercase folder name this code used to hard-code:
+        assert!(is_lunar_launcher_exe(
+            Path::new("C:\\Users\\Jane\\AppData\\Local\\Programs\\lunarclient\\Lunar Client.exe"),
+            root
+        ));
+        // Neighbours in that same folder, and anything outside Programs:
+        assert!(!is_lunar_launcher_exe(
+            Path::new("C:\\Users\\Jane\\AppData\\Local\\Programs\\Lunar Client\\Uninstall Lunar Client.exe"),
+            root
+        ));
+        assert!(!is_lunar_launcher_exe(
+            Path::new("C:\\Users\\Jane\\AppData\\Local\\Programs\\Lunar Client\\resources\\elevate.exe"),
+            root
+        ));
+        assert!(!is_lunar_launcher_exe(
+            Path::new("C:\\Games\\Lunar Client\\Lunar Client.exe"),
+            root
+        ));
     }
 
     #[test]
     fn caseless_predicates_ignore_component_case_only() {
-        assert!(caseless_paths_equal(
-            Path::new("a/B/c.TXT"),
-            Path::new("A/b/C.txt")
+        assert!(caseless_component_eq(
+            OsStr::new("Lunar Client.EXE"),
+            OsStr::new("lunar client.exe")
         ));
-        assert!(!caseless_paths_equal(Path::new("a/b"), Path::new("a/b/c")));
+        assert!(!caseless_component_eq(
+            OsStr::new("Lunar Clients.exe"),
+            OsStr::new("lunar client.exe")
+        ));
         assert!(caseless_has_prefix(
             Path::new("Users/JANE/.lunarclient/jre/x"),
             Path::new("users/jane/.lunarclient/jre")
@@ -403,9 +455,9 @@ mod tests {
         assert!(is_game_java_tail(exe));
         assert!(is_game_java_tail(Path::new("C:\\x\\bin\\JAVA.EXE")));
         assert!(!is_game_java_tail(Path::new("C:\\x\\bin\\notjava.exe")));
-        assert!(paths_equal(
+        assert!(is_lunar_launcher_exe(
             Path::new("C:\\Users\\JANE\\AppData\\Local\\Programs\\lunarclient\\Lunar Client.exe"),
-            &lunar_exe_from(Some(OsStr::new("c:\\users\\jane\\appdata\\local"))).unwrap()
+            &lunar_programs_root(Some(OsStr::new("c:\\users\\jane\\appdata\\local"))).unwrap()
         ));
     }
 }

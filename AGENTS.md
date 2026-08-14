@@ -21,6 +21,12 @@
 - Build with `./gradlew build` (Forge, JDK 17-21) and `./gradlew build` in `lunar/`. Run narrower
   relevant checks first when available. Note `harness.LaneContrastTest` is a wall-clock benchmark,
   not a correctness test - it dominates the Forge suite runtime and is timing-sensitive.
+- `lunar/` pins a Java 8 toolchain and Gradle must be able to SEE a JDK 8: foojay auto-provisioning
+  (resolver 0.8.0) fails on Gradle 9.4 with `JvmVendorSpec ... IBM_SEMERU`. CI dodges it by
+  installing JDK 8 and passing `-Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64`; locally,
+  point `org.gradle.java.installations.paths` at a JDK 8 in `~/.gradle/gradle.properties`.
+- The `launcher/` Tauri app builds and tests on Windows as well as macOS - see `launcher/README.md`,
+  "Build on Windows". Do not treat CI as the only way to run a launcher change.
 
 ## Safety
 

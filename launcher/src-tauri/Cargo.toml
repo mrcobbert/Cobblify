@@ -23,6 +23,14 @@ tauri = { version = "2.11", features = [] }
 # ShellExecute-based deep-link open; `cmd /C start` is banned (console flash,
 # breaks on `&` in the URL).
 tauri-plugin-opener = "2"
+# Raw Win32 for src/hide_windows.rs only: window enumeration, ShowWindowAsync,
+# and the console-ownership lookup. 0.61 is already in the lock file via tauri's
+# own dependency tree, so this adds no new crate version to the build.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Console",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -53,11 +53,15 @@ Quit Lunar Client first, then open Cobblify Launcher. It will:
 Then click LAUNCH LUNAR. It should start the game and join Hypixel by
 itself.
 
-Unlike on Mac, the Lunar launcher window STAYS ON SCREEN on Windows -
-that's expected for now, just ignore it or minimize it.
+Lunar's own windows get minimized out of the way while the game boots.
+If one of them is a window you actually want (see below), just restore it
+from the taskbar - Cobblify stops touching a window after a moment and
+leaves it wherever you put it.
 
 The very first time, Lunar may ask you to log in - that window is real,
-log in like you always do. Same goes for Lunar updates.
+log in like you always do. Same goes for Lunar updates. If it gets
+minimized while the game is starting, click it in the taskbar and it
+stays open.
 
 The button works once per open. To launch again later, reopen Cobblify -
 or just start Lunar normally; Cobblify should load either way, you only
@@ -81,6 +85,12 @@ missing. This is per-profile, so if you switch profiles, check again.
     Lunar is still running. Quit it fully, then reopen the launcher.
     Lunar overwrites its own settings when it closes, so Cobblify waits
     rather than fighting it.
+
+    Closing the Lunar window is often NOT quitting it. Lunar can be set to
+    start with Windows and sit in the system tray, where it keeps running
+    with no window at all. Click the ^ arrow next to the clock, right-click
+    Lunar Client, and choose Quit. If you would rather it stopped doing
+    that, turn off "Start with computer" in Lunar's settings.
 
 "Conflicting jars"
     You have more than one version installed. The launcher lists them

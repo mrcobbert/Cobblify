@@ -66,6 +66,34 @@ either way; only the dmg step fails.
 The build is **blank on purpose** - no jars inside it. That is what keeps the
 backend token out of every build artifact. Jars are injected later, locally.
 
+### Build on Windows
+
+A Windows machine builds and tests the whole launcher locally - CI is the
+release gate, not the only way to see a change run. Verified 2026-08-14 on
+Windows 11:
+
+```powershell
+cd launcher
+npm ci
+npm run build                  # vite -> dist/, which generate_context! needs
+cargo test --manifest-path src-tauri/Cargo.toml
+npx tauri build --no-bundle    # -> src-tauri/target/release/cobblify-launcher.exe
+```
+
+Prerequisites: Rust (rustup, MSVC toolchain), VS Build Tools 2022 with the C++
+workload, a Windows 10/11 SDK, the WebView2 runtime (present on Windows 11), and
+Node 22. `--no-bundle` matches CI: the bundler is macOS-only here and portable
+zip packaging happens owner-side anyway.
+
+To run a local build end to end, drop the exe next to any existing `resources/`
+folder (the jars + `manifest.json` from a bundle) - resource resolution is
+relative to the executable, and the file name does not matter, so a second exe
+can sit beside the shipped one as a control.
+
+This does NOT change the distribution rules: `package-windows-bundle.sh` still
+demands a CI-built exe with matching provenance. A locally built exe is for the
+dev loop, never for a friend bundle.
+
 ## Test it without packaging
 
 `launcher/tools/test-drive.command` builds a runnable launcher using the jars
@@ -166,9 +194,26 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 - The button disables for the rest of the session after a successful
   dispatch (a second play request mid-boot has no defined meaning);
   reopening Cobblify resets it.
-- On Windows there is no hiding at all (first cut, by decision): the Lunar
-  window stays visible, and the deep link goes through ShellExecute
-  (never `cmd /C start` - it breaks on `&` and flashes a console).
+- Windows hides differently, because it has to. There is no app-level hide,
+  so `hide_windows.rs` walks the top-level windows and acts per window:
+  Lunar launcher windows (every process running `Lunar Client.exe` under
+  `%LOCALAPPDATA%\Programs` - Electron helpers share that path) are
+  MINIMIZED, and the game JVM's console window, when Lunar starts the game
+  on `java.exe` rather than `javaw.exe`, is hidden outright. A console
+  window is owned by `conhost.exe`, so its pid proves nothing; ownership
+  comes from `AttachConsole(game pid)` + `GetConsoleWindow` instead. The
+  Minecraft window is never a target. Each window is acted on at most three
+  times, so restoring one from the taskbar ends the argument - that is the
+  escape hatch for a login or update window caught in the sweep. The sweep
+  runs for 150 s (a cold start reaches the JVM long after the click) or
+  until nothing Lunar-shaped is running.
+- The deep link goes through ShellExecute on Windows (never `cmd /C start` -
+  it breaks on `&` and flashes a console).
+- The Windows exe is linked into the GUI subsystem
+  (`windows_subsystem = "windows"` in `main.rs`, release builds only). Without
+  it Windows opens a console window next to the launcher that the user cannot
+  close - closing a console kills the process attached to it. Verified against
+  the 0.9.0 bundle: PE Subsystem was 3 (CONSOLE).
 
 ## Layout
 
@@ -177,7 +222,8 @@ launcher/
   src/            UI - main.js, scene.js (three.js voxel hero), style.css
   src-tauri/
     src/main.rs         startup sequence + the two commands
-    src/hide.rs         post-launch launcher hiding - fail-soft, pid-targeted
+    src/hide.rs         post-launch launcher hiding, macOS - fail-soft, pid-targeted
+    src/hide_windows.rs the same job on Windows, per top-level window
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification, fail-closed
     src/install.rs      atomic jar install, conflict reporting

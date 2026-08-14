@@ -1,8 +1,19 @@
+// Windows: link as a GUI binary so no console window is created for the app.
+// Without this the exe is built into the CONSOLE subsystem and Windows opens a
+// conhost window alongside the launcher - one the user cannot close, because
+// closing the console terminates the process attached to it. Kept off debug
+// builds so `cargo run`/`tauri dev` still print to the terminal. No effect on
+// macOS. (Verified against the shipped 0.9.0 exe: PE Subsystem = 3, CONSOLE.)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 #[cfg(target_os = "macos")]
 mod hide;
-/// Windows first cut ships without launcher hiding (TASK decision 2, PLAN
-/// Phase 2); the no-op keeps the launch path's call site clean.
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+#[path = "hide_windows.rs"]
+mod hide;
+/// Everything else (Linux dev builds) has no hiding; the no-op keeps the
+/// launch path's call site clean.
+#[cfg(not(any(target_os = "macos", windows)))]
 mod hide {
     pub fn spawn_worker() {}
 }
@@ -57,6 +68,19 @@ fn home() -> Result<PathBuf, String> {
         .map_err(|_| "USERPROFILE is not set.".to_string())
 }
 
+/// Shown under the "Quit Lunar" heading. Closing Lunar's WINDOW is not
+/// quitting it on Windows: `computerStartup: "DOCKED"` in Lunar's own
+/// launcher.json starts it with Windows and leaves it in the notification
+/// area, windows created but hidden - measured 2026-08-14, seven live
+/// processes and not one visible window. A user in that state reads "quit
+/// Lunar", sees no Lunar, and is stuck, so the tray is named explicitly.
+#[cfg(windows)]
+const LUNAR_RUNNING_HINT: &str =
+    "Lunar may be docked in the system tray - click the ^ arrow next to the clock, \
+     right-click Lunar Client, then Quit. Then reopen Cobblify.";
+#[cfg(not(windows))]
+const LUNAR_RUNNING_HINT: &str = "Then reopen Cobblify.";
+
 fn start_up(app: &tauri::AppHandle) -> Status {
     let resource_dir = match app.path().resource_dir() {
         Ok(dir) => dir.join("resources"),
@@ -99,7 +123,7 @@ fn start_up(app: &tauri::AppHandle) -> Status {
         },
         Err(lunar_config::RegisterError::LunarRunning) => Status {
             state: "blocked",
-            message: "Then reopen Cobblify.".to_string(),
+            message: LUNAR_RUNNING_HINT.to_string(),
             mod_version: Some(version),
             conflicts: Vec::new(),
         },
@@ -181,8 +205,10 @@ struct ProgressState {
 const PLAY: &str = "lunarclient://play?serverAddress=play.hypixel.net";
 
 /// Fires the play deep link (on macOS via `open -g`, no focus steal; on
-/// Windows via ShellExecute, which has no no-focus equivalent), then hides
-/// the launcher window as soon as it appears (macOS only). The link drives
+/// Windows via ShellExecute, which has no no-focus equivalent), then gets
+/// Lunar's own windows off the screen as soon as they appear - `hide.rs` on
+/// macOS (app-level hide), `hide_windows.rs` on Windows (per-window
+/// minimize, plus the game's console window). The link drives
 /// Lunar's OWN launcher - cold start, an already-running instance, login, and
 /// the agent registered in `launcher.json` all behave exactly as a manual
 /// launch.
