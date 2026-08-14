@@ -166,6 +166,33 @@ function glowTexture() {
 
 const BOB = 0.07;
 
+// The key light's shadow frustum, in world units, fitted to what the island
+// sweeps through as it turns. The x span is the one the map is sized against;
+// y is 1.3x coarser at the same map size, so it, not x, sets the worst texel.
+const SHADOW_SPAN_X = 5.0;
+const SHADOW_SPAN_Y = 6.5;
+// Target device pixels per shadow texel. The map is resized to hold this as the
+// island's size on screen changes, instead of costing a fixed 2048x2048 whether
+// it fills the window or sits in the dash corner at 190x120 - where the texel
+// was landing at a tenth of a device pixel, nine times finer per axis than
+// anything downstream can resolve. Held constant, `radius` stays right too: it
+// counts texels, so the penumbra measured in screen pixels does not move.
+const SHADOW_TEXEL_PX = 0.8;
+const SHADOW_MIN = 256;
+const SHADOW_MAX = 2048;
+// normalBias is in world units and is meant to be about one texel, so it tracks
+// the texel rather than staying pinned to what the 2048 map wanted. (`bias` is
+// in normalised depth and does not scale with the map, so it is left alone.)
+const NORMAL_BIAS_TEXELS = 1.024;
+// The island turns once every 57 s and bobs on a 10 s sine, so the loop does not
+// need the display's refresh rate - on a 144 Hz panel it was paying 2.4x for
+// motion nothing can see. Not 30 on the homepage: there the outermost voxel
+// steps 1.7-2.3 device px per frame at 30, more than the shadow-texel jump the
+// big map exists to hide, so the silhouette itself would start stepping. In the
+// dash corner that same voxel moves 0.25 px per frame, so 30 is free there.
+const FPS_HOME = 60;
+const FPS_DASH = 30;
+
 /** World-space points that define the island silhouette: voxel centres + bed corners. */
 function islandPoints() {
   const pts = [];
@@ -346,21 +373,50 @@ export function createHeroScene(canvas) {
   // Fitting the camera to what the island actually sweeps through (verified
   // against its rotated bounds, it cannot clip) and doubling the map takes the
   // jump from 2.05 screen px to 0.51.
-  keyLight.shadow.mapSize.set(2048, 2048);
+  // Starting size only - applyFrame() sizes the map to the view from here on.
+  keyLight.shadow.mapSize.set(SHADOW_MAX, SHADOW_MAX);
   keyLight.shadow.radius = 2;
   keyLight.shadow.camera.near = 8.3;
   keyLight.shadow.camera.far = 15.1;
-  keyLight.shadow.camera.left = -2.5;
-  keyLight.shadow.camera.right = 2.5;
-  keyLight.shadow.camera.top = 3.25;
-  keyLight.shadow.camera.bottom = -3.25;
+  keyLight.shadow.camera.left = -SHADOW_SPAN_X / 2;
+  keyLight.shadow.camera.right = SHADOW_SPAN_X / 2;
+  keyLight.shadow.camera.top = SHADOW_SPAN_Y / 2;
+  keyLight.shadow.camera.bottom = -SHADOW_SPAN_Y / 2;
   // Small: with the cubes touching, an oversized bias leaks light at contact
   // edges instead of hiding inside the gap that used to be there.
   keyLight.shadow.bias = -0.0002;
   // In world units, so it has to shrink with the texel: 0.01 was ~1 texel at
-  // the old density and would be 4 at this one, eating contact shadow.
-  keyLight.shadow.normalBias = 0.0025;
+  // the old density and would be 4 at this one, eating contact shadow. One
+  // expression so it cannot drift out of step with the map size.
+  keyLight.shadow.normalBias =
+    (SHADOW_SPAN_X / SHADOW_MAX) * NORMAL_BIAS_TEXELS;
   scene.add(keyLight);
+
+  /**
+   * Sizes the shadow map so one texel lands at about SHADOW_TEXEL_PX device
+   * pixels, given how many screen pixels one world unit currently covers.
+   *
+   * Powers of two so a smooth resize steps through a handful of reallocations
+   * rather than one per frame.
+   */
+  function setShadowResolution(pxPerWorld) {
+    const want =
+      (SHADOW_SPAN_X * pxPerWorld * renderer.getPixelRatio()) / SHADOW_TEXEL_PX;
+    const n = Math.min(
+      SHADOW_MAX,
+      Math.max(SHADOW_MIN, 2 ** Math.ceil(Math.log2(Math.max(1, want)))),
+    );
+    if (n === keyLight.shadow.mapSize.x) return;
+    keyLight.shadow.mapSize.set(n, n);
+    // Three allocates the map only when it is null and never checks the size of
+    // one it already holds, so mapSize alone does nothing after the first
+    // render. shadow.dispose() is not the way out either - it frees the render
+    // target but leaves the reference, which is worse than doing nothing. Drop
+    // it by hand, or leak the texture and its framebuffer on every change.
+    keyLight.shadow.map?.dispose();
+    keyLight.shadow.map = null;
+    keyLight.shadow.normalBias = (SHADOW_SPAN_X / n) * NORMAL_BIAS_TEXELS;
+  }
 
   // Rim from behind - this is the light that carries the state colour.
   const rim = new THREE.DirectionalLight(MOOD.ready.rim, 1.15);
@@ -402,6 +458,9 @@ export function createHeroScene(canvas) {
   const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let t = 3.4; // opening pose: the bed reads clearly from the start
   let running = false;
+  let frameInterval = 1 / FPS_HOME; // applyFrame() sets this per view
+  let sinceRender = 0;
+  let paintedOnResize = false;
 
   function frame() {
     world.rotation.y = t * 0.11;
@@ -425,15 +484,21 @@ export function createHeroScene(canvas) {
       camera.top = VIEW;
       camera.bottom = -VIEW;
       camera.updateProjectionMatrix();
+      frameInterval = 1 / FPS_DASH;
+      // Width only widens the world span here; VIEW fixes the scale off height.
+      setShadowResolution(h / (2 * VIEW));
       return;
     }
+
+    frameInterval = 1 / FPS_HOME;
+    let pxPerWorld;
 
     if (layout === "stack") {
       const copy = stage?.querySelector(".copy");
       const copyH = copy?.offsetHeight ?? 0;
       const slotH = Math.max(1, h - copyH);
       const pad = 16;
-      const pxPerWorld = Math.max(
+      pxPerWorld = Math.max(
         1e-6,
         Math.min((w - 2 * pad) / sweepW, (slotH - 2 * pad) / sweepH),
       );
@@ -446,7 +511,7 @@ export function createHeroScene(canvas) {
     } else {
       const inset = pageInsetPx(stage || document.documentElement);
       const vPad = 16;
-      const pxPerWorld = Math.max(
+      pxPerWorld = Math.max(
         1e-6,
         Math.min((h - 2 * vPad) / sweepH, Math.max(1, w - inset) / sweepW),
       );
@@ -458,10 +523,32 @@ export function createHeroScene(canvas) {
       camera.left = camera.right - worldW;
     }
     camera.updateProjectionMatrix();
+    setShadowResolution(pxPerWorld);
   }
 
   function tick() {
-    t += Math.min(clock.getDelta(), 0.05);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    // Advances whether or not this frame renders, so the motion stays
+    // time-based and capping the rate does not slow the island down.
+    t += dt;
+
+    // ResizeObserver callbacks run after the animation callbacks and before the
+    // paint, so on any frame where one fires, the render below is overwritten -
+    // or thrown away outright, since setSize clears the buffer. That is not a
+    // stale frame reaching the screen, it is a whole wasted render, shadow map
+    // included. The dash drop animates width and height for 0.45 s, so it was
+    // ~27 frames of exactly that. Let the observer be the one that paints.
+    if (paintedOnResize) {
+      paintedOnResize = false;
+      sinceRender = 0;
+      return;
+    }
+
+    sinceRender += dt;
+    if (sinceRender < frameInterval) return;
+    // Carry the remainder so the long-run rate is the target rather than the
+    // next divisor of the refresh rate; clamp it so a stall cannot bank credit.
+    sinceRender = Math.min(sinceRender - frameInterval, frameInterval);
     frame();
   }
 
@@ -469,6 +556,8 @@ export function createHeroScene(canvas) {
     if (running || motion.matches || document.hidden) return;
     running = true;
     clock.getDelta(); // drop the paused interval
+    sinceRender = frameInterval; // paint on the first tick, not one interval in
+    paintedOnResize = false;
     renderer.setAnimationLoop(tick);
   }
 
@@ -487,8 +576,10 @@ export function createHeroScene(canvas) {
     }
     applyFrame();
     // Paint before the browser composites. setSize clears the drawing buffer;
-    // waiting for the animation loop is the resize flash.
+    // waiting for the animation loop is the resize flash. This render is the
+    // one that survives the frame, so tell the loop to sit the next one out.
     frame();
+    paintedOnResize = running;
   }
 
   let lastW = 0;
@@ -522,6 +613,10 @@ export function createHeroScene(canvas) {
       observer.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
       motion.removeEventListener("change", onMotion);
+      // The shadow map belongs to the light, not the renderer, so it does not
+      // go with renderer.dispose() - and this scene now reallocates it.
+      keyLight.shadow.map?.dispose();
+      keyLight.shadow.map = null;
       renderer.dispose();
     },
   };
