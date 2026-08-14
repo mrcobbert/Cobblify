@@ -21,8 +21,12 @@ import { shmeadoScrapeAndCache } from "./shmeado.js";
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+// Markers of an actual Cloudflare interstitial. `challenge-platform` is deliberately NOT here:
+// that token is the /cdn-cgi/challenge-platform/ beacon script, which Cloudflare injects into
+// EVERY proxied response including successful player pages, so matching it made the verdict a
+// pure function of the <50 KB size gate rather than of the page's content.
 const CHALLENGE_RE =
-  /just a moment|cf-challenge|turnstile|challenge-platform|attention required/i;
+  /just a moment|cf-challenge|turnstile|attention required/i;
 
 // Header + full Bedwars block live in the first ~21% (~55 KB decompressed) of the ~258 KB page.
 const NEEDLE = "stats-content-bedwars";
@@ -232,6 +236,17 @@ export async function scrapePlayerHtml(player, env) {
   try { html = await readHtmlPrefix(response); }
   catch (e) { return { ok: false, body: errBody(player, "stream_" + String(e && e.message ? e.message : e)) }; }
 
+  // A 404 is hypixel ANSWERING: there is no member by that name. That is precisely what a /nick
+  // looks like from the forum's side, so it is the NICKED verdict - the same one the shmeado
+  // source already returns for these names - and it caches like the stable state it is.
+  //
+  // This must be decided BEFORE the challenge heuristic below. The 404 page is ~42 KB, which slips
+  // under the <50 KB size gate, so while `challenge-platform` was still a challenge marker every
+  // nicked player in a lobby was read as `blocked_by_cloudflare`: it tripped the global origin
+  // breaker and rendered as a blank tab cell instead of [Nicked].
+  if (response.status === 404) {
+    return { ok: false, body: { success: false, state: "NICKED", displayName: player, httpStatus: 404 } };
+  }
   if (response.status === 403 || (html.length < 50_000 && CHALLENGE_RE.test(html))) {
     return { ok: false, body: errBody(player, "blocked_by_cloudflare", response.status) };
   }
@@ -255,7 +270,12 @@ async function scrapeAndCache(player, env, ctx, source) {
     if (scraped.body && scraped.body.error === "blocked_by_cloudflare") writeBlocked(env, ctx);
     // 429s are NOT negatively cached: the pool retries them, and a cached terminal 429
     // would poison the very lookups the backoff is about to make succeed.
-    if (!scraped.retry429) writeCached(player, scraped.body, env, ctx, NEG_TTL_SEC);
+    // A 404-sourced NICKED is not a failure at all — it caches on the stable-state TTL, exactly
+    // like the parse-sourced NICKED below, so a nicked lobby costs one origin hit per 15 min.
+    if (!scraped.retry429) {
+      writeCached(player, scraped.body, env, ctx,
+        scraped.body.state === "NICKED" ? NICKED_TTL_SEC : NEG_TTL_SEC);
+    }
     return { body: scraped.body, retry429: scraped.retry429 === true };
   }
 

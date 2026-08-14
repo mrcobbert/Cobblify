@@ -20,8 +20,9 @@ const SHMEADO_UA =
 const FETCH_TIMEOUT_MS = 15_000; // observed worst page 7.3 s; no retries
 const SHMEADO_SPACING_MS = 1500; // per-isolate politeness toward a hobby site
 
+// Actual interstitial markers only — see the note in scrape.js on why the beacon token is absent.
 const CHALLENGE_RE =
-  /just a moment|cf-challenge|turnstile|challenge-platform|attention required/i;
+  /just a moment|cf-challenge|turnstile|attention required/i;
 
 const MARKER = "window.player={";
 

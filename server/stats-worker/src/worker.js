@@ -38,8 +38,9 @@ import {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+// Actual interstitial markers only — see the note in scrape.js on why the beacon token is absent.
 const CHALLENGE_RE =
-  /just a moment|cf-challenge|turnstile|challenge-platform|attention required/i;
+  /just a moment|cf-challenge|turnstile|attention required/i;
 
 const NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
 

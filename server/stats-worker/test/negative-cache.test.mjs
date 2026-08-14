@@ -47,6 +47,13 @@ const OK_HTML = [
 ].join("\n");
 // Page loads but has no Bedwars section at all -> NICKED.
 const NICKED_HTML = "<html><body><h1>Some profile without stats</h1></body></html>";
+// A nicked player: hypixel has no such member, so /player/<nick> 404s. The real page is ~42 KB
+// and carries Cloudflare's beacon script — both reproduced here, because that combination is
+// exactly what used to slip under the <50 KB challenge gate and be misread as a block.
+const NOT_FOUND_HTML =
+  "<html><head><title>Oops! We ran into some problems. | Hypixel Forums</title></head><body>" +
+  '<script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js"></script>' +
+  "<!--" + "p".repeat(42_000) + "--></body></html>";
 // Section needle present but none of the six labels resolve -> parse_failed.
 const PARSE_FAIL_HTML = '<html><body><div id="stats-content-bedwars">markup changed</div></body></html>';
 // Challenge page (under 50 KB + challenge words) -> blocked_by_cloudflare.
@@ -79,7 +86,8 @@ const fixture = http.createServer((req, res) => {
   hits.set(name, hitCount(name) + 1);
   if (name === "PlayerA") { res.end(CHALLENGE_HTML); return; }
   if (name === "ParseFailGuy") { res.end(PARSE_FAIL_HTML); return; }
-  if (name === "OkGuy") { res.end(OK_HTML); return; }
+  if (name === "OkGuy" || name === "OkGuy2") { res.end(OK_HTML); return; }
+  if (name === "Nick404Guy") { res.statusCode = 404; res.end(NOT_FOUND_HTML); return; }
   res.end(NICKED_HTML);
 });
 
@@ -165,6 +173,31 @@ test("batch serves a cached NICKED line with zero origin traffic", async () => {
   assert.equal(line.displayName, "NickGuy");
   assert.equal(line.cached, true);
   assert.equal(hitCount("NickGuy"), before);
+});
+
+// A 404 is hypixel answering "no such member" — the normal case for a /nick'd player. It must
+// read as NICKED (so the mod renders "[Nicked]" instead of a blank cell), cache on the stable
+// NICKED TTL, and above all NOT trip the global blocked flag: one nicked player in one lobby
+// used to knock every user of the shared worker off the hypixel origin for 120 s.
+test("a 404 player page is NICKED, caches, and does not trip the blocked flag", async () => {
+  const b1 = await (await req("/bedwars/Nick404Guy")).json();
+  assert.equal(b1.success, false);
+  assert.equal(b1.state, "NICKED");
+  assert.equal(b1.displayName, "Nick404Guy");
+  assert.equal(b1.error, undefined, "a nick is an answer, not a failure");
+  assert.equal(hitCount("Nick404Guy"), 1);
+
+  await sleep(200); // let the waitUntil cache writes commit
+  const b2 = await (await req("/bedwars/Nick404Guy")).json();
+  assert.equal(b2.state, "NICKED");
+  assert.equal(b2.cached, true);
+  assert.equal(hitCount("Nick404Guy"), 1, "NICKED caches on the stable TTL, not per-lookup");
+
+  // The breaker is untouched: a fresh player still scrapes hypixel rather than the fallback.
+  const b3 = await (await req("/bedwars/OkGuy2")).json();
+  assert.equal(b3.state, "OK");
+  assert.equal(hitCount("OkGuy2"), 1);
+  assert.equal(shmeadoHitCount("OkGuy2"), 0);
 });
 
 // LAST: trips the global blocked flag for this worker instance.

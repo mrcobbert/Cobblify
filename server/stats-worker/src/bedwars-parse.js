@@ -100,5 +100,7 @@ function readExact(tokens, label) {
   return null;
 }
 
+// Actual interstitial markers only. `challenge-platform` (Cloudflare's beacon script) ships on
+// every proxied page, successful ones included, so it cannot distinguish a challenge from content.
 const CHALLENGE_RE =
-  /just a moment|cf-challenge|turnstile|challenge-platform|attention required/i;
+  /just a moment|cf-challenge|turnstile|attention required/i;
