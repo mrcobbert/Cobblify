@@ -22,7 +22,10 @@ function syncHomeLayout() {
   stage.dataset.layout = next;
   scene?.relayout?.();
 }
-new ResizeObserver(syncHomeLayout).observe(stage);
+new ResizeObserver(() => {
+  syncHomeLayout();
+  syncDashLayout();
+}).observe(stage);
 syncHomeLayout();
 
 /**
@@ -361,6 +364,7 @@ function enterDashboard() {
 const LOBBY_POLL_MS = 700;
 let lobbyTimer = null;
 let lastKey = null;
+let lastView = null; // the rendered view, kept so a resize can re-column it
 
 function startLobbyPolling() {
   if (lobbyTimer) return;
@@ -401,7 +405,12 @@ function applyLobby(d) {
   const key = `${ctx}:${d.seq ?? ""}`;
   if (key !== lastKey) {
     try {
-      dash.innerHTML = renderDashboard(d);
+      const view = viewOf(d);
+      // Hold columns only within a context - a queue must not inherit the
+      // lobby's second column just because it was on screen a moment ago.
+      const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
+      dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
+      lastView = view;
       lastKey = key;
     } catch {
       return; // a malformed roster must not blank the dashboard
@@ -414,8 +423,22 @@ function applyLobby(d) {
   dash.classList.add("on");
 }
 
+const currentCols = () =>
+  Number(dash.firstElementChild?.style.getPropertyValue("--n")) || 1;
+
+// A resized window is a different layout problem: a column may now fit that
+// didn't, and the density that fitted the old height may not fit the new one.
+// Re-columning means re-rendering, so it only happens when the count changes.
+function syncDashLayout() {
+  if (stage.dataset.view !== "dash" || !lastView || !dash.firstElementChild) return;
+  const have = currentCols();
+  const want = planCols(lastView, dash.clientWidth, have);
+  if (want !== have) dash.innerHTML = sheetHtml(lastView, want);
+  fitDash();
+}
+
 // Compact cozy → compact → dense so the roster tries to fit the window.
-// If it still overflows after dense, the dash scrolls (one column, always).
+// If it still overflows after dense, the dash scrolls.
 function fitDash() {
   dash.dataset.density = "cozy";
   for (const step of ["compact", "dense"]) {
@@ -553,13 +576,101 @@ function row(p, teamName) {
     <div class="stat cell-kd">${n2(p.kd)}</div></div>`;
 }
 
-function dashChrome(title, sub) {
-  return `<div class="dash-sticky col-head">
-    <span class="ctx"><span class="live"></span>
-      <span class="ctx-title">${title}</span>
-      <span class="ctx-sub">${sub}</span></span>
-    <span>FKDR</span><span>WLR</span><span>Finals</span><span>K/D</span>
-  </div>`;
+// ── column layout ───────────────────────────────────────────────────────────
+// A view is { title, sub, blocks }; a block is a section - a head plus its rows
+// - or an atomic one (a team) that has to stay whole. A window wide enough for
+// two readable columns gets two, so the roster fills the width instead of
+// sitting in a strip with black either side. The split is done here rather than
+// in CSS because every column has to be headed and a team must not be cut in
+// half. One column produces exactly the markup this always had.
+const MIN_COL = 560; // narrowest column that still fits a name and four stats
+const COL_GAP = 26; // keep in step with --gap in the stylesheet
+const PER_COL = 9; // lines wanted before a second column is worth opening
+const MAX_COLS = 3;
+
+const blockRows = (b) => b.n ?? b.rows?.length ?? 0;
+
+// Columns are worth opening only if there is width for a readable one and
+// enough lines to fill it. `current` is what is on screen now: a column, once
+// opened, is held until the roster drops well under the point that opened it,
+// so players trickling in and out of a lobby can't flap the layout.
+function planCols(view, width, current) {
+  const lines = units(view.blocks).reduce((s, u) => s + u.w, 0);
+  const byWidth = Math.floor((width + COL_GAP) / (MIN_COL + COL_GAP));
+  const open = Math.ceil(lines / PER_COL);
+  const hold = current > 1 && lines >= (current - 1) * PER_COL - 3 ? current : 1;
+  return Math.max(1, Math.min(MAX_COLS, byWidth, Math.max(open, hold)));
+}
+
+// Flatten to placeable units. A head weighs what a row weighs; an atomic block
+// weighs what it would have weighed split.
+function units(blocks) {
+  const out = [];
+  for (const b of blocks) {
+    if (b.atomic) {
+      out.push({ html: b.atomic, w: blockRows(b) + 1 });
+      continue;
+    }
+    if (b.head) out.push({ html: b.head, w: 1, head: true });
+    for (const r of b.rows ?? []) out.push({ html: r, w: 1 });
+    if (b.foot) out.push({ html: b.foot, w: 1 });
+  }
+  return out;
+}
+
+// Greedy fill to an even share. A column never ends on a section head - a head
+// belongs with the rows it labels - and never opens with nothing left to place.
+function columnize(blocks, n) {
+  const list = units(blocks);
+  if (n <= 1) return [list];
+  const share = list.reduce((s, u) => s + u.w, 0) / n;
+  const cols = [];
+  let col = [];
+  let acc = 0;
+  list.forEach((u, i) => {
+    col.push(u);
+    acc += u.w;
+    const left = n - cols.length - 1; // columns still to open after this one
+    const rest = list.length - i - 1; // units still to place
+    if (left > 0 && rest > left && acc >= share && !u.head) {
+      cols.push(col);
+      col = [];
+      acc = 0;
+    }
+  });
+  cols.push(col);
+  return cols;
+}
+
+const STAT_LABELS = `<span>FKDR</span><span>WLR</span><span>Finals</span><span>K/D</span>`;
+
+function sheetHtml(view, n) {
+  const cols = columnize(view.blocks, n);
+  // What columnize could actually fill, which is fewer than asked for when the
+  // blocks refuse to divide - one team bigger than the share, say. The sheet is
+  // told that number, never the wish, so it can't lay out an empty track.
+  const k = cols.length;
+  const ctx = `<span class="ctx"><span class="live"></span>
+      <span class="ctx-title">${view.title}</span>
+      <span class="ctx-sub">${view.sub}</span></span>`;
+  // One column keeps the context and the labels on a single sticky row. Past
+  // that the labels can no longer line up with one shared header, so each
+  // column heads itself and the bar carries the context alone.
+  const head =
+    k > 1
+      ? `<div class="dash-sticky ctx-bar">${ctx}</div>`
+      : `<div class="dash-sticky col-head">${ctx}${STAT_LABELS}</div>`;
+  const body = cols
+    .map((col) => {
+      const labels = k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
+      return `<div class="col">${labels}${col.map((u) => u.html).join("")}</div>`;
+    })
+    .join("");
+  return `<div class="sheet" style="--n:${k}">${head}${body}</div>`;
+}
+
+function sectHead(title, note) {
+  return `<div class="sect"><h3>${title}</h3><span class="n">${note}</span></div>`;
 }
 
 function roster(players, teamOf) {
@@ -586,10 +697,12 @@ function withoutParty(d, players) {
   return (players ?? []).filter((p) => !names.has(p.name));
 }
 
-function partySection(list, teamOf) {
-  if (!list || !list.length) return "";
-  return `<div class="sect"><h3>Your Party</h3><span class="n">${list.length}</span></div>
-    ${roster(list, teamOf)}`;
+function partyBlock(list, teamOf) {
+  if (!list || !list.length) return null;
+  return {
+    head: sectHead("Your Party", list.length),
+    rows: list.map((p) => row(p, teamOf?.get(p.name))),
+  };
 }
 
 function teamAvg(t) {
@@ -597,62 +710,77 @@ function teamAvg(t) {
   return ok.length ? ok.reduce((s, p) => s + (p.fkdr ?? 0), 0) / ok.length : 0;
 }
 
-function renderDashboard(d) {
+function viewOf(d) {
   const ctx = d.context;
-  if (ctx === "QUEUE") return renderQueue(d);
-  if (ctx === "GAME") return renderGame(d);
-  return renderLobby(d);
+  if (ctx === "QUEUE") return viewQueue(d);
+  if (ctx === "GAME") return viewGame(d);
+  return viewLobby(d);
 }
 
-function renderLobby(d) {
+function viewLobby(d) {
   const all = d.players ?? [];
   const rest = bySweat(withoutParty(d, all));
-  return `<div class="sheet">
-    ${dashChrome("Main Lobby", `· ${all.length} players`)}
-    ${rest.length ? `<div class="sect"><h3>Lobby</h3><span class="n">${rest.length}</span></div>${roster(rest)}` : ""}
-    ${partySection(d.yourParty)}
-  </div>`;
+  const blocks = [];
+  if (rest.length) {
+    blocks.push({ head: sectHead("Lobby", rest.length), rows: rest.map((p) => row(p)) });
+  }
+  const party = partyBlock(d.yourParty);
+  if (party) blocks.push(party);
+  return { title: "Main Lobby", sub: `· ${all.length} players`, blocks };
 }
 
-function renderQueue(d) {
+function viewQueue(d) {
   const all = d.players ?? [];
   const rest = bySweat(withoutParty(d, all));
   const parties = typeof d.partyCount === "number" ? `${d.partyCount} parties · ` : "";
-  const title = d.mode ? `${esc(d.mode)} Queue` : "Queue";
-  return `<div class="sheet">
-    ${dashChrome(title, `· ${parties}${all.length} known`)}
-    ${rest.length ? `<div class="sect"><h3>Chatted</h3><span class="n">only typed players resolve</span></div>${roster(rest)}` : ""}
-    <div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>
-    ${partySection(d.yourParty)}
-  </div>`;
+  const hidden = `<div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>`;
+  const blocks = [
+    rest.length
+      ? {
+          head: sectHead("Chatted", "only typed players resolve"),
+          rows: rest.map((p) => row(p)),
+          foot: hidden,
+        }
+      : { rows: [], foot: hidden },
+  ];
+  const party = partyBlock(d.yourParty);
+  if (party) blocks.push(party);
+  return {
+    title: d.mode ? `${esc(d.mode)} Queue` : "Queue",
+    sub: `· ${parties}${all.length} known`,
+    blocks,
+  };
 }
 
-function renderGame(d) {
+function viewGame(d) {
   const teamOf = teamOfPlayers(d);
   const teams = (d.teams ?? [])
     .map((t) => ({ t, agg: teamAvg(t) }))
     .sort((a, b) => b.agg - a.agg);
   const maxAgg = teams.length ? teams[0].agg : 0;
-  const teamsHtml = teams
-    .map(({ t, agg }) => {
-      const target = teams.length > 0 && agg === maxAgg;
-      const rest = bySweat(withoutParty(d, t.players));
-      const yours = rest.length === 0 && (t.players ?? []).length > 0;
-      const slug = TEAM_SLUG[t.name];
-      const teamCls = slug ? ` team-${slug}` : "";
-      const aggHtml = yours ? "" : `<span class="agg">avg FKDR ${agg.toFixed(1)}</span>`;
-      return `<div class="team${teamCls}"><div class="team-head ${target ? "targeted" : ""}"><h3>${esc(t.name)}</h3>
+  const blocks = teams.map(({ t, agg }) => {
+    const target = teams.length > 0 && agg === maxAgg;
+    const rest = bySweat(withoutParty(d, t.players));
+    const yours = rest.length === 0 && (t.players ?? []).length > 0;
+    const slug = TEAM_SLUG[t.name];
+    const teamCls = slug ? ` team-${slug}` : "";
+    const aggHtml = yours ? "" : `<span class="agg">avg FKDR ${agg.toFixed(1)}</span>`;
+    // Atomic: a team's head, colour scope and rows are placed as one unit.
+    return {
+      n: rest.length,
+      atomic: `<div class="team${teamCls}"><div class="team-head ${target ? "targeted" : ""}"><h3>${esc(t.name)}</h3>
         ${aggHtml}
         ${target ? '<span class="target-badge">Target</span>' : ""}</div>
-        ${roster(rest, teamOf)}</div>`;
-    })
-    .join("");
-  const title = d.mode ? esc(d.mode) : "Live Match";
-  return `<div class="sheet">
-    ${dashChrome(title, `· ${teams.length} teams`)}
-    ${teamsHtml}
-    ${partySection(d.yourParty, teamOf)}
-  </div>`;
+        ${roster(rest, teamOf)}</div>`,
+    };
+  });
+  const party = partyBlock(d.yourParty, teamOf);
+  if (party) blocks.push(party);
+  return {
+    title: d.mode ? esc(d.mode) : "Live Match",
+    sub: `· ${teams.length} teams`,
+    blocks,
+  };
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
@@ -883,6 +1011,7 @@ function resetPreviewSession() {
     lobbyTimer = null;
   }
   lastKey = null;
+  lastView = null;
   previewLaunchAt = null;
   joining.classList.remove("on");
   dash.classList.remove("on");

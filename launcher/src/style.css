@@ -542,12 +542,22 @@ kbd {
 }
 
 /* ── dashboard scroll region ────────────────────────────────────────────── */
+/* Safe centering (the dash is display: grid once the view switches): a roster
+   shorter than the band sits in the middle of the space under the wordmark
+   instead of hugging the top. `safe` matters - plain center would push the
+   first rows above the scrollport once the roster overflows, and they could
+   never be scrolled back into view. */
 .dash {
   position: absolute;
   inset: var(--header-band) 0 0 0;
-  padding: 0 18px 16px;
+  /* Grows to 44px so a filled sheet's first column lines up with the wordmark
+     (44 + the row's own 12), and collapses back to 18 on windows too narrow to
+     spare it. Identical to the old flat 18 at every width where the sheet is
+     still narrower than the window. */
+  padding: 0 clamp(18px, calc((100cqw - var(--content)) / 2), 44px) 16px;
   overflow-y: auto;
   overflow-x: hidden;
+  align-content: safe center;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.4s ease;
@@ -572,6 +582,14 @@ kbd {
   background: var(--bg-0);
 }
 .dash-sticky.col-head {
+  padding: 8px 12px 6px;
+}
+/* Two or more columns: the stat labels can no longer line up with one shared
+   header, so the sticky bar carries the context alone and each column heads
+   itself. */
+.dash-sticky.ctx-bar {
+  display: flex;
+  align-items: center;
   padding: 8px 12px 6px;
 }
 .col-head .ctx {
@@ -664,13 +682,45 @@ kbd {
   padding: 0;
 }
 
-/* one content column: header, party, teams/lists all share the same width */
+/* The sheet is --n columns wide, each capped at --content so rows never stretch
+   past the width they were designed for. A wide window gets a second (or third)
+   column of roster rather than one strip of content with black either side;
+   main.js picks --n from the width it actually has and the rows it has to
+   place. At --n: 1 this is the old single centered column, unchanged. */
 .sheet {
   --cols: minmax(0, 1fr) 58px 52px 64px 46px;
+  --gap: 26px;
+  /* Still a container: at one column the sticky header sits here rather than in
+     a .col, and it has to answer the same width question its rows answer. */
   container-type: inline-size;
-  max-width: var(--content);
+  display: grid;
+  grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr));
+  column-gap: var(--gap);
+  align-content: start;
+  width: 100%;
+  max-width: calc(
+    var(--content) * var(--n, 1) + var(--gap) * (var(--n, 1) - 1)
+  );
   margin-left: auto;
   margin-right: auto;
+}
+
+/* The context bar always spans the whole sheet. */
+.sheet > .dash-sticky {
+  grid-column: 1 / -1;
+}
+
+/* Each column is its own container, so the stat-dropping queries below react to
+   the column's width rather than the whole sheet's. */
+.col {
+  container-type: inline-size;
+  min-width: 0;
+}
+/* Rows placed straight into a column (a lobby or queue list, which columnize
+   may break across columns) space themselves the way .roster spaces the rows
+   it still wraps - a team's. */
+.col > .prow + .prow {
+  margin-top: 2px;
 }
 
 /* roster: name left, stats hug right */
@@ -897,9 +947,12 @@ kbd {
   padding: 6px 4px;
 }
 
-/* responsive: drop the lowest-signal stats before things get cramped */
+/* responsive: drop the lowest-signal stats before things get cramped.
+   Measured per column - --cols is redeclared on the rows themselves because a
+   container query can style a container's descendants, never the .col itself. */
 @container (max-width: 520px) {
-  .sheet {
+  .prow,
+  .col-head {
     --cols: minmax(0, 1fr) 58px 52px;
   }
   .col-head span:nth-child(4),
@@ -910,7 +963,8 @@ kbd {
   }
 }
 @container (max-width: 360px) {
-  .sheet {
+  .prow,
+  .col-head {
     --cols: minmax(0, 1fr) 58px;
   }
   .col-head span:nth-child(3),
@@ -926,7 +980,8 @@ kbd {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* density step 1: compact */
-.dash[data-density="compact"] .dash-sticky.col-head {
+.dash[data-density="compact"] .dash-sticky.col-head,
+.dash[data-density="compact"] .dash-sticky.ctx-bar {
   padding: 5px 10px 4px;
 }
 .dash[data-density="compact"] .sect,
@@ -954,7 +1009,8 @@ kbd {
 }
 
 /* density step 2: dense — the 16-player worst case */
-.dash[data-density="dense"] .dash-sticky.col-head {
+.dash[data-density="dense"] .dash-sticky.col-head,
+.dash[data-density="dense"] .dash-sticky.ctx-bar {
   padding: 4px 8px 2px;
 }
 .dash[data-density="dense"] .sect,
@@ -977,6 +1033,9 @@ kbd {
 }
 .dash[data-density="dense"] .roster {
   gap: 1px;
+}
+.dash[data-density="dense"] .col > .prow + .prow {
+  margin-top: 1px;
 }
 .dash[data-density="dense"] .prow {
   padding: 2px 8px;
@@ -1088,8 +1147,10 @@ kbd {
 .stage[data-view="dash"] .joining {
   display: flex;
 }
+/* Grid, not block: this is the display the dash's safe centering is written
+   against. */
 .stage[data-view="dash"] .dash {
-  display: block;
+  display: grid;
 }
 
 /* ── browser preview chrome (injected only when Tauri is absent) ─────────── */
