@@ -125,12 +125,32 @@ public final class LobbyExport {
 
     // ---- contract DTOs (field names ARE the JSON keys; do not rename) ----
 
+    /**
+     * Launcher header for a queue/game snapshot. Maps Hypixel's sidebar {@code Mode:} value (and
+     * {@link com.bedwarsqol.stats.BedwarsMode#label()} fallbacks) onto the demo titles:
+     * {@code Solos}, {@code Doubles}, {@code 3v3v3v3}, {@code 4v4v4v4}, {@code 4v4}.
+     * {@code Overall} and blank input are not a mode — returns null so the UI stays generic.
+     */
+    public static String dashboardModeLabel(String raw) {
+        if (raw == null) return null;
+        String v = raw.trim();
+        if (v.isEmpty()) return null;
+        if (v.equalsIgnoreCase("overall")) return null;
+        if (v.equalsIgnoreCase("solo") || v.equalsIgnoreCase("solos")) return "Solos";
+        if (v.equalsIgnoreCase("doubles")) return "Doubles";
+        if (v.equalsIgnoreCase("3v3v3v3")) return "3v3v3v3";
+        if (v.equalsIgnoreCase("4v4v4v4")) return "4v4v4v4";
+        if (v.equalsIgnoreCase("4v4")) return "4v4";
+        return v;
+    }
+
     /** Root of {@code lobby.json}; {@code seq} is injected by the writer, not this object. */
     public static final class Lobby {
         public final int v = 1;
         public String context = "MENU";     // MENU | LOBBY | QUEUE | GAME
         public boolean inHypixel;
         public String self;
+        public String mode;                  // Solos|Doubles|3v3v3v3|4v4v4v4|4v4|…; null in lobby/menu
         public Integer partyCount;           // null = unknown / feature off
         public List<Player> yourParty = new ArrayList<Player>();
         public List<Player> players = new ArrayList<Player>();

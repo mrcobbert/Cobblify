@@ -14,7 +14,7 @@ mods=("$DIR"/Cobblify-Lunar-*.jar)
 shopt -u nullglob
 
 if [ "${#agents[@]}" -ne 1 ] || [ "${#mods[@]}" -ne 1 ]; then
-  echo "  ❌ Expected exactly one Weave-Loader-Agent-*.jar and exactly one"
+  echo "  ERROR: Expected exactly one Weave-Loader-Agent-*.jar and exactly one"
   echo "     Cobblify-Lunar-*.jar next to this installer"
   echo "     (found ${#agents[@]} agent jar(s) and ${#mods[@]} mod jar(s))."
   echo "     Extract the bundle into a fresh, empty folder and run this again."
@@ -42,13 +42,13 @@ AGENT="\$HOME/.weave/$AGENT"
 LUNAR="/Applications/Lunar Client.app/Contents/MacOS/Lunar Client"
 
 if [ ! -f "\$AGENT" ]; then
-  echo "❌ Weave agent not found at: \$AGENT"
+  echo "ERROR: Weave agent not found at: \$AGENT"
   echo "   Run the Cobblify installer again."
   read -p "Press Return to close."
   exit 1
 fi
 if [ ! -x "\$LUNAR" ]; then
-  echo "❌ Lunar Client not found at: \$LUNAR"
+  echo "ERROR: Lunar Client not found at: \$LUNAR"
   echo "   Install Lunar Client first, then run this again."
   read -p "Press Return to close."
   exit 1
@@ -67,7 +67,7 @@ LAUNCHEOF
 write_launcher "$DIR/$LAUNCHER"
 write_launcher "$HOME/Desktop/$LAUNCHER"
 
-echo "  ✅ Done."
+echo "  Done."
 echo ""
 echo "  ────────────────────────────────────────────────────────────"
 echo "  A launcher named '$LAUNCHER' was placed"

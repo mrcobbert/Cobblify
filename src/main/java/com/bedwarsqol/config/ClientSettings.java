@@ -19,7 +19,7 @@ public class ClientSettings {
     /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
     public String guiAccent = "orange";
 
-    public boolean potionStatusEnabled = true;
+    public boolean potionStatusEnabled = false;
     /** Only render this HUD while in an active BedWars game (off = render everywhere). */
     public boolean potionInGameOnly = false;
     public int potionHudX = 5;
@@ -29,7 +29,7 @@ public class ClientSettings {
     /** Draw a modern translucent panel behind this HUD element. */
     public boolean potionBackgroundEnabled = false;
 
-    public boolean armorTypeEnabled = true;
+    public boolean armorTypeEnabled = false;
     public boolean armorInGameOnly = false;
     public int armorHudX = 5;
     public int armorHudY = 34;
@@ -67,7 +67,8 @@ public class ClientSettings {
     public int keystrokesHudAnchor = 8; // bottom-right by default
     public float keystrokesHudScale = 1.0f;
 
-    public boolean playerStats = false;
+    /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
+    public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
     public boolean playerStatsNametag = true;
     public boolean playerStatsTab = true;
@@ -83,25 +84,25 @@ public class ClientSettings {
      */
     public String chatStatsMode = "auto";
     /** When in an active Bedwars game, broadcast one condensed sweat line to party chat once. */
-    public boolean statsSweatReport = false;
+    public boolean statsSweatReport = true;
 
     /** Auto GG: say "gg" in chat once each time a BedWars game ends. */
-    public boolean autoGg = false;
+    public boolean autoGg = true;
 
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
-    public boolean partyJoinAlert = false;
+    public boolean partyJoinAlert = true;
 
     // --- Chat module ---
 
     /** Unlimited Chat: raise the vanilla 100-line chat history cap to 32,767 lines. */
-    public boolean chatUnlimited = false;
+    public boolean chatUnlimited = true;
     /**
      * Keep Chat History: stop the return to the main menu (server switches, disconnects) from wiping
      * chat within a session. F3+D still clears; nothing is written to disk.
      */
-    public boolean chatKeepHistory = false;
+    public boolean chatKeepHistory = true;
     /** Stack Spam Messages: collapse consecutive identical chat lines into one line with a gray (xN). */
-    public boolean chatStackSpam = false;
+    public boolean chatStackSpam = true;
     /** Sub of Stack Spam: only stack when the repeat arrives within {@link #chatStackWindowSec} of the last. */
     public boolean chatStackTimeBased = true;
     /** Seconds a line stays stackable when time-based stacking is on (1-30). */
@@ -109,27 +110,27 @@ public class ClientSettings {
     /** Sub of Stack Spam: blank lines never stack and never break a stacking chain. */
     public boolean chatStackIgnoreBlanks = true;
     /** Chat Notifications: master toggle for the chat-driven sound alerts below. */
-    public boolean chatNotifications = false;
+    public boolean chatNotifications = true;
     /** Sub: pling when another player's typed message contains your name (whole word). */
     public boolean chatNotifyMention = true;
     /** Sub: double pling when a teammate or party member says "inc"/"incoming" in an active Bedwars game. */
     public boolean chatNotifyInc = true;
     /** Copy Chat: right-click a chat line while chat is open to copy the full message to the clipboard. */
-    public boolean chatCopy = false;
+    public boolean chatCopy = true;
     /**
      * Longer Messages: raise the 1.8.9 chat cap from 100 to 256 characters (the modern-vanilla limit)
      * while connected to Hypixel. Applies to typing, pasting, and every message the mod sends.
      * See {@link com.bedwarsqol.feature.ChatLengthLimit}.
      */
-    public boolean chatLongMessages = false;
+    public boolean chatLongMessages = true;
     /** Send INC keybind: the "Send /pc INC" key (Controls menu) sends /pc INC with a 2s cooldown. */
     public boolean pcIncKey = true;
 
     /**
      * Nick Utils: master toggle for the nicked-player module. Detects Hypixel-nicked players entirely
-     * client-side (see {@link com.bedwarsqol.feature.NickUtils}). Off by default.
+     * client-side (see {@link com.bedwarsqol.feature.NickUtils}). On by default; inert off Hypixel.
      */
-    public boolean nickUtils = false;
+    public boolean nickUtils = true;
 
     /**
      * Nick Notify (sub-setting of {@link #nickUtils}): print "&lt;name&gt; is Nicked" once per nicked
@@ -146,10 +147,10 @@ public class ClientSettings {
 
     /**
      * Urchin Tags: master toggle for community-reported blacklist tags from urchin.ws, resolved
-     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). Off by
-     * default. When off the mod causes zero Urchin traffic and shows no tags.
+     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). On by
+     * default; inert off Hypixel. When off the mod causes zero Urchin traffic and shows no tags.
      */
-    public boolean urchinTags = false;
+    public boolean urchinTags = true;
     /** Sub of Urchin Tags: append the priority tag badge to the tab-list overlay. */
     public boolean urchinBadgeTab = true;
     /** Sub of Urchin Tags: one private chat line the first time a tagged player is seen each game. */
@@ -161,10 +162,11 @@ public class ClientSettings {
 
     /**
      * Seraph Tags: master toggle for the Seraph community blacklist/safelist provider (api.seraph.si),
-     * resolved server-side by the stats Worker. Off by default. When off the mod causes zero Seraph
-     * traffic and shows no tags. Independent of Urchin — either, both, or neither may be enabled.
+     * resolved server-side by the stats Worker. On by default; inert off Hypixel. When off the mod
+     * causes zero Seraph traffic and shows no tags. Independent of Urchin — either, both, or neither
+     * may be enabled.
      */
-    public boolean seraphTags = false;
+    public boolean seraphTags = true;
     /** Sub of Seraph Tags: append the priority tag badge to the tab-list overlay. */
     public boolean seraphBadgeTab = true;
     /** Sub of Seraph Tags: one private chat line the first time a tagged player is seen each game. */
@@ -177,19 +179,20 @@ public class ClientSettings {
     /**
      * Queue Tag Alert: in the Bedwars <b>pregame queue only</b>, print one Urchin/Seraph cheater-tag
      * line for a player who <b>types</b> in chat (the queue's tab list is anonymized, so nobody else
-     * can be checked). Off by default — each new name costs an outbound provider lookup, capped per
-     * queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs {@link #urchinTags} and/or
-     * {@link #seraphTags} plus a configured stats backend; disabled providers are never queried.
+     * can be checked). On by default; inert off Hypixel — each new name costs an outbound provider
+     * lookup, capped per queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs
+     * {@link #urchinTags} and/or {@link #seraphTags} plus a configured stats backend; disabled
+     * providers are never queried.
      */
-    public boolean queueTagAlert = false;
+    public boolean queueTagAlert = true;
 
     /**
      * Queue Nick Alert: in the Bedwars <b>pregame queue only</b>, print one line when a player who
-     * <b>types</b> in chat has no Mojang account (i.e. is nicked). Off by default — each new name
-     * costs an outbound name resolution, capped per queue. Independent of Nick Utils, which cannot
-     * see the queue's anonymized tab list.
+     * <b>types</b> in chat has no Mojang account (i.e. is nicked). On by default; inert off Hypixel —
+     * each new name costs an outbound name resolution, capped per queue. Independent of Nick Utils,
+     * which cannot see the queue's anonymized tab list.
      */
-    public boolean queueNickAlert = false;
+    public boolean queueNickAlert = true;
 
     // A backend may be baked into the jar at build time via the cobblify-backend.properties
     // resource (see BackendDefaults / the generateBackendProperties Gradle task) — never commit a

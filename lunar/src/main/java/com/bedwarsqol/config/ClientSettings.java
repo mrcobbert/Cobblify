@@ -43,7 +43,8 @@ public class ClientSettings {
     public int emeraldTimerHudAnchor = 2;
     public float emeraldTimerHudScale = 1.0f;
 
-    public boolean playerStats = false;
+    /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
+    public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
     public boolean playerStatsNametag = true;
     public boolean playerStatsTab = true;
@@ -59,10 +60,10 @@ public class ClientSettings {
      */
     public String chatStatsMode = "auto";
     /** When in an active Bedwars game, broadcast one condensed sweat line to party chat once. */
-    public boolean statsSweatReport = false;
+    public boolean statsSweatReport = true;
 
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
-    public boolean partyJoinAlert = false;
+    public boolean partyJoinAlert = true;
 
     // --- Chat module (Lunar keeps only the two inc pieces; Lunar Client ships the generic chat QOL
     // natively, so Unlimited/Keep History/Stack Spam/Copy Chat/mention sound live in the Forge tree only) ---
@@ -71,7 +72,7 @@ public class ClientSettings {
      * Inc Alert: double pling when a teammate or party member says "inc"/"incoming" in an active
      * Bedwars game. Standalone master here; the Forge tree nests it under Chat Notifications.
      */
-    public boolean chatNotifyInc = false;
+    public boolean chatNotifyInc = true;
     /** Send INC keybind: the "Send /pc INC" key (Controls menu) sends /pc INC with a 2s cooldown. */
     public boolean pcIncKey = true;
     /** Key code for the Send /pc INC key, echoed from the Controls menu rebind. Default unbound. */
@@ -79,9 +80,9 @@ public class ClientSettings {
 
     /**
      * Nick Utils: master toggle for the nicked-player module. Detects Hypixel-nicked players entirely
-     * client-side (see {@link com.bedwarsqol.feature.NickUtils}). Off by default.
+     * client-side (see {@link com.bedwarsqol.feature.NickUtils}). On by default; inert off Hypixel.
      */
-    public boolean nickUtils = false;
+    public boolean nickUtils = true;
 
     /**
      * Nick Notify (sub-setting of {@link #nickUtils}): print "&lt;name&gt; is Nicked" once per nicked
@@ -98,10 +99,10 @@ public class ClientSettings {
 
     /**
      * Urchin Tags: master toggle for community-reported blacklist tags from urchin.ws, resolved
-     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). Off by
-     * default. When off the mod causes zero Urchin traffic and shows no tags.
+     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). On by
+     * default; inert off Hypixel. When off the mod causes zero Urchin traffic and shows no tags.
      */
-    public boolean urchinTags = false;
+    public boolean urchinTags = true;
     /** Sub of Urchin Tags: append the priority tag badge to the tab-list overlay. */
     public boolean urchinBadgeTab = true;
     /** Sub of Urchin Tags: one private chat line the first time a tagged player is seen each game. */
@@ -113,10 +114,11 @@ public class ClientSettings {
 
     /**
      * Seraph Tags: master toggle for the Seraph community blacklist/safelist provider (api.seraph.si),
-     * resolved server-side by the stats Worker. Off by default. When off the mod causes zero Seraph
-     * traffic and shows no tags. Independent of Urchin — either, both, or neither may be enabled.
+     * resolved server-side by the stats Worker. On by default; inert off Hypixel. When off the mod
+     * causes zero Seraph traffic and shows no tags. Independent of Urchin — either, both, or neither
+     * may be enabled.
      */
-    public boolean seraphTags = false;
+    public boolean seraphTags = true;
     /** Sub of Seraph Tags: append the priority tag badge to the tab-list overlay. */
     public boolean seraphBadgeTab = true;
     /** Sub of Seraph Tags: one private chat line the first time a tagged player is seen each game. */
@@ -129,19 +131,20 @@ public class ClientSettings {
     /**
      * Queue Tag Alert: in the Bedwars <b>pregame queue only</b>, print one Urchin/Seraph cheater-tag
      * line for a player who <b>types</b> in chat (the queue's tab list is anonymized, so nobody else
-     * can be checked). Off by default — each new name costs an outbound provider lookup, capped per
-     * queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs {@link #urchinTags} and/or
-     * {@link #seraphTags} plus a configured stats backend; disabled providers are never queried.
+     * can be checked). On by default; inert off Hypixel — each new name costs an outbound provider
+     * lookup, capped per queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs
+     * {@link #urchinTags} and/or {@link #seraphTags} plus a configured stats backend; disabled
+     * providers are never queried.
      */
-    public boolean queueTagAlert = false;
+    public boolean queueTagAlert = true;
 
     /**
      * Queue Nick Alert: in the Bedwars <b>pregame queue only</b>, print one line when a player who
-     * <b>types</b> in chat has no Mojang account (i.e. is nicked). Off by default — each new name
-     * costs an outbound name resolution, capped per queue. Independent of Nick Utils, which cannot
-     * see the queue's anonymized tab list.
+     * <b>types</b> in chat has no Mojang account (i.e. is nicked). On by default; inert off Hypixel —
+     * each new name costs an outbound name resolution, capped per queue. Independent of Nick Utils,
+     * which cannot see the queue's anonymized tab list.
      */
-    public boolean queueNickAlert = false;
+    public boolean queueNickAlert = true;
 
     // A backend may be baked into the jar at build time via the cobblify-backend.properties
     // resource (see BackendDefaults / the generateBackendProperties Gradle task) — never commit a

@@ -6,8 +6,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * The strict Hypixel host-boundary gate used only by Urchin: exactly {@code hypixel.net} or a
- * {@code *.hypixel.net} subdomain (suffix boundary, never a substring), so spoof hosts get zero traffic.
+ * The strict Hypixel host-boundary gate (HypixelContext + Urchin/Seraph eligibility): exactly
+ * {@code hypixel.net} or a {@code *.hypixel.net} subdomain (suffix boundary, never a substring),
+ * so spoof hosts get zero Hypixel-feature traffic.
  */
 public class HostBoundaryTest {
 

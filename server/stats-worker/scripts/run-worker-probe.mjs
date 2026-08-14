@@ -30,11 +30,11 @@ console.log(JSON.stringify(data, null, 2));
 console.log("");
 
 if (data.verdict === "PASS") {
-  console.log("✓ DEFINITIVE: Cloudflare Worker egress CAN scrape Hypixel player pages today.");
+  console.log("PASS DEFINITIVE: Cloudflare Worker egress CAN scrape Hypixel player pages today.");
   process.exit(0);
 }
 if (data.verdict === "BLOCKED") {
-  console.log("✗ DEFINITIVE: Worker egress is BLOCKED. Use Oracle VM (or non-CF egress), not plain Workers.");
+  console.log("FAIL DEFINITIVE: Worker egress is BLOCKED. Use Oracle VM (or non-CF egress), not plain Workers.");
   process.exit(2);
 }
 console.log("? INCONCLUSIVE: inspect JSON above.");

@@ -65,8 +65,8 @@ public final class EligibilitySnapshot {
 
     /**
      * Strict Hypixel host-boundary test: exactly {@code hypixel.net} or a {@code *.hypixel.net}
-     * subdomain (suffix boundary, never a substring). A port suffix is tolerated. Used ONLY by the
-     * Urchin gate — {@link HypixelContext} keeps its looser substring check for stats.
+     * subdomain (suffix boundary, never a substring). A port suffix is tolerated. Shared by the
+     * client HypixelContext gate and the Urchin/Seraph eligibility snapshot.
      */
     public static boolean isExactHypixelHost(String serverAddress) {
         if (serverAddress == null) return false;

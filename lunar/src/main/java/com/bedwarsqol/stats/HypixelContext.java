@@ -17,8 +17,9 @@ public final class HypixelContext {
         if (mc.isSingleplayer()) return false;
         ServerData server = mc.getCurrentServerData();
         if (server == null || server.serverIP == null) return false;
-        String ip = server.serverIP.toLowerCase();
-        return ip.endsWith("hypixel.net") || ip.equals("mc.hypixel.net") || ip.contains("hypixel");
+        // Exact hypixel.net / *.hypixel.net only (port-tolerant). Spoof hosts get zero Hypixel-tab
+        // feature traffic even when those modules default on.
+        return EligibilitySnapshot.isExactHypixelHost(server.serverIP);
     }
 
     /** How long a confirmed Bedwars context outlives the raw sidebar check (see {@link #isInBedwars}). */
@@ -71,23 +72,31 @@ public final class HypixelContext {
      */
     public static boolean isInBedwarsQueue() {
         if (!isInBedwars() || isInActiveBedwarsGame()) return false;
-        return sidebarHasModeLine();
+        return sidebarModeLabel() != null;
     }
 
-    private static boolean sidebarHasModeLine() {
+    /**
+     * The sidebar {@code Mode: <label>} value (pregame queue), or {@code null} when that line is
+     * absent. Used both to detect the queue and to title the launcher dashboard.
+     */
+    public static String sidebarModeLabel() {
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc == null || mc.theWorld == null) return false;
+        if (mc == null || mc.theWorld == null) return null;
         Scoreboard board = mc.theWorld.getScoreboard();
-        if (board == null) return false;
+        if (board == null) return null;
         ScoreObjective sidebar = board.getObjectiveInDisplaySlot(1);
-        if (sidebar == null) return false;
+        if (sidebar == null) return null;
         for (net.minecraft.scoreboard.Score score : board.getSortedScores(sidebar)) {
             ScorePlayerTeam team = board.getPlayersTeam(score.getPlayerName());
             String line = EnumChatFormatting.getTextWithoutFormattingCodes(
                     ScorePlayerTeam.formatPlayerName(team, score.getPlayerName()));
-            if (line != null && line.contains("Mode:")) return true;
+            if (line == null) continue;
+            int i = line.indexOf("Mode:");
+            if (i < 0) continue;
+            String v = line.substring(i + 5).trim();
+            if (!v.isEmpty()) return v;
         }
-        return false;
+        return null;
     }
 
     /**
