@@ -18,6 +18,12 @@ export const CACHE_TTL_SEC = 900; // 15m, matches the mod's disk cache
 // re-scrape on every lookup, but short enough that transient upstream trouble self-heals.
 export const NEG_TTL_SEC = 90; // transient failures (fetch error, blocked, parse_failed, other http_*)
 export const NICKED_TTL_SEC = 900; // NICKED is a stable page state; match the counter TTL
+// A 404-sourced NICKED is inferred from an absence, not read off a page, so it is held on a short
+// L1-only lease instead of the durable 900 s one. Content cannot tell "no such member" apart from
+// "the /player/ route moved" - both render the same XenForo error - so if hypixel ever 404s broadly
+// this bounds the wrong verdict to one short window per colo rather than 15 min across every user.
+// Nearly free: the mod caches NICKED for 30 min itself, so it rarely re-asks inside this window.
+export const NICK_404_TTL_SEC = 180;
 const BLOCKED_TTL_SEC = 120; // global "origin blocked" circuit breaker
 const KV_MIN_REMAINING_SEC = 30; // a KV record this close to expiry is not worth re-warming
 

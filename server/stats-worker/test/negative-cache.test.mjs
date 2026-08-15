@@ -47,13 +47,18 @@ const OK_HTML = [
 ].join("\n");
 // Page loads but has no Bedwars section at all -> NICKED.
 const NICKED_HTML = "<html><body><h1>Some profile without stats</h1></body></html>";
-// A nicked player: hypixel has no such member, so /player/<nick> 404s. The real page is ~42 KB
-// and carries Cloudflare's beacon script — both reproduced here, because that combination is
-// exactly what used to slip under the <50 KB challenge gate and be misread as a block.
+// A nicked player: hypixel has no such member, so /player/<nick> 404s. The real page is ~42 KB,
+// carries Cloudflare's beacon script (that combination is what used to slip under the <50 KB
+// challenge gate and be misread as a block), and is rendered by XenForo's error template — the
+// marker that proves the forum itself answered, which is what licenses the NICKED verdict.
 const NOT_FOUND_HTML =
-  "<html><head><title>Oops! We ran into some problems. | Hypixel Forums</title></head><body>" +
+  '<html data-template="error"><head><title>Oops! We ran into some problems. | Hypixel Forums' +
+  "</title></head><body>" +
   '<script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js"></script>' +
   "<!--" + "p".repeat(42_000) + "--></body></html>";
+// A 404 that did NOT come from the forum app (moved route, edge error). Must stay a retryable
+// ERROR: labelling this "nicked" would mislabel every player at once.
+const EDGE_404_HTML = "<html><head><title>404 Not Found</title></head><body>edge</body></html>";
 // Section needle present but none of the six labels resolve -> parse_failed.
 const PARSE_FAIL_HTML = '<html><body><div id="stats-content-bedwars">markup changed</div></body></html>';
 // Challenge page (under 50 KB + challenge words) -> blocked_by_cloudflare.
@@ -88,6 +93,7 @@ const fixture = http.createServer((req, res) => {
   if (name === "ParseFailGuy") { res.end(PARSE_FAIL_HTML); return; }
   if (name === "OkGuy" || name === "OkGuy2") { res.end(OK_HTML); return; }
   if (name === "Nick404Guy") { res.statusCode = 404; res.end(NOT_FOUND_HTML); return; }
+  if (name === "Edge404Guy") { res.statusCode = 404; res.end(EDGE_404_HTML); return; }
   res.end(NICKED_HTML);
 });
 
@@ -198,6 +204,16 @@ test("a 404 player page is NICKED, caches, and does not trip the blocked flag", 
   assert.equal(b3.state, "OK");
   assert.equal(hitCount("OkGuy2"), 1);
   assert.equal(shmeadoHitCount("OkGuy2"), 0);
+});
+
+// The guard on the verdict above: content cannot distinguish "no such member" from "the /player/
+// route moved" once the forum answers, so the forum's own error template is what licenses NICKED.
+// A 404 from anywhere else stays ERROR rather than confidently mislabelling a real player.
+test("a 404 that the forum did not render stays ERROR, never NICKED", async () => {
+  const b = await (await req("/bedwars/Edge404Guy")).json();
+  assert.equal(b.success, false);
+  assert.equal(b.state, "ERROR");
+  assert.equal(b.error, "http_404");
 });
 
 // LAST: trips the global blocked flag for this worker instance.

@@ -22,9 +22,14 @@ import { scrapePlayerHtml } from "../src/scrape.js";
 const CF_BEACON =
   '<script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js"></script>';
 
-/** A page of `bytes` total length carrying the beacon — mimics the real 404's size class. */
-function beaconPage(bytes, inner = "") {
-  const head = `<html><head><title>Oops! We ran into some problems. | Hypixel Forums</title></head>` +
+/**
+ * A page of `bytes` total length carrying the beacon — mimics the real 404's size class.
+ * `forumError` adds XenForo's error-template marker, which on the live site sits at byte ~92 and
+ * is what proves the forum application (rather than something in front of it) produced the 404.
+ */
+function beaconPage(bytes, { inner = "", forumError = false } = {}) {
+  const head = `<html ${forumError ? 'data-template="error" ' : ""}>` +
+    `<head><title>Oops! We ran into some problems. | Hypixel Forums</title></head>` +
     `<body>${inner}${CF_BEACON}`;
   const tail = "</body></html>";
   return head + "<!--" + "p".repeat(Math.max(0, bytes - head.length - tail.length - 7)) + "-->" + tail;
@@ -40,7 +45,7 @@ function stubFetch(status, body) {
 }
 
 test("a 404 player page is NICKED, not a cloudflare block", async () => {
-  const page = beaconPage(42_600);
+  const page = beaconPage(42_600, { forumError: true });
   assert.ok(page.length < 50_000, "fixture must sit under the size gate, like the real 404");
   stubFetch(404, page);
 
@@ -53,10 +58,32 @@ test("a 404 player page is NICKED, not a cloudflare block", async () => {
   assert.equal(r.body.error, undefined, "a nick must never be reported as blocked_by_cloudflare");
 });
 
+// The other half of the verdict: a 404 the forum did NOT produce is infrastructure trouble
+// (Cloudflare, a proxy, a moved route), and calling that "nicked" would confidently mislabel every
+// player at once. It stays a retryable ERROR, exactly as before the nick verdict existed.
+test("a 404 without the forum error template is http_404, not NICKED", async () => {
+  stubFetch(404, beaconPage(42_600)); // no forumError marker
+
+  const r = await scrapePlayerHtml("LazyAndTiny", {});
+  assert.equal(r.ok, false);
+  assert.equal(r.body.state, "ERROR");
+  assert.equal(r.body.error, "http_404");
+  assert.notEqual(r.body.state, "NICKED");
+});
+
+test("a bare Cloudflare-style 404 is never read as a nick", async () => {
+  // No XenForo markup at all — an edge/proxy 404, the shape a moved route would produce.
+  stubFetch(404, "<html><head><title>404 Not Found</title></head><body>nginx</body></html>");
+
+  const r = await scrapePlayerHtml("SomeGuy", {});
+  assert.equal(r.body.state, "ERROR");
+  assert.equal(r.body.error, "http_404");
+});
+
 test("the cloudflare beacon alone never makes a page look like a challenge", async () => {
   // A short 2xx body carrying only the beacon: content-wise indistinguishable from the old
   // false positive, but it is not an interstitial and must not be treated as one.
-  stubFetch(200, beaconPage(10_000, "<div>short but real</div>"));
+  stubFetch(200, beaconPage(10_000, { inner: "<div>short but real</div>" }));
 
   const r = await scrapePlayerHtml("SomeGuy", {});
   assert.equal(r.ok, true, "beacon + small body is not evidence of a block");
