@@ -44,25 +44,26 @@ Contents/Resources/resources/.gitkeep
 EOF
 }
 
-# The same list after injection and ad-hoc signing: the three injected resource
+# The same list after injection and ad-hoc signing: the four injected resource
 # files, plus the seal codesign writes.
-# Usage: cobblify_injected_app_files <mod jar name> <agent jar name>
+# Usage: cobblify_injected_app_files <mod jar name> <agent jar name> <forge jar name>
 cobblify_injected_app_files() {
-  local mod_jar=$1 agent_jar=$2
+  local mod_jar=$1 agent_jar=$2 forge_jar=$3
   cobblify_blank_app_files
   printf '%s\n' \
     "$COBBLIFY_APP_RESOURCES/manifest.json" \
     "$COBBLIFY_APP_RESOURCES/$mod_jar" \
     "$COBBLIFY_APP_RESOURCES/$agent_jar" \
+    "$COBBLIFY_APP_RESOURCES/$forge_jar" \
     "Contents/_CodeSignature/CodeResources"
 }
 
 # The zip entry names those files get, i.e. each one prefixed with the .app
 # directory as it is stored in the archive.
-# Usage: cobblify_app_zip_entries <app dir name> <mod jar name> <agent jar name>
+# Usage: cobblify_app_zip_entries <app dir name> <mod jar> <agent jar> <forge jar>
 cobblify_app_zip_entries() {
   local app_name=$1
-  cobblify_injected_app_files "$2" "$3" | sed "s|^|$app_name/|"
+  cobblify_injected_app_files "$2" "$3" "$4" | sed "s|^|$app_name/|"
 }
 
 # A launcher build must be blank: the jars are injected into a COPY at package
@@ -80,57 +81,80 @@ $found
 Delete launcher/src-tauri/resources/*.jar and rebuild."
 }
 
-# Writes manifest.json and copies both jars into a STAGED bundle.
+# Writes manifest.json and copies all three jars into a STAGED bundle.
 #
 # The manifest shape is fixed by the Rust side (launcher/src-tauri/src/resources.rs,
 # serde with deny_unknown_fields): exactly mod_jar, agent_jar, mod_version,
-# mod_sha256, agent_sha256, all snake_case. An extra or renamed key makes the
-# launcher refuse to start, by design.
+# mod_sha256, agent_sha256, forge_jar, forge_sha256, all snake_case. An extra or
+# renamed key makes the launcher refuse to start, by design.
 #
-# Usage: cobblify_inject_app <staged app> <mod jar path> <agent jar path> <version>
+# forge_jar/forge_sha256 are optional on the Rust side ONLY so a bundle built
+# before Forge support still runs; they are all-or-nothing there, so this writer
+# always emits both. A name that is not a plain ASCII .jar leaf is refused here
+# and again by the launcher, because those strings are joined onto the resource
+# directory and opened.
+#
+# Usage: cobblify_inject_app <staged app> <mod jar> <agent jar> <version> <forge jar>
 cobblify_inject_app() {
-  local app=$1 mod_src=$2 agent_src=$3 version=$4
+  local app=$1 mod_src=$2 agent_src=$3 version=$4 forge_src=$5
   local res="$app/$COBBLIFY_APP_RESOURCES"
-  local mod_name agent_name mod_sha agent_sha
+  local mod_name agent_name forge_name mod_sha agent_sha forge_sha
 
   [ -d "$res" ] || die "$res does not exist in the staged bundle"
   [ -f "$mod_src" ] || die "mod jar not found: $mod_src"
   [ -f "$agent_src" ] || die "agent jar not found: $agent_src"
+  [ -n "$forge_src" ] || die "cobblify_inject_app now requires a forge jar argument"
+  [ -f "$forge_src" ] || die "forge jar not found: $forge_src"
 
   mod_name=$(basename "$mod_src")
   agent_name=$(basename "$agent_src")
+  forge_name=$(basename "$forge_src")
 
   # The names and version go into JSON unescaped, so refuse anything that would
   # need escaping instead of silently producing a broken manifest.
   printf '%s' "$version" | grep -Eq '^[0-9A-Za-z._+-]+$' \
     || die "version '$version' is not safe to write into manifest.json"
-  printf '%s' "$mod_name" | grep -Eq '^[0-9A-Za-z._+-]+\.jar$' \
-    || die "mod jar name '$mod_name' is not safe to write into manifest.json"
-  printf '%s' "$agent_name" | grep -Eq '^[0-9A-Za-z._+-]+\.jar$' \
-    || die "agent jar name '$agent_name' is not safe to write into manifest.json"
+  local n
+  for n in "$mod_name" "$agent_name" "$forge_name"; do
+    printf '%s' "$n" | grep -Eq '^[0-9A-Za-z._+-]+\.jar$' \
+      || die "jar name '$n' is not safe to write into manifest.json"
+    # A reserved Windows device stays a device behind any extension (NUL.jar,
+    # NUL.payload.jar), so compare the text before the FIRST period. Checked on
+    # this host too: a Mac-built bundle must not carry a name that becomes a
+    # device on a friend's Windows machine.
+    printf '%s' "${n%%.*}" \
+      | grep -Eiqv '^(con|prn|aux|nul|com[1-9]|lpt[1-9])$' \
+      || die "jar name '$n' is a reserved Windows device name"
+  done
 
   cp "$mod_src" "$res/$mod_name" || die "could not stage $mod_name"
   cp "$agent_src" "$res/$agent_name" || die "could not stage $agent_name"
+  cp "$forge_src" "$res/$forge_name" || die "could not stage $forge_name"
 
   # Hash the STAGED copies, not the sources: the manifest must describe the
   # bytes that ship, so a truncated copy is caught here rather than by a friend.
   mod_sha=$(shasum -a 256 "$res/$mod_name" | awk '{print $1}')
   agent_sha=$(shasum -a 256 "$res/$agent_name" | awk '{print $1}')
-  [ -n "$mod_sha" ] && [ -n "$agent_sha" ] || die "could not hash the staged jars"
+  forge_sha=$(shasum -a 256 "$res/$forge_name" | awk '{print $1}')
+  [ -n "$mod_sha" ] && [ -n "$agent_sha" ] && [ -n "$forge_sha" ] \
+    || die "could not hash the staged jars"
 
-  printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s"}\n' \
-    "$mod_name" "$agent_name" "$version" "$mod_sha" "$agent_sha" > "$res/manifest.json" \
+  printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s","forge_jar":"%s","forge_sha256":"%s"}\n' \
+    "$mod_name" "$agent_name" "$version" "$mod_sha" "$agent_sha" "$forge_name" "$forge_sha" \
+    > "$res/manifest.json" \
     || die "could not write manifest.json"
 
   # Read back what shipped: the launcher rejects an unexpected jar, so an extra
   # file here would be a bundle that fails on the friend's machine.
   local jars
   jars=$(find "$res" -maxdepth 1 -type f -name '*.jar' | wc -l | tr -d '[:space:]')
-  [ "$jars" = "2" ] || die "staged resources hold $jars jar(s), expected exactly 2"
+  [ "$jars" = "3" ] || die "staged resources hold $jars jar(s), expected exactly 3"
   grep -q "\"mod_sha256\":\"$mod_sha\"" "$res/manifest.json" \
     || die "manifest.json does not describe the staged mod jar"
   grep -q "\"agent_sha256\":\"$agent_sha\"" "$res/manifest.json" \
     || die "manifest.json does not describe the staged agent jar"
+  grep -q "\"forge_sha256\":\"$forge_sha\"" "$res/manifest.json" \
+    || die "manifest.json does not describe the staged forge jar"
 }
 
 # Ad-hoc signs a staged bundle and then VALIDATES the signature.

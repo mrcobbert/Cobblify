@@ -1,7 +1,14 @@
 # Cobblify Launcher
 
 A small desktop app (macOS and Windows) that installs Cobblify for Lunar
-Client and registers it so the mod loads however Lunar is started.
+Client and for a regular Forge 1.8.9 setup, and registers it so the mod loads
+however the game is started.
+
+The two targets are set up **independently**. Either can be absent, blocked or
+broken without taking the other down - a friend with Forge and no Lunar reaches
+a working app, which is exactly what the previous Lunar-only version could not
+do (it called `lunar_config::register` unconditionally and a missing
+`launcher.json` was an app-wide error).
 
 macOS is the proven platform. The Windows build is new and its live gates are
 still open (see "Ship it for Windows"); `lunar/dist/Install BedwarsQOL
@@ -49,6 +56,55 @@ Before writing it:
 
 It also installs the jars into `~/.weave/` using a same-directory temp file plus
 an atomic rename, so a running game never sees a half-written jar.
+
+## Forge
+
+The Forge build is a **pure drop-in**: Mixin is shaded into the jar and its
+manifest carries `TweakClass` + `ForceLoadAsMod`, which FML auto-registers. No
+JVM argument, no coremod, no bootstrap, no config edit. The launcher deliberately
+supports Prism only: Prism provides a documented instance-id CLI, so Forge can match
+Lunar's one-click launch, automatic Hypixel join, hidden launcher, progress text and
+external lobby/queue/game dashboard.
+
+`forge.rs` scans Prism's default instances directory and reads `mmc-pack.json`:
+
+- **Confirmed** - the metadata says Minecraft 1.8.9 *and* Forge.
+- **Incompatible** - the metadata positively says another version, another
+  loader, or that Forge is not installed. **Never offered**.
+
+**Nothing is ever installed speculatively.** Startup lists candidates; a user
+choice installs. The choice is remembered in `~/.cobblify/launcher-targets.json`
+and its Prism marker is revalidated before every install or launch.
+
+### The install transaction
+
+Forge raises `DuplicateModsFoundException` and refuses to boot with two jars
+declaring mod id `bedwarsqol`, so a stale Cobblify jar is fatal rather than
+untidy. Order is the whole safety argument:
+
+1. stage and hash the new jar - a failure here moves nothing;
+2. set aside a **foreign** jar sitting at our own destination name, so a renamed
+   local build or a privately shared artifact is preserved rather than
+   overwritten;
+3. **always** scan both `mods/` and `mods/1.8.9/` (FML loads the version-specific
+   directory too) - including when step 1 found our jar already current, which is
+   the likeliest real upgrade and the case an early return would break;
+4. commit.
+
+Nothing is ever deleted. A superseded release is **renamed** to
+`<name>.cobblify-disabled` - FML only considers `(.+).(zip|jar)$`, so the rename
+alone makes it inert, it stays in the same directory, and the user recovers it by
+renaming it back. The backup name is claimed with `create_new`, which fails
+atomically if taken; a stat-then-rename would race, and rename replaces its
+destination on both platforms. Anything Cobblify-ish that is *not* an exact
+`Cobblify-1.8.9-forge-<x.y.z>.jar` - a `-dev` build, a hand-renamed file - is
+reported and blocks, untouched.
+
+Classification is **caseless on both platforms**, unlike the Lunar path: Forge
+loads a jar however its name is cased, so an exact match would miss a lower-cased
+stale jar on a case-sensitive volume. The one exempt file is our own destination,
+identified by `canonicalize` rather than by folding a string; a candidate whose
+path cannot be resolved blocks rather than being skipped.
 
 ## Build
 
@@ -172,7 +228,14 @@ bypass, so the instructions name the System Settings path specifically.
 
 **`status()` is computed once at startup and cached.** There is deliberately no
 Retry button - it would report stale state. Blocked and error states tell the
-user to quit and reopen.
+user to quit and reopen. It now lives behind a `Mutex` because an *explicit* user
+action - choosing a Forge instance - produces a new one; it is still never
+recomputed behind the user's back, which is the invariant that mattered.
+
+**The Forge dashboard uses explicit-session freshness.** A Launch Forge click stamps a
+baseline; only a newer `~/.cobblify/lobby.json` can activate the dashboard. This gives
+Prism the same lobby/queue/game experience without identifying a system Java process or
+reading Minecraft argv. Forge progress comes from the remembered instance's FML log.
 
 **`proc.rs` is the only file allowed to use `sysinfo`.** Lunar's game JVM
 carries a live Minecraft access token in its command line, so process inspection
@@ -225,10 +288,11 @@ launcher/
     src/hide.rs         post-launch launcher hiding, macOS - fail-soft, pid-targeted
     src/hide_windows.rs the same job on Windows, per top-level window
     src/proc.rs         the only sysinfo call site
-    src/resources.rs    manifest verification, fail-closed
-    src/install.rs      atomic jar install, conflict reporting
+    src/resources.rs    manifest verification: global fail-closed, per-target isolated
+    src/install.rs      stage_verified + commit, the atomic jar primitive
+    src/forge.rs        instance detection, compatibility, quarantine, persistence
     src/lunar_config.rs the launcher.json edit
-    resources/          empty in git; jars + manifest injected at package time
+    resources/          empty in git; THREE jars + manifest injected at package time
   tools/          test-drive, check-state, test-injection, app-inject-lib
   friend/         READ ME FIRST.txt - ships to friends inside the bundle.
                   Lives OUTSIDE dist/ because Vite wipes dist/ on every build.

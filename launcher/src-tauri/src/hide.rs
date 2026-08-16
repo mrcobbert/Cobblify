@@ -40,6 +40,8 @@ pub fn spawn_worker() {
         .spawn(worker);
 }
 
+pub fn spawn_prism_worker() {}
+
 fn worker() {
     let started = Instant::now();
     loop {

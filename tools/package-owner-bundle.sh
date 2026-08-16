@@ -226,7 +226,7 @@ cp "$WEAVE_AGENT_PATH" "$lunar_jar" "$installer_cmd" "$installer_bat" "$readme_t
 staged_app="$stage/$COBBLIFY_APP_NAME"
 cp -R "$app_src" "$stage/" || die "could not stage $COBBLIFY_APP_NAME"
 cobblify_assert_blank_app "$staged_app"
-cobblify_inject_app "$staged_app" "$lunar_jar" "$WEAVE_AGENT_PATH" "$version"
+cobblify_inject_app "$staged_app" "$lunar_jar" "$WEAVE_AGENT_PATH" "$version" "$forge_jar"
 # After injection, never before: adding files invalidates whatever signature the
 # build carried. cobblify_sign_app validates with --verify --deep --strict.
 cobblify_sign_app "$staged_app"
@@ -260,7 +260,7 @@ zipinfo -1 "$bundle" | LC_ALL=C sort > "$tmpd/got_entries" \
     "Install BedwarsQOL (Lunar).bat" \
     "READ ME FIRST.txt"
   cobblify_app_zip_entries "$COBBLIFY_APP_NAME" \
-    "$(basename "$lunar_jar")" "$(basename "$WEAVE_AGENT_PATH")"
+    "$(basename "$lunar_jar")" "$(basename "$WEAVE_AGENT_PATH")" "$(basename "$forge_jar")"
 } | LC_ALL=C sort > "$tmpd/want_entries"
 if ! cmp -s "$tmpd/got_entries" "$tmpd/want_entries"; then
   echo "error: the bundle does not hold exactly the expected paths" >&2

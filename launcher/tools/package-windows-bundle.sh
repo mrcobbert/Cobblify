@@ -9,7 +9,7 @@
 #   dist-owner/Cobblify-Windows-<version>.zip
 #     Cobblify (Windows)/
 #       Cobblify Launcher.exe
-#       resources/            (mod jar, Weave agent jar, manifest.json)
+#       resources/            (Lunar jar, Weave agent jar, Forge jar, manifest.json)
 #       READ ME FIRST.txt
 #
 # Provenance is fail-closed (PLAN round-1 finding I4): the CI run ID and the
@@ -53,14 +53,17 @@ trusted_ref=$2
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required (brew install gh)"
 
 lunar_build="$repo_root/lunar/build"
+forge_build="$repo_root/versions/1.8.9-forge/build"
 
-# Delete every on-disk plaintext copy of the baked backend properties from the
-# Lunar build tree (the only tree this script builds). Wired into the EXIT trap
-# so failed runs never leave the baked url/token behind.
+# Delete every on-disk plaintext copy of the baked backend properties from BOTH
+# build trees this script builds - it gained the Forge build with Forge support,
+# and a scrub that still covered only Lunar would leave the baked url/token in
+# the Forge tree. Wired into the EXIT trap so failed runs never leave them either.
 scrub_plaintext() {
-  find "$lunar_build" -type f -name cobblify-backend.properties \
+  find "$lunar_build" "$forge_build" -type f -name cobblify-backend.properties \
     -exec rm -f {} + 2>/dev/null || true
-  rm -rf "$lunar_build/generated/backendProps" 2>/dev/null || true
+  rm -rf "$lunar_build/generated/backendProps" "$forge_build/generated/backendProps" \
+    2>/dev/null || true
 }
 
 tmpd=$(mktemp -d) || die "mktemp failed"
@@ -96,8 +99,16 @@ local_sha=$(git rev-parse HEAD)
 # appear here); both tracked modifications and untracked files fail.
 # lunar/gradlew is in the set because this script EXECUTES it - a dirty
 # wrapper could replace the whole build while HEAD still matches.
+# BOTH jars are built from the WORKING TREE, so every input to EITHER build must
+# match the trusted commit. root.gradle.kts is in the set because
+# settings.gradle.kts sets `rootProject.buildFileName = "root.gradle.kts"` - it is
+# a real Forge build file, and a dirty one would ship bytes the trusted commit
+# does not identify. The root gradlew is here for the same reason lunar/gradlew
+# is: this script EXECUTES it.
 jar_input_paths=(lunar/src lunar/build.gradle.kts lunar/settings.gradle.kts \
-  lunar/gradle.properties lunar/gradle lunar/gradlew common/src)
+  lunar/gradle.properties lunar/gradle lunar/gradlew common/src \
+  src build.gradle.kts root.gradle.kts settings.gradle.kts gradle.properties \
+  gradle gradlew versions/mainProject)
 dirty=$(git status --porcelain -- "${jar_input_paths[@]}")
 [ -z "$dirty" ] || die "jar source inputs differ from the trusted commit:
 $dirty
@@ -138,17 +149,31 @@ echo "packaging version $version"
 
 # --- build the baked Lunar jar -----------------------------------------------
 
+echo "building Forge (:1.8.9-forge:assemble)..."
+"$repo_root/gradlew" -p "$repo_root" :1.8.9-forge:assemble || die "Forge assemble failed"
+
 echo "building Lunar (assemble)..."
 ( cd "$repo_root/lunar" && ./gradlew assemble ) || die "Lunar assemble failed"
 
 lunar_jar="$repo_root/lunar/build/libs/Cobblify-Lunar-$version.jar"
 [ -f "$lunar_jar" ] || die "expected exactly $lunar_jar after the build"
+forge_jar="$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar"
+[ -f "$forge_jar" ] || die "expected exactly $forge_jar after the build"
 
-# Parsed check only; the values are never printed.
+# Parsed check only; the values are never printed. Both jars must carry the same
+# non-empty backend - a friend running Forge and Lunar side by side would
+# otherwise report to two different places. Same assertion as the macOS owner
+# script, which had it while this one checked Lunar alone.
 jar_prop() { unzip -p "$1" cobblify-backend.properties 2>/dev/null | sed -n "s/^$2=//p" | head -1; }
-[ -n "$(jar_prop "$lunar_jar" url)" ] || die "Lunar jar: baked url is empty or cobblify-backend.properties missing"
-[ -n "$(jar_prop "$lunar_jar" token)" ] || die "Lunar jar: baked token is empty"
-echo "baked backend properties verified (non-empty)"
+l_url=$(jar_prop "$lunar_jar" url); l_tok=$(jar_prop "$lunar_jar" token)
+f_url=$(jar_prop "$forge_jar" url); f_tok=$(jar_prop "$forge_jar" token)
+[ -n "$l_url" ] || die "Lunar jar: baked url is empty or cobblify-backend.properties missing"
+[ -n "$l_tok" ] || die "Lunar jar: baked token is empty"
+[ -n "$f_url" ] || die "Forge jar: baked url is empty or cobblify-backend.properties missing"
+[ -n "$f_tok" ] || die "Forge jar: baked token is empty"
+[ "$f_url" = "$l_url" ] || die "baked url differs between the Forge and Lunar jars"
+[ "$f_tok" = "$l_tok" ] || die "baked token differs between the Forge and Lunar jars"
+echo "baked backend properties verified (non-empty, identical across jars)"
 
 # --- fetch and verify the CI exe ---------------------------------------------
 
@@ -173,18 +198,33 @@ cp "$readme" "$stage/READ ME FIRST.txt"
 
 mod_name=$(basename "$lunar_jar")
 agent_name=$(basename "$WEAVE_AGENT_PATH")
+forge_name=$(basename "$forge_jar")
 cp "$lunar_jar" "$res/$mod_name"
 cp "$WEAVE_AGENT_PATH" "$res/$agent_name"
+cp "$forge_jar" "$res/$forge_name"
 
 # Same manifest shape and same hash-the-staged-copy rule as
 # launcher/tools/app-inject-lib.sh (resources.rs, deny_unknown_fields).
+# forge_jar/forge_sha256 are optional on the Rust side ONLY so a pre-Forge bundle
+# still runs; they are all-or-nothing there, so this writer always emits both.
 printf '%s' "$version" | grep -Eq '^[0-9A-Za-z._+-]+$' \
   || die "version '$version' is not safe to write into manifest.json"
+for n in "$mod_name" "$agent_name" "$forge_name"; do
+  printf '%s' "$n" | grep -Eq '^[0-9A-Za-z._+-]+[.]jar$' \
+    || die "jar name '$n' is not safe to write into manifest.json"
+  # A reserved Windows device stays a device behind ANY extension (NUL.jar,
+  # NUL.payload.jar), so compare the text before the FIRST period.
+  printf '%s' "${n%%.*}" | grep -Eiqv '^(con|prn|aux|nul|com[1-9]|lpt[1-9])$' \
+    || die "jar name '$n' is a reserved Windows device name"
+done
 mod_sha=$(shasum -a 256 "$res/$mod_name" | awk '{print $1}')
 staged_agent_sha=$(shasum -a 256 "$res/$agent_name" | awk '{print $1}')
+forge_sha=$(shasum -a 256 "$res/$forge_name" | awk '{print $1}')
 [ "$staged_agent_sha" = "$WEAVE_AGENT_SHA256" ] || die "staged agent copy is corrupt"
-printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s"}\n' \
-  "$mod_name" "$agent_name" "$version" "$mod_sha" "$staged_agent_sha" > "$res/manifest.json" \
+[ -n "$forge_sha" ] || die "could not hash the staged Forge jar"
+printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s","forge_jar":"%s","forge_sha256":"%s"}\n' \
+  "$mod_name" "$agent_name" "$version" "$mod_sha" "$staged_agent_sha" "$forge_name" "$forge_sha" \
+  > "$res/manifest.json" \
   || die "could not write manifest.json"
 
 # Bundle-level provenance record: once the zip leaves this machine, the
@@ -201,6 +241,8 @@ printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","a
   echo "mod_sha256: $mod_sha"
   echo "agent_jar: $agent_name"
   echo "agent_sha256: $staged_agent_sha"
+  echo "forge_jar: $forge_name"
+  echo "forge_sha256: $forge_sha"
 } > "$stage/PROVENANCE.txt" || die "could not write PROVENANCE.txt"
 
 # --- zip with an exact-entry assertion, then publish -------------------------
@@ -230,6 +272,7 @@ printf '%s\n' \
   "$BUNDLE_DIR_NAME/resources/manifest.json" \
   "$BUNDLE_DIR_NAME/resources/$mod_name" \
   "$BUNDLE_DIR_NAME/resources/$agent_name" \
+  "$BUNDLE_DIR_NAME/resources/$forge_name" \
   | LC_ALL=C sort > "$tmpd/want_entries"
 if ! cmp -s "$tmpd/got_entries" "$tmpd/want_entries"; then
   echo "error: the bundle does not hold exactly the expected paths" >&2
@@ -242,7 +285,7 @@ fi
 # filesystem, which is atomic.
 cp "$staged_zip" "$publish_tmp" || die "could not stage the verified bundle for publication"
 mv "$publish_tmp" "$bundle" || die "could not publish the verified bundle"
-echo "bundle entries verified (6 paths, exact match)"
+echo "bundle entries verified (7 paths, exact match)"
 
 # --- done --------------------------------------------------------------------
 

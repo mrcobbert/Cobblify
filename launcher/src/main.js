@@ -209,22 +209,18 @@ let previewLaunchAt = null;
 
 function previewInvoke(command) {
   if (command === "status") {
-    const cases = {
-      ready: { state: "ready", message: "Cobblify v0.8.0 ready", mod_version: "0.8.0", conflicts: [] },
-      lunar: { state: "blocked", message: "Then reopen Cobblify.", mod_version: "0.8.0", conflicts: [] },
-      jars: {
-        state: "blocked",
-        message: "Remove the extra one, then reopen.",
-        mod_version: "0.8.0",
-        conflicts: [
-          "/Users/you/.weave/mods/Cobblify-Lunar-0.7.2.jar",
-          "/Users/you/.weave/mods/Cobblify-Lunar-dev.jar",
-        ],
-      },
-      error: { state: "error", message: "Setup files are missing.", mod_version: null, conflicts: [] },
-    };
     const which = new URLSearchParams(location.search).get("state");
-    return new Promise((resolve) => setTimeout(() => resolve(cases[which] ?? cases.ready), 250));
+    return new Promise((resolve) =>
+      setTimeout(() => resolve(PREVIEW_STATUS[which] ?? PREVIEW_STATUS.ready), 250),
+    );
+  }
+
+  // The chooser commands each return a fresh full status, so the stub does too.
+  if (command === "choose_forge_target" || command === "confirm_forge_target") {
+    return Promise.resolve(PREVIEW_STATUS.both);
+  }
+  if (command === "pick_forge_folder") {
+    return Promise.resolve(PREVIEW_STATUS.picked);
   }
 
   if (command === "launch_lunar") {
@@ -262,6 +258,7 @@ function previewInvoke(command) {
 
 // ── initial status render (loading / ready / blocked / error) ───────────────
 function render(status) {
+  lastStatus = status;
   const state = ["ready", "blocked", "error"].includes(status.state)
     ? status.state
     : "error";
@@ -295,6 +292,145 @@ function render(status) {
 
   stage.dataset.state = state;
   scene?.setMood(state);
+  const targets = status.targets ?? [];
+  el("launch").hidden = !targets.some((t) => t.kind === "lunar" && t.state === "ready");
+  el("launch-forge").hidden = !targets.some(
+    (t) => t.kind === "forge" && t.state === "ready",
+  );
+  renderTargets(status, state);
+}
+
+// ── per-target breakdown + Forge instance chooser ───────────────────────────
+// Lunar and Forge are set up independently, so each reports for itself here: a
+// friend with Forge and no Lunar sees Forge working rather than a Lunar error.
+// Nothing on this panel installs on its own - a folder is only ever written to
+// after an explicit click, and an unmarked folder needs a second one.
+const TARGET_LABEL = { lunar: "Lunar Client", forge: "Forge" };
+const targetsBox = el("targets");
+let targetError = null;
+let confirming = null; // candidate id awaiting its "yes, this is 1.8.9 Forge"
+let lastStatus = { state: "loading", targets: [] };
+
+function node(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function renderTargets(status, state) {
+  const targets = status.targets ?? [];
+  const show = targets.length > 0 && (state === "ready" || state === "blocked");
+  targetsBox.hidden = !show;
+  if (!show) {
+    targetsBox.replaceChildren();
+    return;
+  }
+  targetsBox.replaceChildren(...targets.map(targetNode));
+  if (targetError) {
+    targetsBox.append(node("p", "alert", targetError));
+  }
+}
+
+function targetNode(t) {
+  const box = node("div", "target");
+  box.dataset.state = t.state;
+  box.append(node("div", "target-head", TARGET_LABEL[t.kind] ?? t.kind));
+
+  if (t.state === "ready" && t.path) {
+    box.append(node("p", "target-path", t.path));
+  } else {
+    box.append(node("p", "target-note", t.message));
+  }
+
+  // A jar we moved aside is named, with its new name, so it can be put back.
+  for (const moved of t.quarantined ?? []) {
+    box.append(node("p", "target-moved", `Moved aside: ${moved}`));
+  }
+  if ((t.conflicts ?? []).length) {
+    const list = node("ul", "paths selectable");
+    for (const p of t.conflicts) list.append(node("li", null, p));
+    box.append(list);
+  }
+
+  if (t.action === "choose") box.append(chooser(t));
+  return box;
+}
+
+function chooser(t) {
+  const frag = document.createDocumentFragment();
+  const list = node("ul", "cands");
+  for (const c of t.candidates ?? []) list.append(candidateNode(c));
+  if (list.childElementCount) frag.append(list);
+  return frag; // Prism-only: no generic folder picker.
+
+  const pick = node("button", "mini ghost", "Choose folder…");
+  pick.type = "button";
+  pick.addEventListener("click", () => run(() => invoke("pick_forge_folder")));
+  frag.append(pick);
+  return frag;
+}
+
+function candidateNode(c) {
+  const row = node("li", "cand");
+  row.dataset.compat = c.compat;
+
+  const left = node("div");
+  left.append(node("span", "cand-name", `${c.launcher} · ${c.name}`));
+  left.append(node("span", "cand-meta", c.compat === "incompatible" ? c.reason : c.path));
+  row.append(left);
+
+  if (c.compat === "incompatible") return row; // shown, never offered
+
+  if (confirming === c.id) {
+    // An unmarked folder carries no evidence of what it is, so the user vouches
+    // for it explicitly before anything is written into it.
+    left.append(node("span", "cand-meta", "This must be Minecraft 1.8.9 with Forge."));
+    const yes = node("button", "mini", "Confirm");
+    yes.type = "button";
+    yes.addEventListener("click", () =>
+      run(() => invoke("confirm_forge_target", { id: c.id })),
+    );
+    const no = node("button", "mini ghost", "Cancel");
+    no.type = "button";
+    no.addEventListener("click", () => {
+      confirming = null;
+      renderTargets(lastStatus, lastStatus.state);
+    });
+    row.append(yes, no);
+    return row;
+  }
+
+  const go = node("button", "mini", "Set up");
+  go.type = "button";
+  go.addEventListener("click", () => {
+    if (c.compat === "unknown") {
+      confirming = c.id;
+      renderTargets(lastStatus, lastStatus.state);
+      return;
+    }
+    run(() => invoke("choose_forge_target", { id: c.id }));
+  });
+  row.append(go);
+  return row;
+}
+
+/// Every chooser action returns a fresh full status, so the panel re-renders from
+/// one shape rather than patching itself.
+async function run(action) {
+  targetError = null;
+  for (const b of targetsBox.querySelectorAll("button")) b.disabled = true;
+  try {
+    const next = await action();
+    confirming = null;
+    if (next && typeof next === "object") {
+      lastStatus = next;
+      render(next);
+    }
+  } catch (e) {
+    targetError = String(e);
+    renderTargets(lastStatus, lastStatus.state);
+  }
 }
 
 // ── launch: stay on the homepage, narrate the boot, wait for the server ─────
@@ -310,12 +446,46 @@ const STAGE_LABEL = {
   attached: "Weave attached",
   discovered: "Mods found",
   mixing: "Loading Cobblify",
+  forge_fired: "Preparing Prism...",
+  forge_attached: "Forge started",
+  forge_discovered: "Mods found",
+  forge_mixing: "Loading Cobblify",
+  forge_settled: "In game - joining Hypixel...",
   settled: "In game - joining Hypixel…",
 };
 const PROGRESS_POLL_MS = 600;
 let progressTimer = null;
 
 const launch = el("launch");
+const launchForge = el("launch-forge");
+launchForge.addEventListener("click", async () => {
+  const label = el("launch-forge-label");
+  const error = el("launch-error");
+  error.hidden = true;
+  launchForge.disabled = true;
+  launchForge.classList.add("is-loading");
+  label.textContent = "Heading to Hypixel";
+  try {
+    await invoke("launch_forge");
+  } catch (e) {
+    error.textContent = String(e);
+    error.hidden = false;
+    launchForge.disabled = false;
+    launchForge.classList.remove("is-loading");
+    label.textContent = "Launch Forge";
+    return;
+  }
+  label.textContent = STAGE_LABEL.forge_fired;
+  progressTimer = setInterval(async () => {
+    try {
+      const p = await invoke("launch_progress");
+      if (p) label.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.forge_fired;
+    } catch {
+      // Cosmetic and fail-soft; retry on the next poll.
+    }
+  }, PROGRESS_POLL_MS);
+  startLobbyPolling();
+});
 launch.addEventListener("click", async () => {
   const label = el("launch-label");
   const error = el("launch-error");
@@ -830,6 +1000,11 @@ function mountPreviewBar(active) {
     <button type="button" data-preview="lunar">lunar running</button>
     <button type="button" data-preview="jars">jars</button>
     <button type="button" data-preview="error">error</button>
+    <span class="preview-group">forge</span>
+    <button type="button" data-preview="forge">choose</button>
+    <button type="button" data-preview="picked">picked</button>
+    <button type="button" data-preview="both">both ready</button>
+    <button type="button" data-preview="oldbundle">no forge jar</button>
     <span class="preview-group">lobby</span>
     <button type="button" data-preview="lobby">lobby</button>
     <button type="button" data-preview="joining">joining</button>
@@ -1013,6 +1188,8 @@ function resetPreviewSession() {
   lastKey = null;
   lastView = null;
   previewLaunchAt = null;
+  confirming = null;
+  targetError = null;
   joining.classList.remove("on");
   dash.classList.remove("on");
   dash.replaceChildren();
@@ -1026,19 +1203,137 @@ function resetPreviewSession() {
   el("launch-error").hidden = true;
 }
 
+// ── preview: status cases ───────────────────────────────────────────────────
+const tgt = (kind, state, message, extra) =>
+  Object.assign(
+    { kind, state, message, conflicts: [], quarantined: [], path: null, action: "none", candidates: [] },
+    extra,
+  );
+
+const LUNAR_READY = tgt("lunar", "ready", "Lunar Client", {
+  path: "/Users/you/.weave/Weave-Loader-Agent-1.3.3.jar",
+});
+const LUNAR_ABSENT = tgt("lunar", "absent", "Lunar Client is not installed.");
+
+const PREVIEW_CANDIDATES = [
+  {
+    id: "d0",
+    launcher: "CurseForge",
+    name: "Hypixel",
+    path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\Hypixel",
+    compat: "confirmed",
+    reason: "",
+  },
+  {
+    id: "d1",
+    launcher: "Chosen folder",
+    name: "my-1.8.9-pack",
+    path: "D:\\games\\my-1.8.9-pack",
+    compat: "unknown",
+    reason: "",
+  },
+  {
+    id: "d2",
+    launcher: "CurseForge",
+    name: "DawnCraft",
+    path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\DawnCraft",
+    compat: "incompatible",
+    reason: "This instance is Minecraft 1.20.1, not 1.8.9.",
+  },
+];
+
 const PREVIEW_STATUS = {
-  ready: { state: "ready", message: "Cobblify v0.8.0 ready", mod_version: "0.8.0", conflicts: [] },
-  lunar: { state: "blocked", message: "Then reopen Cobblify.", mod_version: "0.8.0", conflicts: [] },
+  ready: {
+    state: "ready",
+    message: "Cobblify v0.9.0 ready for Lunar Client - Right Shift for settings in game",
+    mod_version: "0.9.0",
+    conflicts: [],
+    targets: [LUNAR_READY, tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
+      action: "choose",
+      candidates: PREVIEW_CANDIDATES,
+    })],
+  },
+  // Both targets set up, with a superseded jar moved aside rather than deleted.
+  both: {
+    state: "ready",
+    message: "Cobblify v0.9.0 ready for Lunar Client and Forge - Right Shift for settings in game",
+    mod_version: "0.9.0",
+    conflicts: [],
+    targets: [
+      LUNAR_READY,
+      tgt("forge", "ready", "Forge", {
+        path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\Hypixel\\mods\\Cobblify-1.8.9-forge-0.9.0.jar",
+        quarantined: [
+          "C:\\Users\\you\\...\\mods\\Cobblify-1.8.9-forge-0.8.0.jar -> Cobblify-1.8.9-forge-0.8.0.jar.cobblify-disabled",
+        ],
+      }),
+    ],
+  },
+  // A Forge-only machine: no Lunar at all is NOT an app-wide error.
+  forge: {
+    state: "blocked",
+    message: "No Lunar Client found. Choose your Minecraft folder to set up Forge.",
+    mod_version: "0.9.0",
+    conflicts: [],
+    targets: [
+      LUNAR_ABSENT,
+      tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
+        action: "choose",
+        candidates: PREVIEW_CANDIDATES,
+      }),
+    ],
+  },
+  // What a hand-picked folder looks like once the backend has adopted it.
+  picked: {
+    state: "blocked",
+    message: "Choose which Minecraft folder to set Forge up in.",
+    mod_version: "0.9.0",
+    conflicts: [],
+    targets: [
+      LUNAR_ABSENT,
+      tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
+        action: "choose",
+        candidates: [
+          { id: "p1", launcher: "Chosen folder", name: "hypixel-1.8.9", path: "E:\\mc\\hypixel-1.8.9", compat: "unknown", reason: "" },
+          ...PREVIEW_CANDIDATES,
+        ],
+      }),
+    ],
+  },
+  // An old bundle with no Forge jar must NOT offer a picker that cannot succeed.
+  oldbundle: {
+    state: "blocked",
+    message: "No Lunar Client found, and this copy does not include Forge.",
+    mod_version: "0.8.0",
+    conflicts: [],
+    targets: [LUNAR_ABSENT, tgt("forge", "absent", "This copy does not include Forge.")],
+  },
+  lunar: {
+    state: "blocked",
+    message: "Then reopen Cobblify.",
+    mod_version: "0.9.0",
+    conflicts: [],
+    targets: [tgt("lunar", "blocked", "Then reopen Cobblify."), tgt("forge", "absent", "This copy does not include Forge.")],
+  },
   jars: {
     state: "blocked",
     message: "Remove the extra one, then reopen.",
-    mod_version: "0.8.0",
+    mod_version: "0.9.0",
     conflicts: [
       "/Users/you/.weave/mods/Cobblify-Lunar-0.7.2.jar",
       "/Users/you/.weave/mods/Cobblify-Lunar-dev.jar",
     ],
+    targets: [
+      tgt("lunar", "blocked", "Remove the extra one, then reopen.", {
+        conflicts: [
+          "/Users/you/.weave/mods/Cobblify-Lunar-0.7.2.jar",
+          "/Users/you/.weave/mods/Cobblify-Lunar-dev.jar",
+        ],
+      }),
+      tgt("forge", "absent", "This copy does not include Forge."),
+    ],
   },
-  error: { state: "error", message: "Setup files are missing.", mod_version: null, conflicts: [] },
+  error: { state: "error", message: "Setup files are missing.", mod_version: null, conflicts: [], targets: [] },
 };
 
 function showPreview(kind) {

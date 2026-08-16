@@ -1,5 +1,9 @@
-COBBLIFY FOR LUNAR CLIENT - macOS
-=================================
+COBBLIFY FOR LUNAR CLIENT AND FORGE - macOS
+===========================================
+
+Cobblify works with Lunar Client and with a Prism Launcher Minecraft
+1.8.9 + Forge 11.15.1.2318 instance. You can have both. If you only use
+one, the other is skipped.
 
 You only do this once.
 
@@ -39,9 +43,17 @@ Apple removed that in macOS 15, so use the System Settings steps above.
 
 Quit Lunar Client first, then open Cobblify Launcher. It will:
 
-  - install Cobblify and the Weave loader
-  - register them with Lunar Client
+  - install Cobblify and the Weave loader, and register them with Lunar
+  - offer to set up Forge (see below)
   - say "Cobblify vX.X.X ready"
+
+FORGE: Cobblify lists compatible Prism instances. You need Prism with a
+Minecraft 1.8.9 + Forge 11.15.1.2318 instance already made. Click Set up
+once; Launch Forge then starts it, hides Prism and joins Hypixel.
+
+If you already had an older Cobblify jar in there, it gets moved aside
+rather than deleted - Forge refuses to start if two copies are present.
+The launcher tells you the exact file and its new name.
 
 Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself -
 you never touch the Lunar launcher window. Cobblify hides it for you;
@@ -68,6 +80,9 @@ way, you only miss the auto-join.
     and Cobblify only works on 1.8.9.
   - press RIGHT SHIFT in game to open Cobblify's settings
 
+Launch Forge has the same loading updates and live lobby/queue/game
+dashboard as Launch Lunar.
+
 IMPORTANT: turn Lunar's "Waypoints" module OFF in the settings profile
 you actually play on. Leaving it on can make Cobblify's stats go
 missing. This is per-profile, so if you switch profiles, check again.
@@ -81,10 +96,19 @@ missing. This is per-profile, so if you switch profiles, check again.
     launcher. Lunar overwrites its own settings when it closes, so
     Cobblify waits rather than fighting it.
 
-"Conflicting jars"
-    You have more than one version installed. The launcher lists them
-    and will not delete anything it didn't put there. Remove the extra
-    one, then reopen the launcher.
+"Conflicting jars", or a message about another Cobblify jar
+    You have more than one copy installed. The launcher lists them and
+    will not delete anything it isn't certain it put there. Remove or
+    rename the extra one, then reopen the launcher.
+
+    On Forge this matters more than it sounds: the game will not start
+    at all with two copies of the same mod.
+
+I want a moved-aside jar back
+    Anything the launcher set aside is still there, in the same folder,
+    with ".cobblify-disabled" added to the end of its name. Delete that
+    bit from the name and it's exactly as it was. (Nothing is ever
+    deleted, so you can always get it back.)
 
 "This copy is incomplete"
     The download didn't finish or got corrupted. Download it again.
@@ -108,6 +132,11 @@ anything. To undo everything it changed, paste this into Terminal:
 
 Then delete Cobblify Launcher.app, and delete the ~/.weave folder if you
 don't use any other Weave mods.
+
+For Forge, delete the Cobblify jar out of your instance's "mods" folder -
+the launcher showed you exactly where it put it. You can also delete
+~/.cobblify, which is where its settings and its note of which folder
+you chose are kept.
 
 
 Questions: message Jacob.

@@ -56,8 +56,10 @@ Build it first: cd \"$repo_root/launcher\" && npm run tauri build -- --bundles a
 version="9.9.9-test"
 mod_jar="$tmpd/Cobblify-Lunar-$version.jar"
 agent_jar="$tmpd/Weave-Loader-Agent-1.3.3.jar"
+forge_jar="$tmpd/Cobblify-1.8.9-forge-$version.jar"
 printf 'fake mod jar, not a real build\n'   > "$mod_jar"
 printf 'fake weave agent, not a real one\n' > "$agent_jar"
+printf 'fake forge jar, not a real build\n' > "$forge_jar"
 
 echo "== 1. the build output is blank =="
 cobblify_assert_blank_app "$app_src"
@@ -68,22 +70,24 @@ stage="$tmpd/stage"
 mkdir "$stage"
 staged_app="$stage/$COBBLIFY_APP_NAME"
 cp -R "$app_src" "$stage/"
-cobblify_inject_app "$staged_app" "$mod_jar" "$agent_jar" "$version"
-ok "injection wrote both jars and manifest.json"
+cobblify_inject_app "$staged_app" "$mod_jar" "$agent_jar" "$version" "$forge_jar"
+ok "injection wrote all three jars and manifest.json"
 
 res="$staged_app/$COBBLIFY_APP_RESOURCES"
 manifest=$(cat "$res/manifest.json")
-for key in mod_jar agent_jar mod_version mod_sha256 agent_sha256; do
+for key in mod_jar agent_jar mod_version mod_sha256 agent_sha256 forge_jar forge_sha256; do
   case "$manifest" in
     *"\"$key\":"*) ;;
     *) fail "manifest.json has no $key" ;;
   esac
 done
 # deny_unknown_fields on the Rust side: an extra key is a hard failure there, so
-# the count must be exactly five.
+# the count must be exactly seven. forge_jar/forge_sha256 are optional there ONLY
+# so a bundle built before Forge support still runs; the writer always emits both,
+# and half a pair is a hard failure on both sides.
 keys=$(printf '%s' "$manifest" | tr ',' '\n' | grep -c '":' || true)
-[ "$keys" = "5" ] || fail "manifest.json has $keys keys, expected exactly 5"
-ok "manifest.json has exactly the 5 fields resources.rs deserialises"
+[ "$keys" = "7" ] || fail "manifest.json has $keys keys, expected exactly 7"
+ok "manifest.json has exactly the 7 fields resources.rs deserialises"
 
 expect_mod=$(shasum -a 256 "$mod_jar" | awk '{print $1}')
 case "$manifest" in
@@ -135,7 +139,7 @@ want_entries() {
       "Install BedwarsQOL (Lunar).command" \
       "Install BedwarsQOL (Lunar).bat"
     cobblify_app_zip_entries "$COBBLIFY_APP_NAME" \
-      "$(basename "$mod_jar")" "$(basename "$agent_jar")"
+      "$(basename "$mod_jar")" "$(basename "$agent_jar")" "$(basename "$forge_jar")"
   } | LC_ALL=C sort
 }
 
@@ -189,12 +193,21 @@ refuses "a version that would break the JSON is refused" \
 echo "== 8. the real Rust code reads what was injected =="
 # The strongest check available without shipping anything: run the injected
 # bundle with HOME redirected into $tmpd. If manifest.json parses under
-# deny_unknown_fields, both hashes match, and resource_dir().join("resources")
+# deny_unknown_fields, every hash matches, and resource_dir().join("resources")
 # resolves to the directory this script wrote, the launcher installs the fake
 # jars under the fake HOME. Nothing touches the real ~/.weave or ~/.lunarclient,
 # and Lunar Client is never started.
+#
+# The fake home now needs a Lunar FIXTURE. Lunar setup is gated on
+# ~/.lunarclient/settings/launcher.json existing, because an absent Lunar must be
+# reported as "not installed" rather than as an app-wide error - that is the
+# whole point of the Forge work. Without this fixture the launcher would
+# correctly skip the Lunar install and the assertions below would be proving
+# nothing.
 fake_home="$tmpd/home"
-mkdir "$fake_home"
+mkdir -p "$fake_home/.lunarclient/settings"
+printf '{"settings":{"jvm-args":"","jvmArgs":""}}\n' \
+  > "$fake_home/.lunarclient/settings/launcher.json"
 HOME="$fake_home" "$out/$COBBLIFY_APP_NAME/Contents/MacOS/cobblify-launcher" \
   >"$tmpd/app.log" 2>&1 &
 app_pid=$!
@@ -208,7 +221,15 @@ installed_agent="$fake_home/.weave/$(basename "$agent_jar")"
 [ -f "$installed_agent" ] || fail "the launcher did not install the agent jar"
 cmp -s "$installed_mod" "$mod_jar" || fail "the installed mod jar differs from the injected one"
 cmp -s "$installed_agent" "$agent_jar" || fail "the installed agent jar differs from the injected one"
-ok "the running .app found, verified and installed both injected jars"
+ok "the running .app found, verified and installed both Lunar jars"
+
+# The Forge jar must verify (a bad one would have aborted startup and taken the
+# Lunar install with it) but must NOT be installed: nothing was chosen, and the
+# launcher never picks a Minecraft folder on the user's behalf.
+stray=$(find "$fake_home" -type f -name "$(basename "$forge_jar")" -print)
+[ -z "$stray" ] || fail "the launcher installed the Forge jar without a choice being made:
+$stray"
+ok "the Forge jar was verified but NOT installed speculatively"
 
 echo
 echo "all $pass checks passed - injection, manifest, signing, verification and"

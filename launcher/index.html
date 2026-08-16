@@ -27,6 +27,9 @@
             <button class="btn" id="launch" type="button">
               <span id="launch-label">Launch Lunar</span>
             </button>
+            <button class="btn" id="launch-forge" type="button" hidden>
+              <span id="launch-forge-label">Launch Forge</span>
+            </button>
             <p class="alert" id="launch-error" role="alert" hidden></p>
           </div>
 
@@ -48,6 +51,11 @@
             <p class="lede selectable" id="error-message"></p>
             <p class="hint">Reopen to try again.</p>
           </div>
+
+          <!-- Per-target breakdown: Lunar and Forge each report for themselves, so a
+               failure on one never hides a working other. Rendered from status.targets
+               and shown in the ready and blocked states only. -->
+          <div class="targets" id="targets" hidden></div>
         </div>
       </section>
 

@@ -100,6 +100,15 @@ pub fn lunar_launcher_pids() -> Result<Vec<u32>, String> {
     Ok(pids_where(|exe| is_lunar_launcher_exe(exe, &root)))
 }
 
+#[cfg(windows)]
+pub fn prism_launcher_pids() -> Vec<u32> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return Vec::new();
+    };
+    let wanted = PathBuf::from(local).join("Programs/PrismLauncher/prismlauncher.exe");
+    pids_where(|exe| caseless_ends_with(exe, &wanted))
+}
+
 /// `%LOCALAPPDATA%\Programs`, rejecting every UNUSABLE value rather than only
 /// an absent one: an empty or relative base would join into a path that can
 /// never match a real process, the scan would complete as `false`, and the

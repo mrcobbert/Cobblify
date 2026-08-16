@@ -74,6 +74,39 @@ pub fn spawn_worker() {
         .spawn(worker);
 }
 
+pub fn spawn_prism_worker() {
+    let _ = std::thread::Builder::new()
+        .name("prism-hide".into())
+        .spawn(|| launcher_only_worker(crate::proc::prism_launcher_pids));
+}
+
+fn launcher_only_worker(pids: fn() -> Vec<u32>) {
+    let started = Instant::now();
+    while started.elapsed() < SEARCH_DEADLINE {
+        let launcher = pids();
+        if !launcher.is_empty() {
+            let sweep_started = Instant::now();
+            let mut budget = HashMap::new();
+            while sweep_started.elapsed() < SWEEP_WINDOW {
+                let launcher = pids();
+                if launcher.is_empty() {
+                    return;
+                }
+                for window in top_level_windows() {
+                    if decide(&window, &launcher, &[]) == Action::Minimize
+                        && spend(&mut budget, window.hwnd)
+                    {
+                        apply(window.hwnd, Action::Minimize);
+                    }
+                }
+                std::thread::sleep(SWEEP_INTERVAL);
+            }
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
 fn worker() {
     let started = Instant::now();
     loop {

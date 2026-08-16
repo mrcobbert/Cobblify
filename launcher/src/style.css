@@ -403,6 +403,141 @@ kbd {
   margin-top: 6px;
 }
 
+/* ── per-target breakdown ───────────────────────────────────────────────── */
+/* Lunar and Forge report independently, so this list is how a user sees that
+   one is working even when the other is not. Deliberately quiet: it sits under
+   the primary action, not in place of it. */
+.targets {
+  width: 100%;
+  margin-top: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.target {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  text-align: left;
+}
+
+.target[data-state="ready"] {
+  border-left-color: var(--aqua);
+}
+.target[data-state="blocked"] {
+  border-left-color: var(--gold);
+}
+.target[data-state="error"] {
+  border-left-color: var(--red);
+}
+
+.target-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.target-note,
+.target-path {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+/* A file we moved aside is never silent - the user is told the new name so they
+   can put it back. */
+.target-moved {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--gold);
+  word-break: break-all;
+}
+
+/* ── instance chooser ───────────────────────────────────────────────────── */
+.cands {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.cand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+}
+
+/* An instance whose own metadata says it is not Minecraft 1.8.9 with Forge is
+   shown with the reason and cannot be chosen - a click is not a substitute for
+   evidence, and installing there would stop the game booting. */
+.cand[data-compat="incompatible"] {
+  opacity: 0.55;
+}
+
+.cand-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.cand-meta {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.cand[data-compat="incompatible"] .cand-meta {
+  color: var(--gold);
+}
+
+.mini {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mini:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.mini:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mini.ghost {
+  align-self: flex-start;
+  background: none;
+}
+
 /* ── entrance ───────────────────────────────────────────────────────────── */
 /* Held until main.js stamps .lit, right after the voxel scene boots. The boot
    compiles every shader synchronously - ~0.5s on WKWebView with a cold Metal

@@ -42,6 +42,27 @@ pub fn milestone_from_log(log: &str) -> Milestone {
     best
 }
 
+pub fn milestone_from_forge_log(log: &str) -> Milestone {
+    let mut best = Milestone::Fired;
+    for line in log.lines() {
+        let here = if is_bedwarsqol_mixin(line) {
+            Milestone::Mixing
+        } else if line.contains("Forge Mod Loader has identified") && line.contains("mods to load") {
+            Milestone::Discovered
+        } else if line.contains("Forge Mod Loader version") && line.contains("loading") {
+            Milestone::Attached
+        } else {
+            continue;
+        };
+        best = best.max(here);
+    }
+    best
+}
+
+pub fn forge_loaded(log: &str) -> bool {
+    log.contains("Forge Mod Loader has successfully loaded")
+}
+
 /// `Mixing <anything>bedwarsqol<anything>` - a mixin-applying line whose target
 /// class is one of ours. Order matters: `Mixing` must come before `bedwarsqol`.
 fn is_bedwarsqol_mixin(line: &str) -> bool {
@@ -79,6 +100,17 @@ pub fn progress_for(milestone: Milestone, settled: bool) -> Progress {
         Milestone::Mixing if settled => Progress { stage: "settled", percent: 100 },
         Milestone::Mixing => Progress { stage: "mixing", percent: 85 },
     }
+}
+
+pub fn progress_for_forge(milestone: Milestone, settled: bool) -> Progress {
+    let (stage, percent) = match milestone {
+        Milestone::Fired => ("forge_fired", 10),
+        Milestone::Attached => ("forge_attached", 35),
+        Milestone::Discovered => ("forge_discovered", 60),
+        Milestone::Mixing if settled => ("forge_settled", 100),
+        Milestone::Mixing => ("forge_mixing", 85),
+    };
+    Progress { stage, percent }
 }
 
 #[cfg(test)]
@@ -173,5 +205,16 @@ Attached Weave
         assert_eq!(progress_for(Milestone::Mixing, true).stage, "settled");
         // settled has no effect on earlier stages.
         assert_eq!(progress_for(Milestone::Discovered, true).percent, 60);
+    }
+
+    #[test]
+    fn real_forge_signatures_advance_and_settle() {
+        let log = "Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n\
+Forge Mod Loader has identified 4 mods to load\n\
+Mixing GuiIngameMixin from mixins.bedwarsqol.json into net.minecraft.client.gui.GuiIngame\n\
+Forge Mod Loader has successfully loaded 4 mods";
+        assert_eq!(milestone_from_forge_log(log), Milestone::Mixing);
+        assert!(forge_loaded(log));
+        assert_eq!(progress_for_forge(Milestone::Mixing, true).stage, "forge_settled");
     }
 }
