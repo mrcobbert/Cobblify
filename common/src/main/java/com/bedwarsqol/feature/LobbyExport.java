@@ -129,19 +129,33 @@ public final class LobbyExport {
      * Launcher header for a queue/game snapshot. Maps Hypixel's sidebar {@code Mode:} value (and
      * {@link com.bedwarsqol.stats.BedwarsMode#label()} fallbacks) onto the demo titles:
      * {@code Solos}, {@code Doubles}, {@code 3v3v3v3}, {@code 4v4v4v4}, {@code 4v4}.
-     * {@code Overall} and blank input are not a mode — returns null so the UI stays generic.
+     * Recognized labels may carry a decorative, non-alphanumeric suffix from the scoreboard; that
+     * suffix is discarded so a seasonal glyph cannot leak into the launcher title. {@code Overall}
+     * and blank input are not a mode — returns null so the UI stays generic.
      */
     public static String dashboardModeLabel(String raw) {
         if (raw == null) return null;
         String v = raw.trim();
         if (v.isEmpty()) return null;
-        if (v.equalsIgnoreCase("overall")) return null;
-        if (v.equalsIgnoreCase("solo") || v.equalsIgnoreCase("solos")) return "Solos";
-        if (v.equalsIgnoreCase("doubles")) return "Doubles";
-        if (v.equalsIgnoreCase("3v3v3v3")) return "3v3v3v3";
-        if (v.equalsIgnoreCase("4v4v4v4")) return "4v4v4v4";
-        if (v.equalsIgnoreCase("4v4")) return "4v4";
+        if (isLabelWithDecoration(v, "overall")) return null;
+        if (isLabelWithDecoration(v, "solo") || isLabelWithDecoration(v, "solos")) return "Solos";
+        if (isLabelWithDecoration(v, "doubles")) return "Doubles";
+        if (isLabelWithDecoration(v, "3v3v3v3")) return "3v3v3v3";
+        if (isLabelWithDecoration(v, "4v4v4v4")) return "4v4v4v4";
+        if (isLabelWithDecoration(v, "4v4")) return "4v4";
         return v;
+    }
+
+    /** Exact label, case-insensitive, optionally followed only by whitespace/symbol decoration. */
+    private static boolean isLabelWithDecoration(String value, String label) {
+        if (value.length() < label.length()
+                || !value.regionMatches(true, 0, label, 0, label.length())) return false;
+        for (int i = label.length(); i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if (Character.isLetterOrDigit(codePoint)) return false;
+            i += Character.charCount(codePoint);
+        }
+        return true;
     }
 
     /** Root of {@code lobby.json}; {@code seq} is injected by the writer, not this object. */

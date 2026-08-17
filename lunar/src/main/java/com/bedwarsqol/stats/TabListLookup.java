@@ -37,7 +37,8 @@ public final class TabListLookup {
 
         ClientSettings cfg = BedwarsQol.config;
         // Fetch when Player Stats OR an Urchin/Seraph badge needs this player's identity.
-        if (!UrchinTag.needsTabIdentity(cfg) && !SeraphTag.needsTabIdentity(cfg)) return null;
+        boolean statsEnabled = cfg.playerStats && cfg.playerStatsTab;
+        if (!statsEnabled && !UrchinTag.needsTabIdentity(cfg) && !SeraphTag.needsTabIdentity(cfg)) return null;
 
         String name = info.getGameProfile().getName();
         boolean urchinEligible = cfg.urchinTags

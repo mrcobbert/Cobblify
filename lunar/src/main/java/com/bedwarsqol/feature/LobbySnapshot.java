@@ -15,6 +15,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,7 +74,14 @@ public final class LobbySnapshot {
         else lobby.context = "MENU";
         fillMode(lobby);
 
-        if (mc != null && mc.thePlayer != null) lobby.self = mc.thePlayer.getName();
+        if (mc != null && mc.thePlayer != null) {
+            lobby.self = mc.thePlayer.getName();
+            // Nametag stats intentionally skip the local entity, so self otherwise resolves only as
+            // a side effect of opening tab. Prime the shared cache here; both dashboard and tab read it.
+            if ("GAME".equals(lobby.context) && mc.thePlayer.getGameProfile() != null) {
+                StatsCache.ensureFetched(mc.thePlayer.getGameProfile().getId(), StatsCache.PRIORITY_TAB);
+            }
+        }
 
         ClientSettings cfg = BedwarsQol.config;
         lobby.partyCount = (cfg != null && cfg.partyJoinAlert)
@@ -85,7 +93,29 @@ public final class LobbySnapshot {
         }
 
         if ("QUEUE".equals(lobby.context)) {
-            // The queue tab list is obfuscated; only players who typed are real, named roster.
+            // Hypixel leaves party members as real player rows in the otherwise-obfuscated queue tab.
+            // Treat every real-shaped, non-NPC row there as authoritative party membership. Keep the
+            // retained /party-list roster only as a fail-soft fallback while the tab is unavailable.
+            List<LobbyExport.Player> visibleParty = new ArrayList<LobbyExport.Player>();
+            NetHandlerPlayClient net = mc == null ? null : mc.getNetHandler();
+            if (net != null) {
+                for (NetworkPlayerInfo info : net.getPlayerInfoMap()) {
+                    if (info == null || info.getGameProfile() == null) continue;
+                    GameProfile gp = info.getGameProfile();
+                    String name = gp.getName();
+                    UUID id = gp.getId();
+                    if (name == null || id == null || !NAME.matcher(name).matches()) continue;
+                    if (id.version() == 2) continue;
+                    StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
+                    visibleParty.add(player(name, id));
+                }
+            }
+            if (!visibleParty.isEmpty()) {
+                lobby.yourParty.clear();
+                lobby.yourParty.addAll(visibleParty);
+            }
+            // Keep public queue chatters for the separate launcher section. The launcher removes
+            // anyone already identified above as party, including a nicked member's current tab name.
             for (String name : LobbyChatState.queueTypers(GameSessionTracker.currentSessionId())) {
                 lobby.players.add(player(name, null));
             }

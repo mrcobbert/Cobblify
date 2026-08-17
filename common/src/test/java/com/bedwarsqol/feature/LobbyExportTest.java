@@ -20,9 +20,19 @@ public class LobbyExportTest {
     }
 
     @Test
+    public void stripsDecorativeScoreboardSuffixesFromKnownModes() {
+        assertEquals("Doubles", LobbyExport.dashboardModeLabel("Doubles 😈"));
+        assertEquals("Doubles", LobbyExport.dashboardModeLabel("doubles ☠"));
+        assertEquals("Solos", LobbyExport.dashboardModeLabel("Solo ⚔️"));
+        assertEquals("4v4v4v4", LobbyExport.dashboardModeLabel("4v4v4v4 ✦"));
+        assertNull(LobbyExport.dashboardModeLabel("Overall 😈"));
+    }
+
+    @Test
     public void passesThroughUnmappedSidebarModes() {
         assertEquals("Castle", LobbyExport.dashboardModeLabel("Castle"));
         assertEquals("Rush", LobbyExport.dashboardModeLabel(" Rush "));
+        assertEquals("Doubles Rush", LobbyExport.dashboardModeLabel("Doubles Rush"));
     }
 
     @Test

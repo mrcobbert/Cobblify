@@ -4,6 +4,7 @@ import "@fontsource/dm-mono/latin-500.css";
 import "./style.css";
 
 import { createHeroScene } from "./scene.js";
+import { aliases, dashboardParty, opponentTeams, withoutPlayers } from "./roster-identity.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -320,7 +321,18 @@ function node(tag, cls, text) {
 
 function renderTargets(status, state) {
   const targets = status.targets ?? [];
-  const show = targets.length > 0 && (state === "ready" || state === "blocked");
+  // Once every target is healthy, the paths are implementation detail rather
+  // than useful status. Keep this panel only while there is something the user
+  // may need to act on or a moved-aside jar worth calling out.
+  const needsAttention = targets.some(
+    (t) =>
+      t.state !== "ready" ||
+      t.action === "choose" ||
+      (t.conflicts ?? []).length > 0 ||
+      (t.quarantined ?? []).length > 0,
+  );
+  const show =
+    targets.length > 0 && needsAttention && (state === "ready" || state === "blocked");
   targetsBox.hidden = !show;
   if (!show) {
     targetsBox.replaceChildren();
@@ -845,39 +857,39 @@ function sectHead(title, note) {
 
 function roster(players, teamOf) {
   if (!players || !players.length) return "";
-  return `<div class="roster">${players.map((p) => row(p, teamOf?.get(p.name))).join("")}</div>`;
+  return `<div class="roster">${players.map((p) => row(p, teamNameFor(teamOf, p))).join("")}</div>`;
 }
 
 function teamOfPlayers(d) {
   const map = new Map();
   for (const t of d.teams ?? []) {
     for (const p of t.players ?? []) {
-      if (p && p.name) map.set(p.name, t.name);
+      for (const name of aliases(p)) map.set(name, t.name);
     }
   }
   return map;
 }
 
-function partyNames(d) {
-  return new Set((d.yourParty ?? []).map((p) => p.name));
-}
-
-function withoutParty(d, players) {
-  const names = partyNames(d);
-  return (players ?? []).filter((p) => !names.has(p.name));
+function teamNameFor(teamOf, player) {
+  if (!teamOf) return undefined;
+  for (const name of aliases(player)) {
+    const team = teamOf.get(name);
+    if (team) return team;
+  }
+  return undefined;
 }
 
 function partyBlock(list, teamOf) {
   if (!list || !list.length) return null;
   return {
     head: sectHead("Your Party", list.length),
-    rows: list.map((p) => row(p, teamOf?.get(p.name))),
+    rows: list.map((p) => row(p, teamNameFor(teamOf, p))),
   };
 }
 
 function teamAvg(t) {
   const ok = (t.players ?? []).filter((p) => p.state === "OK");
-  return ok.length ? ok.reduce((s, p) => s + (p.fkdr ?? 0), 0) / ok.length : 0;
+  return ok.length ? ok.reduce((s, p) => s + (p.fkdr ?? 0), 0) / ok.length : null;
 }
 
 function viewOf(d) {
@@ -889,19 +901,21 @@ function viewOf(d) {
 
 function viewLobby(d) {
   const all = d.players ?? [];
-  const rest = bySweat(withoutParty(d, all));
+  const partyPlayers = dashboardParty(d);
+  const rest = bySweat(withoutPlayers(all, partyPlayers));
   const blocks = [];
   if (rest.length) {
     blocks.push({ head: sectHead("Lobby", rest.length), rows: rest.map((p) => row(p)) });
   }
-  const party = partyBlock(d.yourParty);
+  const party = partyBlock(partyPlayers);
   if (party) blocks.push(party);
   return { title: "Main Lobby", sub: `· ${all.length} players`, blocks };
 }
 
 function viewQueue(d) {
   const all = d.players ?? [];
-  const rest = bySweat(withoutParty(d, all));
+  const partyPlayers = dashboardParty(d);
+  const rest = bySweat(withoutPlayers(all, partyPlayers));
   const parties = typeof d.partyCount === "number" ? `${d.partyCount} parties · ` : "";
   const hidden = `<div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>`;
   const blocks = [
@@ -913,7 +927,7 @@ function viewQueue(d) {
         }
       : { rows: [], foot: hidden },
   ];
-  const party = partyBlock(d.yourParty);
+  const party = partyBlock(partyPlayers);
   if (party) blocks.push(party);
   return {
     title: d.mode ? `${esc(d.mode)} Queue` : "Queue",
@@ -924,17 +938,17 @@ function viewQueue(d) {
 
 function viewGame(d) {
   const teamOf = teamOfPlayers(d);
-  const teams = (d.teams ?? [])
-    .map((t) => ({ t, agg: teamAvg(t) }))
-    .sort((a, b) => b.agg - a.agg);
-  const maxAgg = teams.length ? teams[0].agg : 0;
-  const blocks = teams.map(({ t, agg }) => {
-    const target = teams.length > 0 && agg === maxAgg;
-    const rest = bySweat(withoutParty(d, t.players));
-    const yours = rest.length === 0 && (t.players ?? []).length > 0;
+  const partyPlayers = dashboardParty(d);
+  const teams = opponentTeams(d)
+    .map((t) => ({ t, players: t.players, agg: teamAvg(t) }))
+    .sort((a, b) => (b.agg ?? -1) - (a.agg ?? -1));
+  const maxAgg = teams.length ? teams[0].agg : null;
+  const blocks = teams.map(({ t, players, agg }) => {
+    const target = maxAgg !== null && agg === maxAgg;
+    const rest = bySweat(players);
     const slug = TEAM_SLUG[t.name];
     const teamCls = slug ? ` team-${slug}` : "";
-    const aggHtml = yours ? "" : `<span class="agg">avg FKDR ${agg.toFixed(1)}</span>`;
+    const aggHtml = `<span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>`;
     // Atomic: a team's head, colour scope and rows are placed as one unit.
     return {
       n: rest.length,
@@ -944,11 +958,11 @@ function viewGame(d) {
         ${roster(rest, teamOf)}</div>`,
     };
   });
-  const party = partyBlock(d.yourParty, teamOf);
+  const party = partyBlock(partyPlayers, teamOf);
   if (party) blocks.push(party);
   return {
     title: d.mode ? esc(d.mode) : "Live Match",
-    sub: `· ${teams.length} teams`,
+    sub: `· ${(d.teams ?? []).length} teams`,
     blocks,
   };
 }
