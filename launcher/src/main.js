@@ -5,6 +5,21 @@ import "./style.css";
 
 import { createHeroScene } from "./scene.js";
 import { aliases, dashboardParty, opponentTeams, withoutPlayers } from "./roster-identity.js";
+import {
+  PREVIEW_SETUP_KEYS,
+  PREVIEW_SETUP_LABELS,
+  PREVIEW_STATUS,
+  resolvePreviewStatus,
+} from "./setup-fixtures.js";
+import { createConnectionModel } from "./connection-state.js";
+import { connectionCopy } from "./connection-view.js";
+import {
+  ISSUE,
+  launchLabel,
+  readyTargets,
+  setupBlocks,
+  topLevelError,
+} from "./setup-view.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -15,10 +30,11 @@ const scene = createHeroScene(el("hero-canvas"));
 stage.classList.add("lit");
 
 function syncHomeLayout() {
-  const w = stage.clientWidth;
-  const h = stage.clientHeight;
-  const stack = w < 780 || (h > 0 && w / h < 1.2);
-  const next = stack ? "stack" : "split";
+  // The homepage keeps its defining cabinet composition at every supported
+  // launcher size: copy on the left, voxel island on the right. The old stack
+  // breakpoint centered the wordmark and moved the art above it in narrower or
+  // taller windows, which made the launcher feel like a different screen.
+  const next = "split";
   if (stage.dataset.layout === next) return;
   stage.dataset.layout = next;
   scene?.relayout?.();
@@ -33,8 +49,8 @@ syncHomeLayout();
  * The Tauri bridge is injected by the app shell (withGlobalTauri). Outside it -
  * `npm run preview` in a browser - fall back to a stub so the whole flow can be
  * watched without touching the real Lunar config or the mod's lobby.json.
- *   ?state=ready|lunar|jars|error  picks the initial status case
- *   ?ctx=lobby|joining             lobby dashboard / joining interstitial
+ *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
+ *   ?ctx=lobby|joining|disconnected  lobby dashboard / joining / disconnected
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
  */
@@ -208,20 +224,31 @@ PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
 
 let previewLaunchAt = null;
 
-function previewInvoke(command) {
-  if (command === "status") {
+function previewInvoke(command, args) {
+  if (command === "status" || command === "refresh_setup") {
     const which = new URLSearchParams(location.search).get("state");
     return new Promise((resolve) =>
-      setTimeout(() => resolve(PREVIEW_STATUS[which] ?? PREVIEW_STATUS.ready), 250),
+      setTimeout(() => resolve(resolvePreviewStatus(which)), 250),
     );
   }
 
-  // The chooser commands each return a fresh full status, so the stub does too.
-  if (command === "choose_forge_target" || command === "confirm_forge_target") {
-    return Promise.resolve(PREVIEW_STATUS.both);
+  if (command === "get_launcher") {
+    const kind = args?.kind ?? "lunar";
+    return Promise.resolve({
+      installed: kind === "forge" ? !PREVIEW_STATUS.prismNoInstances : false,
+      download_url:
+        kind === "forge"
+          ? "https://prismlauncher.org/download/"
+          : "https://www.lunarclient.com/download",
+    });
   }
-  if (command === "pick_forge_folder") {
-    return Promise.resolve(PREVIEW_STATUS.picked);
+
+  if (command === "open_launcher" || command === "open_setup_location") {
+    return Promise.resolve();
+  }
+
+  if (command === "choose_forge_target") {
+    return Promise.resolve(PREVIEW_STATUS.bothReady);
   }
 
   if (command === "launch_lunar") {
@@ -258,191 +285,166 @@ function previewInvoke(command) {
 }
 
 // ── initial status render (loading / ready / blocked / error) ───────────────
+const setupBox = el("setup");
+let setupBusy = false;
+let lastStatus = { state: "loading", targets: [] };
+let refreshTimer = null;
+let suppressRefresh = false;
+
 function render(status) {
   lastStatus = status;
-  const state = ["ready", "blocked", "error"].includes(status.state)
-    ? status.state
-    : "error";
+  const ready = readyTargets(status);
+  const hasReady = ready.length > 0;
+  const err = topLevelError(status);
+  const state = err
+    ? "error"
+    : hasReady
+      ? "ready"
+      : ["blocked", "error"].includes(status.state)
+        ? status.state
+        : "blocked";
   const version = status.mod_version ? `v${status.mod_version}` : null;
-  const conflicts = status.conflicts ?? [];
 
-  if (state === "ready") {
-    el("chip-text").textContent = version ?? "installed";
-  } else if (state === "blocked") {
-    el("chip-text").textContent = version ?? "—";
+  el("chip-text").textContent =
+    state === "ready" ? (version ?? "installed") : state === "loading" ? "checking setup" : (version ?? "—");
 
-    const jars = conflicts.length > 0;
-    el("blocked-title").textContent = jars ? "Conflicting jars" : "Quit Lunar";
-    el("blocked-message").textContent = status.message;
-    el("blocked-hint").hidden = true;
+  const lunarReady = ready.some((t) => t.kind === "lunar");
+  const forgeReady = ready.some((t) => t.kind === "forge");
+  el("launch").hidden = !lunarReady;
+  el("launch-forge").hidden = !forgeReady;
+  el("launch-label").textContent = launchLabel("lunar");
+  el("launch-forge-label").textContent = launchLabel("forge");
 
-    const list = el("blocked-paths");
-    list.replaceChildren(
-      ...conflicts.map((path) => {
-        const li = document.createElement("li");
-        li.textContent = path;
-        return li;
-      }),
-    );
-    list.hidden = !jars;
-  } else {
-    el("chip-text").textContent = version ?? "—";
-    el("error-message").textContent =
-      status.message || "Setup files are missing.";
-  }
-
+  renderSetup(status, state);
   stage.dataset.state = state;
   scene?.setMood(state);
-  const targets = status.targets ?? [];
-  el("launch").hidden = !targets.some((t) => t.kind === "lunar" && t.state === "ready");
-  el("launch-forge").hidden = !targets.some(
-    (t) => t.kind === "forge" && t.state === "ready",
-  );
-  renderTargets(status, state);
 }
 
-// ── per-target breakdown + Forge instance chooser ───────────────────────────
-// Lunar and Forge are set up independently, so each reports for itself here: a
-// friend with Forge and no Lunar sees Forge working rather than a Lunar error.
-// Nothing on this panel installs on its own - a folder is only ever written to
-// after an explicit click, and an unmarked folder needs a second one.
-const TARGET_LABEL = { lunar: "Lunar Client", forge: "Forge" };
-const targetsBox = el("targets");
-let targetError = null;
-let confirming = null; // candidate id awaiting its "yes, this is 1.8.9 Forge"
-let lastStatus = { state: "loading", targets: [] };
+function renderSetup(status, state) {
+  const blocks = setupBlocks(status);
+  const err = topLevelError(status);
+  const showSetup = blocks.length > 0 || err;
+  setupBox.hidden = !showSetup;
+  setupBox.replaceChildren();
+
+  if (err) {
+    setupBox.append(setupErrorNode(err));
+  }
+
+  const compact = state === "ready";
+  for (const block of blocks) {
+    setupBox.append(setupBlockNode(block, compact || block.compact));
+  }
+}
+
+function setupErrorNode(err) {
+  const box = node("div", "setup-block");
+  box.append(node("p", "setup-head", err.heading));
+  const actions = node("div", "setup-actions");
+  for (const action of err.actions) actions.append(setupActionButton(action));
+  box.append(actions);
+  if (err.detail) box.append(setupDetails(err.detail));
+  return box;
+}
+
+function setupBlockNode(block, compact) {
+  const box = node("div", compact ? "setup-block setup-block-compact" : "setup-block");
+  box.append(node("p", "setup-head", block.heading));
+  if (block.hint) box.append(node("p", "setup-hint", block.hint));
+
+  if (block.candidates.length) {
+    const list = node("ul", "setup-cands");
+    for (const row of block.candidates) {
+      const li = node("li", "setup-cand");
+      li.append(node("span", "setup-cand-name", row.name));
+      li.append(setupActionButton(row.action));
+      list.append(li);
+    }
+    box.append(list);
+  }
+
+  if (block.actions.length) {
+    const actions = node("div", "setup-actions");
+    for (const action of block.actions) actions.append(setupActionButton(action));
+    box.append(actions);
+  }
+
+  if (block.hasDetails && block.detailText) {
+    box.append(setupDetails(block.detailText));
+  }
+
+  return box;
+}
+
+function setupDetails(text) {
+  const det = document.createElement("details");
+  det.className = "setup-details";
+  const sum = document.createElement("summary");
+  sum.textContent = "Details";
+  det.append(sum, node("p", "setup-detail-text selectable", text));
+  return det;
+}
+
+function setupActionButton(action) {
+  const btn = node("button", action.kind === "setup_prism" ? "btn setup-btn" : "btn setup-btn", action.label);
+  btn.type = "button";
+  btn.dataset.action = action.kind;
+  if (action.launcher) btn.dataset.launcher = action.launcher;
+  if (action.candidateId) btn.dataset.candidateId = action.candidateId;
+  btn.addEventListener("click", () => runSetupAction(action, btn));
+  return btn;
+}
+
+async function runSetupAction(action, btn) {
+  if (setupBusy) return;
+  setupBusy = true;
+  const prev = btn.textContent;
+  if (action.kind === "setup_prism") {
+    btn.disabled = true;
+    btn.textContent = "Setting Up…";
+    btn.setAttribute("aria-busy", "true");
+  } else {
+    for (const b of setupBox.querySelectorAll("button")) b.disabled = true;
+  }
+  try {
+    if (action.kind === "refresh") {
+      const next = await invoke("refresh_setup");
+      if (next) render(next);
+      return;
+    }
+    if (action.kind === "download") {
+      await invoke("get_launcher", { kind: action.launcher });
+      return;
+    }
+    if (action.kind === "open_launcher") {
+      await invoke("open_launcher", { kind: action.launcher });
+      return;
+    }
+    if (action.kind === "open_folder") {
+      await invoke("open_setup_location", { kind: action.launcher });
+      return;
+    }
+    if (action.kind === "setup_prism") {
+      const next = await invoke("choose_forge_target", { id: action.candidateId });
+      if (next) render(next);
+    }
+  } catch (e) {
+    setupBox.append(node("p", "alert", String(e)));
+  } finally {
+    setupBusy = false;
+    for (const b of setupBox.querySelectorAll("button")) {
+      b.disabled = false;
+      b.removeAttribute("aria-busy");
+    }
+    if (action.kind === "setup_prism") btn.textContent = prev;
+  }
+}
 
 function node(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text != null) n.textContent = text;
   return n;
-}
-
-function renderTargets(status, state) {
-  const targets = status.targets ?? [];
-  // Once every target is healthy, the paths are implementation detail rather
-  // than useful status. Keep this panel only while there is something the user
-  // may need to act on or a moved-aside jar worth calling out.
-  const needsAttention = targets.some(
-    (t) =>
-      t.state !== "ready" ||
-      t.action === "choose" ||
-      (t.conflicts ?? []).length > 0 ||
-      (t.quarantined ?? []).length > 0,
-  );
-  const show =
-    targets.length > 0 && needsAttention && (state === "ready" || state === "blocked");
-  targetsBox.hidden = !show;
-  if (!show) {
-    targetsBox.replaceChildren();
-    return;
-  }
-  targetsBox.replaceChildren(...targets.map(targetNode));
-  if (targetError) {
-    targetsBox.append(node("p", "alert", targetError));
-  }
-}
-
-function targetNode(t) {
-  const box = node("div", "target");
-  box.dataset.state = t.state;
-  box.append(node("div", "target-head", TARGET_LABEL[t.kind] ?? t.kind));
-
-  if (t.state === "ready" && t.path) {
-    box.append(node("p", "target-path", t.path));
-  } else {
-    box.append(node("p", "target-note", t.message));
-  }
-
-  // A jar we moved aside is named, with its new name, so it can be put back.
-  for (const moved of t.quarantined ?? []) {
-    box.append(node("p", "target-moved", `Moved aside: ${moved}`));
-  }
-  if ((t.conflicts ?? []).length) {
-    const list = node("ul", "paths selectable");
-    for (const p of t.conflicts) list.append(node("li", null, p));
-    box.append(list);
-  }
-
-  if (t.action === "choose") box.append(chooser(t));
-  return box;
-}
-
-function chooser(t) {
-  const frag = document.createDocumentFragment();
-  const list = node("ul", "cands");
-  for (const c of t.candidates ?? []) list.append(candidateNode(c));
-  if (list.childElementCount) frag.append(list);
-  return frag; // Prism-only: no generic folder picker.
-
-  const pick = node("button", "mini ghost", "Choose folder…");
-  pick.type = "button";
-  pick.addEventListener("click", () => run(() => invoke("pick_forge_folder")));
-  frag.append(pick);
-  return frag;
-}
-
-function candidateNode(c) {
-  const row = node("li", "cand");
-  row.dataset.compat = c.compat;
-
-  const left = node("div");
-  left.append(node("span", "cand-name", `${c.launcher} · ${c.name}`));
-  left.append(node("span", "cand-meta", c.compat === "incompatible" ? c.reason : c.path));
-  row.append(left);
-
-  if (c.compat === "incompatible") return row; // shown, never offered
-
-  if (confirming === c.id) {
-    // An unmarked folder carries no evidence of what it is, so the user vouches
-    // for it explicitly before anything is written into it.
-    left.append(node("span", "cand-meta", "This must be Minecraft 1.8.9 with Forge."));
-    const yes = node("button", "mini", "Confirm");
-    yes.type = "button";
-    yes.addEventListener("click", () =>
-      run(() => invoke("confirm_forge_target", { id: c.id })),
-    );
-    const no = node("button", "mini ghost", "Cancel");
-    no.type = "button";
-    no.addEventListener("click", () => {
-      confirming = null;
-      renderTargets(lastStatus, lastStatus.state);
-    });
-    row.append(yes, no);
-    return row;
-  }
-
-  const go = node("button", "mini", "Set up");
-  go.type = "button";
-  go.addEventListener("click", () => {
-    if (c.compat === "unknown") {
-      confirming = c.id;
-      renderTargets(lastStatus, lastStatus.state);
-      return;
-    }
-    run(() => invoke("choose_forge_target", { id: c.id }));
-  });
-  row.append(go);
-  return row;
-}
-
-/// Every chooser action returns a fresh full status, so the panel re-renders from
-/// one shape rather than patching itself.
-async function run(action) {
-  targetError = null;
-  for (const b of targetsBox.querySelectorAll("button")) b.disabled = true;
-  try {
-    const next = await action();
-    confirming = null;
-    if (next && typeof next === "object") {
-      lastStatus = next;
-      render(next);
-    }
-  } catch (e) {
-    targetError = String(e);
-    renderTargets(lastStatus, lastStatus.state);
-  }
 }
 
 // ── launch: stay on the homepage, narrate the boot, wait for the server ─────
@@ -476,6 +478,7 @@ launchForge.addEventListener("click", async () => {
   error.hidden = true;
   launchForge.disabled = true;
   launchForge.classList.add("is-loading");
+  suppressRefresh = true;
   label.textContent = "Heading to Hypixel";
   try {
     await invoke("launch_forge");
@@ -484,7 +487,8 @@ launchForge.addEventListener("click", async () => {
     error.hidden = false;
     launchForge.disabled = false;
     launchForge.classList.remove("is-loading");
-    label.textContent = "Launch Forge";
+    suppressRefresh = false;
+    label.textContent = launchLabel("forge");
     return;
   }
   label.textContent = STAGE_LABEL.forge_fired;
@@ -496,7 +500,7 @@ launchForge.addEventListener("click", async () => {
       // Cosmetic and fail-soft; retry on the next poll.
     }
   }, PROGRESS_POLL_MS);
-  startLobbyPolling();
+  beginLaunchSession();
 });
 launch.addEventListener("click", async () => {
   const label = el("launch-label");
@@ -504,6 +508,7 @@ launch.addEventListener("click", async () => {
   error.hidden = true;
   launch.disabled = true;
   launch.classList.add("is-loading");
+  suppressRefresh = true;
   label.textContent = "Heading to Hypixel";
   try {
     await invoke("launch_lunar");
@@ -512,7 +517,8 @@ launch.addEventListener("click", async () => {
     error.hidden = false;
     launch.disabled = false;
     launch.classList.remove("is-loading");
-    label.textContent = "Launch Lunar";
+    suppressRefresh = false;
+    label.textContent = launchLabel("lunar");
     return;
   }
   label.textContent = STAGE_LABEL.fired;
@@ -527,7 +533,7 @@ launch.addEventListener("click", async () => {
     label.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.fired;
   }, PROGRESS_POLL_MS);
 
-  startLobbyPolling();
+  beginLaunchSession();
 });
 
 // Swap views: the CSS on data-view="dash" hides the homepage copy, tucks the
@@ -547,6 +553,31 @@ const LOBBY_POLL_MS = 700;
 let lobbyTimer = null;
 let lastKey = null;
 let lastView = null; // the rendered view, kept so a resize can re-column it
+const connection = createConnectionModel();
+let interstitialMode = "joining";
+
+function setInterstitialMode(mode, { force = false } = {}) {
+  if (!force && interstitialMode === mode) return;
+  interstitialMode = mode;
+  joining.dataset.conn = mode;
+  const copy = connectionCopy(mode);
+  el("joining-title").textContent = copy.title;
+  el("joining-sub").textContent = copy.subtitle;
+  joining.setAttribute("aria-busy", copy.loading ? "true" : "false");
+}
+
+function setInterstitialVisible(visible) {
+  joining.classList.toggle("on", visible);
+  joining.setAttribute("aria-hidden", visible ? "false" : "true");
+  const loading = visible && connectionCopy(interstitialMode).loading;
+  joining.setAttribute("aria-busy", loading ? "true" : "false");
+}
+
+function beginLaunchSession() {
+  connection.reset();
+  setInterstitialMode("joining");
+  startLobbyPolling();
+}
 
 function startLobbyPolling() {
   if (lobbyTimer) return;
@@ -566,43 +597,57 @@ async function pollLobby() {
 }
 
 function applyLobby(d) {
+  const { mode } = connection.tick(d, Date.now());
   const ctx = d.context;
-  const live = d.inHypixel === true && (ctx === "LOBBY" || ctx === "QUEUE" || ctx === "GAME");
   const inDash = stage.dataset.view === "dash";
 
-  if (!live) {
-    // Before the first live snapshot the homepage keeps narrating the boot;
-    // after it, a gap (left to the menu, changing lobbies) shows the
-    // interstitial over the dashboard rather than a stale roster.
-    if (inDash) {
-      dash.classList.remove("on");
-      joining.classList.add("on");
-      lastKey = null;
+  if (mode === "connected") {
+    if (!inDash) enterDashboard();
+    setInterstitialVisible(false);
+    const key = `${ctx}:${d.seq ?? ""}`;
+    if (key !== lastKey) {
+      try {
+        const view = viewOf(d);
+        // Hold columns only within a context - a queue must not inherit the
+        // lobby's second column just because it was on screen a moment ago.
+        const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
+        dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
+        lastView = view;
+        lastKey = key;
+      } catch {
+        return; // a malformed roster must not blank the dashboard
+      }
+      dash.dataset.ctx = ctx.toLowerCase();
+      if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
+      else delete dash.dataset.teams;
+      fitDash();
     }
+    dash.classList.add("on");
     return;
   }
 
-  if (!inDash) enterDashboard();
-  joining.classList.remove("on");
-  const key = `${ctx}:${d.seq ?? ""}`;
-  if (key !== lastKey) {
-    try {
-      const view = viewOf(d);
-      // Hold columns only within a context - a queue must not inherit the
-      // lobby's second column just because it was on screen a moment ago.
-      const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
-      dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
-      lastView = view;
-      lastKey = key;
-    } catch {
-      return; // a malformed roster must not blank the dashboard
-    }
-    dash.dataset.ctx = ctx.toLowerCase();
-    if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
-    else delete dash.dataset.teams;
-    fitDash();
+  if (mode === "disconnected") {
+    if (!inDash) enterDashboard();
+    dash.classList.remove("on");
+    dash.replaceChildren();
+    delete dash.dataset.ctx;
+    delete dash.dataset.density;
+    delete dash.dataset.teams;
+    lastKey = null;
+    lastView = null;
+    setInterstitialMode("disconnected");
+    setInterstitialVisible(true);
+    return;
   }
-  dash.classList.add("on");
+
+  // Joining interstitial: initial boot (still on homepage) or a post-live grace
+  // gap while Hypixel transfers servers/worlds.
+  if (inDash) {
+    dash.classList.remove("on");
+    setInterstitialMode("joining");
+    setInterstitialVisible(true);
+    lastKey = null;
+  }
 }
 
 const currentCols = () =>
@@ -948,12 +993,13 @@ function viewGame(d) {
     const rest = bySweat(players);
     const slug = TEAM_SLUG[t.name];
     const teamCls = slug ? ` team-${slug}` : "";
-    const aggHtml = `<span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>`;
-    // Atomic: a team's head, colour scope and rows are placed as one unit.
+    // Atomic: a team's border, colour scope and rows are placed as one unit. The
+    // team is named by its border colour alone; the rail breaks that border to
+    // carry the average, and the target flag on the sweatiest team.
     return {
       n: rest.length,
-      atomic: `<div class="team${teamCls}"><div class="team-head ${target ? "targeted" : ""}"><h3>${esc(t.name)}</h3>
-        ${aggHtml}
+      atomic: `<div class="team${teamCls}"><div class="team-rail">
+        <span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>
         ${target ? '<span class="target-badge">Target</span>' : ""}</div>
         ${roster(rest, teamOf)}</div>`,
     };
@@ -977,10 +1023,15 @@ const bootKind = bootParams.get("ctx") || bootParams.get("state");
 function afterStatus(status) {
   render(status);
   if (!previewing) return;
-  mountPreviewBar(bootKind || "ready");
+  mountPreviewBar(bootKind || "lunarReady");
   if (bootParams.get("ctx") === "joining") {
     stage.dataset.view = "dash";
-    joining.classList.add("on");
+    setInterstitialMode("joining");
+    setInterstitialVisible(true);
+  } else if (bootParams.get("ctx") === "disconnected") {
+    stage.dataset.view = "dash";
+    setInterstitialMode("disconnected");
+    setInterstitialVisible(true);
   } else if (PREVIEW_LOBBY[bootParams.get("ctx")]) {
     applyLobby(PREVIEW_LOBBY[bootParams.get("ctx")]);
   }
@@ -989,11 +1040,51 @@ function afterStatus(status) {
 if (previewing && bootParams.get("state") === "loading") {
   mountPreviewBar("loading");
 } else {
-  invoke("status")
+  invoke("refresh_setup")
     .then(afterStatus)
     .catch((e) =>
-      afterStatus({ state: "error", message: String(e), mod_version: null, conflicts: [] }),
+      afterStatus({
+        state: "error",
+        message: String(e),
+        mod_version: null,
+        targets: [],
+      }),
     );
+}
+
+function canAutoRefresh() {
+  if (previewing || suppressRefresh || setupBusy) return false;
+  if (stage.dataset.view === "dash") return false;
+  if (launch.classList.contains("is-loading") || launchForge.classList.contains("is-loading")) {
+    return false;
+  }
+  return true;
+}
+
+function scheduleRefresh() {
+  if (!canAutoRefresh()) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    if (!canAutoRefresh()) return;
+    try {
+      const next = await invoke("refresh_setup");
+      if (next) render(next);
+    } catch {
+      // fail-soft on background refresh
+    }
+  }, 400);
+}
+
+if (!previewing) {
+  let lostFocus = false;
+  window.addEventListener("blur", () => {
+    lostFocus = true;
+  });
+  window.addEventListener("focus", () => {
+    if (!lostFocus) return;
+    lostFocus = false;
+    scheduleRefresh();
+  });
 }
 
 // Browser-only chrome: a 900×620 frame plus a bar to flip every UI state.
@@ -1006,22 +1097,19 @@ function mountPreviewBar(active) {
   const bar = document.createElement("nav");
   bar.id = "preview-bar";
   bar.className = "preview-bar";
+  const setupButtons = PREVIEW_SETUP_KEYS.map(
+    (key) =>
+      `<button type="button" data-preview="${key}">${PREVIEW_SETUP_LABELS[key] ?? key}</button>`,
+  ).join("");
   bar.innerHTML = `
     <span class="preview-size">900×620</span>
-    <span class="preview-group">home</span>
+    <span class="preview-group">setup</span>
     <button type="button" data-preview="loading">loading</button>
-    <button type="button" data-preview="ready">ready</button>
-    <button type="button" data-preview="lunar">lunar running</button>
-    <button type="button" data-preview="jars">jars</button>
-    <button type="button" data-preview="error">error</button>
-    <span class="preview-group">forge</span>
-    <button type="button" data-preview="forge">choose</button>
-    <button type="button" data-preview="picked">picked</button>
-    <button type="button" data-preview="both">both ready</button>
-    <button type="button" data-preview="oldbundle">no forge jar</button>
+    ${setupButtons}
     <span class="preview-group">lobby</span>
     <button type="button" data-preview="lobby">lobby</button>
     <button type="button" data-preview="joining">joining</button>
+    <button type="button" data-preview="disconnected">disconnected</button>
     <span class="preview-group">queue</span>
     <button type="button" data-preview="queueSolo">solos</button>
     <button type="button" data-preview="queueDoubles">doubles</button>
@@ -1202,9 +1290,11 @@ function resetPreviewSession() {
   lastKey = null;
   lastView = null;
   previewLaunchAt = null;
-  confirming = null;
-  targetError = null;
-  joining.classList.remove("on");
+  setupBusy = false;
+  suppressRefresh = false;
+  connection.reset();
+  setInterstitialMode("joining", { force: true });
+  setInterstitialVisible(false);
   dash.classList.remove("on");
   dash.replaceChildren();
   delete dash.dataset.ctx;
@@ -1213,142 +1303,12 @@ function resetPreviewSession() {
   stage.dataset.view = "home";
   launch.disabled = false;
   launch.classList.remove("is-loading");
-  el("launch-label").textContent = "Launch Lunar";
+  el("launch-label").textContent = launchLabel("lunar");
+  launchForge.disabled = false;
+  launchForge.classList.remove("is-loading");
+  el("launch-forge-label").textContent = launchLabel("forge");
   el("launch-error").hidden = true;
 }
-
-// ── preview: status cases ───────────────────────────────────────────────────
-const tgt = (kind, state, message, extra) =>
-  Object.assign(
-    { kind, state, message, conflicts: [], quarantined: [], path: null, action: "none", candidates: [] },
-    extra,
-  );
-
-const LUNAR_READY = tgt("lunar", "ready", "Lunar Client", {
-  path: "/Users/you/.weave/Weave-Loader-Agent-1.3.3.jar",
-});
-const LUNAR_ABSENT = tgt("lunar", "absent", "Lunar Client is not installed.");
-
-const PREVIEW_CANDIDATES = [
-  {
-    id: "d0",
-    launcher: "CurseForge",
-    name: "Hypixel",
-    path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\Hypixel",
-    compat: "confirmed",
-    reason: "",
-  },
-  {
-    id: "d1",
-    launcher: "Chosen folder",
-    name: "my-1.8.9-pack",
-    path: "D:\\games\\my-1.8.9-pack",
-    compat: "unknown",
-    reason: "",
-  },
-  {
-    id: "d2",
-    launcher: "CurseForge",
-    name: "DawnCraft",
-    path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\DawnCraft",
-    compat: "incompatible",
-    reason: "This instance is Minecraft 1.20.1, not 1.8.9.",
-  },
-];
-
-const PREVIEW_STATUS = {
-  ready: {
-    state: "ready",
-    message: "Cobblify v0.9.0 ready for Lunar Client - Right Shift for settings in game",
-    mod_version: "0.9.0",
-    conflicts: [],
-    targets: [LUNAR_READY, tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
-      action: "choose",
-      candidates: PREVIEW_CANDIDATES,
-    })],
-  },
-  // Both targets set up, with a superseded jar moved aside rather than deleted.
-  both: {
-    state: "ready",
-    message: "Cobblify v0.9.0 ready for Lunar Client and Forge - Right Shift for settings in game",
-    mod_version: "0.9.0",
-    conflicts: [],
-    targets: [
-      LUNAR_READY,
-      tgt("forge", "ready", "Forge", {
-        path: "C:\\Users\\you\\curseforge\\minecraft\\Instances\\Hypixel\\mods\\Cobblify-1.8.9-forge-0.9.0.jar",
-        quarantined: [
-          "C:\\Users\\you\\...\\mods\\Cobblify-1.8.9-forge-0.8.0.jar -> Cobblify-1.8.9-forge-0.8.0.jar.cobblify-disabled",
-        ],
-      }),
-    ],
-  },
-  // A Forge-only machine: no Lunar at all is NOT an app-wide error.
-  forge: {
-    state: "blocked",
-    message: "No Lunar Client found. Choose your Minecraft folder to set up Forge.",
-    mod_version: "0.9.0",
-    conflicts: [],
-    targets: [
-      LUNAR_ABSENT,
-      tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
-        action: "choose",
-        candidates: PREVIEW_CANDIDATES,
-      }),
-    ],
-  },
-  // What a hand-picked folder looks like once the backend has adopted it.
-  picked: {
-    state: "blocked",
-    message: "Choose which Minecraft folder to set Forge up in.",
-    mod_version: "0.9.0",
-    conflicts: [],
-    targets: [
-      LUNAR_ABSENT,
-      tgt("forge", "absent", "Choose which Minecraft folder to set Forge up in.", {
-        action: "choose",
-        candidates: [
-          { id: "p1", launcher: "Chosen folder", name: "hypixel-1.8.9", path: "E:\\mc\\hypixel-1.8.9", compat: "unknown", reason: "" },
-          ...PREVIEW_CANDIDATES,
-        ],
-      }),
-    ],
-  },
-  // An old bundle with no Forge jar must NOT offer a picker that cannot succeed.
-  oldbundle: {
-    state: "blocked",
-    message: "No Lunar Client found, and this copy does not include Forge.",
-    mod_version: "0.8.0",
-    conflicts: [],
-    targets: [LUNAR_ABSENT, tgt("forge", "absent", "This copy does not include Forge.")],
-  },
-  lunar: {
-    state: "blocked",
-    message: "Then reopen Cobblify.",
-    mod_version: "0.9.0",
-    conflicts: [],
-    targets: [tgt("lunar", "blocked", "Then reopen Cobblify."), tgt("forge", "absent", "This copy does not include Forge.")],
-  },
-  jars: {
-    state: "blocked",
-    message: "Remove the extra one, then reopen.",
-    mod_version: "0.9.0",
-    conflicts: [
-      "/Users/you/.weave/mods/Cobblify-Lunar-0.7.2.jar",
-      "/Users/you/.weave/mods/Cobblify-Lunar-dev.jar",
-    ],
-    targets: [
-      tgt("lunar", "blocked", "Remove the extra one, then reopen.", {
-        conflicts: [
-          "/Users/you/.weave/mods/Cobblify-Lunar-0.7.2.jar",
-          "/Users/you/.weave/mods/Cobblify-Lunar-dev.jar",
-        ],
-      }),
-      tgt("forge", "absent", "This copy does not include Forge."),
-    ],
-  },
-  error: { state: "error", message: "Setup files are missing.", mod_version: null, conflicts: [], targets: [] },
-};
 
 function showPreview(kind) {
   resetPreviewSession();
@@ -1358,17 +1318,24 @@ function showPreview(kind) {
     el("chip-text").textContent = "checking setup";
     params.set("state", "loading");
   } else if (kind === "joining") {
-    render(PREVIEW_STATUS.ready);
+    render(PREVIEW_STATUS.lunarReady);
     stage.dataset.view = "dash";
-    joining.classList.add("on");
+    setInterstitialMode("joining");
+    setInterstitialVisible(true);
     params.set("ctx", "joining");
+  } else if (kind === "disconnected") {
+    render(PREVIEW_STATUS.lunarReady);
+    stage.dataset.view = "dash";
+    setInterstitialMode("disconnected");
+    setInterstitialVisible(true);
+    params.set("ctx", "disconnected");
   } else if (PREVIEW_LOBBY[kind]) {
-    render(PREVIEW_STATUS.ready);
+    render(PREVIEW_STATUS.lunarReady);
     applyLobby(PREVIEW_LOBBY[kind]);
     params.set("ctx", kind);
   } else {
-    render(PREVIEW_STATUS[kind] ?? PREVIEW_STATUS.ready);
-    params.set("state", PREVIEW_STATUS[kind] ? kind : "ready");
+    render(resolvePreviewStatus(kind));
+    params.set("state", kind);
   }
   history.replaceState(null, "", `${location.pathname}?${params}`);
   markPreviewActive(kind);

@@ -74,7 +74,8 @@ external lobby/queue/game dashboard.
 
 **Nothing is ever installed speculatively.** Startup lists candidates; a user
 choice installs. The choice is remembered in `~/.cobblify/launcher-targets.json`
-and its Prism marker is revalidated before every install or launch.
+and its Prism marker is revalidated before every install or launch. Cobblify does not
+support CurseForge, the vanilla `.minecraft` folder, or a hand-picked directory.
 
 ### The install transaction
 

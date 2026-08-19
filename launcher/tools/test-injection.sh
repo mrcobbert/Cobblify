@@ -225,7 +225,7 @@ ok "the running .app found, verified and installed both Lunar jars"
 
 # The Forge jar must verify (a bad one would have aborted startup and taken the
 # Lunar install with it) but must NOT be installed: nothing was chosen, and the
-# launcher never picks a Minecraft folder on the user's behalf.
+# launcher never installs into a Prism instance on the user's behalf.
 stray=$(find "$fake_home" -type f -name "$(basename "$forge_jar")" -print)
 [ -z "$stray" ] || fail "the launcher installed the Forge jar without a choice being made:
 $stray"

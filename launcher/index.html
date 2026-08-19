@@ -20,42 +20,25 @@
 
         <div class="panel reveal" style="--d: 210ms" aria-live="polite">
           <div class="state state-loading">
-            <p class="lede">Checking your Lunar Client setup.</p>
+            <p class="lede">Checking setup.</p>
           </div>
 
           <div class="state state-ready">
-            <button class="btn" id="launch" type="button">
-              <span id="launch-label">Launch Lunar</span>
-            </button>
-            <button class="btn" id="launch-forge" type="button" hidden>
-              <span id="launch-forge-label">Launch Forge</span>
-            </button>
+            <div class="launch-row">
+              <button class="btn" id="launch" type="button">
+                <span id="launch-label">Launch Lunar</span>
+              </button>
+              <button class="btn" id="launch-forge" type="button" hidden>
+                <span id="launch-forge-label">Launch Prism</span>
+              </button>
+            </div>
             <p class="alert" id="launch-error" role="alert" hidden></p>
           </div>
 
-          <div class="state state-blocked">
-            <p class="notice">
-              <span class="notice-mark" aria-hidden="true"></span>
-              <span id="blocked-title">Setup paused</span>
-            </p>
-            <p class="lede selectable" id="blocked-message"></p>
-            <ul class="paths selectable" id="blocked-paths" hidden></ul>
-            <p class="hint" id="blocked-hint" hidden></p>
-          </div>
+          <div class="state state-blocked" hidden></div>
+          <div class="state state-error" hidden></div>
 
-          <div class="state state-error">
-            <p class="notice">
-              <span class="notice-mark" aria-hidden="true"></span>
-              <span>Setup failed</span>
-            </p>
-            <p class="lede selectable" id="error-message"></p>
-            <p class="hint">Reopen to try again.</p>
-          </div>
-
-          <!-- Per-target breakdown: Lunar and Forge each report for themselves, so a
-               failure on one never hides a working other. Rendered from status.targets
-               and shown in the ready and blocked states only. -->
-          <div class="targets" id="targets" hidden></div>
+          <div class="setup" id="setup" hidden></div>
         </div>
       </section>
 
@@ -64,10 +47,22 @@
       </div>
 
       <!-- ── in-game dashboard overlay: hidden until launch, then swapped in ── -->
-      <div class="joining" id="joining">
-        <div class="ring"></div>
-        <div class="jt">Joining Hypixel</div>
-        <div class="js">Connecting to network<span class="dots"></span></div>
+      <div
+        class="joining"
+        id="joining"
+        data-conn="joining"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-busy="true"
+        aria-hidden="true"
+      >
+        <div class="ring" aria-hidden="true"></div>
+        <div class="jt" id="joining-title">Joining Hypixel</div>
+        <div class="js">
+          <span id="joining-sub">Connecting to network</span
+          ><span class="dots" aria-hidden="true"></span>
+        </div>
       </div>
       <div class="dash" id="dash"></div>
     </main>

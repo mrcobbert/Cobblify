@@ -4,8 +4,8 @@
 //! The design rests on one fact: the Forge build of Cobblify is a PURE DROP-IN. Mixin is
 //! shaded into the jar and its manifest carries `TweakClass` + `ForceLoadAsMod`, which FML
 //! auto-registers, so there is no JVM argument, no coremod, no bootstrap and no config to
-//! edit. "Support every launcher" therefore collapses to "find the right `mods` folder",
-//! which is why this module detects rather than integrates.
+//! edit. Forge support is Prism-only: detect instances under Prism Launcher's default
+//! directory, install into the instance game folder, and launch via Prism's instance-id CLI.
 //!
 //! Three rules earn their complexity, and each one exists because getting it wrong breaks
 //! a real client:
@@ -59,7 +59,7 @@ const TARGETS_FILE: &str = "launcher-targets.json";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Compat {
     Confirmed,
-    /// No readable version metadata at all - a hand-picked folder, essentially.
+    /// Prism's `mmc-pack.json` exists but could not be read or parsed.
     Unknown,
     Incompatible(String),
 }
@@ -79,7 +79,7 @@ impl Compat {
         }
     }
     pub fn is_installable(&self) -> bool {
-        !matches!(self, Compat::Incompatible(_))
+        matches!(self, Compat::Confirmed)
     }
 }
 
@@ -96,32 +96,41 @@ pub struct Candidate {
     pub marker: Option<String>,
 }
 
-/// The wire shape the UI renders.
-#[derive(Debug, Clone, Serialize)]
+/// The wire shape the UI renders. Only confirmed instances are published.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CandidateView {
     pub id: String,
-    pub launcher: String,
     pub name: String,
-    pub path: String,
-    pub compat: &'static str,
-    pub reason: String,
 }
 
 impl Candidate {
     pub fn view(&self) -> CandidateView {
         CandidateView {
             id: self.id.clone(),
-            launcher: self.launcher.clone(),
             name: self.name.clone(),
-            path: self.game_dir.display().to_string(),
-            compat: self.compat.tag(),
-            reason: self.compat.reason(),
         }
     }
-    /// Why this instance was refused, for a message the user can act on.
-    pub fn compat_reason(&self) -> String {
-        self.compat.reason()
+}
+
+/// Standard Prism install locations used for launch and setup detection.
+pub fn prism_exe() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
+            .join("Programs/PrismLauncher/prismlauncher.exe")
     }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher")
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        PathBuf::from("prismlauncher")
+    }
+}
+
+pub fn prism_installed() -> bool {
+    prism_exe().is_file()
 }
 
 // ── detection ───────────────────────────────────────────────────────────────────
@@ -194,31 +203,18 @@ fn dir_entries(dir: &Path) -> Vec<PathBuf> {
 /// individual entry must succeed or the whole install refuses.
 fn read_dir_strict(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    for entry in
-        fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?
-    {
-        let entry =
-            entry.map_err(|e| format!("Cannot read an entry in {}: {e}", dir.display()))?;
+    for entry in fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("Cannot read an entry in {}: {e}", dir.display()))?;
         out.push(entry.path());
     }
     out.sort();
     Ok(out)
 }
 
-fn contains_caseless(haystack: &str, needle: &str) -> bool {
-    haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
-}
-
-/// Detection reads DEFAULT locations only. A relocated CurseForge folder, portable or
-/// `--dir` Prism, MultiMC, or anything hand-rolled goes through the folder picker instead -
-/// which is not a lesser route, it is the launcher-agnostic one. Parsing each launcher's
-/// own configuration to chase a moved root was tried in planning and dropped: Prism's
-/// instance directory setting is *relative*, so resolving it against the wrong base scans
-/// the wrong tree, and the picker already covers every such case with an absolute path the
-/// user chose.
+/// Detection reads Prism Launcher's default instances directory only. Portable or
+/// relocated Prism installs are out of scope: Cobblify supports the standard layout so
+/// every offered target can be installed and launched the same way as Lunar.
 pub fn detect(env: &Env) -> Vec<Candidate> {
-    // Prism-only: it is the one supported launcher with an instance-id CLI, so every
-    // target offered here can provide the same install-and-launch experience as Lunar.
     let mut out = detect_prism(env);
 
     // Confirmed first, then unknown, then the refused ones - the UI shows this order.
@@ -231,60 +227,6 @@ pub fn detect(env: &Env) -> Vec<Candidate> {
         c.id = format!("d{i}");
     }
     out
-}
-
-fn detect_vanilla(env: &Env) -> Option<Candidate> {
-    let root = if cfg!(windows) {
-        env.appdata.as_ref()?.join(".minecraft")
-    } else {
-        env.app_support()?.join("minecraft")
-    };
-    if !root.join("launcher_profiles.json").is_file() {
-        return None;
-    }
-    // Readable and positively lacking Forge 1.8.9 is a REFUSAL, not an "unknown":
-    // installing there would drop a 1.8.9 Forge mod into a folder whose profiles are
-    // something else entirely.
-    let compat = judge_vanilla(&root);
-    Some(Candidate {
-        id: String::new(),
-        launcher: "Minecraft Launcher".to_string(),
-        name: ".minecraft".to_string(),
-        game_dir: root,
-        compat,
-        marker: Some("launcher_profiles.json".to_string()),
-    })
-}
-
-fn detect_curseforge(env: &Env) -> Vec<Candidate> {
-    let root = if cfg!(windows) {
-        env.home.join("curseforge/minecraft/Instances")
-    } else {
-        env.home.join("Documents/curseforge/minecraft/Instances")
-    };
-    dir_entries(&root)
-        .into_iter()
-        .filter_map(|dir| {
-            let marker = dir.join("minecraftinstance.json");
-            if !marker.is_file() {
-                return None;
-            }
-            // Only two fields are read; the file also carries account data, which is
-            // never touched, logged or surfaced.
-            let compat = match read_json(&marker) {
-                Some(v) => judge_curseforge(&v),
-                None => Compat::Unknown,
-            };
-            Some(Candidate {
-                id: String::new(),
-                launcher: "CurseForge".to_string(),
-                name: dir_name(&dir),
-                game_dir: dir,
-                compat,
-                marker: Some("minecraftinstance.json".to_string()),
-            })
-        })
-        .collect()
 }
 
 fn detect_prism(env: &Env) -> Vec<Candidate> {
@@ -328,37 +270,6 @@ fn prism_game_dir(instance: &Path) -> PathBuf {
     instance.join(".minecraft")
 }
 
-#[allow(dead_code)]
-fn detect_modrinth(env: &Env) -> Vec<Candidate> {
-    let Some(root) = env
-        .app_support()
-        .map(|p| p.join("com.modrinth.theseus/profiles"))
-    else {
-        return Vec::new();
-    };
-    dir_entries(&root)
-        .into_iter()
-        .filter_map(|dir| {
-            let marker = dir.join("profile.json");
-            if !marker.is_file() {
-                return None;
-            }
-            let compat = match read_json(&marker) {
-                Some(v) => judge_modrinth(&v),
-                None => Compat::Unknown,
-            };
-            Some(Candidate {
-                id: String::new(),
-                launcher: "Modrinth App".to_string(),
-                name: dir_name(&dir),
-                game_dir: dir,
-                compat,
-                marker: Some("profile.json".to_string()),
-            })
-        })
-        .collect()
-}
-
 fn dir_name(p: &Path) -> String {
     p.file_name()
         .unwrap_or_default()
@@ -366,36 +277,7 @@ fn dir_name(p: &Path) -> String {
         .into_owned()
 }
 
-/// The shared version/loader verdict for launchers that record both fields.
-///
-/// `Unknown` means we read NOTHING - only then is the user allowed to vouch for a folder.
-/// If the file identified the instance at all, one-sided evidence is still evidence: a
-/// CurseForge or Modrinth record naming Minecraft 1.8.9 with no Forge loader is a vanilla
-/// instance, and letting a user confirm past that would drop a Forge mod somewhere it can
-/// only crash.
-fn judge(version: &str, loader: &str) -> Compat {
-    if version.is_empty() && loader.is_empty() {
-        return Compat::Unknown;
-    }
-    if !version.is_empty() && version != "1.8.9" {
-        return Compat::Incompatible(format!("This instance is Minecraft {version}, not 1.8.9."));
-    }
-    if loader.is_empty() {
-        return Compat::Incompatible(
-            "This instance has no mod loader installed - Cobblify needs Forge.".to_string(),
-        );
-    }
-    if !contains_caseless(loader, "forge") {
-        return Compat::Incompatible(format!("This instance uses {loader}, not Forge."));
-    }
-    if version.is_empty() {
-        // Forge, but the file never said which Minecraft version.
-        return Compat::Unknown;
-    }
-    Compat::Confirmed
-}
-
-/// Prism/MultiMC record the version as a component list rather than two fields.
+/// Prism records the version as a component list rather than two fields.
 fn judge_mmc(v: &Value) -> Compat {
     let Some(components) = v.get("components").and_then(Value::as_array) else {
         return Compat::Unknown;
@@ -425,108 +307,46 @@ fn judge_mmc(v: &Value) -> Compat {
     Compat::Confirmed
 }
 
-/// Classifies a directory the user picked by hand. The marker files are the same ones
-/// detection uses, so a picked Prism or CurseForge instance is judged exactly as a detected
-/// one would be; a folder with no marker at all is `Unknown` and needs explicit
-/// confirmation before anything is written.
+fn prism_instance_from_game_dir(game_dir: &Path) -> Result<PathBuf, String> {
+    if game_dir.join("mmc-pack.json").is_file() {
+        return Ok(game_dir.to_path_buf());
+    }
+    let Some(parent) = game_dir.parent() else {
+        return Err("That is not a Prism instance.".to_string());
+    };
+    if parent.join("mmc-pack.json").is_file() {
+        return Ok(parent.to_path_buf());
+    }
+    Err("That is not a Prism instance.".to_string())
+}
+
+fn prism_candidate(instance_root: &Path, compat: Compat) -> Candidate {
+    Candidate {
+        id: String::new(),
+        launcher: "Prism Launcher".to_string(),
+        name: dir_name(instance_root),
+        game_dir: prism_game_dir(instance_root),
+        compat,
+        marker: Some("mmc-pack.json".to_string()),
+    }
+}
+
+/// Re-reads a remembered Prism instance from its stored game directory.
 pub fn classify_picked(dir: &Path) -> Result<Candidate, String> {
     if !dir.is_dir() {
         return Err("That is not a folder.".to_string());
     }
-    // Tolerate the user picking the `mods` folder itself, which is the obvious mistake.
     let game_dir = if dir_name(dir).eq_ignore_ascii_case("mods") {
         dir.parent().unwrap_or(dir).to_path_buf()
     } else {
         dir.to_path_buf()
     };
-
-    if game_dir.join("minecraftinstance.json").is_file() {
-        let marker = game_dir.join("minecraftinstance.json");
-        let compat = read_json(&marker)
-            .map(|v| judge_curseforge(&v))
-            .unwrap_or(Compat::Unknown);
-        return Ok(picked(game_dir, compat, Some("minecraftinstance.json")));
-    }
-    if game_dir.join("mmc-pack.json").is_file() {
-        let compat = read_json(&game_dir.join("mmc-pack.json"))
-            .map(|v| judge_mmc(&v))
-            .unwrap_or(Compat::Unknown);
-        // The user picked the instance root; the game files are a level down.
-        return Ok(picked(prism_game_dir(&game_dir), compat, Some("mmc-pack.json")));
-    }
-    // Prism/MultiMC again, from the OTHER direction: the stored target for a Prism
-    // instance is its `.minecraft`/`minecraft` game directory, and the marker lives one
-    // level up. Without this branch, re-checking a remembered Prism target found no
-    // metadata, fell through to `Unknown`, and would have installed into an instance
-    // whose own `mmc-pack.json` now said it was something else entirely.
-    if let Some(parent) = game_dir.parent() {
-        if parent.join("mmc-pack.json").is_file() {
-            let compat = read_json(&parent.join("mmc-pack.json"))
-                .map(|v| judge_mmc(&v))
-                .unwrap_or(Compat::Unknown);
-            return Ok(picked(game_dir, compat, Some("mmc-pack.json")));
-        }
-    }
-    if game_dir.join("profile.json").is_file() {
-        let compat = read_json(&game_dir.join("profile.json"))
-            .map(|v| judge_modrinth(&v))
-            .unwrap_or(Compat::Unknown);
-        return Ok(picked(game_dir, compat, Some("profile.json")));
-    }
-    if game_dir.join("launcher_profiles.json").is_file() {
-        return Ok(picked(
-            game_dir.clone(),
-            judge_vanilla(&game_dir),
-            Some("launcher_profiles.json"),
-        ));
-    }
-    Ok(picked(game_dir, Compat::Unknown, None))
-}
-
-fn judge_curseforge(v: &Value) -> Compat {
-    judge(
-        v.get("gameVersion").and_then(Value::as_str).unwrap_or(""),
-        v.get("baseModLoader")
-            .and_then(|m| m.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-    )
-}
-
-fn judge_modrinth(v: &Value) -> Compat {
-    judge(
-        v.get("game_version").and_then(Value::as_str).unwrap_or(""),
-        v.get("loader").and_then(Value::as_str).unwrap_or(""),
-    )
-}
-
-/// The vanilla `mods/` folder is shared by every profile, so the only evidence that Forge
-/// 1.8.9 is present is an installed version of that name.
-fn judge_vanilla(root: &Path) -> Compat {
-    let versions = root.join("versions");
-    if !versions.is_dir() {
-        return Compat::Unknown;
-    }
-    let has = dir_entries(&versions).iter().any(|p| {
-        let n = dir_name(p);
-        contains_caseless(&n, "1.8.9") && contains_caseless(&n, "forge")
-    });
-    if has {
-        Compat::Confirmed
-    } else {
-        Compat::Incompatible("Forge 1.8.9 is not installed in this Minecraft folder.".to_string())
-    }
-}
-
-fn picked(game_dir: PathBuf, compat: Compat, marker: Option<&str>) -> Candidate {
-    Candidate {
-        id: String::new(),
-        launcher: "Chosen folder".to_string(),
-        name: dir_name(&game_dir),
-        game_dir,
-        compat,
-        marker: marker.map(str::to_string),
-    }
+    let instance_root = prism_instance_from_game_dir(&game_dir)?;
+    let compat = match read_json(&instance_root.join("mmc-pack.json")) {
+        Some(v) => judge_mmc(&v),
+        None => Compat::Unknown,
+    };
+    Ok(prism_candidate(&instance_root, compat))
 }
 
 // ── stale jars ──────────────────────────────────────────────────────────────────
@@ -656,7 +476,8 @@ fn is_destination_entry(path: &Path, dest: &Path) -> bool {
         (Some(a), Some(b)) => {
             #[cfg(windows)]
             {
-                a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+                a.to_string_lossy()
+                    .eq_ignore_ascii_case(&b.to_string_lossy())
             }
             #[cfg(not(windows))]
             {
@@ -807,9 +628,8 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
 
 // ── remembering the choice ──────────────────────────────────────────────────────
 
-/// How the target was validated when it was chosen. A marker-backed target can be
-/// re-checked exactly; a user-confirmed folder never had a marker, so re-checking it the
-/// same way would reject it on every launch.
+/// How the target was validated when it was chosen. Only Prism marker-backed targets are
+/// remembered today; older user-confirmed records are ignored on revalidation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ValidatedBy {
@@ -849,7 +669,7 @@ pub fn save_target(home: &Path, target: &SavedTarget) -> Result<(), String> {
         forge: Some(target.clone()),
     };
     let json = serde_json::to_string_pretty(&saved)
-        .map_err(|e| format!("Cannot record the chosen folder: {e}"))?;
+        .map_err(|e| format!("Cannot record the chosen Prism instance: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, json).map_err(|e| format!("Cannot write {}: {e}", tmp.display()))?;
     fs::rename(&tmp, &path).map_err(|e| {
@@ -858,38 +678,24 @@ pub fn save_target(home: &Path, target: &SavedTarget) -> Result<(), String> {
     })
 }
 
-/// Re-checks a remembered target. `None` means "ask again" - the folder is gone, its
-/// marker no longer validates, or a user-confirmed folder has since acquired metadata
-/// saying it is something other than 1.8.9 Forge.
+/// Re-checks a remembered Prism target. `None` means "ask again" - the instance is gone,
+/// its marker no longer validates, or the saved record is from a removed setup path.
 pub fn revalidate(saved: &SavedTarget) -> Option<Candidate> {
+    if saved.validated_by != ValidatedBy::Marker {
+        return None;
+    }
+    if saved.marker.as_deref() != Some("mmc-pack.json") {
+        return None;
+    }
     let game_dir = PathBuf::from(&saved.game_dir);
     if !game_dir.is_dir() {
         return None;
     }
     let fresh = classify_picked(&game_dir).ok()?;
-    match saved.validated_by {
-        ValidatedBy::Marker => {
-            // This target was adopted on the strength of its launcher's own metadata, so
-            // that evidence has to still be there AND still say the same thing. Anything
-            // less - a missing marker, or one that now reads Unknown - means the instance
-            // was moved, rebuilt or re-versioned, and the honest answer is to ask again
-            // rather than to quietly downgrade it to a folder the user once vouched for.
-            let marker = saved.marker.as_ref()?;
-            if marker != "mmc-pack.json" {
-                return None;
-            }
-            if fresh.marker.as_ref() != Some(marker) {
-                return None;
-            }
-            (fresh.compat == Compat::Confirmed).then_some(fresh)
-        }
-        ValidatedBy::User => {
-            // The user vouched specifically for an unmarked folder. Metadata appearing
-            // later changes the provenance of that choice, even if it happens to be
-            // compatible, so ask again instead of silently upgrading trust.
-            (fresh.compat == Compat::Unknown && fresh.marker.is_none()).then_some(fresh)
-        }
+    if fresh.marker.as_deref() != Some("mmc-pack.json") {
+        return None;
     }
+    (fresh.compat == Compat::Confirmed).then_some(fresh)
 }
 
 #[cfg(test)]
@@ -920,13 +726,25 @@ mod tests {
 
     #[test]
     fn release_shaped_jars_quarantine_and_everything_else_blocks_or_is_ignored() {
-        assert_eq!(classify("Cobblify-1.8.9-forge-0.8.0.jar", OURS), Verdict::Quarantine);
-        assert_eq!(classify("Cobblify-1.8.9-forge-0.10.2.jar", OURS), Verdict::Quarantine);
+        assert_eq!(
+            classify("Cobblify-1.8.9-forge-0.8.0.jar", OURS),
+            Verdict::Quarantine
+        );
+        assert_eq!(
+            classify("Cobblify-1.8.9-forge-0.10.2.jar", OURS),
+            Verdict::Quarantine
+        );
         // A dev build is ours in spirit but not a release we packaged - never touched.
-        assert_eq!(classify("Cobblify-1.8.9-forge-0.9.0-dev.jar", OURS), Verdict::Block);
+        assert_eq!(
+            classify("Cobblify-1.8.9-forge-0.9.0-dev.jar", OURS),
+            Verdict::Block
+        );
         assert_eq!(classify("Cobblify-renamed.jar", OURS), Verdict::Block);
         assert_eq!(classify("SomeOtherMod.jar", OURS), Verdict::Ignore);
-        assert_eq!(classify("OptiFine_1.8.9_HD_U_M5.jar", OURS), Verdict::Ignore);
+        assert_eq!(
+            classify("OptiFine_1.8.9_HD_U_M5.jar", OURS),
+            Verdict::Ignore
+        );
         assert_eq!(classify("notes.txt", OURS), Verdict::Ignore);
     }
 
@@ -934,11 +752,20 @@ mod tests {
     /// case-sensitive volume and leave the client unable to boot.
     #[test]
     fn classification_is_caseless_on_every_platform() {
-        assert_eq!(classify("cobblify-1.8.9-forge-0.8.0.jar", OURS), Verdict::Quarantine);
-        assert_eq!(classify("COBBLIFY-1.8.9-FORGE-0.8.0.JAR", OURS), Verdict::Quarantine);
+        assert_eq!(
+            classify("cobblify-1.8.9-forge-0.8.0.jar", OURS),
+            Verdict::Quarantine
+        );
+        assert_eq!(
+            classify("COBBLIFY-1.8.9-FORGE-0.8.0.JAR", OURS),
+            Verdict::Quarantine
+        );
         // Even a case variant of our OWN name is a candidate - only real file identity
         // exempts the destination, and that is decided in `install`, not here.
-        assert_eq!(classify("cobblify-1.8.9-forge-0.9.0.jar", OURS), Verdict::Quarantine);
+        assert_eq!(
+            classify("cobblify-1.8.9-forge-0.9.0.jar", OURS),
+            Verdict::Quarantine
+        );
     }
 
     #[test]
@@ -960,7 +787,10 @@ mod tests {
         let jar = forge_jar(src.path(), b"forge");
 
         let out = install(&jar, game.path()).unwrap();
-        assert_eq!(fs::read(game.path().join("mods").join(OURS)).unwrap(), b"forge");
+        assert_eq!(
+            fs::read(game.path().join("mods").join(OURS)).unwrap(),
+            b"forge"
+        );
         assert!(out.conflicts.is_empty());
         assert!(out.quarantined.is_empty());
     }
@@ -1081,14 +911,6 @@ mod tests {
     // ── compatibility judgements ───────────────────────────────────────────────
 
     #[test]
-    fn judge_confirms_only_1_8_9_forge() {
-        assert_eq!(judge("1.8.9", "forge-11.15.1.2318"), Compat::Confirmed);
-        assert!(matches!(judge("1.21.4", "fabric"), Compat::Incompatible(_)));
-        assert!(matches!(judge("1.8.9", "fabric-0.16"), Compat::Incompatible(_)));
-        assert_eq!(judge("", ""), Compat::Unknown);
-    }
-
-    #[test]
     fn judge_mmc_reads_the_component_list() {
         let ok = serde_json::json!({"components":[
             {"uid":"net.minecraft","version":"1.8.9"},
@@ -1107,65 +929,37 @@ mod tests {
         assert_eq!(judge_mmc(&serde_json::json!({})), Compat::Unknown);
     }
 
-    /// Round-2 B1: a readable vanilla folder with no Forge version installed is a REFUSAL,
-    /// not an "unknown". This is the exact state of the planning machine's own
-    /// `%APPDATA%\.minecraft`, which holds 1.8.9 and Fabric 1.21.x but no Forge.
     #[test]
-    fn a_vanilla_folder_without_forge_is_refused_not_offered() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("launcher_profiles.json"), b"{}").unwrap();
-        let versions = root.path().join("versions");
-        fs::create_dir_all(versions.join("1.8.9")).unwrap();
-        fs::create_dir_all(versions.join("fabric-loader-0.16.12-1.21.4")).unwrap();
-
-        let c = classify_picked(root.path()).unwrap();
-        assert!(matches!(c.compat, Compat::Incompatible(_)), "{:?}", c.compat);
-        assert!(!c.compat.is_installable());
-    }
-
-    #[test]
-    fn a_vanilla_folder_with_forge_1_8_9_is_confirmed() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("launcher_profiles.json"), b"{}").unwrap();
-        fs::create_dir_all(root.path().join("versions/1.8.9-forge1.8.9-11.15.1.2318")).unwrap();
-
-        let c = classify_picked(root.path()).unwrap();
-        assert_eq!(c.compat, Compat::Confirmed);
-    }
-
-    #[test]
-    fn an_unmarked_folder_is_unknown_and_needs_confirmation() {
-        let dir = tempfile::tempdir().unwrap();
-        let c = classify_picked(dir.path()).unwrap();
-        assert_eq!(c.compat, Compat::Unknown);
-        assert!(c.marker.is_none());
-    }
-
-    #[test]
-    fn picking_the_mods_folder_itself_resolves_to_its_instance() {
+    fn a_prism_game_directory_is_reparsed_from_its_saved_target() {
         let inst = tempfile::tempdir().unwrap();
-        fs::write(inst.path().join("minecraftinstance.json"), br#"{"gameVersion":"1.8.9","baseModLoader":{"name":"forge-11.15.1.2318"}}"#).unwrap();
-        let mods = inst.path().join("mods");
-        fs::create_dir_all(&mods).unwrap();
-
-        let c = classify_picked(&mods).unwrap();
-        assert_eq!(c.compat, Compat::Confirmed);
-        assert_eq!(c.game_dir, inst.path());
-    }
-
-    #[test]
-    fn a_picked_prism_instance_resolves_to_its_game_directory() {
-        let inst = tempfile::tempdir().unwrap();
+        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
         fs::write(
             inst.path().join("mmc-pack.json"),
             br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
         )
         .unwrap();
-        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
 
-        let c = classify_picked(inst.path()).unwrap();
+        let c = classify_picked(&inst.path().join("minecraft")).unwrap();
         assert_eq!(c.compat, Compat::Confirmed);
         assert_eq!(c.game_dir, inst.path().join("minecraft"));
+        assert_eq!(c.launcher, "Prism Launcher");
+    }
+
+    #[test]
+    fn unreadable_prism_metadata_is_unknown_and_not_installable() {
+        let inst = tempfile::tempdir().unwrap();
+        fs::create_dir_all(inst.path().join(".minecraft")).unwrap();
+        fs::write(inst.path().join("mmc-pack.json"), b"{").unwrap();
+
+        let c = classify_picked(&inst.path().join(".minecraft")).unwrap();
+        assert_eq!(c.compat, Compat::Unknown);
+        assert!(!c.compat.is_installable());
+    }
+
+    #[test]
+    fn non_prism_directories_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(classify_picked(dir.path()).is_err());
     }
 
     #[test]
@@ -1182,58 +976,53 @@ mod tests {
 
     // ── detection ──────────────────────────────────────────────────────────────
 
-    /// `.minecraft` lives under `%APPDATA%` on Windows while `home()` is `%USERPROFILE%`;
-    /// building that path off the home directory would silently find nothing.
     #[test]
-    fn windows_detection_reads_appdata_not_the_home_directory() {
+    fn candidate_view_is_id_and_name_only() {
+        let c = Candidate {
+            id: "d0".to_string(),
+            launcher: "Prism Launcher".to_string(),
+            name: "Hypixel".to_string(),
+            game_dir: PathBuf::from("/tmp/hypixel/minecraft"),
+            compat: Compat::Confirmed,
+            marker: Some("mmc-pack.json".to_string()),
+        };
+        assert_eq!(
+            c.view(),
+            CandidateView {
+                id: "d0".to_string(),
+                name: "Hypixel".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn detection_exposes_only_prism_candidates() {
         let home = tempfile::tempdir().unwrap();
         let appdata = tempfile::tempdir().unwrap();
-        let mc = appdata.path().join(".minecraft");
-        fs::create_dir_all(mc.join("versions/1.8.9-forge1.8.9")).unwrap();
-        fs::write(mc.join("launcher_profiles.json"), b"{}").unwrap();
-
         let env = Env {
             home: home.path().to_path_buf(),
             appdata: Some(appdata.path().to_path_buf()),
         };
-        let found = detect_vanilla(&env);
-        if cfg!(windows) {
-            let c = found.expect("must find .minecraft under APPDATA");
-            assert_eq!(c.compat, Compat::Confirmed);
-            assert_eq!(c.game_dir, mc);
-        } else {
-            assert!(found.is_none(), "the windows layout must not match on macOS");
-        }
-    }
-
-    #[test]
-    fn curseforge_instances_are_detected_and_judged() {
-        let home = tempfile::tempdir().unwrap();
-        let root = if cfg!(windows) {
-            home.path().join("curseforge/minecraft/Instances")
-        } else {
-            home.path().join("Documents/curseforge/minecraft/Instances")
-        };
+        let root = env.app_support().unwrap().join("PrismLauncher/instances");
         for (name, json) in [
-            ("Hypixel", r#"{"gameVersion":"1.8.9","baseModLoader":{"name":"forge-11.15.1.2318"}}"#),
-            ("DawnCraft", r#"{"gameVersion":"1.20.1","baseModLoader":{"name":"forge-47.2.0"}}"#),
+            ("Unreadable", b"{".as_slice()),
+            (
+                "Hypixel",
+                br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#.as_slice(),
+            ),
         ] {
             let dir = root.join(name);
             fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("minecraftinstance.json"), json).unwrap();
+            fs::write(dir.join("mmc-pack.json"), json).unwrap();
         }
-
-        let env = Env {
-            home: home.path().to_path_buf(),
-            appdata: None,
-        };
-        let found = detect_curseforge(&env);
+        let found = detect(&env);
         assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|c| c.launcher == "Prism Launcher"));
         let hypixel = found.iter().find(|c| c.name == "Hypixel").unwrap();
         assert_eq!(hypixel.compat, Compat::Confirmed);
-        let dawn = found.iter().find(|c| c.name == "DawnCraft").unwrap();
-        assert!(matches!(dawn.compat, Compat::Incompatible(_)));
-        assert!(!dawn.compat.is_installable());
+        let unreadable = found.iter().find(|c| c.name == "Unreadable").unwrap();
+        assert_eq!(unreadable.compat, Compat::Unknown);
+        assert!(!unreadable.compat.is_installable());
     }
 
     #[test]
@@ -1246,8 +1035,14 @@ mod tests {
         };
         let root = env.app_support().unwrap().join("PrismLauncher/instances");
         for (name, json) in [
-            ("AAA-wrong", r#"{"components":[{"uid":"net.minecraft","version":"1.20.1"},{"uid":"net.minecraftforge","version":"x"}]}"#),
-            ("ZZZ-right", r#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#),
+            (
+                "AAA-wrong",
+                r#"{"components":[{"uid":"net.minecraft","version":"1.20.1"},{"uid":"net.minecraftforge","version":"x"}]}"#,
+            ),
+            (
+                "ZZZ-right",
+                r#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
+            ),
         ] {
             let dir = root.join(name);
             fs::create_dir_all(&dir).unwrap();
@@ -1279,13 +1074,13 @@ mod tests {
         let t = SavedTarget {
             game_dir: "C:/games/hypixel".to_string(),
             validated_by: ValidatedBy::Marker,
-            marker: Some("minecraftinstance.json".to_string()),
+            marker: Some("mmc-pack.json".to_string()),
         };
         save_target(home.path(), &t).unwrap();
         let back = load_target(home.path()).unwrap();
         assert_eq!(back.game_dir, t.game_dir);
         assert_eq!(back.validated_by, ValidatedBy::Marker);
-        assert_eq!(back.marker.as_deref(), Some("minecraftinstance.json"));
+        assert_eq!(back.marker.as_deref(), Some("mmc-pack.json"));
         // No temp file left behind.
         assert!(!home
             .path()
@@ -1310,44 +1105,25 @@ mod tests {
     }
 
     #[test]
+    fn legacy_user_confirmed_targets_are_not_revalidated() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = SavedTarget {
+            game_dir: dir.path().display().to_string(),
+            validated_by: ValidatedBy::User,
+            marker: None,
+        };
+        assert!(revalidate(&t).is_none());
+    }
+
+    #[test]
     fn a_marker_that_no_longer_validates_is_not_revalidated() {
         let inst = tempfile::tempdir().unwrap();
         let t = SavedTarget {
             game_dir: inst.path().display().to_string(),
             validated_by: ValidatedBy::Marker,
-            marker: Some("minecraftinstance.json".to_string()),
+            marker: Some("mmc-pack.json".to_string()),
         };
         // The folder exists but the marker is gone - the instance was deleted or moved.
-        assert!(revalidate(&t).is_none());
-    }
-
-    #[test]
-    fn a_user_confirmed_folder_survives_having_no_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let t = SavedTarget {
-            game_dir: dir.path().display().to_string(),
-            validated_by: ValidatedBy::User,
-            marker: None,
-        };
-        let c = revalidate(&t).expect("an unmarked folder is exactly what was confirmed");
-        assert_eq!(c.compat, Compat::Unknown);
-    }
-
-    /// A folder the user vouched for is still refused once it starts saying, in its own
-    /// metadata, that it is something else.
-    #[test]
-    fn a_user_confirmed_folder_that_becomes_contradictory_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join("minecraftinstance.json"),
-            br#"{"gameVersion":"1.21.4","baseModLoader":{"name":"fabric"}}"#,
-        )
-        .unwrap();
-        let t = SavedTarget {
-            game_dir: dir.path().display().to_string(),
-            validated_by: ValidatedBy::User,
-            marker: None,
-        };
         assert!(revalidate(&t).is_none());
     }
 
@@ -1367,22 +1143,5 @@ mod tests {
             marker: Some("mmc-pack.json".to_string()),
         };
         assert_eq!(revalidate(&prism_saved).unwrap().compat, Compat::Confirmed);
-
-    }
-
-    #[test]
-    fn user_confirmed_folder_does_not_silently_acquire_marker_provenance() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join("profile.json"),
-            br#"{"game_version":"1.8.9","loader":"forge"}"#,
-        )
-        .unwrap();
-        let saved = SavedTarget {
-            game_dir: dir.path().display().to_string(),
-            validated_by: ValidatedBy::User,
-            marker: None,
-        };
-        assert!(revalidate(&saved).is_none());
     }
 }

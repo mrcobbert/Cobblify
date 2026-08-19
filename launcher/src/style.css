@@ -103,7 +103,7 @@ body {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: "copy hero";
   align-items: stretch;
@@ -132,7 +132,11 @@ body {
   justify-content: center;
   align-items: flex-start;
   gap: var(--space-md);
-  padding: 48px 24px 48px var(--page-inset);
+  padding:
+    clamp(24px, 7.75cqh, 48px)
+    clamp(14px, 2.7cqi, 24px)
+    clamp(24px, 7.75cqh, 48px)
+    clamp(24px, 5.8cqi, var(--page-inset));
   text-align: left;
   min-width: 0;
   background: transparent;
@@ -158,39 +162,6 @@ body {
   pointer-events: none;
 }
 
-/* Tall or narrow window: island on top, copy below. Separate boxes, no overlap. */
-.stage[data-layout="stack"] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "hero"
-    "copy";
-}
-.stage[data-layout="stack"] .copy {
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-  padding: 24px 32px 32px;
-}
-.stage[data-layout="stack"] .id,
-.stage[data-layout="stack"] .panel,
-.stage[data-layout="stack"] .state {
-  align-items: center;
-  width: auto;
-  max-width: 100%;
-}
-.stage[data-layout="stack"] .lede,
-.stage[data-layout="stack"] .hint {
-  margin-left: auto;
-  margin-right: auto;
-}
-.stage[data-layout="stack"] .paths {
-  width: min(100%, 42ch);
-}
-.stage[data-layout="stack"] .hero {
-  min-height: 0;
-}
-
 /* ── identity ───────────────────────────────────────────────────────────── */
 .id {
   display: flex;
@@ -203,7 +174,7 @@ body {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(1.65rem, 6.5cqi, 2.6rem);
+  font-size: clamp(1.5rem, 4.5cqi, 2.6rem);
   line-height: 1;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -403,38 +374,42 @@ kbd {
   margin-top: 6px;
 }
 
-/* ── per-target breakdown ───────────────────────────────────────────────── */
-/* Lunar and Forge report independently, so this list is how a user sees that
-   one is working even when the other is not. Deliberately quiet: it sits under
-   the primary action, not in place of it. */
-.targets {
+/* ── compact setup blocks ───────────────────────────────────────────────── */
+.setup {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin-top: var(--space-sm);
   display: flex;
   flex-direction: column;
+  gap: 12px;
+}
+
+.stage[data-state="ready"] .setup {
+  margin-top: 14px;
+}
+
+.launch-row {
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
-.target {
+.setup-block {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding-left: 10px;
-  border-left: 2px solid var(--line);
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   text-align: left;
 }
 
-.target[data-state="ready"] {
-  border-left-color: var(--aqua);
-}
-.target[data-state="blocked"] {
-  border-left-color: var(--gold);
-}
-.target[data-state="error"] {
-  border-left-color: var(--red);
+.setup-block-compact {
+  gap: 6px;
 }
 
-.target-head {
+.setup-head {
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.16em;
@@ -442,100 +417,91 @@ kbd {
   color: var(--text-dim);
 }
 
-.target-note,
-.target-path {
+.setup-hint {
   margin: 0;
   font-size: 11px;
   line-height: 1.55;
   color: var(--text-faint);
-  word-break: break-all;
+  max-width: 44ch;
 }
 
-/* A file we moved aside is never silent - the user is told the new name so they
-   can put it back. */
-.target-moved {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--gold);
-  word-break: break-all;
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-/* ── instance chooser ───────────────────────────────────────────────────── */
-.cands {
+.btn.setup-btn {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  padding: 6px 12px;
+  box-shadow:
+    0 1px 0 rgba(233, 238, 250, 0.3),
+    0 6px 14px -10px rgba(233, 238, 250, 0.45);
+}
+
+.setup-cands {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 100%;
-  margin: 2px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 168px;
-  overflow-y: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.cand {
+.setup-cand {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
-  text-align: left;
 }
 
-/* An instance whose own metadata says it is not Minecraft 1.8.9 with Forge is
-   shown with the reason and cannot be chosen - a click is not a substitute for
-   evidence, and installing there would stop the game booting. */
-.cand[data-compat="incompatible"] {
-  opacity: 0.55;
-}
-
-.cand-name {
+.setup-cand-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.cand-meta {
-  display: block;
-  font-size: 10.5px;
-  color: var(--text-faint);
-  word-break: break-all;
-}
-
-.cand[data-compat="incompatible"] .cand-meta {
-  color: var(--gold);
-}
-
-.mini {
+.setup-cand .setup-btn {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 6px 10px;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+}
+
+.setup-details {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.setup-details summary {
   cursor: pointer;
+  color: var(--text-dim);
+  list-style: none;
 }
 
-.mini:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+.setup-details summary::-webkit-details-marker {
+  display: none;
 }
 
-.mini:disabled {
-  opacity: 0.4;
-  cursor: default;
+.setup-details summary:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 2px;
 }
 
-.mini.ghost {
-  align-self: flex-start;
-  background: none;
+.setup-detail-text {
+  margin: 6px 0 0;
+  line-height: 1.55;
+  word-break: break-word;
 }
 
 /* ── entrance ───────────────────────────────────────────────────────────── */
@@ -660,6 +626,14 @@ kbd {
 .joining .js .dots::after {
   content: "";
   animation: dots 1.4s steps(4, end) infinite;
+}
+.joining[data-conn="disconnected"] .ring {
+  animation: none;
+  border-top-color: var(--line-2);
+  opacity: 0.45;
+}
+.joining[data-conn="disconnected"] .dots {
+  display: none;
 }
 @keyframes dots {
   0% {
@@ -786,35 +760,49 @@ kbd {
   letter-spacing: 0.08em;
 }
 
-/* team header — greyscale, name only */
-.team-head {
+/* Team block — the team is named by the colour of the box it's drawn in, so
+   there is no written header. The rail rides the top edge and paints over the
+   border it crosses, leaving a break at each end that the average and the
+   target flag sit in. */
+.team {
+  --team: var(--line-2);
+  position: relative;
+  margin: 14px 0 6px;
+  /* No side padding: the rows keep their own 12px inset, so their stats stay
+     under the column labels the sticky header sets. */
+  padding: 9px 0;
+  border: 1px solid var(--team);
+  border-radius: var(--r-md);
+}
+.team-rail {
+  position: absolute;
+  top: 0;
+  left: 5px;
+  right: 5px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 14px 2px 6px;
+  justify-content: space-between;
+  /* Tight leading: the rail only has to reach half its own height into the box,
+     so the roster can sit on padding that matches the bottom. */
+  line-height: 1;
+  transform: translateY(-50%);
+  pointer-events: none;
 }
-.team-head h3 {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-2);
+.team-rail > * {
+  padding: 1px 7px;
+  background: var(--bg-0);
 }
-.team-head .agg {
+.agg {
   font-size: 10px;
   color: var(--ink-4);
   letter-spacing: 0.04em;
 }
 .target-badge {
-  margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   font-weight: 700;
   color: var(--mc-red);
-  background: none;
-  padding: 0;
 }
 
 /* The sheet is --n columns wide, each capped at --content so rows never stretch
@@ -884,15 +872,6 @@ kbd {
   gap: 14px;
   grid-template-columns: var(--cols);
   padding: 6px 12px;
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  transition:
-    background 0.14s,
-    border-color 0.14s;
-}
-.prow:hover {
-  background: var(--surf-1);
-  border-color: var(--line);
 }
 
 /* name cell (holds the inline flags) */
@@ -1017,39 +996,36 @@ kbd {
   border: 1px solid var(--line-2);
 }
 
-/* confirmed cheater row — inverted accent bar + faint wash */
-.prow.cheater {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--line-2);
-}
+/* confirmed cheater row — inverted accent bar */
 .prow.cheater .sweat-bar {
   background: #fff;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
 }
 
-/* Hypixel-accurate team colors — names + headers, dark shadow so they hold on black */
-.team-red .team-head h3,
+/* Hypixel-accurate team colors — names at full strength, the box border held
+   back so eight of them on one screen read as scope, not as eight alarms. */
+.team-red { --team: rgba(255, 85, 85, 0.5); }
 .team-red .pn { color: var(--mc-red); text-shadow: var(--name-shadow); }
 
-.team-blue .team-head h3,
+.team-blue { --team: rgba(85, 85, 255, 0.5); }
 .team-blue .pn { color: var(--mc-blue); text-shadow: var(--name-shadow); }
 
-.team-green .team-head h3,
+.team-green { --team: rgba(85, 255, 85, 0.5); }
 .team-green .pn { color: var(--mc-green); text-shadow: var(--name-shadow); }
 
-.team-yellow .team-head h3,
+.team-yellow { --team: rgba(255, 255, 85, 0.5); }
 .team-yellow .pn { color: var(--mc-yellow); text-shadow: var(--name-shadow); }
 
-.team-aqua .team-head h3,
+.team-aqua { --team: rgba(85, 255, 255, 0.5); }
 .team-aqua .pn { color: var(--mc-aqua); text-shadow: var(--name-shadow); }
 
-.team-white .team-head h3,
+.team-white { --team: rgba(255, 255, 255, 0.5); }
 .team-white .pn { color: var(--mc-white); text-shadow: var(--name-shadow); }
 
-.team-pink .team-head h3,
+.team-pink { --team: rgba(255, 85, 255, 0.5); }
 .team-pink .pn { color: var(--mc-pink); text-shadow: var(--name-shadow); }
 
-.team-gray .team-head h3,
+.team-gray { --team: rgba(170, 170, 170, 0.5); }
 .team-gray .pn { color: var(--mc-gray); text-shadow: var(--name-shadow); }
 
 /* loading skeleton */
@@ -1119,9 +1095,12 @@ kbd {
 .dash[data-density="compact"] .dash-sticky.ctx-bar {
   padding: 5px 10px 4px;
 }
-.dash[data-density="compact"] .sect,
-.dash[data-density="compact"] .team-head {
+.dash[data-density="compact"] .sect {
   margin: 8px 2px 3px;
+}
+.dash[data-density="compact"] .team {
+  margin: 9px 0 4px;
+  padding: 8px 0;
 }
 .dash[data-density="compact"] .prow {
   padding: 4px 10px;
@@ -1148,18 +1127,18 @@ kbd {
 .dash[data-density="dense"] .dash-sticky.ctx-bar {
   padding: 4px 8px 2px;
 }
-.dash[data-density="dense"] .sect,
-.dash[data-density="dense"] .team-head {
+.dash[data-density="dense"] .sect {
   margin: 6px 2px 2px;
+}
+.dash[data-density="dense"] .team {
+  margin: 7px 0 3px;
+  padding: 7px 0;
 }
 .dash[data-density="dense"] .sect h3 {
   font-size: 9px;
 }
-.dash[data-density="dense"] .team-head h3 {
-  font-size: 10px;
-}
 .dash[data-density="dense"] .sect .n,
-.dash[data-density="dense"] .team-head .agg {
+.dash[data-density="dense"] .agg {
   font-size: 9px;
 }
 .dash[data-density="dense"] .col-head {

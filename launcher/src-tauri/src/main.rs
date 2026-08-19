@@ -32,10 +32,21 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 use tauri::Manager;
-use tauri_plugin_dialog::DialogExt;
 
 use forge::{Candidate, CandidateView, Compat, SavedTarget, ValidatedBy};
 use resources::ForgeJar;
+
+/// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
+mod issue {
+    pub const MISSING_LAUNCHER: &str = "missing_launcher";
+    pub const UNINITIALIZED_LUNAR: &str = "uninitialized_lunar";
+    pub const RUNNING_LUNAR: &str = "running_lunar";
+    pub const CONFLICTS: &str = "conflicts";
+    pub const NO_COMPATIBLE_PRISM: &str = "no_compatible_prism_instance";
+    pub const MISSING_BUNDLED_FORGE: &str = "missing_bundled_forge_jar";
+    pub const SETUP_ERROR: &str = "setup_error";
+    pub const RENAMED_JAR: &str = "renamed_jar";
+}
 
 /// One install target's own outcome. The two targets are reported independently and on
 /// purpose: a friend with Forge but no Lunar, or the reverse, must not be shown the other
@@ -46,17 +57,25 @@ struct TargetStatus {
     kind: &'static str,
     /// "ready" | "blocked" | "absent" | "error"
     state: &'static str,
+    /// Typed setup issue for the frontend. Omitted when there is nothing to act on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issue: Option<&'static str>,
     message: String,
-    /// Files we refused to touch. Their presence blocks.
-    conflicts: Vec<String>,
-    /// `"<old path> -> <new name>"` for anything we set aside, so it is never silent.
-    quarantined: Vec<String>,
-    /// Where our jar now lives.
-    path: Option<String>,
-    /// "none" | "choose" - whether the UI should offer instance selection. An old bundle
-    /// with no Forge jar is "none": a picker there could never succeed.
+    /// Optional semantic detail (exact error text, renamed jar filenames).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    /// "none" | "choose" - whether the UI should offer instance selection.
     action: &'static str,
     candidates: Vec<CandidateView>,
+    /// Filenames only, for optional renamed-jar diagnostics.
+    quarantined_names: Vec<String>,
+    /// Whether `open_setup_location` can reveal a folder for this target.
+    has_setup_folder: bool,
+    /// Backend-owned paths; never sent to the frontend.
+    #[serde(skip)]
+    conflict_dir: Option<PathBuf>,
+    #[serde(skip)]
+    install_path: Option<PathBuf>,
 }
 
 impl TargetStatus {
@@ -64,28 +83,38 @@ impl TargetStatus {
         TargetStatus {
             kind,
             state,
+            issue: None,
             message: message.into(),
-            conflicts: Vec::new(),
-            quarantined: Vec::new(),
-            path: None,
+            detail: None,
             action: "none",
             candidates: Vec::new(),
+            quarantined_names: Vec::new(),
+            has_setup_folder: false,
+            conflict_dir: None,
+            install_path: None,
         }
+    }
+
+    fn with_issue(mut self, issue: &'static str) -> Self {
+        self.issue = Some(issue);
+        self
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 }
 
-/// Readiness is a static property, computed at startup and reported as-is. It is never
-/// recomputed behind the user's back - there is deliberately no Retry button, which would
-/// report stale state. It DOES change in response to an explicit user action (choosing a
-/// Forge instance), which is why it now lives behind a `Mutex`.
+/// Readiness is computed at startup and on explicit refresh. It DOES change in response to
+/// an explicit user action (choosing a Prism instance), which is why it lives behind a
+/// `Mutex`.
 #[derive(Clone, Serialize)]
 struct Status {
     /// "ready" | "blocked" | "error"
     state: &'static str,
     message: String,
     mod_version: Option<String>,
-    /// Kept for the existing blocked-jars UI: the union across targets.
-    conflicts: Vec<String>,
     targets: Vec<TargetStatus>,
 }
 
@@ -95,20 +124,35 @@ impl Status {
             state: "error",
             message,
             mod_version: None,
-            conflicts: Vec::new(),
             targets: Vec::new(),
         }
     }
 }
 
-/// Everything the choice commands need after startup. `candidates` is backend-owned and
-/// keyed by an opaque id: the frontend never sends us a filesystem path, so a chosen target
-/// can only ever be one this process itself detected or the user picked in a native dialog.
+fn quarantined_filenames(entries: &[String]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let tail = trimmed.rsplit(" -> ").next().unwrap_or(trimmed).trim();
+            Path::new(tail)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// Everything the choice command needs after startup. `candidates` is backend-owned and
+/// keyed by an opaque id: the frontend never sends us a filesystem path.
 #[derive(Default)]
 struct ForgeState {
     jar: Option<ForgeJar>,
     candidates: HashMap<String, Candidate>,
-    next_pick: u32,
 }
 
 #[cfg(not(windows))]
@@ -135,9 +179,13 @@ fn home() -> Result<PathBuf, String> {
 #[cfg(windows)]
 const LUNAR_RUNNING_HINT: &str =
     "Lunar may be docked in the system tray - click the ^ arrow next to the clock, \
-     right-click Lunar Client, then Quit. Then reopen Cobblify.";
-#[cfg(not(windows))]
-const LUNAR_RUNNING_HINT: &str = "Then reopen Cobblify.";
+     right-click Lunar Client, then Quit. Then return to Cobblify.";
+#[cfg(target_os = "macos")]
+const LUNAR_RUNNING_HINT: &str =
+    "Quit Lunar completely with ⌘Q, then return to Cobblify.";
+#[cfg(not(any(windows, target_os = "macos")))]
+const LUNAR_RUNNING_HINT: &str =
+    "Quit Lunar completely, then return to Cobblify.";
 
 const NEVER_RUN_LUNAR: &str =
     "Lunar Client has never been run on this computer - open it and log in once, \
@@ -151,122 +199,146 @@ const NEVER_RUN_LUNAR: &str =
 /// everything below is what it has always been.
 fn set_up_lunar(res: &resources::Resources, home: &Path) -> TargetStatus {
     if !home.join(".lunarclient").exists() {
-        return TargetStatus::new("lunar", "absent", "Lunar Client is not installed.");
+        return TargetStatus::new("lunar", "absent", "Lunar Client is not installed.")
+            .with_issue(issue::MISSING_LAUNCHER);
     }
     let launcher_json = home.join(".lunarclient/settings/launcher.json");
     if !launcher_json.exists() {
-        return TargetStatus::new("lunar", "blocked", NEVER_RUN_LUNAR);
+        return TargetStatus::new("lunar", "blocked", NEVER_RUN_LUNAR)
+            .with_issue(issue::UNINITIALIZED_LUNAR);
     }
     let jars = match &res.lunar {
         Ok(j) => j,
-        Err(e) => return TargetStatus::new("lunar", "error", e.clone()),
+        Err(e) => {
+            return TargetStatus::new("lunar", "error", e.clone())
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e.clone());
+        }
     };
 
     let installed = match install::install_lunar(jars, &home.join(".weave")) {
         Ok(i) => i,
-        Err(e) => return TargetStatus::new("lunar", "error", e),
+        Err(e) => {
+            return TargetStatus::new("lunar", "error", e.clone())
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e);
+        }
     };
     if !installed.conflicts.is_empty() {
-        let mut t = TargetStatus::new("lunar", "blocked", "Remove the extra one, then reopen.");
-        t.conflicts = installed
-            .conflicts
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        let mut t =
+            TargetStatus::new("lunar", "blocked", "Conflicting jars.").with_issue(issue::CONFLICTS);
+        t.has_setup_folder = true;
+        t.conflict_dir = Some(home.join(".weave/mods"));
         return t;
     }
 
     match lunar_config::register(&launcher_json, &installed.agent_path) {
         Ok(()) => {
             let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
-            t.path = Some(installed.agent_path.display().to_string());
+            t.install_path = Some(installed.agent_path);
             t
         }
         Err(lunar_config::RegisterError::LunarRunning) => {
             TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
+                .with_issue(issue::RUNNING_LUNAR)
         }
-        Err(lunar_config::RegisterError::Failed(e)) => TargetStatus::new("lunar", "error", e),
+        Err(lunar_config::RegisterError::Failed(e)) => {
+            TargetStatus::new("lunar", "error", e.clone())
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e)
+        }
     }
 }
 
 // ── Forge ───────────────────────────────────────────────────────────────────────
 
 /// Turns a completed Forge install into a target status.
-fn forge_ready(out: forge::Outcome) -> TargetStatus {
+fn forge_ready(out: forge::Outcome, game_dir: &Path) -> TargetStatus {
     let mut t = if out.blocked {
-        TargetStatus::new(
-            "forge",
-            "blocked",
-            "Another Cobblify jar is already in that mods folder, and Cobblify will not \
-             touch a file it did not put there. Forge refuses to start with two copies, so \
-             nothing was installed - move or rename that jar, then reopen Cobblify.",
-        )
+        TargetStatus::new("forge", "blocked", "Conflicting jars.").with_issue(issue::CONFLICTS)
     } else {
-        TargetStatus::new("forge", "ready", "Forge")
+        TargetStatus::new("forge", "ready", "Prism Forge 1.8.9")
     };
-    t.path = out.path;
-    t.conflicts = out.conflicts;
-    t.quarantined = out.quarantined;
-    t
-}
-
-/// A failure that may have already moved files. The moves are carried onto the status so
-/// the user is still told what was set aside and how to put it back - reporting the error
-/// alone would leave them with renamed files and nothing naming them.
-fn forge_failed(e: forge::ForgeError) -> TargetStatus {
-    let mut t = TargetStatus::new("forge", "error", e.message);
-    if !e.quarantined.is_empty() {
-        t.message = format!(
-            "{} Some files were already moved aside - they are listed below, and renaming \
-             one back to its original name restores it exactly.",
-            t.message
-        );
+    if out.blocked {
+        t.has_setup_folder = true;
+        t.conflict_dir = Some(game_dir.join("mods"));
+    } else if let Some(path) = out.path {
+        t.install_path = Some(PathBuf::from(path));
     }
-    t.quarantined = e.quarantined;
+    let names = quarantined_filenames(&out.quarantined);
+    if !names.is_empty() {
+        t.quarantined_names = names.clone();
+        t.has_setup_folder = true;
+        t.conflict_dir = Some(game_dir.join("mods"));
+        if !out.blocked {
+            t.issue = Some(issue::RENAMED_JAR);
+            t.detail = Some(names.join(", "));
+        }
+    }
     t
 }
 
-/// The "nothing chosen yet" status. `action` is what stops an old bundle from showing a
-/// picker that could not possibly install anything.
-fn forge_choose(candidates: &[Candidate]) -> TargetStatus {
-    let installable = candidates.iter().filter(|c| c.compat.is_installable()).count();
-    let message = if candidates.is_empty() {
-        "No Minecraft folder found yet - choose yours to set up Forge.".to_string()
-    } else if installable == 0 {
-        "None of the Minecraft folders found can run Cobblify - choose another.".to_string()
-    } else {
-        "Choose which Minecraft folder to set Forge up in.".to_string()
-    };
-    let mut t = TargetStatus::new("forge", "absent", message);
-    t.action = "choose";
-    t.candidates = candidates.iter().map(Candidate::view).collect();
+fn forge_failed(e: forge::ForgeError, game_dir: Option<&Path>) -> TargetStatus {
+    let names = quarantined_filenames(&e.quarantined);
+    let mut t = TargetStatus::new("forge", "error", "Setup failed.")
+        .with_issue(issue::SETUP_ERROR)
+        .with_detail(e.message);
+    if !names.is_empty() {
+        t.quarantined_names = names;
+        if let Some(dir) = game_dir {
+            t.has_setup_folder = true;
+            t.conflict_dir = Some(dir.join("mods"));
+        }
+    }
     t
+}
+
+fn forge_choose_with_prism(candidates: &[Candidate], prism_installed: bool) -> TargetStatus {
+    let confirmed: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| c.compat == Compat::Confirmed)
+        .collect();
+
+    if !prism_installed {
+        return TargetStatus::new("forge", "absent", "Prism Launcher is not installed.")
+            .with_issue(issue::MISSING_LAUNCHER);
+    }
+
+    if confirmed.is_empty() {
+        return TargetStatus::new("forge", "absent", "No compatible Prism instance was found.")
+            .with_issue(issue::NO_COMPATIBLE_PRISM);
+    }
+
+    let mut t = TargetStatus::new("forge", "absent", "Choose a Prism instance.");
+    t.action = "choose";
+    t.candidates = confirmed.iter().map(|c| c.view()).collect();
+    t
+}
+
+fn forge_choose(candidates: &[Candidate]) -> TargetStatus {
+    forge_choose_with_prism(candidates, forge::prism_installed())
 }
 
 /// Installs into a candidate and remembers it, but only once the install succeeded.
 fn adopt(jar: &ForgeJar, c: &Candidate, home: &Path) -> TargetStatus {
     let out = match forge::install(jar, &c.game_dir) {
         Ok(o) => o,
-        Err(e) => return forge_failed(e),
+        Err(e) => return forge_failed(e, Some(&c.game_dir)),
     };
-    // A blocked outcome installed nothing, so there is nothing to remember.
     if out.blocked {
-        return forge_ready(out);
+        return forge_ready(out, &c.game_dir);
     }
     let saved = SavedTarget {
         game_dir: c.game_dir.display().to_string(),
-        validated_by: if c.marker.is_some() {
-            ValidatedBy::Marker
-        } else {
-            ValidatedBy::User
-        },
+        validated_by: ValidatedBy::Marker,
         marker: c.marker.clone(),
     };
-    // A failure to remember is not a failure to install; say so rather than pretending
-    // the whole thing broke.
-    let mut t = forge_ready(out);
+    let mut t = forge_ready(out, &c.game_dir);
     if let Err(e) = forge::save_target(home, &saved) {
-        t.message = format!("{} (could not remember this folder: {e})", t.message);
+        t.message = format!(
+            "{} (could not remember this Prism instance: {e})",
+            t.message
+        );
     }
     t
 }
@@ -280,10 +352,6 @@ fn adopt(jar: &ForgeJar, c: &Candidate, home: &Path) -> TargetStatus {
 /// whole point of running the two independently.
 fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
     let ready: Vec<&TargetStatus> = targets.iter().filter(|t| t.state == "ready").collect();
-    let conflicts: Vec<String> = targets
-        .iter()
-        .flat_map(|t| t.conflicts.iter().cloned())
-        .collect();
 
     if !ready.is_empty() {
         let names: Vec<&str> = ready.iter().map(|t| t.message.as_str()).collect();
@@ -295,7 +363,6 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
                 names.join(" and ")
             ),
             mod_version: version,
-            conflicts,
             targets,
         };
     }
@@ -305,78 +372,87 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
             state: "blocked",
             message: blocked.message.clone(),
             mod_version: version,
-            conflicts,
             targets,
         };
     }
 
-    // Nothing ready, nothing blocked: either everything is absent, or something errored.
     if let Some(err) = targets.iter().find(|t| t.state == "error") {
         return Status {
             state: "error",
             message: err.message.clone(),
             mod_version: version,
-            conflicts,
             targets,
         };
     }
 
-    // All absent. Whether that is actionable depends on whether a Forge jar even shipped.
-    let can_choose = targets.iter().any(|t| t.action == "choose");
-    let message = if can_choose {
-        "No Lunar Client found. Choose your Minecraft folder to set up Forge.".to_string()
+    let forge = targets.iter().find(|t| t.kind == "forge");
+    let message = if forge
+        .and_then(|t| t.issue)
+        .is_some_and(|i| i == issue::MISSING_LAUNCHER)
+    {
+        "Install Prism Launcher to set up Forge.".to_string()
+    } else if forge
+        .and_then(|t| t.issue)
+        .is_some_and(|i| i == issue::NO_COMPATIBLE_PRISM)
+    {
+        "No compatible Prism instance was found.".to_string()
+    } else if forge.map(|t| t.action == "choose").unwrap_or(false) {
+        "Choose a Prism instance.".to_string()
+    } else if forge
+        .and_then(|t| t.issue)
+        .is_some_and(|i| i == issue::MISSING_BUNDLED_FORGE)
+    {
+        "This copy does not include Forge.".to_string()
     } else {
-        "No Lunar Client found, and this copy does not include Forge.".to_string()
+        "Setup needed.".to_string()
     };
+
     Status {
         state: "blocked",
         message,
         mod_version: version,
-        conflicts,
         targets,
     }
 }
 
-fn start_up(app: &tauri::AppHandle) -> (Status, ForgeState) {
+/// Cached verified resources so `refresh_setup` can rebuild without re-reading the manifest path.
+struct SetupContext {
+    resource_dir: PathBuf,
+    mod_version: Option<String>,
+}
+
+fn rebuild_setup(home: &Path, ctx: &SetupContext) -> (Status, ForgeState) {
     let none = ForgeState::default();
-    let resource_dir = match app.path().resource_dir() {
-        Ok(dir) => dir.join("resources"),
-        Err(e) => {
-            return (
-                Status::error(format!("Cannot locate the bundled resources: {e}")),
-                none,
-            )
-        }
-    };
-    let verified = match resources::verify(&resource_dir) {
+    let verified = match resources::verify(&ctx.resource_dir) {
         Ok(v) => v,
         Err(e) => return (Status::error(e), none),
     };
-    let version = verified.manifest.mod_version.clone();
 
-    let home = match home() {
-        Ok(h) => h,
-        Err(e) => return (Status::error(e), none),
-    };
-
-    let lunar = set_up_lunar(&verified, &home);
+    let lunar = set_up_lunar(&verified, home);
 
     let mut state = ForgeState::default();
     let forge_target = match &verified.forge {
-        None => TargetStatus::new("forge", "absent", "This copy does not include Forge."),
-        Some(Err(e)) => TargetStatus::new("forge", "error", e.clone()),
+        None => TargetStatus::new("forge", "absent", "This copy does not include Forge.")
+            .with_issue(issue::MISSING_BUNDLED_FORGE),
+        Some(Err(e)) => TargetStatus::new("forge", "error", "Setup failed.")
+            .with_issue(issue::SETUP_ERROR)
+            .with_detail(e.clone()),
         Some(Ok(jar)) => {
             state.jar = Some(jar.clone());
-            // A remembered instance re-installs straight away - idempotent and
-            // self-healing, exactly the property the Lunar path already has.
-            match forge::load_target(&home).as_ref().and_then(forge::revalidate) {
-                Some(c) => adopt(jar, &c, &home),
+            match forge::load_target(home)
+                .as_ref()
+                .and_then(forge::revalidate)
+            {
+                Some(c) => adopt(jar, &c, home),
                 None => {
                     let candidates = forge::Env::from_process()
                         .map(|env| forge::detect(&env))
                         .unwrap_or_default();
                     let t = forge_choose(&candidates);
-                    for c in candidates {
+                    for c in candidates
+                        .into_iter()
+                        .filter(|c| c.compat == Compat::Confirmed)
+                    {
                         state.candidates.insert(c.id.clone(), c);
                     }
                     t
@@ -385,7 +461,62 @@ fn start_up(app: &tauri::AppHandle) -> (Status, ForgeState) {
         }
     };
 
-    (aggregate(Some(version), vec![lunar, forge_target]), state)
+    (
+        aggregate(ctx.mod_version.clone(), vec![lunar, forge_target]),
+        state,
+    )
+}
+
+fn start_up(app: &tauri::AppHandle) -> (Status, ForgeState, SetupContext) {
+    let none = ForgeState::default();
+    let resource_dir = match app.path().resource_dir() {
+        Ok(dir) => dir.join("resources"),
+        Err(e) => {
+            return (
+                Status::error(format!("Cannot locate the bundled resources: {e}")),
+                none,
+                SetupContext {
+                    resource_dir: PathBuf::new(),
+                    mod_version: None,
+                },
+            )
+        }
+    };
+    let verified = match resources::verify(&resource_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                Status::error(e),
+                none,
+                SetupContext {
+                    resource_dir,
+                    mod_version: None,
+                },
+            )
+        }
+    };
+    let version = verified.manifest.mod_version.clone();
+
+    let home = match home() {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                Status::error(e),
+                none,
+                SetupContext {
+                    resource_dir,
+                    mod_version: Some(version),
+                },
+            )
+        }
+    };
+
+    let ctx = SetupContext {
+        resource_dir: resource_dir.clone(),
+        mod_version: Some(version.clone()),
+    };
+    let (status, forge_state) = rebuild_setup(&home, &ctx);
+    (status, forge_state, ctx)
 }
 
 // ── commands ────────────────────────────────────────────────────────────────────
@@ -395,11 +526,167 @@ fn status(state: tauri::State<'_, Mutex<Status>>) -> Status {
     state.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+#[tauri::command]
+fn refresh_setup(
+    status: tauri::State<'_, Mutex<Status>>,
+    forge: tauri::State<'_, Mutex<ForgeState>>,
+    ctx: tauri::State<'_, SetupContext>,
+) -> Result<Status, String> {
+    let home = home()?;
+    let (next, forge_state) = rebuild_setup(&home, &ctx);
+    *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
+    *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
+    Ok(next)
+}
+
+#[derive(Serialize)]
+struct LauncherInfo {
+    installed: bool,
+    download_url: &'static str,
+}
+
+fn parse_launcher_kind(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "lunar" => Ok("lunar"),
+        "forge" => Ok("forge"),
+        _ => Err("Unknown launcher kind.".to_string()),
+    }
+}
+
+fn launcher_download_url(kind: &str) -> &'static str {
+    match kind {
+        "lunar" => "https://www.lunarclient.com/download",
+        "forge" => "https://prismlauncher.org/download/",
+        _ => unreachable!(),
+    }
+}
+
+fn open_download_url(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri_plugin_opener::open_url(url, None::<&str>)
+            .map_err(|e| format!("Cannot open download page: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg(url)
+            .status()
+            .map_err(|e| format!("Cannot open download page: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = url;
+        Err("Opening download pages is not supported on this platform.".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_launcher(kind: String) -> Result<LauncherInfo, String> {
+    let kind = parse_launcher_kind(&kind)?;
+    let home = home()?;
+    let installed = match kind {
+        "lunar" => home.join(".lunarclient").exists(),
+        "forge" => forge::prism_installed(),
+        _ => unreachable!(),
+    };
+    let download_url = launcher_download_url(kind);
+    open_download_url(download_url)?;
+    Ok(LauncherInfo {
+        installed,
+        download_url,
+    })
+}
+
+fn open_path(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri_plugin_opener::open_path(path, None::<&str>)
+            .map_err(|e| format!("Cannot open folder: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Cannot open folder: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = path;
+        Err("Opening folders is not supported on this platform.".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_launcher(kind: String) -> Result<(), String> {
+    parse_launcher_kind(&kind)?;
+    match kind.as_str() {
+        "lunar" => {
+            #[cfg(target_os = "macos")]
+            {
+                std::process::Command::new("/usr/bin/open")
+                    .args(["-a", "Lunar Client"])
+                    .status()
+                    .map_err(|e| format!("Cannot open Lunar Client: {e}"))?;
+            }
+            #[cfg(windows)]
+            {
+                let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set.")?;
+                let exe = PathBuf::from(local).join("Programs/lunarclient/Lunar Client.exe");
+                if !exe.is_file() {
+                    return Err("Lunar Client is not installed.".to_string());
+                }
+                std::process::Command::new(&exe)
+                    .spawn()
+                    .map_err(|e| format!("Cannot open Lunar Client: {e}"))?;
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                return Err("Opening Lunar Client is not supported on this platform.".to_string());
+            }
+            Ok(())
+        }
+        "forge" => {
+            let exe = forge::prism_exe();
+            if !exe.is_file() {
+                return Err("Prism Launcher is not installed.".to_string());
+            }
+            std::process::Command::new(&exe)
+                .spawn()
+                .map_err(|e| format!("Cannot open Prism Launcher: {e}"))?;
+            Ok(())
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tauri::command]
+fn open_setup_location(
+    kind: String,
+    status: tauri::State<'_, Mutex<Status>>,
+) -> Result<(), String> {
+    parse_launcher_kind(&kind)?;
+    let guard = status.lock().unwrap_or_else(|e| e.into_inner());
+    let target = guard
+        .targets
+        .iter()
+        .find(|t| t.kind == kind)
+        .ok_or("That setup location is not available.")?;
+    if !target.has_setup_folder {
+        return Err("That setup location is not available.".to_string());
+    }
+    let dir = target
+        .conflict_dir
+        .as_ref()
+        .ok_or("That setup location is not available.")?;
+    open_path(dir)
+}
+
 /// Rebuilds the whole status after a Forge choice, so the UI re-renders from one shape.
-fn republish(
-    status: &tauri::State<'_, Mutex<Status>>,
-    forge_target: TargetStatus,
-) -> Status {
+fn republish(status: &tauri::State<'_, Mutex<Status>>, forge_target: TargetStatus) -> Status {
     let mut guard = status.lock().unwrap_or_else(|e| e.into_inner());
     let lunar = guard
         .targets
@@ -412,12 +699,9 @@ fn republish(
     next
 }
 
-/// Installs into a candidate the backend already knows. `confirm` is required for an
-/// `Unknown` folder - one with no launcher metadata at all - and refused for a `Confirmed`
-/// one, so the two commands cannot be used interchangeably to skip a confirmation.
+/// Installs into a Prism candidate the backend already detected.
 fn install_into(
     id: &str,
-    confirmed_by_user: bool,
     status: tauri::State<'_, Mutex<Status>>,
     forge: tauri::State<'_, Mutex<ForgeState>>,
 ) -> Result<Status, String> {
@@ -427,44 +711,29 @@ fn install_into(
             .jar
             .clone()
             .ok_or("This copy of Cobblify does not include Forge.")?;
-        let c = guard
-            .candidates
-            .get(id)
-            .cloned()
-            .ok_or("That folder is no longer available - reopen Cobblify and try again.")?;
+        let c =
+            guard.candidates.get(id).cloned().ok_or(
+                "That Prism instance is no longer available - reopen Cobblify and try again.",
+            )?;
         (jar, c)
     };
 
     match &candidate.compat {
         Compat::Incompatible(why) => return Err(why.clone()),
-        Compat::Unknown if !confirmed_by_user => {
-            return Err("That folder needs to be confirmed first.".to_string())
+        Compat::Unknown => {
+            return Err(
+                "That Prism instance could not be verified - fix or recreate it in Prism Launcher first."
+                    .to_string(),
+            )
         }
-        Compat::Confirmed if confirmed_by_user => {
-            return Err("That folder does not need confirming.".to_string())
-        }
-        _ => {}
+        Compat::Confirmed => {}
     }
 
-    // Re-validate NOW: the folder may have changed between being listed and being
-    // clicked. The FRESH candidate is what gets installed - re-reading the metadata and
-    // then installing into the stale one would make the re-check theatre.
+    // Re-validate NOW: the instance may have changed between being listed and being clicked.
     let fresh = forge::classify_picked(&candidate.game_dir)?;
-    if !fresh.compat.is_installable() {
-        return Err(fresh.compat_reason());
-    }
-    // Preserve the provenance of the offer. A user-confirmed bare folder must remain
-    // bare, while a launcher-backed offer must retain the same marker and still confirm
-    // 1.8.9 Forge. Otherwise metadata could change between rendering and clicking and
-    // silently change what the click means.
-    if confirmed_by_user {
-        if fresh.compat != forge::Compat::Unknown || fresh.marker.is_some() {
-            return Err("That folder changed since it was listed - reopen Cobblify and try again."
-                .to_string());
-        }
-    } else if fresh.compat != forge::Compat::Confirmed || fresh.marker != candidate.marker {
+    if fresh.compat != Compat::Confirmed || fresh.marker != candidate.marker {
         return Err(
-            "That Minecraft instance changed since it was listed - reopen Cobblify and try again."
+            "That Prism instance changed since it was listed - reopen Cobblify and try again."
                 .to_string(),
         );
     }
@@ -488,59 +757,7 @@ fn choose_forge_target(
     status: tauri::State<'_, Mutex<Status>>,
     forge: tauri::State<'_, Mutex<ForgeState>>,
 ) -> Result<Status, String> {
-    install_into(&id, false, status, forge)
-}
-
-#[tauri::command]
-fn confirm_forge_target(
-    id: String,
-    status: tauri::State<'_, Mutex<Status>>,
-    forge: tauri::State<'_, Mutex<ForgeState>>,
-) -> Result<Status, String> {
-    install_into(&id, true, status, forge)
-}
-
-/// Opens the native folder picker and, on a usable selection, ADDS it to the backend's own
-/// candidate list under a fresh id. It never installs: a second explicit command always
-/// follows, even when the picked folder is the only candidate on screen.
-///
-/// `async` is load-bearing - `blocking_pick_folder` must not run on the main thread, and an
-/// async command runs on Tauri's runtime instead.
-#[tauri::command]
-async fn pick_forge_folder(
-    app: tauri::AppHandle,
-    status: tauri::State<'_, Mutex<Status>>,
-    forge: tauri::State<'_, Mutex<ForgeState>>,
-) -> Result<Status, String> {
-    let picked = app.dialog().file().blocking_pick_folder();
-    let Some(picked) = picked else {
-        // Cancelling is not an error and must change nothing.
-        return Ok(status.lock().unwrap_or_else(|e| e.into_inner()).clone());
-    };
-    let path = picked
-        .into_path()
-        .map_err(|_| "That folder could not be read.".to_string())?;
-
-    let mut candidate = forge::classify_picked(&path)?;
-    if !candidate.compat.is_installable() {
-        return Err(candidate.compat_reason());
-    }
-
-    let mut guard = forge.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.jar.is_none() {
-        return Err("This copy of Cobblify does not include Forge.".to_string());
-    }
-    guard.next_pick += 1;
-    candidate.id = format!("p{}", guard.next_pick);
-    let id = candidate.id.clone();
-    guard.candidates.insert(id.clone(), candidate);
-    let listed: Vec<Candidate> = guard.candidates.values().cloned().collect();
-    drop(guard);
-
-    let mut target = forge_choose(&listed);
-    // Put the folder they just chose at the top of the list.
-    target.candidates.sort_by_key(|c| (c.id != id) as u8);
-    Ok(republish(&status, target))
+    install_into(&id, status, forge)
 }
 
 /// Reads the mod's `~/.cobblify/lobby.json` and hands the parsed JSON straight
@@ -650,11 +867,12 @@ fn launch_lunar(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), Str
 /// Microsoft authentication; Cobblify never reads or handles account material.
 #[tauri::command]
 fn launch_forge(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), String> {
-    let saved = forge::load_target(&home()?)
-        .ok_or("Choose a Prism Forge instance before launching.")?;
+    let saved =
+        forge::load_target(&home()?).ok_or("Choose a Prism Forge instance before launching.")?;
     if saved.marker.as_deref() != Some("mmc-pack.json") {
-        return Err("The saved Forge target is not a Prism instance - set up Prism first."
-            .to_string());
+        return Err(
+            "The saved Forge target is not a Prism instance - set up Prism first.".to_string(),
+        );
     }
     let fresh = forge::revalidate(&saved)
         .ok_or("That Prism instance changed - reopen Cobblify and set it up again.")?;
@@ -667,14 +885,11 @@ fn launch_forge(state: tauri::State<'_, Mutex<ProgressState>>) -> Result<(), Str
         .ok_or("Cannot determine the Prism instance id.")?;
 
     #[cfg(windows)]
-    let exe = PathBuf::from(
-        std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set.")?,
-    )
-    .join("Programs/PrismLauncher/prismlauncher.exe");
+    let exe = forge::prism_exe();
     #[cfg(target_os = "macos")]
-    let exe = PathBuf::from("/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher");
+    let exe = forge::prism_exe();
     #[cfg(not(any(windows, target_os = "macos")))]
-    let exe = PathBuf::from("prismlauncher");
+    let exe = forge::prism_exe();
 
     if !exe.is_file() {
         return Err("Prism Launcher is not installed in its standard location.".to_string());
@@ -771,7 +986,11 @@ fn launch_progress(state: tauri::State<'_, Mutex<ProgressState>>) -> progress::P
     st.steady_polls = steady;
     st.last_mtime = mtime;
     let settled = milestone == progress::Milestone::Mixing
-        && if forge_session { progress::forge_loaded(&log) } else { steady >= 2 };
+        && if forge_session {
+            progress::forge_loaded(&log)
+        } else {
+            steady >= 2
+        };
     if forge_session {
         progress::progress_for_forge(milestone, settled)
     } else {
@@ -797,8 +1016,12 @@ mod tests {
     }
 
     fn choosable() -> TargetStatus {
-        let mut t = TargetStatus::new("forge", "absent", "pick one");
+        let mut t = TargetStatus::new("forge", "absent", "Choose a Prism instance.");
         t.action = "choose";
+        t.candidates.push(CandidateView {
+            id: "d0".to_string(),
+            name: "Hypixel".to_string(),
+        });
         t
     }
 
@@ -818,8 +1041,14 @@ mod tests {
 
     #[test]
     fn a_blocked_target_wins_over_absent_and_error() {
-        assert_eq!(agg(t("lunar", "blocked"), t("forge", "absent")).state, "blocked");
-        assert_eq!(agg(t("lunar", "error"), t("forge", "blocked")).state, "blocked");
+        assert_eq!(
+            agg(t("lunar", "blocked"), t("forge", "absent")).state,
+            "blocked"
+        );
+        assert_eq!(
+            agg(t("lunar", "error"), t("forge", "blocked")).state,
+            "blocked"
+        );
         assert_eq!(
             agg(t("lunar", "blocked"), t("forge", "error")).message,
             "lunar-blocked"
@@ -828,8 +1057,14 @@ mod tests {
 
     #[test]
     fn an_error_surfaces_only_when_nothing_is_ready_or_blocked() {
-        assert_eq!(agg(t("lunar", "error"), t("forge", "absent")).state, "error");
-        assert_eq!(agg(t("lunar", "absent"), t("forge", "error")).state, "error");
+        assert_eq!(
+            agg(t("lunar", "error"), t("forge", "absent")).state,
+            "error"
+        );
+        assert_eq!(
+            agg(t("lunar", "absent"), t("forge", "error")).state,
+            "error"
+        );
         assert_eq!(
             agg(t("lunar", "absent"), t("forge", "error")).message,
             "forge-error"
@@ -850,16 +1085,22 @@ mod tests {
     fn all_absent_with_a_forge_jar_offers_a_choice() {
         let s = agg(t("lunar", "absent"), choosable());
         assert_eq!(s.state, "blocked");
-        assert!(s.message.contains("Choose your Minecraft folder"), "{}", s.message);
+        assert!(s.message.contains("Choose a Prism"), "{}", s.message);
     }
 
     /// Round-2 I2: an old five-key bundle on a Lunar-less machine must not show a picker
     /// that cannot succeed.
     #[test]
     fn all_absent_without_a_forge_jar_offers_nothing() {
-        let s = agg(t("lunar", "absent"), t("forge", "absent"));
+        let mut forge = t("forge", "absent");
+        forge.issue = Some(issue::MISSING_BUNDLED_FORGE);
+        let s = agg(t("lunar", "absent"), forge);
         assert_eq!(s.state, "blocked");
-        assert!(s.message.contains("does not include Forge"), "{}", s.message);
+        assert!(
+            s.message.contains("does not include Forge"),
+            "{}",
+            s.message
+        );
         assert!(s.targets.iter().all(|t| t.action == "none"));
     }
 
@@ -880,35 +1121,118 @@ mod tests {
     }
 
     #[test]
-    fn conflicts_are_unioned_across_targets() {
+    fn conflicts_are_tracked_per_target() {
         let mut lunar = t("lunar", "blocked");
-        lunar.conflicts = vec!["a.jar".into()];
+        lunar.issue = Some(issue::CONFLICTS);
+        lunar.has_setup_folder = true;
         let mut forge = t("forge", "blocked");
-        forge.conflicts = vec!["b.jar".into()];
+        forge.issue = Some(issue::CONFLICTS);
+        forge.has_setup_folder = true;
         let s = agg(lunar, forge);
-        assert_eq!(s.conflicts, vec!["a.jar".to_string(), "b.jar".to_string()]);
+        assert_eq!(s.state, "blocked");
+        assert!(s.targets.iter().all(|t| t.issue == Some(issue::CONFLICTS)));
+    }
+
+    #[test]
+    fn parse_launcher_kind_rejects_unknown_values() {
+        assert!(parse_launcher_kind("lunar").is_ok());
+        assert!(parse_launcher_kind("forge").is_ok());
+        assert!(parse_launcher_kind("curseforge").is_err());
+        assert!(parse_launcher_kind("../etc").is_err());
+    }
+
+    #[test]
+    fn quarantined_filenames_extracts_only_names() {
+        let names = quarantined_filenames(&[
+            "/tmp/mods/Cobblify.jar -> Cobblify.jar.cobblify-disabled".to_string(),
+        ]);
+        assert_eq!(names, vec!["Cobblify.jar.cobblify-disabled".to_string()]);
+
+        let bare_path = quarantined_filenames(&[
+            "/Users/foo/Library/Application Support/PrismLauncher/instances/foo/mods/Other.jar"
+                .to_string(),
+        ]);
+        assert_eq!(bare_path, vec!["Other.jar".to_string()]);
+
+        let basename_only = quarantined_filenames(&["Cobblify.jar.cobblify-disabled".to_string()]);
+        assert_eq!(
+            basename_only,
+            vec!["Cobblify.jar.cobblify-disabled".to_string()]
+        );
+    }
+
+    #[test]
+    fn forge_choose_reports_missing_prism() {
+        let missing = forge_choose_with_prism(&[], false);
+        assert_eq!(missing.issue, Some(issue::MISSING_LAUNCHER));
+        assert!(missing.candidates.is_empty());
+    }
+
+    #[test]
+    fn forge_choose_reports_no_compatible_instance() {
+        let incompatible = forge_choose_with_prism(
+            &[Candidate {
+                id: "d0".into(),
+                launcher: "Prism Launcher".into(),
+                name: "Wrong".into(),
+                game_dir: PathBuf::from("/tmp/wrong"),
+                compat: Compat::Incompatible("nope".into()),
+                marker: Some("mmc-pack.json".into()),
+            }],
+            true,
+        );
+        assert_eq!(incompatible.issue, Some(issue::NO_COMPATIBLE_PRISM));
+        assert!(incompatible.candidates.is_empty());
+    }
+
+    #[test]
+    fn forge_choose_publishes_confirmed_candidates_only() {
+        let candidates = vec![
+            Candidate {
+                id: "d0".into(),
+                launcher: "Prism Launcher".into(),
+                name: "Right".into(),
+                game_dir: PathBuf::from("/tmp/right"),
+                compat: Compat::Confirmed,
+                marker: Some("mmc-pack.json".into()),
+            },
+            Candidate {
+                id: "d1".into(),
+                launcher: "Prism Launcher".into(),
+                name: "Unreadable".into(),
+                game_dir: PathBuf::from("/tmp/unreadable"),
+                compat: Compat::Unknown,
+                marker: Some("mmc-pack.json".into()),
+            },
+        ];
+        let t = forge_choose_with_prism(&candidates, true);
+        assert_eq!(t.action, "choose");
+        assert_eq!(t.candidates.len(), 1);
+        assert_eq!(t.candidates[0].name, "Right");
     }
 }
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let (status, forge_state) = start_up(app.handle());
+            let (status, forge_state, ctx) = start_up(app.handle());
             app.manage(Mutex::new(status));
             app.manage(Mutex::new(forge_state));
+            app.manage(ctx);
             app.manage(Mutex::new(ProgressState::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             status,
+            refresh_setup,
+            get_launcher,
+            open_launcher,
+            open_setup_location,
             lobby_state,
             launch_lunar,
             launch_forge,
             launch_progress,
-            pick_forge_folder,
-            choose_forge_target,
-            confirm_forge_target
+            choose_forge_target
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Cobblify launcher");
