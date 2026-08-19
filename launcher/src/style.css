@@ -4,8 +4,11 @@
    Retune the whole app from this one block.
    ═══════════════════════════════════════════════════════════════════════════ */
 :root {
-  --bg: #000000;
-  --bg-lift: #000000;
+  /* Not pure black: a cool near-black so the roster reads as lit rather than
+     punched out of the void. Must stay in step with --bg-0, which the sticky
+     bar and the team rail paint with to mask what they sit on. */
+  --bg: #0d1015;
+  --bg-lift: #161b22;
   --surface: rgba(17, 24, 36, 0.78);
   --line: rgba(150, 178, 214, 0.14);
   --line-strong: rgba(150, 178, 214, 0.3);
@@ -558,9 +561,9 @@ kbd {
   --ink-2: #aeb0b4;
   --ink-3: #9aa0a8;
   --ink-4: #8a9098;
-  --surf-1: #161719;
-  --surf-2: #1b1d1f;
-  --surf-3: #232527;
+  --surf-1: #171a20;
+  --surf-2: #1c2028;
+  --surf-3: #242932;
   --line-2: rgba(255, 255, 255, 0.11);
   --load-a: #567833;
   --load-b: #86b24a;
@@ -570,7 +573,7 @@ kbd {
   --r-md: 9px;
   --content: 780px; /* roster + header cap so wide windows don't stretch rows */
   --header-band: 140px; /* clears the shrunken corner voxel */
-  --bg-0: #000000;
+  --bg-0: #0d1015;
   --mc-red: #ff5555;
   --mc-blue: #5555ff;
   --mc-green: #55ff55;
@@ -748,14 +751,14 @@ kbd {
 }
 .sect h3 {
   margin: 0;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
 .sect .n {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink-4);
   letter-spacing: 0.08em;
 }
@@ -793,12 +796,12 @@ kbd {
   background: var(--bg-0);
 }
 .agg {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink-4);
   letter-spacing: 0.04em;
 }
 .target-badge {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   font-weight: 700;
@@ -811,7 +814,7 @@ kbd {
    main.js picks --n from the width it actually has and the rows it has to
    place. At --n: 1 this is the old single centered column, unchanged. */
 .sheet {
-  --cols: minmax(0, 1fr) 58px 52px 64px 46px;
+  --cols: minmax(0, 1fr) 62px 56px 70px 50px;
   --gap: 26px;
   /* Still a container: at one column the sticky header sits here rather than in
      a .col, and it has to answer the same width question its rows answer. */
@@ -858,7 +861,7 @@ kbd {
   gap: 14px;
   padding: 2px 12px 5px;
   grid-template-columns: var(--cols);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-4);
@@ -897,7 +900,8 @@ kbd {
   flex: 0 1 auto;
 }
 .rank {
-  font-size: 11px;
+  /* matches the name it sits beside */
+  font-size: 14.5px;
   white-space: nowrap;
   letter-spacing: 0.01em;
 }
@@ -910,7 +914,7 @@ kbd {
 .rank .r-darkgreen { color: var(--mc-darkgreen); text-shadow: var(--name-shadow); }
 .pn {
   font-weight: 600;
-  font-size: 13.5px;
+  font-size: 14.5px;
   color: var(--ink-1);
   white-space: nowrap;
   overflow: hidden;
@@ -927,7 +931,7 @@ kbd {
 .stat {
   font-family: var(--num);
   text-align: right;
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
@@ -975,7 +979,7 @@ kbd {
 /* inline flags — scoped under .dash so they never hit the homepage .chip */
 .dash .chip {
   display: inline-block;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   border-radius: 4px;
@@ -1053,7 +1057,7 @@ kbd {
 }
 
 .empty-note {
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--ink-4);
   padding: 6px 4px;
 }
@@ -1064,7 +1068,7 @@ kbd {
 @container (max-width: 520px) {
   .prow,
   .col-head {
-    --cols: minmax(0, 1fr) 58px 52px;
+    --cols: minmax(0, 1fr) 62px 56px;
   }
   .col-head span:nth-child(4),
   .col-head span:nth-child(5),
@@ -1076,7 +1080,7 @@ kbd {
 @container (max-width: 360px) {
   .prow,
   .col-head {
-    --cols: minmax(0, 1fr) 58px;
+    --cols: minmax(0, 1fr) 62px;
   }
   .col-head span:nth-child(3),
   .cell-wlr {
@@ -1107,13 +1111,13 @@ kbd {
   line-height: 1.45;
 }
 .dash[data-density="compact"] .pn {
-  font-size: 12.5px;
+  font-size: 13.5px;
 }
 .dash[data-density="compact"] .rank {
-  font-size: 10px;
+  font-size: 13.5px;
 }
 .dash[data-density="compact"] .stat {
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 .dash[data-density="compact"] .sweat-bar {
   min-height: 15px;
@@ -1135,14 +1139,14 @@ kbd {
   padding: 7px 0;
 }
 .dash[data-density="dense"] .sect h3 {
-  font-size: 9px;
+  font-size: 10px;
 }
 .dash[data-density="dense"] .sect .n,
 .dash[data-density="dense"] .agg {
-  font-size: 9px;
+  font-size: 10px;
 }
 .dash[data-density="dense"] .col-head {
-  font-size: 8.5px;
+  font-size: 9.5px;
   padding: 0 8px 2px;
 }
 .dash[data-density="dense"] .roster {
@@ -1156,32 +1160,32 @@ kbd {
   line-height: 1.35;
 }
 .dash[data-density="dense"] .pn {
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 .dash[data-density="dense"] .rank {
-  font-size: 9.5px;
+  font-size: 12.5px;
 }
 .dash[data-density="dense"] .identity {
   gap: 5px;
 }
 .dash[data-density="dense"] .stat {
-  font-size: 10.5px;
+  font-size: 11.5px;
 }
 .dash[data-density="dense"] .sweat-bar {
   min-height: 13px;
 }
 .dash[data-density="dense"] .chip {
-  font-size: 8px;
+  font-size: 9px;
   padding: 1px 4px;
 }
 .dash[data-density="dense"] .target-badge {
-  font-size: 8px;
+  font-size: 9px;
 }
 .dash[data-density="dense"] .skel {
   height: 8px;
 }
 .dash[data-density="dense"] .empty-note {
-  font-size: 10px;
+  font-size: 11px;
   padding: 2px 4px;
 }
 
