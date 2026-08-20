@@ -86,9 +86,12 @@ export function writeCached(player, parsed, env, ctx, ttlSec = CACHE_TTL_SEC) {
 }
 
 // ---- Global "origin blocked" circuit breaker ------------------------------
-// When hypixel's edge serves us a challenge page, EVERY scrape is doomed until the block
-// lifts, so a short global flag stops the worker from hammering the origin (which would
-// only prolong the block) and short-circuits lookups to an instant error instead.
+// Set when hypixel stops answering usefully, in either of its two shapes: the edge serving us a
+// challenge page / 403, or the origin itself failing behind a healthy edge (Cloudflare 520-527, or
+// a fetch that outlives our own bound). EVERY hypixel scrape is doomed until it lifts, so a short
+// global flag stops the worker from hammering the origin - which would only prolong an edge block
+// and pile connections onto a struggling origin - and pins subsequent lookups to the shmeado
+// fallback instead. Failures that set this flag are never negatively cached; see scrape.js.
 
 function blockedL1Key() {
   return new Request("https://bedwarsqol.internal/cache/blocked/v1");

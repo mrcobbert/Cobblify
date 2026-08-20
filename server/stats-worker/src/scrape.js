@@ -37,6 +37,20 @@ const NEEDLE = "stats-content-bedwars";
 const BEDWARS_CUSHION = 22_000; // bytes to keep reading past the needle to capture the whole block
 const MAX_PREFIX_BYTES = 90_000; // hard stop; also fully contains any <50 KB challenge page
 
+// Cloudflare's origin-error family: the edge answered us, but hypixel's own server did not answer
+// the edge (520 unknown, 521 down, 522 connect timeout, 523 unreachable, 524 read timeout,
+// 525/526 SSL, 527 railgun). Distinct from a challenge/403, which is the edge refusing US.
+const ORIGIN_DOWN_MIN = 520;
+const ORIGIN_DOWN_MAX = 527;
+
+// Bound on one player-page fetch + prefix read. Measured healthy: ~0.3 s for the full 264 KB page
+// (the worker's own egress probe reports ~85 ms), so this is ~40x headroom. It sits deliberately
+// BELOW the ~20 s Cloudflare itself takes to give up and emit a 522: without a bound, every lookup
+// during a hypixel outage held an origin-gate slot for that full ~20 s. Because it fires first, an
+// abort we armed is classified as origin-down too - otherwise the bound would hide the very 522
+// that trips the breaker.
+const FETCH_TIMEOUT_MS = 12_000;
+
 // Politeness toward hypixel — pinned to the measured ~1.7/s per-IP origin limit (with margin).
 const BATCH_CFG = {
   concurrency: 2, // gate below dominates; 2 lets a scrape overlap the next start's latency
@@ -211,62 +225,96 @@ function errBody(player, error, httpStatus) {
   return b;
 }
 
-/** Fetch + stream-read a player page. Returns { ok, html } or { ok:false, body, retry429? }. */
+/**
+ * Fetch + stream-read a player page, bounded by FETCH_TIMEOUT_MS.
+ * Returns { ok, html } or { ok:false, body, retry429?, originDown? }.
+ *
+ * `originDown` marks "hypixel itself is not answering" (as opposed to a block aimed at this
+ * worker). It is an internal control flag beside `retry429`, never a wire field: the body keeps
+ * its precise http_<code> so the failure stays diagnosable from a client response.
+ */
 export async function scrapePlayerHtml(player, env) {
   const base = (env && env.HYPIXEL_BASE) || "https://hypixel.net";
   const target = `${base}/player/${encodeURIComponent(player)}`;
-  let response;
+  const aborter = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; aborter.abort(); }, FETCH_TIMEOUT_MS);
   try {
-    response = await fetch(target, {
-      method: "GET",
-      headers: {
-        "User-Agent": BROWSER_UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      redirect: "follow",
-    });
-  } catch (e) {
-    return { ok: false, body: errBody(player, String(e && e.message ? e.message : e)) };
-  }
-
-  // Rate-limited by hypixel: signal the pool to back off and retry.
-  if (response.status === 429) {
-    try { await response.body?.cancel(); } catch (_) {}
-    return { ok: false, retry429: true, body: errBody(player, "http_429", 429) };
-  }
-
-  let html;
-  try { html = await readHtmlPrefix(response); }
-  catch (e) { return { ok: false, body: errBody(player, "stream_" + String(e && e.message ? e.message : e)) }; }
-
-  // A 404 from the forum APPLICATION is hypixel answering: there is no member by that name. That
-  // is precisely what a /nick looks like from the forum's side, so it is the NICKED verdict - the
-  // same one the shmeado source already returns for these names.
-  //
-  // The XenForo error template is what makes it an answer rather than a failure. A 404 without it
-  // was not produced by the forum at all (Cloudflare, a proxy, a routing change), so it is
-  // infrastructure trouble and stays a retryable ERROR - never a confident "this player is nicked".
-  // Measured: the marker sits at byte ~92 of the ~42 KB 404 page (so always inside the prefix read)
-  // and appears on no successful player page.
-  //
-  // This must be decided BEFORE the challenge heuristic below. The 404 page slips under the
-  // <50 KB size gate, so while `challenge-platform` was still a challenge marker every nicked
-  // player in a lobby was read as `blocked_by_cloudflare`: it tripped the global origin breaker
-  // and rendered as a blank tab cell instead of [Nicked].
-  if (response.status === 404) {
-    if (html.includes(FORUM_ERROR_TEMPLATE)) {
-      return { ok: false, body: { success: false, state: "NICKED", displayName: player, httpStatus: 404 } };
+    let response;
+    try {
+      response = await fetch(target, {
+        method: "GET",
+        headers: {
+          "User-Agent": BROWSER_UA,
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+        signal: aborter.signal,
+      });
+    } catch (e) {
+      if (timedOut) return { ok: false, originDown: true, body: errBody(player, "origin_timeout") };
+      return { ok: false, body: errBody(player, String(e && e.message ? e.message : e)) };
     }
-    return { ok: false, body: errBody(player, "http_404", 404) };
+
+    // Rate-limited by hypixel: signal the pool to back off and retry.
+    if (response.status === 429) {
+      try { await response.body?.cancel(); } catch (_) {}
+      return { ok: false, retry429: true, body: errBody(player, "http_429", 429) };
+    }
+
+    let html;
+    try { html = await readHtmlPrefix(response); }
+    catch (e) {
+      // The bound covers the streaming read too: an origin that accepts the connection and then
+      // stalls mid-body is down in every way that matters to us.
+      if (timedOut) return { ok: false, originDown: true, body: errBody(player, "origin_timeout") };
+      return { ok: false, body: errBody(player, "stream_" + String(e && e.message ? e.message : e)) };
+    }
+
+    // A 404 from the forum APPLICATION is hypixel answering: there is no member by that name. That
+    // is precisely what a /nick looks like from the forum's side, so it is the NICKED verdict - the
+    // same one the shmeado source already returns for these names.
+    //
+    // The XenForo error template is what makes it an answer rather than a failure. A 404 without it
+    // was not produced by the forum at all (Cloudflare, a proxy, a routing change), so it is
+    // infrastructure trouble and stays a retryable ERROR - never a confident "this player is nicked".
+    // Measured: the marker sits at byte ~92 of the ~42 KB 404 page (so always inside the prefix read)
+    // and appears on no successful player page.
+    //
+    // This must be decided BEFORE the challenge heuristic below. The 404 page slips under the
+    // <50 KB size gate, so while `challenge-platform` was still a challenge marker every nicked
+    // player in a lobby was read as `blocked_by_cloudflare`: it tripped the global origin breaker
+    // and rendered as a blank tab cell instead of [Nicked].
+    if (response.status === 404) {
+      if (html.includes(FORUM_ERROR_TEMPLATE)) {
+        return { ok: false, body: { success: false, state: "NICKED", displayName: player, httpStatus: 404 } };
+      }
+      return { ok: false, body: errBody(player, "http_404", 404) };
+    }
+
+    // Also decided by status BEFORE the content heuristic, for the same reason the 404 is: a
+    // Cloudflare origin-error page is short enough to slip under the <50 KB gate, and calling a
+    // hypixel-side outage "blocked_by_cloudflare" would misreport who is failing. Both trip the
+    // breaker, so the fallback engages either way - this only keeps the verdict honest.
+    if (response.status >= ORIGIN_DOWN_MIN && response.status <= ORIGIN_DOWN_MAX) {
+      return {
+        ok: false,
+        originDown: true,
+        body: errBody(player, "http_" + response.status, response.status),
+      };
+    }
+
+    if (response.status === 403 || (html.length < 50_000 && CHALLENGE_RE.test(html))) {
+      return { ok: false, body: errBody(player, "blocked_by_cloudflare", response.status) };
+    }
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, body: errBody(player, "http_" + response.status, response.status) };
+    }
+    return { ok: true, html };
+  } finally {
+    clearTimeout(timer);
   }
-  if (response.status === 403 || (html.length < 50_000 && CHALLENGE_RE.test(html))) {
-    return { ok: false, body: errBody(player, "blocked_by_cloudflare", response.status) };
-  }
-  if (response.status < 200 || response.status >= 300) {
-    return { ok: false, body: errBody(player, "http_" + response.status, response.status) };
-  }
-  return { ok: true, html };
 }
 
 /** Scrape one player from the request's pinned source, parse, and cache. Returns { body, retry429? }. */
@@ -280,13 +328,26 @@ async function scrapeAndCache(player, env, ctx, source) {
   }
   const scraped = await scrapePlayerHtml(player, env);
   if (!scraped.ok) {
-    if (scraped.body && scraped.body.error === "blocked_by_cloudflare") writeBlocked(env, ctx);
+    // Two shapes of "hypixel is not answering", one breaker:
+    //   blocked_by_cloudflare - the EDGE is refusing this worker (challenge page / 403)
+    //   originDown            - the edge is fine, hypixel's own origin is not (520-527 / timeout)
+    // Either way every further hypixel scrape this window is doomed, which is exactly the
+    // condition that pins the next request to shmeado.
+    const trippedBreaker = scraped.originDown === true
+      || (scraped.body && scraped.body.error === "blocked_by_cloudflare");
+    if (trippedBreaker) writeBlocked(env, ctx);
     // 429s are NOT negatively cached: the pool retries them, and a cached terminal 429
     // would poison the very lookups the backoff is about to make succeed.
+    // A breaker-tripping failure is not cached either, for a sharper reason: readCached runs
+    // BEFORE the source is pinned (see getBedwars / streamBedwarsBatch), so a 90 s negative
+    // outlives nothing but its own usefulness - it would be served in preference to the
+    // fallback for most of the breaker's 120 s life, leaving the flag routing around hypixel
+    // while the cache kept handing back hypixel's error. Same rationale as the uncached
+    // transport failures in shmeado.js.
     // A 404-sourced NICKED is not a failure, so it is cached rather than retried - but on the
     // short L1-only lease (see NICK_404_TTL_SEC), not the durable one the parse-sourced NICKED
     // below gets. NICKED is the only non-ok state this branch can produce.
-    if (!scraped.retry429) {
+    if (!scraped.retry429 && !trippedBreaker) {
       writeCached(player, scraped.body, env, ctx,
         scraped.body.state === "NICKED" ? NICK_404_TTL_SEC : NEG_TTL_SEC);
     }
