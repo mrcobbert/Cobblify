@@ -32,6 +32,12 @@
                 <span id="launch-forge-label">Launch Prism</span>
               </button>
             </div>
+            <label class="auto-join" id="auto-join-wrap" hidden>
+              <input type="checkbox" id="auto-join" checked />
+              <span>Auto-join Hypixel</span>
+            </label>
+            <p class="pref-error alert" id="pref-error" role="alert" hidden></p>
+            <button class="btn setup-btn" id="repair-pref" type="button" hidden>Repair Setting</button>
             <p class="alert" id="launch-error" role="alert" hidden></p>
           </div>
 
@@ -63,8 +69,10 @@
           <span id="joining-sub">Connecting to network</span
           ><span class="dots" aria-hidden="true"></span>
         </div>
+        <button class="btn setup-btn" id="conn-try-again" type="button" hidden>Try Again</button>
       </div>
       <div class="dash" id="dash"></div>
+      <div class="conn-announce" id="conn-announce" aria-live="polite" aria-atomic="true"></div>
     </main>
 
     <div class="grain" aria-hidden="true"></div>

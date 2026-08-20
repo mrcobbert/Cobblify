@@ -231,6 +231,53 @@ stray=$(find "$fake_home" -type f -name "$(basename "$forge_jar")" -print)
 $stray"
 ok "the Forge jar was verified but NOT installed speculatively"
 
+echo "== 9. test-drive.command uses local build outputs before Desktop staging =="
+test_drive="$repo_root/launcher/tools/test-drive.command"
+[ -f "$test_drive" ] || die "missing $test_drive"
+
+grep -q 'lunar/build.gradle.kts' "$test_drive" \
+  || fail "test-drive.command does not read version from lunar/build.gradle.kts"
+grep -q 'lunar/build/libs/Cobblify-Lunar-' "$test_drive" \
+  || fail "test-drive.command does not derive mod_src from lunar/build/libs"
+grep -q 'versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-' "$test_drive" \
+  || fail "test-drive.command does not derive forge_src from versions/1.8.9-forge/build/libs"
+grep -q 'Weave-Loader-Agent-' "$test_drive" \
+  || fail "test-drive.command does not locate the installed Weave agent"
+if grep -q '\.weave/mods' "$test_drive"; then
+  fail "test-drive.command still reads the Lunar mod from ~/.weave/mods"
+fi
+
+inject_line=$(grep -n 'cobblify_inject_app ' "$test_drive" | head -1)
+[ -n "$inject_line" ] || fail "test-drive.command has no cobblify_inject_app call"
+inject_body=${inject_line#*:}
+for arg in '"$mod_src"' '"$agent_src"' '"$version"' '"$forge_src"'; do
+  case "$inject_body" in
+    *"$arg"*) ;;
+    *) fail "test-drive.command cobblify_inject_app omits argument $arg" ;;
+  esac
+done
+
+desktop_rm=$(grep -n 'rm -rf "\$dest"' "$test_drive" | head -1 | cut -d: -f1)
+[ -n "$desktop_rm" ] || fail "test-drive.command has no Desktop staging step"
+
+must_precede_desktop() { # <description> <grep pattern>
+  local what=$1 pattern=$2 line
+  line=$(grep -n "$pattern" "$test_drive" | head -1 | cut -d: -f1)
+  [ -n "$line" ] || fail "test-drive.command has no $what"
+  if [ "$line" -ge "$desktop_rm" ]; then
+    fail "test-drive.command $what too late (line $line, Desktop rm at $desktop_rm)"
+  fi
+}
+
+must_precede_desktop 'version read' 'could not read version from lunar/build.gradle.kts'
+must_precede_desktop 'mod_src assignment' 'mod_src="\$repo_root/lunar/build/libs/Cobblify-Lunar-\$version.jar"'
+must_precede_desktop 'forge_src assignment' 'forge_src="\$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-\$version.jar"'
+must_precede_desktop 'agent check' '\[ -n "\$agent_src" \]'
+must_precede_desktop 'Lunar jar check' '\[ -f "\$mod_src" \]'
+must_precede_desktop 'Forge jar check' '\[ -f "\$forge_src" \]'
+
+ok "test-drive.command selects local Lunar/Forge build outputs, verifies all inputs, and passes forge to cobblify_inject_app before Desktop staging"
+
 echo
 echo "all $pass checks passed - injection, manifest, signing, verification and"
 echo "the archive listing are proven with fake jars and no token."

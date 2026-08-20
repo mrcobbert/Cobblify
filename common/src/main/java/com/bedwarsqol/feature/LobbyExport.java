@@ -38,6 +38,10 @@ public final class LobbyExport {
     // Background-thread only.
     private static String lastBody = "";
     private static int seq;
+    /** Immutable for this JVM; null when identity cannot be validated. */
+    private static final JvmWriterIdentity WRITER = JvmWriterIdentity.current();
+    /** Per-JVM temp path; set once when identity is valid. */
+    private static final File TEMP_FILE = tempFileFor(WRITER);
 
     static {
         Thread t = new Thread(LobbyExport::writeLoop, "BedwarsQol-LobbyExport");
@@ -74,8 +78,11 @@ public final class LobbyExport {
     }
 
     private static void writeIfChanged(Lobby lobby) {
+        if (WRITER == null || TEMP_FILE == null) return;
         try {
             JsonObject tree = GSON.toJsonTree(lobby).getAsJsonObject();
+            tree.addProperty("jvmPid", WRITER.pid);
+            tree.addProperty("jvmStartTimeMs", WRITER.startTimeMs);
             String body = tree.toString(); // seq-free, so it changes only when the roster does
             if (body.equals(lastBody)) return;
             seq++;
@@ -83,15 +90,23 @@ public final class LobbyExport {
             writeAtomically(GSON.toJson(tree));
             lastBody = body;
         } catch (Throwable ignored) {
+            deleteOwnedTempBestEffort();
             // never propagate into the game; the launcher degrades to its idle state on a missing file
         }
+    }
+
+    private static File tempFileFor(JvmWriterIdentity identity) {
+        if (identity == null) return null;
+        File dir = new File(System.getProperty("user.home"), ".cobblify");
+        return new File(dir, identity.tempFileName());
     }
 
     private static void writeAtomically(String json) throws Exception {
         File dir = new File(System.getProperty("user.home"), ".cobblify");
         if (!dir.isDirectory() && !dir.mkdirs()) return;
         File file = new File(dir, "lobby.json");
-        File tmp = new File(dir, "lobby.json.tmp");
+        File tmp = TEMP_FILE;
+        if (tmp == null) return;
         Writer w = new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8);
         try {
             w.write(json);
@@ -104,6 +119,17 @@ public final class LobbyExport {
         } catch (Exception atomicUnsupported) {
             if (!tmp.renameTo(file)) {
                 Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    /** Best-effort delete of this JVM's temp file only; used after a failed write. */
+    static void deleteOwnedTempBestEffort() {
+        File tmp = TEMP_FILE;
+        if (tmp != null && tmp.isFile()) {
+            try {
+                tmp.delete();
+            } catch (Throwable ignored) {
             }
         }
     }
@@ -158,9 +184,11 @@ public final class LobbyExport {
         return true;
     }
 
-    /** Root of {@code lobby.json}; {@code seq} is injected by the writer, not this object. */
+    /** Root of {@code lobby.json}; {@code seq} and writer identity are injected by the writer. */
     public static final class Lobby {
         public final int v = 1;
+        public long jvmPid;
+        public long jvmStartTimeMs;
         public String context = "MENU";     // MENU | LOBBY | QUEUE | GAME
         public boolean inHypixel;
         public String self;

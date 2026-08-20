@@ -153,9 +153,10 @@ dev loop, never for a friend bundle.
 
 ## Test it without packaging
 
-`launcher/tools/test-drive.command` builds a runnable launcher using the jars
-already installed in `~/.weave` on this machine. No Gradle build, no token.
-It drops the app on the Desktop.
+`launcher/tools/test-drive.command` builds a runnable launcher using the
+current locally built Lunar and Forge jars plus the Weave agent already installed
+in `~/.weave`. It runs no Gradle build itself and touches no token. It drops
+the app on the Desktop.
 
 `launcher/tools/check-state.sh` is read-only and reports what the launcher did:
 whether the backup exists, whether there is exactly one javaagent per key,
@@ -233,10 +234,28 @@ user to quit and reopen. It now lives behind a `Mutex` because an *explicit* use
 action - choosing a Forge instance - produces a new one; it is still never
 recomputed behind the user's back, which is the invariant that mattered.
 
-**The Forge dashboard uses explicit-session freshness.** A Launch Forge click stamps a
-baseline; only a newer `~/.cobblify/lobby.json` can activate the dashboard. This gives
-Prism the same lobby/queue/game experience without identifying a system Java process or
-reading Minecraft argv. Forge progress comes from the remembered instance's FML log.
+**Auto-join Hypixel (shared preference).** A compact checkbox under the launch row
+defaults on and is stored at `~/.cobblify/launcher-preferences.json` (backend-owned
+path and lock; the UI never supplies a filesystem location). When on, Lunar uses the
+official `lunarclient://play?serverAddress=play.hypixel.net` deep link and Prism gets
+`--server play.hypixel.net`. When off, Lunar opens only (`Open Lunar` / `Opening Lunar…`
+/ `Lunar Opened`) and Prism launches with `--launch <instance-id>` only (no server
+argument). The UI does not narrate Hypixel connectivity until a verified live lobby
+snapshot proves it.
+
+**Lobby writer identity and session binding.** Every `lobby.json` snapshot carries
+`jvmPid` and `jvmStartTimeMs` from the exporting JVM (operational metadata only — never
+argv). Each JVM writes through its own temp file (`lobby.<pid>.<start>.tmp`) before an
+atomic replace. The launcher admits only a writer whose OS process is alive, whose birth
+time is at/after the launch baseline, and whose JVM start time matches that process
+within strict bounds. A pre-existing alive writer is detected before native dispatch and
+surfaces **Game Already Running** with **Try Again**; stale files from prior sessions
+never activate the dashboard.
+
+**The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a
+per-launch baseline; only snapshots from a JVM born after that baseline and still alive
+at poll time can connect. Forge cosmetic progress still comes from the remembered
+instance's FML log.
 
 **`proc.rs` is the only file allowed to use `sysinfo`.** Lunar's game JVM
 carries a live Minecraft access token in its command line, so process inspection

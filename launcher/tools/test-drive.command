@@ -3,9 +3,10 @@
 # Cobblify Launcher - build a REAL, runnable launcher for hands-on testing.
 #
 # This is the Phase 3 manual gate. It is NOT the owner packaging path: it runs no
-# Gradle build and touches no backend token. It injects the jars ALREADY
-# INSTALLED on this machine (~/.weave) into the blank launcher build, signs it,
-# and drops it on the Desktop ready to open.
+# Gradle build and touches no backend token. It injects the current locally built
+# Lunar and Forge jars plus the Weave agent already installed on this machine
+# (~/.weave) into the blank launcher build, signs it, and drops it on the Desktop
+# ready to open.
 #
 # THIS SCRIPT ITSELF WRITES NOTHING to ~/.weave or ~/.lunarclient. Only the
 # launcher you then open does that, and only when Lunar is closed.
@@ -41,16 +42,26 @@ if [ ! -d "$app_src" ]; then
 fi
 cobblify_assert_blank_app "$app_src"
 
-# --- 3. locate the jars already installed on this machine --------------------
+# --- 3. locate inputs: local build outputs + installed Weave agent -------------
+#
+# Version comes from the Gradle project so filenames cannot drift from source.
+# Lunar and Forge jars must be freshly built locally; only the Weave agent is
+# read from ~/.weave.
+
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/lunar/build.gradle.kts" | head -1)
+[ -n "$version" ] || die "could not read version from lunar/build.gradle.kts"
+
 agent_src=$(find "$HOME/.weave" -maxdepth 1 -name 'Weave-Loader-Agent-*.jar' | head -1)
-mod_src=$(find "$HOME/.weave/mods" -maxdepth 1 -name 'Cobblify-Lunar-*.jar' | head -1)
+mod_src="$repo_root/lunar/build/libs/Cobblify-Lunar-$version.jar"
+forge_src="$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar"
+
 [ -n "$agent_src" ] || die "no Weave agent found in ~/.weave"
-[ -n "$mod_src" ]   || die "no Cobblify jar found in ~/.weave/mods"
-version=$(basename "$mod_src" | sed -n 's/^Cobblify-Lunar-\(.*\)\.jar$/\1/p')
-[ -n "$version" ] || die "could not read a version out of $(basename "$mod_src")"
+[ -f "$mod_src" ] || die "no Lunar jar at lunar/build/libs/Cobblify-Lunar-$version.jar - build it with: ( cd \"$repo_root/lunar\" && ./gradlew assemble )"
+[ -f "$forge_src" ] || die "no Forge jar at versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar - build it with: \"$repo_root/gradlew\" -p \"$repo_root\" :1.8.9-forge:assemble"
 
 echo "  agent:   $(basename "$agent_src")"
 echo "  mod:     $(basename "$mod_src")  (v$version)"
+echo "  forge:   $(basename "$forge_src")"
 
 # --- 4. stage on the Desktop, inject, sign -----------------------------------
 #
@@ -60,7 +71,7 @@ echo "  mod:     $(basename "$mod_src")  (v$version)"
 dest="$HOME/Desktop/$COBBLIFY_APP_NAME"
 rm -rf "$dest"
 cp -R "$app_src" "$dest"
-cobblify_inject_app "$dest" "$mod_src" "$agent_src" "$version"
+cobblify_inject_app "$dest" "$mod_src" "$agent_src" "$version" "$forge_src"
 cobblify_sign_app "$dest"
 
 echo ""

@@ -398,6 +398,47 @@ kbd {
   gap: 10px;
 }
 
+.auto-join {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-join input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--text);
+}
+
+.auto-join input:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.conn-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.pref-error {
+  margin-top: 8px;
+}
+
 .setup-block {
   display: flex;
   flex-direction: column;

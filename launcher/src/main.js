@@ -12,7 +12,9 @@ import {
   resolvePreviewStatus,
 } from "./setup-fixtures.js";
 import { createConnectionModel } from "./connection-state.js";
-import { connectionCopy } from "./connection-view.js";
+import { createConnectionShell } from "./connection-shell.js";
+import { createLaunchController } from "./launch-controller.js";
+import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import {
   ISSUE,
   launchLabel,
@@ -20,11 +22,17 @@ import {
   setupBlocks,
   topLevelError,
 } from "./setup-view.js";
+import { manualRouteSubtitleFor } from "./connection-view.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
 const joining = el("joining");
 const dash = el("dash");
+const connAnnounce = el("conn-announce");
+const autoJoinWrap = el("auto-join-wrap");
+const autoJoinInput = el("auto-join");
+const prefError = el("pref-error");
+const repairPref = el("repair-pref");
 const scene = createHeroScene(el("hero-canvas"));
 // Scene boot (shader compile included) is behind us - let the entrance run.
 stage.classList.add("lit");
@@ -107,8 +115,11 @@ function previewSnap(context, extra) {
   return Object.assign(
     {
       v: 1,
+      jvmPid: 4242,
+      jvmStartTimeMs: 1_700_000_000_000,
       inHypixel: true,
       self: "you_",
+      mode: null,
       partyCount: null,
       yourParty: [],
       teams: [],
@@ -251,8 +262,33 @@ function previewInvoke(command, args) {
     return Promise.resolve(PREVIEW_STATUS.bothReady);
   }
 
-  if (command === "launch_lunar") {
+  if (command === "launch_preferences") {
+    return Promise.resolve({ autoJoinHypixel: true, health: "missing" });
+  }
+
+  if (command === "set_auto_join_hypixel") {
+    return Promise.resolve({ status: "saved", autoJoinHypixel: args?.enabled ?? true });
+  }
+
+  if (command === "launch_lunar" || command === "launch_forge") {
     previewLaunchAt = Date.now();
+    const autoJoin = args?.expectedAutoJoinHypixel ?? true;
+    if (!autoJoin) {
+      return Promise.resolve({
+        status: "launched",
+        outcome: {
+          autoJoinHypixel: false,
+          action: command === "launch_lunar" ? "launcher_opened" : "game_launch_requested",
+        },
+      });
+    }
+    return Promise.resolve({
+      status: "launched",
+      outcome: { autoJoinHypixel: true, action: "game_launch_requested" },
+    });
+  }
+
+  if (command === "acknowledge_lobby_snapshot") {
     return Promise.resolve();
   }
 
@@ -273,12 +309,21 @@ function previewInvoke(command, args) {
   if (command === "lobby_state") {
     const which = new URLSearchParams(location.search).get("ctx");
     if (which && PREVIEW_LOBBY[which]) {
-      return Promise.resolve(PREVIEW_LOBBY[which]);
+      return Promise.resolve({
+        kind: "snapshot",
+        snapshot: PREVIEW_LOBBY[which],
+        token: 1,
+      });
     }
     const t = previewLaunchAt ? Date.now() - previewLaunchAt : 0;
-    // Idle until well after the bar settles, so the homepage-wait shows.
-    if (t < 6000) return Promise.resolve({ context: "MENU", inHypixel: false });
-    return Promise.resolve(PREVIEW_LOBBY.lobby);
+    if (t < 6000) {
+      return Promise.resolve({ kind: "unavailable" });
+    }
+    return Promise.resolve({
+      kind: "snapshot",
+      snapshot: PREVIEW_LOBBY.lobby,
+      token: 2,
+    });
   }
 
   return Promise.resolve();
@@ -312,8 +357,8 @@ function render(status) {
   const forgeReady = ready.some((t) => t.kind === "forge");
   el("launch").hidden = !lunarReady;
   el("launch-forge").hidden = !forgeReady;
-  el("launch-label").textContent = launchLabel("lunar");
-  el("launch-forge-label").textContent = launchLabel("forge");
+  launchController.projectLaunchButtons({ lunarReady, forgeReady });
+  syncLaunchUi();
 
   renderSetup(status, state);
   stage.dataset.state = state;
@@ -396,7 +441,10 @@ function setupActionButton(action) {
 }
 
 async function runSetupAction(action, btn) {
-  if (setupBusy) return;
+  const st = launchController.getState();
+  if (setupBusy || st.activeOutcome != null || st.launchBusy || st.prefSaving || st.prefUncertain) {
+    return;
+  }
   setupBusy = true;
   const prev = btn.textContent;
   if (action.kind === "setup_prism") {
@@ -447,137 +495,204 @@ function node(tag, cls, text) {
   return n;
 }
 
-// ── launch: stay on the homepage, narrate the boot, wait for the server ─────
-// Fires Lunar's official play deep link: the game boots on the active 1.8.9
-// profile and auto-joins Hypixel. The agent lives in Lunar's own config, so
-// Cobblify loads either way. The homepage STAYS - the button itself narrates
-// the boot off real weave-log milestones - and the dashboard is entered only
-// by applyLobby, the moment lobby.json reports we are actually inside Hypixel.
-// The backend ignores any lobby.json older than this launch, so a stale roster
-// from a prior session can never be what flips the view.
-const STAGE_LABEL = {
-  fired: "Preparing Lunar…",
-  attached: "Weave attached",
-  discovered: "Mods found",
-  mixing: "Loading Cobblify",
-  forge_fired: "Preparing Prism...",
-  forge_attached: "Forge started",
-  forge_discovered: "Mods found",
-  forge_mixing: "Loading Cobblify",
-  forge_settled: "In game - joining Hypixel...",
-  settled: "In game - joining Hypixel…",
-};
+// ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
+// Auto-join on uses the backend-owned Hypixel routes; off uses open-only Lunar
+// or Prism without --server. The dashboard opens only after an acknowledged
+// live snapshot via handleLobbyPoll — not from cosmetic progress alone.
 const PROGRESS_POLL_MS = 600;
 let progressTimer = null;
+let lobbyTimer = null;
+let lobbyPollInFlight = false;
+let lastKey = null;
+let lastView = null;
+let firstLiveSeen = false;
+let lastLaunchKind = "lunar";
+/** Route-specific manual subtitle preserved across unavailable polls. */
+let manualRouteSubtitle = null;
 
 const launch = el("launch");
 const launchForge = el("launch-forge");
-launchForge.addEventListener("click", async () => {
-  const label = el("launch-forge-label");
-  const error = el("launch-error");
-  error.hidden = true;
-  launchForge.disabled = true;
-  launchForge.classList.add("is-loading");
-  suppressRefresh = true;
-  label.textContent = "Heading to Hypixel";
-  try {
-    await invoke("launch_forge");
-  } catch (e) {
-    error.textContent = String(e);
-    error.hidden = false;
-    launchForge.disabled = false;
+const launchError = el("launch-error");
+
+const connection = createConnectionModel();
+const connectionShell = createConnectionShell({
+  titleEl: el("joining-title"),
+  subEl: el("joining-sub"),
+  shellEl: joining,
+  tryAgainEl: el("conn-try-again"),
+  announceEl: connAnnounce,
+  onTryAgain: () => {
+    connection.clearForcedMode();
+    connectionShell.hide();
+    launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
+  },
+  clearRoster: () => {
+    dash.classList.remove("on");
+    dash.replaceChildren();
+    delete dash.dataset.ctx;
+    delete dash.dataset.density;
+    delete dash.dataset.teams;
+    lastKey = null;
+    lastView = null;
+  },
+  stopProgress: () => {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+    launch.classList.remove("is-loading");
     launchForge.classList.remove("is-loading");
     suppressRefresh = false;
-    label.textContent = launchLabel("forge");
-    return;
-  }
-  label.textContent = STAGE_LABEL.forge_fired;
-  progressTimer = setInterval(async () => {
-    try {
-      const p = await invoke("launch_progress");
-      if (p) label.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.forge_fired;
-    } catch {
-      // Cosmetic and fail-soft; retry on the next poll.
-    }
-  }, PROGRESS_POLL_MS);
-  beginLaunchSession();
-});
-launch.addEventListener("click", async () => {
-  const label = el("launch-label");
-  const error = el("launch-error");
-  error.hidden = true;
-  launch.disabled = true;
-  launch.classList.add("is-loading");
-  suppressRefresh = true;
-  label.textContent = "Heading to Hypixel";
-  try {
-    await invoke("launch_lunar");
-  } catch (e) {
-    error.textContent = String(e);
-    error.hidden = false;
-    launch.disabled = false;
-    launch.classList.remove("is-loading");
-    suppressRefresh = false;
-    label.textContent = launchLabel("lunar");
-    return;
-  }
-  label.textContent = STAGE_LABEL.fired;
-  progressTimer = setInterval(async () => {
-    let p;
-    try {
-      p = await invoke("launch_progress");
-    } catch {
-      return; // never surface a progress error; try again next tick
-    }
-    if (!p) return;
-    label.textContent = STAGE_LABEL[p.stage] ?? STAGE_LABEL.fired;
-  }, PROGRESS_POLL_MS);
-
-  beginLaunchSession();
+  },
+  showDash: () => {
+    stage.dataset.view = "dash";
+  },
+  hideDash: () => {
+    dash.classList.remove("on");
+  },
 });
 
-// Swap views: the CSS on data-view="dash" hides the homepage copy, tucks the
-// wordmark into the top-left, drops the voxel to its corner, and reveals the
-// dashboard overlay below the header band.
-// Called exactly once, by applyLobby, on the first FRESH in-Hypixel snapshot.
-function enterDashboard() {
-  stage.dataset.view = "dash";
+const launchController = createLaunchController(invoke, {
+  onChange: syncLaunchUi,
+});
+
+function syncLaunchUi() {
+  const st = launchController.getState();
+  const ready = readyTargets(lastStatus);
+  const lunarReady = ready.some((t) => t.kind === "lunar");
+  const forgeReady = ready.some((t) => t.kind === "forge");
+  const buttons = launchController.projectForCurrentPhase({ lunarReady, forgeReady });
+  if (lunarReady && buttons.find((b) => b.kind === "lunar")) {
+    const b = buttons.find((x) => x.kind === "lunar");
+    el("launch-label").textContent = b.label;
+    launch.disabled = !b.enabled;
+    launch.classList.toggle("is-loading", b.loading);
+  }
+  if (forgeReady && buttons.find((b) => b.kind === "forge")) {
+    const b = buttons.find((x) => x.kind === "forge");
+    el("launch-forge-label").textContent = b.label;
+    launchForge.disabled = !b.enabled;
+    launchForge.classList.toggle("is-loading", b.loading);
+  }
+  autoJoinWrap.hidden = !st.showAutoJoinSwitch;
+  autoJoinInput.checked = st.optimisticAutoJoin;
+  autoJoinInput.disabled = st.launchBusy || st.prefSaving || st.prefUncertain || st.activeOutcome != null;
+  repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
+  if (st.prefError) {
+    prefError.textContent = st.prefError;
+    prefError.hidden = false;
+  } else {
+    prefError.hidden = true;
+  }
+}
+
+autoJoinInput.addEventListener("change", () => {
+  launchController.setAutoJoin(autoJoinInput.checked);
+});
+repairPref.addEventListener("click", () => {
+  launchController.setAutoJoin(autoJoinInput.checked, { repair: true });
+});
+
+function stopProgressPolling() {
   if (progressTimer) {
     clearInterval(progressTimer);
     progressTimer = null;
   }
 }
 
-// ── lobby polling ───────────────────────────────────────────────────────────
+let progressPollInFlight = false;
+let progressLaunchGen = 0;
+
+function startProgressPolling(kind, autoJoin = true) {
+  stopProgressPolling();
+  const labelEl = kind === "forge" ? el("launch-forge-label") : el("launch-label");
+  const labels = launchController.getState().stageLabels(autoJoin);
+  progressLaunchGen = launchController.getState().launchGen;
+  progressTimer = setInterval(async () => {
+    if (progressPollInFlight) return;
+    if (launchController.getState().launchGen !== progressLaunchGen) {
+      stopProgressPolling();
+      return;
+    }
+    progressPollInFlight = true;
+    try {
+      const p = await launchController.pollProgress();
+      if (launchController.getState().launchGen !== progressLaunchGen) return;
+      if (p?.stage) {
+        labelEl.textContent = labels[p.stage] ?? labelEl.textContent;
+        if (
+          !autoJoin &&
+          (p.stage === "settled" || p.stage === "forge_settled")
+        ) {
+          launchController.settleLaunchPhase();
+          syncLaunchUi();
+        }
+      }
+    } catch {
+      // cosmetic fail-soft
+    } finally {
+      progressPollInFlight = false;
+    }
+  }, PROGRESS_POLL_MS);
+}
+
+const launchHooks = {
+  onLaunchReply(reply) {
+    launchError.hidden = true;
+    if (reply.status === "preexisting_game") {
+      connection.setForcedMode("preexisting_game");
+      connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
+      stage.dataset.view = "dash";
+      return;
+    }
+    if (reply.status !== "launched") return;
+    const autoJoin = reply.outcome.autoJoinHypixel;
+    const now = Date.now();
+    connection.setAutoJoin(autoJoin);
+    connection.beginLaunchSession({ autoJoin, now });
+    firstLiveSeen = false;
+    launchController.bumpPollGen();
+    startLobbyPolling();
+    if (!autoJoin) {
+      manualRouteSubtitle = manualRouteSubtitleFor(reply.outcome.action);
+      connectionShell.show("manual", { subtitle: manualRouteSubtitle });
+      stage.dataset.view = "dash";
+      syncLaunchUi();
+      return;
+    }
+    connectionShell.scheduleWaitingDeadline(60_000, () => {
+      stopProgressPolling();
+      const { mode } = connection.stateAt(Date.now());
+      if (mode === "waiting") {
+        connectionShell.show("waiting");
+        stage.dataset.view = "dash";
+      }
+    });
+    connectionShell.show("joining");
+    stage.dataset.view = "dash";
+  },
+  onProgressStart(autoJoin = true) {
+    startProgressPolling(lastLaunchKind, autoJoin);
+  },
+};
+
+launch.addEventListener("click", () => {
+  lastLaunchKind = "lunar";
+  suppressRefresh = true;
+  launchController.launch("lunar", launchHooks);
+});
+launchForge.addEventListener("click", () => {
+  lastLaunchKind = "forge";
+  suppressRefresh = true;
+  launchController.launch("forge", launchHooks);
+});
+
+function enterDashboard() {
+  connectionShell.enterConnected({ firstLive: !firstLiveSeen });
+  firstLiveSeen = true;
+}
+
 const LOBBY_POLL_MS = 700;
-let lobbyTimer = null;
-let lastKey = null;
-let lastView = null; // the rendered view, kept so a resize can re-column it
-const connection = createConnectionModel();
-let interstitialMode = "joining";
-
-function setInterstitialMode(mode, { force = false } = {}) {
-  if (!force && interstitialMode === mode) return;
-  interstitialMode = mode;
-  joining.dataset.conn = mode;
-  const copy = connectionCopy(mode);
-  el("joining-title").textContent = copy.title;
-  el("joining-sub").textContent = copy.subtitle;
-  joining.setAttribute("aria-busy", copy.loading ? "true" : "false");
-}
-
-function setInterstitialVisible(visible) {
-  joining.classList.toggle("on", visible);
-  joining.setAttribute("aria-hidden", visible ? "false" : "true");
-  const loading = visible && connectionCopy(interstitialMode).loading;
-  joining.setAttribute("aria-busy", loading ? "true" : "false");
-}
-
-function beginLaunchSession() {
-  connection.reset();
-  setInterstitialMode("joining");
-  startLobbyPolling();
-}
 
 function startLobbyPolling() {
   if (lobbyTimer) return;
@@ -586,68 +701,64 @@ function startLobbyPolling() {
 }
 
 async function pollLobby() {
-  let data;
-  try {
-    data = await invoke("lobby_state");
-  } catch {
-    return; // fail-soft: swallow a bad poll, retry next tick
-  }
-  if (!data || typeof data !== "object") return;
-  applyLobby(data);
+  if (lobbyPollInFlight) return;
+  lobbyPollInFlight = true;
+  await launchController.pollLobbyOnce({ onPoll: handleLobbyPoll });
+  lobbyPollInFlight = false;
 }
 
-function applyLobby(d) {
-  const { mode } = connection.tick(d, Date.now());
-  const ctx = d.context;
-  const inDash = stage.dataset.view === "dash";
-
-  if (mode === "connected") {
-    if (!inDash) enterDashboard();
-    setInterstitialVisible(false);
-    const key = `${ctx}:${d.seq ?? ""}`;
-    if (key !== lastKey) {
-      try {
-        const view = viewOf(d);
-        // Hold columns only within a context - a queue must not inherit the
-        // lobby's second column just because it was on screen a moment ago.
-        const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
-        dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
-        lastView = view;
-        lastKey = key;
-      } catch {
-        return; // a malformed roster must not blank the dashboard
+async function handleLobbyPoll(poll) {
+  await runLobbyPoll(poll, {
+    connection,
+    connectionShell,
+    launchController,
+    manualRouteSubtitle,
+    firstLiveSeen,
+    applyLobbySnapshot,
+    enterTerminal: (reason) =>
+      connectionShell.enterTerminal(
+        reason === "game_session_changed" ? "session_changed" : "session_ended",
+      ),
+    stopLobbyPolling: () => {
+      if (lobbyTimer) {
+        clearInterval(lobbyTimer);
+        lobbyTimer = null;
       }
+    },
+    setStageDash: () => {
+      stage.dataset.view = "dash";
+    },
+  });
+}
+
+function applyLobbySnapshot(d, { reconnect = false } = {}) {
+  if (!firstLiveSeen) {
+    enterDashboard();
+  } else if (reconnect) {
+    connectionShell.enterConnected({ reconnect: true });
+  }
+  const ctx = d.context;
+  const key = `${ctx}:${d.seq ?? ""}`;
+  if (key !== lastKey) {
+    try {
+      const view = viewOf(d);
+      const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
+      dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
+      lastView = view;
+      lastKey = key;
       dash.dataset.ctx = ctx.toLowerCase();
       if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
       else delete dash.dataset.teams;
       fitDash();
+    } catch {
+      return;
     }
-    dash.classList.add("on");
-    return;
   }
+  dash.classList.add("on");
+}
 
-  if (mode === "disconnected") {
-    if (!inDash) enterDashboard();
-    dash.classList.remove("on");
-    dash.replaceChildren();
-    delete dash.dataset.ctx;
-    delete dash.dataset.density;
-    delete dash.dataset.teams;
-    lastKey = null;
-    lastView = null;
-    setInterstitialMode("disconnected");
-    setInterstitialVisible(true);
-    return;
-  }
-
-  // Joining interstitial: initial boot (still on homepage) or a post-live grace
-  // gap while Hypixel transfers servers/worlds.
-  if (inDash) {
-    dash.classList.remove("on");
-    setInterstitialMode("joining");
-    setInterstitialVisible(true);
-    lastKey = null;
-  }
+function applyLobby(d) {
+  applyLobbySnapshot(d);
 }
 
 const currentCols = () =>
@@ -1022,18 +1133,27 @@ const bootKind = bootParams.get("ctx") || bootParams.get("state");
 
 function afterStatus(status) {
   render(status);
+  if (!previewing) launchController.refreshPreferences();
   if (!previewing) return;
   mountPreviewBar(bootKind || "lunarReady");
-  if (bootParams.get("ctx") === "joining") {
+  const ctx = bootParams.get("ctx");
+  if (ctx === "joining") {
     stage.dataset.view = "dash";
-    setInterstitialMode("joining");
-    setInterstitialVisible(true);
-  } else if (bootParams.get("ctx") === "disconnected") {
+    connectionShell.show("joining");
+  } else if (ctx === "waiting") {
     stage.dataset.view = "dash";
-    setInterstitialMode("disconnected");
-    setInterstitialVisible(true);
-  } else if (PREVIEW_LOBBY[bootParams.get("ctx")]) {
-    applyLobby(PREVIEW_LOBBY[bootParams.get("ctx")]);
+    connectionShell.show("waiting");
+  } else if (ctx === "disconnected") {
+    stage.dataset.view = "dash";
+    connectionShell.enterDisconnected();
+  } else if (ctx === "preexisting_game") {
+    stage.dataset.view = "dash";
+    connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
+  } else if (ctx === "session_ended" || ctx === "session_changed") {
+    stage.dataset.view = "dash";
+    connectionShell.enterTerminal(ctx);
+  } else if (PREVIEW_LOBBY[ctx]) {
+    applyLobbySnapshot(PREVIEW_LOBBY[ctx]);
   }
 }
 
@@ -1106,6 +1226,12 @@ function mountPreviewBar(active) {
     <span class="preview-group">setup</span>
     <button type="button" data-preview="loading">loading</button>
     ${setupButtons}
+    <span class="preview-group">ready</span>
+    <button type="button" data-preview="lunarReady">lunar on</button>
+    <button type="button" data-preview="lunarReadyOff">lunar off</button>
+    <button type="button" data-preview="forgeReadyOff">prism off</button>
+    <button type="button" data-preview="bothReady">both</button>
+    <button type="button" data-preview="invalidPref">bad pref</button>
     <span class="preview-group">lobby</span>
     <button type="button" data-preview="lobby">lobby</button>
     <button type="button" data-preview="joining">joining</button>
@@ -1279,22 +1405,20 @@ function markPreviewActive(kind) {
 }
 
 function resetPreviewSession() {
-  if (progressTimer) {
-    clearInterval(progressTimer);
-    progressTimer = null;
-  }
+  stopProgressPolling();
   if (lobbyTimer) {
     clearInterval(lobbyTimer);
     lobbyTimer = null;
   }
   lastKey = null;
   lastView = null;
+  firstLiveSeen = false;
   previewLaunchAt = null;
   setupBusy = false;
   suppressRefresh = false;
   connection.reset();
-  setInterstitialMode("joining", { force: true });
-  setInterstitialVisible(false);
+  connectionShell.reset();
+  connAnnounce.textContent = "";
   dash.classList.remove("on");
   dash.replaceChildren();
   delete dash.dataset.ctx;
@@ -1303,11 +1427,10 @@ function resetPreviewSession() {
   stage.dataset.view = "home";
   launch.disabled = false;
   launch.classList.remove("is-loading");
-  el("launch-label").textContent = launchLabel("lunar");
   launchForge.disabled = false;
   launchForge.classList.remove("is-loading");
-  el("launch-forge-label").textContent = launchLabel("forge");
-  el("launch-error").hidden = true;
+  launchError.hidden = true;
+  syncLaunchUi();
 }
 
 function showPreview(kind) {
@@ -1320,18 +1443,51 @@ function showPreview(kind) {
   } else if (kind === "joining") {
     render(PREVIEW_STATUS.lunarReady);
     stage.dataset.view = "dash";
-    setInterstitialMode("joining");
-    setInterstitialVisible(true);
+    connectionShell.show("joining");
     params.set("ctx", "joining");
+  } else if (kind === "waiting") {
+    render(PREVIEW_STATUS.lunarReady);
+    stage.dataset.view = "dash";
+    connectionShell.show("waiting");
+    params.set("ctx", "waiting");
   } else if (kind === "disconnected") {
     render(PREVIEW_STATUS.lunarReady);
     stage.dataset.view = "dash";
-    setInterstitialMode("disconnected");
-    setInterstitialVisible(true);
+    connectionShell.enterDisconnected();
     params.set("ctx", "disconnected");
+  } else if (kind === "preexisting_game") {
+    render(PREVIEW_STATUS.lunarReady);
+    stage.dataset.view = "dash";
+    connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
+    params.set("ctx", "preexisting_game");
+  } else if (kind === "invalidPref") {
+    render(PREVIEW_STATUS.lunarReady);
+    autoJoinWrap.hidden = false;
+    autoJoinInput.checked = true;
+    repairPref.hidden = false;
+    prefError.textContent = "Preference file is invalid.";
+    prefError.hidden = false;
+    params.set("state", "lunarReady");
+  } else if (kind === "lunarReadyOff" || kind === "forgeReadyOff") {
+    render(
+      kind === "lunarReadyOff" ? PREVIEW_STATUS.lunarReady : PREVIEW_STATUS.forgeReady,
+    );
+    autoJoinWrap.hidden = false;
+    autoJoinInput.checked = false;
+    params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
+  } else if (kind === "bothReady") {
+    render(PREVIEW_STATUS.bothReady);
+    autoJoinWrap.hidden = false;
+    autoJoinInput.checked = true;
+    params.set("state", "bothReady");
+  } else if (kind === "session_ended" || kind === "session_changed") {
+    render(PREVIEW_STATUS.lunarReady);
+    stage.dataset.view = "dash";
+    connectionShell.enterTerminal(kind);
+    params.set("ctx", kind);
   } else if (PREVIEW_LOBBY[kind]) {
     render(PREVIEW_STATUS.lunarReady);
-    applyLobby(PREVIEW_LOBBY[kind]);
+    applyLobbySnapshot(PREVIEW_LOBBY[kind]);
     params.set("ctx", kind);
   } else {
     render(resolvePreviewStatus(kind));
