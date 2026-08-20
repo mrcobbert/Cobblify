@@ -10,9 +10,12 @@ a working app, which is exactly what the previous Lunar-only version could not
 do (it called `lunar_config::register` unconditionally and a missing
 `launcher.json` was an app-wide error).
 
-macOS is the proven platform. The Windows build is new and its live gates are
-still open (see "Ship it for Windows"); `lunar/dist/Install BedwarsQOL
-(Lunar).bat` remains the manual fallback route on Windows.
+Both platforms are live-verified. On 2026-08-20 the owner reported roughly two
+hours of real Bedwars play across macOS and Windows on 0.9.1 with no surprises:
+launch, deep link, dashboard, and roster all behaved as designed on each.
+`lunar/dist/Install BedwarsQOL (Lunar).bat` remains the manual fallback route on
+Windows. See "Verification status" under "Ship it for Windows" for the two paths
+that real play still has not touched.
 
 ## How it works
 
@@ -203,14 +206,24 @@ Lunar jar matches the exe. It then assembles and verifies
 `resources/` (jars + manifest) beside it, and the Windows friend README. Same
 distribution rule: DM only.
 
-Verification honesty: the CI job runs the cargo suite (including the
-argv-canary privacy test) on a Windows runner on every push, but until those
-runs and a live smoke test have actually happened, the Windows build is
-UNVERIFIED - it has never been run against a live Lunar on a real Windows
-machine. The open gates live in `.ai/HANDOFF.md`. In particular, the launcher
-refuses (with a screenshot-able message, changing nothing) if Windows Lunar's
-`launcher.json` does not match the schema verified on Mac, because no real
-Windows copy of that file has been observed yet.
+### Verification status
+
+The CI job runs the cargo suite (including the argv-canary privacy test) on a
+Windows runner on every push. Beyond that, as of 2026-08-20:
+
+- **Live-verified on macOS and Windows** by roughly two hours of real Bedwars
+  play on 0.9.1 - auto-join on (launch, deep link, dashboard, roster),
+  auto-join off followed by a manual join, and a mid-session disconnect
+  followed by a reconnect.
+- **Windows `launcher.json` has been observed** on a real Windows machine
+  (2026-08-13). A fresh Windows install carries no jvm keys at all and Lunar
+  writes camelCase `jvmArgs` only; the schema guard accepts that shape and
+  still refuses missing-settings, non-string, or divergent files.
+- **Not exercised by real play:** the bounded "Still Waiting for Hypixel"
+  state, and the refusal to attach to a game that was already running before
+  the launch. Both are covered by tests only. Still-waiting may be hard to
+  reach in practice - Minecraft's own connect timeout is short enough that it
+  tends to fail first.
 
 ## Gotchas worth knowing
 

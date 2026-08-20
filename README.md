@@ -1,6 +1,7 @@
 # Cobblify
 
-modules and a custom GUI.
+A Hypixel BedWars quality-of-life mod for **Minecraft 1.8.9** on both **Forge**
+and **Lunar Client**, featuring several modules and a custom GUI.
 
 Adheres to the [Hypixel Allowed Modifications](https://support.hypixel.net/hc/en-us/articles/6472550754962-Hypixel-Allowed-Modifications)
 policy — no automation of player actions, no unfair advantages.
