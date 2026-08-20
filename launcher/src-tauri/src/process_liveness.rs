@@ -404,8 +404,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_filetime_conversion_roundtrip_known_epoch() {
+        // The Unix epoch as a FILETIME: 116_444_736_000_000_000 hundred-nanosecond ticks after
+        // 1601-01-01, which is exactly EPOCH_DIFF_100NS, so this must convert to 0. Split as
+        // high = value >> 32 = 0x019DB1DE, low = value & 0xFFFFFFFF = 0xD53E8000.
         let ft = windows_sys::Win32::Foundation::FILETIME {
-            dwLowDateTime: 0xD1C0_3E00,
+            dwLowDateTime: 0xD53E_8000,
             dwHighDateTime: 0x019D_B1DE,
         };
         let ns = windows::filetime_to_ns(ft).expect("convert");
