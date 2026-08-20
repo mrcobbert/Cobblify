@@ -216,9 +216,14 @@ mod windows {
     use windows_sys::Win32::Foundation::{
         CloseHandle, FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
+    // SYNCHRONIZE is a generic access right (needed to wait on the handle), but windows-sys 0.61
+    // only emits it under Win32_Storage_FileSystem, typed as FILE_ACCESS_RIGHTS. It is NOT in
+    // Win32::System::Threading beside the process rights, where it reads as if it belongs.
+    // FILE_ACCESS_RIGHTS and PROCESS_ACCESS_RIGHTS are both `u32` aliases, so the OR below is
+    // well typed regardless of which module the constant came from.
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
-        SYNCHRONIZE,
     };
 
     pub(crate) fn filetime_to_ns(ft: FILETIME) -> Option<EpochNs> {
