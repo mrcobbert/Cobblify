@@ -3,14 +3,30 @@
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefKey {
+    AutoJoin,
+    Overlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
     Idle,
     Refreshing,
     SettingUp,
     Saving,
-    PreferenceUncertain { desired: bool },
+    PreferenceUncertain { key: PrefKey, desired: bool },
     Launching,
     Active,
+    /// Exclusive session-reset transaction; publishes Idle only when done.
+    Resetting,
+}
+
+/// Admission result for the reset transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetBegin {
+    Begun,
+    AlreadyIdle,
+    Busy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,9 +74,16 @@ impl Coordinator {
         self.claim(Lifecycle::Saving)
     }
 
-    pub fn try_save_while_uncertain(&mut self, desired: bool) -> Result<(), LifecycleError> {
+    pub fn try_save_while_uncertain(
+        &mut self,
+        key: PrefKey,
+        desired: bool,
+    ) -> Result<(), LifecycleError> {
         match self.state {
-            Lifecycle::PreferenceUncertain { desired: current } if current == desired => {
+            Lifecycle::PreferenceUncertain {
+                key: current_key,
+                desired: current,
+            } if current_key == key && current == desired => {
                 self.state = Lifecycle::Saving;
                 Ok(())
             }
@@ -95,8 +118,35 @@ impl Coordinator {
         self.state = Lifecycle::Idle;
     }
 
-    pub fn mark_uncertain(&mut self, desired: bool) {
-        self.state = Lifecycle::PreferenceUncertain { desired };
+    pub fn mark_uncertain(&mut self, key: PrefKey, desired: bool) {
+        self.state = Lifecycle::PreferenceUncertain { key, desired };
+    }
+
+    /// Reset admission: only an Active session can be reset, and only one
+    /// reset can hold the transaction. Both admission and the final release
+    /// are conditional on states only the transaction can hold, so a reset
+    /// can never demote a session it does not own.
+    pub fn try_begin_reset(&mut self) -> ResetBegin {
+        match self.state {
+            Lifecycle::Active => {
+                self.state = Lifecycle::Resetting;
+                ResetBegin::Begun
+            }
+            Lifecycle::Idle => ResetBegin::AlreadyIdle,
+            _ => ResetBegin::Busy,
+        }
+    }
+
+    pub fn abort_reset(&mut self) {
+        if self.state == Lifecycle::Resetting {
+            self.state = Lifecycle::Active;
+        }
+    }
+
+    pub fn finish_reset(&mut self) {
+        if self.state == Lifecycle::Resetting {
+            self.state = Lifecycle::Idle;
+        }
     }
 
     pub fn clear_uncertain_on_success(&mut self) {
@@ -172,16 +222,25 @@ mod tests {
     #[test]
     fn uncertain_blocks_mismatched_save() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(true);
+        c.mark_uncertain(PrefKey::AutoJoin, true);
         assert_eq!(c.try_save(), Err(LifecycleError::PreferenceUncertain));
-        assert!(c.try_save_while_uncertain(false).is_err());
-        assert!(c.try_save_while_uncertain(true).is_ok());
+        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, false).is_err());
+        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, true).is_ok());
+    }
+
+    #[test]
+    fn uncertain_blocks_cross_key_repair() {
+        let mut c = Coordinator::default();
+        c.mark_uncertain(PrefKey::Overlay, false);
+        // Same desired value, wrong key: rejected exactly like a value mismatch.
+        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, false).is_err());
+        assert!(c.try_save_while_uncertain(PrefKey::Overlay, false).is_ok());
     }
 
     #[test]
     fn uncertain_blocks_launch_until_cleared() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(false);
+        c.mark_uncertain(PrefKey::AutoJoin, false);
         assert_eq!(c.try_launch(), Err(LifecycleError::PreferenceUncertain));
         c.clear_uncertain_on_success();
         assert!(c.try_launch().is_ok());
@@ -200,7 +259,43 @@ mod tests {
     #[test]
     fn uncertain_launch_maps_to_rejection_not_queue() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(true);
+        c.mark_uncertain(PrefKey::AutoJoin, true);
         assert_eq!(c.try_launch(), Err(LifecycleError::PreferenceUncertain));
+    }
+
+    #[test]
+    fn reset_admits_only_from_active_and_serializes() {
+        let mut c = Coordinator::default();
+        assert_eq!(c.try_begin_reset(), ResetBegin::AlreadyIdle);
+        let gen = c.try_launch().unwrap();
+        assert_eq!(c.try_begin_reset(), ResetBegin::Busy);
+        c.launch_active();
+        assert_eq!(c.try_begin_reset(), ResetBegin::Begun);
+        // A second reset while the first holds the transaction.
+        assert_eq!(c.try_begin_reset(), ResetBegin::Busy);
+        // Nothing else can be admitted mid-reset.
+        assert_eq!(c.try_launch(), Err(LifecycleError::Busy));
+        assert_eq!(c.try_save(), Err(LifecycleError::Busy));
+        c.finish_reset();
+        assert_eq!(c.state(), Lifecycle::Idle);
+        let next = c.try_launch().unwrap();
+        assert!(next > gen, "fresh generation after reset");
+    }
+
+    #[test]
+    fn abort_reset_restores_active_and_conditional_ops_are_inert_elsewhere() {
+        let mut c = Coordinator::default();
+        c.try_launch().unwrap();
+        c.launch_active();
+        assert_eq!(c.try_begin_reset(), ResetBegin::Begun);
+        c.abort_reset();
+        assert_eq!(c.state(), Lifecycle::Active);
+        // finish/abort outside Resetting never demote another state.
+        c.finish_reset();
+        assert_eq!(c.state(), Lifecycle::Active);
+        c.release();
+        c.try_launch().unwrap();
+        c.abort_reset();
+        assert_eq!(c.state(), Lifecycle::Launching);
     }
 }

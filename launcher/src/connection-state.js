@@ -1,6 +1,6 @@
 /** @typedef {'manual' | 'joining' | 'waiting' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed'} ConnectionMode */
 
-export const DISCONNECT_GRACE_MS = 2000;
+export const DISCONNECT_GRACE_MS = 1000;
 const WAITING_MS = 60_000;
 
 /**

@@ -7,13 +7,13 @@ import { connectionCopy } from "./connection-view.js";
  *   titleEl: { textContent: string },
  *   subEl: { textContent: string },
  *   shellEl: { classList: { toggle: Function }, dataset: Record<string, string>, setAttribute: Function },
- *   tryAgainEl?: { hidden: boolean, addEventListener: Function },
+ *   actionEl?: { hidden: boolean, textContent: string, addEventListener: Function },
+ *   actions?: Record<string, { label: string, onAction: () => void }>,
  *   announceEl?: { textContent: string },
  *   clearRoster: () => void,
  *   stopProgress: () => void,
  *   showDash: () => void,
  *   hideDash: () => void,
- *   onTryAgain?: () => void,
  *   clock?: () => number,
  *   schedule?: (fn: () => void, ms: number) => number,
  *   cancel?: (id: number) => void,
@@ -31,8 +31,13 @@ export function createConnectionShell(deps) {
   let timerId = null;
   let subtitleOverride = null;
 
-  if (deps.tryAgainEl && deps.onTryAgain) {
-    deps.tryAgainEl.addEventListener("click", () => deps.onTryAgain?.());
+  // One action slot, configured per mode: `preexisting_game` retries the
+  // launch, `waiting` escapes back home. A mode with no entry has no button.
+  const actions = deps.actions ?? {};
+  const actionFor = (m) => actions[m] ?? null;
+
+  if (deps.actionEl) {
+    deps.actionEl.addEventListener("click", () => actionFor(mode)?.onAction());
   }
 
   function applyCopy() {
@@ -41,8 +46,10 @@ export function createConnectionShell(deps) {
     deps.subEl.textContent = subtitleOverride ?? copy.subtitle;
     deps.shellEl.dataset.conn = mode;
     deps.shellEl.setAttribute("aria-busy", copy.loading ? "true" : "false");
-    if (deps.tryAgainEl) {
-      deps.tryAgainEl.hidden = mode !== "preexisting_game";
+    if (deps.actionEl) {
+      const action = actionFor(mode);
+      if (action) deps.actionEl.textContent = action.label;
+      deps.actionEl.hidden = !action;
     }
   }
 
@@ -66,7 +73,7 @@ export function createConnectionShell(deps) {
   function hide() {
     setVisible(false);
     subtitleOverride = null;
-    if (deps.tryAgainEl) deps.tryAgainEl.hidden = true;
+    if (deps.actionEl) deps.actionEl.hidden = true;
   }
 
   function enterConnected({ firstLive = false, reconnect = false } = {}) {
@@ -97,8 +104,10 @@ export function createConnectionShell(deps) {
       timerId = null;
     }
     show(modeNext);
-    if (deps.tryAgainEl) {
-      deps.tryAgainEl.hidden = !showTryAgain || modeNext !== "preexisting_game";
+    if (deps.actionEl) {
+      // A terminal mode only offers its action when the caller asks for it;
+      // the reset-to-home terminals deliberately have no escape button.
+      deps.actionEl.hidden = !showTryAgain || !actionFor(modeNext);
     }
   }
 
@@ -112,7 +121,7 @@ export function createConnectionShell(deps) {
       timerId = null;
     }
     setVisible(false);
-    if (deps.tryAgainEl) deps.tryAgainEl.hidden = true;
+    if (deps.actionEl) deps.actionEl.hidden = true;
   }
 
   function scheduleWaitingDeadline(ms, onWaiting) {

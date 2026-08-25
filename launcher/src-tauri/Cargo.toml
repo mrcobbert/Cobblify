@@ -26,15 +26,17 @@ tauri-plugin-single-instance = "2"
 # ShellExecute-based deep-link open; `cmd /C start` is banned (console flash,
 # breaks on `&` in the URL).
 tauri-plugin-opener = "2"
-# Raw Win32 for src/hide_windows.rs only: window enumeration, ShowWindowAsync,
-# and the console-ownership lookup. 0.61 is already in the lock file via tauri's
-# own dependency tree, so this adds no new crate version to the build.
+# Raw Win32 for src/hide_windows.rs (window enumeration, ShowWindowAsync,
+# console-ownership lookup) and src/proc.rs (K32EnumProcesses, the
+# scan-completeness reconciliation source). 0.61 is already in the lock file
+# via tauri's own dependency tree, so this adds no new crate version.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   # Only for SYNCHRONIZE, which this crate files here as a FILE_ACCESS_RIGHTS even
   # though it is a generic access right (see src/process_liveness.rs).
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }

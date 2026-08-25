@@ -23,6 +23,7 @@ pub enum PreferenceHealth {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchPreferencesView {
     pub auto_join_hypixel: bool,
+    pub use_external_overlay: bool,
     pub health: PreferenceHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
@@ -34,18 +35,28 @@ pub enum PreferenceSaveReply {
     Saved {
         #[serde(rename = "autoJoinHypixel")]
         auto_join_hypixel: bool,
+        #[serde(rename = "useExternalOverlay")]
+        use_external_overlay: bool,
     },
     Reconciled {
         #[serde(rename = "autoJoinHypixel")]
         auto_join_hypixel: bool,
+        #[serde(rename = "useExternalOverlay")]
+        use_external_overlay: bool,
     },
     NotSaved { diagnostic: String },
     Indeterminate,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PreferenceDoc {
     auto_join_hypixel: bool,
+    #[serde(default = "default_true")]
+    use_external_overlay: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,46 +128,86 @@ impl LockedPrefs {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => LaunchPreferencesView {
                 auto_join_hypixel: doc.auto_join_hypixel,
+                use_external_overlay: doc.use_external_overlay,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
             Err(ReadOutcome::Missing) => LaunchPreferencesView {
                 auto_join_hypixel: true,
+                use_external_overlay: true,
                 health: PreferenceHealth::Missing,
                 diagnostic: None,
             },
             Err(ReadOutcome::Invalid(msg)) => LaunchPreferencesView {
                 auto_join_hypixel: true,
+                use_external_overlay: true,
                 health: PreferenceHealth::Invalid,
                 diagnostic: Some(msg),
             },
         }
     }
 
-    pub(crate) fn read_strict(&self) -> Result<bool, String> {
+    pub(crate) fn read_strict(&self) -> Result<(bool, bool), String> {
         match read_doc(&pref_path(&self.home)) {
-            Ok(doc) => Ok(doc.auto_join_hypixel),
-            Err(ReadOutcome::Missing) => Ok(true),
+            Ok(doc) => Ok((doc.auto_join_hypixel, doc.use_external_overlay)),
+            Err(ReadOutcome::Missing) => Ok((true, true)),
             Err(ReadOutcome::Invalid(msg)) => Err(msg),
         }
     }
 
-    fn write_bool(&self, enabled: bool) -> PreferenceSaveReply {
+    /// Save one field, preserving the sibling. The sibling comes from a
+    /// lenient per-field read so a valid value survives even when the other
+    /// field (or the document's health) is invalid; only a file that is not
+    /// a JSON object at all falls back to both defaults.
+    fn write_key(&self, key: SetterKey, enabled: bool) -> PreferenceSaveReply {
         let path = pref_path(&self.home);
-        let doc = PreferenceDoc {
-            auto_join_hypixel: enabled,
+        let (auto_join, overlay) = read_fields_lenient(&path);
+        let doc = match key {
+            SetterKey::AutoJoin => PreferenceDoc {
+                auto_join_hypixel: enabled,
+                use_external_overlay: overlay,
+            },
+            SetterKey::Overlay => PreferenceDoc {
+                auto_join_hypixel: auto_join,
+                use_external_overlay: enabled,
+            },
         };
         match write_doc(&path, &doc) {
             Ok(()) => PreferenceSaveReply::Saved {
-                auto_join_hypixel: enabled,
+                auto_join_hypixel: doc.auto_join_hypixel,
+                use_external_overlay: doc.use_external_overlay,
             },
             Err(SaveOutcome::NotSaved(msg)) => PreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => PreferenceSaveReply::Indeterminate,
-            Err(SaveOutcome::Reconciled(value)) => PreferenceSaveReply::Reconciled {
-                auto_join_hypixel: value,
+            Err(SaveOutcome::Reconciled(auto_join, overlay)) => PreferenceSaveReply::Reconciled {
+                auto_join_hypixel: auto_join,
+                use_external_overlay: overlay,
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SetterKey {
+    AutoJoin,
+    Overlay,
+}
+
+/// Per-field salvage for the save path: each known key is read
+/// independently; a bool survives, anything else takes its default.
+fn read_fields_lenient(path: &Path) -> (bool, bool) {
+    let Ok(mut file) = File::open(path) else {
+        return (true, true);
+    };
+    let mut text = String::new();
+    if file.read_to_string(&mut text).is_err() {
+        return (true, true);
+    }
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) else {
+        return (true, true);
+    };
+    let field = |name: &str| map.get(name).and_then(|v| v.as_bool()).unwrap_or(true);
+    (field("auto_join_hypixel"), field("use_external_overlay"))
 }
 
 enum ReadOutcome {
@@ -190,7 +241,7 @@ fn read_doc(path: &Path) -> Result<PreferenceDoc, ReadOutcome> {
 enum SaveOutcome {
     NotSaved(String),
     Indeterminate,
-    Reconciled(bool),
+    Reconciled(bool, bool),
 }
 
 fn write_doc(path: &Path, doc: &PreferenceDoc) -> Result<(), SaveOutcome> {
@@ -210,10 +261,10 @@ fn write_doc(path: &Path, doc: &PreferenceDoc) -> Result<(), SaveOutcome> {
         Err(_) => {
             // Commit may have succeeded; reread under the same outer lock.
             match read_doc(path) {
-                Ok(current) if current == *doc => {
-                    Err(SaveOutcome::Reconciled(current.auto_join_hypixel))
-                }
-                Ok(current) => Err(SaveOutcome::Reconciled(current.auto_join_hypixel)),
+                Ok(current) => Err(SaveOutcome::Reconciled(
+                    current.auto_join_hypixel,
+                    current.use_external_overlay,
+                )),
                 Err(_) => Err(SaveOutcome::Indeterminate),
             }
         }
@@ -225,19 +276,20 @@ pub fn launch_preferences(home: &Path) -> Result<LaunchPreferencesView, Preferen
     Ok(locked.read_view())
 }
 
-pub fn read_strict_auto_join(home: &Path) -> Result<bool, PreferenceReadError> {
-    let locked = LockedPrefs::acquire(home)?;
-    locked
-        .read_strict()
-        .map_err(|msg| PreferenceReadError::Io(msg))
-}
-
 pub fn set_auto_join_hypixel(
     home: &Path,
     enabled: bool,
 ) -> Result<PreferenceSaveReply, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
-    Ok(locked.write_bool(enabled))
+    Ok(locked.write_key(SetterKey::AutoJoin, enabled))
+}
+
+pub fn set_use_external_overlay(
+    home: &Path,
+    enabled: bool,
+) -> Result<PreferenceSaveReply, PreferenceReadError> {
+    let locked = LockedPrefs::acquire(home)?;
+    Ok(locked.write_key(SetterKey::Overlay, enabled))
 }
 
 #[cfg(test)]
@@ -262,10 +314,140 @@ mod tests {
     fn first_save_persists() {
         let home = temp_home();
         let reply = set_auto_join_hypixel(&home, false).unwrap();
-        assert!(matches!(reply, PreferenceSaveReply::Saved { auto_join_hypixel: false }));
+        assert!(matches!(
+            reply,
+            PreferenceSaveReply::Saved {
+                auto_join_hypixel: false,
+                use_external_overlay: true,
+            }
+        ));
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.auto_join_hypixel, false);
+        assert_eq!(view.use_external_overlay, true);
         assert_eq!(view.health, PreferenceHealth::Valid);
+    }
+
+    #[test]
+    fn overlay_save_persists_and_preserves_auto_join() {
+        let home = temp_home();
+        set_auto_join_hypixel(&home, false).unwrap();
+        let reply = set_use_external_overlay(&home, false).unwrap();
+        assert!(matches!(
+            reply,
+            PreferenceSaveReply::Saved {
+                auto_join_hypixel: false,
+                use_external_overlay: false,
+            }
+        ));
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.auto_join_hypixel, false);
+        assert_eq!(view.use_external_overlay, false);
+    }
+
+    #[test]
+    fn auto_join_save_preserves_overlay_sibling() {
+        let home = temp_home();
+        set_use_external_overlay(&home, false).unwrap();
+        set_auto_join_hypixel(&home, true).unwrap();
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.auto_join_hypixel, true);
+        assert_eq!(view.use_external_overlay, false);
+    }
+
+    #[test]
+    fn old_one_key_file_reads_overlay_default_on() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(dir.join(PREF_FILE), r#"{"auto_join_hypixel":false}"#).unwrap();
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert_eq!(view.auto_join_hypixel, false);
+        assert_eq!(view.use_external_overlay, true);
+        let locked = LockedPrefs::acquire(&home).unwrap();
+        assert_eq!(locked.read_strict().unwrap(), (false, true));
+    }
+
+    #[test]
+    fn repairing_overlay_salvages_valid_auto_join_from_invalid_doc() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":false,"use_external_overlay":"yes"}"#,
+        )
+        .unwrap();
+        let reply = set_use_external_overlay(&home, true).unwrap();
+        assert!(matches!(
+            reply,
+            PreferenceSaveReply::Saved {
+                auto_join_hypixel: false,
+                use_external_overlay: true,
+            }
+        ));
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert_eq!(view.auto_join_hypixel, false);
+    }
+
+    #[test]
+    fn repairing_auto_join_salvages_valid_overlay_from_invalid_doc() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":"yes","use_external_overlay":false}"#,
+        )
+        .unwrap();
+        let reply = set_auto_join_hypixel(&home, true).unwrap();
+        assert!(matches!(
+            reply,
+            PreferenceSaveReply::Saved {
+                auto_join_hypixel: true,
+                use_external_overlay: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn unparseable_file_resets_both_to_defaults_on_save() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(dir.join(PREF_FILE), "{not json").unwrap();
+        let reply = set_auto_join_hypixel(&home, false).unwrap();
+        assert!(matches!(
+            reply,
+            PreferenceSaveReply::Saved {
+                auto_join_hypixel: false,
+                use_external_overlay: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn wrong_type_overlay_is_invalid_but_defaults_on_in_view() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":true,"use_external_overlay":"yes"}"#,
+        )
+        .unwrap();
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Invalid);
+        assert_eq!(view.use_external_overlay, true);
+        let locked = LockedPrefs::acquire(&home).unwrap();
+        assert!(locked.read_strict().is_err());
+    }
+
+    #[test]
+    fn round_trip_of_both_keys() {
+        let home = temp_home();
+        set_auto_join_hypixel(&home, false).unwrap();
+        set_use_external_overlay(&home, false).unwrap();
+        set_auto_join_hypixel(&home, true).unwrap();
+        set_use_external_overlay(&home, true).unwrap();
+        let locked = LockedPrefs::acquire(&home).unwrap();
+        assert_eq!(locked.read_strict().unwrap(), (true, true));
     }
 
     #[test]
@@ -333,9 +515,11 @@ mod tests {
     fn save_reply_serializes_snake_case_tags() {
         let saved = serde_json::to_value(PreferenceSaveReply::Saved {
             auto_join_hypixel: true,
+            use_external_overlay: false,
         })
         .unwrap();
         assert_eq!(saved["status"], "saved");
+        assert_eq!(saved["useExternalOverlay"], false);
         let not_saved = serde_json::to_value(PreferenceSaveReply::NotSaved {
             diagnostic: "disk".into(),
         })

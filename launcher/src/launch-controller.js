@@ -6,6 +6,7 @@ import {
   acknowledgeLobbySnapshot,
   launchProgress,
   setAutoJoinHypixel,
+  setUseExternalOverlay,
 } from "./tauri-contract.js";
 import { classifyLive } from "./lobby-validator.js";
 
@@ -36,8 +37,8 @@ const STAGE_LABEL_OFF = {
 };
 
 const LUNAR_OPEN_LABELS = {
-  idle: "Open Lunar",
-  loading: "Opening Lunar…",
+  idle: "Launch Lunar",
+  loading: "Launching Lunar…",
   done: "Lunar Opened",
 };
 
@@ -63,9 +64,13 @@ export function createLaunchController(invoke, { onChange } = {}) {
   let launchGen = 0;
   let optimisticAutoJoin = true;
   let confirmedAutoJoin = true;
+  let optimisticOverlay = true;
+  let confirmedOverlay = true;
   let prefHealth = "missing";
   let prefDiagnostic = null;
   let prefUncertain = false;
+  /** @type {'autoJoin' | 'overlay' | null} Which key the uncertainty belongs to. */
+  let prefUncertainKey = null;
   let prefError = null;
   let prefSaving = false;
   let launchBusy = false;
@@ -79,17 +84,24 @@ export function createLaunchController(invoke, { onChange } = {}) {
     onChange?.();
   }
 
+  function syncFromView(view) {
+    optimisticAutoJoin = view.autoJoinHypixel;
+    confirmedAutoJoin = view.autoJoinHypixel;
+    optimisticOverlay = view.useExternalOverlay;
+    confirmedOverlay = view.useExternalOverlay;
+    prefHealth = view.health;
+    prefDiagnostic = view.diagnostic ?? null;
+    prefUncertain = false;
+    prefUncertainKey = null;
+    prefError = null;
+  }
+
   async function refreshPreferences() {
     const gen = ++refreshGen;
     try {
       const view = await launchPreferences(invoke);
       if (gen !== refreshGen) return;
-      optimisticAutoJoin = view.autoJoinHypixel;
-      confirmedAutoJoin = view.autoJoinHypixel;
-      prefHealth = view.health;
-      prefDiagnostic = view.diagnostic ?? null;
-      prefUncertain = false;
-      prefError = null;
+      syncFromView(view);
       notify();
     } catch (e) {
       if (gen !== refreshGen) return;
@@ -99,43 +111,71 @@ export function createLaunchController(invoke, { onChange } = {}) {
   }
 
   /**
+   * Shared two-key save path. One save gate covers both checkboxes; repairs
+   * are keyed - an uncertain save can only be repaired through the same key
+   * and value. Saves are rejected outright during a launch or an active
+   * session, matching the DOM disable so a programmatic or stale change
+   * event cannot mutate a preference mid-launch.
+   *
+   * @param {'autoJoin' | 'overlay'} key
    * @param {boolean} enabled
    * @param {{ repair?: boolean }} [opts]
    */
-  async function setAutoJoin(enabled, { repair = false } = {}) {
-    if (prefSaving) return;
-    if (prefUncertain && !repair && enabled !== optimisticAutoJoin) {
-      prefError = "Repair the setting before changing it.";
+  async function setPreference(key, enabled, { repair = false } = {}) {
+    if (prefSaving || launchBusy || activeOutcome != null) return;
+    const optimistic = key === "autoJoin" ? optimisticAutoJoin : optimisticOverlay;
+    if (prefUncertain && !repair && (key !== prefUncertainKey || enabled !== optimistic)) {
+      prefError = "Repair the settings before changing them.";
+      notify();
+      return;
+    }
+    if (prefUncertain && repair && key !== prefUncertainKey) {
+      prefError = "Repair the settings before changing them.";
       notify();
       return;
     }
     const gen = ++prefOpGen;
     refreshGen += 1;
-    const prev = optimisticAutoJoin;
+    const prevAutoJoin = optimisticAutoJoin;
+    const prevOverlay = optimisticOverlay;
     prefSaving = true;
-    optimisticAutoJoin = enabled;
+    if (key === "autoJoin") {
+      optimisticAutoJoin = enabled;
+    } else {
+      optimisticOverlay = enabled;
+    }
     prefError = null;
     notify();
     try {
-      const reply = await setAutoJoinHypixel(invoke, enabled);
+      const reply =
+        key === "autoJoin"
+          ? await setAutoJoinHypixel(invoke, enabled)
+          : await setUseExternalOverlay(invoke, enabled);
       if (gen !== prefOpGen) return;
       if (reply.status === "saved" || reply.status === "reconciled") {
+        // Replies carry BOTH confirmed booleans: resync the whole document.
         confirmedAutoJoin = reply.autoJoinHypixel;
         optimisticAutoJoin = reply.autoJoinHypixel;
+        confirmedOverlay = reply.useExternalOverlay;
+        optimisticOverlay = reply.useExternalOverlay;
         prefUncertain = false;
+        prefUncertainKey = null;
         prefHealth = "valid";
         prefDiagnostic = null;
       } else if (reply.status === "not_saved") {
-        optimisticAutoJoin = prev;
+        optimisticAutoJoin = prevAutoJoin;
+        optimisticOverlay = prevOverlay;
         prefError = reply.diagnostic;
       } else if (reply.status === "indeterminate") {
         prefUncertain = true;
+        prefUncertainKey = key;
         prefError = "Could not confirm the save. Try again.";
       }
       notify();
     } catch (e) {
       if (gen !== prefOpGen) return;
-      optimisticAutoJoin = prev;
+      optimisticAutoJoin = prevAutoJoin;
+      optimisticOverlay = prevOverlay;
       prefError = String(e);
       notify();
     } finally {
@@ -146,13 +186,30 @@ export function createLaunchController(invoke, { onChange } = {}) {
     }
   }
 
+  async function setAutoJoin(enabled, opts) {
+    return setPreference("autoJoin", enabled, opts);
+  }
+
+  async function setOverlay(enabled, opts) {
+    return setPreference("overlay", enabled, opts);
+  }
+
   function lunarLabel(autoJoin, phase) {
     if (!autoJoin) {
       if (phase === "loading") return LUNAR_OPEN_LABELS.loading;
-      if (phase === "done") return LUNAR_OPEN_LABELS.done;
+      if (phase === "done") {
+        // Only the never-fired open-only route settles as "Lunar Opened";
+        // a direct launch that settled reads as in-game.
+        return activeOutcome?.action === "launcher_opened"
+          ? LUNAR_OPEN_LABELS.done
+          : "In game…";
+      }
       return LUNAR_OPEN_LABELS.idle;
     }
     if (phase === "loading") return "Heading to Hypixel";
+    // Auto-join ON now settles on the home button too (the dashboard waits
+    // for a live snapshot), reusing the settled stage copy.
+    if (phase === "done") return STAGE_LABEL_ON.settled;
     return "Launch Lunar";
   }
 
@@ -163,6 +220,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
       return PRISM_LABELS.idle;
     }
     if (phase === "loading") return "Heading to Hypixel";
+    if (phase === "done") return STAGE_LABEL_ON.forge_settled;
     return "Launch Prism";
   }
 
@@ -210,8 +268,8 @@ export function createLaunchController(invoke, { onChange } = {}) {
     try {
       const reply =
         kind === "lunar"
-          ? await launchLunar(invoke, confirmedAutoJoin)
-          : await launchForge(invoke, confirmedAutoJoin);
+          ? await launchLunar(invoke, confirmedAutoJoin, confirmedOverlay)
+          : await launchForge(invoke, confirmedAutoJoin, confirmedOverlay);
       if (gen !== operationGen) return;
       launchBusy = false;
       if (reply.status === "launched") {
@@ -225,7 +283,11 @@ export function createLaunchController(invoke, { onChange } = {}) {
           launchPhase = "loading";
         }
         hooks.onLaunchReply(reply);
-        if (reply.outcome.autoJoinHypixel || reply.outcome.action === "game_launch_requested") {
+        if (
+          reply.outcome.autoJoinHypixel ||
+          reply.outcome.action === "game_launch_requested" ||
+          reply.outcome.action === "launch_unconfirmed"
+        ) {
           hooks.onProgressStart(reply.outcome.autoJoinHypixel);
         }
       } else if (reply.status === "preexisting_game") {
@@ -236,8 +298,16 @@ export function createLaunchController(invoke, { onChange } = {}) {
         if (reply.code === "stale_preference" && reply.preferences) {
           optimisticAutoJoin = reply.preferences.autoJoinHypixel;
           confirmedAutoJoin = reply.preferences.autoJoinHypixel;
+          optimisticOverlay = reply.preferences.useExternalOverlay;
+          confirmedOverlay = reply.preferences.useExternalOverlay;
         }
-        prefError = reply.message ?? reply.code;
+        // The backend's cooldown message carries the remaining seconds; the
+        // fallback stays truthful without inventing a number.
+        prefError =
+          reply.message ??
+          (reply.code === "launch_cooldown"
+            ? "The previous launch may still be starting - try again in a moment."
+            : reply.code);
         notify();
       }
       notify();
@@ -283,6 +353,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
   return {
     refreshPreferences,
     setAutoJoin,
+    setOverlay,
     launch,
     tryAgainLaunch,
     pollLobbyOnce,
@@ -292,9 +363,12 @@ export function createLaunchController(invoke, { onChange } = {}) {
       return {
         optimisticAutoJoin,
         confirmedAutoJoin,
+        optimisticOverlay,
+        confirmedOverlay,
         prefHealth,
         prefDiagnostic,
         prefUncertain,
+        prefUncertainKey,
         prefError,
         prefSaving,
         launchBusy,
@@ -316,6 +390,32 @@ export function createLaunchController(invoke, { onChange } = {}) {
     },
     bumpPollGen() {
       pollGen = launchGen;
+    },
+    /**
+     * Session reset step 1: discard every in-flight async result before any
+     * UI changes. Generations 0 can never match a backend generation, and
+     * bumping the op counters orphans pending launch/save/refresh replies.
+     */
+    invalidateSession() {
+      operationGen += 1;
+      prefOpGen += 1;
+      refreshGen += 1;
+      pollGen = 0;
+      launchGen = 0;
+      launchBusy = false;
+      prefSaving = false;
+    },
+    /**
+     * Session reset commit: back to a launchable idle home. `view`, when
+     * present (carried by both reset success variants), resyncs both
+     * checkboxes.
+     */
+    resetLaunchSession(view) {
+      activeOutcome = null;
+      launchPhase = "idle";
+      prefError = null;
+      if (view) syncFromView(view);
+      notify();
     },
   };
 }

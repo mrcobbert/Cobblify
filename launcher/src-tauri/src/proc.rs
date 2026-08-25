@@ -24,9 +24,11 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 #[cfg(target_os = "macos")]
 pub const LUNAR_EXE: &str = "/Applications/Lunar Client.app/Contents/MacOS/Lunar Client";
 
-/// The one process snapshot shape this crate may take: executable path only.
-/// Never widen the refresh kind - argv carries the game's live access token
-/// (see the module header and `exe_only_snapshot_leaves_argv_empty`).
+/// The default process snapshot shape: executable path only. The scan path
+/// additionally refreshes the owning user (`scan_snapshot`) - and nothing
+/// else, ever: argv carries the game's live access token (see the module
+/// header, `exe_only_snapshot_leaves_argv_empty`, and
+/// `scan_snapshot_leaves_argv_empty`).
 fn exe_snapshot() -> System {
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -166,8 +168,186 @@ pub fn game_jvm_running(home: &Path) -> bool {
 /// the game - and, just as importantly, to leave every OTHER window of that
 /// same process (the Minecraft window itself) alone.
 pub fn game_jvm_pids(home: &Path) -> Vec<u32> {
+    game_jvm_scan(home).pids
+}
+
+/// A game-JVM enumeration that also answers for its own completeness.
+pub struct GameJvmScan {
+    pub pids: Vec<u32>,
+    /// Whether "no game JVM was found" may be trusted as authoritative.
+    /// Proven, not assumed, by two independent checks:
+    ///
+    /// 1. Reconciliation: every pid a SEPARATE raw kernel enumeration saw
+    ///    must either appear in the snapshot or be provably dead
+    ///    (`process_exists == DefinitelyGone`). A snapshot that silently
+    ///    truncated (sysinfo's Windows iteration stops on ANY error) loses
+    ///    live pids and fails this.
+    /// 2. Per-process readability: a SAME-USER process whose executable
+    ///    lookup failed could itself be the game JVM, so unless it is
+    ///    provably dead the snapshot may not claim absence. Other users'
+    ///    processes cannot be our game and are exempt (on Windows their
+    ///    exe lookup routinely fails).
+    ///
+    /// `complete: false` never blocks discovery - found pids are still
+    /// returned - it only downgrades "nothing found" to uncertainty.
+    pub complete: bool,
+}
+
+pub fn game_jvm_scan(home: &Path) -> GameJvmScan {
+    // Raw list FIRST: a pid that exits between the two enumerations probes
+    // dead and is excused; one spawned between them appears only in the
+    // snapshot and costs nothing.
+    let raw = raw_pid_list();
     let jre_root = home.join(".lunarclient/jre");
-    pids_where(move |exe| path_has_prefix(exe, &jre_root) && is_game_java_tail(exe))
+    let system = scan_snapshot();
+    let pids = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| {
+            process
+                .exe()
+                .is_some_and(|exe| path_has_prefix(exe, &jre_root) && is_game_java_tail(exe))
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .collect();
+    GameJvmScan {
+        complete: scan_is_complete(&system, raw),
+        pids,
+    }
+}
+
+/// Snapshot for `game_jvm_scan`: executable path plus owning user, nothing
+/// else. Argv stays off-limits exactly as in `exe_snapshot` (the canary
+/// test covers this refresh shape too).
+fn scan_snapshot() -> System {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
+            .with_user(UpdateKind::Always),
+    );
+    system
+}
+
+fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
+    use crate::process_liveness::{process_exists, IdentityCheck};
+    let own_pid = sysinfo::Pid::from_u32(std::process::id());
+    let Some(own) = system.process(own_pid) else {
+        return false;
+    };
+    if own.exe().is_none_or(|e| e.as_os_str().is_empty()) {
+        return false;
+    }
+    let Some(own_uid) = own.user_id() else {
+        return false;
+    };
+    for (pid, process) in system.processes() {
+        if *pid == own_pid {
+            continue;
+        }
+        // PID 4 is Windows' kernel System process. It has neither a normal
+        // user token nor an executable path, and it cannot be a Lunar JVM.
+        // Treating that expected shape as an unreadable same-user process
+        // makes every otherwise-complete Windows scan permanently uncertain.
+        #[cfg(windows)]
+        if is_windows_system_pid(pid.as_u32()) {
+            continue;
+        }
+        // Only a KNOWN different user is exempt; a failed uid lookup could
+        // be our own process and must fail closed like a failed exe lookup.
+        let provably_other_user = process.user_id().is_some_and(|uid| uid != own_uid);
+        if provably_other_user {
+            continue;
+        }
+        if process.exe().is_none_or(|e| e.as_os_str().is_empty())
+            && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone
+        {
+            return false;
+        }
+    }
+    let Some(raw) = raw else {
+        return false;
+    };
+    raw.into_iter().all(|pid| {
+        system.process(sysinfo::Pid::from_u32(pid)).is_some()
+            || process_exists(pid) == IdentityCheck::DefinitelyGone
+    })
+}
+
+#[cfg(windows)]
+fn is_windows_system_pid(pid: u32) -> bool {
+    pid == 4
+}
+
+/// Pid enumeration independent of the sysinfo snapshot - the reconciliation
+/// source for `scan_is_complete`. Returns None on any failure (fails the
+/// scan closed).
+#[cfg(target_os = "macos")]
+fn raw_pid_list() -> Option<Vec<u32>> {
+    // libproc's byte-counted two-call pattern; same header family as the
+    // proc_pidinfo binding in `process_liveness`.
+    extern "C" {
+        fn proc_listallpids(
+            buffer: *mut std::ffi::c_void,
+            buffersize: std::ffi::c_int,
+        ) -> std::ffi::c_int;
+    }
+    const PID_BYTES: usize = std::mem::size_of::<i32>();
+    unsafe {
+        // BOTH returns are PID COUNTS: Apple's wrapper divides the kernel's
+        // byte count by sizeof(int) before returning (libproc.c,
+        // proc_listallpids). Only the buffersize ARGUMENT is bytes.
+        let needed = proc_listallpids(std::ptr::null_mut(), 0);
+        if needed <= 0 {
+            return None;
+        }
+        // Headroom for processes spawned between the two calls.
+        let cap = needed as usize + 64;
+        let mut buf = vec![0i32; cap];
+        let got = proc_listallpids(buf.as_mut_ptr().cast(), (cap * PID_BYTES) as std::ffi::c_int);
+        if got <= 0 {
+            return None;
+        }
+        let count = (got as usize).min(cap);
+        Some(buf[..count].iter().filter(|p| **p > 0).map(|p| *p as u32).collect())
+    }
+}
+
+#[cfg(windows)]
+fn raw_pid_list() -> Option<Vec<u32>> {
+    use windows_sys::Win32::System::ProcessStatus::K32EnumProcesses;
+    let mut cap = 1024usize;
+    loop {
+        let mut buf = vec![0u32; cap];
+        let mut used_bytes = 0u32;
+        let ok = unsafe { K32EnumProcesses(buf.as_mut_ptr(), (cap * 4) as u32, &mut used_bytes) };
+        if ok == 0 {
+            return None;
+        }
+        let count = used_bytes as usize / 4;
+        if count < cap {
+            buf.truncate(count);
+            buf.retain(|p| *p > 0);
+            return Some(buf);
+        }
+        cap *= 2;
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn raw_pid_list() -> Option<Vec<u32>> {
+    // Any entry error fails the whole enumeration closed - a partial raw
+    // list would silently weaken the reconciliation it exists to serve.
+    let mut pids = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()? {
+        let entry = entry.ok()?;
+        if let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
+            pids.push(pid);
+        }
+    }
+    Some(pids)
 }
 
 // Per-platform path identity. macOS keeps the exact std comparisons it has
@@ -468,5 +648,62 @@ mod tests {
             Path::new("C:\\Users\\JANE\\AppData\\Local\\Programs\\lunarclient\\Lunar Client.exe"),
             &lunar_programs_root(Some(OsStr::new("c:\\users\\jane\\appdata\\local"))).unwrap()
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_kernel_system_pid_is_not_a_candidate_user_process() {
+        assert!(is_windows_system_pid(4));
+        assert!(!is_windows_system_pid(std::process::id()));
+    }
+
+    /// The completeness proof is live, not scripted: a real scan must pass
+    /// the raw-list reconciliation and the same-user readability check on
+    /// this host. If either enumeration degrades, `complete` goes false and
+    /// the witness path reads Indeterminate instead of proving absence.
+    #[test]
+    fn a_real_scan_reconciles_to_complete_on_this_host() {
+        let scan = game_jvm_scan(Path::new("/nonexistent-home-for-this-test"));
+        assert!(scan.complete, "reconciled real snapshot reads complete");
+        assert!(scan.pids.is_empty(), "no game JVM under a nonexistent home");
+    }
+
+    /// The reconciliation source must be a real, independent enumeration:
+    /// it has to contain this very process.
+    #[test]
+    fn the_raw_pid_list_sees_this_process() {
+        let raw = raw_pid_list().expect("raw enumeration available");
+        assert!(raw.contains(&std::process::id()));
+    }
+
+    /// Cardinality lock for the raw enumeration's count semantics: it must
+    /// be the same order of magnitude as the snapshot, not a divided prefix
+    /// (`proc_listallpids` returns PID counts, not bytes - the confusion
+    /// this test exists to catch).
+    #[test]
+    fn the_raw_pid_list_matches_snapshot_cardinality() {
+        let raw = raw_pid_list().expect("raw enumeration available").len();
+        let snapshot = scan_snapshot().processes().len();
+        assert!(
+            raw * 2 > snapshot,
+            "raw enumeration ({raw}) is a divided prefix of the snapshot ({snapshot})"
+        );
+    }
+
+    /// The argv ban holds for the scan snapshot's exe+user refresh shape
+    /// exactly as it does for the exe-only shape (same canary discipline).
+    #[test]
+    fn scan_snapshot_leaves_argv_empty() {
+        let guard = spawn_canary();
+        let pid = Pid::from_u32(guard.child.id());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let system = scan_snapshot();
+        let seen = system
+            .process(pid)
+            .expect("canary child visible in the scan snapshot");
+        assert!(
+            seen.cmd().is_empty(),
+            "exe+user refresh must never populate argv"
+        );
     }
 }

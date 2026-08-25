@@ -23,8 +23,13 @@ mod hide;
 mod hide {
     pub fn spawn_worker() {}
     pub fn spawn_prism_worker() {}
+    pub fn rehide_once() {}
+    pub fn restore_lunar_windows() {}
+    pub fn quit_lunar_launcher(_commit: &dyn Fn() -> bool) {}
 }
+mod hide_registry;
 mod install;
+mod nojoin;
 mod lunar_config;
 mod proc;
 mod progress;
@@ -850,6 +855,8 @@ struct ProgressState {
     forge_session: bool,
     last_mtime: Option<SystemTime>,
     steady_polls: u32,
+    /// D1c fires at most once per launch generation.
+    early_hide_fired: bool,
 }
 
 /// Split mutexes so stalled lobby polling cannot block lifecycle admission.
@@ -868,6 +875,16 @@ impl SessionParts {
             progress: Arc::new(Mutex::new(ProgressState::default())),
         }
     }
+
+    /// Same parts around a pre-built lobby session (injected clock/probe).
+    #[cfg(test)]
+    fn with_lobby(lobby: LobbySession) -> Self {
+        SessionParts {
+            coordinator: Arc::new(Mutex::new(Coordinator::default())),
+            lobby: Arc::new(Mutex::new(lobby)),
+            progress: Arc::new(Mutex::new(ProgressState::default())),
+        }
+    }
 }
 
 fn lifecycle_err(e: LifecycleError) -> String {
@@ -883,6 +900,14 @@ fn launch_rejection(code: &'static str) -> LaunchReply {
         code,
         preferences: None,
         message: Some(code.into()),
+    }
+}
+
+fn launch_rejection_msg(code: &'static str, message: String) -> LaunchReply {
+    LaunchReply::Rejected {
+        code,
+        preferences: None,
+        message: Some(message),
     }
 }
 
@@ -932,8 +957,8 @@ async fn launch_preferences(
     }
 }
 
-#[tauri::command]
-async fn set_auto_join_hypixel(
+async fn set_preference(
+    key: lifecycle::PrefKey,
     enabled: bool,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<PreferenceSaveReply, String> {
@@ -943,12 +968,12 @@ async fn set_auto_join_hypixel(
         let mut guard = coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let uncertain = matches!(
             guard.state(),
-            lifecycle::Lifecycle::PreferenceUncertain { desired }
-                if desired == enabled
+            lifecycle::Lifecycle::PreferenceUncertain { key: k, desired }
+                if k == key && desired == enabled
         );
         if uncertain {
             guard
-                .try_save_while_uncertain(enabled)
+                .try_save_while_uncertain(key, enabled)
                 .map_err(lifecycle_err)?;
         } else if matches!(
             guard.state(),
@@ -960,8 +985,9 @@ async fn set_auto_join_hypixel(
         }
         uncertain
     };
-    let reply = match tauri::async_runtime::spawn_blocking(move || {
-        preferences::set_auto_join_hypixel(&home, enabled)
+    let reply = match tauri::async_runtime::spawn_blocking(move || match key {
+        lifecycle::PrefKey::AutoJoin => preferences::set_auto_join_hypixel(&home, enabled),
+        lifecycle::PrefKey::Overlay => preferences::set_use_external_overlay(&home, enabled),
     })
     .await
     {
@@ -969,7 +995,7 @@ async fn set_auto_join_hypixel(
         Ok(Err(e)) => {
             let mut guard = coordinator.lock().unwrap_or_else(|e| e.into_inner());
             if uncertain_retry {
-                guard.mark_uncertain(enabled);
+                guard.mark_uncertain(key, enabled);
             } else {
                 guard.release();
             }
@@ -978,7 +1004,7 @@ async fn set_auto_join_hypixel(
         Err(e) => {
             let mut guard = coordinator.lock().unwrap_or_else(|e| e.into_inner());
             if uncertain_retry {
-                guard.mark_uncertain(enabled);
+                guard.mark_uncertain(key, enabled);
             } else {
                 guard.release();
             }
@@ -988,7 +1014,7 @@ async fn set_auto_join_hypixel(
     let mut guard = coordinator.lock().unwrap_or_else(|e| e.into_inner());
     match &reply {
         PreferenceSaveReply::Indeterminate => {
-            guard.mark_uncertain(enabled);
+            guard.mark_uncertain(key, enabled);
         }
         PreferenceSaveReply::Saved { .. } | PreferenceSaveReply::Reconciled { .. } => {
             guard.clear_uncertain_on_success();
@@ -996,7 +1022,7 @@ async fn set_auto_join_hypixel(
         }
         PreferenceSaveReply::NotSaved { .. } => {
             if uncertain_retry {
-                guard.mark_uncertain(enabled);
+                guard.mark_uncertain(key, enabled);
             } else {
                 guard.release();
             }
@@ -1006,19 +1032,85 @@ async fn set_auto_join_hypixel(
 }
 
 #[tauri::command]
+async fn set_auto_join_hypixel(
+    enabled: bool,
+    session: tauri::State<'_, SessionParts>,
+) -> Result<PreferenceSaveReply, String> {
+    set_preference(lifecycle::PrefKey::AutoJoin, enabled, session).await
+}
+
+#[tauri::command]
+async fn set_use_external_overlay(
+    enabled: bool,
+    session: tauri::State<'_, SessionParts>,
+) -> Result<PreferenceSaveReply, String> {
+    set_preference(lifecycle::PrefKey::Overlay, enabled, session).await
+}
+
+/// D1c trigger, as a pure decision. The FIRST poll of a Lunar session that
+/// shows an armed absence (the session's own `grace` reason) or a proven
+/// session end starts the early hide - Lunar re-shows its launcher window
+/// the moment the game exits, and the reset-time terminate is ~1 s later.
+/// `game_session_changed` is excluded on purpose: a verified-live
+/// replacement writer exists, so no launcher window is coming.
+fn early_hide_trigger(poll: &LobbyPoll, lunar_session: bool, already_fired: bool) -> bool {
+    if !lunar_session || already_fired {
+        return false;
+    }
+    match poll {
+        LobbyPoll::Unavailable { reason: Some(reason) } => reason == "grace",
+        LobbyPoll::SessionEnded { reason } => *reason == "game_session_ended",
+        _ => false,
+    }
+}
+
+/// Captures the CURRENT launcher identity and starts the registered,
+/// identity-bound early-hide worker. Skips silently when the identity is
+/// unavailable - an Indeterminate never acts.
+#[cfg(target_os = "macos")]
+fn start_early_hide() {
+    let Some(pid) = proc::lunar_launcher_pid() else {
+        return;
+    };
+    let Some(birth) = process_liveness::process_birth_ns(pid) else {
+        return;
+    };
+    hide::spawn_bound_rehide(pid, birth);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_early_hide() {}
+
+#[tauri::command]
 async fn lobby_state(session: tauri::State<'_, SessionParts>) -> Result<LobbyPoll, String> {
     let home = home()?;
     let lobby = Arc::clone(&session.lobby);
     let progress = Arc::clone(&session.progress);
     tauri::async_runtime::spawn_blocking(move || {
-        if progress.lock().unwrap_or_else(|e| e.into_inner()).baseline.is_none() {
-            return Ok(LobbyPoll::Unavailable { reason: None });
-        }
+        let lunar_session = {
+            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.baseline.is_none() {
+                return Ok(LobbyPoll::Unavailable { reason: None });
+            }
+            !progress.forge_session
+        };
         let now = SystemTime::now();
-        Ok(lobby
+        let poll = lobby
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .poll(&home, now))
+            .poll(&home, now);
+        let fire = {
+            let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            let fire = early_hide_trigger(&poll, lunar_session, progress.early_hide_fired);
+            if fire {
+                progress.early_hide_fired = true;
+            }
+            fire
+        };
+        if fire {
+            start_early_hide();
+        }
+        Ok(poll)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1043,9 +1135,365 @@ async fn acknowledge_lobby_snapshot(
     .map_err(|e| e.to_string())?
 }
 
+/// Session-reset reply. Both success variants ALWAYS carry a preference
+/// view so the home page can resync its checkboxes atomically; an
+/// unreadable file degrades to the same defaults-with-invalid-health view
+/// the normal preference read produces.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ResetReply {
+    Ok { preferences: LaunchPreferencesView },
+    AlreadyReset { preferences: LaunchPreferencesView },
+    NotTerminal,
+    Busy,
+}
+
+fn prefs_view_or_fallback(home: &Path) -> LaunchPreferencesView {
+    match preferences::launch_preferences(home) {
+        Ok(view) => view,
+        Err(e) => LaunchPreferencesView {
+            auto_join_hypixel: true,
+            use_external_overlay: true,
+            health: preferences::PreferenceHealth::Invalid,
+            diagnostic: Some(format!("{e:?}")),
+        },
+    }
+}
+
+/// Whether the reset must prove a terminal first. `Abort` is the forcing
+/// admission (D2b): it skips ONLY the not-terminal refusal, and clears the
+/// lobby through the abort evidence rule instead of the terminal one.
+/// Everything else - serialization, Busy-from-Launching, the Lunar quit,
+/// Idle published last - is identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResetMode {
+    Terminal,
+    Abort,
+}
+
+/// The reset transaction. Locks are taken one at a time; the exclusive
+/// `Resetting` lifecycle state is the mutual exclusion for the whole
+/// sequence, and Idle is published last.
+/// `quit_lunar` runs (bounded, fail-soft) for a LUNAR session only, after
+/// the transaction commits: Lunar's launcher re-shows itself when the game
+/// exits and, while it runs, the setup refresh cannot re-register the
+/// agent - quitting it is what makes home immediately launchable again.
+fn reset_session_end_inner(
+    parts: &SessionParts,
+    home: &Path,
+    mode: ResetMode,
+    quit_lunar: impl FnOnce(),
+) -> ResetReply {
+    let prefs_view = || prefs_view_or_fallback(home);
+    match parts
+        .coordinator
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .try_begin_reset()
+    {
+        lifecycle::ResetBegin::AlreadyIdle => {
+            return ResetReply::AlreadyReset {
+                preferences: prefs_view(),
+            };
+        }
+        lifecycle::ResetBegin::Busy => return ResetReply::Busy,
+        lifecycle::ResetBegin::Begun => {}
+    }
+    let forge_session = {
+        parts
+            .progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .forge_session
+    };
+    {
+        let mut lobby = parts.lobby.lock().unwrap_or_else(|e| e.into_inner());
+        if mode == ResetMode::Terminal && lobby.terminal_reason().is_none() {
+            drop(lobby);
+            parts
+                .coordinator
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .abort_reset();
+            return ResetReply::NotTerminal;
+        }
+        match mode {
+            ResetMode::Terminal => lobby.clear_for_reset(),
+            ResetMode::Abort => lobby.clear_for_abort(forge_session, home),
+        }
+    }
+    let was_lunar_session = {
+        let mut progress = parts.progress.lock().unwrap_or_else(|e| e.into_inner());
+        let lunar = progress.baseline.is_some() && !progress.forge_session;
+        progress.baseline = None;
+        progress.forge_session = false;
+        progress.last_mtime = None;
+        progress.steady_polls = 0;
+        progress.early_hide_fired = false;
+        lunar
+    };
+    // The destructive Lunar quit runs INSIDE the exclusive `Resetting`
+    // state, before Idle is published: no fresh launch can be admitted
+    // while termination can still act. (Production wraps this in
+    // run_destructive_bounded, whose commit gate guarantees a timed-out
+    // pass never acts late; only a committed pass that also blows its own
+    // internal bounds can linger, and that is reported, not silent.)
+    if was_lunar_session {
+        quit_lunar();
+    }
+    parts
+        .coordinator
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .finish_reset();
+    ResetReply::Ok {
+        preferences: prefs_view(),
+    }
+}
+
+/// Late-success rehide: invoked exactly once by the frontend when a
+/// fired-but-unconfirmed launch is proven real (settled or a live lobby
+/// snapshot). Always replies promptly; hide is fail-soft by contract, so
+/// native failure never surfaces as an error.
+fn rehide_inner(use_external_overlay: bool) {
+    if use_external_overlay {
+        // Fresh registered finite worker: full repeated coverage restored.
+        hide::spawn_worker();
+    } else {
+        // One pass, ordered strictly before the reply so an overlay-off
+        // exit cannot kill the corrective actor - but BOUNDED: the command
+        // must always reply so the exit can proceed even if the native
+        // call hangs (hung-pass residual, cosmetic).
+        hide_registry::run_pass_bounded(
+            || hide::rehide_once(),
+            std::time::Duration::from_secs(3),
+        );
+    }
+}
+
+/// Overlay-off exit. The game, Lunar, and Prism are separate processes and
+/// survive; in-process hide threads die with the app (accepted narrowing).
+#[tauri::command]
+fn quit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn rehide_after_confirmation(use_external_overlay: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || rehide_inner(use_external_overlay))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn run_reset(session: &tauri::State<'_, SessionParts>, mode: ResetMode) -> Result<ResetReply, String> {
+    let home = home()?;
+    let parts = SessionParts {
+        coordinator: Arc::clone(&session.coordinator),
+        lobby: Arc::clone(&session.lobby),
+        progress: Arc::clone(&session.progress),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        reset_session_end_inner(&parts, &home, mode, || {
+            // Destructive gate: a hung osascript can only delay the reply
+            // up to bound+grace, and a pass that missed the bound before
+            // committing can never terminate anything afterwards.
+            hide_registry::run_destructive_bounded(
+                |commit| hide::quit_lunar_launcher(commit),
+                std::time::Duration::from_secs(3),
+                std::time::Duration::from_secs(3),
+            );
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reset_session_end(session: tauri::State<'_, SessionParts>) -> Result<ResetReply, String> {
+    run_reset(&session, ResetMode::Terminal).await
+}
+
+/// The forcing abort (D2b): the user cancelling a launch that never proved a
+/// terminal. Same wire shape as `reset_session_end`; `not_terminal` is
+/// simply never returned here.
+#[tauri::command]
+async fn abort_launch_session(
+    session: tauri::State<'_, SessionParts>,
+) -> Result<ResetReply, String> {
+    run_reset(&session, ResetMode::Abort).await
+}
+
+/// Guard pruning as a pure function over identity checks: only
+/// `DefinitelyGone` prunes; `AliveSameIdentity` AND `Indeterminate` (a
+/// query the OS refused) conservatively keep blocking.
+fn prune_guards(
+    guards: Vec<lobby::WriterProof>,
+    mut check: impl FnMut(&lobby::WriterProof) -> process_liveness::IdentityCheck,
+) -> (Vec<lobby::WriterProof>, bool) {
+    let mut remaining = Vec::new();
+    for guard in guards {
+        match check(&guard) {
+            process_liveness::IdentityCheck::DefinitelyGone => {}
+            _ => remaining.push(guard),
+        }
+    }
+    let blocked = !remaining.is_empty();
+    (remaining, blocked)
+}
+
+/// A Forge log touched at or after the aborted launch's baseline and this
+/// recently means a game from that launch is actively booting.
+const FML_ACTIVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Post-abort admission decision, pure over one probe result so the whole
+/// matrix is testable. There is deliberately NO time-based cooldown layer:
+/// the user overturned it (2026-08-21, recorded in TASK.md) - only
+/// evidence may refuse a click, never a blind timer. The residual double-
+/// launch risk of an unobservable pending launch is accepted.
+#[derive(Debug, Clone, PartialEq)]
+enum AbortAdmission {
+    /// Fail-closed: the route probe could not prove safety.
+    Unproven,
+    /// Conversion: concrete live identities become launch guards.
+    /// The record survives when the same probe ALSO carried uncertainty
+    /// about an identity it could not attribute (review finding).
+    Guard {
+        identities: Vec<lobby::WriterProof>,
+        keep_record: bool,
+    },
+    /// Admitted - and the record is deliberately KEPT (see CB-2).
+    Admit,
+}
+
+fn abort_admission(probe: lobby::AdmissionProbe) -> AbortAdmission {
+    match probe {
+        lobby::AdmissionProbe::Live {
+            identities,
+            uncertain,
+        } => AbortAdmission::Guard {
+            identities,
+            keep_record: uncertain,
+        },
+        lobby::AdmissionProbe::Indeterminate => AbortAdmission::Unproven,
+        lobby::AdmissionProbe::Clean => AbortAdmission::Admit,
+    }
+}
+
+/// Forge activity probe: MTIME ONLY, no contents are read. A log touched at
+/// or after the aborted launch's baseline and still recent means that
+/// launch's game is booting right now.
+fn fml_log_active(
+    mtime: Option<SystemTime>,
+    baseline: SystemTime,
+    now: SystemTime,
+) -> bool {
+    let Some(mtime) = mtime else {
+        return false;
+    };
+    if mtime < baseline {
+        return false;
+    }
+    match now.duration_since(mtime) {
+        Ok(age) => age < FML_ACTIVE_WINDOW,
+        // A log stamped in the future is fresher than now, not stale.
+        Err(_) => true,
+    }
+}
+
+fn fml_log_mtime(home: &Path) -> Option<SystemTime> {
+    let saved = forge::load_target(home)?;
+    let path = PathBuf::from(saved.game_dir).join("logs/fml-client-latest.log");
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Applies the layered admission for a recorded unproven abort. Returns the
+/// rejection message when the launch must be refused; `None` admits.
+///
+/// A clean probe ADMITS but never clears the record: a point-in-time probe
+/// is not proof that the aborted launch produced nothing, so every later
+/// preflight repeats the check (binding review condition; the residual
+/// itself is contract boundary CB-2).
+fn apply_abort_admission(
+    parts: &SessionParts,
+    probe: impl FnOnce(&lobby::UnprovenAbort) -> lobby::AdmissionProbe,
+) -> Option<String> {
+    let record = {
+        let lobby = parts.lobby.lock().unwrap_or_else(|e| e.into_inner());
+        lobby.unproven_abort()?
+    };
+    match abort_admission(probe(&record)) {
+        AbortAdmission::Unproven => Some(
+            "Cobblify cannot confirm the cancelled launch has finished - try again in a moment."
+                .to_string(),
+        ),
+        AbortAdmission::Guard {
+            identities,
+            keep_record,
+        } => {
+            let mut lobby = parts.lobby.lock().unwrap_or_else(|e| e.into_inner());
+            lobby.add_session_guards(identities);
+            if keep_record {
+                // Coexisting uncertainty existed AT this probe, so THIS
+                // click must refuse too - the guards alone cannot carry
+                // that refusal (the guarded identity could die before the
+                // guard check and admit a launch over the unproven one).
+                return Some(
+                    "Cobblify cannot confirm the cancelled launch has finished - try again in a moment."
+                        .to_string(),
+                );
+            }
+            // Fully converted to concrete guards: the record has done its
+            // job.
+            lobby.clear_unproven_abort();
+            None
+        }
+        AbortAdmission::Admit => None,
+    }
+}
+
+/// Production route probe for a recorded abort: the Lunar structured scan or
+/// the Forge fml-activity probe, chosen by the ABORTED launch's route.
+fn route_probe(
+    parts: &SessionParts,
+    home: &Path,
+    record: &lobby::UnprovenAbort,
+) -> lobby::AdmissionProbe {
+    if record.forge {
+        if fml_log_active(fml_log_mtime(home), record.baseline, SystemTime::now()) {
+            lobby::AdmissionProbe::Indeterminate
+        } else {
+            lobby::AdmissionProbe::Clean
+        }
+    } else {
+        parts
+            .lobby
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .probe_post_baseline_games(home, record.baseline)
+    }
+}
+
+/// File-independent guard against relaunching over a writer a session reset
+/// released while it was (or might still be) alive.
+fn session_guards_block_launch(lobby: &Mutex<LobbySession>) -> bool {
+    let guards = lobby.lock().unwrap_or_else(|e| e.into_inner()).session_guards();
+    if guards.is_empty() {
+        return false;
+    }
+    let (remaining, blocked) = prune_guards(guards, |g| {
+        process_liveness::check_identity(g.pid, g.os_birth_ns)
+    });
+    lobby
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_session_guards(remaining);
+    blocked
+}
+
 async fn launch_target(
     kind: LaunchKind,
     expected_auto_join_hypixel: bool,
+    expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<LaunchReply, String> {
     let home = home()?;
@@ -1059,8 +1507,52 @@ async fn launch_target(
         Err(e) => return Ok(lifecycle_to_launch(e)),
     };
 
+    // D2b: while an unproven abort is on record EVERY preflight re-probes
+    // the aborted launch's route. A conversion pushes concrete guards, which
+    // the existing guard mechanism below turns into `preexisting_game`.
+    {
+        let parts = SessionParts {
+            coordinator: Arc::clone(&session.coordinator),
+            lobby: Arc::clone(&session.lobby),
+            progress: Arc::clone(&session.progress),
+        };
+        let probe_home = home.clone();
+        if let Some(message) =
+            apply_abort_admission(&parts, |record| route_probe(&parts, &probe_home, record))
+        {
+            coordinator
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .release();
+            return Ok(launch_rejection_msg("launch_cooldown", message));
+        }
+    }
+
+    if session_guards_block_launch(&session.lobby) {
+        coordinator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .release();
+        let guard_home = home.clone();
+        let prefs = tauri::async_runtime::spawn_blocking(move || {
+            preferences::launch_preferences(&guard_home)
+        })
+        .await;
+        return match prefs {
+            Ok(Ok(view)) => Ok(LaunchReply::PreexistingGame { preferences: view }),
+            Ok(Err(e)) => Ok(launch_rejection_msg("preference_error", format!("{e:?}"))),
+            Err(e) => Ok(launch_rejection_msg("preference_error", e.to_string())),
+        };
+    }
+
     let attempt = match tauri::async_runtime::spawn_blocking(move || {
-        launch::launch_with_preflight(&home, kind, expected_auto_join_hypixel, generation)
+        launch::launch_with_preflight(
+            &home,
+            kind,
+            expected_auto_join_hypixel,
+            expected_use_external_overlay,
+            generation,
+        )
     })
     .await
     {
@@ -1082,11 +1574,12 @@ async fn launch_target(
                 progress.forge_session = matches!(kind, LaunchKind::Forge);
                 progress.last_mtime = None;
                 progress.steady_polls = 0;
+                progress.early_hide_fired = false;
                 session
                     .lobby
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .reset_for_launch(generation, baseline);
+                    .reset_for_launch(generation, baseline, matches!(kind, LaunchKind::Lunar));
             }
             coordinator
                 .lock()
@@ -1118,17 +1611,31 @@ async fn launch_target(
 #[tauri::command(rename_all = "camelCase")]
 async fn launch_lunar(
     expected_auto_join_hypixel: bool,
+    expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<LaunchReply, String> {
-    launch_target(LaunchKind::Lunar, expected_auto_join_hypixel, session).await
+    launch_target(
+        LaunchKind::Lunar,
+        expected_auto_join_hypixel,
+        expected_use_external_overlay,
+        session,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 async fn launch_forge(
     expected_auto_join_hypixel: bool,
+    expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<LaunchReply, String> {
-    launch_target(LaunchKind::Forge, expected_auto_join_hypixel, session).await
+    launch_target(
+        LaunchKind::Forge,
+        expected_auto_join_hypixel,
+        expected_use_external_overlay,
+        session,
+    )
+    .await
 }
 
 /// Cosmetic, fail-soft stepped progress for the launch button. Stats the weave
@@ -1425,6 +1932,781 @@ mod tests {
         assert_eq!(t.candidates.len(), 1);
         assert_eq!(t.candidates[0].name, "Right");
     }
+
+    fn temp_home() -> PathBuf {
+        tempfile::tempdir().unwrap().into_path()
+    }
+
+    fn active_with_latch(parts: &SessionParts, generation: u64) {
+        let mut c = parts.coordinator.lock().unwrap();
+        c.try_launch().unwrap();
+        c.launch_active();
+        drop(c);
+        let mut lobby = parts.lobby.lock().unwrap();
+        lobby.reset_for_launch(generation, SystemTime::now(), true);
+        lobby.latch_terminal_for_test("game_session_ended");
+        drop(lobby);
+        parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+    }
+
+    #[test]
+    fn reset_when_idle_is_already_reset() {
+        let parts = SessionParts::new();
+        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {});
+        assert!(matches!(reply, ResetReply::AlreadyReset { .. }));
+    }
+
+    #[test]
+    fn reset_clears_latch_progress_and_publishes_idle_last() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {});
+        assert!(matches!(reply, ResetReply::Ok { .. }));
+        assert_eq!(parts.lobby.lock().unwrap().terminal_reason(), None);
+        assert!(parts.progress.lock().unwrap().baseline.is_none());
+        // Fresh launch admissible with a fresh generation.
+        let gen = parts.coordinator.lock().unwrap().try_launch().unwrap();
+        assert!(gen >= 2);
+    }
+
+    #[test]
+    fn reset_without_latch_restores_active() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        {
+            let mut c = parts.coordinator.lock().unwrap();
+            c.try_launch().unwrap();
+            c.launch_active();
+        }
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {});
+        assert!(matches!(reply, ResetReply::NotTerminal));
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Active
+        );
+    }
+
+    #[test]
+    fn reset_busy_while_launching() {
+        let parts = SessionParts::new();
+        parts.coordinator.lock().unwrap().try_launch().unwrap();
+        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {});
+        assert!(matches!(reply, ResetReply::Busy));
+    }
+
+    /// The round-2/round-4 interleaving: after one reset commits, a fresh
+    /// launch's state can never be cleared or demoted by another reset.
+    #[test]
+    fn second_reset_never_touches_a_fresh_launch() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::Ok { .. }
+        ));
+        // Fresh launch installs its state and is admitted mid-way.
+        let gen = parts.coordinator.lock().unwrap().try_launch().unwrap();
+        {
+            let mut lobby = parts.lobby.lock().unwrap();
+            lobby.reset_for_launch(gen, SystemTime::now(), true);
+            parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+        }
+        // A reset arriving while Launching is refused outright.
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::Busy
+        ));
+        parts.coordinator.lock().unwrap().launch_active();
+        // Active with NO latch: refused, still Active, state intact.
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::NotTerminal
+        ));
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Active
+        );
+        assert!(parts.lobby.lock().unwrap().has_baseline());
+        assert!(parts.progress.lock().unwrap().baseline.is_some());
+    }
+
+    /// Round-10 I2: the backend halves of the rehide command. Overlay-on
+    /// registers exactly one fresh finite worker; overlay-off completes its
+    /// single pass before returning (nothing is scheduled).
+    #[test]
+    fn rehide_overlay_on_registers_and_off_completes_inline() {
+        let _guard = hide_registry::REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let before = hide_registry::registered_count();
+        rehide_inner(true);
+        assert_eq!(hide_registry::registered_count(), before + 1);
+        assert!(hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(5)));
+        // The synchronous branch: only exercised when no real Lunar launcher
+        // is running (it would cosmetically hide the user's window).
+        #[cfg(target_os = "macos")]
+        if proc::lunar_launcher_pid().is_none() {
+            rehide_inner(false);
+            assert_eq!(hide_registry::registered_count(), 0, "nothing scheduled");
+        }
+    }
+
+    /// TWO genuinely concurrent resets on the same SessionParts: exactly
+    /// one may perform the transaction; the other must observe `busy` or
+    /// `already_reset`, and the end state is a clean Idle.
+    #[test]
+    fn concurrent_resets_serialize_through_the_resetting_state() {
+        for _ in 0..25 {
+            let parts = SessionParts::new();
+            let home = temp_home();
+            active_with_latch(&parts, 1);
+            let (a, b) = std::thread::scope(|s| {
+                let pa = parts.clone();
+                let ha = home.clone();
+                let ta = s.spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal, || {}));
+                let pb = parts.clone();
+                let hb = home.clone();
+                let tb = s.spawn(move || reset_session_end_inner(&pb, &hb, ResetMode::Terminal, || {}));
+                (ta.join().unwrap(), tb.join().unwrap())
+            });
+            let oks = [&a, &b]
+                .iter()
+                .filter(|r| matches!(r, ResetReply::Ok { .. }))
+                .count();
+            assert_eq!(oks, 1, "exactly one reset performs the transaction");
+            assert!(
+                [&a, &b].iter().all(|r| matches!(
+                    r,
+                    ResetReply::Ok { .. } | ResetReply::Busy | ResetReply::AlreadyReset { .. }
+                )),
+                "the loser is busy or already_reset, never not_terminal"
+            );
+            assert_eq!(
+                parts.coordinator.lock().unwrap().state(),
+                lifecycle::Lifecycle::Idle
+            );
+            assert_eq!(parts.lobby.lock().unwrap().terminal_reason(), None);
+        }
+    }
+
+    /// DETERMINISTIC interleaving: the test holds the lobby lock so reset
+    /// A provably sits INSIDE the transaction (state `Resetting`) when
+    /// reset B arrives; B must observe `busy`. After A commits, a fresh
+    /// launch is admitted with a fresh generation and a late reset can
+    /// never demote or clear it - the PLAN Phase 2 sequence end to end.
+    #[test]
+    fn gated_reset_interleaving_and_fresh_launch_survival() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        // Gate: hold the lobby lock; A will block at transaction step 2.
+        let lobby_gate = parts.lobby.lock().unwrap();
+        let pa = parts.clone();
+        let ha = home.clone();
+        let a = std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal, || {}));
+        // Wait until A has claimed the exclusive Resetting state.
+        while parts.coordinator.lock().unwrap().state() != lifecycle::Lifecycle::Resetting {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // B arrives while A provably holds the transaction: busy.
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::Busy
+        ));
+        drop(lobby_gate);
+        assert!(matches!(a.join().unwrap(), ResetReply::Ok { .. }));
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Idle
+        );
+        // Fresh launch admitted after the commit, with a fresh generation.
+        let gen = parts.coordinator.lock().unwrap().try_launch().unwrap();
+        assert!(gen >= 2);
+        {
+            let mut lobby = parts.lobby.lock().unwrap();
+            lobby.reset_for_launch(gen, SystemTime::now(), true);
+            parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+        }
+        // A late reset while Launching is refused and touches nothing.
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::Busy
+        ));
+        parts.coordinator.lock().unwrap().launch_active();
+        // Active with no latch: refused; the fresh session stays intact.
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::NotTerminal
+        ));
+        assert!(parts.lobby.lock().unwrap().has_baseline());
+        assert!(parts.progress.lock().unwrap().baseline.is_some());
+    }
+
+    /// The Lunar-launcher quit runs exactly for a committed LUNAR session
+    /// reset - never for Forge sessions, never on refused resets.
+    #[test]
+    fn reset_quits_lunar_launcher_only_for_lunar_sessions() {
+        use std::cell::Cell;
+        let quits = Cell::new(0u32);
+        let quit = || quits.set(quits.get() + 1);
+
+        // Lunar session (baseline set, forge_session false): quit invoked.
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
+            ResetReply::Ok { .. }
+        ));
+        assert_eq!(quits.get(), 1);
+
+        // Forge session: no quit.
+        let parts = SessionParts::new();
+        active_with_latch(&parts, 1);
+        parts.progress.lock().unwrap().forge_session = true;
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
+            ResetReply::Ok { .. }
+        ));
+        assert_eq!(quits.get(), 1);
+
+        // Refused resets never quit: not_terminal and busy.
+        let parts = SessionParts::new();
+        {
+            let mut c = parts.coordinator.lock().unwrap();
+            c.try_launch().unwrap();
+            c.launch_active();
+        }
+        parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
+            ResetReply::NotTerminal
+        ));
+        assert_eq!(quits.get(), 1);
+        let parts = SessionParts::new();
+        parts.coordinator.lock().unwrap().try_launch().unwrap();
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
+            ResetReply::Busy
+        ));
+        assert_eq!(quits.get(), 1);
+    }
+
+    /// DETERMINISTIC quit-overlap exclusion: the quit seam is held open
+    /// and, while it runs, the coordinator is provably still `Resetting`,
+    /// so a fresh launch cannot be admitted until termination can no
+    /// longer act.
+    #[test]
+    fn no_launch_can_be_admitted_while_the_lunar_quit_runs() {
+        use std::sync::mpsc;
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let pa = parts.clone();
+        let ha = home.clone();
+        let worker = std::thread::spawn(move || {
+            reset_session_end_inner(&pa, &ha, ResetMode::Terminal, move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("quit seam entered");
+        // The quit is mid-flight: still Resetting, launch refused.
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Resetting
+        );
+        assert!(parts.coordinator.lock().unwrap().try_launch().is_err());
+        release_tx.send(()).unwrap();
+        assert!(matches!(worker.join().unwrap(), ResetReply::Ok { .. }));
+        // Only after the quit finished is a fresh launch admitted.
+        assert!(parts.coordinator.lock().unwrap().try_launch().is_ok());
+    }
+
+    #[test]
+    fn prune_guards_retains_indeterminate_and_blocks() {
+        use lobby::WriterProof;
+        use process_liveness::IdentityCheck;
+        let g = |pid: u32| WriterProof { pid, jvm_start_ms: 1, os_birth_ns: 1 };
+        // An OS-refused query is NOT death: guard retained, launch blocked.
+        let (remaining, blocked) = prune_guards(vec![g(1), g(2)], |guard| {
+            if guard.pid == 1 {
+                IdentityCheck::Indeterminate
+            } else {
+                IdentityCheck::DefinitelyGone
+            }
+        });
+        assert!(blocked);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].pid, 1);
+        let (remaining, blocked) =
+            prune_guards(vec![g(3)], |_| IdentityCheck::AliveSameIdentity);
+        assert!(blocked);
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn reset_success_always_carries_a_preferences_view() {
+        let parts = SessionParts::new();
+        // Unreadable preference environment: a home whose .cobblify is a
+        // FILE, so the locked read fails - the reply still carries a view.
+        let base = tempfile::tempdir().unwrap().into_path();
+        let home = base.join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join(".cobblify"), "not a dir").unwrap();
+        active_with_latch(&parts, 1);
+        match reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}) {
+            ResetReply::Ok { preferences } => {
+                assert_eq!(preferences.auto_join_hypixel, true);
+                assert_eq!(preferences.use_external_overlay, true);
+                assert_eq!(preferences.health, preferences::PreferenceHealth::Invalid);
+            }
+            other => panic!("expected ok, got {other:?}"),
+        }
+        match reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}) {
+            ResetReply::AlreadyReset { .. } => {}
+            other => panic!("expected already_reset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_guards_prune_dead_and_block_on_alive_or_indeterminate() {
+        use lobby::WriterProof;
+        let parts = SessionParts::new();
+        let pid = std::process::id();
+        let birth = process_liveness::process_birth_ns(pid).expect("self birth");
+        // A-live (self) plus B-dead (self with reused-pid birth mismatch).
+        parts.lobby.lock().unwrap().set_session_guards(vec![
+            WriterProof { pid, jvm_start_ms: 1, os_birth_ns: birth },
+            WriterProof { pid, jvm_start_ms: 1, os_birth_ns: birth - 1 },
+        ]);
+        assert!(session_guards_block_launch(&parts.lobby));
+        let remaining = parts.lobby.lock().unwrap().session_guards();
+        assert_eq!(remaining.len(), 1, "dead guard pruned, live one kept");
+        assert_eq!(remaining[0].os_birth_ns, birth);
+        // Both definitively gone: guard set empties and launch unblocks.
+        parts.lobby.lock().unwrap().set_session_guards(vec![WriterProof {
+            pid: 999_999_999,
+            jvm_start_ms: 1,
+            os_birth_ns: 1,
+        }]);
+        assert!(!session_guards_block_launch(&parts.lobby));
+        assert!(parts.lobby.lock().unwrap().session_guards().is_empty());
+    }
+
+    // ── D2b: the forcing abort ──────────────────────────────────────────
+
+    /// The abort twin of `reset_without_latch_restores_active`: the same
+    /// Active-with-no-latch session that the terminal reset refuses is
+    /// admitted by the abort, which then publishes Idle.
+    #[test]
+    fn abort_without_latch_begins_from_active_and_publishes_idle() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        {
+            let mut c = parts.coordinator.lock().unwrap();
+            c.try_launch().unwrap();
+            c.launch_active();
+        }
+        parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Abort, || {});
+        assert!(matches!(reply, ResetReply::Ok { .. }));
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Idle
+        );
+        assert!(parts.progress.lock().unwrap().baseline.is_none());
+    }
+
+    /// Abort keeps every other admission rule: a launch still mid-flight is
+    /// Busy, and an Idle app is already reset.
+    #[test]
+    fn abort_is_busy_from_launching_and_already_reset_from_idle() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        parts.coordinator.lock().unwrap().try_launch().unwrap();
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Abort, || {}),
+            ResetReply::Busy
+        ));
+        let idle = SessionParts::new();
+        assert!(matches!(
+            reset_session_end_inner(&idle, &home, ResetMode::Abort, || {}),
+            ResetReply::AlreadyReset { .. }
+        ));
+    }
+
+    /// The abort runs through the SAME exclusive transaction: a reset that
+    /// arrives while an abort provably holds it observes `busy`.
+    #[test]
+    fn abort_serializes_against_a_concurrent_reset() {
+        let parts = SessionParts::new();
+        let home = temp_home();
+        active_with_latch(&parts, 1);
+        let lobby_gate = parts.lobby.lock().unwrap();
+        let pa = parts.clone();
+        let ha = home.clone();
+        let abort =
+            std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Abort, || {}));
+        while parts.coordinator.lock().unwrap().state() != lifecycle::Lifecycle::Resetting {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            ResetReply::Busy
+        ));
+        drop(lobby_gate);
+        assert!(matches!(abort.join().unwrap(), ResetReply::Ok { .. }));
+        assert_eq!(
+            parts.coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Idle
+        );
+    }
+
+    /// The abort quits Lunar for a Lunar session exactly like the terminal
+    /// reset does, and never for a Forge one.
+    #[test]
+    fn abort_quits_lunar_only_for_lunar_sessions() {
+        use std::cell::Cell;
+        let quits = Cell::new(0u32);
+        let quit = || quits.set(quits.get() + 1);
+        let home = temp_home();
+
+        let parts = SessionParts::new();
+        active_with_latch(&parts, 1);
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Abort, quit),
+            ResetReply::Ok { .. }
+        ));
+        assert_eq!(quits.get(), 1);
+
+        let parts = SessionParts::new();
+        active_with_latch(&parts, 1);
+        parts.progress.lock().unwrap().forge_session = true;
+        assert!(matches!(
+            reset_session_end_inner(&parts, &home, ResetMode::Abort, quit),
+            ResetReply::Ok { .. }
+        ));
+        assert_eq!(quits.get(), 1);
+    }
+
+    // ── D2b: layered launch admission ───────────────────────────────────
+
+    fn abort_parts(clock: &lobby::ManualClock, forge: bool) -> SessionParts {
+        let mut lobby = LobbySession::default();
+        lobby.set_clock(clock.clock());
+        // No writer and no witness: the "no evidence either way" case.
+        lobby.reset_for_launch(1, SystemTime::now(), !forge);
+        lobby.clear_for_abort(forge, Path::new("/nonexistent-home-for-this-test"));
+        assert!(lobby.unproven_abort().is_some(), "record stored");
+        SessionParts::with_lobby(lobby)
+    }
+
+    fn live_identity() -> lobby::WriterProof {
+        lobby::WriterProof {
+            pid: 4242,
+            jvm_start_ms: 0,
+            os_birth_ns: 99,
+        }
+    }
+
+    #[test]
+    fn abort_admission_probe_outcomes_are_exact() {
+        assert_eq!(
+            abort_admission(lobby::AdmissionProbe::Clean),
+            AbortAdmission::Admit
+        );
+        assert_eq!(
+            abort_admission(lobby::AdmissionProbe::Indeterminate),
+            AbortAdmission::Unproven,
+            "uncertainty fails closed"
+        );
+        assert_eq!(
+            abort_admission(
+                lobby::AdmissionProbe::Live { identities: vec![live_identity()], uncertain: false }
+            ),
+            AbortAdmission::Guard { identities: vec![live_identity()], keep_record: false }
+        );
+    }
+
+    #[test]
+    fn every_preflight_probes_immediately_without_a_blind_cooldown() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        let probed = std::cell::Cell::new(0u32);
+        let message = apply_abort_admission(&parts, |_| {
+            probed.set(probed.get() + 1);
+            lobby::AdmissionProbe::Clean
+        });
+        assert_eq!(message, None, "clean evidence admits immediately");
+        assert_eq!(probed.get(), 1, "the route is probed on the first preflight");
+        assert!(parts.lobby.lock().unwrap().unproven_abort().is_some());
+    }
+
+    /// The binding review condition: a clean probe ADMITS but NEVER clears
+    /// the record, so every later preflight probes again.
+    #[test]
+    fn a_clean_probe_admits_and_keeps_the_record() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        let probed = std::cell::Cell::new(0u32);
+        for _ in 0..4 {
+            clock.advance(std::time::Duration::from_secs(5));
+            let message = apply_abort_admission(&parts, |_| {
+                probed.set(probed.get() + 1);
+                lobby::AdmissionProbe::Clean
+            });
+            assert_eq!(message, None, "a clean probe admits");
+            assert!(
+                parts.lobby.lock().unwrap().unproven_abort().is_some(),
+                "a clean probe is never proof: the record survives"
+            );
+        }
+        assert_eq!(probed.get(), 4, "every preflight probes, not just the first");
+    }
+
+    #[test]
+    fn an_indeterminate_probe_refuses_and_keeps_the_record() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        let message = apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Indeterminate);
+        assert!(message.is_some(), "fail closed on uncertainty");
+        assert!(parts.lobby.lock().unwrap().unproven_abort().is_some());
+    }
+
+    /// Conversion: a live post-baseline candidate becomes a concrete guard,
+    /// the record is spent, and the existing guard mechanism refuses the
+    /// launch until that identity is provably dead.
+    #[test]
+    fn a_live_candidate_converts_the_record_into_a_session_guard() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        let pid = std::process::id();
+        let birth = process_liveness::process_birth_ns(pid).expect("self birth");
+        let identity = lobby::WriterProof {
+            pid,
+            jvm_start_ms: 0,
+            os_birth_ns: birth,
+        };
+        let message =
+            apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Live { identities: vec![identity.clone()], uncertain: false });
+        assert_eq!(message, None, "the guard mechanism takes over from here");
+        assert!(
+            parts.lobby.lock().unwrap().unproven_abort().is_none(),
+            "converted: only this clears the record"
+        );
+        assert!(
+            session_guards_block_launch(&parts.lobby),
+            "a live identity blocks the launch"
+        );
+        // Proven dead: the guard prunes itself and home is launchable again.
+        parts
+            .lobby
+            .lock()
+            .unwrap()
+            .set_session_guards(vec![lobby::WriterProof {
+                pid: 999_999_999,
+                jvm_start_ms: 0,
+                os_birth_ns: 1,
+            }]);
+        assert!(!session_guards_block_launch(&parts.lobby));
+    }
+
+    /// Review fix: a probe that finds a live identity AND coexisting
+    /// uncertainty guards the identity but KEEPS the record - a later
+    /// unknown identity must still be re-probed at every admission.
+    #[test]
+    fn a_live_candidate_with_uncertainty_guards_but_keeps_the_record() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        let pid = std::process::id();
+        let birth = process_liveness::process_birth_ns(pid).expect("self birth");
+        let identity = lobby::WriterProof {
+            pid,
+            jvm_start_ms: 0,
+            os_birth_ns: birth,
+        };
+        let message = apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Live {
+            identities: vec![identity.clone()],
+            uncertain: true,
+        });
+        assert!(
+            message.is_some(),
+            "uncertainty at the probe refuses THIS click - the guard alone \
+             cannot (the guarded identity could die before the guard check)"
+        );
+        assert!(
+            session_guards_block_launch(&parts.lobby),
+            "the live identity is guarded for later clicks too"
+        );
+        assert!(
+            parts.lobby.lock().unwrap().unproven_abort().is_some(),
+            "coexisting uncertainty keeps the record"
+        );
+    }
+
+    /// Forge's route probe is mtime-only: a log touched at or after the
+    /// aborted launch's baseline and still recent means a game is booting.
+    #[test]
+    fn the_forge_activity_probe_reads_only_mtimes() {
+        let baseline = SystemTime::now();
+        let now = baseline + std::time::Duration::from_secs(5);
+        assert!(!fml_log_active(None, baseline, now), "no log: quiet");
+        assert!(
+            !fml_log_active(
+                Some(baseline - std::time::Duration::from_secs(1)),
+                baseline,
+                now
+            ),
+            "a pre-baseline log belongs to an older launch"
+        );
+        assert!(
+            fml_log_active(Some(baseline), baseline, now),
+            "touched at the baseline, 5 s ago: actively booting"
+        );
+        assert!(
+            !fml_log_active(
+                Some(baseline),
+                baseline,
+                baseline + FML_ACTIVE_WINDOW
+            ),
+            "15 s of silence is quiet"
+        );
+    }
+
+    #[test]
+    fn the_forge_route_refuses_while_its_log_is_active_and_admits_when_quiet() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, true);
+        assert!(
+            apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Indeterminate).is_some(),
+            "an active fml log refuses"
+        );
+        assert_eq!(
+            apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Clean),
+            None,
+            "a quiet fml log admits"
+        );
+        assert!(
+            parts.lobby.lock().unwrap().unproven_abort().is_some(),
+            "the record survives a quiet log too"
+        );
+    }
+
+    /// CB-2, DOCUMENTED not prevented: a spawn that begins strictly after a
+    /// clean probe still gets a second launch admitted. The evidence checks
+    /// narrow the window; they cannot close it. The record surviving
+    /// means the NEXT preflight catches the spawn - after the race is lost.
+    #[test]
+    fn a_spawn_after_a_clean_probe_still_admits_a_second_launch_cb2() {
+        let clock = lobby::ManualClock::new();
+        let parts = abort_parts(&clock, false);
+        // Nothing observable exists at check time: the launch is admitted.
+        assert_eq!(
+            apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Clean),
+            None,
+            "documents CB-2: admission cannot see work that has not started"
+        );
+        // The aborted launch's game only now begins to spawn. Because the
+        // record survived, the next preflight does convert it to a guard -
+        // but the second launch above already went through.
+        let identity = live_identity();
+        assert_eq!(
+            apply_abort_admission(&parts, |_| lobby::AdmissionProbe::Live { identities: vec![identity.clone()], uncertain: false }),
+            None
+        );
+        assert_eq!(parts.lobby.lock().unwrap().session_guards(), vec![identity]);
+        assert!(parts.lobby.lock().unwrap().unproven_abort().is_none());
+    }
+
+    // ── D1c: the identity-bound early hide trigger ──────────────────────
+
+    fn grace_poll() -> LobbyPoll {
+        LobbyPoll::Unavailable {
+            reason: Some("grace".into()),
+        }
+    }
+
+    #[test]
+    fn the_early_hide_trigger_reuses_the_sessions_own_signals() {
+        assert!(early_hide_trigger(&grace_poll(), true, false));
+        assert!(early_hide_trigger(
+            &LobbyPoll::SessionEnded {
+                reason: "game_session_ended"
+            },
+            true,
+            false
+        ));
+        // A live replacement writer exists: no launcher window is coming.
+        assert!(!early_hide_trigger(
+            &LobbyPoll::SessionEnded {
+                reason: "game_session_changed"
+            },
+            true,
+            false
+        ));
+        // Other unavailable reasons are not an armed absence.
+        for reason in ["missing_file", "stale_mtime", "process_unavailable", "malformed"] {
+            assert!(!early_hide_trigger(
+                &LobbyPoll::Unavailable {
+                    reason: Some(reason.into())
+                },
+                true,
+                false
+            ));
+        }
+        assert!(!early_hide_trigger(
+            &LobbyPoll::Unavailable { reason: None },
+            true,
+            false
+        ));
+        // Forge sessions never trigger it: there is no Lunar launcher.
+        assert!(!early_hide_trigger(&grace_poll(), false, false));
+    }
+
+    /// Mirrors `lobby_state`'s flag handling: at most one worker per launch
+    /// generation, re-armed by the next launch or reset.
+    #[test]
+    fn the_early_hide_fires_once_per_launch_generation() {
+        let mut progress = ProgressState::default();
+        let polls = [
+            grace_poll(),
+            grace_poll(),
+            LobbyPoll::SessionEnded {
+                reason: "game_session_ended",
+            },
+        ];
+        let mut fired = 0;
+        for poll in &polls {
+            if early_hide_trigger(poll, true, progress.early_hide_fired) {
+                progress.early_hide_fired = true;
+                fired += 1;
+            }
+        }
+        assert_eq!(fired, 1, "one worker per generation, not one per poll");
+        // A fresh launch (or a reset) re-arms it.
+        progress.early_hide_fired = false;
+        assert!(early_hide_trigger(&grace_poll(), true, progress.early_hide_fired));
+    }
+
+    /// Both lifecycle edges that install a new generation re-arm the flag.
+    #[test]
+    fn a_reset_rearms_the_early_hide_flag() {
+        let parts = SessionParts::new();
+        active_with_latch(&parts, 1);
+        parts.progress.lock().unwrap().early_hide_fired = true;
+        assert!(matches!(
+            reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {}),
+            ResetReply::Ok { .. }
+        ));
+        assert!(!parts.progress.lock().unwrap().early_hide_fired);
+    }
 }
 
 fn main() {
@@ -1452,8 +2734,13 @@ fn main() {
             open_setup_location,
             launch_preferences,
             set_auto_join_hypixel,
+            set_use_external_overlay,
             lobby_state,
             acknowledge_lobby_snapshot,
+            reset_session_end,
+            abort_launch_session,
+            rehide_after_confirmation,
+            quit_app,
             launch_lunar,
             launch_forge,
             launch_progress,

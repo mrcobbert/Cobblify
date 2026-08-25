@@ -36,9 +36,17 @@
               <input type="checkbox" id="auto-join" checked />
               <span>Auto-join Hypixel</span>
             </label>
+            <label class="auto-join" id="overlay-wrap" hidden>
+              <input type="checkbox" id="use-overlay" checked />
+              <span>Use external overlay</span>
+            </label>
             <p class="pref-error alert" id="pref-error" role="alert" hidden></p>
-            <button class="btn setup-btn" id="repair-pref" type="button" hidden>Repair Setting</button>
+            <button class="btn setup-btn" id="repair-pref" type="button" hidden>Repair Settings</button>
             <p class="alert" id="launch-error" role="alert" hidden></p>
+            <!-- escape hatch for a dispatched launch that has not gone live -->
+            <button class="btn setup-btn" id="cancel-launch" type="button" hidden>
+              Cancel Launch
+            </button>
           </div>
 
           <div class="state state-blocked" hidden></div>
@@ -69,7 +77,8 @@
           <span id="joining-sub">Connecting to network</span
           ><span class="dots" aria-hidden="true"></span>
         </div>
-        <button class="btn setup-btn" id="conn-try-again" type="button" hidden>Try Again</button>
+        <!-- one action slot; its label and handler come from the shell mode -->
+        <button class="btn setup-btn" id="conn-action" type="button" hidden>Try Again</button>
       </div>
       <div class="dash" id="dash"></div>
       <div class="conn-announce" id="conn-announce" aria-live="polite" aria-atomic="true"></div>

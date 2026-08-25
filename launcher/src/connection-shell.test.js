@@ -10,7 +10,13 @@ function fakeEl() {
     classList: { on: false, toggle(_c, v) { this.on = v; } },
     dataset: {},
     setAttribute(_k, _v) {},
-    addEventListener() {},
+    listeners: [],
+    addEventListener(_type, fn) {
+      this.listeners.push(fn);
+    },
+    click() {
+      for (const fn of this.listeners) fn();
+    },
   };
 }
 
@@ -18,17 +24,34 @@ function makeShell(overrides = {}) {
   const titleEl = fakeEl();
   const subEl = fakeEl();
   const shellEl = fakeEl();
-  const tryAgainEl = fakeEl();
+  const actionEl = fakeEl();
   const announceEl = fakeEl();
   let dashView = null;
   let rosterCleared = 0;
   let progressStopped = 0;
+  const fired = [];
   const timers = [];
   const shell = createConnectionShell({
     titleEl,
     subEl,
     shellEl,
-    tryAgainEl,
+    actionEl,
+    actions: {
+      preexisting_game: {
+        label: "Try Again",
+        onAction: () => {
+          fired.push("try_again");
+          overrides.onTryAgain?.();
+        },
+      },
+      waiting: {
+        label: "Back to Home",
+        onAction: () => {
+          fired.push("back_home");
+          overrides.onBackHome?.();
+        },
+      },
+    },
     announceEl,
     clearRoster: () => {
       rosterCleared += 1;
@@ -42,7 +65,6 @@ function makeShell(overrides = {}) {
     hideDash: () => {
       dashView = null;
     },
-    onTryAgain: overrides.onTryAgain ?? (() => {}),
     clock: () => 0,
     schedule: (fn, ms) => {
       const id = timers.length + 1;
@@ -56,8 +78,9 @@ function makeShell(overrides = {}) {
     titleEl,
     subEl,
     shellEl,
-    tryAgainEl,
+    actionEl,
     announceEl,
+    fired,
     timers,
     get dashView() {
       return dashView;
@@ -104,9 +127,63 @@ test("preexisting_game shows try again and clears roster", () => {
   const ctx = makeShell();
   ctx.shell.enterTerminal("preexisting_game", { showTryAgain: true });
   assert.equal(ctx.titleEl.textContent, "Game Already Running");
-  assert.equal(ctx.tryAgainEl.hidden, false);
+  assert.equal(ctx.actionEl.hidden, false);
+  assert.equal(ctx.actionEl.textContent, "Try Again");
   assert.equal(ctx.rosterCleared, 1);
   assert.equal(ctx.progressStopped, 1);
+});
+
+test("the action slot is per-mode: try again, back to home, or nothing", () => {
+  const ctx = makeShell();
+  const seen = [];
+  for (const mode of [
+    "joining",
+    "manual",
+    "waiting",
+    "disconnected",
+    "preexisting_game",
+    "session_ended",
+    "session_changed",
+    "launch_aborted",
+    "launch_aborted_resetting",
+  ]) {
+    ctx.shell.show(mode);
+    seen.push([mode, ctx.actionEl.hidden ? null : ctx.actionEl.textContent]);
+  }
+  assert.deepEqual(seen, [
+    ["joining", null],
+    ["manual", null],
+    ["waiting", "Back to Home"],
+    ["disconnected", null],
+    ["preexisting_game", "Try Again"],
+    ["session_ended", null],
+    ["session_changed", null],
+    ["launch_aborted", null],
+    ["launch_aborted_resetting", null],
+  ]);
+});
+
+test("the action slot dispatches to the action of the mode on screen", () => {
+  const ctx = makeShell();
+  ctx.shell.show("waiting");
+  ctx.actionEl.click();
+  ctx.shell.enterTerminal("preexisting_game", { showTryAgain: true });
+  ctx.actionEl.click();
+  // A mode with no action swallows the click instead of firing a stale one.
+  ctx.shell.enterTerminal("session_ended");
+  ctx.actionEl.click();
+  assert.deepEqual(ctx.fired, ["back_home", "try_again"]);
+});
+
+test("terminal reset modes never offer an escape button", () => {
+  const ctx = makeShell();
+  for (const mode of ["session_ended", "session_changed", "launch_aborted_resetting"]) {
+    ctx.shell.enterTerminal(mode, { showTryAgain: true });
+    assert.equal(ctx.actionEl.hidden, true, mode);
+  }
+  // preexisting_game without the flag stays button-less too.
+  ctx.shell.enterTerminal("preexisting_game");
+  assert.equal(ctx.actionEl.hidden, true);
 });
 
 test("terminal session modes use approved copy", () => {

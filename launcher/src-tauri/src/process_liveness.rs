@@ -65,16 +65,79 @@ pub fn process_birth_ns(pid: u32) -> Option<EpochNs> {
     observe_process(pid).map(|obs| obs.birth_ns)
 }
 
-/// Presence of an already-bound writer PID. Birth mismatch is absent (PID reuse).
+/// Three-way identity check: distinguishes definitive nonexistence (or PID
+/// reuse) from a query the OS refused to answer. `Indeterminate` is always
+/// the conservative bucket - callers must treat it as possibly-alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityCheck {
+    AliveSameIdentity,
+    DefinitelyGone,
+    Indeterminate,
+}
+
+/// Pure errno mapping for Unix-family lookups: ESRCH (3, macOS
+/// proc_pidinfo) and ENOENT (2, /proc reads on the Linux dev shim) are the
+/// OS saying "no such process"; anything else is a refused/failed query.
+pub(crate) fn identity_from_unix_errno(errno: Option<i32>) -> IdentityCheck {
+    match errno {
+        Some(2) | Some(3) => IdentityCheck::DefinitelyGone,
+        _ => IdentityCheck::Indeterminate,
+    }
+}
+
+/// Pure GetLastError mapping for a failed OpenProcess:
+/// ERROR_INVALID_PARAMETER (87) means the PID does not exist;
+/// ERROR_ACCESS_DENIED (5) and everything else is indeterminate.
+pub(crate) fn identity_from_windows_error(code: u32) -> IdentityCheck {
+    match code {
+        87 => IdentityCheck::DefinitelyGone,
+        _ => IdentityCheck::Indeterminate,
+    }
+}
+
+/// Identity-aware liveness of `pid` against `expected_birth_ns`.
+pub fn check_identity(pid: u32, expected_birth_ns: EpochNs) -> IdentityCheck {
+    #[cfg(target_os = "macos")]
+    {
+        macos::check_identity(pid, expected_birth_ns)
+    }
+    #[cfg(windows)]
+    {
+        windows::check_identity(pid, expected_birth_ns)
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        linux_dev::check_identity(pid, expected_birth_ns)
+    }
+}
+
+/// Three-way existence of a PID with no identity expectation, for the
+/// scan-completeness reconciliation: `DefinitelyGone` is the ONLY answer
+/// that may excuse a pid missing from a process snapshot; a refused or
+/// ambiguous query is `Indeterminate` and fails the snapshot closed.
+pub fn process_exists(pid: u32) -> IdentityCheck {
+    #[cfg(target_os = "macos")]
+    {
+        macos::exists(pid)
+    }
+    #[cfg(windows)]
+    {
+        windows::exists(pid)
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        linux_dev::exists(pid)
+    }
+}
+
+/// Presence of an already-bound writer PID, on the same identity semantics
+/// as the reset guards: only definitive nonexistence (or PID reuse) counts
+/// as absent; a refused query never feeds the death latch.
 pub fn bound_writer_presence(pid: u32, expected_birth_ns: EpochNs) -> BoundPresence {
-    match observe_process(pid) {
-        None => BoundPresence::Absent,
-        Some(obs) if obs.birth_ns != expected_birth_ns => BoundPresence::Absent,
-        Some(obs) => match obs.liveness {
-            Liveness::Alive => BoundPresence::Present,
-            Liveness::Dead => BoundPresence::Absent,
-            Liveness::Unavailable => BoundPresence::Unavailable,
-        },
+    match check_identity(pid, expected_birth_ns) {
+        IdentityCheck::AliveSameIdentity => BoundPresence::Present,
+        IdentityCheck::DefinitelyGone => BoundPresence::Absent,
+        IdentityCheck::Indeterminate => BoundPresence::Unavailable,
     }
 }
 
@@ -158,9 +221,18 @@ mod macos {
         ) -> i32;
     }
 
-    fn bsd_info(pid: u32) -> Option<ProcBsdInfo> {
+    enum BsdInfoOutcome {
+        Info(ProcBsdInfo),
+        /// The OS answered definitively: no such process (ESRCH), a zombie
+        /// (exited, awaiting reap), or the invalid pid 0.
+        Gone,
+        /// The query itself failed (permissions, transient error).
+        Unavailable,
+    }
+
+    fn bsd_info_checked(pid: u32) -> BsdInfoOutcome {
         if pid == 0 {
-            return None;
+            return BsdInfoOutcome::Gone;
         }
         let mut info = MaybeUninit::<ProcBsdInfo>::uninit();
         let size = std::mem::size_of::<ProcBsdInfo>() as i32;
@@ -174,13 +246,44 @@ mod macos {
             )
         };
         if got != size {
-            return None;
+            let errno = std::io::Error::last_os_error().raw_os_error();
+            return match super::identity_from_unix_errno(errno) {
+                super::IdentityCheck::DefinitelyGone => BsdInfoOutcome::Gone,
+                _ => BsdInfoOutcome::Unavailable,
+            };
         }
         let info = unsafe { info.assume_init() };
         if info.pbi_status as i32 == SZOMB {
-            return None;
+            return BsdInfoOutcome::Gone;
         }
-        Some(info)
+        BsdInfoOutcome::Info(info)
+    }
+
+    fn bsd_info(pid: u32) -> Option<ProcBsdInfo> {
+        match bsd_info_checked(pid) {
+            BsdInfoOutcome::Info(info) => Some(info),
+            _ => None,
+        }
+    }
+
+    pub fn check_identity(pid: u32, expected_birth_ns: super::EpochNs) -> super::IdentityCheck {
+        match bsd_info_checked(pid) {
+            BsdInfoOutcome::Gone => super::IdentityCheck::DefinitelyGone,
+            BsdInfoOutcome::Unavailable => super::IdentityCheck::Indeterminate,
+            BsdInfoOutcome::Info(info) => {
+                let sec = i128::from(info.pbi_start_tvsec);
+                let usec = i128::from(info.pbi_start_tvusec);
+                let birth_ns = sec
+                    .checked_mul(1_000_000_000)
+                    .and_then(|v| v.checked_add(usec.checked_mul(1_000)?));
+                match birth_ns {
+                    Some(b) if b == expected_birth_ns => super::IdentityCheck::AliveSameIdentity,
+                    // A different birth is PID reuse: OUR writer is gone.
+                    Some(_) => super::IdentityCheck::DefinitelyGone,
+                    None => super::IdentityCheck::Indeterminate,
+                }
+            }
+        }
     }
 
     pub fn observe(pid: u32) -> Option<ProcessObservation> {
@@ -204,6 +307,16 @@ mod macos {
         match bsd_info(pid) {
             Some(_) => Liveness::Alive,
             None => Liveness::Dead,
+        }
+    }
+
+    /// Three-way existence: a zombie counts as gone (its game is over), a
+    /// refused query is indeterminate, never gone.
+    pub fn exists(pid: u32) -> super::IdentityCheck {
+        match bsd_info_checked(pid) {
+            BsdInfoOutcome::Info(_) => super::IdentityCheck::AliveSameIdentity,
+            BsdInfoOutcome::Gone => super::IdentityCheck::DefinitelyGone,
+            BsdInfoOutcome::Unavailable => super::IdentityCheck::Indeterminate,
         }
     }
 }
@@ -299,6 +412,68 @@ mod windows {
             .map(|obs| obs.liveness)
             .unwrap_or(Liveness::Unavailable)
     }
+
+    /// Three-way existence: an openable process object counts as existing
+    /// (conservative - a terminated-but-held object reads as present, which
+    /// can only fail a snapshot closed); a refused open maps through the
+    /// same error split as identity checks.
+    pub fn exists(pid: u32) -> super::IdentityCheck {
+        if pid == 0 {
+            return super::IdentityCheck::DefinitelyGone;
+        }
+        match open_query(pid) {
+            Some(handle) => {
+                unsafe { CloseHandle(handle) };
+                super::IdentityCheck::AliveSameIdentity
+            }
+            None => {
+                let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                super::identity_from_windows_error(code)
+            }
+        }
+    }
+
+    pub fn check_identity(pid: u32, expected_birth_ns: EpochNs) -> super::IdentityCheck {
+        if pid == 0 {
+            return super::IdentityCheck::DefinitelyGone;
+        }
+        let handle = match open_query(pid) {
+            Some(h) => h,
+            None => {
+                let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                return super::identity_from_windows_error(code);
+            }
+        };
+        let result = (|| {
+            let mut creation = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut exit = creation;
+            let mut kernel = creation;
+            let mut user = creation;
+            let ok = unsafe {
+                GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+            };
+            if ok == 0 {
+                return super::IdentityCheck::Indeterminate;
+            }
+            let Some(birth_ns) = filetime_to_ns(creation) else {
+                return super::IdentityCheck::Indeterminate;
+            };
+            if birth_ns != expected_birth_ns {
+                // PID reuse: OUR writer is gone.
+                return super::IdentityCheck::DefinitelyGone;
+            }
+            match unsafe { WaitForSingleObject(handle, 0) } {
+                WAIT_TIMEOUT => super::IdentityCheck::AliveSameIdentity,
+                WAIT_OBJECT_0 => super::IdentityCheck::DefinitelyGone,
+                _ => super::IdentityCheck::Indeterminate,
+            }
+        })();
+        unsafe { CloseHandle(handle) };
+        result
+    }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -344,6 +519,42 @@ mod linux_dev {
             return Liveness::Dead;
         }
         Liveness::Alive
+    }
+
+    pub fn check_identity(pid: u32, expected_birth_ns: EpochNs) -> super::IdentityCheck {
+        if pid == 0 {
+            return super::IdentityCheck::DefinitelyGone;
+        }
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(e) => super::identity_from_unix_errno(e.raw_os_error()),
+            Ok(stat) => {
+                if stat.contains(" Z ") || stat.contains(") Z ") {
+                    return super::IdentityCheck::DefinitelyGone;
+                }
+                match birth_ns(pid) {
+                    Some(b) if b == expected_birth_ns => super::IdentityCheck::AliveSameIdentity,
+                    Some(_) => super::IdentityCheck::DefinitelyGone,
+                    None => super::IdentityCheck::Indeterminate,
+                }
+            }
+        }
+    }
+
+    /// Three-way existence; zombies are gone, an unreadable stat maps
+    /// through the same errno split as identity checks.
+    pub fn exists(pid: u32) -> super::IdentityCheck {
+        if pid == 0 {
+            return super::IdentityCheck::DefinitelyGone;
+        }
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(e) => super::identity_from_unix_errno(e.raw_os_error()),
+            Ok(stat) => {
+                if stat.contains(" Z ") || stat.contains(") Z ") {
+                    return super::IdentityCheck::DefinitelyGone;
+                }
+                super::IdentityCheck::AliveSameIdentity
+            }
+        }
     }
 
     fn clock_ticks_per_sec() -> u64 {
@@ -420,6 +631,37 @@ mod tests {
         assert_eq!(
             bound_writer_presence(999_999_999, 1),
             BoundPresence::Absent
+        );
+    }
+
+    #[test]
+    fn errno_mapping_is_conservative() {
+        assert_eq!(identity_from_unix_errno(Some(3)), IdentityCheck::DefinitelyGone);
+        assert_eq!(identity_from_unix_errno(Some(2)), IdentityCheck::DefinitelyGone);
+        assert_eq!(identity_from_unix_errno(Some(1)), IdentityCheck::Indeterminate); // EPERM
+        assert_eq!(identity_from_unix_errno(Some(13)), IdentityCheck::Indeterminate); // EACCES
+        assert_eq!(identity_from_unix_errno(None), IdentityCheck::Indeterminate);
+        assert_eq!(identity_from_windows_error(87), IdentityCheck::DefinitelyGone);
+        assert_eq!(identity_from_windows_error(5), IdentityCheck::Indeterminate);
+        assert_eq!(identity_from_windows_error(0), IdentityCheck::Indeterminate);
+    }
+
+    /// Native branch: a definitively nonexistent PID must map to gone, not
+    /// indeterminate - a guard held on it would otherwise never prune.
+    #[test]
+    fn check_identity_native_branches() {
+        assert_eq!(
+            check_identity(999_999_999, 1),
+            IdentityCheck::DefinitelyGone,
+            "nonexistent pid is definitive on this OS"
+        );
+        let pid = std::process::id();
+        let birth = process_birth_ns(pid).expect("self birth");
+        assert_eq!(check_identity(pid, birth), IdentityCheck::AliveSameIdentity);
+        assert_eq!(
+            check_identity(pid, birth - 1),
+            IdentityCheck::DefinitelyGone,
+            "birth mismatch is PID reuse: our writer is gone"
         );
     }
 

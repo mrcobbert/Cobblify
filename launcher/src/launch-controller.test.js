@@ -260,23 +260,36 @@ test("auto-join-off manual shell copy avoids Hypixel before live", () => {
   assert.doesNotMatch(CONNECTION_COPY.manual.subtitle, /Hypixel|joining|connected/i);
 });
 
-test("launch phases show opening and opened labels for lunar off", async () => {
+test("lunar off reads Launch Lunar and settles per outcome", async () => {
   const invoke = fakeInvoke({
     ...baseHandlers,
     [CMD.launchPreferences]: () => ({
       autoJoinHypixel: false,
+      useExternalOverlay: true,
       health: "valid",
     }),
     [CMD.launchLunar]: () => ({
       status: "launched",
       generation: 2,
-      outcome: { autoJoinHypixel: false, action: "launcher_opened" },
+      outcome: {
+        autoJoinHypixel: false,
+        useExternalOverlay: true,
+        action: "launcher_opened",
+      },
     }),
   });
   const ctrl = createLaunchController(invoke);
   await ctrl.refreshPreferences();
+  // The button reads Launch Lunar in BOTH auto-join states.
+  ctrl.projectLaunchButtons({ lunarReady: true, forgeReady: false }, "idle");
+  assert.equal(ctrl.getState().launchButtons[0].label, "Launch Lunar");
   ctrl.projectLaunchButtons({ lunarReady: true, forgeReady: false }, "loading");
-  assert.equal(ctrl.getState().launchButtons[0].label, "Opening Lunar…");
+  assert.equal(ctrl.getState().launchButtons[0].label, "Launching Lunar…");
+  // A degraded open-only outcome settles through Lunar Opened.
+  await ctrl.launch("lunar", {
+    onLaunchReply() {},
+    onProgressStart() {},
+  });
   ctrl.projectLaunchButtons({ lunarReady: true, forgeReady: false }, "done");
   assert.equal(ctrl.getState().launchButtons[0].label, "Lunar Opened");
 });
@@ -295,6 +308,46 @@ test("launch phases show prism dispatch labels", async () => {
   assert.equal(ctrl.getState().launchButtons[0].label, "Launching Prism…");
   ctrl.projectLaunchButtons({ lunarReady: false, forgeReady: true }, "done");
   assert.equal(ctrl.getState().launchButtons[0].label, "Prism Started");
+});
+
+test("auto-join-on launch settles into the in-game joining label", async () => {
+  const invoke = fakeInvoke(baseHandlers);
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  const onLabels = ctrl.getState().stageLabels(true);
+  ctrl.projectLaunchButtons({ lunarReady: true, forgeReady: true }, "loading");
+  assert.equal(ctrl.getState().launchButtons[0].label, "Heading to Hypixel");
+  assert.equal(ctrl.getState().launchButtons[1].label, "Heading to Hypixel");
+  ctrl.projectLaunchButtons({ lunarReady: true, forgeReady: true }, "done");
+  const done = ctrl.getState().launchButtons;
+  // The settled button reuses the settled stage copy verbatim, so the
+  // narration does not flicker to different wording at settle.
+  assert.equal(done[0].label, onLabels.settled);
+  assert.equal(done[1].label, onLabels.forge_settled);
+  assert.equal(done[0].loading, false);
+});
+
+test("settleLaunchPhase reaches done for an auto-join-on launch", async () => {
+  const invoke = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "launched",
+      generation: 9,
+      outcome: {
+        autoJoinHypixel: true,
+        useExternalOverlay: true,
+        action: "game_launch_requested",
+      },
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  assert.equal(ctrl.getState().launchPhase, "loading");
+  ctrl.settleLaunchPhase();
+  assert.equal(ctrl.getState().launchPhase, "done");
+  const buttons = ctrl.projectForCurrentPhase({ lunarReady: true, forgeReady: false });
+  assert.equal(buttons[0].label, "In game - joining Hypixel…");
 });
 
 test("busy launch rejection returns typed reply without active outcome", async () => {
@@ -334,4 +387,277 @@ test("save completion survives rejected launch attempt", async () => {
   await save;
   assert.equal(ctrl.getState().confirmedAutoJoin, false);
   assert.equal(ctrl.getState().prefSaving, false);
+});
+
+// ── use_external_overlay preference, shared save gate, session reset ───────
+
+const twoKeyHandlers = {
+  ...baseHandlers,
+  [CMD.launchPreferences]: () => ({
+    autoJoinHypixel: true,
+    useExternalOverlay: true,
+    health: "valid",
+  }),
+};
+
+test("overlay save resyncs both booleans from the reply", async () => {
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.setUseExternalOverlay]: () => ({
+      status: "saved",
+      autoJoinHypixel: false,
+      useExternalOverlay: false,
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.setOverlay(false);
+  const st = ctrl.getState();
+  assert.equal(st.optimisticOverlay, false);
+  assert.equal(st.confirmedOverlay, false);
+  // The reply's sibling value wins: full-document resynchronization.
+  assert.equal(st.confirmedAutoJoin, false);
+});
+
+test("cross-key repair is rejected; same-key repair is admitted", async () => {
+  let overlaySaves = 0;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.setUseExternalOverlay]: () => {
+      overlaySaves += 1;
+      return overlaySaves === 1
+        ? { status: "indeterminate" }
+        : { status: "saved", autoJoinHypixel: true, useExternalOverlay: false };
+    },
+    [CMD.setAutoJoinHypixel]: () => {
+      throw new Error("cross-key save must never reach the wire");
+    },
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.setOverlay(false);
+  assert.equal(ctrl.getState().prefUncertain, true);
+  assert.equal(ctrl.getState().prefUncertainKey, "overlay");
+  // A repair through the OTHER key is refused before any invoke.
+  await ctrl.setAutoJoin(true, { repair: true });
+  assert.equal(ctrl.getState().prefUncertain, true);
+  // The matching key repairs.
+  await ctrl.setOverlay(false, { repair: true });
+  const st = ctrl.getState();
+  assert.equal(st.prefUncertain, false);
+  assert.equal(st.confirmedOverlay, false);
+});
+
+test("saves are rejected at the controller during launch and active session", async () => {
+  let saves = 0;
+  let resolveLaunch;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.setUseExternalOverlay]: () => {
+      saves += 1;
+      return { status: "saved", autoJoinHypixel: true, useExternalOverlay: false };
+    },
+    [CMD.setAutoJoinHypixel]: () => {
+      saves += 1;
+      return { status: "saved", autoJoinHypixel: false, useExternalOverlay: true };
+    },
+    [CMD.launchLunar]: () =>
+      new Promise((resolve) => {
+        resolveLaunch = () =>
+          resolve({
+            status: "launched",
+            generation: 3,
+            outcome: {
+              autoJoinHypixel: true,
+              useExternalOverlay: true,
+              action: "game_launch_requested",
+            },
+          });
+      }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  const launching = ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  // Mid-launch: a programmatic/stale change event mutates nothing.
+  await ctrl.setOverlay(false);
+  await ctrl.setAutoJoin(false);
+  assert.equal(saves, 0);
+  resolveLaunch();
+  await launching;
+  // Active session: still rejected.
+  await ctrl.setOverlay(false);
+  assert.equal(saves, 0);
+  assert.equal(ctrl.getState().optimisticOverlay, true);
+});
+
+test("launch_cooldown surfaces the backend message on the rejection surface", async () => {
+  const withMessage = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "rejected",
+      code: "launch_cooldown",
+      message: "The previous launch may still be starting - try again in 24s.",
+    }),
+  });
+  const ctrl = createLaunchController(withMessage);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  const st = ctrl.getState();
+  assert.equal(st.activeOutcome, null);
+  assert.equal(st.launchPhase, "idle");
+  assert.match(st.prefError, /try again in 24s/);
+});
+
+test("a message-less launch_cooldown falls back to honest copy, not the raw code", async () => {
+  const bare = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchLunar]: () => ({ status: "rejected", code: "launch_cooldown" }),
+  });
+  const ctrl = createLaunchController(bare);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  const { prefError } = ctrl.getState();
+  assert.equal(
+    prefError,
+    "The previous launch may still be starting - try again in a moment.",
+  );
+  assert.doesNotMatch(prefError, /launch_cooldown/);
+});
+
+test("stale_preference resynchronizes both booleans", async () => {
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "rejected",
+      code: "stale_preference",
+      preferences: { autoJoinHypixel: false, useExternalOverlay: false, health: "valid" },
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  const st = ctrl.getState();
+  assert.equal(st.confirmedAutoJoin, false);
+  assert.equal(st.confirmedOverlay, false);
+});
+
+test("launch_unconfirmed starts progress and keeps loading phase", async () => {
+  let progressStarted = 0;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "launched",
+      generation: 4,
+      outcome: {
+        autoJoinHypixel: false,
+        useExternalOverlay: true,
+        action: "launch_unconfirmed",
+      },
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", {
+    onLaunchReply() {},
+    onProgressStart() {
+      progressStarted += 1;
+    },
+  });
+  assert.equal(progressStarted, 1, "unconfirmed installs progress watching");
+  assert.equal(ctrl.getState().launchPhase, "loading");
+});
+
+test("invalidateSession orphans stale callbacks and reset restores idle home", async () => {
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "launched",
+      generation: 5,
+      outcome: {
+        autoJoinHypixel: true,
+        useExternalOverlay: true,
+        action: "game_launch_requested",
+      },
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  assert.equal(ctrl.getState().launchGen, 5);
+  ctrl.invalidateSession();
+  const st = ctrl.getState();
+  assert.equal(st.launchGen, 0, "no backend generation can match again");
+  assert.equal(st.pollGen, 0);
+  ctrl.resetLaunchSession({
+    autoJoinHypixel: false,
+    useExternalOverlay: false,
+    health: "valid",
+  });
+  const after = ctrl.getState();
+  assert.equal(after.activeOutcome, null);
+  assert.equal(after.launchPhase, "idle");
+  assert.equal(after.confirmedAutoJoin, false);
+  assert.equal(after.confirmedOverlay, false);
+});
+
+test("a stale lobby poll callback after invalidateSession is dropped", async () => {
+  let resolvePoll;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "launched",
+      generation: 6,
+      outcome: {
+        autoJoinHypixel: true,
+        useExternalOverlay: true,
+        action: "game_launch_requested",
+      },
+    }),
+    [CMD.lobbyState]: () =>
+      new Promise((resolve) => {
+        resolvePoll = () => resolve({ kind: "session_ended", reason: "game_session_ended" });
+      }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  ctrl.bumpPollGen();
+  let delivered = 0;
+  const pending = ctrl.pollLobbyOnce({
+    onPoll: () => {
+      delivered += 1;
+    },
+  });
+  // The reset invalidates while the poll response is in flight.
+  ctrl.invalidateSession();
+  resolvePoll();
+  await pending;
+  assert.equal(delivered, 0, "stale callback mutates nothing after invalidation");
+});
+
+test("a second launch after reset uses the fresh backend generation", async () => {
+  let generation = 5;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.launchLunar]: () => ({
+      status: "launched",
+      generation,
+      outcome: {
+        autoJoinHypixel: true,
+        useExternalOverlay: true,
+        action: "game_launch_requested",
+      },
+    }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  assert.equal(ctrl.getState().launchGen, 5);
+  ctrl.invalidateSession();
+  ctrl.resetLaunchSession({ autoJoinHypixel: true, useExternalOverlay: true, health: "valid" });
+  generation = 6;
+  await ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  const st = ctrl.getState();
+  assert.equal(st.launchGen, 6, "fresh generation adopted end to end");
+  assert.equal(st.activeOutcome?.action, "game_launch_requested");
 });

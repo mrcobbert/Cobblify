@@ -14,7 +14,16 @@ import {
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
 import { createLaunchController } from "./launch-controller.js";
+import { createOverlayExit } from "./overlay-exit.js";
+import { createSessionReset } from "./session-reset.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
+import {
+  abortLaunchSession,
+  quitApp,
+  rehideAfterConfirmation,
+  resetSessionEnd,
+} from "./tauri-contract.js";
+import { LOBBY_POLL_MS } from "./poll-config.js";
 import {
   ISSUE,
   launchLabel,
@@ -23,6 +32,11 @@ import {
   topLevelError,
 } from "./setup-view.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
+import {
+  keepsStageNarration,
+  launchViewRoute,
+  showsCancelLaunch,
+} from "./launch-view-route.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -31,8 +45,11 @@ const dash = el("dash");
 const connAnnounce = el("conn-announce");
 const autoJoinWrap = el("auto-join-wrap");
 const autoJoinInput = el("auto-join");
+const overlayWrap = el("overlay-wrap");
+const overlayInput = el("use-overlay");
 const prefError = el("pref-error");
 const repairPref = el("repair-pref");
+const cancelLaunch = el("cancel-launch");
 const scene = createHeroScene(el("hero-canvas"));
 // Scene boot (shader compile included) is behind us - let the entrance run.
 stage.classList.add("lit");
@@ -263,28 +280,63 @@ function previewInvoke(command, args) {
   }
 
   if (command === "launch_preferences") {
-    return Promise.resolve({ autoJoinHypixel: true, health: "missing" });
+    return Promise.resolve({
+      autoJoinHypixel: true,
+      useExternalOverlay: true,
+      health: "missing",
+    });
   }
 
   if (command === "set_auto_join_hypixel") {
-    return Promise.resolve({ status: "saved", autoJoinHypixel: args?.enabled ?? true });
+    return Promise.resolve({
+      status: "saved",
+      autoJoinHypixel: args?.enabled ?? true,
+      useExternalOverlay: true,
+    });
+  }
+
+  if (command === "set_use_external_overlay") {
+    return Promise.resolve({
+      status: "saved",
+      autoJoinHypixel: true,
+      useExternalOverlay: args?.enabled ?? true,
+    });
+  }
+
+  // The forcing abort answers in the same shape as the ordinary reset.
+  if (command === "reset_session_end" || command === "abort_launch_session") {
+    return Promise.resolve({
+      status: "ok",
+      preferences: { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" },
+    });
+  }
+
+  if (command === "rehide_after_confirmation" || command === "quit_app") {
+    // Preview never exits the page; quit is a no-op here.
+    return Promise.resolve();
   }
 
   if (command === "launch_lunar" || command === "launch_forge") {
     previewLaunchAt = Date.now();
     const autoJoin = args?.expectedAutoJoinHypixel ?? true;
+    const overlay = args?.expectedUseExternalOverlay ?? true;
     if (!autoJoin) {
       return Promise.resolve({
         status: "launched",
         outcome: {
           autoJoinHypixel: false,
-          action: command === "launch_lunar" ? "launcher_opened" : "game_launch_requested",
+          useExternalOverlay: overlay,
+          action: "game_launch_requested",
         },
       });
     }
     return Promise.resolve({
       status: "launched",
-      outcome: { autoJoinHypixel: true, action: "game_launch_requested" },
+      outcome: {
+        autoJoinHypixel: true,
+        useExternalOverlay: overlay,
+        action: "game_launch_requested",
+      },
     });
   }
 
@@ -509,6 +561,14 @@ let firstLiveSeen = false;
 let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
 let manualRouteSubtitle = null;
+/**
+ * Hold the home view (button narration) until the first acknowledged live
+ * lobby snapshot. Set for every confirmed game dispatch, both auto-join
+ * states; see launch-view-route.js for the decision table.
+ */
+let homeUntilLive = false;
+/** Launch kind whose button currently shows backend stage text, if any. */
+let stageNarrationKind = null;
 
 const launch = el("launch");
 const launchForge = el("launch-forge");
@@ -519,12 +579,24 @@ const connectionShell = createConnectionShell({
   titleEl: el("joining-title"),
   subEl: el("joining-sub"),
   shellEl: joining,
-  tryAgainEl: el("conn-try-again"),
+  actionEl: el("conn-action"),
   announceEl: connAnnounce,
-  onTryAgain: () => {
-    connection.clearForcedMode();
-    connectionShell.hide();
-    launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
+  actions: {
+    preexisting_game: {
+      label: "Try Again",
+      onAction: () => {
+        connection.clearForcedMode();
+        connectionShell.hide();
+        launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
+      },
+    },
+    // The 60s escape hatch: the launch never reached Hypixel, so the same
+    // forcing abort the home-view Cancel control uses gets the app back to
+    // a launchable home instead of leaving it stranded here.
+    waiting: {
+      label: "Back to Home",
+      onAction: () => sessionReset.resetToHome("launch_aborted"),
+    },
   },
   clearRoster: () => {
     dash.classList.remove("on");
@@ -540,6 +612,7 @@ const connectionShell = createConnectionShell({
       clearInterval(progressTimer);
       progressTimer = null;
     }
+    stageNarrationKind = null;
     launch.classList.remove("is-loading");
     launchForge.classList.remove("is-loading");
     suppressRefresh = false;
@@ -562,22 +635,38 @@ function syncLaunchUi() {
   const lunarReady = ready.some((t) => t.kind === "lunar");
   const forgeReady = ready.some((t) => t.kind === "forge");
   const buttons = launchController.projectForCurrentPhase({ lunarReady, forgeReady });
+  // A re-render must never clobber live stage narration with the generic
+  // phase label: the launch button IS the progress surface now.
+  const narration = { launchPhase: st.launchPhase, narratingKind: stageNarrationKind };
   if (lunarReady && buttons.find((b) => b.kind === "lunar")) {
     const b = buttons.find((x) => x.kind === "lunar");
-    el("launch-label").textContent = b.label;
+    if (!keepsStageNarration({ ...narration, kind: "lunar" })) {
+      el("launch-label").textContent = b.label;
+    }
     launch.disabled = !b.enabled;
     launch.classList.toggle("is-loading", b.loading);
   }
   if (forgeReady && buttons.find((b) => b.kind === "forge")) {
     const b = buttons.find((x) => x.kind === "forge");
-    el("launch-forge-label").textContent = b.label;
+    if (!keepsStageNarration({ ...narration, kind: "forge" })) {
+      el("launch-forge-label").textContent = b.label;
+    }
     launchForge.disabled = !b.enabled;
     launchForge.classList.toggle("is-loading", b.loading);
   }
   autoJoinWrap.hidden = !st.showAutoJoinSwitch;
   autoJoinInput.checked = st.optimisticAutoJoin;
   autoJoinInput.disabled = st.launchBusy || st.prefSaving || st.prefUncertain || st.activeOutcome != null;
+  overlayWrap.hidden = !st.showAutoJoinSwitch;
+  overlayInput.checked = st.optimisticOverlay;
+  overlayInput.disabled = autoJoinInput.disabled;
   repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
+  cancelLaunch.hidden = !showsCancelLaunch({
+    activeOutcome: st.activeOutcome,
+    launchPhase: st.launchPhase,
+    homeUntilLive,
+    resetActive: sessionReset.isActive(),
+  });
   if (st.prefError) {
     prefError.textContent = st.prefError;
     prefError.hidden = false;
@@ -589,8 +678,17 @@ function syncLaunchUi() {
 autoJoinInput.addEventListener("change", () => {
   launchController.setAutoJoin(autoJoinInput.checked);
 });
+overlayInput.addEventListener("change", () => {
+  launchController.setOverlay(overlayInput.checked);
+});
 repairPref.addEventListener("click", () => {
-  launchController.setAutoJoin(autoJoinInput.checked, { repair: true });
+  // Any save rewrites a valid two-key document (backend salvages the valid
+  // sibling); an uncertain save must be repaired through its own key.
+  if (launchController.getState().prefUncertainKey === "overlay") {
+    launchController.setOverlay(overlayInput.checked, { repair: true });
+  } else {
+    launchController.setAutoJoin(autoJoinInput.checked, { repair: true });
+  }
 });
 
 function stopProgressPolling() {
@@ -598,7 +696,103 @@ function stopProgressPolling() {
     clearInterval(progressTimer);
     progressTimer = null;
   }
+  stageNarrationKind = null;
 }
+
+function stopLobbyPolling() {
+  if (lobbyTimer) {
+    clearInterval(lobbyTimer);
+    lobbyTimer = null;
+  }
+}
+
+// Overlay-off quit / late-success rehide coordination (dependency-injected
+// module; see overlay-exit.js for the exhaustive route table).
+const overlayExit = createOverlayExit({
+  rehide: (useExternalOverlay) => rehideAfterConfirmation(invoke, useExternalOverlay),
+  quit: () => quitApp(invoke),
+  // Double quit rejection: enter the overlay flow instead of stranding an
+  // Active app - lobby polling gives it a live loop that can reach the
+  // dashboard and, on game quit, the reset-to-home path.
+  fallbackToOverlayFlow: () => startLobbyPolling(),
+});
+
+/** Shell copy for each reset reason, transitional and final. */
+const RESET_SHELL_MODES = {
+  game_session_changed: ["session_changed_resetting", "session_changed"],
+  launch_aborted: ["launch_aborted_resetting", "launch_aborted"],
+};
+const resetShellMode = (reason, phase) => {
+  const [transitional, final] =
+    RESET_SHELL_MODES[reason] ?? ["session_ended_resetting", "session_ended"];
+  return phase === "transitional" ? transitional : final;
+};
+
+// Session-ended-to-home orchestrator: invalidate first, reset, commit home
+// atomically; truthful transitional copy + bounded retry on failure.
+const sessionReset = createSessionReset({
+  // A user-cancelled launch has no terminal to reset from - it takes the
+  // forcing abort command; every backend-latched reason takes the ordinary
+  // reset. Both answer in the same reply shape.
+  invokeReset: (reason) =>
+    reason === "launch_aborted" ? abortLaunchSession(invoke) : resetSessionEnd(invoke),
+  stopPolling: () => {
+    stopProgressPolling();
+    stopLobbyPolling();
+  },
+  invalidate: () => {
+    launchController.invalidateSession();
+    // The reset owns the surface from here: the Cancel control goes away
+    // before its own command has even answered.
+    syncLaunchUi();
+  },
+  commitHome: (prefs) => {
+    overlayExit.resetSession();
+    connection.reset();
+    connectionShell.reset();
+    connAnnounce.textContent = "";
+    dash.classList.remove("on");
+    dash.replaceChildren();
+    delete dash.dataset.ctx;
+    delete dash.dataset.density;
+    delete dash.dataset.teams;
+    lastKey = null;
+    lastView = null;
+    firstLiveSeen = false;
+    manualRouteSubtitle = null;
+    homeUntilLive = false;
+    suppressRefresh = false;
+    launch.classList.remove("is-loading");
+    launchForge.classList.remove("is-loading");
+    launchError.hidden = true;
+    launchController.resetLaunchSession(prefs);
+    stage.dataset.view = "home";
+    syncLaunchUi();
+  },
+  refreshHome: async () => {
+    const next = await invoke("refresh_setup");
+    if (next) render(next);
+  },
+  onRefreshError: (e) => {
+    // Home stays visible with the existing setup-error rendering (the
+    // same projection the boot path uses) - recoverable, never silent.
+    render(setupErrorStatus(e));
+  },
+  showTransitional: (reason) => {
+    connectionShell.enterTerminal(resetShellMode(reason, "transitional"));
+    // Only a session that actually reached the dashboard shows this copy
+    // there. A pre-live quit or a cancelled launch never left home
+    // (`homeUntilLive` is still set): it stays on home, buttons re-enabling
+    // as the reset completes, with no dashboard flash on the way out.
+    if (!homeUntilLive) stage.dataset.view = "dash";
+  },
+  showFinal: (reason) => {
+    // The final copy is the recovery instruction ("quit and reopen"); it has
+    // to be readable wherever the session was, so it always takes the shell.
+    connectionShell.enterTerminal(resetShellMode(reason, "final"));
+    stage.dataset.view = "dash";
+  },
+});
 
 let progressPollInFlight = false;
 let progressLaunchGen = 0;
@@ -619,13 +813,17 @@ function startProgressPolling(kind, autoJoin = true) {
       const p = await launchController.pollProgress();
       if (launchController.getState().launchGen !== progressLaunchGen) return;
       if (p?.stage) {
-        labelEl.textContent = labels[p.stage] ?? labelEl.textContent;
-        if (
-          !autoJoin &&
-          (p.stage === "settled" || p.stage === "forge_settled")
-        ) {
+        if (labels[p.stage]) {
+          labelEl.textContent = labels[p.stage];
+          stageNarrationKind = kind;
+        }
+        if (p.stage === "settled" || p.stage === "forge_settled") {
+          // Both auto-join states settle on the home button now.
           launchController.settleLaunchPhase();
           syncLaunchUi();
+          // Overlay-off quit / unconfirmed late-success trigger; the module
+          // fires each obligation exactly once across duplicate polls.
+          overlayExit.onConfirmationSignal("settled");
         }
       }
     } catch {
@@ -652,24 +850,45 @@ const launchHooks = {
     connection.beginLaunchSession({ autoJoin, now });
     firstLiveSeen = false;
     launchController.bumpPollGen();
-    startLobbyPolling();
-    if (!autoJoin) {
-      manualRouteSubtitle = manualRouteSubtitleFor(reply.outcome.action);
-      connectionShell.show("manual", { subtitle: manualRouteSubtitle });
-      stage.dataset.view = "dash";
-      syncLaunchUi();
+    const exitRoute = overlayExit.routeFor(reply.outcome);
+    if (exitRoute === "quit_now") {
+      // Never-fired open-only with overlay off: the backend proved the
+      // launcher presented and quiescent - exit immediately after the
+      // reply. (Unproven cleanup arrives as launch_unconfirmed instead.)
+      overlayExit.quitNow();
       return;
     }
-    connectionShell.scheduleWaitingDeadline(60_000, () => {
-      stopProgressPolling();
-      const { mode } = connection.stateAt(Date.now());
-      if (mode === "waiting") {
-        connectionShell.show("waiting");
-        stage.dataset.view = "dash";
-      }
-    });
-    connectionShell.show("joining");
-    stage.dataset.view = "dash";
+    const view = launchViewRoute(reply.outcome);
+    homeUntilLive = view.stayHome;
+    // A null subtitle tells the poll handler no manual screen exists.
+    manualRouteSubtitle = view.subtitleKind
+      ? manualRouteSubtitleFor(view.subtitleKind, lastLaunchKind)
+      : null;
+    // Every surviving route polls the lobby. The overlay-off confirmed route
+    // polls HEADLESSLY (the marker suppresses its shell) purely so a
+    // session_ended poll can still reset the app to a launchable home; its
+    // quit-at-settled obligation is untouched.
+    startLobbyPolling();
+    if (autoJoin && reply.outcome.useExternalOverlay) {
+      // The 60s escape hatch, armed only where a dashboard may appear at
+      // all. The overlay-off route must stay headless: surfacing the
+      // waiting dash there would also stop progress polling and starve
+      // its quit-at-settled obligation on a slow cold start.
+      connectionShell.scheduleWaitingDeadline(60_000, () => {
+        stopProgressPolling();
+        const { mode } = connection.stateAt(Date.now());
+        if (mode === "waiting") {
+          connectionShell.show("waiting");
+          stage.dataset.view = "dash";
+        }
+      });
+    }
+    if (!view.stayHome) {
+      // Open-only / unconfirmed: the manual screen IS the guidance.
+      connectionShell.show(view.shellMode, { subtitle: manualRouteSubtitle });
+      stage.dataset.view = "dash";
+    }
+    syncLaunchUi();
   },
   onProgressStart(autoJoin = true) {
     startProgressPolling(lastLaunchKind, autoJoin);
@@ -686,13 +905,22 @@ launchForge.addEventListener("click", () => {
   suppressRefresh = true;
   launchController.launch("forge", launchHooks);
 });
+// The pre-live escape hatch. The backend has nothing to latch on yet, so
+// this takes the forcing abort; the orchestrator handles the rest exactly
+// like any other return to home.
+cancelLaunch.addEventListener("click", () => {
+  sessionReset.resetToHome("launch_aborted");
+});
 
 function enterDashboard() {
   connectionShell.enterConnected({ firstLive: !firstLiveSeen });
   firstLiveSeen = true;
+  // The live snapshot the home view was held for: the marker's job is done.
+  homeUntilLive = false;
+  // First acknowledged live snapshot: the second late-success trigger
+  // (covers dashboard entry stopping progress polling before settled).
+  overlayExit.onConfirmationSignal("live");
 }
-
-const LOBBY_POLL_MS = 700;
 
 function startLobbyPolling() {
   if (lobbyTimer) return;
@@ -713,18 +941,11 @@ async function handleLobbyPoll(poll) {
     connectionShell,
     launchController,
     manualRouteSubtitle,
+    homeUntilLive,
     firstLiveSeen,
     applyLobbySnapshot,
-    enterTerminal: (reason) =>
-      connectionShell.enterTerminal(
-        reason === "game_session_changed" ? "session_changed" : "session_ended",
-      ),
-    stopLobbyPolling: () => {
-      if (lobbyTimer) {
-        clearInterval(lobbyTimer);
-        lobbyTimer = null;
-      }
-    },
+    resetToHome: (reason) => sessionReset.resetToHome(reason),
+    stopLobbyPolling,
     setStageDash: () => {
       stage.dataset.view = "dash";
     },
@@ -1157,19 +1378,22 @@ function afterStatus(status) {
   }
 }
 
+/** One setup-error projection for boot and reset-home refresh failures. */
+function setupErrorStatus(e) {
+  return {
+    state: "error",
+    message: String(e),
+    mod_version: null,
+    targets: [],
+  };
+}
+
 if (previewing && bootParams.get("state") === "loading") {
   mountPreviewBar("loading");
 } else {
   invoke("refresh_setup")
     .then(afterStatus)
-    .catch((e) =>
-      afterStatus({
-        state: "error",
-        message: String(e),
-        mod_version: null,
-        targets: [],
-      }),
-    );
+    .catch((e) => afterStatus(setupErrorStatus(e)));
 }
 
 function canAutoRefresh() {
@@ -1406,13 +1630,13 @@ function markPreviewActive(kind) {
 
 function resetPreviewSession() {
   stopProgressPolling();
-  if (lobbyTimer) {
-    clearInterval(lobbyTimer);
-    lobbyTimer = null;
-  }
+  stopLobbyPolling();
+  sessionReset.cancelRetry();
+  overlayExit.resetSession();
   lastKey = null;
   lastView = null;
   firstLiveSeen = false;
+  homeUntilLive = false;
   previewLaunchAt = null;
   setupBusy = false;
   suppressRefresh = false;

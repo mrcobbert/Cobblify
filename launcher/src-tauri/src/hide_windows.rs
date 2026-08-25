@@ -29,14 +29,17 @@
 //! exact `HWND` (`decide` below, and the tests under it).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, ShowWindowAsync, SW_HIDE,
-    SW_SHOWMINNOACTIVE,
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, ShowWindowAsync,
+    SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, WM_CLOSE,
 };
 
+use crate::hide_registry;
 use crate::proc;
 
 /// Search cadence and bound, same numbers the macOS worker uses.
@@ -65,29 +68,174 @@ const IDLE_GIVE_UP: Duration = Duration::from_secs(5);
 /// paint-then-re-show flicker; after that the window is the user's.
 const ACTION_BUDGET: u8 = 3;
 
-/// Spawns the detached worker. Thread-creation failure is discarded: the launch
-/// has already succeeded and hiding is cosmetic (`thread::spawn` would panic
-/// here instead).
+/// Spawns the detached worker, registered app-wide so a later dispatch (or
+/// the bare-link route's cancel) can stop it. Thread-creation failure is
+/// discarded: the launch has already succeeded and hiding is cosmetic
+/// (`thread::spawn` would panic here instead).
 pub fn spawn_worker() {
-    let _ = std::thread::Builder::new()
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    if let Ok(handle) = std::thread::Builder::new()
         .name("lunar-hide".into())
-        .spawn(worker);
+        .spawn(move || worker(flag))
+    {
+        hide_registry::register(cancel, handle);
+    }
 }
 
 pub fn spawn_prism_worker() {
-    let _ = std::thread::Builder::new()
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    if let Ok(handle) = std::thread::Builder::new()
         .name("prism-hide".into())
-        .spawn(|| launcher_only_worker(crate::proc::prism_launcher_pids));
+        .spawn(move || launcher_only_worker(crate::proc::prism_launcher_pids, flag))
+    {
+        hide_registry::register(cancel, handle);
+    }
 }
 
-fn launcher_only_worker(pids: fn() -> Vec<u32>) {
+/// One immediate minimize pass over Lunar's launcher windows - the
+/// late-success rehide for an overlay-off exit. No thread, no schedule, no
+/// console handling (a single pass cannot own the budget/consoles state).
+pub fn rehide_once() {
+    let launcher = launcher_pids();
+    if launcher.is_empty() {
+        return;
+    }
+    for window in top_level_windows() {
+        if decide(&window, &launcher, &[]) == Action::Minimize {
+            apply(window.hwnd, Action::Minimize);
+        }
+    }
+}
+
+/// Post a restore to every Lunar launcher window. Posted to the same
+/// per-thread queues as the workers' minimizes, so after those workers are
+/// joined (no new posts possible) this restore is processed after - and
+/// supersedes - any still-queued minimize.
+pub fn restore_lunar_windows() {
+    let launcher = launcher_pids();
+    if launcher.is_empty() {
+        return;
+    }
+    for window in top_level_windows() {
+        if launcher.contains(&window.pid) {
+            unsafe { ShowWindowAsync(window.hwnd as _, SW_RESTORE) };
+        }
+    }
+}
+
+/// Gracefully quit Lunar's launcher (session-ended reset): post `WM_CLOSE`
+/// to every exe-verified launcher window - the normal close request an
+/// Electron app handles by quitting - then wait briefly for the processes
+/// to exit so the setup refresh that follows sees a clean state.
+///
+/// `commit` is the destructive gate (see
+/// `hide_registry::run_destructive_bounded`), called once immediately
+/// before the first post. Because WM_CLOSE is destructive, each window's
+/// owner is REVALIDATED at send time: the pid captured at enumeration must
+/// still own the hwnd AND still be the same exe-verified process by birth
+/// identity, so a pid reused by an unrelated process between snapshot and
+/// send can never receive the close. Fail-soft: errors ignored.
+pub fn quit_lunar_launcher(commit: &dyn Fn() -> bool) {
+    let targets = verified_targets();
+    if targets.is_empty() {
+        return;
+    }
+    let windows = top_level_windows();
+    if !commit() {
+        return;
+    }
+    for window in windows {
+        let Some((pid, birth)) = targets.iter().copied().find(|(p, _)| *p == window.pid)
+        else {
+            continue;
+        };
+        let mut owner_now: u32 = 0;
+        unsafe { GetWindowThreadProcessId(window.hwnd as _, &mut owner_now) };
+        let identity = crate::process_liveness::check_identity(pid, birth);
+        if confirmed_close_target(window.pid, owner_now, identity) {
+            unsafe { PostMessageW(window.hwnd as _, WM_CLOSE, 0, 0) };
+        }
+    }
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while !launcher_pids().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Destructive targets with exe verification and birth identity BOUND to
+/// the same process instance. The observations are ordered exe-scan ->
+/// birth -> exe-scan -> birth per pid, and a target is accepted only when
+/// both scans verify the pid and both births agree: a pid reused between
+/// any two observations carries a different birth (or fails the second
+/// exe scan) and is refused, so an unrelated replacement can never have
+/// its birth bound to a stale verification.
+fn verified_targets() -> Vec<(u32, crate::process_liveness::EpochNs)> {
+    let first = launcher_pids();
+    if first.is_empty() {
+        return Vec::new();
+    }
+    let births: Vec<(u32, crate::process_liveness::EpochNs)> = first
+        .iter()
+        .filter_map(|&pid| crate::process_liveness::process_birth_ns(pid).map(|b| (pid, b)))
+        .collect();
+    let second = launcher_pids();
+    births
+        .into_iter()
+        .filter_map(|(pid, birth)| {
+            bind_target(
+                second.contains(&pid),
+                birth,
+                crate::process_liveness::process_birth_ns(pid),
+            )
+            .map(|b| (pid, b))
+        })
+        .collect()
+}
+
+/// Pure binding rule for one candidate: the second exe scan must still
+/// verify the pid and the re-read birth must equal the first. Equal births
+/// across the second scan prove the exe-verified instance IS the
+/// birth-bound instance (a reused pid always carries a later birth).
+fn bind_target(
+    exe_verified_again: bool,
+    birth_first: crate::process_liveness::EpochNs,
+    birth_again: Option<crate::process_liveness::EpochNs>,
+) -> Option<crate::process_liveness::EpochNs> {
+    match birth_again {
+        Some(b) if exe_verified_again && b == birth_first => Some(birth_first),
+        _ => None,
+    }
+}
+
+/// Send-time gate for a destructive close: the enumerated owner must still
+/// own the window now, and the pid must still be the same exe-verified
+/// process (same OS birth identity). Anything else - reuse, exit,
+/// indeterminate - is refused.
+fn confirmed_close_target(
+    enum_pid: u32,
+    owner_now: u32,
+    identity: crate::process_liveness::IdentityCheck,
+) -> bool {
+    enum_pid == owner_now
+        && identity == crate::process_liveness::IdentityCheck::AliveSameIdentity
+}
+
+fn launcher_only_worker(pids: fn() -> Vec<u32>, cancel: Arc<AtomicBool>) {
     let started = Instant::now();
     while started.elapsed() < SEARCH_DEADLINE {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let launcher = pids();
         if !launcher.is_empty() {
             let sweep_started = Instant::now();
             let mut budget = HashMap::new();
             while sweep_started.elapsed() < SWEEP_WINDOW {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
                 let launcher = pids();
                 if launcher.is_empty() {
                     return;
@@ -107,16 +255,19 @@ fn launcher_only_worker(pids: fn() -> Vec<u32>) {
     }
 }
 
-fn worker() {
+fn worker(cancel: Arc<AtomicBool>) {
     let started = Instant::now();
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         match search_decision(!launcher_pids().is_empty(), started.elapsed()) {
             SearchDecision::Sweep => break,
             SearchDecision::GiveUp => return,
             SearchDecision::Poll => std::thread::sleep(POLL),
         }
     }
-    sweep(Instant::now());
+    sweep(Instant::now(), cancel);
 }
 
 #[derive(Debug, PartialEq)]
@@ -189,7 +340,7 @@ fn spend(budget: &mut HashMap<isize, u8>, hwnd: isize) -> bool {
 /// The sweep loop. Enumerates every `SWEEP_INTERVAL`, re-resolves pids at
 /// `PID_REFRESH`, and stops early when nothing Lunar-shaped has been alive for
 /// `IDLE_GIVE_UP`.
-fn sweep(start: Instant) {
+fn sweep(start: Instant, cancel: Arc<AtomicBool>) {
     let home = crate::home().ok();
     let mut budget: HashMap<isize, u8> = HashMap::new();
     // Game pid -> its console window (0 = looked up, none exists). Resolved
@@ -201,6 +352,9 @@ fn sweep(start: Instant) {
     let mut idle_since: Option<Instant> = None;
 
     while start.elapsed() < SWEEP_WINDOW {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         if refreshed.is_none_or(|at| at.elapsed() >= PID_REFRESH) {
             launcher = launcher_pids();
             let game = home.as_deref().map(proc::game_jvm_pids).unwrap_or_default();
@@ -305,6 +459,34 @@ mod tests {
 
     fn win(hwnd: isize, pid: u32, visible: bool) -> Window {
         Window { hwnd, pid, visible }
+    }
+
+    /// The target-formation race: a pid reused between the exe scan and
+    /// the birth read binds an UNRELATED birth to a stale verification and
+    /// must be refused - by the second scan (unrelated exe) or by the
+    /// birth disagreement (Lunar-exe replacement).
+    #[test]
+    fn target_binding_refuses_reuse_between_observations() {
+        // Stable instance: verified twice, same birth -> bound.
+        assert_eq!(bind_target(true, 100, Some(100)), Some(100));
+        // Reused by an unrelated process: second exe scan fails.
+        assert_eq!(bind_target(false, 200, Some(200)), None);
+        // Reused by ANOTHER Lunar launcher: births disagree.
+        assert_eq!(bind_target(true, 100, Some(300)), None);
+        // Vanished before the re-read.
+        assert_eq!(bind_target(true, 100, None), None);
+    }
+
+    /// The identity-change seam for the destructive close: a pid reused by
+    /// an unrelated process, a vanished process, an indeterminate query,
+    /// or a window whose owner changed must all be refused at send time.
+    #[test]
+    fn close_is_refused_unless_owner_and_identity_still_match() {
+        use crate::process_liveness::IdentityCheck;
+        assert!(confirmed_close_target(10, 10, IdentityCheck::AliveSameIdentity));
+        assert!(!confirmed_close_target(10, 10, IdentityCheck::DefinitelyGone));
+        assert!(!confirmed_close_target(10, 10, IdentityCheck::Indeterminate));
+        assert!(!confirmed_close_target(10, 11, IdentityCheck::AliveSameIdentity));
     }
 
     #[test]

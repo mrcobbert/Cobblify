@@ -58,7 +58,10 @@ function fakeEl() {
   };
 }
 
-function makeHarness({ manualRouteSubtitle = "Prism is launching — use Minecraft when ready." } = {}) {
+function makeHarness({
+  manualRouteSubtitle = "Prism is launching — use Minecraft when ready.",
+  homeUntilLive = false,
+} = {}) {
   const connection = createConnectionModel({ graceMs: 2000 });
   connection.beginLaunchSession({ autoJoin: true, now: 0 });
   connection.tick("live", 0);
@@ -79,8 +82,11 @@ function makeHarness({ manualRouteSubtitle = "Prism is launching — use Minecra
   });
 
   let applied = 0;
-  let terminal = null;
+  let resetReasons = [];
   let stopped = false;
+  // Recorded, never silent: a stray dashboard open is exactly what the
+  // home-until-live routing has to prevent.
+  let dashOpens = 0;
 
   const launchController = {
     launchGen: 1,
@@ -100,28 +106,31 @@ function makeHarness({ manualRouteSubtitle = "Prism is launching — use Minecra
         connectionShell: shell,
         launchController,
         manualRouteSubtitle,
+        homeUntilLive,
         firstLiveSeen: true,
         applyLobbySnapshot: () => {
           applied += 1;
         },
-        enterTerminal: (reason) => {
-          terminal = reason;
-          shell.enterTerminal(
-            reason === "game_session_changed" ? "session_changed" : "session_ended",
-          );
+        resetToHome: (reason) => {
+          resetReasons.push(reason);
         },
         stopLobbyPolling: () => {
           stopped = true;
         },
-        setStageDash: () => {},
+        setStageDash: () => {
+          dashOpens += 1;
+        },
         now,
       });
+    },
+    get dashOpens() {
+      return dashOpens;
     },
     get applied() {
       return applied;
     },
-    get terminal() {
-      return terminal;
+    get resetReasons() {
+      return resetReasons;
     },
     get stopped() {
       return stopped;
@@ -153,16 +162,78 @@ test("unavailable manual poll preserves route-specific subtitle", async () => {
   assert.equal(h.subEl.textContent, subtitle);
 });
 
-test("session ended stops polling and enters terminal", async () => {
+test("session ended drives exactly one home reset and nothing else", async () => {
   const h = makeHarness();
   await h.poll({ kind: "session_ended", reason: "game_session_changed" }, 100);
-  assert.equal(h.stopped, true);
-  assert.equal(h.terminal, "game_session_changed");
-  assert.equal(h.connection.stateAt(100).mode, "session_changed");
+  assert.deepEqual(h.resetReasons, ["game_session_changed"]);
+  // The orchestrator owns stopping/invalidating; the handler adds nothing.
+  assert.equal(h.stopped, false);
+  assert.equal(h.applied, 0);
+  await h.poll({ kind: "session_ended", reason: "game_session_ended" }, 200);
+  assert.deepEqual(h.resetReasons, ["game_session_changed", "game_session_ended"]);
 });
 
 test("live snapshot applies roster while connected", async () => {
   const h = makeHarness();
   await h.poll({ kind: "snapshot", token: 1, snapshot: liveSnap({ seq: 2 }) }, 100);
   assert.equal(h.applied, 1);
+});
+
+test("direct-launch route (null subtitle) stays on the home page", async () => {
+  const h = makeHarness({ manualRouteSubtitle: null });
+  h.connection.setAutoJoin(false);
+  h.connection.beginLaunchSession({ autoJoin: false, now: 0 });
+  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 0);
+  // No manual screen, no dash: the home buttons narrate progress instead.
+  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.dashOpens, 0);
+});
+
+test("auto-join-on unavailable poll holds the home view until live", async () => {
+  const h = makeHarness({ homeUntilLive: true });
+  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  assert.equal(h.connection.stateAt(0).mode, "joining");
+  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 0);
+  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.dashOpens, 0);
+});
+
+test("auto-join-on non-live snapshot holds the home view until live", async () => {
+  const h = makeHarness({ homeUntilLive: true });
+  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  await h.poll({ kind: "snapshot", token: 1, snapshot: menuSnap() }, 100);
+  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.dashOpens, 0);
+  assert.equal(h.applied, 0);
+});
+
+test("the live snapshot is the one dashboard entry while home-until-live", async () => {
+  const h = makeHarness({ homeUntilLive: true });
+  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  await h.poll({ kind: "snapshot", token: 1, snapshot: liveSnap({ seq: 3 }) }, 100);
+  // applyLobbySnapshot owns the transition (enterDashboard); the handler
+  // never opens the dash itself.
+  assert.equal(h.applied, 1);
+  assert.equal(h.dashOpens, 0);
+});
+
+test("the poll path never opens the waiting dash while home-until-live", async () => {
+  // Review fix: connection-state arms its internal waiting deadline for
+  // EVERY auto-join session, including the headless overlay-off route. Only
+  // the explicit 60s deadline (armed solely for overlay-on) may open the
+  // waiting dash; this poll path must stay silent.
+  const h = makeHarness({ homeUntilLive: true });
+  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 61_000);
+  assert.equal(h.connection.stateAt(61_000).mode, "waiting");
+  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.dashOpens, 0);
+});
+
+test("without the marker the waiting poll path keeps its dash behavior", async () => {
+  const h = makeHarness({ homeUntilLive: false });
+  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 61_000);
+  assert.equal(h.shell.getVisible(), true);
+  assert.equal(h.dashOpens, 1);
 });
