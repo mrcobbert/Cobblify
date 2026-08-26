@@ -37,6 +37,9 @@ jobs:
       - name: Check tree drift
         run: ./tools/check-tree-drift.sh
 
+      - name: Check release version alignment
+        run: ./tools/check-release-version.sh
+
       # Tests the checker itself. A drift check that passes when it should fail
       # manufactures confidence, so its claimed behaviours are asserted rather
       # than assumed. Runs entirely in throwaway clones; needs no JDK.
