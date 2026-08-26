@@ -10,7 +10,16 @@ import {
   rehideAfterConfirmation,
   resetSessionEnd,
   setAutoJoinHypixel,
+  setAutoUpdate,
   setUseExternalOverlay,
+  checkForUpdate,
+  updatePreferences,
+  updateStatus,
+  startUpdate,
+  pauseUpdate,
+  resumeUpdate,
+  installUpdate,
+  deferUpdate,
 } from "./tauri-contract.js";
 
 test("invoke uses exact wire keys", async () => {
@@ -49,6 +58,31 @@ test("invoke uses exact wire keys", async () => {
   assert.equal(calls[6].args, undefined);
   assert.equal(calls[7].cmd, CMD.abortLaunchSession);
   assert.equal(calls[7].args, undefined);
+});
+
+test("updater commands keep native names and arguments behind the adapter", async () => {
+  const calls = [];
+  const invoke = async (cmd, args) => calls.push({ cmd, args });
+  await updatePreferences(invoke);
+  await updateStatus(invoke);
+  await checkForUpdate(invoke, false);
+  await setAutoUpdate(invoke, true);
+  await startUpdate(invoke);
+  await pauseUpdate(invoke);
+  await resumeUpdate(invoke);
+  await installUpdate(invoke);
+  await deferUpdate(invoke);
+  assert.deepEqual(calls, [
+    { cmd: "update_preferences", args: undefined },
+    { cmd: "update_status", args: undefined },
+    { cmd: "check_for_update", args: { manual: false } },
+    { cmd: "set_auto_update", args: { enabled: true } },
+    { cmd: "start_update", args: undefined },
+    { cmd: "pause_update", args: undefined },
+    { cmd: "resume_update", args: undefined },
+    { cmd: "install_update", args: undefined },
+    { cmd: "defer_update", args: undefined },
+  ]);
 });
 
 test("abort_launch_session is argument-free and answers in the reset shape", async () => {

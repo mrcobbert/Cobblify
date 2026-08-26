@@ -21,6 +21,15 @@ export const CMD = {
   getLauncher: "get_launcher",
   openLauncher: "open_launcher",
   openSetupLocation: "open_setup_location",
+  updatePreferences: "update_preferences",
+  setAutoUpdate: "set_auto_update",
+  updateStatus: "update_status",
+  checkForUpdate: "check_for_update",
+  startUpdate: "start_update",
+  pauseUpdate: "pause_update",
+  resumeUpdate: "resume_update",
+  installUpdate: "install_update",
+  deferUpdate: "defer_update",
 };
 
 export function launchPreferences(invoke) {
@@ -34,6 +43,28 @@ export function setAutoJoinHypixel(invoke, enabled) {
 export function setUseExternalOverlay(invoke, enabled) {
   return invoke(CMD.setUseExternalOverlay, { enabled });
 }
+
+export function updatePreferences(invoke) {
+  return invoke(CMD.updatePreferences);
+}
+
+export function setAutoUpdate(invoke, enabled) {
+  return invoke(CMD.setAutoUpdate, { enabled });
+}
+
+export function updateStatus(invoke) {
+  return invoke(CMD.updateStatus);
+}
+
+export function checkForUpdate(invoke, manual) {
+  return invoke(CMD.checkForUpdate, { manual });
+}
+
+export function startUpdate(invoke) { return invoke(CMD.startUpdate); }
+export function pauseUpdate(invoke) { return invoke(CMD.pauseUpdate); }
+export function resumeUpdate(invoke) { return invoke(CMD.resumeUpdate); }
+export function installUpdate(invoke) { return invoke(CMD.installUpdate); }
+export function deferUpdate(invoke) { return invoke(CMD.deferUpdate); }
 
 export function launchLunar(invoke, expectedAutoJoinHypixel, expectedUseExternalOverlay) {
   return invoke(CMD.launchLunar, { expectedAutoJoinHypixel, expectedUseExternalOverlay });
@@ -78,6 +109,8 @@ export function launchProgress(invoke) {
 }
 
 /** @typedef {{ autoJoinHypixel: boolean, useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
+/** @typedef {{ autoUpdateEnabled: boolean, autoUpdatePrompted: boolean, health: string, diagnostic?: string }} UpdatePreferencesView */
+/** @typedef {'idle'|'checking'|'current'|'available'|'downloading'|'paused'|'ready'|'installing'|'error'|'critical_required'} UpdateState */
 /** @typedef {{ status: 'saved', autoJoinHypixel: boolean, useExternalOverlay: boolean } | { status: 'reconciled', autoJoinHypixel: boolean, useExternalOverlay: boolean } | { status: 'not_saved', diagnostic: string } | { status: 'indeterminate' }} PreferenceSaveReply */
 /** @typedef {'stale_preference' | 'launch_cooldown' | string} LaunchRejectionCode */
 /** @typedef {{ status: 'launched', outcome: { autoJoinHypixel: boolean, useExternalOverlay: boolean, action: 'game_launch_requested' | 'launcher_opened' | 'launch_unconfirmed' }, generation: number } | { status: 'preexisting_game', preferences: LaunchPreferencesView } | { status: 'rejected', code: LaunchRejectionCode, preferences?: LaunchPreferencesView, message?: string }} LaunchReply */

@@ -1,0 +1,146 @@
+import {
+  checkForUpdate,
+  deferUpdate,
+  installUpdate,
+  pauseUpdate,
+  resumeUpdate,
+  setAutoUpdate as saveAutoUpdate,
+  startUpdate,
+  updatePreferences,
+  updateStatus,
+} from "./tauri-contract.js";
+
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Frontend coordinator for the updater row. Native code owns downloads,
+ * signatures, cache files, critical policy, and install guards; this module
+ * owns only UI intent and cadence.
+ */
+export function createUpdateController(invoke, deps = {}) {
+  const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+  const cancelSchedule = deps.cancelSchedule ?? clearTimeout;
+  const random = deps.random ?? Math.random;
+  const onChange = deps.onChange ?? (() => {});
+  let timer = null;
+  let generation = 0;
+  let busy = false;
+  let gameActive = false;
+  let state = {
+    state: "idle",
+    currentVersion: "",
+    autoUpdateEnabled: false,
+    autoUpdatePrompted: false,
+  };
+
+  const notify = () => onChange({ ...state });
+  const merge = (next) => {
+    state = { ...state, ...next };
+    notify();
+  };
+
+  function armCheck() {
+    if (timer != null) cancelSchedule(timer);
+    const jitter = 0.9 + random() * 0.2;
+    timer = schedule(async () => {
+      timer = null;
+      await check(false);
+    }, Math.round(SIX_HOURS_MS * jitter));
+  }
+
+  async function bootstrap() {
+    const gen = ++generation;
+    const [prefs, status] = await Promise.all([
+      updatePreferences(invoke),
+      updateStatus(invoke),
+    ]);
+    if (gen !== generation) return;
+    merge({ ...status, ...prefs });
+    await check(false);
+  }
+
+  async function check(manual = true) {
+    if (busy) return;
+    busy = true;
+    const gen = ++generation;
+    merge({ state: "checking", manual });
+    try {
+      const next = await checkForUpdate(invoke, manual);
+      if (gen !== generation) return;
+      merge({ ...next, manual });
+      if (!gameActive && state.autoUpdateEnabled && (next.state === "available" || next.state === "critical_required")) {
+        const download = await startUpdate(invoke);
+        if (gen === generation && download) merge(download);
+      }
+    } catch (_) {
+      if (gen === generation) merge({ state: "error", diagnosticCode: "check_failed", manual });
+    } finally {
+      if (gen === generation) busy = false;
+      armCheck();
+    }
+  }
+
+  async function setAutoUpdate(enabled) {
+    const reply = await saveAutoUpdate(invoke, enabled);
+    if (reply.status !== "saved" && reply.status !== "reconciled") {
+      merge({ state: "error", diagnosticCode: "preference_not_saved", manual: true });
+      return;
+    }
+    merge({
+      autoUpdateEnabled: reply.autoUpdateEnabled,
+      autoUpdatePrompted: reply.autoUpdatePrompted,
+    });
+    if (!gameActive && enabled && (state.state === "available" || state.state === "critical_required")) {
+      const next = await startUpdate(invoke);
+      if (next) merge(next);
+    }
+  }
+
+  async function action(name) {
+    const commands = {
+      download: startUpdate,
+      pause: pauseUpdate,
+      resume: resumeUpdate,
+      install: installUpdate,
+      defer: deferUpdate,
+    };
+    if (name === "enable") return setAutoUpdate(true);
+    if (name === "disable") return setAutoUpdate(false);
+    if (name === "dismiss_consent") return setAutoUpdate(false);
+    if (name === "check") return check(true);
+    const command = commands[name];
+    if (!command) return;
+    const next = await command(invoke);
+    if (next) merge(next);
+  }
+
+  function acceptStatus(next) {
+    if (next && typeof next.state === "string") merge(next);
+  }
+
+  async function setGameActive(active) {
+    gameActive = active;
+    if (active && state.state === "downloading") {
+      await action("pause");
+    } else if (!active && state.autoUpdateEnabled && state.state === "paused") {
+      await action("resume");
+    }
+  }
+
+  function dispose() {
+    generation += 1;
+    if (timer != null) cancelSchedule(timer);
+    timer = null;
+  }
+
+  return {
+    bootstrap,
+    check,
+    setAutoUpdate,
+    action,
+    acceptStatus,
+    setGameActive,
+    dispose,
+    getState: () => ({ ...state }),
+  };
+}

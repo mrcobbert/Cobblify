@@ -34,6 +34,7 @@ mod lunar_config;
 mod proc;
 mod progress;
 mod resources;
+mod updater;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,7 +48,9 @@ use forge::{Candidate, CandidateView, Compat, SavedTarget, ValidatedBy};
 use launch::{LaunchKind, LaunchReply};
 use lifecycle::{Coordinator, LifecycleError};
 use lobby::{LobbyPoll, LobbySession};
-use preferences::{LaunchPreferencesView, PreferenceSaveReply};
+use preferences::{
+    LaunchPreferencesView, PreferenceSaveReply, UpdatePreferenceSaveReply, UpdatePreferencesView,
+};
 use resources::ForgeJar;
 
 /// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
@@ -957,6 +960,24 @@ async fn launch_preferences(
     }
 }
 
+#[tauri::command]
+async fn update_preferences() -> Result<UpdatePreferencesView, String> {
+    let home = home()?;
+    tauri::async_runtime::spawn_blocking(move || preferences::update_preferences(&home))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:?}"))
+}
+
+#[tauri::command]
+async fn set_auto_update(enabled: bool) -> Result<UpdatePreferenceSaveReply, String> {
+    let home = home()?;
+    tauri::async_runtime::spawn_blocking(move || preferences::set_auto_update(&home, enabled))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:?}"))
+}
+
 async fn set_preference(
     key: lifecycle::PrefKey,
     enabled: bool,
@@ -1613,7 +1634,14 @@ async fn launch_lunar(
     expected_auto_join_hypixel: bool,
     expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
+    updater_service: tauri::State<'_, updater::UpdaterService>,
 ) -> Result<LaunchReply, String> {
+    if updater_service.blocks_launch() {
+        return Ok(launch_rejection_msg(
+            "critical_update_required",
+            "Install the required Cobblify update before starting another game.".into(),
+        ));
+    }
     launch_target(
         LaunchKind::Lunar,
         expected_auto_join_hypixel,
@@ -1628,7 +1656,14 @@ async fn launch_forge(
     expected_auto_join_hypixel: bool,
     expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
+    updater_service: tauri::State<'_, updater::UpdaterService>,
 ) -> Result<LaunchReply, String> {
+    if updater_service.blocks_launch() {
+        return Ok(launch_rejection_msg(
+            "critical_update_required",
+            "Install the required Cobblify update before starting another game.".into(),
+        ));
+    }
     launch_target(
         LaunchKind::Forge,
         expected_auto_join_hypixel,
@@ -2711,6 +2746,7 @@ mod tests {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(updater::plugin())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -2724,6 +2760,13 @@ fn main() {
             app.manage(Mutex::new(forge_state));
             app.manage(ctx);
             app.manage(SessionParts::new());
+            let updater_home = home().map_err(std::io::Error::other)?;
+            let updater_service = updater::UpdaterService::new(
+                updater_home,
+                app.package_info().version.to_string(),
+            );
+            updater_service.report_completed_install();
+            app.manage(updater_service);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2733,8 +2776,17 @@ fn main() {
             open_launcher,
             open_setup_location,
             launch_preferences,
+            update_preferences,
             set_auto_join_hypixel,
             set_use_external_overlay,
+            set_auto_update,
+            updater::update_status,
+            updater::check_for_update,
+            updater::start_update,
+            updater::pause_update,
+            updater::resume_update,
+            updater::install_update,
+            updater::defer_update,
             lobby_state,
             acknowledge_lobby_snapshot,
             reset_session_end,

@@ -25,6 +25,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": "",
+      "windows": null
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],

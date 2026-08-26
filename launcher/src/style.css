@@ -199,11 +199,11 @@ body {
 .panel {
   width: 100%;
   min-height: 32px;
-  margin-top: 12px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
+  gap: var(--space-sm);
 }
 
 .state {
@@ -382,14 +382,9 @@ kbd {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  margin-top: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-.stage[data-state="ready"] .setup {
-  margin-top: 14px;
+  gap: var(--space-xs);
 }
 
 .launch-row {
@@ -402,7 +397,6 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
@@ -410,6 +404,11 @@ kbd {
   color: var(--text-dim);
   cursor: pointer;
   user-select: none;
+}
+
+/* Pair the two homepage checkboxes tighter than the surrounding stack step. */
+.auto-join:not([hidden]) + .auto-join:not([hidden]) {
+  margin-top: calc(var(--space-xs) - var(--space-sm));
 }
 
 .auto-join input {
@@ -423,6 +422,70 @@ kbd {
   outline-offset: 2px;
 }
 
+.update-strip {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 14px;
+  width: min(390px, 100%);
+  padding: 0;
+}
+
+.update-copy { min-width: 0; }
+.update-title,
+.update-detail { margin: 0; }
+
+.update-title {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.update-detail {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-secondary {
+  padding: 4px 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.update-secondary:hover { opacity: 0.7; }
+.update-secondary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+
+.update-progress {
+  grid-column: 1 / -1;
+  height: 2px;
+  overflow: hidden;
+  background: rgba(233, 238, 250, 0.18);
+}
+
+.update-progress > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--text);
+  transition: width 180ms ease-out;
+}
+
 .conn-announce {
   position: absolute;
   width: 1px;
@@ -433,10 +496,6 @@ kbd {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-.pref-error {
-  margin-top: 8px;
 }
 
 .setup-block {
@@ -1334,6 +1393,18 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0.16em;
   font-size: 9px;
+}
+.preview-play {
+  margin-right: 2px;
+  padding: 3px 10px !important;
+  font-size: 12px !important;
+  letter-spacing: 0;
+  line-height: 1;
+}
+.preview-play.on {
+  color: var(--text) !important;
+  background: rgba(233, 238, 250, 0.12) !important;
+  border-color: rgba(233, 238, 250, 0.35) !important;
 }
 .preview-bar .preview-size {
   color: var(--aqua);

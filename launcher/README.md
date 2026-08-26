@@ -17,6 +17,27 @@ launch, deep link, dashboard, and roster all behaved as designed on each.
 Windows. See "Verification status" under "Ship it for Windows" for the two paths
 that real play still has not touched.
 
+## Launcher updates
+
+The home window includes a compact updater row. Every install checks stable
+metadata at startup and again every six hours (with ±10% jitter). The first run
+offers an inline, non-blocking choice to enable automatic downloads; manual
+**Check** and **Update** actions remain available when automatic downloads are
+off. Downloads are resumable and remain cached after restart, pause while a
+game is active, and are verified with both SHA-256 and the Tauri Minisign key
+before **Restart to update** is offered.
+
+The stable channel is private: authenticated metadata comes from the existing
+stats Worker, artifacts are streamed from a private R2 bucket through expiring
+signed URLs, and minimum-version policy is independently signed. A critical
+minimum version blocks only a new game launch—it never interrupts an active
+session. Ordinary releases can be deferred for the current launcher run.
+
+Local builds deliberately compile without update credentials and stay fully
+usable. Release builds and stable promotion are performed by the protected
+`Launcher Update Candidate` workflow. Provisioning, key backup, required
+secrets, and promotion details are in [UPDATE_RELEASE.md](UPDATE_RELEASE.md).
+
 ## How it works
 
 The launcher writes `-javaagent:<weave agent>` into Lunar's own JVM arguments in

@@ -30,6 +30,16 @@ pub struct LaunchPreferencesView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePreferencesView {
+    pub auto_update_enabled: bool,
+    pub auto_update_prompted: bool,
+    pub health: PreferenceHealth,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PreferenceSaveReply {
     Saved {
@@ -48,6 +58,25 @@ pub enum PreferenceSaveReply {
     Indeterminate,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdatePreferenceSaveReply {
+    Saved {
+        #[serde(rename = "autoUpdateEnabled")]
+        auto_update_enabled: bool,
+        #[serde(rename = "autoUpdatePrompted")]
+        auto_update_prompted: bool,
+    },
+    Reconciled {
+        #[serde(rename = "autoUpdateEnabled")]
+        auto_update_enabled: bool,
+        #[serde(rename = "autoUpdatePrompted")]
+        auto_update_prompted: bool,
+    },
+    NotSaved { diagnostic: String },
+    Indeterminate,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -57,6 +86,10 @@ struct PreferenceDoc {
     auto_join_hypixel: bool,
     #[serde(default = "default_true")]
     use_external_overlay: bool,
+    #[serde(default)]
+    auto_update_enabled: bool,
+    #[serde(default)]
+    auto_update_prompted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +180,29 @@ impl LockedPrefs {
         }
     }
 
+    pub(crate) fn read_update_view(&self) -> UpdatePreferencesView {
+        match read_doc(&pref_path(&self.home)) {
+            Ok(doc) => UpdatePreferencesView {
+                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_prompted: doc.auto_update_prompted,
+                health: PreferenceHealth::Valid,
+                diagnostic: None,
+            },
+            Err(ReadOutcome::Missing) => UpdatePreferencesView {
+                auto_update_enabled: false,
+                auto_update_prompted: false,
+                health: PreferenceHealth::Missing,
+                diagnostic: None,
+            },
+            Err(ReadOutcome::Invalid(msg)) => UpdatePreferencesView {
+                auto_update_enabled: false,
+                auto_update_prompted: false,
+                health: PreferenceHealth::Invalid,
+                diagnostic: Some(msg),
+            },
+        }
+    }
+
     pub(crate) fn read_strict(&self) -> Result<(bool, bool), String> {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => Ok((doc.auto_join_hypixel, doc.use_external_overlay)),
@@ -161,17 +217,11 @@ impl LockedPrefs {
     /// a JSON object at all falls back to both defaults.
     fn write_key(&self, key: SetterKey, enabled: bool) -> PreferenceSaveReply {
         let path = pref_path(&self.home);
-        let (auto_join, overlay) = read_fields_lenient(&path);
-        let doc = match key {
-            SetterKey::AutoJoin => PreferenceDoc {
-                auto_join_hypixel: enabled,
-                use_external_overlay: overlay,
-            },
-            SetterKey::Overlay => PreferenceDoc {
-                auto_join_hypixel: auto_join,
-                use_external_overlay: enabled,
-            },
-        };
+        let mut doc = read_fields_lenient(&path);
+        match key {
+            SetterKey::AutoJoin => doc.auto_join_hypixel = enabled,
+            SetterKey::Overlay => doc.use_external_overlay = enabled,
+        }
         match write_doc(&path, &doc) {
             Ok(()) => PreferenceSaveReply::Saved {
                 auto_join_hypixel: doc.auto_join_hypixel,
@@ -179,9 +229,28 @@ impl LockedPrefs {
             },
             Err(SaveOutcome::NotSaved(msg)) => PreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => PreferenceSaveReply::Indeterminate,
-            Err(SaveOutcome::Reconciled(auto_join, overlay)) => PreferenceSaveReply::Reconciled {
-                auto_join_hypixel: auto_join,
-                use_external_overlay: overlay,
+            Err(SaveOutcome::Reconciled(current)) => PreferenceSaveReply::Reconciled {
+                auto_join_hypixel: current.auto_join_hypixel,
+                use_external_overlay: current.use_external_overlay,
+            },
+        }
+    }
+
+    fn write_auto_update(&self, enabled: bool) -> UpdatePreferenceSaveReply {
+        let path = pref_path(&self.home);
+        let mut doc = read_fields_lenient(&path);
+        doc.auto_update_enabled = enabled;
+        doc.auto_update_prompted = true;
+        match write_doc(&path, &doc) {
+            Ok(()) => UpdatePreferenceSaveReply::Saved {
+                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_prompted: doc.auto_update_prompted,
+            },
+            Err(SaveOutcome::NotSaved(msg)) => UpdatePreferenceSaveReply::NotSaved { diagnostic: msg },
+            Err(SaveOutcome::Indeterminate) => UpdatePreferenceSaveReply::Indeterminate,
+            Err(SaveOutcome::Reconciled(current)) => UpdatePreferenceSaveReply::Reconciled {
+                auto_update_enabled: current.auto_update_enabled,
+                auto_update_prompted: current.auto_update_prompted,
             },
         }
     }
@@ -195,19 +264,30 @@ enum SetterKey {
 
 /// Per-field salvage for the save path: each known key is read
 /// independently; a bool survives, anything else takes its default.
-fn read_fields_lenient(path: &Path) -> (bool, bool) {
+fn read_fields_lenient(path: &Path) -> PreferenceDoc {
+    let defaults = || PreferenceDoc {
+        auto_join_hypixel: true,
+        use_external_overlay: true,
+        auto_update_enabled: false,
+        auto_update_prompted: false,
+    };
     let Ok(mut file) = File::open(path) else {
-        return (true, true);
+        return defaults();
     };
     let mut text = String::new();
     if file.read_to_string(&mut text).is_err() {
-        return (true, true);
+        return defaults();
     }
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) else {
-        return (true, true);
+        return defaults();
     };
-    let field = |name: &str| map.get(name).and_then(|v| v.as_bool()).unwrap_or(true);
-    (field("auto_join_hypixel"), field("use_external_overlay"))
+    let field = |name: &str, fallback| map.get(name).and_then(|v| v.as_bool()).unwrap_or(fallback);
+    PreferenceDoc {
+        auto_join_hypixel: field("auto_join_hypixel", true),
+        use_external_overlay: field("use_external_overlay", true),
+        auto_update_enabled: field("auto_update_enabled", false),
+        auto_update_prompted: field("auto_update_prompted", false),
+    }
 }
 
 enum ReadOutcome {
@@ -241,7 +321,7 @@ fn read_doc(path: &Path) -> Result<PreferenceDoc, ReadOutcome> {
 enum SaveOutcome {
     NotSaved(String),
     Indeterminate,
-    Reconciled(bool, bool),
+    Reconciled(PreferenceDoc),
 }
 
 fn write_doc(path: &Path, doc: &PreferenceDoc) -> Result<(), SaveOutcome> {
@@ -261,10 +341,7 @@ fn write_doc(path: &Path, doc: &PreferenceDoc) -> Result<(), SaveOutcome> {
         Err(_) => {
             // Commit may have succeeded; reread under the same outer lock.
             match read_doc(path) {
-                Ok(current) => Err(SaveOutcome::Reconciled(
-                    current.auto_join_hypixel,
-                    current.use_external_overlay,
-                )),
+                Ok(current) => Err(SaveOutcome::Reconciled(current)),
                 Err(_) => Err(SaveOutcome::Indeterminate),
             }
         }
@@ -274,6 +351,11 @@ fn write_doc(path: &Path, doc: &PreferenceDoc) -> Result<(), SaveOutcome> {
 pub fn launch_preferences(home: &Path) -> Result<LaunchPreferencesView, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
     Ok(locked.read_view())
+}
+
+pub fn update_preferences(home: &Path) -> Result<UpdatePreferencesView, PreferenceReadError> {
+    let locked = LockedPrefs::acquire(home)?;
+    Ok(locked.read_update_view())
 }
 
 pub fn set_auto_join_hypixel(
@@ -290,6 +372,14 @@ pub fn set_use_external_overlay(
 ) -> Result<PreferenceSaveReply, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
     Ok(locked.write_key(SetterKey::Overlay, enabled))
+}
+
+pub fn set_auto_update(
+    home: &Path,
+    enabled: bool,
+) -> Result<UpdatePreferenceSaveReply, PreferenceReadError> {
+    let locked = LockedPrefs::acquire(home)?;
+    Ok(locked.write_auto_update(enabled))
 }
 
 #[cfg(test)]
@@ -365,6 +455,48 @@ mod tests {
         assert_eq!(view.use_external_overlay, true);
         let locked = LockedPrefs::acquire(&home).unwrap();
         assert_eq!(locked.read_strict().unwrap(), (false, true));
+    }
+
+    #[test]
+    fn old_launch_preferences_prompt_for_updates_without_enabling_them() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":false,"use_external_overlay":true}"#,
+        )
+        .unwrap();
+        let view = update_preferences(&home).unwrap();
+        assert!(!view.auto_update_enabled);
+        assert!(!view.auto_update_prompted);
+        assert_eq!(view.health, PreferenceHealth::Valid);
+    }
+
+    #[test]
+    fn update_consent_preserves_both_launch_preferences() {
+        let home = temp_home();
+        set_auto_join_hypixel(&home, false).unwrap();
+        set_use_external_overlay(&home, false).unwrap();
+        let reply = set_auto_update(&home, true).unwrap();
+        assert!(matches!(
+            reply,
+            UpdatePreferenceSaveReply::Saved {
+                auto_update_enabled: true,
+                auto_update_prompted: true,
+            }
+        ));
+        let launch = launch_preferences(&home).unwrap();
+        assert!(!launch.auto_join_hypixel);
+        assert!(!launch.use_external_overlay);
+    }
+
+    #[test]
+    fn later_records_the_prompt_without_enabling_updates() {
+        let home = temp_home();
+        set_auto_update(&home, false).unwrap();
+        let view = update_preferences(&home).unwrap();
+        assert!(!view.auto_update_enabled);
+        assert!(view.auto_update_prompted);
     }
 
     #[test]

@@ -11,11 +11,19 @@ import {
   PREVIEW_STATUS,
   resolvePreviewStatus,
 } from "./setup-fixtures.js";
+import {
+  PREVIEW_UPDATE,
+  PREVIEW_UPDATE_KEYS,
+  PREVIEW_UPDATE_LABELS,
+  resolvePreviewUpdate,
+} from "./update-fixtures.js";
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
 import { createLaunchController } from "./launch-controller.js";
 import { createOverlayExit } from "./overlay-exit.js";
 import { createSessionReset } from "./session-reset.js";
+import { createUpdateController } from "./update-controller.js";
+import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import {
   abortLaunchSession,
@@ -50,6 +58,13 @@ const overlayInput = el("use-overlay");
 const prefError = el("pref-error");
 const repairPref = el("repair-pref");
 const cancelLaunch = el("cancel-launch");
+const updateStrip = el("update-strip");
+const updateTitle = el("update-title");
+const updateDetail = el("update-detail");
+const updatePrimary = el("update-primary");
+const updateSecondary = el("update-secondary");
+const updateProgress = el("update-progress");
+const updateProgressFill = el("update-progress-fill");
 const scene = createHeroScene(el("hero-canvas"));
 // Scene boot (shader compile included) is behind us - let the entrance run.
 stage.classList.add("lit");
@@ -75,7 +90,9 @@ syncHomeLayout();
  * `npm run preview` in a browser - fall back to a stub so the whole flow can be
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
- *   ?ctx=lobby|joining|disconnected  lobby dashboard / joining / disconnected
+ *   ?update=consent|checking|available|critical|downloading|…  updater row
+ *   ?ctx=lobby|joining|waiting|disconnected  lobby dashboard / joining / waiting
+ *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
  */
@@ -251,6 +268,7 @@ PREVIEW_LOBBY.game = PREVIEW_LOBBY.gameThrees;
 PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
 
 let previewLaunchAt = null;
+let previewUpdateKey = "consent";
 
 function previewInvoke(command, args) {
   if (command === "status" || command === "refresh_setup") {
@@ -301,6 +319,31 @@ function previewInvoke(command, args) {
       autoJoinHypixel: true,
       useExternalOverlay: args?.enabled ?? true,
     });
+  }
+
+  if (command === "update_preferences") {
+    const snap = resolvePreviewUpdate(previewUpdateKey);
+    return Promise.resolve({
+      autoUpdateEnabled: snap.autoUpdateEnabled,
+      autoUpdatePrompted: snap.autoUpdatePrompted,
+      health: "valid",
+    });
+  }
+
+  if (command === "update_status" || command === "check_for_update") {
+    return Promise.resolve(resolvePreviewUpdate(previewUpdateKey));
+  }
+
+  if (command === "set_auto_update") {
+    return Promise.resolve({
+      status: "saved",
+      autoUpdateEnabled: args?.enabled ?? false,
+      autoUpdatePrompted: true,
+    });
+  }
+
+  if (["start_update", "pause_update", "resume_update", "install_update", "defer_update"].includes(command)) {
+    return Promise.resolve(resolvePreviewUpdate(previewUpdateKey));
   }
 
   // The forcing abort answers in the same shape as the ordinary reset.
@@ -628,6 +671,43 @@ const connectionShell = createConnectionShell({
 const launchController = createLaunchController(invoke, {
   onChange: syncLaunchUi,
 });
+let updateBlocksLaunch = false;
+const updateController = createUpdateController(invoke, { onChange: syncUpdateUi });
+
+function syncUpdateUi() {
+  const snapshot = updateController.getState();
+  const view = updateView(snapshot);
+  updateTitle.textContent = view.title;
+  updateDetail.textContent = view.detail;
+  updateDetail.hidden = !view.detail;
+  updatePrimary.hidden = !view.primaryAction;
+  updatePrimary.textContent = view.primaryLabel ?? "";
+  updatePrimary.dataset.action = view.primaryAction ?? "";
+  updateSecondary.hidden = !view.secondaryAction;
+  updateSecondary.textContent = view.secondaryLabel ?? "";
+  updateSecondary.dataset.action = view.secondaryAction ?? "";
+  const showProgress = ["downloading", "paused"].includes(snapshot.state) && snapshot.sizeBytes > 0;
+  updateProgress.hidden = !showProgress;
+  updateProgress.setAttribute("aria-hidden", showProgress ? "false" : "true");
+  const percent = showProgress
+    ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
+    : 0;
+  updateProgressFill.style.width = `${percent}%`;
+  updateBlocksLaunch = view.blocksLaunch;
+  syncLaunchUi();
+}
+
+for (const button of [updatePrimary, updateSecondary]) {
+  button.addEventListener("click", () => {
+    const action = button.dataset.action;
+    if (action) updateController.action(action);
+  });
+}
+
+function applyPreviewUpdate(key) {
+  previewUpdateKey = PREVIEW_UPDATE[key] ? key : "consent";
+  updateController.acceptStatus(resolvePreviewUpdate(previewUpdateKey));
+}
 
 function syncLaunchUi() {
   const st = launchController.getState();
@@ -643,7 +723,7 @@ function syncLaunchUi() {
     if (!keepsStageNarration({ ...narration, kind: "lunar" })) {
       el("launch-label").textContent = b.label;
     }
-    launch.disabled = !b.enabled;
+    launch.disabled = !b.enabled || updateBlocksLaunch;
     launch.classList.toggle("is-loading", b.loading);
   }
   if (forgeReady && buttons.find((b) => b.kind === "forge")) {
@@ -651,7 +731,7 @@ function syncLaunchUi() {
     if (!keepsStageNarration({ ...narration, kind: "forge" })) {
       el("launch-forge-label").textContent = b.label;
     }
-    launchForge.disabled = !b.enabled;
+    launchForge.disabled = !b.enabled || updateBlocksLaunch;
     launchForge.classList.toggle("is-loading", b.loading);
   }
   autoJoinWrap.hidden = !st.showAutoJoinSwitch;
@@ -768,6 +848,7 @@ const sessionReset = createSessionReset({
     launchController.resetLaunchSession(prefs);
     stage.dataset.view = "home";
     syncLaunchUi();
+    updateController.setGameActive(false);
   },
   refreshHome: async () => {
     const next = await invoke("refresh_setup");
@@ -844,6 +925,7 @@ const launchHooks = {
       return;
     }
     if (reply.status !== "launched") return;
+    updateController.setGameActive(true);
     const autoJoin = reply.outcome.autoJoinHypixel;
     const now = Date.now();
     connection.setAutoJoin(autoJoin);
@@ -1356,7 +1438,7 @@ function afterStatus(status) {
   render(status);
   if (!previewing) launchController.refreshPreferences();
   if (!previewing) return;
-  mountPreviewBar(bootKind || "lunarReady");
+  mountPreviewBar(bootParams.get("update") || bootKind || "lunarReady");
   const ctx = bootParams.get("ctx");
   if (ctx === "joining") {
     stage.dataset.view = "dash";
@@ -1370,7 +1452,12 @@ function afterStatus(status) {
   } else if (ctx === "preexisting_game") {
     stage.dataset.view = "dash";
     connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
-  } else if (ctx === "session_ended" || ctx === "session_changed") {
+  } else if (
+    ctx === "session_ended" ||
+    ctx === "session_changed" ||
+    ctx === "launch_aborted" ||
+    ctx === "session_ended_resetting"
+  ) {
     stage.dataset.view = "dash";
     connectionShell.enterTerminal(ctx);
   } else if (PREVIEW_LOBBY[ctx]) {
@@ -1394,6 +1481,20 @@ if (previewing && bootParams.get("state") === "loading") {
   invoke("refresh_setup")
     .then(afterStatus)
     .catch((e) => afterStatus(setupErrorStatus(e)));
+}
+
+if (previewing) {
+  applyPreviewUpdate(bootParams.get("update") || "consent");
+} else {
+  updateController.bootstrap().catch(() => {
+    updateController.acceptStatus({ state: "error", manual: false });
+  });
+}
+
+if (!previewing && window.__TAURI__?.event?.listen) {
+  window.__TAURI__.event.listen("updater://status", ({ payload }) => {
+    updateController.acceptStatus(payload);
+  });
 }
 
 function canAutoRefresh() {
@@ -1432,6 +1533,78 @@ if (!previewing) {
 }
 
 // Browser-only chrome: a 900×620 frame plus a bar to flip every UI state.
+const PREVIEW_TOUR_MS = 1000;
+const PREVIEW_TOUR_KEYS = [
+  "loading",
+  ...PREVIEW_SETUP_KEYS,
+  "lunarReady",
+  "lunarReadyOff",
+  "overlayOff",
+  "forgeReadyOff",
+  "bothReady",
+  "invalidPref",
+  ...PREVIEW_UPDATE_KEYS,
+  "lobby",
+  "joining",
+  "disconnected",
+  "waiting",
+  "preexisting_game",
+  "session_ended",
+  "session_changed",
+  "launch_aborted",
+  "session_ended_resetting",
+  "queueSolo",
+  "queueDoubles",
+  "queueThrees",
+  "queueFours",
+  "gameSolo",
+  "gameDoubles",
+  "gameThrees",
+  "gameFours",
+  "game4v4",
+];
+
+let previewTourTimer = null;
+let previewTourIndex = -1;
+
+function syncPreviewPlayButton(playing) {
+  const btn = document.getElementById("preview-play");
+  if (!btn) return;
+  btn.classList.toggle("on", playing);
+  btn.textContent = playing ? "■" : "▶";
+  btn.setAttribute("aria-label", playing ? "Stop demo tour" : "Play through every state");
+  btn.title = playing ? "Stop demo tour" : "Play through every state (1s each)";
+}
+
+function stopPreviewTour() {
+  if (previewTourTimer != null) {
+    clearInterval(previewTourTimer);
+    previewTourTimer = null;
+  }
+  previewTourIndex = -1;
+  syncPreviewPlayButton(false);
+}
+
+function startPreviewTour() {
+  stopPreviewTour();
+  previewTourIndex = 0;
+  syncPreviewPlayButton(true);
+  showPreview(PREVIEW_TOUR_KEYS[0]);
+  previewTourTimer = setInterval(() => {
+    previewTourIndex += 1;
+    if (previewTourIndex >= PREVIEW_TOUR_KEYS.length) {
+      stopPreviewTour();
+      return;
+    }
+    showPreview(PREVIEW_TOUR_KEYS[previewTourIndex]);
+  }, PREVIEW_TOUR_MS);
+}
+
+function togglePreviewTour() {
+  if (previewTourTimer != null) stopPreviewTour();
+  else startPreviewTour();
+}
+
 function mountPreviewBar(active) {
   if (document.getElementById("preview-bar")) {
     markPreviewActive(active);
@@ -1445,7 +1618,12 @@ function mountPreviewBar(active) {
     (key) =>
       `<button type="button" data-preview="${key}">${PREVIEW_SETUP_LABELS[key] ?? key}</button>`,
   ).join("");
+  const updateButtons = PREVIEW_UPDATE_KEYS.map(
+    (key) =>
+      `<button type="button" data-preview="${key}">${PREVIEW_UPDATE_LABELS[key] ?? key}</button>`,
+  ).join("");
   bar.innerHTML = `
+    <button type="button" id="preview-play" class="preview-play" title="Play through every state (1s each)" aria-label="Play through every state">▶</button>
     <span class="preview-size">900×620</span>
     <span class="preview-group">setup</span>
     <button type="button" data-preview="loading">loading</button>
@@ -1453,13 +1631,23 @@ function mountPreviewBar(active) {
     <span class="preview-group">ready</span>
     <button type="button" data-preview="lunarReady">lunar on</button>
     <button type="button" data-preview="lunarReadyOff">lunar off</button>
+    <button type="button" data-preview="overlayOff">overlay off</button>
     <button type="button" data-preview="forgeReadyOff">prism off</button>
     <button type="button" data-preview="bothReady">both</button>
     <button type="button" data-preview="invalidPref">bad pref</button>
+    <span class="preview-group">update</span>
+    ${updateButtons}
     <span class="preview-group">lobby</span>
     <button type="button" data-preview="lobby">lobby</button>
     <button type="button" data-preview="joining">joining</button>
     <button type="button" data-preview="disconnected">disconnected</button>
+    <span class="preview-group">session</span>
+    <button type="button" data-preview="waiting">waiting</button>
+    <button type="button" data-preview="preexisting_game">already running</button>
+    <button type="button" data-preview="session_ended">ended</button>
+    <button type="button" data-preview="session_changed">changed</button>
+    <button type="button" data-preview="launch_aborted">cancelled</button>
+    <button type="button" data-preview="session_ended_resetting">returning</button>
     <span class="preview-group">queue</span>
     <button type="button" data-preview="queueSolo">solos</button>
     <button type="button" data-preview="queueDoubles">doubles</button>
@@ -1472,8 +1660,15 @@ function mountPreviewBar(active) {
     <button type="button" data-preview="gameFours">4s</button>
     <button type="button" data-preview="game4v4">4v4</button>`;
   bar.addEventListener("click", (e) => {
+    if (e.target.closest("#preview-play")) {
+      togglePreviewTour();
+      return;
+    }
     const btn = e.target.closest("[data-preview]");
-    if (btn) showPreview(btn.dataset.preview);
+    if (btn) {
+      stopPreviewTour();
+      showPreview(btn.dataset.preview);
+    }
   });
   document.body.prepend(bar);
   markPreviewActive(active);
@@ -1654,6 +1849,8 @@ function resetPreviewSession() {
   launchForge.disabled = false;
   launchForge.classList.remove("is-loading");
   launchError.hidden = true;
+  prefError.hidden = true;
+  prefError.textContent = "";
   syncLaunchUi();
 }
 
@@ -1688,6 +1885,8 @@ function showPreview(kind) {
     render(PREVIEW_STATUS.lunarReady);
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
+    overlayWrap.hidden = false;
+    overlayInput.checked = true;
     repairPref.hidden = false;
     prefError.textContent = "Preference file is invalid.";
     prefError.hidden = false;
@@ -1698,17 +1897,42 @@ function showPreview(kind) {
     );
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = false;
+    overlayWrap.hidden = false;
+    overlayInput.checked = true;
     params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
+  } else if (kind === "overlayOff") {
+    render(PREVIEW_STATUS.lunarReady);
+    autoJoinWrap.hidden = false;
+    autoJoinInput.checked = true;
+    overlayWrap.hidden = false;
+    overlayInput.checked = false;
+    params.set("state", "lunarReady");
   } else if (kind === "bothReady") {
     render(PREVIEW_STATUS.bothReady);
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
+    overlayWrap.hidden = false;
+    overlayInput.checked = true;
     params.set("state", "bothReady");
-  } else if (kind === "session_ended" || kind === "session_changed") {
+  } else if (
+    kind === "session_ended" ||
+    kind === "session_changed" ||
+    kind === "launch_aborted" ||
+    kind === "session_ended_resetting"
+  ) {
     render(PREVIEW_STATUS.lunarReady);
     stage.dataset.view = "dash";
     connectionShell.enterTerminal(kind);
     params.set("ctx", kind);
+  } else if (PREVIEW_UPDATE[kind]) {
+    render(PREVIEW_STATUS.lunarReady);
+    autoJoinWrap.hidden = false;
+    autoJoinInput.checked = true;
+    overlayWrap.hidden = false;
+    overlayInput.checked = true;
+    applyPreviewUpdate(kind);
+    params.set("state", "lunarReady");
+    params.set("update", kind);
   } else if (PREVIEW_LOBBY[kind]) {
     render(PREVIEW_STATUS.lunarReady);
     applyLobbySnapshot(PREVIEW_LOBBY[kind]);
