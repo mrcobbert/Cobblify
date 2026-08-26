@@ -256,7 +256,7 @@ export default {
  */
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
 
-let tokenMemo = { raw: undefined, tokens: [], invalid: 0, ids: new Map() };
+let tokenMemo = { raw: undefined, tokens: [], invalid: 0, ids: new Map(), hmacKeys: new Map() };
 
 function parseTokenList(raw) {
   const out = [];
@@ -275,9 +275,28 @@ async function tokenIdentity(token) {
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const AUTH_PROOF = new TextEncoder().encode("cobblify-auth-v1");
+
+async function tokenHmacKey(token) {
+  let key = tokenMemo.hmacKeys.get(token);
+  if (!key) {
+    key = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(token),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"],
+    );
+    tokenMemo.hmacKeys.set(token, key);
+  }
+  return key;
+}
+
 export async function authenticate(request, env) {
   const raw = (env && env.STATS_TOKEN) || "";
-  if (tokenMemo.raw !== raw) tokenMemo = { raw, ...parseTokenList(raw), ids: new Map() };
+  if (tokenMemo.raw !== raw) {
+    tokenMemo = { raw, ...parseTokenList(raw), ids: new Map(), hmacKeys: new Map() };
+  }
   if (tokenMemo.tokens.length === 0) {
     if (tokenMemo.invalid > 0) {
       // Secret set but every entry malformed: auth was intended - deny, never fall open.
@@ -286,7 +305,28 @@ export async function authenticate(request, env) {
     return { identity: null, isOwner: false }; // open worker (secret unset/empty)
   }
   const got = request.headers.get("X-BedwarsQol-Token");
-  const idx = got == null ? -1 : tokenMemo.tokens.indexOf(got);
+  let idx = -1;
+  if (got != null && TOKEN_RE.test(got)) {
+    const suppliedKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(got),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const suppliedProof = await crypto.subtle.sign("HMAC", suppliedKey, AUTH_PROOF);
+    // Check every configured token. WebCrypto performs the MAC comparison;
+    // never expose a prefix-sensitive JavaScript string comparison.
+    for (let i = 0; i < tokenMemo.tokens.length; i++) {
+      const valid = await crypto.subtle.verify(
+        "HMAC",
+        await tokenHmacKey(tokenMemo.tokens[i]),
+        suppliedProof,
+        AUTH_PROOF,
+      );
+      if (valid) idx = i;
+    }
+  }
   if (idx < 0) {
     return { denied: jsonResponse({ success: false, state: "ERROR", error: "unauthorized" }, 401) };
   }
