@@ -34,6 +34,12 @@ import {
   resultFields as seraphResultFields,
   handleKeySet as seraphHandleKeySet,
 } from "./seraph.js";
+import {
+  cleanupUpdateEvents,
+  handleUpdateDownload,
+  handleUpdateEvent,
+  handleUpdateMetadata,
+} from "./update-routes.js";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -50,6 +56,12 @@ const laneFor = (url) => (url.searchParams.get("prio") === "1" ? LANE_HIGH : LAN
 
 export default {
   async scheduled(event, env, ctx) {
+    try {
+      await cleanupUpdateEvents(env);
+    } catch (error) {
+      // Telemetry retention must never suppress the existing health probe.
+      console.warn("UPDATE_EVENT_CLEANUP_FAILED", error instanceof Error ? error.message : "unknown");
+    }
     const result = await probeHypixelPlayer("beepor", env);
     console.log("SCHEDULED_PROBE", JSON.stringify(result));
   },
@@ -61,6 +73,18 @@ export default {
     // ONE auth derivation per request: every route consumes this object; nothing below
     // re-reads the token header or the secret.
     const auth = await authenticate(request, env);
+
+    if (path === "/launcher/download" && request.method === "GET") {
+      return handleUpdateDownload(request, env);
+    }
+    if (path === "/launcher/update-event" && request.method === "POST") {
+      if (auth.denied) return auth.denied;
+      return handleUpdateEvent(request, env, auth);
+    }
+    if (/^\/launcher\/update\//.test(path) && request.method === "GET") {
+      if (auth.denied) return auth.denied;
+      return handleUpdateMetadata(request, env, auth);
+    }
 
     if (path === "/" || path === "/health") {
       if (path === "/health") {

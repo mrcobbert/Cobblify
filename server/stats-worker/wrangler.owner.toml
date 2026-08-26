@@ -45,9 +45,20 @@ mode = "off"
 binding = "STATS_KV"
 id = "16fd5eea0e37475c91e5f255d45d82ce"
 
-# Optional: uncomment to re-run edge probe via `wrangler tail` (see README)
-# [triggers]
-# crons = ["0 12 * * *"]
+# Daily probe plus launcher-event retention cleanup.
+[triggers]
+crons = ["0 12 * * *"]
 
 # Optional: set after first deploy, e.g. WORKER_URL=https://bedwarsqol-stats.<subdomain>.workers.dev
 # Used by: npm run test:worker
+
+# Launcher update resources are not checked in because their account IDs are
+# deployment-specific. Provision once, then add these owner-only bindings:
+# [[r2_buckets]]
+# binding = "UPDATE_BUCKET"
+# bucket_name = "cobblify-launcher-updates"
+# [[d1_databases]]
+# binding = "UPDATE_EVENTS"
+# database_name = "cobblify-launcher-update-events"
+# database_id = "<database-id>"
+# Set the ticket-signing secret with: wrangler secret put UPDATE_URL_SECRET

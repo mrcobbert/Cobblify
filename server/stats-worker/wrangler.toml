@@ -37,3 +37,8 @@ mode = "smart"
 
 # Optional: set after first deploy, e.g. WORKER_URL=https://bedwarsqol-stats.<subdomain>.workers.dev
 # Used by: npm run test:worker
+
+# Private launcher updates are owner-operated and intentionally disabled in
+# this portable config. Self-hosters can create the resources, apply
+# migrations/0001_launcher_update_events.sql, then add UPDATE_BUCKET (R2) and
+# UPDATE_EVENTS (D1) bindings. UPDATE_URL_SECRET is a Wrangler secret.

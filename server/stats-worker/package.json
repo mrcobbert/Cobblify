@@ -1,6 +1,7 @@
 {
   "name": "bedwarsqol-stats-worker",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "BedwarsQOL stats backend: a Cloudflare Worker that serves Hypixel BedWars stats to the mod.",
   "scripts": {

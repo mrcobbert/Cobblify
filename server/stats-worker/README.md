@@ -9,6 +9,13 @@ tags for the mod. Two deployment configs:
   binding. Deploy ONLY with `npm run deploy:owner` (a plain `wrangler deploy`
   strips the binding and silently disables the providers).
 
+The owner deployment can also serve private launcher updates. Add the
+`UPDATE_BUCKET` R2 and `UPDATE_EVENTS` D1 bindings documented in
+`wrangler.owner.toml`, apply `migrations/0001_launcher_update_events.sql`, and
+set `UPDATE_URL_SECRET`. Metadata uses the existing `STATS_TOKEN` identity;
+artifacts remain private behind expiring HMAC download tickets. Update telemetry
+contains no identity and is deleted after 30 days.
+
 Tests: `npm test` (note: the route tests bind a local server and fail with
 `EPERM` in sandboxes that deny `listen` - run them outside such sandboxes).
 
