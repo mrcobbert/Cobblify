@@ -41,7 +41,10 @@ public final class LobbyExport {
     private static volatile String retainedSupportedMode;
     /** Queue-tab party names, kept into GAME when {@code /party list} was never parsed. */
     private static volatile List<String> retainedQueueParty = Collections.emptyList();
-    /** Last time evaluate saw QUEUE or GAME; hub-shaped samples inside this window are a Mode-line gap. */
+    /**
+     * Last QUEUE/GAME time. Hub-shaped samples inside this window keep a supported retain and
+     * do not clear {@link #sawUnsupportedMode}; they are still eligible as the hub.
+     */
     private static volatile long lastQueueOrGameMs;
     private static final long MATCH_GAP_MS = 2000L;
     /**
@@ -253,17 +256,13 @@ public final class LobbyExport {
         if (queue || game) lastQueueOrGameMs = nowMs;
 
         if (!queue && !game) {
+            r.eligible = rawInBedwars;
             boolean modeLineGap = rawInBedwars && lastQueueOrGameMs > 0L
                     && nowMs - lastQueueOrGameMs < MATCH_GAP_MS;
-            if (modeLineGap) {
-                r.eligible = false;
-                if (isSupportedDashboardMode(retainedIfNoSidebar)) {
-                    r.modeToRetain = dashboardModeLabel(retainedIfNoSidebar);
-                }
-            } else {
-                r.eligible = rawInBedwars;
-                if (r.eligible) sawUnsupportedMode = false;
+            if (modeLineGap && isSupportedDashboardMode(retainedIfNoSidebar)) {
+                r.modeToRetain = dashboardModeLabel(retainedIfNoSidebar);
             }
+            if (r.eligible && !modeLineGap) sawUnsupportedMode = false;
         } else if (sidebarMode != null && !sidebarMode.trim().isEmpty()) {
             if (isSupportedDashboardMode(sidebarMode)) {
                 r.eligible = true;

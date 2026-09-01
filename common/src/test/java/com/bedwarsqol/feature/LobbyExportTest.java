@@ -167,19 +167,13 @@ public class LobbyExportTest {
     }
 
     @Test
-    public void castleQueueModeLineGapIsNotAnEligibleHub() {
-        LobbyExport.evaluate(true, true, true, false, "Castle", "Solos", 1000L);
-        LobbyExport.EvalResult gap = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
-        assertEquals("LOBBY", gap.context);
-        assertFalse(gap.eligible);
-        assertFalse(gap.autoFetch);
-        assertEquals("Solos", gap.modeToRetain);
-        RecordingSink sink = new RecordingSink();
-        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
-        LobbyExport.applySnapshot(lobby, gap, Collections.<String>emptyList(),
-                Arrays.asList(new LobbyExport.TabRow("Random")), null, null, sink);
-        assertTrue(lobby.players.isEmpty());
-        assertTrue(sink.names.isEmpty());
+    public void bedwarsHubAfterAQueueIsEligibleImmediately() {
+        LobbyExport.evaluate(true, true, true, false, "Solo", null, 1000L);
+        LobbyExport.EvalResult hub = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
+        assertEquals("LOBBY", hub.context);
+        assertTrue(hub.eligible);
+        assertTrue(hub.autoFetch);
+        assertEquals("Solos", hub.modeToRetain);
     }
 
     @Test
@@ -187,7 +181,7 @@ public class LobbyExportTest {
         LobbyExport.EvalResult queue = LobbyExport.evaluate(true, true, true, false, "Solo", null, 1000L);
         assertEquals("Solos", queue.modeToRetain);
         LobbyExport.EvalResult gap = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
-        assertFalse(gap.eligible);
+        assertTrue(gap.eligible);
         assertEquals("Solos", gap.modeToRetain);
         LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, null, "Solos", 1200L);
         assertTrue(game.eligible);
@@ -241,7 +235,10 @@ public class LobbyExportTest {
         LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, null, null, 1500L);
         assertFalse(game.eligible);
         assertTrue(LobbyExport.sawUnsupportedMode());
-        LobbyExport.evaluate(true, true, true, false, "Solo", null, 5000L);
+        LobbyExport.EvalResult hubGap = LobbyExport.evaluate(true, true, false, false, null, null, 1600L);
+        assertTrue(hubGap.eligible);
+        assertTrue(LobbyExport.sawUnsupportedMode());
+        LobbyExport.evaluate(true, true, false, false, null, null, 4000L);
         assertFalse(LobbyExport.sawUnsupportedMode());
     }
 
