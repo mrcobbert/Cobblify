@@ -12,7 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Writes the Cobblify lobby dashboard file, {@code ~/.cobblify/lobby.json}, that the launcher polls to
@@ -172,6 +174,118 @@ public final class LobbyExport {
         return v;
     }
 
+    /**
+     * Whether {@code raw} canonicalizes to a mode the overlay may show: Solos, Doubles, 3v3v3v3,
+     * 4v4v4v4, or 4v4. Unknown strings (Castle, Rush, Doubles Rush) are not supported even though
+     * {@link #dashboardModeLabel} still passes them through for diagnostics.
+     */
+    public static boolean isSupportedDashboardMode(String raw) {
+        String mapped = dashboardModeLabel(raw);
+        return "Solos".equals(mapped)
+                || "Doubles".equals(mapped)
+                || "3v3v3v3".equals(mapped)
+                || "4v4v4v4".equals(mapped)
+                || "4v4".equals(mapped);
+    }
+
+    /**
+     * Overlay eligibility. {@code sidebarMode} is the live {@code Mode:} line, or {@code null} when
+     * that line is absent. {@code retainedIfNoSidebar} is consulted only in that absent-line branch
+     * (a present unsupported label clears retention; it must not fall back to a previous Solo).
+     */
+    public static EvalResult evaluate(boolean inHypixel, boolean rawInBedwars,
+                                      boolean queue, boolean game,
+                                      String sidebarMode, String retainedIfNoSidebar) {
+        EvalResult r = new EvalResult();
+        if (!inHypixel) {
+            r.context = "MENU";
+            return r;
+        }
+        if (game) r.context = "GAME";
+        else if (queue) r.context = "QUEUE";
+        else r.context = "LOBBY";
+
+        if (!queue && !game) {
+            r.eligible = rawInBedwars;
+        } else if (sidebarMode != null && !sidebarMode.trim().isEmpty()) {
+            if (isSupportedDashboardMode(sidebarMode)) {
+                r.eligible = true;
+                r.modeToRetain = dashboardModeLabel(sidebarMode);
+            }
+        } else if (isSupportedDashboardMode(retainedIfNoSidebar)) {
+            r.eligible = true;
+            r.modeToRetain = dashboardModeLabel(retainedIfNoSidebar);
+        }
+        r.scanFullRoster = r.eligible && !"QUEUE".equals(r.context);
+        r.readQueuePartyFromTab = "QUEUE".equals(r.context);
+        r.autoFetch = r.eligible;
+        return r;
+    }
+
+    /**
+     * Fill party / roster / teams from already-filtered rows. Never fetches unless
+     * {@link EvalResult#autoFetch} is true. Queue tab names populate {@code yourParty} even when
+     * ineligible (Hypixel's queue tab <i>is</i> the party); they still do not fetch.
+     */
+    public static void applySnapshot(Lobby lobby, EvalResult r,
+                                     List<String> chatParty, List<TabRow> tab,
+                                     List<String> extraPlayers,
+                                     PlayerFactory factory, FetchSink sink) {
+        if (lobby == null || r == null) return;
+        PlayerFactory make = factory != null ? factory : new PlayerFactory() {
+            public Player player(String name) { return new Player(name); }
+        };
+        lobby.context = r.context;
+        lobby.dashboardEligible = r.eligible;
+        lobby.mode = r.eligible ? r.modeToRetain : null;
+        lobby.yourParty.clear();
+        lobby.players.clear();
+        lobby.teams.clear();
+
+        boolean usedQueueTab = false;
+        if (r.readQueuePartyFromTab && tab != null) {
+            for (int i = 0; i < tab.size(); i++) {
+                TabRow row = tab.get(i);
+                if (row == null || row.name == null) continue;
+                if (r.autoFetch && sink != null) sink.fetch(row);
+                lobby.yourParty.add(make.player(row.name));
+                usedQueueTab = true;
+            }
+        }
+        if (!usedQueueTab && chatParty != null) {
+            for (int i = 0; i < chatParty.size(); i++) {
+                String name = chatParty.get(i);
+                if (name != null) lobby.yourParty.add(make.player(name));
+            }
+        }
+
+        if (r.scanFullRoster) {
+            List<TabRow> rows = tab != null ? tab : java.util.Collections.<TabRow>emptyList();
+            Map<String, Team> teams = new LinkedHashMap<String, Team>();
+            for (int i = 0; i < rows.size(); i++) {
+                TabRow row = rows.get(i);
+                if (row == null || row.name == null) continue;
+                if (r.autoFetch && sink != null) sink.fetch(row);
+                Player p = make.player(row.name);
+                lobby.players.add(p);
+                if (row.teamName != null) {
+                    Team team = teams.get(row.teamName);
+                    if (team == null) {
+                        team = new Team(row.teamName);
+                        teams.put(row.teamName, team);
+                    }
+                    team.players.add(p);
+                }
+            }
+            lobby.teams.addAll(teams.values());
+        } else if (r.eligible && extraPlayers != null) {
+            for (int i = 0; i < extraPlayers.size(); i++) {
+                String name = extraPlayers.get(i);
+                if (name != null) lobby.players.add(make.player(name));
+            }
+        }
+    }
+
     /** Exact label, case-insensitive, optionally followed only by whitespace/symbol decoration. */
     private static boolean isLabelWithDecoration(String value, String label) {
         if (value.length() < label.length()
@@ -191,6 +305,7 @@ public final class LobbyExport {
         public long jvmStartTimeMs;
         public String context = "MENU";     // MENU | LOBBY | QUEUE | GAME
         public boolean inHypixel;
+        public boolean dashboardEligible;
         public String self;
         public String mode;                  // Solos|Doubles|3v3v3v3|4v4v4v4|4v4|…; null in lobby/menu
         public Integer partyCount;           // null = unknown / feature off
@@ -225,5 +340,38 @@ public final class LobbyExport {
         public Player(String name) {
             this.name = name;
         }
+    }
+
+    /** Outcome of {@link LobbyExport#evaluate}. Default flags are all false / MENU. */
+    public static final class EvalResult {
+        public String context = "MENU";
+        public boolean eligible;
+        public String modeToRetain;
+        public boolean scanFullRoster;
+        public boolean readQueuePartyFromTab;
+        public boolean autoFetch;
+    }
+
+    /** Already-filtered tab row. {@code teamName} is set only for GAME grouping. */
+    public static final class TabRow {
+        public final String name;
+        public final String teamName;
+
+        public TabRow(String name) {
+            this(name, null);
+        }
+
+        public TabRow(String name, String teamName) {
+            this.name = name;
+            this.teamName = teamName;
+        }
+    }
+
+    public interface PlayerFactory {
+        Player player(String name);
+    }
+
+    public interface FetchSink {
+        void fetch(TabRow row);
     }
 }

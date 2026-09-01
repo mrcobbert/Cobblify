@@ -2,8 +2,14 @@ package com.bedwarsqol.feature;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /** Pins launcher queue/game titles against Hypixel sidebar and detector labels. */
 public class LobbyExportTest {
@@ -41,5 +47,123 @@ public class LobbyExportTest {
         assertNull(LobbyExport.dashboardModeLabel(""));
         assertNull(LobbyExport.dashboardModeLabel("  "));
         assertNull(LobbyExport.dashboardModeLabel("Overall"));
+    }
+
+    @Test
+    public void supportedAllowlistIncludesFourVFourAndDecoratedSolo() {
+        assertTrue(LobbyExport.isSupportedDashboardMode("Solo"));
+        assertTrue(LobbyExport.isSupportedDashboardMode("Solo ⚔️"));
+        assertTrue(LobbyExport.isSupportedDashboardMode("Doubles"));
+        assertTrue(LobbyExport.isSupportedDashboardMode("3v3v3v3"));
+        assertTrue(LobbyExport.isSupportedDashboardMode("4v4v4v4"));
+        assertTrue(LobbyExport.isSupportedDashboardMode("4v4"));
+        assertFalse(LobbyExport.isSupportedDashboardMode("Castle"));
+        assertFalse(LobbyExport.isSupportedDashboardMode("Rush"));
+        assertFalse(LobbyExport.isSupportedDashboardMode("Doubles Rush"));
+        assertFalse(LobbyExport.isSupportedDashboardMode("Overall"));
+        assertFalse(LobbyExport.isSupportedDashboardMode(null));
+    }
+
+    @Test
+    public void skywarsShapedInputsAreNotTheBedwarsHub() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, false, false, false, null, "Solos");
+        assertEquals("LOBBY", r.context);
+        assertFalse(r.eligible);
+        assertFalse(r.scanFullRoster);
+        assertFalse(r.autoFetch);
+        assertFalse(r.readQueuePartyFromTab);
+    }
+
+    @Test
+    public void bedwarsHubIsEligibleWithoutAMode() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, false, null, null);
+        assertEquals("LOBBY", r.context);
+        assertTrue(r.eligible);
+        assertTrue(r.scanFullRoster);
+        assertTrue(r.autoFetch);
+        assertNull(r.modeToRetain);
+    }
+
+    @Test
+    public void offHypixelIsMenuEvenWithGameFlags() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(false, true, true, true, "Solo", "Solos");
+        assertEquals("MENU", r.context);
+        assertFalse(r.eligible);
+        assertFalse(r.scanFullRoster);
+        assertFalse(r.autoFetch);
+        assertNull(r.modeToRetain);
+    }
+
+    @Test
+    public void castleSidebarClearsRetainedSolos() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, true, false, "Castle", "Solos");
+        assertEquals("QUEUE", r.context);
+        assertFalse(r.eligible);
+        assertFalse(r.autoFetch);
+        assertTrue(r.readQueuePartyFromTab);
+        assertNull(r.modeToRetain);
+    }
+
+    @Test
+    public void absentModeLineKeepsRetainedSolos() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, true, null, "Solos");
+        assertEquals("GAME", r.context);
+        assertTrue(r.eligible);
+        assertEquals("Solos", r.modeToRetain);
+        assertTrue(r.scanFullRoster);
+        assertTrue(r.autoFetch);
+    }
+
+    @Test
+    public void absentModeLineWithoutRetainIsIneligible() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, true, null, null);
+        assertEquals("GAME", r.context);
+        assertFalse(r.eligible);
+        assertNull(r.modeToRetain);
+        assertFalse(r.autoFetch);
+    }
+
+    @Test
+    public void ineligibleQueueCopiesTabPartyWithoutFetching() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, true, false, "Castle", "Solos");
+        RecordingSink sink = new RecordingSink();
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        lobby.inHypixel = true;
+        List<LobbyExport.TabRow> tab = Arrays.asList(
+                new LobbyExport.TabRow("Alice"), new LobbyExport.TabRow("Bob"));
+        LobbyExport.applySnapshot(lobby, r, Arrays.asList("StaleParty"), tab,
+                Arrays.asList("ShouldNotAppear"), null, sink);
+        assertFalse(lobby.dashboardEligible);
+        assertEquals("QUEUE", lobby.context);
+        assertNull(lobby.mode);
+        assertEquals(2, lobby.yourParty.size());
+        assertEquals("Alice", lobby.yourParty.get(0).name);
+        assertEquals("Bob", lobby.yourParty.get(1).name);
+        assertTrue(lobby.players.isEmpty());
+        assertTrue(sink.names.isEmpty());
+    }
+
+    @Test
+    public void eligibleLobbyFetchesTabAndIgnoresQueueTypers() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, false, null, null);
+        RecordingSink sink = new RecordingSink();
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        List<LobbyExport.TabRow> tab = Arrays.asList(new LobbyExport.TabRow("Steve"));
+        LobbyExport.applySnapshot(lobby, r, Arrays.asList("PartyPal"), tab,
+                Arrays.asList("Typer"), null, sink);
+        assertTrue(lobby.dashboardEligible);
+        assertEquals(1, lobby.yourParty.size());
+        assertEquals("PartyPal", lobby.yourParty.get(0).name);
+        assertEquals(1, lobby.players.size());
+        assertEquals("Steve", lobby.players.get(0).name);
+        assertEquals(Arrays.asList("Steve"), sink.names);
+    }
+
+    private static final class RecordingSink implements LobbyExport.FetchSink {
+        final List<String> names = new ArrayList<String>();
+
+        public void fetch(LobbyExport.TabRow row) {
+            names.add(row.name);
+        }
     }
 }
