@@ -25,6 +25,7 @@ import { createSessionReset } from "./session-reset.js";
 import { createUpdateController } from "./update-controller.js";
 import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
+import { dashboardView, liveDashboardAction } from "./dashboard-view.js";
 import {
   abortLaunchSession,
   quitApp,
@@ -1035,13 +1036,17 @@ async function handleLobbyPoll(poll) {
 }
 
 function applyLobbySnapshot(d, { reconnect = false } = {}) {
-  if (!firstLiveSeen) {
+  const action = liveDashboardAction(d, {
+    firstLiveSeen,
+    wasDisconnected: reconnect,
+  });
+  if (action.enterDashboard) {
     enterDashboard();
   } else if (reconnect) {
     connectionShell.enterConnected({ reconnect: true });
   }
   const ctx = d.context;
-  const key = `${ctx}:${d.seq ?? ""}`;
+  const key = `${ctx}:${d.seq ?? ""}:${action.eligible ? "1" : "0"}`;
   if (key !== lastKey) {
     try {
       const view = viewOf(d);
@@ -1352,6 +1357,10 @@ function teamAvg(t) {
 }
 
 function viewOf(d) {
+  return dashboardView(d, viewOfEligible);
+}
+
+function viewOfEligible(d) {
   const ctx = d.context;
   if (ctx === "QUEUE") return viewQueue(d);
   if (ctx === "GAME") return viewGame(d);

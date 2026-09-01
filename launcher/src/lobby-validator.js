@@ -53,6 +53,7 @@ export function isValidLobbySnapshot(d) {
   if (typeof ctx !== "string") return false;
   if (!["MENU", "LOBBY", "QUEUE", "GAME"].includes(ctx)) return false;
   if (typeof d.inHypixel !== "boolean") return false;
+  if ("dashboardEligible" in d && typeof d.dashboardEligible !== "boolean") return false;
   if (!("self" in d)) return false;
   if (d.self !== null && typeof d.self !== "string") return false;
   if (!("mode" in d)) return false;
