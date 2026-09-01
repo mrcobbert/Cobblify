@@ -153,9 +153,11 @@ public final class NickUtils {
         ClientSettings cfg = BedwarsQol.config;
         if (cfg == null || !cfg.nickUtils) return;
 
-        if (HypixelContext.isInActiveBedwarsGame()) {
+        if (HypixelContext.isInActiveBedwarsGame() && HypixelContext.isSupportedBedwarsSurface()) {
             notActiveSlots = 0;
             runReport(mc, cfg);
+        } else if (HypixelContext.isInActiveBedwarsGame()) {
+            notActiveSlots = 0;
         } else {
             if (++notActiveSlots >= REARM_GRACE_SLOTS) rearmReport();
             if (visible && HypixelContext.isInBedwars()) lobbyAnnounce(mc, cfg);

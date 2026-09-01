@@ -1,9 +1,11 @@
 package com.bedwarsqol.feature;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -13,6 +15,11 @@ import static org.junit.Assert.assertTrue;
 
 /** Pins launcher queue/game titles against Hypixel sidebar and detector labels. */
 public class LobbyExportTest {
+
+    @Before
+    public void resetTransientState() {
+        LobbyExport.resetEligibilityStateForTest();
+    }
 
     @Test
     public void mapsDemoTitles() {
@@ -157,6 +164,54 @@ public class LobbyExportTest {
         assertEquals(1, lobby.players.size());
         assertEquals("Steve", lobby.players.get(0).name);
         assertEquals(Arrays.asList("Steve"), sink.names);
+    }
+
+    @Test
+    public void castleQueueModeLineGapIsNotAnEligibleHub() {
+        LobbyExport.evaluate(true, true, true, false, "Castle", "Solos", 1000L);
+        LobbyExport.EvalResult gap = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
+        assertEquals("LOBBY", gap.context);
+        assertFalse(gap.eligible);
+        assertFalse(gap.autoFetch);
+        assertEquals("Solos", gap.modeToRetain);
+        RecordingSink sink = new RecordingSink();
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        LobbyExport.applySnapshot(lobby, gap, Collections.<String>emptyList(),
+                Arrays.asList(new LobbyExport.TabRow("Random")), null, null, sink);
+        assertTrue(lobby.players.isEmpty());
+        assertTrue(sink.names.isEmpty());
+    }
+
+    @Test
+    public void soloRetainSurvivesModeLineGapIntoTheGame() {
+        LobbyExport.EvalResult queue = LobbyExport.evaluate(true, true, true, false, "Solo", null, 1000L);
+        assertEquals("Solos", queue.modeToRetain);
+        LobbyExport.EvalResult gap = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
+        assertFalse(gap.eligible);
+        assertEquals("Solos", gap.modeToRetain);
+        LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, null, "Solos", 1200L);
+        assertTrue(game.eligible);
+        assertEquals("GAME", game.context);
+        assertEquals("Solos", game.modeToRetain);
+    }
+
+    @Test
+    public void queueTabPartySurvivesIntoUnsupportedGame() {
+        LobbyExport.EvalResult queue = LobbyExport.evaluate(true, true, true, false, "Castle", null, 1000L);
+        LobbyExport.applySnapshot(new LobbyExport.Lobby(), queue, Collections.<String>emptyList(),
+                Arrays.asList(new LobbyExport.TabRow("Alice"), new LobbyExport.TabRow("Bob")),
+                null, null, new RecordingSink());
+        LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, null, null, 1500L);
+        assertFalse(game.eligible);
+        RecordingSink sink = new RecordingSink();
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        LobbyExport.applySnapshot(lobby, game, Collections.<String>emptyList(),
+                Collections.<LobbyExport.TabRow>emptyList(), null, null, sink);
+        assertEquals(2, lobby.yourParty.size());
+        assertEquals("Alice", lobby.yourParty.get(0).name);
+        assertEquals("Bob", lobby.yourParty.get(1).name);
+        assertTrue(lobby.players.isEmpty());
+        assertTrue(sink.names.isEmpty());
     }
 
     private static final class RecordingSink implements LobbyExport.FetchSink {

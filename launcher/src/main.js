@@ -25,7 +25,7 @@ import { createSessionReset } from "./session-reset.js";
 import { createUpdateController } from "./update-controller.js";
 import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
-import { dashboardView, liveDashboardAction } from "./dashboard-view.js";
+import { nextLiveDashboard } from "./dashboard-view.js";
 import {
   abortLaunchSession,
   quitApp,
@@ -1036,20 +1036,21 @@ async function handleLobbyPoll(poll) {
 }
 
 function applyLobbySnapshot(d, { reconnect = false } = {}) {
-  const action = liveDashboardAction(d, {
+  const step = nextLiveDashboard(d, {
     firstLiveSeen,
     wasDisconnected: reconnect,
+    eligibleViewOf: viewOfEligible,
   });
-  if (action.enterDashboard) {
+  if (step.enterDashboard) {
     enterDashboard();
   } else if (reconnect) {
     connectionShell.enterConnected({ reconnect: true });
   }
   const ctx = d.context;
-  const key = `${ctx}:${d.seq ?? ""}:${action.eligible ? "1" : "0"}`;
+  const key = `${ctx}:${d.seq ?? ""}:${step.eligible ? "1" : "0"}`;
   if (key !== lastKey) {
     try {
-      const view = viewOf(d);
+      const view = step.view;
       const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
       dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
       lastView = view;
@@ -1357,7 +1358,7 @@ function teamAvg(t) {
 }
 
 function viewOf(d) {
-  return dashboardView(d, viewOfEligible);
+  return nextLiveDashboard(d, { firstLiveSeen: true, eligibleViewOf: viewOfEligible }).view;
 }
 
 function viewOfEligible(d) {

@@ -42,4 +42,17 @@ export function dashboardView(d, fallbackViewOf) {
   return isDashboardEligible(d) ? fallbackViewOf(d) : viewUnsupported(d);
 }
 
+/**
+ * Production live-snapshot UI step: first ineligible snapshot still enters, later eligible
+ * snapshots restore the roster view. main.js must call this rather than open-coding it.
+ */
+export function nextLiveDashboard(d, { firstLiveSeen = false, wasDisconnected = false, eligibleViewOf }) {
+  const action = liveDashboardAction(d, { firstLiveSeen, wasDisconnected });
+  return {
+    ...action,
+    view: dashboardView(d, eligibleViewOf),
+    nextFirstLiveSeen: firstLiveSeen || action.enterDashboard,
+  };
+}
+
 export const UNSUPPORTED_NOTE = NOTE;

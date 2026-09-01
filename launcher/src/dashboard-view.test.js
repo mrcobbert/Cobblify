@@ -6,6 +6,7 @@ import {
   dashboardView,
   isDashboardEligible,
   liveDashboardAction,
+  nextLiveDashboard,
   UNSUPPORTED_NOTE,
   viewUnsupported,
 } from "./dashboard-view.js";
@@ -98,4 +99,27 @@ test("ineligible then eligible restores the roster view without a relaunch", () 
   assert.equal(shown.title, "Main Lobby");
   assert.deepEqual(shown.blocks[0].rows, ["SkyWarsRandom"]);
   assert.doesNotMatch(JSON.stringify(shown), new RegExp(UNSUPPORTED_NOTE));
+});
+
+test("poll-shaped first-live ineligible then eligible mutates firstLiveSeen", () => {
+  const fallback = (d) => ({
+    title: "Main Lobby",
+    blocks: [{ rows: (d.players ?? []).map((p) => p.name) }],
+  });
+  let firstLiveSeen = false;
+  const first = nextLiveDashboard(liveSnap({ dashboardEligible: false, seq: 1 }), {
+    firstLiveSeen,
+    eligibleViewOf: fallback,
+  });
+  assert.equal(first.enterDashboard, true);
+  assert.match(JSON.stringify(first.view), new RegExp(UNSUPPORTED_NOTE));
+  firstLiveSeen = first.nextFirstLiveSeen;
+  assert.equal(firstLiveSeen, true);
+  const second = nextLiveDashboard(liveSnap({ dashboardEligible: true, seq: 2 }), {
+    firstLiveSeen,
+    eligibleViewOf: fallback,
+  });
+  assert.equal(second.enterDashboard, false);
+  assert.equal(second.view.title, "Main Lobby");
+  assert.doesNotMatch(JSON.stringify(second.view), new RegExp(UNSUPPORTED_NOTE));
 });

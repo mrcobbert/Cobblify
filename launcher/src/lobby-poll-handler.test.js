@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
 import { handleLobbyPoll } from "./lobby-poll-handler.js";
+import { nextLiveDashboard, UNSUPPORTED_NOTE } from "./dashboard-view.js";
 
 const pp = {
   name: "you_",
@@ -236,4 +237,77 @@ test("without the marker the waiting poll path keeps its dash behavior", async (
   await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 61_000);
   assert.equal(h.shell.getVisible(), true);
   assert.equal(h.dashOpens, 1);
+});
+
+test("first live ineligible poll enters, later eligible poll restores the roster", async () => {
+  const connection = createConnectionModel();
+  connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  const shell = createConnectionShell({
+    root: { hidden: true, dataset: {} },
+    titleEl: {},
+    subEl: {},
+    actionSlot: { innerHTML: "", hidden: true },
+    dash: { innerHTML: "" },
+    announce: {},
+  });
+  let firstLiveSeen = false;
+  const steps = [];
+  const fallback = (d) => ({
+    title: "Main Lobby",
+    blocks: [{ rows: (d.players ?? []).map((p) => p.name) }],
+  });
+  const applyLobbySnapshot = (snapshot, { reconnect = false } = {}) => {
+    const step = nextLiveDashboard(snapshot, {
+      firstLiveSeen,
+      wasDisconnected: reconnect,
+      eligibleViewOf: fallback,
+    });
+    if (step.enterDashboard) firstLiveSeen = step.nextFirstLiveSeen;
+    steps.push(step);
+  };
+  const deps = {
+    connection,
+    connectionShell: shell,
+    launchController: {
+      launchGen: 1,
+      getState() {
+        return { launchGen: 1 };
+      },
+      async acknowledgeSnapshot() {},
+    },
+    manualRouteSubtitle: null,
+    homeUntilLive: true,
+    get firstLiveSeen() {
+      return firstLiveSeen;
+    },
+    applyLobbySnapshot,
+    resetToHome: () => {},
+    stopLobbyPolling: () => {},
+    setStageDash: () => {},
+    now: 100,
+  };
+  const stranger = { ...pp, name: "LobbySteve" };
+  await handleLobbyPoll(
+    {
+      kind: "snapshot",
+      token: 1,
+      snapshot: liveSnap({ dashboardEligible: false, seq: 1, players: [stranger] }),
+    },
+    deps,
+  );
+  assert.equal(firstLiveSeen, true);
+  assert.equal(steps[0].enterDashboard, true);
+  assert.match(JSON.stringify(steps[0].view), new RegExp(UNSUPPORTED_NOTE));
+  deps.now = 200;
+  await handleLobbyPoll(
+    {
+      kind: "snapshot",
+      token: 2,
+      snapshot: liveSnap({ dashboardEligible: true, seq: 2, players: [stranger] }),
+    },
+    deps,
+  );
+  assert.equal(steps[1].enterDashboard, false);
+  assert.equal(steps[1].view.title, "Main Lobby");
+  assert.deepEqual(steps[1].view.blocks[0].rows, ["LobbySteve"]);
 });

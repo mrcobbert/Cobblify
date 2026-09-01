@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,11 @@ public final class LobbyExport {
     private static volatile boolean pending;
     /** Last supported canonical mode; consulted only when the sidebar Mode line is absent. */
     private static volatile String retainedSupportedMode;
+    /** Queue-tab party names, kept into GAME when {@code /party list} was never parsed. */
+    private static volatile List<String> retainedQueueParty = Collections.emptyList();
+    /** Last time evaluate saw QUEUE or GAME; hub-shaped samples inside this window are a Mode-line gap. */
+    private static volatile long lastQueueOrGameMs;
+    private static final long MATCH_GAP_MS = 2000L;
 
     // Background-thread only.
     private static String lastBody = "";
@@ -72,6 +78,13 @@ public final class LobbyExport {
 
     public static void rememberSupportedMode(String canonicalOrNull) {
         retainedSupportedMode = canonicalOrNull;
+    }
+
+    /** Test-only: drop retain, queue-party memory, and the Mode-line gap clock. */
+    public static void resetEligibilityStateForTest() {
+        retainedSupportedMode = null;
+        retainedQueueParty = Collections.emptyList();
+        lastQueueOrGameMs = 0L;
     }
 
     private static void writeLoop() {
@@ -206,17 +219,37 @@ public final class LobbyExport {
     public static EvalResult evaluate(boolean inHypixel, boolean rawInBedwars,
                                       boolean queue, boolean game,
                                       String sidebarMode, String retainedIfNoSidebar) {
+        return evaluate(inHypixel, rawInBedwars, queue, game, sidebarMode, retainedIfNoSidebar,
+                System.currentTimeMillis());
+    }
+
+    public static EvalResult evaluate(boolean inHypixel, boolean rawInBedwars,
+                                      boolean queue, boolean game,
+                                      String sidebarMode, String retainedIfNoSidebar,
+                                      long nowMs) {
         EvalResult r = new EvalResult();
         if (!inHypixel) {
             r.context = "MENU";
+            lastQueueOrGameMs = 0L;
             return r;
         }
         if (game) r.context = "GAME";
         else if (queue) r.context = "QUEUE";
         else r.context = "LOBBY";
 
+        if (queue || game) lastQueueOrGameMs = nowMs;
+
         if (!queue && !game) {
-            r.eligible = rawInBedwars;
+            boolean modeLineGap = rawInBedwars && lastQueueOrGameMs > 0L
+                    && nowMs - lastQueueOrGameMs < MATCH_GAP_MS;
+            if (modeLineGap) {
+                r.eligible = false;
+                if (isSupportedDashboardMode(retainedIfNoSidebar)) {
+                    r.modeToRetain = dashboardModeLabel(retainedIfNoSidebar);
+                }
+            } else {
+                r.eligible = rawInBedwars;
+            }
         } else if (sidebarMode != null && !sidebarMode.trim().isEmpty()) {
             if (isSupportedDashboardMode(sidebarMode)) {
                 r.eligible = true;
@@ -265,6 +298,20 @@ public final class LobbyExport {
         if (!usedQueueTab && chatParty != null) {
             for (int i = 0; i < chatParty.size(); i++) {
                 String name = chatParty.get(i);
+                if (name != null) lobby.yourParty.add(make.player(name));
+            }
+        }
+        if (usedQueueTab) {
+            List<String> names = new ArrayList<String>(lobby.yourParty.size());
+            for (int i = 0; i < lobby.yourParty.size(); i++) {
+                names.add(lobby.yourParty.get(i).name);
+            }
+            retainedQueueParty = Collections.unmodifiableList(names);
+        } else if ("MENU".equals(r.context) || (r.eligible && "LOBBY".equals(r.context))) {
+            retainedQueueParty = Collections.emptyList();
+        } else if (lobby.yourParty.isEmpty() && "GAME".equals(r.context) && !retainedQueueParty.isEmpty()) {
+            for (int i = 0; i < retainedQueueParty.size(); i++) {
+                String name = retainedQueueParty.get(i);
                 if (name != null) lobby.yourParty.add(make.player(name));
             }
         }

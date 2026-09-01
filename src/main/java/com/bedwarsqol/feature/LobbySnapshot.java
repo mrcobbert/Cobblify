@@ -2,6 +2,8 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.stats.BedwarsMode;
+import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
@@ -60,13 +62,22 @@ public final class LobbySnapshot {
         boolean inHypixel = HypixelContext.isOnHypixel();
         boolean queue = HypixelContext.isInBedwarsQueue();
         boolean game = HypixelContext.isInActiveBedwarsGame();
+        String sidebar = HypixelContext.sidebarModeLabel();
+        String retained = LobbyExport.retainedSupportedMode();
+        if (game && (sidebar == null || sidebar.trim().isEmpty())
+                && !LobbyExport.isSupportedDashboardMode(retained)) {
+            BedwarsMode detected = BedwarsModeDetector.current();
+            if (detected != BedwarsMode.UNKNOWN) {
+                sidebar = detected.label();
+            }
+        }
         LobbyExport.EvalResult r = LobbyExport.evaluate(
                 inHypixel,
                 HypixelContext.sidebarSaysBedwars(),
                 queue,
                 game,
-                HypixelContext.sidebarModeLabel(),
-                LobbyExport.retainedSupportedMode());
+                sidebar,
+                retained);
         LobbyExport.rememberSupportedMode(r.modeToRetain);
         lobby.inHypixel = inHypixel;
 
