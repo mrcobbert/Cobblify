@@ -44,6 +44,12 @@ public final class LobbyExport {
     /** Last time evaluate saw QUEUE or GAME; hub-shaped samples inside this window are a Mode-line gap. */
     private static volatile long lastQueueOrGameMs;
     private static final long MATCH_GAP_MS = 2000L;
+    /**
+     * True after a present unsupported Mode line (Castle, Rush, …). Cleared by a supported Mode
+     * line, an eligible hub, or leaving Hypixel. Blocks the team-shape detector fallback so a
+     * Doubles Rush game is not injected as {@code Doubles}.
+     */
+    private static volatile boolean sawUnsupportedMode;
 
     // Background-thread only.
     private static String lastBody = "";
@@ -80,11 +86,17 @@ public final class LobbyExport {
         retainedSupportedMode = canonicalOrNull;
     }
 
-    /** Test-only: drop retain, queue-party memory, and the Mode-line gap clock. */
+    /** True after an explicit unsupported Mode line; see {@code sawUnsupportedMode}. */
+    public static boolean sawUnsupportedMode() {
+        return sawUnsupportedMode;
+    }
+
+    /** Test-only: drop retain, queue-party memory, the Mode-line gap clock, and the Rush sticky. */
     public static void resetEligibilityStateForTest() {
         retainedSupportedMode = null;
         retainedQueueParty = Collections.emptyList();
         lastQueueOrGameMs = 0L;
+        sawUnsupportedMode = false;
     }
 
     private static void writeLoop() {
@@ -231,6 +243,7 @@ public final class LobbyExport {
         if (!inHypixel) {
             r.context = "MENU";
             lastQueueOrGameMs = 0L;
+            sawUnsupportedMode = false;
             return r;
         }
         if (game) r.context = "GAME";
@@ -249,11 +262,15 @@ public final class LobbyExport {
                 }
             } else {
                 r.eligible = rawInBedwars;
+                if (r.eligible) sawUnsupportedMode = false;
             }
         } else if (sidebarMode != null && !sidebarMode.trim().isEmpty()) {
             if (isSupportedDashboardMode(sidebarMode)) {
                 r.eligible = true;
                 r.modeToRetain = dashboardModeLabel(sidebarMode);
+                sawUnsupportedMode = false;
+            } else {
+                sawUnsupportedMode = true;
             }
         } else if (isSupportedDashboardMode(retainedIfNoSidebar)) {
             r.eligible = true;
@@ -309,7 +326,8 @@ public final class LobbyExport {
             retainedQueueParty = Collections.unmodifiableList(names);
         } else if ("MENU".equals(r.context) || (r.eligible && "LOBBY".equals(r.context))) {
             retainedQueueParty = Collections.emptyList();
-        } else if (lobby.yourParty.isEmpty() && "GAME".equals(r.context) && !retainedQueueParty.isEmpty()) {
+        } else if (lobby.yourParty.isEmpty() && !retainedQueueParty.isEmpty()
+                && ("GAME".equals(r.context) || !r.eligible)) {
             for (int i = 0; i < retainedQueueParty.size(); i++) {
                 String name = retainedQueueParty.get(i);
                 if (name != null) lobby.yourParty.add(make.player(name));

@@ -65,7 +65,8 @@ public final class LobbySnapshot {
         String sidebar = HypixelContext.sidebarModeLabel();
         String retained = LobbyExport.retainedSupportedMode();
         if (game && (sidebar == null || sidebar.trim().isEmpty())
-                && !LobbyExport.isSupportedDashboardMode(retained)) {
+                && !LobbyExport.isSupportedDashboardMode(retained)
+                && !LobbyExport.sawUnsupportedMode()) {
             BedwarsMode detected = BedwarsModeDetector.current();
             if (detected != BedwarsMode.UNKNOWN) {
                 sidebar = detected.label();

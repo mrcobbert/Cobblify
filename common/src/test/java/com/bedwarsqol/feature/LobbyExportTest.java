@@ -214,6 +214,37 @@ public class LobbyExportTest {
         assertTrue(sink.names.isEmpty());
     }
 
+    @Test
+    public void queueTabPartySurvivesIntoUnsupportedLobby() {
+        LobbyExport.EvalResult queue = LobbyExport.evaluate(true, true, true, false, "Castle", null, 1000L);
+        LobbyExport.applySnapshot(new LobbyExport.Lobby(), queue, Collections.<String>emptyList(),
+                Arrays.asList(new LobbyExport.TabRow("Alice"), new LobbyExport.TabRow("Bob")),
+                null, null, new RecordingSink());
+        LobbyExport.EvalResult skywars = LobbyExport.evaluate(true, false, false, false, null, null, 4000L);
+        assertEquals("LOBBY", skywars.context);
+        assertFalse(skywars.eligible);
+        RecordingSink sink = new RecordingSink();
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        LobbyExport.applySnapshot(lobby, skywars, Collections.<String>emptyList(),
+                Collections.<LobbyExport.TabRow>emptyList(), null, null, sink);
+        assertEquals(2, lobby.yourParty.size());
+        assertEquals("Alice", lobby.yourParty.get(0).name);
+        assertEquals("Bob", lobby.yourParty.get(1).name);
+        assertTrue(lobby.players.isEmpty());
+        assertTrue(sink.names.isEmpty());
+    }
+
+    @Test
+    public void doublesRushQueueBlocksTeamShapeFallback() {
+        LobbyExport.evaluate(true, true, true, false, "Doubles Rush", null, 1000L);
+        assertTrue(LobbyExport.sawUnsupportedMode());
+        LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, null, null, 1500L);
+        assertFalse(game.eligible);
+        assertTrue(LobbyExport.sawUnsupportedMode());
+        LobbyExport.evaluate(true, true, true, false, "Solo", null, 5000L);
+        assertFalse(LobbyExport.sawUnsupportedMode());
+    }
+
     private static final class RecordingSink implements LobbyExport.FetchSink {
         final List<String> names = new ArrayList<String>();
 
