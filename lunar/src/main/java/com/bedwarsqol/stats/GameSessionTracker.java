@@ -75,6 +75,8 @@ public final class GameSessionTracker {
     // ---- client-thread driver ----
     private static final GameSessionTracker INSTANCE = new GameSessionTracker();
     private static volatile int CURRENT;
+    /** Last world identity observed on the driver tick; used to clear BedWars grace first. */
+    private static Object lastWorldForGrace;
 
     /** The live session id (client-thread advanced; read by all Urchin consumers). */
     public static int currentSessionId() {
@@ -86,6 +88,10 @@ public final class GameSessionTracker {
         Minecraft mc = Minecraft.getMinecraft();
         long now = System.currentTimeMillis();
         Object worldObj = mc == null ? null : mc.theWorld;
+        if (worldObj != lastWorldForGrace) {
+            HypixelContext.clearBedwarsGrace();
+            lastWorldForGrace = worldObj;
+        }
         boolean activeGame = HypixelContext.isInActiveBedwarsGame();
 
         int before = CURRENT;

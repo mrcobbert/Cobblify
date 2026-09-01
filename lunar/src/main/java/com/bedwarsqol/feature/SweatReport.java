@@ -56,7 +56,8 @@ public final class SweatReport {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null) return;
 
-        boolean inActive = HypixelContext.isOnHypixel() && HypixelContext.isInActiveBedwarsGame();
+        boolean inActive = HypixelContext.isOnHypixel() && HypixelContext.isInActiveBedwarsGame()
+                && HypixelContext.isSupportedBedwarsSurface();
         if (!inActive) {
             if (++notActiveSlots >= REARM_GRACE_SLOTS) rearm("left active game");
             return;

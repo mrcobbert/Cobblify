@@ -36,6 +36,8 @@ public final class LobbyExport {
 
     private static volatile Lobby latest;
     private static volatile boolean pending;
+    /** Last supported canonical mode; consulted only when the sidebar Mode line is absent. */
+    private static volatile String retainedSupportedMode;
 
     // Background-thread only.
     private static String lastBody = "";
@@ -62,6 +64,14 @@ public final class LobbyExport {
     /** Force the next debounce cycle to re-evaluate (e.g. a stat just resolved to a real value). */
     public static void markDirty() {
         pending = true;
+    }
+
+    public static String retainedSupportedMode() {
+        return retainedSupportedMode;
+    }
+
+    public static void rememberSupportedMode(String canonicalOrNull) {
+        retainedSupportedMode = canonicalOrNull;
     }
 
     private static void writeLoop() {

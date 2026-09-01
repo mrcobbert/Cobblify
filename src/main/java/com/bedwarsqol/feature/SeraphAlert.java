@@ -50,7 +50,7 @@ public final class SeraphAlert {
         if (cfg == null || !cfg.seraphTags) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null || mc.getNetHandler() == null) return;
-        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return;
+        if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return;
 
         int session = GameSessionTracker.currentSessionId();
         if (session != currentSession) {

@@ -1,5 +1,6 @@
 package com.bedwarsqol.stats;
 
+import com.bedwarsqol.feature.LobbyExport;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.scoreboard.Scoreboard;
@@ -39,6 +40,27 @@ public final class HypixelContext {
             return true;
         }
         return System.currentTimeMillis() - lastInBedwarsMs < CONTEXT_GRACE_MS;
+    }
+
+    /** Raw sidebar title, no grace. Overlay eligibility must not treat SkyWars as the BedWars hub. */
+    public static boolean sidebarSaysBedwars() {
+        return rawIsInBedwars();
+    }
+
+    /** Drop the BedWars grace so a world change cannot leak hub eligibility into SkyWars. */
+    public static void clearBedwarsGrace() {
+        lastInBedwarsMs = 0L;
+    }
+
+    /** Hub or a supported Solo/Doubles/3s/4s/4v4 queue/game on exact Hypixel. */
+    public static boolean isSupportedBedwarsSurface() {
+        return LobbyExport.evaluate(
+                isOnHypixel(),
+                rawIsInBedwars(),
+                isInBedwarsQueue(),
+                isInActiveBedwarsGame(),
+                sidebarModeLabel(),
+                LobbyExport.retainedSupportedMode()).eligible;
     }
 
     private static boolean rawIsInBedwars() {

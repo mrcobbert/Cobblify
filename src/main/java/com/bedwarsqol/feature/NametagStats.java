@@ -43,7 +43,7 @@ public class NametagStats {
         ClientSettings cfg = BedwarsQol.config;
         // Draw when Player Stats OR an Urchin/Seraph nametag badge needs this identity.
         if (!UrchinTag.needsNametagIdentity(cfg) && !SeraphTag.needsNametagIdentity(cfg)) return;
-        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return;
+        if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return;
 
         // RenderLivingEvent.Specials.Post fires even when the vanilla name is hidden,
         // so mirror vanilla's visibility rules: never draw over ourselves, an invisible

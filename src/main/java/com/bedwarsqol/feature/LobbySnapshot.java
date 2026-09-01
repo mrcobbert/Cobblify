@@ -2,8 +2,6 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
-import com.bedwarsqol.stats.BedwarsMode;
-import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
@@ -43,13 +41,6 @@ public final class LobbySnapshot {
     private static final long CAPTURE_INTERVAL_MS = 400L;
     private static volatile long lastCaptureMs;
 
-    /**
-     * Last queue/game mode label written to {@code lobby.json}. The sidebar {@code Mode:} line is
-     * gone once the match starts, so we keep the queue value (and 4v4 / dreams the detector
-     * does not map) until the player is back in the hub or menu.
-     */
-    private static volatile String lastMode;
-
     private LobbySnapshot() {}
 
     /** Build and submit a snapshot, throttled. Never throws. */
@@ -67,18 +58,21 @@ public final class LobbySnapshot {
     private static LobbyExport.Lobby build(Minecraft mc) {
         LobbyExport.Lobby lobby = new LobbyExport.Lobby();
         boolean inHypixel = HypixelContext.isOnHypixel();
+        boolean queue = HypixelContext.isInBedwarsQueue();
+        boolean game = HypixelContext.isInActiveBedwarsGame();
+        LobbyExport.EvalResult r = LobbyExport.evaluate(
+                inHypixel,
+                HypixelContext.sidebarSaysBedwars(),
+                queue,
+                game,
+                HypixelContext.sidebarModeLabel(),
+                LobbyExport.retainedSupportedMode());
+        LobbyExport.rememberSupportedMode(r.modeToRetain);
         lobby.inHypixel = inHypixel;
-        if (HypixelContext.isInActiveBedwarsGame()) lobby.context = "GAME";
-        else if (HypixelContext.isInBedwarsQueue()) lobby.context = "QUEUE";
-        else if (inHypixel) lobby.context = "LOBBY";
-        else lobby.context = "MENU";
-        fillMode(lobby);
 
         if (mc != null && mc.thePlayer != null) {
             lobby.self = mc.thePlayer.getName();
-            // Nametag stats intentionally skip the local entity, so self otherwise resolves only as
-            // a side effect of opening tab. Prime the shared cache here; both dashboard and tab read it.
-            if ("GAME".equals(lobby.context) && mc.thePlayer.getGameProfile() != null) {
+            if (r.autoFetch && game && mc.thePlayer.getGameProfile() != null) {
                 StatsCache.ensureFetched(mc.thePlayer.getGameProfile().getId(), StatsCache.PRIORITY_TAB);
             }
         }
@@ -87,16 +81,9 @@ public final class LobbySnapshot {
         lobby.partyCount = (cfg != null && cfg.partyJoinAlert)
                 ? Integer.valueOf(PartyJoinAlert.partiesInLobby()) : null;
 
-        // Your party rides along on every context (the launcher pins it at the top).
-        for (String name : LobbyChatState.party()) {
-            lobby.yourParty.add(player(name, null));
-        }
-
-        if ("QUEUE".equals(lobby.context)) {
-            // Hypixel leaves party members as real player rows in the otherwise-obfuscated queue tab.
-            // Treat every real-shaped, non-NPC row there as authoritative party membership. Keep the
-            // retained /party-list roster only as a fail-soft fallback while the tab is unavailable.
-            List<LobbyExport.Player> visibleParty = new ArrayList<LobbyExport.Player>();
+        final Map<String, UUID> ids = new LinkedHashMap<String, UUID>();
+        List<LobbyExport.TabRow> tab = new ArrayList<LobbyExport.TabRow>();
+        if (r.scanFullRoster || r.readQueuePartyFromTab) {
             NetHandlerPlayClient net = mc == null ? null : mc.getNetHandler();
             if (net != null) {
                 for (NetworkPlayerInfo info : net.getPlayerInfoMap()) {
@@ -106,65 +93,30 @@ public final class LobbySnapshot {
                     UUID id = gp.getId();
                     if (name == null || id == null || !NAME.matcher(name).matches()) continue;
                     if (id.version() == 2) continue;
-                    StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
-                    visibleParty.add(player(name, id));
+                    ids.put(name, id);
+                    String team = (r.scanFullRoster && "GAME".equals(r.context))
+                            ? teamName(TeamColors.code(name)) : null;
+                    tab.add(new LobbyExport.TabRow(name, team));
                 }
             }
-            if (!visibleParty.isEmpty()) {
-                lobby.yourParty.clear();
-                lobby.yourParty.addAll(visibleParty);
-            }
-            // Keep public queue chatters for the separate launcher section. The launcher removes
-            // anyone already identified above as party, including a nicked member's current tab name.
-            for (String name : LobbyChatState.queueTypers(GameSessionTracker.currentSessionId())) {
-                lobby.players.add(player(name, null));
-            }
-        } else if ("LOBBY".equals(lobby.context) || "GAME".equals(lobby.context)) {
-            boolean grouped = "GAME".equals(lobby.context);
-            Map<String, LobbyExport.Team> teams = new LinkedHashMap<String, LobbyExport.Team>();
-            NetHandlerPlayClient net = mc == null ? null : mc.getNetHandler();
-            if (net != null) {
-                for (NetworkPlayerInfo info : net.getPlayerInfoMap()) {
-                    if (info == null || info.getGameProfile() == null) continue;
-                    GameProfile gp = info.getGameProfile();
-                    String name = gp.getName();
-                    UUID id = gp.getId();
-                    if (name == null || id == null || !NAME.matcher(name).matches()) continue;
-                    if (id.version() == 2) continue; // Hypixel NPC rows are never players
-                    LobbyExport.Player p = player(name, id);
-                    lobby.players.add(p);
-                    if (grouped) {
-                        String teamName = teamName(TeamColors.code(name));
-                        LobbyExport.Team team = teams.get(teamName);
-                        if (team == null) {
-                            team = new LobbyExport.Team(teamName);
-                            teams.put(teamName, team);
-                        }
-                        team.players.add(p);
-                    }
-                }
-            }
-            if (grouped) lobby.teams.addAll(teams.values());
         }
-        return lobby;
-    }
 
-    /** Set {@link LobbyExport.Lobby#mode} for QUEUE/GAME; clear it in the hub and menu. */
-    private static void fillMode(LobbyExport.Lobby lobby) {
-        if (!"QUEUE".equals(lobby.context) && !"GAME".equals(lobby.context)) {
-            lastMode = null;
-            lobby.mode = null;
-            return;
-        }
-        String label = LobbyExport.dashboardModeLabel(HypixelContext.sidebarModeLabel());
-        if (label == null) {
-            BedwarsMode detected = BedwarsModeDetector.current();
-            if (detected != BedwarsMode.UNKNOWN) {
-                label = LobbyExport.dashboardModeLabel(detected.label());
-            }
-        }
-        if (label != null) lastMode = label;
-        lobby.mode = lastMode;
+        List<String> extra = (r.eligible && "QUEUE".equals(r.context))
+                ? LobbyChatState.queueTypers(GameSessionTracker.currentSessionId())
+                : null;
+        LobbyExport.applySnapshot(lobby, r, LobbyChatState.party(), tab, extra,
+                new LobbyExport.PlayerFactory() {
+                    public LobbyExport.Player player(String name) {
+                        return LobbySnapshot.player(name, ids.get(name));
+                    }
+                },
+                new LobbyExport.FetchSink() {
+                    public void fetch(LobbyExport.TabRow row) {
+                        UUID id = ids.get(row.name);
+                        if (id != null) StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
+                    }
+                });
+        return lobby;
     }
 
     /** Build one player row: identity from name/UUID, stats from the cache (LOADING when not yet resolved). */

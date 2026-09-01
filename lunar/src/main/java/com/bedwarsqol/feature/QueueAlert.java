@@ -74,7 +74,8 @@ public final class QueueAlert {
         // Queue only — NOT the Bedwars hub, which shares the "BED WARS" sidebar and has no active
         // game either. The hub's chat traffic would burn the lookup cap on players we're not queued
         // with; only a real pregame queue lists the match being assembled.
-        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInBedwarsQueue()) return;
+        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInBedwarsQueue()
+                || !HypixelContext.isSupportedBedwarsSurface()) return;
 
         int session = GameSessionTracker.currentSessionId();
         if (session != currentSession) {

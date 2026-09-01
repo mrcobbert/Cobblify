@@ -48,7 +48,7 @@ public final class UrchinAlert {
         if (cfg == null || !cfg.urchinTags) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null || mc.getNetHandler() == null) return;
-        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return;
+        if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return;
 
         int session = GameSessionTracker.currentSessionId();
         if (session != currentSession) {

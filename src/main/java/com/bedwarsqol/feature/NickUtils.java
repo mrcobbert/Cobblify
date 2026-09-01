@@ -283,7 +283,9 @@ public final class NickUtils {
                 case PENDING:
                     // force: a stale pre-rankCode cache entry reads UNKNOWN; upgrade it with a fresh
                     // lookup now instead of staying pending until the full TTL expires.
-                    StatsCache.ensureFetchedByName(real, StatsCache.PRIORITY_TAB, true);
+                    if (HypixelContext.isSupportedBedwarsSurface()) {
+                        StatsCache.ensureFetchedByName(real, StatsCache.PRIORITY_TAB, true);
+                    }
                     break;
                 default: // DROP — this account cannot have nicked
                     break;
@@ -394,7 +396,9 @@ public final class NickUtils {
             int resolved = 0;
             for (String[] d : denicks) {
                 if (StatsCache.getCachedByName(d[1]) != null) resolved++;
-                else StatsCache.ensureFetchedByName(d[1], StatsCache.PRIORITY_TAB);
+                else if (HypixelContext.isSupportedBedwarsSurface()) {
+                    StatsCache.ensureFetchedByName(d[1], StatsCache.PRIORITY_TAB);
+                }
             }
             if (resolved < denicks.size() && !timedOut) return;
         }
