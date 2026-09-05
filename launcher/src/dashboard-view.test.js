@@ -73,13 +73,14 @@ test("first live ineligible snapshot still enters the dashboard", () => {
   assert.equal(later.enterDashboard, false);
 });
 
-test("unsupported view keeps party, hides others, and uses the exact note", () => {
+test("unsupported view hides everyone and uses the exact note", () => {
   const view = viewUnsupported(liveSnap({ dashboardEligible: false }));
   const html = JSON.stringify(view);
   assert.match(html, new RegExp(UNSUPPORTED_NOTE));
-  assert.match(html, /PartyPal/);
+  assert.doesNotMatch(html, /PartyPal/);
   assert.doesNotMatch(html, /SkyWarsRandom/);
-  assert.equal(view.title, "Bed Wars");
+  assert.equal(view.bare, true);
+  assert.equal(view.title, "");
 });
 
 test("ineligible then eligible restores the roster view without a relaunch", () => {

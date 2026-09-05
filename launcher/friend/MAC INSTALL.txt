@@ -1,0 +1,17 @@
+COBBLIFY LAUNCHER - MAC INSTALL
+==============================
+
+1. Unzip the download.
+2. Drag "Cobblify Launcher.app" into your Applications folder.
+3. Open it from Applications. Do not run it from Downloads.
+
+Cobblify does not use a paid Apple certificate, so macOS may block the first
+open. If it does:
+
+1. Open System Settings.
+2. Choose Privacy & Security.
+3. Scroll to Security and click Open Anyway for Cobblify Launcher.
+4. Confirm with your password or Touch ID.
+
+Only install updates shown inside Cobblify Launcher. Ask Jacob if the download
+or update does not look right.

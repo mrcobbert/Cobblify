@@ -8,22 +8,13 @@ guidance still applies.
 
 ## One-time setup
 
-Generate one updater keypair from `launcher/`:
+The owner's account, credential, approval, and real-Mac steps are in
+[MAC_RELEASE_CHECKLIST.md](MAC_RELEASE_CHECKLIST.md). Generate the updater key
+outside the repository and keep tested backups of its private key and password.
 
-```sh
-npx tauri signer generate --write-keys cobblify-updater.key
-```
-
-Keep the encrypted private key and password in two protected GitHub
-environments (`launcher-release` and `launcher-stable`). Keep a tested offline
-backup of the private key and password in separate locations. Losing the key
-ends the update chain for every installed launcher; replacing it requires a
-manual reinstall. The public key is safe to store as the
-`TAURI_SIGNING_PUBLIC_KEY` secret, but it must be the base64 value Tauri emits,
-not a path.
-
-Create owner Cloudflare resources from `server/stats-worker/`, then uncomment
-their bindings in `wrangler.owner.toml` using the returned D1 database id:
+The owner's Cloudflare resources were provisioned on September 2, 2026. For a
+replacement account, create them from `server/stats-worker/`, then put the
+returned D1 database id in `wrangler.owner.toml`:
 
 ```sh
 npx wrangler r2 bucket create cobblify-launcher-updates
@@ -37,29 +28,29 @@ The R2 bucket must remain private. `UPDATE_URL_SECRET` is a separate random
 secret used only for 15-minute download tickets; it is not the backend token or
 the Minisign key.
 
-Configure the protected GitHub environments with required reviewers and these
-values:
-
-- Secrets: `COBBLIFY_BACKEND_URL`, `COBBLIFY_BACKEND_TOKEN`,
-  `COBBLIFY_UPDATE_URL`, `WEAVE_AGENT_B64`, `TAURI_SIGNING_PRIVATE_KEY`,
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `TAURI_SIGNING_PUBLIC_KEY`,
-  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and
-  `R2_SECRET_ACCESS_KEY`.
-- Variable: `COBBLIFY_UPDATE_BUCKET=cobblify-launcher-updates`.
-
-The Cloudflare API token needs only R2 object-write access for the selected
-account. The R2 S3 credentials are used only to prune old immutable releases.
+The GitHub Actions secrets and variable are listed in that checklist. They are
+stored once at repository level; each workflow job references only the values
+it needs. The Cloudflare API token needs only R2 object-write access for the
+selected account. The R2 S3 credentials are used only to prune old immutable
+releases.
 
 ## Release and promotion
 
 1. Align every version source; `tools/check-release-version.sh` must pass.
-2. Run `Launcher Update Candidate` manually with the exact version, minimum
-   supported version, short notes, and an HTTPS release-notes URL.
-3. Leave **promote** off for a candidate-only build. Download and test both
-   30-day workflow artifacts on real machines.
-4. Re-run the same trusted ref with **promote** on. The protected stable job
-   uploads both immutable artifacts first and writes `channels/stable.json`
-   last. That final write is the atomic channel promotion.
+2. Run `Launcher Update Candidate` manually with the exact version.
+3. After it finishes, download and test its Mac installation ZIP. Record the run
+   ID shown in the workflow summary.
+4. If it passes, manually run `Promote Launcher Update` with that candidate run
+   ID, version, minimum supported version, short notes, and a public HTTPS
+   release-notes URL.
+5. Promotion verifies the source workflow, successful run, commit, run ID,
+   version, and exact artifact counts. It downloads the stored candidate files,
+   never rebuilds them, and refuses to overwrite an existing version.
+6. Promotion uploads both immutable update artifacts first and writes
+   `channels/stable.json` last. That final write is the atomic channel switch.
+
+If a candidate fails testing, do not run promotion. Build a higher corrected
+version instead.
 
 Promotion retains the newest three immutable release prefixes. There is no
 beta channel, staged rollout, remote rollback button, or per-device enrollment;

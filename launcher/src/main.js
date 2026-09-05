@@ -1297,6 +1297,15 @@ function sheetHtml(view, n) {
   // blocks refuse to divide - one team bigger than the share, say. The sheet is
   // told that number, never the wish, so it can't lay out an empty track.
   const k = cols.length;
+  const body = cols
+    .map((col) => {
+      const labels = !view.bare && k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
+      return `<div class="col">${labels}${col.map((u) => u.html).join("")}</div>`;
+    })
+    .join("");
+  if (view.bare) {
+    return `<div class="sheet bare" style="--n:${k}">${body}</div>`;
+  }
   const ctx = `<span class="ctx"><span class="live"></span>
       <span class="ctx-title">${view.title}</span>
       <span class="ctx-sub">${view.sub}</span></span>`;
@@ -1307,12 +1316,6 @@ function sheetHtml(view, n) {
     k > 1
       ? `<div class="dash-sticky ctx-bar">${ctx}</div>`
       : `<div class="dash-sticky col-head">${ctx}${STAT_LABELS}</div>`;
-  const body = cols
-    .map((col) => {
-      const labels = k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
-      return `<div class="col">${labels}${col.map((u) => u.html).join("")}</div>`;
-    })
-    .join("");
   return `<div class="sheet" style="--n:${k}">${head}${body}</div>`;
 }
 

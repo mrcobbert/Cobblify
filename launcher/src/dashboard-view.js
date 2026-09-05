@@ -1,12 +1,4 @@
-import { dashboardParty } from "./roster-identity.js";
-
-const NOTE = "Not available in this mode.";
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
-}
+const NOTE = "Not Available";
 
 /** Absent flag (old mod) is eligible. Only an explicit false hides the roster. */
 export function isDashboardEligible(d) {
@@ -22,19 +14,8 @@ export function liveDashboardAction(d, { firstLiveSeen = false, wasDisconnected 
 }
 
 export function viewUnsupported(d) {
-  const party = dashboardParty(d);
   const note = `<div class="empty-note">${NOTE}</div>`;
-  const blocks = [{ rows: [], foot: note }];
-  if (party.length) {
-    blocks.push({
-      head: `<div class="sect"><h3>Your Party</h3><span class="n">${party.length}</span></div>`,
-      rows: party.map(
-        (p) =>
-          `<div class="prow"><div class="pname"><div class="identity"><span class="pn">${esc(p.name)}</span></div></div></div>`,
-      ),
-    });
-  }
-  return { title: "Bed Wars", sub: "", blocks };
+  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true };
 }
 
 /** Choose the unsupported empty state or the caller's normal roster view. */

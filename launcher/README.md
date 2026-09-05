@@ -34,8 +34,9 @@ minimum version blocks only a new game launch—it never interrupts an active
 session. Ordinary releases can be deferred for the current launcher run.
 
 Local builds deliberately compile without update credentials and stay fully
-usable. Release builds and stable promotion are performed by the protected
-`Launcher Update Candidate` workflow. Provisioning, key backup, required
+usable. `Launcher Update Candidate` builds private platform artifacts; the
+separate manually started `Promote Launcher Update` workflow publishes those
+exact stored files without rebuilding them. Provisioning, key backup, required
 secrets, and promotion details are in [UPDATE_RELEASE.md](UPDATE_RELEASE.md).
 
 ## How it works

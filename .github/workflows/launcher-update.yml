@@ -6,19 +6,6 @@ on:
       version:
         description: Exact repo version to build
         required: true
-      minimum_supported_version:
-        description: Oldest launcher allowed to start a new game
-        required: true
-      notes:
-        description: Short launcher update note
-        required: true
-      release_notes_url:
-        description: HTTPS release notes URL
-        required: true
-      promote:
-        description: Promote this candidate to stable after both builds pass
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -54,13 +41,18 @@ jobs:
         env:
           BACKEND_URL: ${{ secrets.COBBLIFY_BACKEND_URL }}
           BACKEND_TOKEN: ${{ secrets.COBBLIFY_BACKEND_TOKEN }}
-          WEAVE_AGENT_B64: ${{ secrets.WEAVE_AGENT_B64 }}
+          WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
+          WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
           mkdir -p "$RUNNER_TEMP/gradle-home"
           printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
           GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew :1.8.9-forge:assemble --no-daemon
           (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
-          printf '%s' "$WEAVE_AGENT_B64" | base64 --decode > "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar"
+          test -n "$WEAVE_AGENT_PASSPHRASE"
+          node launcher/tools/weave-agent-crypto.mjs decrypt \
+            launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
+            "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar"
+          node launcher/tools/verify-file-sha256.mjs "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" "$WEAVE_AGENT_SHA256"
           node launcher/tools/stage-update-resources.mjs launcher/src-tauri/resources \
             "lunar/build/libs/Cobblify-Lunar-${{ inputs.version }}.jar" \
             "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" \
@@ -76,16 +68,34 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm ci
+          npm test
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          npx tauri build --target universal-apple-darwin --bundles app --no-sign --ci \
+          npx tauri build --target universal-apple-darwin --bundles app --ci \
             --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          app_count=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d | wc -l | tr -d '[:space:]')
+          test "$app_count" = 1
+          app=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d -print -quit)
+          codesign --verify --deep --strict "$app"
+          install_dir="$RUNNER_TEMP/Cobblify-Mac-${{ inputs.version }}"
+          mkdir "$install_dir"
+          cp -R "$app" "$install_dir/"
+          cp "friend/MAC INSTALL.txt" "$install_dir/"
+          install_zip="$bundle_dir/Cobblify-Launcher-macos-universal.zip"
+          ditto -c -k --sequesterRsrc "$install_dir" "$install_zip"
+          verify_dir="$RUNNER_TEMP/verify-mac-zip"
+          mkdir "$verify_dir"
+          ditto -x -k "$install_zip" "$verify_dir"
+          codesign --verify --deep --strict "$verify_dir/$(basename "$app")"
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-macos-${{ inputs.version }}
           path: |
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/Cobblify-Launcher-macos-universal.zip
           retention-days: 30
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
@@ -115,13 +125,18 @@ jobs:
         env:
           BACKEND_URL: ${{ secrets.COBBLIFY_BACKEND_URL }}
           BACKEND_TOKEN: ${{ secrets.COBBLIFY_BACKEND_TOKEN }}
-          WEAVE_AGENT_B64: ${{ secrets.WEAVE_AGENT_B64 }}
+          WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
+          WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
           mkdir -p "$RUNNER_TEMP/gradle-home"
           printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
           GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat :1.8.9-forge:assemble --no-daemon
           (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
-          printf '%s' "$WEAVE_AGENT_B64" | base64 --decode > "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar"
+          test -n "$WEAVE_AGENT_PASSPHRASE"
+          node launcher/tools/weave-agent-crypto.mjs decrypt \
+            launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
+            "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar"
+          node launcher/tools/verify-file-sha256.mjs "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" "$WEAVE_AGENT_SHA256"
           node launcher/tools/stage-update-resources.mjs launcher/src-tauri/resources \
             "lunar/build/libs/Cobblify-Lunar-${{ inputs.version }}.jar" \
             "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" \
@@ -137,6 +152,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm ci
+          npm test
           npx tauri build --bundles nsis --no-sign --ci \
             --config '{"bundle":{"createUpdaterArtifacts":true}}'
       - uses: actions/upload-artifact@v4
@@ -146,60 +162,34 @@ jobs:
             launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
             launcher/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
           retention-days: 30
+          if-no-files-found: error
 
-  promote:
-    if: inputs.promote
+  ready:
     needs: [macos, windows]
     runs-on: ubuntu-latest
-    environment: launcher-stable
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: launcher-update-*-${{ inputs.version }}
-          path: candidate
-          merge-multiple: true
-      - name: Build and sign immutable manifest
-        working-directory: launcher
+      - name: Record candidate identity
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           RELEASE_VERSION: ${{ inputs.version }}
-          MINIMUM_VERSION: ${{ inputs.minimum_supported_version }}
-          RELEASE_NOTES: ${{ inputs.notes }}
-          RELEASE_NOTES_URL: ${{ inputs.release_notes_url }}
         run: |
-          printf '{"minimumSupportedVersion":"%s"}' "$MINIMUM_VERSION" > ../candidate/policy.json
-          npm ci
-          npx tauri signer sign ../candidate/policy.json
-          mac=$(find ../candidate -name '*.app.tar.gz' -type f -print -quit)
-          win=$(find ../candidate -name '*-setup.exe' -type f -print -quit)
-          node tools/build-update-manifest.mjs ../candidate/stable.json \
-            "$RELEASE_VERSION" "$MINIMUM_VERSION" "$RELEASE_NOTES" "$RELEASE_NOTES_URL" \
-            "$mac" "$mac.sig" "$win" "$win.sig" ../candidate/policy.json.sig
-      - name: Upload candidate, then atomically promote stable manifest
-        working-directory: server/stats-worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
-        run: |
-          npm ci
-          npx wrangler r2 object put "$BUCKET/releases/${{ inputs.version }}/Cobblify-Launcher-macos-universal.app.tar.gz" --file ../../candidate/$(basename "$(find ../../candidate -name '*.app.tar.gz' -type f -print -quit)") --remote
-          npx wrangler r2 object put "$BUCKET/releases/${{ inputs.version }}/Cobblify-Launcher-windows-x86_64-setup.exe" --file ../../candidate/$(basename "$(find ../../candidate -name '*-setup.exe' -type f -print -quit)") --remote
-          npx wrangler r2 object put "$BUCKET/channels/stable.json" --file ../../candidate/stable.json --content-type application/json --remote
-      - name: Retain only the newest three immutable releases
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
-        run: |
-          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | sort -Vu)
-          printf '%s\n' "$versions" | sort -Vr | tail -n +4 | while read -r old; do
-            [ -z "$old" ] || aws s3 rm "s3://$BUCKET/releases/$old/" --recursive --endpoint-url "$R2_ENDPOINT"
-          done
+          mkdir candidate-metadata
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            --arg runId "$GITHUB_RUN_ID" \
+            '{version: $version, commit: $commit, runId: $runId}' \
+            > candidate-metadata/candidate.json
+          {
+            echo "## Candidate ready"
+            echo
+            echo "Test the Mac artifact from run \`$GITHUB_RUN_ID\`."
+            echo "If it passes, run **Promote Launcher Update** with candidate run ID \`$GITHUB_RUN_ID\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-update-metadata-${{ inputs.version }}
+          path: candidate-metadata/candidate.json
+          retention-days: 30
+          if-no-files-found: error

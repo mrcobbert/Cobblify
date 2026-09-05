@@ -21,6 +21,7 @@ check() {
 }
 
 check "lunar/build.gradle.kts" "$(sed -n 's/^version = "\([^"]*\)"$/\1/p' lunar/build.gradle.kts | head -1)"
+check "Lunar runtime VERSION" "$(sed -n 's/^[[:space:]]*public static final String VERSION = "\([^"]*\)";$/\1/p' lunar/src/main/java/com/bedwarsqol/BedwarsQol.java | head -1)"
 check "launcher/package.json" "$(read_json_version launcher/package.json)"
 check "launcher/package-lock.json" "$(read_json_version launcher/package-lock.json)"
 check "launcher/src-tauri/Cargo.toml" "$(read_toml_version launcher/src-tauri/Cargo.toml)"

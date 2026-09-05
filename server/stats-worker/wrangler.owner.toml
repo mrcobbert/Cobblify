@@ -52,13 +52,14 @@ crons = ["0 12 * * *"]
 # Optional: set after first deploy, e.g. WORKER_URL=https://bedwarsqol-stats.<subdomain>.workers.dev
 # Used by: npm run test:worker
 
-# Launcher update resources are not checked in because their account IDs are
-# deployment-specific. Provision once, then add these owner-only bindings:
-# [[r2_buckets]]
-# binding = "UPDATE_BUCKET"
-# bucket_name = "cobblify-launcher-updates"
-# [[d1_databases]]
-# binding = "UPDATE_EVENTS"
-# database_name = "cobblify-launcher-update-events"
-# database_id = "<database-id>"
-# Set the ticket-signing secret with: wrangler secret put UPDATE_URL_SECRET
+# Private launcher update artifacts and anonymous update-event retention. The
+# bucket has no public URL; downloads are streamed only through signed Worker
+# tickets. Set with: npx wrangler secret put UPDATE_URL_SECRET -c wrangler.owner.toml
+[[r2_buckets]]
+binding = "UPDATE_BUCKET"
+bucket_name = "cobblify-launcher-updates"
+
+[[d1_databases]]
+binding = "UPDATE_EVENTS"
+database_name = "cobblify-launcher-update-events"
+database_id = "11fa5f0b-2703-4bca-9bb6-736b54fc69a6"

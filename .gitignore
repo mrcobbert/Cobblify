@@ -25,6 +25,14 @@ build - Copy.gradle
 .devauth
 .DS_STORE
 
+# Tauri updater signing keys must never enter the repository. Generate them in
+# a private directory outside this tree; these names are a final safety net.
+cobblify-updater.key
+cobblify-updater.key.pub
+
+# Only the encrypted Weave agent belongs in the repository.
+launcher/vendor/*.jar
+
 
 # Created by https://www.toptal.com/developers/gitignore/api/java,gradle,forgegradle,kotlin,macos,intellij,intellij+all,eclipse,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=java,gradle,forgegradle,kotlin,macos,intellij,intellij+all,eclipse,visualstudiocode
