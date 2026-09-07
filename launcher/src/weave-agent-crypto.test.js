@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const tool = new URL("../tools/weave-agent-crypto.mjs", import.meta.url);
+const tool = fileURLToPath(new URL("../tools/weave-agent-crypto.mjs", import.meta.url));
 
 function run(mode, input, output, passphrase) {
-  return spawnSync(process.execPath, [tool.pathname, mode, input, output], {
+  return spawnSync(process.execPath, [tool, mode, input, output], {
     env: { ...process.env, WEAVE_AGENT_PASSPHRASE: passphrase },
     encoding: "utf8",
   });
