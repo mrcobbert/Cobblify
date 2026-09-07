@@ -115,11 +115,11 @@ the secret with only the new token would lock out existing builds.
 
 ## 5. Configure GitHub Actions - complete
 
-The current setup uses repository-level Actions secrets so every value is added
-only once. In the repository, open **Settings**, **Secrets and variables**,
-**Actions**.
+The current setup stores every value once in the `launcher-stable` GitHub
+environment. The candidate and promotion workflows both use this environment,
+but each job references only the values it needs.
 
-These repository secrets are configured:
+These environment secrets are configured:
 
 - `COBBLIFY_BACKEND_URL` - `https://bedwarsqol-stats.mrcobbert.workers.dev`
 - `COBBLIFY_BACKEND_TOKEN` - the new friends token
@@ -134,15 +134,14 @@ These repository secrets are configured:
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 
-This repository variable is configured:
+This environment variable is configured:
 
 ```text
 COBBLIFY_UPDATE_BUCKET=cobblify-launcher-updates
 ```
 
-The workflows use the `launcher-release` and `launcher-stable` environments,
-but they reference only the repository secrets needed by each job. The separate,
-manually started promotion workflow is the approval gate.
+The separate, manually started promotion workflow is the approval gate. A
+candidate build cannot publish a stable update by itself.
 
 The Weave Loader Agent is too large for a GitHub secret. Only its short
 decryption password is stored in GitHub; the repository contains the encrypted
@@ -183,5 +182,5 @@ Tell Codex only that these items are complete; do not send the values:
 
 - [x] R2 enabled
 - [ ] Updater key backed up
-- [x] GitHub Actions secrets and variable ready
+- [x] `launcher-stable` secrets and variable ready
 - [x] Public release-notes URL ready

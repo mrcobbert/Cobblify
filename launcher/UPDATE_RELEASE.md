@@ -29,10 +29,10 @@ secret used only for 15-minute download tickets; it is not the backend token or
 the Minisign key.
 
 The GitHub Actions secrets and variable are listed in that checklist. They are
-stored once at repository level; each workflow job references only the values
-it needs. The Cloudflare API token needs only R2 object-write access for the
-selected account. The R2 S3 credentials are used only to prune old immutable
-releases.
+stored once in the `launcher-stable` environment; each workflow job references
+only the values it needs. The Cloudflare API token needs only R2 object-write
+access for the selected account. The R2 S3 credentials are used only to prune
+old immutable releases.
 
 ## Release and promotion
 
