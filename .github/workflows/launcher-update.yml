@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   macos:
-    runs-on: macos-15
+    # Java 8 is unavailable on GitHub's ARM macOS image. The Intel image can
+    # install it and still cross-compile the universal Apple bundle.
+    runs-on: macos-15-intel
     environment: launcher-release
     steps:
       - uses: actions/checkout@v4
