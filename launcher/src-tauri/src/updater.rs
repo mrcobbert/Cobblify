@@ -779,6 +779,14 @@ mod tests {
             .cloned()
             .expect("tauri.conf.json must configure plugins.updater");
 
+        assert_eq!(
+            updater_config
+                .pointer("/windows/installMode")
+                .and_then(serde_json::Value::as_str),
+            Some("passive"),
+            "the Tauri bundler requires plugins.updater.windows to be an object"
+        );
+
         serde_json::from_value::<tauri_plugin_updater::Config>(updater_config)
             .expect("plugins.updater must deserialize before the launcher window starts");
     }

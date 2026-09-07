@@ -29,7 +29,9 @@
     "updater": {
       "endpoints": [],
       "pubkey": "",
-      "windows": null
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {

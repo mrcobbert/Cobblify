@@ -145,6 +145,7 @@ jobs:
             "versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-${{ inputs.version }}.jar" \
             "${{ inputs.version }}"
       - name: Build NSIS signed updater artifact
+        shell: bash
         working-directory: launcher
         env:
           COBBLIFY_UPDATE_URL: ${{ secrets.COBBLIFY_UPDATE_URL }}
