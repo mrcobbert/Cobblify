@@ -10,21 +10,16 @@ R2 is enabled. Codex created the private updater bucket, update-events database,
 Worker bindings, and download-ticket secret on September 2, 2026. The bucket has
 no public URL.
 
-## 2. Create and protect the updater signing key - complete
+## 2. Protect the updater signing key - backup still needed
 
-Run this from the repository's `launcher` folder:
+These verified files now exist on this Mac:
 
-```sh
-mkdir -p ~/.config/cobblify-secrets
-npx tauri signer generate \
-  --write-keys ~/.config/cobblify-secrets/cobblify-updater.key
-```
+- `~/.config/cobblify-secrets/cobblify-updater.key`
+- `~/.config/cobblify-secrets/cobblify-updater.password`
+- `~/.config/cobblify-secrets/cobblify-updater.key.pub`
 
-Choose a strong password when prompted. Save these items:
-
-- The encrypted private key file.
-- Its password, stored separately from the key.
-- The public key printed by the command.
+Copy all three to a private backup drive or another secure location. Do not
+send them to anyone or put them in the repository.
 
 Keep tested backups of the private key and password. Losing either one means
 installed launchers cannot trust another update and must be reinstalled.
@@ -155,22 +150,24 @@ The public release-notes URL for 0.10.0 is:
 https://gist.github.com/mrcobbert/81884fe97f4e58237e6fa8effb04971e
 ```
 
-## 7. Test and promote the Mac release
+## 7. Test and promote the Mac release - candidate ready
 
-Codex will prepare a `Launcher Update Candidate` run. After it finishes:
+Candidate run ID: `34176325981`
 
-1. Write down the candidate run ID shown in its summary.
-2. Download that run's Mac installation ZIP from GitHub Actions.
-3. Install it in `Applications` and open it through Finder.
-4. If macOS blocks it, use **System Settings**, **Privacy & Security**, then
+The verified Mac ZIP is in Downloads as
+`Cobblify-Launcher-macos-universal-0.10.0.zip`.
+
+1. Unzip it, drag `Cobblify Launcher.app` into `Applications`, and open it
+   through Finder.
+2. If macOS blocks it, use **System Settings**, **Privacy & Security**, then
    **Open Anyway**.
-5. Confirm the launcher starts and the bundled Forge and Lunar options install.
-6. Launch Minecraft and test one supported game mode.
-7. Confirm unsupported game modes do not show the launcher dashboard.
-8. If those checks pass, manually start `Promote Launcher Update` and enter the
+3. Confirm the launcher starts and the bundled Forge and Lunar options install.
+4. Launch Minecraft and test one supported game mode.
+5. Confirm unsupported game modes do not show the launcher dashboard.
+6. If those checks pass, manually start `Promote Launcher Update` and enter the
    candidate run ID. That workflow publishes the already-tested files without
    rebuilding them.
-9. Test updating an older launcher to the newly promoted build, including
+7. Test updating an older launcher to the newly promoted build, including
    restart-to-install.
 
 The first updater-enabled build seeds the update system. A second, higher test
