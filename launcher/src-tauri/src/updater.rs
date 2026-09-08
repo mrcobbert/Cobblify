@@ -786,6 +786,13 @@ mod tests {
             Some("passive"),
             "the Tauri bundler requires plugins.updater.windows to be an object"
         );
+        assert!(
+            updater_config
+                .get("pubkey")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|key| !key.is_empty()),
+            "the Tauri bundler requires the updater public key in tauri.conf.json"
+        );
 
         serde_json::from_value::<tauri_plugin_updater::Config>(updater_config)
             .expect("plugins.updater must deserialize before the launcher window starts");
