@@ -28,6 +28,22 @@
 - The `launcher/` Tauri app builds and tests on Windows as well as macOS - see `launcher/README.md`,
   "Build on Windows". Do not treat CI as the only way to run a launcher change.
 
+## Windows build box
+
+- A Windows 11 machine is reachable from this Mac as `ssh win` (Tailscale +
+  OpenSSH, key auth, PowerShell 5.1 shell). Clone lives at
+  `C:\Users\human\Cobblify`. Rust, Node 22, git and the launcher toolchain are
+  installed; see `launcher/README.md` "Build on Windows" for the build commands.
+- The box has no GitHub credentials. Ship code to it by pushing from the Mac:
+  `git push win <branch>`, then `ssh win 'cd C:\Users\human\Cobblify; git checkout <branch>'`.
+  The clone uses `receive.denyCurrentBranch=updateInstead`, so a push refuses
+  if the Windows working tree is dirty.
+- Run builds and tests with `ssh win 'cd C:\Users\human\Cobblify\launcher; <command>'`.
+  PowerShell prints git's stderr (e.g. "Switched to branch") as a red
+  NativeCommandError; that is not a failure, check the exit code and output.
+- This is for iteration and manual verification. Release exes still come from
+  CI (`package-windows-bundle.sh` checks provenance).
+
 ## Safety
 
 - Read `git status --short` before editing.
