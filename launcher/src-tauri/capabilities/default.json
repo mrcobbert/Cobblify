@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Let the webview receive updater status events from native code.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}
