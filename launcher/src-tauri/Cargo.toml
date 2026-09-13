@@ -1,6 +1,6 @@
 [package]
 name = "cobblify-launcher"
-version = "0.10.0"
+version = "0.10.1"
 description = "Cobblify Launcher"
 edition = "2021"
 # Verified toolchain. sysinfo 0.39 needs 1.95, which is not installed, hence the 0.38 pin below.
