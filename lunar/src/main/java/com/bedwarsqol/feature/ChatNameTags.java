@@ -493,7 +493,7 @@ public final class ChatNameTags {
 
     /** Identities are real here: an active game, or a lobby whose skins aren't stripped. */
     private static boolean operate() {
-        if (!HypixelContext.isSupportedBedwarsSurface()) return false;
+        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInBedwars()) return false;
         return HypixelContext.isInActiveBedwarsGame() || Denicks.identitiesVisible();
     }
 
@@ -502,7 +502,7 @@ public final class ChatNameTags {
      * its real sender, so name-keyed tags remain safe for lines a player actually typed.
      */
     private static boolean typedChatContext() {
-        return HypixelContext.isSupportedBedwarsSurface();
+        return HypixelContext.isOnHypixel() && HypixelContext.isInBedwars();
     }
 
     private static boolean isSelf(String name) {
