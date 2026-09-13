@@ -82,12 +82,13 @@ public class LobbyExportTest {
     }
 
     @Test
-    public void bedwarsHubIsEligibleWithoutAMode() {
+    public void bedwarsHubIsEligibleWithoutAModeButNeverAutoFetches() {
         LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, false, null, null);
         assertEquals("LOBBY", r.context);
         assertTrue(r.eligible);
         assertTrue(r.scanFullRoster);
-        assertTrue(r.autoFetch);
+        // The lobby tab is the whole lobby population; listing it must not enqueue a scrape per row.
+        assertFalse(r.autoFetch);
         assertNull(r.modeToRetain);
     }
 
@@ -151,7 +152,7 @@ public class LobbyExportTest {
     }
 
     @Test
-    public void eligibleLobbyFetchesTabAndIgnoresQueueTypers() {
+    public void eligibleLobbyListsTabWithoutFetchingAndIgnoresQueueTypers() {
         LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, false, null, null);
         RecordingSink sink = new RecordingSink();
         LobbyExport.Lobby lobby = new LobbyExport.Lobby();
@@ -163,7 +164,16 @@ public class LobbyExportTest {
         assertEquals("PartyPal", lobby.yourParty.get(0).name);
         assertEquals(1, lobby.players.size());
         assertEquals("Steve", lobby.players.get(0).name);
-        assertEquals(Arrays.asList("Steve"), sink.names);
+        assertTrue(sink.names.isEmpty());
+    }
+
+    @Test
+    public void supportedQueueStillAutoFetchesItsPartyTab() {
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, true, false, "Solo", null);
+        assertEquals("QUEUE", r.context);
+        assertTrue(r.eligible);
+        assertTrue(r.readQueuePartyFromTab);
+        assertTrue(r.autoFetch);
     }
 
     @Test
@@ -172,7 +182,7 @@ public class LobbyExportTest {
         LobbyExport.EvalResult hub = LobbyExport.evaluate(true, true, false, false, null, "Solos", 1100L);
         assertEquals("LOBBY", hub.context);
         assertTrue(hub.eligible);
-        assertTrue(hub.autoFetch);
+        assertFalse(hub.autoFetch);
         assertEquals("Solos", hub.modeToRetain);
     }
 

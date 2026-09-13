@@ -277,7 +277,10 @@ public final class LobbyExport {
         }
         r.scanFullRoster = r.eligible && !"QUEUE".equals(r.context);
         r.readQueuePartyFromTab = "QUEUE".equals(r.context);
-        r.autoFetch = r.eligible;
+        // The BedWars lobby is listed but never fetched: its tab is the whole lobby population
+        // (tens of names), and enqueueing all of them on every visit starves the chat/hover/game
+        // lookups that share the backend's per-IP budget. Queue party and game rosters still fetch.
+        r.autoFetch = r.eligible && !"LOBBY".equals(r.context);
         return r;
     }
 

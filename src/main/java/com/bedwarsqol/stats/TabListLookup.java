@@ -12,7 +12,7 @@ public final class TabListLookup {
 
     public static String statsTextForRenderedName(String renderedText) {
         if (BedwarsQol.config == null) return null;
-        if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return null;
+        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return null;
         if (renderedText == null || renderedText.isEmpty()) return null;
 
         String stripped = EnumChatFormatting.getTextWithoutFormattingCodes(renderedText);
@@ -30,7 +30,7 @@ public final class TabListLookup {
      */
     public static String statsTextForPlayerInfo(NetworkPlayerInfo info) {
         if (BedwarsQol.config == null) return null;
-        if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return null;
+        if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return null;
         if (info == null || info.getGameProfile() == null) return null;
         java.util.UUID uuid = info.getGameProfile().getId();
         if (uuid == null) return null;
