@@ -13,6 +13,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 /** The roster rules: tab adds, chat changes standing, the session boundary clears, stats stick. */
 public class GameRosterTest {
@@ -237,11 +238,25 @@ public class GameRosterTest {
         LobbyExport.Player error = new LobbyExport.Player("Alice");
         error.state = "ERROR";
         assertEquals("OK", r.withRetainedStats("Alice", error).state);
-        // A newer terminal result replaces the memory.
+        // A newer terminal result replaces the memory - every terminal state is retained.
         LobbyExport.Player never = new LobbyExport.Player("Alice");
         never.state = "NEVER_PLAYED";
         r.withRetainedStats("Alice", never);
         assertEquals("NEVER_PLAYED", r.withRetainedStats("Alice", new LobbyExport.Player("Alice")).state);
+        LobbyExport.Player nicked = new LobbyExport.Player("Alice");
+        nicked.state = "NICKED";
+        nicked.nicked = true;
+        nicked.realName = "Frostbyte_";
+        r.withRetainedStats("Alice", nicked);
+        LobbyExport.Player servedNick = r.withRetainedStats("Alice", new LobbyExport.Player("Alice"));
+        assertEquals("NICKED", servedNick.state);
+        assertTrue(servedNick.nicked);
+        assertEquals("Frostbyte_", servedNick.realName);
+        // ERROR is not terminal: it never displaces a retained result.
+        LobbyExport.Player err2 = new LobbyExport.Player("Alice");
+        err2.state = "ERROR";
+        assertEquals("NICKED", r.withRetainedStats("Alice", err2).state);
+        assertEquals("NICKED", r.withRetainedStats("Alice", new LobbyExport.Player("Alice")).state);
     }
 
     @Test
