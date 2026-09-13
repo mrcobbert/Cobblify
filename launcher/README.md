@@ -150,8 +150,8 @@ backend token out of every build artifact. Jars are injected later, locally.
 
 ### Build on Windows
 
-A Windows machine builds and tests the whole launcher locally - CI is the
-release gate, not the only way to see a change run. Verified 2026-08-14 on
+A Windows machine builds and tests the whole launcher locally - this is the
+dev loop; releases come from `Launcher Update Candidate`. Verified 2026-08-14 on
 Windows 11:
 
 ```powershell
@@ -164,17 +164,17 @@ npx tauri build --no-bundle    # -> src-tauri/target/release/cobblify-launcher.e
 
 Prerequisites: Rust (rustup, MSVC toolchain), VS Build Tools 2022 with the C++
 workload, a Windows 10/11 SDK, the WebView2 runtime (present on Windows 11), and
-Node 22. `--no-bundle` matches CI: the bundler is macOS-only here and portable
-zip packaging happens owner-side anyway.
+Node 22. `--no-bundle` skips the NSIS installer; the release workflow builds
+that with credentials baked in.
 
 To run a local build end to end, drop the exe next to any existing `resources/`
 folder (the jars + `manifest.json` from a bundle) - resource resolution is
 relative to the executable, and the file name does not matter, so a second exe
 can sit beside the shipped one as a control.
 
-This does NOT change the distribution rules: `package-windows-bundle.sh` still
-demands a CI-built exe with matching provenance. A locally built exe is for the
-dev loop, never for a friend bundle.
+This does NOT change the distribution rules: friends get the signed setup exe
+published by `Promote Launcher Update`. A locally built exe is for the dev
+loop, never for a friend.
 
 ## Test it without packaging
 
@@ -209,29 +209,20 @@ validates with `codesign --verify --deep --strict`, and asserts the finished zip
 contains exactly the expected paths and nothing else.
 
 Output lands in `dist-owner/`. **DM it. Never attach it to a public GitHub
-Release** - public releases carry only the blank CI jars.
+Release.**
 
 ### Ship it for Windows
 
-```sh
-launcher/tools/package-windows-bundle.sh <ci run id> <trusted commit>
-```
-
-This Mac cannot build Windows binaries, so the exe comes from the
-`launcher-windows` CI job (it runs the whole cargo suite on a real Windows
-runner, then builds a naked exe with `tauri build --no-bundle` - no secrets in
-CI, ever). The script is fail-closed about provenance: the named run must have
-completed successfully, its `headSha` must equal the trusted commit you name,
-and your checkout must be sitting on that commit so the locally built, baked
-Lunar jar matches the exe. It then assembles and verifies
-`dist-owner/Cobblify-Windows-<version>.zip`: a portable folder with the exe,
-`resources/` (jars + manifest) beside it, and the Windows friend README. Same
-distribution rule: DM only.
+This Mac cannot build Windows binaries. The Windows setup exe (and the Mac ZIP)
+come from the manually started `Launcher Update Candidate` workflow, and
+`Promote Launcher Update` publishes those exact files to the private R2 bucket.
+See [UPDATE_RELEASE.md](UPDATE_RELEASE.md). Same distribution rule: DM only.
 
 ### Verification status
 
-The CI job runs the cargo suite (including the argv-canary privacy test) on a
-Windows runner on every push. Beyond that, as of 2026-08-20:
+The cargo suite (including the argv-canary privacy test) runs on the Windows
+box during the dev loop and in `Launcher Update Candidate`. Beyond that, as of
+2026-08-20:
 
 - **Live-verified on macOS and Windows** by roughly two hours of real Bedwars
   play on 0.9.1 - auto-join on (launch, deep link, dashboard, roster),
