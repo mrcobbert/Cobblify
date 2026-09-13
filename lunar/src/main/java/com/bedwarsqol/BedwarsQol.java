@@ -12,6 +12,7 @@ import com.bedwarsqol.feature.OutgoingChat;
 import com.bedwarsqol.feature.KeybindRegistry;
 import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
+import com.bedwarsqol.feature.GameRosterChat;
 import com.bedwarsqol.feature.PartyJoinAlert;
 import com.bedwarsqol.feature.PauseKeyHandler;
 import com.bedwarsqol.feature.PlayersKeyHandler;
@@ -58,6 +59,7 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(OutgoingChat.get());
         EventBus.subscribe(new SweatReport());
         EventBus.subscribe(new PartyJoinAlert());
+        EventBus.subscribe(new GameRosterChat());
         EventBus.subscribe(new NickUtils());
         EventBus.subscribe(new ChatNameTags());
         EventBus.subscribe(new GeneratorTracker());

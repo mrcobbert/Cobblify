@@ -14,6 +14,7 @@ import com.bedwarsqol.feature.OutgoingChat;
 import com.bedwarsqol.feature.TntFuseDisplay;
 import com.bedwarsqol.feature.NametagStats;
 import com.bedwarsqol.feature.NickUtils;
+import com.bedwarsqol.feature.GameRosterChat;
 import com.bedwarsqol.feature.PartyJoinAlert;
 import com.bedwarsqol.feature.PauseKeyHandler;
 import com.bedwarsqol.feature.PlayersKeyHandler;
@@ -77,6 +78,7 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new SweatReport());
         MinecraftForge.EVENT_BUS.register(new AutoGg());
         MinecraftForge.EVENT_BUS.register(new PartyJoinAlert());
+        MinecraftForge.EVENT_BUS.register(new GameRosterChat());
         MinecraftForge.EVENT_BUS.register(new NickUtils());
         MinecraftForge.EVENT_BUS.register(new ChatNameTags());
         MinecraftForge.EVENT_BUS.register(new GeneratorTracker());
