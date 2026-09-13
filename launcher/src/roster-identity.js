@@ -123,6 +123,12 @@ export function sortRoster(players) {
   return ranked.concat(unresolved, out);
 }
 
+/** Given order, except that players who are out of the game move to the end. */
+export function activeFirst(players) {
+  const list = players ?? [];
+  return list.filter(isActive).concat(list.filter((p) => !isActive(p)));
+}
+
 const STANDING_RANK = { active: 0, unresolved: 1, eliminated: 2 };
 
 /**

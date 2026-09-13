@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  activeFirst,
   dashboardParty,
   isActive,
   opponentTeams,
@@ -167,4 +168,14 @@ test("rankedOpponentTeams: (iii) the local team and party members never appear",
   assert.deepEqual(ranked.map((t) => t.team.name), ["Red"]);
   assert.deepEqual(ranked[0].players.map((p) => p.name), ["r1"]);
   assert.equal(ranked[0].target, true);
+});
+
+test("activeFirst keeps the given order but moves out players to the end (party block)", () => {
+  const party = [ok("duo", 7, "ELIMINATED"), ok("me", 5), loading("third", "DISCONNECTED"), ok("fourth", 1)];
+  assert.deepEqual(
+    activeFirst(party).map((p) => p.name),
+    ["me", "fourth", "duo", "third"],
+  );
+  assert.deepEqual(activeFirst([]).map((p) => p.name), []);
+  assert.deepEqual(activeFirst(undefined), []);
 });

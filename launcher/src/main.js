@@ -5,6 +5,7 @@ import "./style.css";
 
 import { createHeroScene } from "./scene.js";
 import {
+  activeFirst,
   aliases,
   dashboardParty,
   isActive,
@@ -1373,11 +1374,14 @@ function teamNameFor(teamOf, player) {
   return undefined;
 }
 
+// The party keeps its own order (you, then your party, then the rest of your
+// team) - it is not ranked by sweat - but a member who is out of the game
+// drops below the ones still in it, like every other block.
 function partyBlock(list, teamOf) {
   if (!list || !list.length) return null;
   return {
     head: sectHead("Your Party", list.length),
-    rows: list.map((p) => row(p, teamNameFor(teamOf, p))),
+    rows: activeFirst(list).map((p) => row(p, teamNameFor(teamOf, p))),
   };
 }
 
