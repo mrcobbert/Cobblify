@@ -62,11 +62,29 @@ public class GameRosterTest {
         assertEquals(GameRoster.DISCONNECTED, find(r.observe(S, T0 + 400, tab(row("Alice", "Red")), null), "Bob").presence);
         r.onChat(S, T0 + 5_000, "Bob reconnected.");
         assertEquals(GameRoster.ACTIVE, find(r.observe(S, T0 + 5_400, tab(row("Alice", "Red")), null), "Bob").presence);
-        // Reappearance in tab alone also clears it.
+        // Leaving tab and reappearing also clears it, without a reconnect line.
         r.onChat(S, T0 + 6_000, "Bob disconnected.");
         assertEquals(GameRoster.DISCONNECTED, r.presenceOf("Bob", T0 + 6_000));
-        r.observe(S, T0 + 6_400, tab(row("Alice", "Red"), row("Bob", "Blue")), null);
-        assertEquals(GameRoster.ACTIVE, r.presenceOf("Bob", T0 + 6_400));
+        r.observe(S, T0 + 6_400, tab(row("Alice", "Red")), null);
+        r.observe(S, T0 + 6_800, tab(row("Alice", "Red"), row("Bob", "Blue")), null);
+        assertEquals(GameRoster.ACTIVE, r.presenceOf("Bob", T0 + 6_800));
+    }
+
+    /** A2 (code review I1): a scan that still lists a just-disconnected player must not clear the flag. */
+    @Test
+    public void disconnectSurvivesAStaleTabScan() {
+        GameRoster r = new GameRoster();
+        List<LobbyExport.TabRow> both = tab(row("Alice", "Red"), row("Bob", "Blue"));
+        List<LobbyExport.TabRow> only = tab(row("Alice", "Red"));
+        r.observe(S, T0, both, null);
+        r.onChat(S, T0 + 100, "Bob disconnected.");
+        // Tab removal has not propagated yet: Bob is still listed on the next scan.
+        assertEquals(GameRoster.DISCONNECTED, find(r.observe(S, T0 + 400, both, null), "Bob").presence);
+        // Now he is gone from tab and stays DC, never MISSING, however long he is away.
+        assertEquals(GameRoster.DISCONNECTED, find(r.observe(S, T0 + 800, only, null), "Bob").presence);
+        assertEquals(GameRoster.DISCONNECTED, find(r.observe(S, T0 + 60_000, only, null), "Bob").presence);
+        // Seen leaving, then seen back: that is a reconnect.
+        assertEquals(GameRoster.ACTIVE, find(r.observe(S, T0 + 61_000, both, null), "Bob").presence);
     }
 
     /** A2: a FINAL KILL line eliminates the victim; nothing in tab ever clears it. */

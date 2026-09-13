@@ -19,8 +19,11 @@ import java.util.Map;
  * <ol>
  *   <li><b>Session-scoped.</b> A different session id clears everything.</li>
  *   <li><b>Tab adds and refreshes, never removes.</b> A row seen in tab is upserted: last-seen time,
- *       team upgraded from unknown to a colour (never downgraded), disconnect flag cleared. Entries
- *       whose team is still unknown are re-resolved on every observation, present in tab or not.</li>
+ *       team upgraded from unknown to a colour (never downgraded). A sighting clears the disconnect
+ *       flag only once the roster has seen the player <i>leave</i> tab since the disconnect line —
+ *       a scan that lands before the tab removal propagates must not erase an authoritative
+ *       broadcast. Entries whose team is still unknown are re-resolved on every observation,
+ *       present in tab or not.</li>
  *   <li><b>Chat changes standing, never membership.</b> Names are matched against existing entries
  *       only; an unknown name is ignored.</li>
  *   <li><b>Presence is derived, in priority order:</b> {@code ELIMINATED} (sticky) →
@@ -57,6 +60,8 @@ public final class GameRoster {
         String team;
         long lastSeenMs;
         boolean disconnected;
+        /** Seen absent from tab since the disconnect line; only then does a sighting mean "back". */
+        boolean leftTabSinceDisconnect;
         boolean eliminated;
         LobbyExport.Player retained;
 
@@ -78,6 +83,7 @@ public final class GameRoster {
                                                          List<LobbyExport.TabRow> tab,
                                                          TeamResolver resolver) {
         bind(sessionId);
+        Map<String, Entry> absent = new LinkedHashMap<String, Entry>(entries);
         if (tab != null) {
             for (int i = 0; i < tab.size(); i++) {
                 LobbyExport.TabRow row = tab.get(i);
@@ -87,11 +93,15 @@ public final class GameRoster {
                     e = new Entry(row.name, nowMs);
                     entries.put(key(row.name), e);
                 }
+                absent.remove(key(row.name));
                 e.lastSeenMs = nowMs;
-                e.disconnected = false;
+                if (e.disconnected && e.leftTabSinceDisconnect) e.disconnected = false;
                 if (isKnownTeam(row.teamName)) e.team = row.teamName;
                 else if (e.team == null) e.team = row.teamName;
             }
+        }
+        for (Entry e : absent.values()) {
+            if (e.disconnected) e.leftTabSinceDisconnect = true;
         }
         List<LobbyExport.TabRow> out = new ArrayList<LobbyExport.TabRow>(entries.size());
         for (Entry e : entries.values()) {
@@ -112,7 +122,10 @@ public final class GameRoster {
         switch (line.kind) {
             case DISCONNECT: {
                 Entry e = entries.get(key(line.name));
-                if (e != null) e.disconnected = true;
+                if (e != null) {
+                    e.disconnected = true;
+                    e.leftTabSinceDisconnect = false;
+                }
                 break;
             }
             case RECONNECT: {
