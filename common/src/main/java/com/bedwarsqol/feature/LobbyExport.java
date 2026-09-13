@@ -344,6 +344,7 @@ public final class LobbyExport {
                 if (row == null || row.name == null) continue;
                 if (r.autoFetch && sink != null) sink.fetch(row);
                 Player p = make.player(row.name);
+                p.presence = row.presence;
                 lobby.players.add(p);
                 if (row.teamName != null) {
                     Team team = teams.get(row.teamName);
@@ -413,6 +414,8 @@ public final class LobbyExport {
         public int seraphThreat = -1;        // -1 = unknown
         public List<String> seraphTags = new ArrayList<String>();
         public List<String> urchinTags = new ArrayList<String>();
+        /** ACTIVE|DISCONNECTED|ELIMINATED|MISSING — standing in the current game; see {@link GameRoster}. */
+        public String presence = GameRoster.ACTIVE;
 
         public Player(String name) {
             this.name = name;
@@ -429,18 +432,27 @@ public final class LobbyExport {
         public boolean autoFetch;
     }
 
-    /** Already-filtered tab row. {@code teamName} is set only for GAME grouping. */
+    /**
+     * Already-filtered tab row. {@code teamName} is set only for GAME grouping; {@code presence} is
+     * the roster's standing for the row (ACTIVE for a plain tab scan).
+     */
     public static final class TabRow {
         public final String name;
         public final String teamName;
+        public final String presence;
 
         public TabRow(String name) {
             this(name, null);
         }
 
         public TabRow(String name, String teamName) {
+            this(name, teamName, GameRoster.ACTIVE);
+        }
+
+        public TabRow(String name, String teamName, String presence) {
             this.name = name;
             this.teamName = teamName;
+            this.presence = presence != null ? presence : GameRoster.ACTIVE;
         }
     }
 
