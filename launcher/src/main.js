@@ -4,7 +4,15 @@ import "@fontsource/dm-mono/latin-500.css";
 import "./style.css";
 
 import { createHeroScene } from "./scene.js";
-import { aliases, dashboardParty, opponentTeams, withoutPlayers } from "./roster-identity.js";
+import {
+  aliases,
+  dashboardParty,
+  isActive,
+  presenceBadge,
+  rankedOpponentTeams,
+  sortRoster,
+  withoutPlayers,
+} from "./roster-identity.js";
 import {
   PREVIEW_SETUP_KEYS,
   PREVIEW_SETUP_LABELS,
@@ -141,6 +149,9 @@ const P = {
   sniped: pp({ name: "sniped_u", rank: "", state: "LOADING" }),
 };
 
+/** Preview only: the same player, out of the game. */
+const out = (p, presence) => ({ ...p, presence });
+
 const PREVIEW_PARTY1 = [P.you];
 const PREVIEW_PARTY = [P.you, P.duo];
 const PREVIEW_PARTY3 = [P.you, P.duo, P.third];
@@ -247,10 +258,15 @@ const PREVIEW_LOBBY = {
     mode: "4v4v4v4",
     yourParty: PREVIEW_PARTY4,
     teams: [
-      team("Red", [P.shadow, P.wallhax, P.tenko, P.zenith]),
+      team("Red", [P.shadow, P.wallhax, P.tenko, out(P.zenith, "ELIMINATED")]),
       team("Blue", [P.you, P.duo, P.third, P.clutch]),
-      team("Green", [P.frost, P.moss, P.cool, P.grandpa]),
-      team("Yellow", [P.virus, P.bread, P.nick, P.prot]),
+      team("Green", [P.frost, P.moss, out(P.cool, "DISCONNECTED"), out(P.grandpa, "MISSING")]),
+      team("Yellow", [
+        out(P.virus, "ELIMINATED"),
+        out(P.bread, "ELIMINATED"),
+        out(P.nick, "ELIMINATED"),
+        out(P.prot, "ELIMINATED"),
+      ]),
     ],
   }),
   game4v4: previewSnap("GAME", {
@@ -1117,13 +1133,8 @@ function isCheater(p) {
 }
 
 // OK players high→low by FKDR; unresolved states (loading/nick/never/error)
-// keep their given order at the bottom.
-function bySweat(players) {
-  const list = (players ?? []).slice();
-  const ranked = list.filter((p) => p.state === "OK").sort((a, b) => (b.fkdr ?? 0) - (a.fkdr ?? 0));
-  const rest = list.filter((p) => p.state !== "OK");
-  return ranked.concat(rest);
-}
+// keep their given order below them; players who are out of the game last.
+const bySweat = sortRoster;
 
 function pname(p, chips) {
   const flags = chips && chips.length ? `<span class="flags-inline">${chips.join("")}</span>` : "";
@@ -1182,11 +1193,26 @@ function teamClass(name) {
   return slug ? ` team-${slug}` : "";
 }
 
+// A player who is out of the game keeps their row - dimmed, badged, and
+// struck through once eliminated - so the team never shrinks or reorders
+// under the reader. The badge leads the flag strip; the stat cells are the
+// same cells every other row gets.
+function outClass(p) {
+  if (isActive(p)) return "";
+  return p.presence === "ELIMINATED" ? " is-out is-eliminated" : " is-out";
+}
+
+function outChip(p) {
+  const badge = presenceBadge(p);
+  return badge ? [`<span class="chip out">${badge}</span>`] : [];
+}
+
 function row(p, teamName) {
-  const teamCls = teamClass(teamName);
+  const teamCls = teamClass(teamName) + outClass(p);
+  const lead = outChip(p);
   if (p.state === "LOADING") {
     return `<div class="prow loading${teamCls}">
-      ${pname(p, ['<span class="chip state">resolving</span>'])}
+      ${pname(p, [...lead, '<span class="chip state">resolving</span>'])}
       <div class="stat fkdr"><span class="skel" style="width:28px"></span></div>
       <div class="stat cell-wlr"><span class="skel" style="width:24px"></span></div>
       <div class="stat cell-finals"><span class="skel" style="width:34px"></span></div>
@@ -1196,21 +1222,21 @@ function row(p, teamName) {
   if (p.state === "NEVER_PLAYED" || p.state === "ERROR") {
     const lbl = p.state === "ERROR" ? "error" : "never played";
     return `<div class="prow${teamCls}">
-      ${pname(p, [`<span class="chip state">${lbl}</span>`])}
+      ${pname(p, [...lead, `<span class="chip state">${lbl}</span>`])}
       <div class="stat muted fkdr">—</div><div class="stat muted cell-wlr">—</div>
       <div class="stat muted cell-finals">—</div><div class="stat muted cell-kd">—</div></div>`;
   }
 
   if (p.state === "NICKED" && !p.realName) {
     return `<div class="prow${teamCls}">
-      ${pname(p, ['<span class="chip nick">nick</span>'])}
+      ${pname(p, [...lead, '<span class="chip nick">nick</span>'])}
       <div class="stat muted fkdr">?</div><div class="stat muted cell-wlr">?</div>
       <div class="stat muted cell-finals">?</div><div class="stat muted cell-kd">?</div></div>`;
   }
 
   const t = tier(p.fkdr ?? 0);
   const cheat = isCheater(p);
-  const chips = [];
+  const chips = [...lead];
   if (p.nicked && p.realName) chips.push(`<span class="chip nick">nick→${esc(p.realName)}</span>`);
   (p.seraphTags ?? []).forEach((s) => chips.push(`<span class="chip cheat">${esc(s)}</span>`));
   (p.urchinTags ?? []).forEach((s) => chips.push(`<span class="chip cheat">${esc(s)}</span>`));
@@ -1355,11 +1381,6 @@ function partyBlock(list, teamOf) {
   };
 }
 
-function teamAvg(t) {
-  const ok = (t.players ?? []).filter((p) => p.state === "OK");
-  return ok.length ? ok.reduce((s, p) => s + (p.fkdr ?? 0), 0) / ok.length : null;
-}
-
 function viewOf(d) {
   return nextLiveDashboard(d, { firstLiveSeen: true, eligibleViewOf: viewOfEligible }).view;
 }
@@ -1411,24 +1432,23 @@ function viewQueue(d) {
 function viewGame(d) {
   const teamOf = teamOfPlayers(d);
   const partyPlayers = dashboardParty(d);
-  const teams = opponentTeams(d)
-    .map((t) => ({ t, players: t.players, agg: teamAvg(t) }))
-    .sort((a, b) => (b.agg ?? -1) - (a.agg ?? -1));
-  const maxAgg = teams.length ? teams[0].agg : null;
-  const blocks = teams.map(({ t, players, agg }) => {
-    const target = maxAgg !== null && agg === maxAgg;
-    const rest = bySweat(players);
-    const slug = TEAM_SLUG[t.name];
-    const teamCls = slug ? ` team-${slug}` : "";
+  // Order, averages and the Target choice are decided in roster-identity.js
+  // (pure, tested); this only draws what it is handed.
+  const blocks = rankedOpponentTeams(d).map(({ team, players, agg, standing, target }) => {
+    const slug = TEAM_SLUG[team.name];
+    const teamCls = (slug ? ` team-${slug}` : "") + (standing === "eliminated" ? " is-eliminated" : "");
+    const rail =
+      standing === "eliminated"
+        ? '<span class="agg">Eliminated</span>'
+        : `<span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>
+        ${target ? '<span class="target-badge">Target</span>' : ""}`;
     // Atomic: a team's border, colour scope and rows are placed as one unit. The
     // team is named by its border colour alone; the rail breaks that border to
     // carry the average, and the target flag on the sweatiest team.
     return {
-      n: rest.length,
-      atomic: `<div class="team${teamCls}"><div class="team-rail">
-        <span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>
-        ${target ? '<span class="target-badge">Target</span>' : ""}</div>
-        ${roster(rest, teamOf)}</div>`,
+      n: players.length,
+      atomic: `<div class="team${teamCls}"><div class="team-rail">${rail}</div>
+        ${roster(players, teamOf)}</div>`,
     };
   });
   const party = partyBlock(partyPlayers, teamOf);
