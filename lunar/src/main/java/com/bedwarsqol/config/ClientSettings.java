@@ -52,6 +52,15 @@ public class ClientSettings {
     public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
     public float sessionStatsHudScale = 1.0f;
 
+    /** Height Limit: Lunar-style map name, build limit (highest placeable Y) and blocks left below it. */
+    public boolean heightLimitEnabled = false;
+    public boolean heightLimitInGameOnly = false;
+    public boolean heightLimitBackgroundEnabled = false;
+    public int heightLimitHudX = 5;
+    public int heightLimitHudY = 5;
+    public int heightLimitHudAnchor = 3; // middle-left
+    public float heightLimitHudScale = 1.0f;
+
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
@@ -229,6 +238,8 @@ public class ClientSettings {
         if (emeraldTimerHudScale < 0.3f || emeraldTimerHudScale > 10.0f) emeraldTimerHudScale = defaultTextSizeScale();
         sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, 0, 8);
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
+        heightLimitHudAnchor = clamp(heightLimitHudAnchor, 0, 8);
+        if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
 
@@ -276,6 +287,7 @@ public class ClientSettings {
         diamondTimerHudScale = scale;
         emeraldTimerHudScale = scale;
         sessionStatsHudScale = scale;
+        heightLimitHudScale = scale;
     }
 
     public void save() {

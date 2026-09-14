@@ -57,6 +57,7 @@ built-in backend). See `server/stats-worker/README.md` for Worker details.
 - **Inventory** - your stored items at a glance
 - **Gen Timers** - diamond/emerald spawn countdowns
 - **Keystrokes** - WASD + spacebar display
+- **Height Limit** - Lunar-style map name, build limit (the highest Y you can place a block at) and Distance (blocks between your feet and that limit). Map comes from Hypixel's own Mod API location event or the queue sidebar; the limit starts from a shipped table of ~180 maps and is corrected from what the server actually accepts or denies while you build (`/cobblify heightlimit` shows the source)
 - **Session Stats** - Lunar-style tally: this game's kills / finals / beds over the session's W/L, FKDR, beds and clock (counted from your own chat lines and the VICTORY!/GAME OVER! title; resets when you leave Hypixel, or with **Reset Session** / `/cobblify session reset`)
 
   **NOTE** - most HUD modules have an "In Game Only" option = show only during a BedWars game
