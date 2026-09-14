@@ -3,6 +3,8 @@ package com.bedwarsqol.command;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatNameTags;
+import com.bedwarsqol.feature.HeightLimitCore;
+import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.ModChat;
 import com.bedwarsqol.feature.SessionStats;
 import com.bedwarsqol.feature.SessionStatsWatch;
@@ -110,6 +112,9 @@ public class BedwarsQolCommand extends CommandBase {
             case "session":
                 handleSession(sender, args);
                 return;
+            case "heightlimit":
+                handleHeightLimit(sender);
+                return;
             default:
                 // A non-reserved first token is a player name → stats card.
                 BedwarsStatsCommand.showStats(args);
@@ -149,8 +154,26 @@ public class BedwarsQolCommand extends CommandBase {
         send(sender, "§f/cobblify urchin <player> §7— community Urchin tags for a player");
         send(sender, "§f/cobblify seraph <player> §7— Seraph tags for a player");
         send(sender, "§f/cobblify session [reset] §7— this session's Bedwars tally");
+        send(sender, "§f/cobblify heightlimit §7— current map, build limit and how it was determined");
         send(sender, "§f/cobblify help §7— this page");
         send(sender, "§7§m------------------------------");
+    }
+
+    private void handleHeightLimit(ICommandSender sender) {
+        HeightLimitCore core = HeightLimitWatch.core();
+        String map = core.map();
+        send(sender, "§7§m----§r §6§lHeight Limit §r§7§m----");
+        if (map == null) {
+            send(sender, "§7Not on a Bedwars map server (no location event or sidebar Map: line yet).");
+        } else {
+            double feet = Minecraft.getMinecraft().thePlayer == null ? 0 : Minecraft.getMinecraft().thePlayer.posY;
+            send(sender, "§fMap §7— §f" + map + (core.mode() == null ? "" : " §7(" + core.mode() + ")"));
+            send(sender, "§fHeight Limit §7— §f" + (core.limit() < 0 ? "?" : core.limit())
+                    + " §7(" + core.source().name().toLowerCase() + ")  §fDistance §7— §f"
+                    + (core.limit() < 0 ? "?" : core.distance(feet)));
+        }
+        send(sender, "§7" + core.describe());
+        send(sender, "§7Learned maps: " + core.learnedCount() + " (~/.cobblify/height-limits.txt)");
     }
 
     private void handleSession(ICommandSender sender, String[] args) {

@@ -26,6 +26,7 @@ divergent main com/bedwarsqol/BedwarsQol.java
 # Event API shape: ClientChatReceivedEvent/TickEvent vs ChatEvent.Received/TickEvent.Post.
 divergent main com/bedwarsqol/bedwars/GeneratorTracker.java
 divergent main com/bedwarsqol/feature/ChatNameTags.java
+divergent main com/bedwarsqol/feature/HeightLimitWatch.java
 divergent main com/bedwarsqol/feature/LobbyChatWatch.java
 divergent main com/bedwarsqol/feature/NametagStats.java
 divergent main com/bedwarsqol/feature/NickUtils.java

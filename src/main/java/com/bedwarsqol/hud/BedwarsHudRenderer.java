@@ -4,6 +4,8 @@ import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.bedwars.GeneratorTracker;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.SessionStats;
+import com.bedwarsqol.feature.HeightLimitCore;
+import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
@@ -40,6 +42,7 @@ public class BedwarsHudRenderer {
     public static final String INVENTORY_HUD = "inventory";
     public static final String DIAMOND_TIMER_HUD = "diamondtimer";
     public static final String SESSION_HUD = "sessionstats";
+    public static final String HEIGHT_LIMIT_HUD = "heightlimit";
     public static final String EMERALD_TIMER_HUD = "emeraldtimer";
     public static final String KEYSTROKES_HUD = "keystrokes";
     private static final int INV_COLS = 9;
@@ -127,6 +130,7 @@ public class BedwarsHudRenderer {
         addBox(boxes, timerBox(mc, cfg, example, false));
         addBox(boxes, keystrokesBox(mc, cfg, example));
         addBox(boxes, sessionBox(mc, cfg, example));
+        addBox(boxes, heightLimitBox(mc, cfg, example));
         return boxes;
     }
 
@@ -166,6 +170,10 @@ public class BedwarsHudRenderer {
             cfg.sessionStatsHudAnchor = anchor;
             cfg.sessionStatsHudX = storedX;
             cfg.sessionStatsHudY = storedY;
+        } else if (HEIGHT_LIMIT_HUD.equals(id)) {
+            cfg.heightLimitHudAnchor = anchor;
+            cfg.heightLimitHudX = storedX;
+            cfg.heightLimitHudY = storedY;
         }
     }
 
@@ -178,6 +186,7 @@ public class BedwarsHudRenderer {
         drawTimerHud(mc, cfg, example, false);
         if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
         drawSessionHud(mc, cfg, example);
+        drawHeightLimitHud(mc, cfg, example);
     }
 
     /**
@@ -746,6 +755,60 @@ public class BedwarsHudRenderer {
         if (example) return diamond ? "23s" : "47s";
         int s = diamond ? GeneratorTracker.diamondSeconds() : GeneratorTracker.emeraldSeconds();
         return s < 0 ? "--" : s + "s";
+    }
+
+    // ----- Height Limit (Lunar-style Map / Height Limit / Distance rows) -----
+
+    /** Rows are Inter Regular like the Session Stats rows; the panel is always drawn. */
+    private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
+
+    private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example) {
+        if (!HeightLimitWatch.visible(cfg, example)) return null;
+        float scale = cfg.heightLimitHudScale;
+        List<String> rows = heightLimitRows(mc, example);
+        float width = 0f;
+        for (String row : rows) width = Math.max(width, fontWidth(row, HEIGHT_ROW_WEIGHT) * scale);
+        float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
+        if (width <= 0f || height <= 0f) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float x = absoluteX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, r.getScaledWidth());
+        float y = absoluteY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, r.getScaledHeight());
+        return new HudBox(HEIGHT_LIMIT_HUD, "Height Limit", x, y, width, height);
+    }
+
+    private static void drawHeightLimitHud(Minecraft mc, ClientSettings cfg, boolean example) {
+        HudBox box = heightLimitBox(mc, cfg, example);
+        if (box == null) return;
+        float scale = cfg.heightLimitHudScale;
+        drawHudBackground(box, scale);
+        float step = (TEXT_HEIGHT + LINE_GAP) * scale;
+        List<String> rows = heightLimitRows(mc, example);
+        for (int i = 0; i < rows.size(); i++) {
+            fontDraw(rows.get(i), box.x, box.y + i * step, scale, TEXT_COLOR, HEIGHT_ROW_WEIGHT);
+        }
+    }
+
+    /**
+     * {@code Map: X} / {@code Height Limit: N} / {@code Distance: N}, the three rows of Lunar's Height
+     * Limit HUD. The limit is the highest Y a block can be placed at; Distance is how many blocks your
+     * feet level sits below it. Unknown values (a map not yet in the table and not yet learned) read "?".
+     */
+    private static List<String> heightLimitRows(Minecraft mc, boolean example) {
+        List<String> out = new ArrayList<>(3);
+        if (example) {
+            out.add("Map: Lighthouse");
+            out.add("Height Limit: 110");
+            out.add("Distance: 27");
+            return out;
+        }
+        HeightLimitCore core = HeightLimitWatch.core();
+        String map = core.map();
+        int limit = core.limit();
+        int distance = mc.thePlayer == null ? -1 : core.distance(mc.thePlayer.posY);
+        out.add("Map: " + (map == null ? "?" : map));
+        out.add("Height Limit: " + (limit < 0 ? "?" : Integer.toString(limit)));
+        out.add("Distance: " + (distance < 0 ? "?" : Integer.toString(distance)));
+        return out;
     }
 
     // ----- Session Stats (Lunar-style game + session tally) -----
