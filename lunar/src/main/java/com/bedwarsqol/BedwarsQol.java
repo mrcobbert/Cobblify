@@ -67,6 +67,7 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(new QueueAlert());
         EventBus.subscribe(new com.bedwarsqol.feature.LobbyChatWatch());
         EventBus.subscribe(new com.bedwarsqol.feature.SessionStatsWatch());
+        EventBus.subscribe(new com.bedwarsqol.feature.HeightLimitWatch());
 
         CommandBus.register(new BedwarsQolCommand());
 

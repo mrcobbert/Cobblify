@@ -81,6 +81,8 @@ public class SettingsGui extends GuiScreen {
     private static final int K_GRP_APPEARANCE = 91, K_GRP_HUD = 92;
     // Session Stats HUD (Lunar-style game + session tally) and its Reset action row.
     private static final int K_SESSION = 120, K_SESSION_INGAME = 121, K_SESSION_BG = 122, K_SESSION_RESET = 123;
+    // Height Limit HUD (Lunar-style map name / build limit / blocks left).
+    private static final int K_HEIGHT = 124, K_HEIGHT_INGAME = 125;
     // Chat module (kind numbers shared with the Lunar tree for the two cards it keeps).
     private static final int K_CHAT_UNLIMITED = 93, K_CHAT_KEEP = 94, K_CHAT_STACK = 95,
             K_STACK_TIME = 96, K_STACK_WINDOW = 97, K_STACK_BLANKS = 98,
@@ -195,7 +197,9 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_SESSION_INGAME, null, K_SESSION),
                     new RowDef(RowType.TOGGLE, "Background", K_SESSION_BG, null, K_SESSION),
-                    new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION)),
+                    new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION),
+                    new RowDef(RowType.TOGGLE, "Height Limit", "Map name, build limit and blocks left", K_HEIGHT),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_HEIGHT_INGAME, null, K_HEIGHT)),
             new Section("Combat",
                     new RowDef(RowType.TOGGLE, "Hand Position", "Move and resize held item", K_HANDPOS),
                     new RowDef(RowType.SLIDER, "X", K_HANDX, -1.0f, 1.0f, K_HANDPOS),
@@ -1694,6 +1698,8 @@ public class SettingsGui extends GuiScreen {
             case K_SESSION: return cfg.sessionStatsEnabled;
             case K_SESSION_INGAME: return cfg.sessionStatsInGameOnly;
             case K_SESSION_BG: return cfg.sessionStatsBackgroundEnabled;
+            case K_HEIGHT: return cfg.heightLimitEnabled;
+            case K_HEIGHT_INGAME: return cfg.heightLimitInGameOnly;
             case K_POTION_INGAME: return cfg.potionInGameOnly;
             case K_ARMOR_INGAME: return cfg.armorInGameOnly;
             case K_INVENTORY_INGAME: return cfg.inventoryInGameOnly;
@@ -1756,6 +1762,8 @@ public class SettingsGui extends GuiScreen {
             case K_SESSION: cfg.sessionStatsEnabled = !cfg.sessionStatsEnabled; break;
             case K_SESSION_INGAME: cfg.sessionStatsInGameOnly = !cfg.sessionStatsInGameOnly; break;
             case K_SESSION_BG: cfg.sessionStatsBackgroundEnabled = !cfg.sessionStatsBackgroundEnabled; break;
+            case K_HEIGHT: cfg.heightLimitEnabled = !cfg.heightLimitEnabled; break;
+            case K_HEIGHT_INGAME: cfg.heightLimitInGameOnly = !cfg.heightLimitInGameOnly; break;
             case K_POTION_INGAME: cfg.potionInGameOnly = !cfg.potionInGameOnly; break;
             case K_ARMOR_INGAME: cfg.armorInGameOnly = !cfg.armorInGameOnly; break;
             case K_INVENTORY_INGAME: cfg.inventoryInGameOnly = !cfg.inventoryInGameOnly; break;
