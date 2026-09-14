@@ -39,6 +39,8 @@ public final class SessionChatLine {
         FINAL_DEATH,
         /** Local player broke a bed. */
         BED_BREAK,
+        /** The local player's team lost its bed ("BED DESTRUCTION > Your Bed …"). */
+        BED_LOST,
         /** Local player's team won. */
         WIN,
         /** Local player's team lost: the game is over. */
@@ -64,7 +66,13 @@ public final class SessionChatLine {
     private static final Pattern SELF_DEATH_NO_KILLER = Pattern.compile(
             "^(?:fell into the void|died|hit the ground too hard|burned to death|drowned|was blown up"
                     + "|was struck by lightning|withered away|was pricked to death)$");
-    private static final Pattern BED = Pattern.compile("^BED DESTRUCTION > [A-Za-z]+ Bed (.+)$");
+    private static final Pattern BED = Pattern.compile("^BED DESTRUCTION > ([A-Za-z]+) Bed (.+)$");
+    /**
+     * Bed Wars lobby stats hologram row (armour-stand name, colour codes already stripped). Grouped
+     * thousands or at most nine plain digits, so a match always fits an int.
+     */
+    private static final Pattern WINSTREAK_HOLOGRAM =
+            Pattern.compile("^Current Winstreak: ([0-9]{1,3}(?:,[0-9]{3})*|[0-9]{1,9})$");
     private static final Pattern WINNERS = Pattern.compile("^Winners?(?: -|:) (.+)$");
     /** AxolotlClient BedwarsMessages.GAME_END, leading whitespace tolerated. */
     private static final Pattern GAME_END =
@@ -92,17 +100,22 @@ public final class SessionChatLine {
         if (w.matches()) return hasToken(w.group(1), self) ? Kind.WIN : null;
         if (line.indexOf(':') >= 0) return null; // player-typed
 
-        if (self == null || self.isEmpty()) return null;
-
         Matcher b = BED.matcher(line);
         if (b.matches()) {
+            // Hypixel names the victim team by colour for everyone else and as "Your" for that team
+            // itself (Open-Meowtils BedTracker.java:110, Raven-Scripts session.java:304), so the local
+            // team's loss needs no team lookup and no self name.
+            if (b.group(1).equalsIgnoreCase("Your")) return Kind.BED_LOST;
+            if (self == null || self.isEmpty()) return null;
             // Same killer-position rule as death lines: "… by Self!", "… by Self's holiday spirit!",
             // "… after seeing Self!". Never an incidental word elsewhere in the cosmetic.
-            String rest = b.group(1).trim();
+            String rest = b.group(2).trim();
             if (rest.endsWith("!")) rest = rest.substring(0, rest.length() - 1).trim();
             String breaker = killerOf(rest);
             return breaker != null && breaker.equalsIgnoreCase(self) ? Kind.BED_BREAK : null;
         }
+
+        if (self == null || self.isEmpty()) return null;
 
         Matcher d = DEATH_LINE.matcher(line);
         if (!d.matches()) return null;
@@ -128,6 +141,23 @@ public final class SessionChatLine {
         if (t.equals("VICTORY!")) return Kind.WIN;
         if (t.equals("GAME OVER!")) return Kind.LOSS;
         return null;
+    }
+
+    /**
+     * The player's current winstreak as shown on the Bed Wars lobby "Bed Wars Profile" hologram
+     * ({@code Current Winstreak: 1,204}; Raven-Scripts session.java:104-112, HypixelRecreation
+     * NPCStats.java:49). {@code -1} for any other text, and never an exception: the tick handler
+     * feeds it every armour-stand name it sees.
+     */
+    public static int parseWinstreakHologram(String plain) {
+        if (plain == null) return -1;
+        Matcher m = WINSTREAK_HOLOGRAM.matcher(plain.trim());
+        if (!m.matches()) return -1;
+        try {
+            return Integer.parseInt(m.group(1).replace(",", ""));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /**

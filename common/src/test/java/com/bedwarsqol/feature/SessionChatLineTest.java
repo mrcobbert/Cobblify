@@ -99,6 +99,36 @@ public class SessionChatLineTest {
         assertEquals(Kind.BED_BREAK, parse("BED DESTRUCTION > Aqua Bed has left the game after seeing Self!")); // BM:238
     }
 
+    /**
+     * The losing team sees its own colour word replaced by "Your" (Open-Meowtils BedTracker.java:110;
+     * Raven-Scripts session.java:304-308, copy in the cycle folder). No self name is needed.
+     */
+    @Test
+    public void ownTeamBedLost() {
+        assertEquals(Kind.BED_LOST, parse("BED DESTRUCTION > Your Bed was destroyed by Steve!"));
+        assertEquals(Kind.BED_LOST, parse("BED DESTRUCTION > Your Bed was melted by Steve's holiday spirit!"));
+        assertEquals(Kind.BED_LOST, parse("BED DESTRUCTION > Your Bed has left the game after seeing Steve!"));
+        assertEquals(Kind.BED_LOST, parse("BED DESTRUCTION > Your Bed was bed #4 destroyed by Steve!"));
+        assertEquals(Kind.BED_LOST, SessionChatLine.parse("BED DESTRUCTION > Your Bed was destroyed by Steve!", null));
+        assertNull(parse("[MVP+] Steve: BED DESTRUCTION > Your Bed was destroyed by Steve!"));
+        assertNull(parse("Party > Alex: BED DESTRUCTION > Your Bed was destroyed by Steve!"));
+        assertNull(parse("Your bed has been destroyed!")); // not the BED DESTRUCTION shape
+    }
+
+    @Test
+    public void winstreakHologram() {
+        assertEquals(1204, SessionChatLine.parseWinstreakHologram("Current Winstreak: 1,204"));
+        assertEquals(3, SessionChatLine.parseWinstreakHologram("Current Winstreak: 3"));
+        assertEquals(0, SessionChatLine.parseWinstreakHologram("  Current Winstreak: 0  "));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram("Total Wins: 1,204"));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram("Winstreak"));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram("Current Winstreak: 1,2"));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram("Current Winstreak: 9,999,999,999")); // I1: overflow, no throw
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram("Current Winstreak: 1234567890"));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram(""));
+        assertEquals(-1, SessionChatLine.parseWinstreakHologram(null));
+    }
+
     @Test
     public void otherPlayersBedsAreIgnored() {
         assertNull(parse("BED DESTRUCTION > Red Bed was destroyed by Steve!"));
