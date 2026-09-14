@@ -14,6 +14,13 @@ Ship a real launcher update through the auto-updater, in two parts:
    Lunar. Shipped as mod + launcher **0.11.0** (the launcher bundle carries the
    mod jars, so a mod feature is a launcher release). Not play-tested on live
    Hypixel before release by the user's decision; the module is default-off.
+3. DONE (2026-09-14) - mod + launcher **0.12.0**: Session Stats HUD redrawn in
+   Lunar's 13-row layout with KDR / BBLR / winstreak / games (cycle
+   `.ai/cycles/2026-09-13-session-hud-lunar-layout`, PR #7) and the Height
+   Limit HUD (PR #6). Right-anchored HUD defaults moved on screen with a
+   stamped `settingsVersion` config migration. Not play-tested before release
+   by the user's decision (the user tests through auto-update; no external
+   users are on the launcher yet).
 
 ## What part 1 changed
 
@@ -50,6 +57,6 @@ Ship a real launcher update through the auto-updater, in two parts:
 - Version bump for the release: every source `tools/check-release-version.sh`
   pins (`gradle.properties`, `lunar/build.gradle.kts`, Lunar `BedwarsQol.VERSION`,
   `launcher/package.json`, `package-lock.json`, `Cargo.toml`, `tauri.conf.json`)
-  plus the `cobblify-launcher` entry in `Cargo.lock`. 0.11.0 as of 2026-09-13.
+  plus the `cobblify-launcher` entry in `Cargo.lock`. 0.12.0 as of 2026-09-14.
 - The release pair is now `Launcher Update Candidate` (`launcher-update.yml`)
   then `Promote Launcher Update` (`launcher-promote.yml`), both manual.
