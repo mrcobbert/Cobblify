@@ -34,9 +34,20 @@ public final class SessionStatsWatch {
         if (CORE.reset()) DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (reset)");
     }
 
+    /**
+     * Only BedWars lines count: the sidebar must say Bed Wars (with HypixelContext's short grace across
+     * sidebar rebuilds), or the current world session must be the one whose game block is open — the
+     * end-of-game rows and title arrive on the same game server, so the latch keeps them even if the
+     * sidebar has already changed. A SkyWars kill or a Duels VICTORY! is never counted.
+     */
+    private static boolean acceptingEvents() {
+        if (!HypixelContext.isOnHypixel()) return false;
+        return HypixelContext.isInBedwars() || GameSessionTracker.currentSessionId() == CORE.gameSessionId();
+    }
+
     /** Called from the GuiIngame title inject with the raw (possibly formatted) title text. */
     public static void onTitle(String title) {
-        if (title == null || !HypixelContext.isOnHypixel()) return;
+        if (title == null || !acceptingEvents()) return;
         CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
     }
 
@@ -44,7 +55,7 @@ public final class SessionStatsWatch {
     public void onChat(ChatEvent.Received event) {
         if (event == null || event.getMessage() == null) return;
         if (ModChat.isMarked(event.getMessage())) return;
-        if (!HypixelContext.isOnHypixel()) return;
+        if (!acceptingEvents()) return;
         String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.getMessage().getUnformattedText());
         CORE.onEvent(SessionChatLine.parse(plain, selfName()));
     }
