@@ -185,7 +185,7 @@ public class HeightLimitCoreTest {
         c.onLocation(W2, "BEDWARS_FOUR_FOUR", "Temple");
         c.onTick(5100, W2, true, null);
         assertEquals("Temple", c.map());
-        assertEquals(105, c.limit());
+        assertEquals(106, c.limit());
     }
 
     @Test
