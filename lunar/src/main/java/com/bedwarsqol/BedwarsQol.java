@@ -66,6 +66,7 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(new SeraphAlert());
         EventBus.subscribe(new QueueAlert());
         EventBus.subscribe(new com.bedwarsqol.feature.LobbyChatWatch());
+        EventBus.subscribe(new com.bedwarsqol.feature.SessionStatsWatch());
 
         CommandBus.register(new BedwarsQolCommand());
 
