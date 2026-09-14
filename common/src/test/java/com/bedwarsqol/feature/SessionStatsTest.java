@@ -41,8 +41,12 @@ public class SessionStatsTest {
         assertEquals("0.33", SessionStats.formatRatio(1.0 / 3.0));
     }
 
-    // A3: a solo win and a team win both count, whichever order the title and killer rows arrive in.
+    // A3: a Solo win and a Doubles win both count, whichever order the title and killer rows arrive in.
 
+    /**
+     * Solo: no roll-call line, only the VICTORY! title (HM WIN_VICTORY / BedwarsGameEndListener.java:38)
+     * and the killer row (BM GAME_END). This is the shape Lunar's mod misses.
+     */
     @Test
     public void soloWinTitleThenKillerRow() {
         SessionStats s = new SessionStats();
@@ -52,6 +56,37 @@ public class SessionStatsTest {
         feed(s, "                        1st Killer - [MVP+] Self - 5");
         assertEquals(1, s.wins());
         assertEquals(0, s.losses());
+    }
+
+    /**
+     * Doubles: a team game ends with the same VICTORY! title (HM WIN_VICTORY; BedwarsGameEndListener.java
+     * broadcasts it per team) and the killer row (BM GAME_END); Hypixel also lists the winning team
+     * ("Winners: …", HM WIN_WINNERS_PREFIX). Any one of the three win signals plus the row counts once.
+     */
+    @Test
+    public void doublesWinTitleRowAndRollCall() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "Steve was killed by Self.", "TEAM ELIMINATED > Red Team has been eliminated!");
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        feed(s, "Winners: Alex, Self", "                        1st Killer - [MVP+] Alex - 6");
+        assertEquals(1, s.wins());
+        assertEquals(0, s.losses());
+        assertEquals(1, s.kills());
+    }
+
+    /** Doubles loss: partner and self eliminated, GAME OVER! title, killer row. */
+    @Test
+    public void doublesLoss() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "Alex was killed by Steve. FINAL KILL!", "Self fell into the void. FINAL KILL!",
+                "You have been eliminated!", "TEAM ELIMINATED > Blue Team has been eliminated!");
+        s.onEvent(SessionChatLine.parseTitle("GAME OVER!"));
+        feed(s, "1st Killer - Steve - 4");
+        assertEquals(0, s.wins());
+        assertEquals(1, s.losses());
+        assertEquals(1, s.finalDeaths());
     }
 
     @Test
