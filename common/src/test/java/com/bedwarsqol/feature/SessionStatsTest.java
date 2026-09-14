@@ -1,0 +1,182 @@
+package com.bedwarsqol.feature;
+
+import org.junit.Test;
+
+import static com.bedwarsqol.feature.SessionChatLine.Kind;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+public class SessionStatsTest {
+
+    private static final String SELF = "Self";
+
+    private static void feed(SessionStats s, String... lines) {
+        for (String l : lines) s.onEvent(SessionChatLine.parse(l, SELF));
+    }
+
+    @Test
+    public void countersAndRatios() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "Steve was killed by Self.", "Alex was shot by Self.",
+                "Steve was knocked into the void by Self. FINAL KILL!",
+                "BED DESTRUCTION > Red Bed was destroyed by Self!",
+                "Self was killed by Alex.", "Self fell into the void. FINAL KILL!");
+        assertEquals(2, s.gameKills());
+        assertEquals(1, s.gameFinals());
+        assertEquals(1, s.gameBeds());
+        assertEquals(2, s.kills());
+        assertEquals(1, s.deaths());
+        assertEquals(1, s.finalKills());
+        assertEquals(1, s.finalDeaths());
+        assertEquals(1, s.beds());
+        assertEquals(1.0, s.fkdr(), 1e-9);
+        // BedwarsStats.ModeStats convention: zero denominator returns the numerator.
+        assertEquals(0.0, s.wlr(), 1e-9);
+        assertEquals(3.0, SessionStats.ratio(3, 0), 1e-9);
+        assertEquals(1.5, SessionStats.ratio(3, 2), 1e-9);
+        assertEquals("3.00", SessionStats.formatRatio(3.0));
+        assertEquals("1.50", SessionStats.formatRatio(1.5));
+        assertEquals("0.33", SessionStats.formatRatio(1.0 / 3.0));
+    }
+
+    // A3: a solo win and a team win both count, whichever order the title and killer rows arrive in.
+
+    @Test
+    public void soloWinTitleThenKillerRow() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(0, s.wins());
+        feed(s, "                        1st Killer - [MVP+] Self - 5");
+        assertEquals(1, s.wins());
+        assertEquals(0, s.losses());
+    }
+
+    @Test
+    public void teamWinKillerRowThenWinnersLine() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "                        1st Killer - Alex - 5");
+        assertEquals(0, s.wins());
+        feed(s, "Winners: Alex, Self");
+        assertEquals(1, s.wins());
+        // Extra signals after settling never double count.
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        feed(s, "VICTORY!", "1st Killer - Alex - 5");
+        assertEquals(1, s.wins());
+    }
+
+    @Test
+    public void lossCountsOnce() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "You have been eliminated!");
+        s.onEvent(SessionChatLine.parseTitle("GAME OVER!"));
+        feed(s, "1st Killer - Alex - 9");
+        assertEquals(1, s.losses());
+        assertEquals(0, s.wins());
+    }
+
+    @Test
+    public void eliminatedThenTeamComebackIsAWin() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "Self was killed by Alex. FINAL KILL!", "You have been eliminated!");
+        assertEquals(SessionStats.Outcome.LOSS, s.outcome());
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(SessionStats.Outcome.WIN, s.outcome());
+        feed(s, "GAME OVER!"); // a late loss signal never demotes a win
+        assertEquals(SessionStats.Outcome.WIN, s.outcome());
+        feed(s, "1st Killer - Alex - 9");
+        assertEquals(1, s.wins());
+        assertEquals(0, s.losses());
+    }
+
+    @Test
+    public void unresolvedEndCountsNothingAndIsReported() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "1st Killer - Alex - 9");
+        assertEquals(0, s.wins() + s.losses());
+        assertTrue(s.onGameStart(2));
+        assertFalse(s.onGameStart(3));
+        assertEquals(0, s.wins() + s.losses());
+    }
+
+    // A4: game block resets per game, session block accumulates.
+
+    @Test
+    public void gameBlockResetsPerGame() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "Steve was killed by Self.", "Steve was killed by Self. FINAL KILL!",
+                "BED DESTRUCTION > Red Bed was destroyed by Self!", "VICTORY!", "1st Killer - Self - 2");
+        s.onGameStart(2);
+        assertEquals(0, s.gameKills());
+        assertEquals(0, s.gameFinals());
+        assertEquals(0, s.gameBeds());
+        assertEquals(SessionStats.Outcome.UNKNOWN, s.outcome());
+        assertEquals(1, s.kills());
+        assertEquals(1, s.finalKills());
+        assertEquals(1, s.beds());
+        assertEquals(1, s.wins());
+        feed(s, "Steve was killed by Self.");
+        assertEquals(1, s.gameKills());
+        assertEquals(2, s.kills());
+    }
+
+    // A5: session resets off Hypixel and on manual reset; survives a lobby hop.
+
+    @Test
+    public void clockStartsOnFirstHypixelTick() {
+        SessionStats s = new SessionStats();
+        assertEquals("--:--", s.elapsed(5_000L));
+        s.onTick(false, 1_000L);
+        assertEquals(-1L, s.sessionStartMs());
+        s.onTick(true, 10_000L);
+        assertEquals(10_000L, s.sessionStartMs());
+        assertEquals("0:05", s.elapsed(15_000L));
+        assertEquals("12:34", s.elapsed(10_000L + (12 * 60 + 34) * 1000L));
+        assertEquals("1:02:03", s.elapsed(10_000L + (3600 + 120 + 3) * 1000L));
+    }
+
+    @Test
+    public void leavingHypixelResetsEverything() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.onGameStart(1);
+        feed(s, "Steve was killed by Self.", "VICTORY!", "1st Killer - Self - 1");
+        assertEquals(1, s.wins());
+        // Lobby hop: still on Hypixel, nothing changes.
+        s.onTick(true, 2_000L);
+        assertEquals(1, s.wins());
+        assertEquals(1_000L, s.sessionStartMs());
+        // Disconnect / quit to title.
+        assertFalse(s.onTick(false, 3_000L));
+        assertEquals(0, s.wins());
+        assertEquals(0, s.kills());
+        assertEquals(-1L, s.sessionStartMs());
+        assertEquals("--:--", s.elapsed(4_000L));
+        // Idle off-Hypixel ticks do nothing more; rejoining starts a fresh clock.
+        s.onTick(false, 5_000L);
+        s.onTick(true, 9_000L);
+        assertEquals(9_000L, s.sessionStartMs());
+    }
+
+    @Test
+    public void manualReset() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.onGameStart(1);
+        feed(s, "Steve was killed by Self.", "1st Killer - Alex - 4");
+        assertTrue(s.reset()); // that game ended unresolved
+        assertEquals(0, s.gameKills());
+        assertEquals(0, s.kills());
+        assertEquals(-1L, s.sessionStartMs());
+        s.onTick(true, 20_000L);
+        assertEquals(20_000L, s.sessionStartMs());
+        assertFalse(s.reset());
+    }
+}
