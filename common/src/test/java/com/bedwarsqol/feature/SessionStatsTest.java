@@ -41,6 +41,97 @@ public class SessionStatsTest {
         assertEquals("0.33", SessionStats.formatRatio(1.0 / 3.0));
     }
 
+    @Test
+    public void bedsLostKdrBblrAndGames() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "BED DESTRUCTION > Red Bed was destroyed by Self!", "BED DESTRUCTION > Green Bed was destroyed by Self!",
+                "BED DESTRUCTION > Your Bed was destroyed by Steve!",
+                "Steve was killed by Self.", "Alex was killed by Self.", "Bob was killed by Self.",
+                "Self was killed by Alex.", "Self was killed by Bob.");
+        assertEquals(2, s.beds());
+        assertEquals(1, s.bedsLost());
+        assertEquals(2.0, s.bblr(), 1e-9);
+        assertEquals(1.5, s.kdr(), 1e-9);
+        assertEquals(0, s.games()); // nothing settled yet
+        feed(s, "GAME OVER!", "1st Killer - Alex - 9");
+        assertEquals(1, s.games());
+        s.onGameStart(2);
+        feed(s, "VICTORY!");
+        assertEquals(2, s.games());
+        // Game block never carries beds lost; a fresh game keeps the session's.
+        assertEquals(0, s.gameBeds());
+        assertEquals(1, s.bedsLost());
+        // Zero-denominator convention holds for the new ratios too.
+        SessionStats z = new SessionStats();
+        feed(z, "BED DESTRUCTION > Red Bed was destroyed by Self!");
+        assertEquals(1.0, z.bblr(), 1e-9);
+        assertEquals(0.0, z.kdr(), 1e-9);
+    }
+
+    @Test
+    public void winstreakFollowsSettledOutcomes() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        assertEquals(0, s.winstreak());
+        s.onGameStart(1);
+        feed(s, "VICTORY!");
+        assertEquals(1, s.winstreak());
+        s.onGameStart(2);
+        feed(s, "VICTORY!", "1st Killer - Self - 2");
+        assertEquals(2, s.winstreak()); // the killer row after a settled title adds nothing
+        s.onGameStart(3);
+        feed(s, "You have been eliminated!");
+        assertEquals(2, s.winstreak()); // provisional loss does not settle
+        feed(s, "GAME OVER!");
+        assertEquals(0, s.winstreak());
+        s.onGameStart(4);
+        feed(s, "VICTORY!");
+        assertEquals(1, s.winstreak());
+    }
+
+    @Test
+    public void winstreakSeedAndLateVictoryRestore() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.seedWinstreak(7);
+        assertEquals(7, s.winstreak());
+        s.seedWinstreak(-1); // "no value" never overwrites
+        assertEquals(7, s.winstreak());
+        s.onGameStart(1);
+        feed(s, "VICTORY!");
+        assertEquals(8, s.winstreak());
+        // Loss settled by the killer row, then the team's comeback title: the streak is restored.
+        s.onGameStart(2);
+        feed(s, "You have been eliminated!", "1st Killer - Alex - 9");
+        assertEquals(1, s.losses());
+        assertEquals(0, s.winstreak());
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(0, s.losses());
+        assertEquals(2, s.wins());
+        assertEquals(9, s.winstreak());
+        feed(s, "GAME OVER!", "VICTORY!"); // nothing moves it again
+        assertEquals(9, s.winstreak());
+    }
+
+    @Test
+    public void manualResetKeepsTheStreakLeavingHypixelClearsIt() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.seedWinstreak(4);
+        s.onGameStart(1);
+        feed(s, "VICTORY!", "BED DESTRUCTION > Your Bed was destroyed by Steve!");
+        assertEquals(5, s.winstreak());
+        assertEquals(1, s.bedsLost());
+        s.reset();
+        assertEquals(5, s.winstreak());
+        assertEquals(0, s.bedsLost());
+        assertEquals(0, s.games());
+        s.onTick(true, 2_000L);
+        s.onTick(false, 3_000L);
+        assertEquals(0, s.winstreak());
+    }
+
     // A3: a Solo win and a Doubles win both count, whichever order the title and killer rows arrive in.
 
     /**
@@ -201,12 +292,12 @@ public class SessionStatsTest {
     @Test
     public void clockStartsOnFirstHypixelTick() {
         SessionStats s = new SessionStats();
-        assertEquals("--:--", s.elapsed(5_000L));
+        assertEquals("00:00", s.elapsed(5_000L));
         s.onTick(false, 1_000L);
         assertEquals(-1L, s.sessionStartMs());
         s.onTick(true, 10_000L);
         assertEquals(10_000L, s.sessionStartMs());
-        assertEquals("0:05", s.elapsed(15_000L));
+        assertEquals("00:05", s.elapsed(15_000L));
         assertEquals("12:34", s.elapsed(10_000L + (12 * 60 + 34) * 1000L));
         assertEquals("1:02:03", s.elapsed(10_000L + (3600 + 120 + 3) * 1000L));
     }
@@ -227,7 +318,7 @@ public class SessionStatsTest {
         assertEquals(0, s.wins());
         assertEquals(0, s.kills());
         assertEquals(-1L, s.sessionStartMs());
-        assertEquals("--:--", s.elapsed(4_000L));
+        assertEquals("00:00", s.elapsed(4_000L));
         // Idle off-Hypixel ticks do nothing more; rejoining starts a fresh clock.
         s.onTick(false, 5_000L);
         s.onTick(true, 9_000L);

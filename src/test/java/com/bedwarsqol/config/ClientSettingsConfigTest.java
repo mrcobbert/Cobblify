@@ -45,6 +45,52 @@ public class ClientSettingsConfigTest {
             + "\"acThroughWall\":true,\"acAutoblock\":false,\"acEating\":true,\"acNoSlow\":false,"
             + "\"urchinAcFusion\":true,\"guiSize\":1,\"autoGg\":true}";
 
+    // settingsVersion v1: right-anchored HUDs shipped at X = +5 (5 GUI px off the right edge).
+
+    private static final String V0_SHIPPED_JSON = "{\"sessionStatsHudX\":5,\"sessionStatsHudAnchor\":2,"
+            + "\"diamondTimerHudX\":5,\"diamondTimerHudAnchor\":2,\"emeraldTimerHudX\":5,\"emeraldTimerHudAnchor\":2,"
+            + "\"sessionStatsBackgroundEnabled\":true,\"guiSize\":1}";
+
+    @Test
+    public void shippedRightAnchoredDefaultsMigrateOnScreenOnce() {
+        ClientSettings s = GSON.fromJson(V0_SHIPPED_JSON, ClientSettings.class);
+        assertEquals("a pre-stamp file reads version 0", 0, s.settingsVersion);
+        s.sanitize();
+        assertEquals(-5, s.sessionStatsHudX);
+        assertEquals(-5, s.diamondTimerHudX);
+        assertEquals(-5, s.emeraldTimerHudX);
+        assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
+        assertEquals("unrelated setting survives", 1, s.guiSize);
+        String out = GSON.toJson(s);
+        assertTrue("the stamp is written", out.contains("\"settingsVersion\":1"));
+        assertFalse("the removed Background key is gone", out.contains("sessionStatsBackgroundEnabled"));
+    }
+
+    @Test
+    public void migrationKeepsBoxesTheUserMoved() {
+        ClientSettings moved = GSON.fromJson("{\"sessionStatsHudX\":40,\"sessionStatsHudAnchor\":2}", ClientSettings.class);
+        moved.sanitize();
+        assertEquals(40, moved.sessionStatsHudX);
+
+        ClientSettings otherAnchor = GSON.fromJson("{\"sessionStatsHudX\":5,\"sessionStatsHudAnchor\":0}", ClientSettings.class);
+        otherAnchor.sanitize();
+        assertEquals("a left-anchored +5 is a real position", 5, otherAnchor.sessionStatsHudX);
+
+        ClientSettings stamped = GSON.fromJson("{\"settingsVersion\":1,\"sessionStatsHudX\":5,\"sessionStatsHudAnchor\":2}", ClientSettings.class);
+        stamped.sanitize();
+        assertEquals("an already-migrated file is never touched again", 5, stamped.sessionStatsHudX);
+    }
+
+    @Test
+    public void freshDefaultsSitOnScreenAndAreStamped() {
+        ClientSettings s = new ClientSettings();
+        s.sanitize();
+        assertEquals(-5, s.sessionStatsHudX);
+        assertEquals(-5, s.diamondTimerHudX);
+        assertEquals(-5, s.emeraldTimerHudX);
+        assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
+    }
+
     @Test
     public void staleAnticheatKeysAreIgnoredAndDropOnSave() {
         ClientSettings s = GSON.fromJson(ANTICHEAT_JSON, ClientSettings.class);
