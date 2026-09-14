@@ -538,7 +538,7 @@ public class BedwarsHudRenderer {
         HudBox box = sessionBox(mc, cfg, example);
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
-        if (cfg.sessionStatsBackgroundEnabled) drawHudBackground(box, scale);
+        drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
         // Numeric panel: always text lines, whichever display mode the other modules use.
         drawLines(mc.fontRendererObj, sessionLines(example), box.x, box.y, scale);
     }

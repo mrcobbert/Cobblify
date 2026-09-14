@@ -73,7 +73,7 @@ public class SettingsGui extends GuiScreen {
     private static final int K_ACCENT = 90;
     private static final int K_GRP_APPEARANCE = 91, K_GRP_HUD = 92;
     // Session Stats HUD (Lunar-style game + session tally) and its Reset action row.
-    private static final int K_SESSION = 120, K_SESSION_INGAME = 121, K_SESSION_BG = 122, K_SESSION_RESET = 123;
+    private static final int K_SESSION = 120, K_SESSION_INGAME = 121, K_SESSION_RESET = 123;
     // Chat module: Lunar keeps only the two inc pieces (Lunar Client ships the generic chat QOL
     // natively); kind numbers match the Forge tree's Chat section.
     private static final int K_NOTIFY_INC = 101, K_INC_KEY = 103;
@@ -170,7 +170,6 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Background", K_GENTIMERS_BG, null, K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_SESSION_INGAME, null, K_SESSION),
-                    new RowDef(RowType.TOGGLE, "Background", K_SESSION_BG, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION)),
             new Section("Combat",
                     new RowDef(RowType.TOGGLE, "Hand Position", "Move and resize held item", K_HANDPOS),
@@ -1631,7 +1630,6 @@ public class SettingsGui extends GuiScreen {
             case K_GENTIMERS: return cfg.genTimersEnabled;
             case K_SESSION: return cfg.sessionStatsEnabled;
             case K_SESSION_INGAME: return cfg.sessionStatsInGameOnly;
-            case K_SESSION_BG: return cfg.sessionStatsBackgroundEnabled;
             case K_STATS: return cfg.playerStats;
             case K_NAMETAG: return cfg.playerStatsNametag;
             case K_TAB: return cfg.playerStatsTab;
@@ -1673,7 +1671,6 @@ public class SettingsGui extends GuiScreen {
             case K_GENTIMERS: cfg.genTimersEnabled = !cfg.genTimersEnabled; break;
             case K_SESSION: cfg.sessionStatsEnabled = !cfg.sessionStatsEnabled; break;
             case K_SESSION_INGAME: cfg.sessionStatsInGameOnly = !cfg.sessionStatsInGameOnly; break;
-            case K_SESSION_BG: cfg.sessionStatsBackgroundEnabled = !cfg.sessionStatsBackgroundEnabled; break;
             case K_STATS: cfg.playerStats = !cfg.playerStats; break;
             case K_NAMETAG: cfg.playerStatsNametag = !cfg.playerStatsNametag; break;
             case K_TAB: cfg.playerStatsTab = !cfg.playerStatsTab; break;
