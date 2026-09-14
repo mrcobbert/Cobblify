@@ -195,10 +195,11 @@ public class BedwarsHudRenderer {
         for (int i = 0; i < lines.size(); i++) {
             Line line = lines.get(i);
             float ly = y + i * lineStep;
-            drawScaledString(fr, line.primary, x, ly, scale);
+            if (line.primary.isEmpty()) continue; // blank spacer row: advances one lineStep, draws nothing
+            drawScaledString(fr, line.primary, x, ly, scale, line.weight);
             if (!line.secondary.isEmpty()) {
-                float secX = x + fontWidth(line.primary) * scale + gap;
-                drawScaledString(fr, line.secondary, secX, ly + secondaryYOffset, secondaryScale);
+                float secX = x + fontWidth(line.primary, line.weight) * scale + gap;
+                drawScaledString(fr, line.secondary, secX, ly + secondaryYOffset, secondaryScale, line.weight);
             }
         }
     }
@@ -208,13 +209,21 @@ public class BedwarsHudRenderer {
     // a frame. Client rendering is single-threaded, so the shared static is safe.
     private static boolean hudVanillaFont = false;
 
-    /** Width of {@code text} at scale 1.0 in the active HUD font (multiply by your scale at the call site). */
+    /**
+     * Width of {@code text} at scale 1.0 in the active HUD font (multiply by your scale at the call
+     * site), measured in the weight it is drawn with — every HUD draw is SemiBold unless a
+     * {@link Line} says otherwise, and SemiBold advances are wider than Regular.
+     */
     private static float fontWidth(String text) {
+        return fontWidth(text, BedwarsQolFont.Weight.BOLD);
+    }
+
+    private static float fontWidth(String text, BedwarsQolFont.Weight weight) {
         if (hudVanillaFont) {
             FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
             return fr == null ? 0f : fr.getStringWidth(text);
         }
-        return BedwarsQolFont.width(text);
+        return BedwarsQolFont.width(text, 1f, weight);
     }
 
     /** Line height at {@code scale}; both fonts are ~9px tall at scale 1.0. */
@@ -240,7 +249,12 @@ public class BedwarsHudRenderer {
 
     private static void drawScaledString(FontRenderer fr, String text, float x, float y, float scale) {
         // Modern Inter SemiBold (default) or the vanilla Minecraft font, per the HUD "Font" setting.
-        fontDraw(text, x, y, scale, TEXT_COLOR, BedwarsQolFont.Weight.BOLD);
+        drawScaledString(fr, text, x, y, scale, BedwarsQolFont.Weight.BOLD);
+    }
+
+    private static void drawScaledString(FontRenderer fr, String text, float x, float y, float scale,
+                                         BedwarsQolFont.Weight weight) {
+        fontDraw(text, x, y, scale, TEXT_COLOR, weight);
     }
 
     private static float absoluteX(float storedX, int anchor, float width, float screenWidth) {
@@ -280,9 +294,9 @@ public class BedwarsHudRenderer {
 
     private static float lineWidth(FontRenderer fr, Line line) {
         if (fr == null) return 0f;
-        float width = fontWidth(line.primary);
+        float width = fontWidth(line.primary, line.weight);
         if (!line.secondary.isEmpty()) {
-            width += SECONDARY_GAP + fontWidth(line.secondary) * SECONDARY_SCALE;
+            width += SECONDARY_GAP + fontWidth(line.secondary, line.weight) * SECONDARY_SCALE;
         }
         return width;
     }
@@ -539,27 +553,45 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
         drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
-        // Numeric panel: always text lines, whichever display mode the other modules use.
+        // Text rows whichever display mode the other modules use; each row carries its own weight.
         drawLines(mc.fontRendererObj, sessionLines(example), box.x, box.y, scale);
     }
 
-    /** Game block over session block, mirroring Lunar's Hypixel Bedwars panel. */
+    /** Weight of every session row that is not a header; headers are SemiBold. */
+    private static final BedwarsQolFont.Weight SESSION_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
+
+    /**
+     * Lunar's Hypixel Bedwars panel, row for row: a SemiBold "Game" header over finals/beds/kills,
+     * a SemiBold "Session" header over the four counter/ratio rows, a blank spacer, then winstreak,
+     * games and the clock. Every row is one string at one size; no colours.
+     */
     private static List<Line> sessionLines(boolean example) {
-        List<Line> out = new ArrayList<>(5);
-        if (example) {
-            out.add(new Line("Game", "Kills 3  Finals 1  Beds 1"));
-            out.add(new Line("Session", "12:34"));
-            out.add(new Line("W/L", "3 / 1  WLR 3.00"));
-            out.add(new Line("FK/FD", "12 / 4  FKDR 3.00"));
-            out.add(new Line("Beds", "5"));
-            return out;
-        }
-        SessionStats s = SessionStatsWatch.core();
-        out.add(new Line("Game", "Kills " + s.gameKills() + "  Finals " + s.gameFinals() + "  Beds " + s.gameBeds()));
-        out.add(new Line("Session", s.elapsed(System.currentTimeMillis())));
-        out.add(new Line("W/L", s.wins() + " / " + s.losses() + "  WLR " + SessionStats.formatRatio(s.wlr())));
-        out.add(new Line("FK/FD", s.finalKills() + " / " + s.finalDeaths() + "  FKDR " + SessionStats.formatRatio(s.fkdr())));
-        out.add(new Line("Beds", Integer.toString(s.beds())));
+        SessionStats s = example ? null : SessionStatsWatch.core();
+        int gFinals = example ? 1 : s.gameFinals();
+        int gBeds = example ? 1 : s.gameBeds();
+        int gKills = example ? 3 : s.gameKills();
+        String finals = example ? "12 / FKDR: 3.00" : s.finalKills() + " / FKDR: " + SessionStats.formatRatio(s.fkdr());
+        String beds = example ? "5 / BBLR: 2.50" : s.beds() + " / BBLR: " + SessionStats.formatRatio(s.bblr());
+        String kills = example ? "40 / KDR: 2.00" : s.kills() + " / KDR: " + SessionStats.formatRatio(s.kdr());
+        String wins = example ? "3 / WLR: 3.00" : s.wins() + " / WLR: " + SessionStats.formatRatio(s.wlr());
+        int streak = example ? 2 : s.winstreak();
+        int games = example ? 4 : s.games();
+        String time = example ? "12:34" : s.elapsed(System.currentTimeMillis());
+
+        List<Line> out = new ArrayList<>(13);
+        out.add(new Line("Game", BedwarsQolFont.Weight.BOLD));
+        out.add(new Line("Finals: " + gFinals, SESSION_ROW_WEIGHT));
+        out.add(new Line("Beds: " + gBeds, SESSION_ROW_WEIGHT));
+        out.add(new Line("Kills: " + gKills, SESSION_ROW_WEIGHT));
+        out.add(new Line("Session", BedwarsQolFont.Weight.BOLD));
+        out.add(new Line("Finals: " + finals, SESSION_ROW_WEIGHT));
+        out.add(new Line("Beds: " + beds, SESSION_ROW_WEIGHT));
+        out.add(new Line("Kills: " + kills, SESSION_ROW_WEIGHT));
+        out.add(new Line("Wins: " + wins, SESSION_ROW_WEIGHT));
+        out.add(new Line("", SESSION_ROW_WEIGHT));
+        out.add(new Line("Winstreak: " + streak, SESSION_ROW_WEIGHT));
+        out.add(new Line("Session Games: " + games, SESSION_ROW_WEIGHT));
+        out.add(new Line("Session Time: " + time, SESSION_ROW_WEIGHT));
         return out;
     }
 
@@ -616,14 +648,25 @@ public class BedwarsHudRenderer {
     private static final class Line {
         final String primary;
         final String secondary;
+        /** Weight the row is measured and drawn in; SemiBold unless a module asks otherwise. */
+        final BedwarsQolFont.Weight weight;
 
         Line(String primary) {
             this(primary, "");
         }
 
         Line(String primary, String secondary) {
-            this.primary = primary;
+            this(primary, secondary, BedwarsQolFont.Weight.BOLD);
+        }
+
+        Line(String primary, BedwarsQolFont.Weight weight) {
+            this(primary, "", weight);
+        }
+
+        Line(String primary, String secondary, BedwarsQolFont.Weight weight) {
+            this.primary = primary == null ? "" : primary;
             this.secondary = secondary == null ? "" : secondary;
+            this.weight = weight == null ? BedwarsQolFont.Weight.BOLD : weight;
         }
     }
 
