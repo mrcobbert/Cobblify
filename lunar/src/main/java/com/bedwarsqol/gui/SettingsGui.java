@@ -75,7 +75,7 @@ public class SettingsGui extends GuiScreen {
     // Session Stats HUD (Lunar-style game + session tally) and its Reset action row.
     private static final int K_SESSION = 120, K_SESSION_INGAME = 121, K_SESSION_BG = 122, K_SESSION_RESET = 123;
     // Height Limit HUD (Lunar-style map name / build limit / blocks left).
-    private static final int K_HEIGHT = 124, K_HEIGHT_INGAME = 125, K_HEIGHT_BG = 126;
+    private static final int K_HEIGHT = 124, K_HEIGHT_INGAME = 125;
     // Chat module: Lunar keeps only the two inc pieces (Lunar Client ships the generic chat QOL
     // natively); kind numbers match the Forge tree's Chat section.
     private static final int K_NOTIFY_INC = 101, K_INC_KEY = 103;
@@ -175,8 +175,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Background", K_SESSION_BG, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION),
                     new RowDef(RowType.TOGGLE, "Height Limit", "Map name, build limit and blocks left", K_HEIGHT),
-                    new RowDef(RowType.TOGGLE, "In Game Only", K_HEIGHT_INGAME, null, K_HEIGHT),
-                    new RowDef(RowType.TOGGLE, "Background", K_HEIGHT_BG, null, K_HEIGHT)),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_HEIGHT_INGAME, null, K_HEIGHT)),
             new Section("Combat",
                     new RowDef(RowType.TOGGLE, "Hand Position", "Move and resize held item", K_HANDPOS),
                     new RowDef(RowType.SLIDER, "X", K_HANDX, -1.0f, 1.0f, K_HANDPOS),
@@ -1639,7 +1638,6 @@ public class SettingsGui extends GuiScreen {
             case K_SESSION_BG: return cfg.sessionStatsBackgroundEnabled;
             case K_HEIGHT: return cfg.heightLimitEnabled;
             case K_HEIGHT_INGAME: return cfg.heightLimitInGameOnly;
-            case K_HEIGHT_BG: return cfg.heightLimitBackgroundEnabled;
             case K_STATS: return cfg.playerStats;
             case K_NAMETAG: return cfg.playerStatsNametag;
             case K_TAB: return cfg.playerStatsTab;
@@ -1684,7 +1682,6 @@ public class SettingsGui extends GuiScreen {
             case K_SESSION_BG: cfg.sessionStatsBackgroundEnabled = !cfg.sessionStatsBackgroundEnabled; break;
             case K_HEIGHT: cfg.heightLimitEnabled = !cfg.heightLimitEnabled; break;
             case K_HEIGHT_INGAME: cfg.heightLimitInGameOnly = !cfg.heightLimitInGameOnly; break;
-            case K_HEIGHT_BG: cfg.heightLimitBackgroundEnabled = !cfg.heightLimitBackgroundEnabled; break;
             case K_STATS: cfg.playerStats = !cfg.playerStats; break;
             case K_NAMETAG: cfg.playerStatsNametag = !cfg.playerStatsNametag; break;
             case K_TAB: cfg.playerStatsTab = !cfg.playerStatsTab; break;

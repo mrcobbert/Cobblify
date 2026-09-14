@@ -530,47 +530,63 @@ public class BedwarsHudRenderer {
         GlStateManager.disableLighting();
     }
 
-    // ----- Height Limit (Lunar-style map / build limit / blocks left) -----
+    // ----- Height Limit (Lunar-style Map / Height Limit / Distance rows) -----
+
+    /** Rows are Inter Regular like the Session Stats rows; the panel is always drawn. */
+    private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example) {
         if (!HeightLimitWatch.visible(cfg, example)) return null;
         float scale = cfg.heightLimitHudScale;
-        Size size = textSize(mc.fontRendererObj, heightLimitLines(mc, example), scale);
-        if (size.width <= 0f || size.height <= 0f) return null;
+        List<String> rows = heightLimitRows(mc, example);
+        float width = 0f;
+        for (String row : rows) width = Math.max(width, rowWidth(row, HEIGHT_ROW_WEIGHT) * scale);
+        float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
+        if (width <= 0f || height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = absoluteX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, size.width, r.getScaledWidth());
-        float y = absoluteY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, size.height, r.getScaledHeight());
-        return new HudBox(HEIGHT_LIMIT_HUD, "Height Limit", x, y, size.width, size.height);
+        float x = absoluteX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, r.getScaledWidth());
+        float y = absoluteY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, r.getScaledHeight());
+        return new HudBox(HEIGHT_LIMIT_HUD, "Height Limit", x, y, width, height);
     }
 
     private static void drawHeightLimitHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = heightLimitBox(mc, cfg, example);
         if (box == null) return;
         float scale = cfg.heightLimitHudScale;
-        if (cfg.heightLimitBackgroundEnabled) drawHudBackground(box, scale);
-        drawLines(mc.fontRendererObj, heightLimitLines(mc, example), box.x, box.y, scale);
+        drawHudBackground(box, scale);
+        float step = (TEXT_HEIGHT + LINE_GAP) * scale;
+        List<String> rows = heightLimitRows(mc, example);
+        for (int i = 0; i < rows.size(); i++) {
+            fontDraw(rows.get(i), box.x, box.y + i * step, scale, TEXT_COLOR, HEIGHT_ROW_WEIGHT);
+        }
+    }
+
+    /** Width of one row in the weight it is drawn in (the vanilla font has a single weight). */
+    private static float rowWidth(String text, BedwarsQolFont.Weight weight) {
+        if (hudVanillaFont) return fontWidth(text);
+        return BedwarsQolFont.width(text, 1f, weight);
     }
 
     /**
-     * Map / Height Limit / Distance, the three rows of Lunar's Height Limit HUD. The limit is the
-     * highest Y a block can be placed at; Distance is how many blocks your feet level sits below it.
-     * Unknown values (a map not yet in the table and not yet learned) read "?".
+     * {@code Map: X} / {@code Height Limit: N} / {@code Distance: N}, the three rows of Lunar's Height
+     * Limit HUD. The limit is the highest Y a block can be placed at; Distance is how many blocks your
+     * feet level sits below it. Unknown values (a map not yet in the table and not yet learned) read "?".
      */
-    private static List<Line> heightLimitLines(Minecraft mc, boolean example) {
-        List<Line> out = new ArrayList<>(3);
+    private static List<String> heightLimitRows(Minecraft mc, boolean example) {
+        List<String> out = new ArrayList<>(3);
         if (example) {
-            out.add(new Line("Map", "Lighthouse"));
-            out.add(new Line("Height Limit", "110"));
-            out.add(new Line("Distance", "27"));
+            out.add("Map: Lighthouse");
+            out.add("Height Limit: 110");
+            out.add("Distance: 27");
             return out;
         }
         HeightLimitCore core = HeightLimitWatch.core();
         String map = core.map();
         int limit = core.limit();
         int distance = mc.thePlayer == null ? -1 : core.distance(mc.thePlayer.posY);
-        out.add(new Line("Map", map == null ? "?" : map));
-        out.add(new Line("Height Limit", limit < 0 ? "?" : Integer.toString(limit)));
-        out.add(new Line("Distance", distance < 0 ? "?" : Integer.toString(distance)));
+        out.add("Map: " + (map == null ? "?" : map));
+        out.add("Height Limit: " + (limit < 0 ? "?" : Integer.toString(limit)));
+        out.add("Distance: " + (distance < 0 ? "?" : Integer.toString(distance)));
         return out;
     }
 

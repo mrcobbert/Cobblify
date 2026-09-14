@@ -55,7 +55,6 @@ public class ClientSettings {
     /** Height Limit: Lunar-style map name, build limit (highest placeable Y) and blocks left below it. */
     public boolean heightLimitEnabled = false;
     public boolean heightLimitInGameOnly = false;
-    public boolean heightLimitBackgroundEnabled = false;
     public int heightLimitHudX = 5;
     public int heightLimitHudY = 5;
     public int heightLimitHudAnchor = 3; // middle-left
