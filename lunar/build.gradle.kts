@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.bedwarsqol"
-version = "0.10.1"
+version = "0.10.2"
 
 weave {
     configure {
