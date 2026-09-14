@@ -88,5 +88,6 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new QueueAlert());
         MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.LobbyChatWatch());
         MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.SessionStatsWatch());
+        MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.HeightLimitWatch());
     }
 }
