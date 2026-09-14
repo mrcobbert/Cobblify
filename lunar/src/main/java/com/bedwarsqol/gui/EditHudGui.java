@@ -327,6 +327,7 @@ public class EditHudGui extends GuiScreen {
         if (BedwarsHudRenderer.INVENTORY_HUD.equals(id)) return cfg.inventoryHudScale;
         if (BedwarsHudRenderer.DIAMOND_TIMER_HUD.equals(id)) return cfg.diamondTimerHudScale;
         if (BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(id)) return cfg.emeraldTimerHudScale;
+        if (BedwarsHudRenderer.SESSION_HUD.equals(id)) return cfg.sessionStatsHudScale;
         return cfg.inventoryHudScale;
     }
 
@@ -337,6 +338,8 @@ public class EditHudGui extends GuiScreen {
             cfg.diamondTimerHudScale = scale;
         } else if (BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(id)) {
             cfg.emeraldTimerHudScale = scale;
+        } else if (BedwarsHudRenderer.SESSION_HUD.equals(id)) {
+            cfg.sessionStatsHudScale = scale;
         }
     }
 

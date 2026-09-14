@@ -3,6 +3,8 @@ package com.bedwarsqol.hud;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.bedwars.GeneratorTracker;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.SessionStats;
+import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
@@ -27,6 +29,7 @@ public class BedwarsHudRenderer {
 
     public static final String INVENTORY_HUD = "inventory";
     public static final String DIAMOND_TIMER_HUD = "diamondtimer";
+    public static final String SESSION_HUD = "sessionstats";
     public static final String EMERALD_TIMER_HUD = "emeraldtimer";
     private static final int INV_COLS = 9;
     private static final int INV_ROWS = 3; // storage rows only — the hotbar is already on screen
@@ -88,6 +91,7 @@ public class BedwarsHudRenderer {
         addBox(boxes, inventoryBox(mc, cfg, example));
         addBox(boxes, timerBox(mc, cfg, example, true));
         addBox(boxes, timerBox(mc, cfg, example, false));
+        addBox(boxes, sessionBox(mc, cfg, example));
         return boxes;
     }
 
@@ -111,6 +115,10 @@ public class BedwarsHudRenderer {
             cfg.emeraldTimerHudAnchor = anchor;
             cfg.emeraldTimerHudX = storedX;
             cfg.emeraldTimerHudY = storedY;
+        } else if (SESSION_HUD.equals(id)) {
+            cfg.sessionStatsHudAnchor = anchor;
+            cfg.sessionStatsHudX = storedX;
+            cfg.sessionStatsHudY = storedY;
         }
     }
 
@@ -119,6 +127,7 @@ public class BedwarsHudRenderer {
         drawInventoryHud(mc, cfg, example);
         drawTimerHud(mc, cfg, example, true);
         drawTimerHud(mc, cfg, example, false);
+        drawSessionHud(mc, cfg, example);
     }
 
     /**
@@ -510,6 +519,48 @@ public class BedwarsHudRenderer {
         GlStateManager.enableTexture2D();
         GlStateManager.enableBlend();
         GlStateManager.disableLighting();
+    }
+
+    // ----- Session Stats (Lunar-style game + session tally) -----
+
+    private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example) {
+        if (!SessionStatsWatch.visible(cfg, example)) return null;
+        float scale = cfg.sessionStatsHudScale;
+        Size size = textSize(mc.fontRendererObj, sessionLines(example), scale);
+        if (size.width <= 0f || size.height <= 0f) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float x = absoluteX(cfg.sessionStatsHudX, cfg.sessionStatsHudAnchor, size.width, r.getScaledWidth());
+        float y = absoluteY(cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.height, r.getScaledHeight());
+        return new HudBox(SESSION_HUD, "Session Stats", x, y, size.width, size.height);
+    }
+
+    private static void drawSessionHud(Minecraft mc, ClientSettings cfg, boolean example) {
+        HudBox box = sessionBox(mc, cfg, example);
+        if (box == null) return;
+        float scale = cfg.sessionStatsHudScale;
+        if (cfg.sessionStatsBackgroundEnabled) drawHudBackground(box, scale);
+        // Numeric panel: always text lines, whichever display mode the other modules use.
+        drawLines(mc.fontRendererObj, sessionLines(example), box.x, box.y, scale);
+    }
+
+    /** Game block over session block, mirroring Lunar's Hypixel Bedwars panel. */
+    private static List<Line> sessionLines(boolean example) {
+        List<Line> out = new ArrayList<>(5);
+        if (example) {
+            out.add(new Line("Game", "Kills 3  Finals 1  Beds 1"));
+            out.add(new Line("Session", "12:34"));
+            out.add(new Line("W/L", "3 / 1  WLR 3.00"));
+            out.add(new Line("FK/FD", "12 / 4  FKDR 3.00"));
+            out.add(new Line("Beds", "5"));
+            return out;
+        }
+        SessionStats s = SessionStatsWatch.core();
+        out.add(new Line("Game", "Kills " + s.gameKills() + "  Finals " + s.gameFinals() + "  Beds " + s.gameBeds()));
+        out.add(new Line("Session", s.elapsed(System.currentTimeMillis())));
+        out.add(new Line("W/L", s.wins() + " / " + s.losses() + "  WLR " + SessionStats.formatRatio(s.wlr())));
+        out.add(new Line("FK/FD", s.finalKills() + " / " + s.finalDeaths() + "  FKDR " + SessionStats.formatRatio(s.fkdr())));
+        out.add(new Line("Beds", Integer.toString(s.beds())));
+        return out;
     }
 
     public static final class HudBox {

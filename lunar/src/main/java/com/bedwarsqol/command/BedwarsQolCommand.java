@@ -4,6 +4,8 @@ import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ModChat;
+import com.bedwarsqol.feature.SessionStats;
+import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.SettingsGui;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.ProviderKeySubmitter;
@@ -84,6 +86,9 @@ public class BedwarsQolCommand extends Command {
             case "seraphkey":
                 handleSeraphKey(args);
                 return;
+            case "session":
+                handleSession(args);
+                return;
             default:
                 // A non-reserved first token is a player name → stats card.
                 BedwarsStatsCommand.showStats(args);
@@ -122,8 +127,23 @@ public class BedwarsQolCommand extends Command {
         send("§f/cobblify statstoken <token> §7— set the backend token");
         send("§f/cobblify urchin <player> §7— community Urchin tags for a player");
         send("§f/cobblify seraph <player> §7— Seraph tags for a player");
+        send("§f/cobblify session [reset] §7— this session's Bedwars tally");
         send("§f/cobblify help §7— this page");
         send("§7§m------------------------------");
+    }
+
+    private void handleSession(String[] args) {
+        if (args.length >= 2 && "reset".equalsIgnoreCase(args[1])) {
+            SessionStatsWatch.reset();
+            send("§eSession stats reset.");
+            return;
+        }
+        SessionStats s = SessionStatsWatch.core();
+        send("§7§m----§r §6§lSession §r§7" + s.elapsed(System.currentTimeMillis()) + "§r §7§m----");
+        send("§fGame §7— Kills §f" + s.gameKills() + " §7Finals §f" + s.gameFinals() + " §7Beds §f" + s.gameBeds());
+        send("§fW/L §7— §f" + s.wins() + " §7/ §f" + s.losses() + " §7WLR §f" + SessionStats.formatRatio(s.wlr()));
+        send("§fFK/FD §7— §f" + s.finalKills() + " §7/ §f" + s.finalDeaths() + " §7FKDR §f" + SessionStats.formatRatio(s.fkdr()));
+        send("§fBeds §7— §f" + s.beds() + "   §7(/cobblify session reset)");
     }
 
     private void handleMode(String[] args) {

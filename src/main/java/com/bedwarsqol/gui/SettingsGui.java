@@ -2,6 +2,7 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
@@ -78,6 +79,8 @@ public class SettingsGui extends GuiScreen {
     // HUD). Container kinds are never toggled.
     private static final int K_ACCENT = 90;
     private static final int K_GRP_APPEARANCE = 91, K_GRP_HUD = 92;
+    // Session Stats HUD (Lunar-style game + session tally) and its Reset action row.
+    private static final int K_SESSION = 120, K_SESSION_INGAME = 121, K_SESSION_BG = 122, K_SESSION_RESET = 123;
     // Chat module (kind numbers shared with the Lunar tree for the two cards it keeps).
     private static final int K_CHAT_UNLIMITED = 93, K_CHAT_KEEP = 94, K_CHAT_STACK = 95,
             K_STACK_TIME = 96, K_STACK_WINDOW = 97, K_STACK_BLANKS = 98,
@@ -116,7 +119,8 @@ public class SettingsGui extends GuiScreen {
     private static final String EDIT_HUD_LABEL = "Edit HUD";
 
     // A GROUP header is a non-toggle container; its rows are always visible (no expander). Everything
-    private enum RowType { TOGGLE, STEPPER, SLIDER, GROUP }
+    /** ACTION: a label with a right-aligned button; clicking runs a one-shot action, no stored value. */
+    private enum RowType { TOGGLE, STEPPER, SLIDER, GROUP, ACTION }
 
     private static final class RowDef {
         final RowType type;
@@ -187,7 +191,11 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Gen Timers", "Diamond and emerald timers", K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Background", K_GENTIMERS_BG, null, K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Keystrokes", "WASD and spacebar keys", K_KEYSTROKES),
-                    new RowDef(RowType.TOGGLE, "In Game Only", K_KEYSTROKES_INGAME, null, K_KEYSTROKES)),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_KEYSTROKES_INGAME, null, K_KEYSTROKES),
+                    new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_SESSION_INGAME, null, K_SESSION),
+                    new RowDef(RowType.TOGGLE, "Background", K_SESSION_BG, null, K_SESSION),
+                    new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION)),
             new Section("Combat",
                     new RowDef(RowType.TOGGLE, "Hand Position", "Move and resize held item", K_HANDPOS),
                     new RowDef(RowType.SLIDER, "X", K_HANDX, -1.0f, 1.0f, K_HANDPOS),
@@ -1024,6 +1032,11 @@ public class SettingsGui extends GuiScreen {
                 drawDropdownTrigger(row, row.def.options[stepperIndex(cfg, row.def.kind)], ddFontScale, enabled, mouseX, mouseY);
                 break;
             }
+            case ACTION: {
+                GuiRender.text(row.def.label, row.x + 2, labelY, lScale, labelColor, MED);
+                drawActionButton(row, actionLabel(row.def.kind), ddFontScale, enabled, mouseX, mouseY);
+                break;
+            }
             case SLIDER: {
                 GuiRender.text(row.def.label, row.x + 2, labelY, lScale, labelColor, MED);
                 float[] tr = sliderTrack(row);
@@ -1135,6 +1148,38 @@ public class SettingsGui extends GuiScreen {
         GuiRender.textCentered(value, (c[0] + caretLeft) / 2f, vcenter(c[1], c[3] - c[1], scale), scale,
                 enabled ? GuiTheme.TEXT_HI : GuiTheme.TEXT_LO, MED);
         drawCaret(caretLeft + caretW / 2f, (c[1] + c[3]) / 2f, caretW / 2f, caretW * 0.34f, open, enabled ? GuiTheme.TEXT_MID : GuiTheme.TEXT_LO);
+    }
+
+    /** Button text for an ACTION row. */
+    private static String actionLabel(int kind) {
+        return kind == K_SESSION_RESET ? "Reset" : "Run";
+    }
+
+    /** One-shot action rows: no stored value, just an effect. */
+    private static void runAction(int kind) {
+        if (kind == K_SESSION_RESET) SessionStatsWatch.reset();
+    }
+
+    /** Button rect [x1,y1,x2,y2] for an ACTION row: right-aligned like the dropdown trigger, sized to its text. */
+    private float[] actionRect(Row row, String label, float scale) {
+        float h = clampf(row.h * 0.50f, 10f, 15f);
+        float padX = ddPadX(row.h);
+        float w = GuiRender.textWidth(label, scale, MED) + 2f * padX;
+        float x2 = row.x + row.w - controlRightPad(row.h);
+        float x1 = x2 - w;
+        float y1 = row.y + (row.h - h) / 2f;
+        return new float[]{x1, y1, x2, y1 + h};
+    }
+
+    /** Draws an ACTION row's button: the dropdown pill without a caret. Brightens on hover. */
+    private void drawActionButton(Row row, String label, float scale, boolean enabled, int mouseX, int mouseY) {
+        float[] c = actionRect(row, label, scale);
+        boolean hover = enabled && GuiRender.inside(mouseX, mouseY, c[0], c[1], c[2], c[3]);
+        float r = (c[3] - c[1]) * 0.13f;
+        GuiRender.roundedRect(c[0], c[1], c[2], c[3], r, hover ? BTN_HOVER : BTN_BG);
+        GuiRender.roundedRectOutline(c[0], c[1], c[2], c[3], r, 0.75f, BTN_BORDER);
+        GuiRender.textCentered(label, (c[0] + c[2]) / 2f, vcenter(c[1], c[3] - c[1], scale), scale,
+                enabled ? GuiTheme.TEXT_HI : GuiTheme.TEXT_LO, MED);
     }
 
     /** A small "v" (down) / "^" (up) caret, drawn as two AA hairlines. */
@@ -1446,6 +1491,14 @@ public class SettingsGui extends GuiScreen {
             case STEPPER:
                 openDropdown(row, ddFontScale);
                 break;
+            case ACTION: {
+                float[] c = actionRect(row, actionLabel(row.def.kind), ddFontScale);
+                if (GuiRender.inside(mouseX, mouseY, c[0], c[1], c[2], c[3])) {
+                    runAction(row.def.kind);
+                    playClick();
+                }
+                break;
+            }
             case SLIDER: {
                 float[] vr = sliderValueRect(row);
                 if (GuiRender.inside(mouseX, mouseY, vr[0] - 3, vr[1] - 2, vr[2] + 2, vr[3] + 2)) {
@@ -1638,6 +1691,9 @@ public class SettingsGui extends GuiScreen {
             case K_AUTO_DENICK: return cfg.autoDenick;
             case K_TAB_HEADERFOOTER: return cfg.tabHideHeaderFooter;
             case K_KEYSTROKES: return cfg.keystrokesEnabled;
+            case K_SESSION: return cfg.sessionStatsEnabled;
+            case K_SESSION_INGAME: return cfg.sessionStatsInGameOnly;
+            case K_SESSION_BG: return cfg.sessionStatsBackgroundEnabled;
             case K_POTION_INGAME: return cfg.potionInGameOnly;
             case K_ARMOR_INGAME: return cfg.armorInGameOnly;
             case K_INVENTORY_INGAME: return cfg.inventoryInGameOnly;
@@ -1697,6 +1753,9 @@ public class SettingsGui extends GuiScreen {
             case K_AUTO_DENICK: cfg.autoDenick = !cfg.autoDenick; break;
             case K_TAB_HEADERFOOTER: cfg.tabHideHeaderFooter = !cfg.tabHideHeaderFooter; break;
             case K_KEYSTROKES: cfg.keystrokesEnabled = !cfg.keystrokesEnabled; break;
+            case K_SESSION: cfg.sessionStatsEnabled = !cfg.sessionStatsEnabled; break;
+            case K_SESSION_INGAME: cfg.sessionStatsInGameOnly = !cfg.sessionStatsInGameOnly; break;
+            case K_SESSION_BG: cfg.sessionStatsBackgroundEnabled = !cfg.sessionStatsBackgroundEnabled; break;
             case K_POTION_INGAME: cfg.potionInGameOnly = !cfg.potionInGameOnly; break;
             case K_ARMOR_INGAME: cfg.armorInGameOnly = !cfg.armorInGameOnly; break;
             case K_INVENTORY_INGAME: cfg.inventoryInGameOnly = !cfg.inventoryInGameOnly; break;

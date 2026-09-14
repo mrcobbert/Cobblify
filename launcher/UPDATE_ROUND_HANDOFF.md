@@ -9,8 +9,11 @@ Ship a real launcher update through the auto-updater, in two parts:
 
 1. DONE - center the dashboard's "Not Available" note (shown when the mod
    reports `dashboardEligible: false`) on the window at every size.
-2. TODO - a larger feature change. The user will describe it to the next
-   agent; nothing is known about it yet. Do not guess at it.
+2. DONE (2026-09-13, cycle `.ai/cycles/2026-09-13-session-stats`) - Session
+   Stats HUD, a Lunar-style game + session tally in the mod on both Forge and
+   Lunar. Shipped as mod + launcher **0.11.0** (the launcher bundle carries the
+   mod jars, so a mod feature is a launcher release). Not play-tested on live
+   Hypixel before release by the user's decision; the module is default-off.
 
 ## What part 1 changed
 
@@ -44,6 +47,9 @@ Ship a real launcher update through the auto-updater, in two parts:
 - Release exes come from CI (`.github/workflows/launcher-update.yml`). GitHub
   Actions minutes were exhausted on 2026-09-08; check they have reset before
   relying on CI for the release build.
-- Version bump for the release: `launcher/src-tauri/tauri.conf.json`,
-  `launcher/package.json` (both `0.10.1` now) and `Cargo.toml` if it carries
-  the version.
+- Version bump for the release: every source `tools/check-release-version.sh`
+  pins (`gradle.properties`, `lunar/build.gradle.kts`, Lunar `BedwarsQol.VERSION`,
+  `launcher/package.json`, `package-lock.json`, `Cargo.toml`, `tauri.conf.json`)
+  plus the `cobblify-launcher` entry in `Cargo.lock`. 0.11.0 as of 2026-09-13.
+- The release pair is now `Launcher Update Candidate` (`launcher-update.yml`)
+  then `Promote Launcher Update` (`launcher-promote.yml`), both manual.

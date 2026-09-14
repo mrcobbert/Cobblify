@@ -43,6 +43,15 @@ public class ClientSettings {
     public int emeraldTimerHudAnchor = 2;
     public float emeraldTimerHudScale = 1.0f;
 
+    /** Session Stats: Lunar-style game (kills/finals/beds) + session (W/L, FK/FD, beds, clock) tally. */
+    public boolean sessionStatsEnabled = false;
+    public boolean sessionStatsInGameOnly = false;
+    public boolean sessionStatsBackgroundEnabled = false;
+    public int sessionStatsHudX = 5;
+    public int sessionStatsHudY = 60;
+    public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
+    public float sessionStatsHudScale = 1.0f;
+
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
@@ -218,6 +227,8 @@ public class ClientSettings {
         if (diamondTimerHudScale < 0.3f || diamondTimerHudScale > 10.0f) diamondTimerHudScale = defaultTextSizeScale();
         emeraldTimerHudAnchor = clamp(emeraldTimerHudAnchor, 0, 8);
         if (emeraldTimerHudScale < 0.3f || emeraldTimerHudScale > 10.0f) emeraldTimerHudScale = defaultTextSizeScale();
+        sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, 0, 8);
+        if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
 
@@ -264,6 +275,7 @@ public class ClientSettings {
         inventoryHudScale = scale;
         diamondTimerHudScale = scale;
         emeraldTimerHudScale = scale;
+        sessionStatsHudScale = scale;
     }
 
     public void save() {
