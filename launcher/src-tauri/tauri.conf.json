@@ -41,6 +41,11 @@
     "resources": ["resources/"],
     "macOS": {
       "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./nsis/hooks.nsh"
+      }
     }
   }
 }
