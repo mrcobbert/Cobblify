@@ -4,6 +4,8 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityArmorStand;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
@@ -13,8 +15,10 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
  * Feeds {@link SessionStats} from the client: chat lines and titles are classified by
  * {@link SessionChatLine} against the local player's name, the tick drives the session clock and the
  * leave-Hypixel reset, and a new {@link GameSessionTracker} id inside an active game starts a new
- * game block. Observe-only: no chat event is cancelled or edited. Always running (the toggle only
- * hides the HUD) so a session that started before the box was enabled is not lost.
+ * game block. In the Bed Wars lobby the "Bed Wars Profile" hologram's {@code Current Winstreak}
+ * armour stand seeds the streak. Observe-only: no chat event is cancelled or edited, nothing is
+ * sent. Always running (the toggle only hides the HUD) so a session that started before the box
+ * was enabled is not lost.
  */
 public final class SessionStatsWatch {
 
@@ -79,7 +83,27 @@ public final class SessionStatsWatch {
         if (sid != lastSessionId && HypixelContext.isInActiveBedwarsGame()) {
             lastSessionId = sid;
             if (CORE.onGameStart(sid)) DiagLog.log("session: unresolved game end sid=" + sid + " (next game)");
+        } else if (HypixelContext.isInBedwars() && !HypixelContext.isInActiveBedwarsGame()) {
+            // Hub or pregame queue: the queue has no such stand and costs one pass over a small list.
+            int seed = lobbyWinstreak(mc);
+            if (seed >= 0) CORE.seedWinstreak(seed);
         }
+    }
+
+    /**
+     * The {@code Current Winstreak: N} row of the lobby stats hologram (invisible armour stands with
+     * custom names, the same shape {@code GeneratorTracker} reads in-game), or -1 when absent.
+     */
+    private static int lobbyWinstreak(Minecraft mc) {
+        if (mc.theWorld == null) return -1;
+        for (Object o : mc.theWorld.loadedEntityList) {
+            if (!(o instanceof EntityArmorStand)) continue;
+            String raw = ((Entity) o).getCustomNameTag();
+            if (raw == null || raw.isEmpty()) continue;
+            int v = SessionChatLine.parseWinstreakHologram(EnumChatFormatting.getTextWithoutFormattingCodes(raw));
+            if (v >= 0) return v;
+        }
+        return -1;
     }
 
     private static String selfName() {
