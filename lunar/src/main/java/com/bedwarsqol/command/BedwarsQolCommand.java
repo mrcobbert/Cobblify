@@ -138,12 +138,17 @@ public class BedwarsQolCommand extends Command {
             send("§eSession stats reset.");
             return;
         }
+        // Same rows as the HUD panel.
         SessionStats s = SessionStatsWatch.core();
-        send("§7§m----§r §6§lSession §r§7" + s.elapsed(System.currentTimeMillis()) + "§r §7§m----");
-        send("§fGame §7— Kills §f" + s.gameKills() + " §7Finals §f" + s.gameFinals() + " §7Beds §f" + s.gameBeds());
-        send("§fW/L §7— §f" + s.wins() + " §7/ §f" + s.losses() + " §7WLR §f" + SessionStats.formatRatio(s.wlr()));
-        send("§fFK/FD §7— §f" + s.finalKills() + " §7/ §f" + s.finalDeaths() + " §7FKDR §f" + SessionStats.formatRatio(s.fkdr()));
-        send("§fBeds §7— §f" + s.beds() + "   §7(/cobblify session reset)");
+        send("§7§m----§r §6§lGame§r §7§m----");
+        send("§7Finals §f" + s.gameFinals() + "  §7Beds §f" + s.gameBeds() + "  §7Kills §f" + s.gameKills());
+        send("§7§m----§r §6§lSession§r §7§m----");
+        send("§7Finals §f" + s.finalKills() + " §7/ FKDR §f" + SessionStats.formatRatio(s.fkdr()));
+        send("§7Beds §f" + s.beds() + " §7/ BBLR §f" + SessionStats.formatRatio(s.bblr()));
+        send("§7Kills §f" + s.kills() + " §7/ KDR §f" + SessionStats.formatRatio(s.kdr()));
+        send("§7Wins §f" + s.wins() + " §7/ WLR §f" + SessionStats.formatRatio(s.wlr()));
+        send("§7Winstreak §f" + s.winstreak() + "  §7Session Games §f" + s.games()
+                + "  §7Session Time §f" + s.elapsed(System.currentTimeMillis()) + "   §8(/cobblify session reset)");
     }
 
     private void handleMode(String[] args) {
