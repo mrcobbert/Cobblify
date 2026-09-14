@@ -126,7 +126,7 @@ public class SessionChatLineTest {
     @Test
     public void lossLines() {
         assertEquals(Kind.LOSS, parse("GAME OVER!"));                                             // HM LOSS_GAME_OVER
-        assertEquals(Kind.LOSS, parse("You have been eliminated!"));                              // HM LOSS_ELIMINATED
+        assertEquals(Kind.ELIMINATED, parse("You have been eliminated!"));                        // HM LOSS_ELIMINATED (mid-game)
     }
 
     @Test

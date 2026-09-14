@@ -52,7 +52,7 @@ public class SessionStatsTest {
         SessionStats s = new SessionStats();
         s.onGameStart(1);
         s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
-        assertEquals(0, s.wins());
+        assertEquals(1, s.wins()); // the title alone ends the game (zero-kill games print no killer row)
         feed(s, "                        1st Killer - [MVP+] Self - 5");
         assertEquals(1, s.wins());
         assertEquals(0, s.losses());
@@ -101,6 +101,24 @@ public class SessionStatsTest {
         s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
         feed(s, "VICTORY!", "1st Killer - Alex - 5");
         assertEquals(1, s.wins());
+    }
+
+    /** Zero-kill game: Hypixel prints no "1st Killer" row (BedwarsGameEndListener.java:50-54), only the title. */
+    @Test
+    public void zeroKillGamesSettleOnTheTitleAlone() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(1, s.wins());
+        assertFalse(s.onGameStart(2));
+        s.onEvent(SessionChatLine.parseTitle("GAME OVER!"));
+        assertEquals(1, s.losses());
+        assertFalse(s.onGameStart(3));
+        // A mid-game elimination alone never settles: the game is still running.
+        feed(s, "You have been eliminated!");
+        assertEquals(1, s.losses());
+        assertEquals(SessionStats.Outcome.LOSS, s.outcome());
+        assertFalse(s.onGameStart(4)); // provisional outcome without an end is not "unresolved"
     }
 
     @Test

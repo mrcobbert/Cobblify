@@ -10,8 +10,11 @@ package com.bedwarsqol.feature;
  * A lobby hop inside Hypixel keeps the session. Nothing is persisted.
  *
  * <p>Outcome: WIN and LOSS signals set the game's outcome (WIN overrides LOSS, LOSS never
- * overrides WIN — an eliminated player whose team comes back is a Hypixel win). GAME_END marks the
- * end of the game. The win or loss is recorded exactly once, when both are known, in either order;
+ * overrides WIN — an eliminated player whose team comes back is a Hypixel win). ELIMINATED is a
+ * provisional loss that does not end the game. The game end is marked by the "1st Killer" row OR by
+ * a WIN/LOSS signal itself — the VICTORY!/GAME OVER! title only ever appears when the game is over,
+ * and Hypixel prints no killer row for a game with zero kills (an opponent who leaves before first
+ * blood). The win or loss is recorded exactly once, when both are known, in either order;
  * a VICTORY that lands after a loss was already settled (eliminated, killer row, then the team's
  * comeback title) moves that game from the losses to the wins. A game that ended without a known
  * outcome is reported as unresolved to the caller of the next {@link #onGameStart} /
@@ -116,9 +119,15 @@ public final class SessionStats {
                     wins++;
                 }
                 outcome = Outcome.WIN;
+                gameEndSeen = true;
                 settle();
                 break;
             case LOSS:
+                if (outcome != Outcome.WIN) outcome = Outcome.LOSS;
+                gameEndSeen = true;
+                settle();
+                break;
+            case ELIMINATED:
                 if (outcome != Outcome.WIN) outcome = Outcome.LOSS;
                 settle();
                 break;

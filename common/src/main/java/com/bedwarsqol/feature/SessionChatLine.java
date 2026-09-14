@@ -41,8 +41,10 @@ public final class SessionChatLine {
         BED_BREAK,
         /** Local player's team won. */
         WIN,
-        /** Local player's team lost / local player eliminated. */
+        /** Local player's team lost: the game is over. */
         LOSS,
+        /** Local player was eliminated mid-game ("You have been eliminated!"); the game goes on. */
+        ELIMINATED,
         /** The end-of-game "1st Killer" summary row. */
         GAME_END
     }
@@ -83,7 +85,8 @@ public final class SessionChatLine {
 
         // Colon-free system lines first; the only colon-bearing system shape is the winners roll-call.
         if (line.equals("VICTORY!") || line.equals("You won!")) return Kind.WIN;
-        if (line.equals("GAME OVER!") || line.equals("You have been eliminated!")) return Kind.LOSS;
+        if (line.equals("GAME OVER!")) return Kind.LOSS;
+        if (line.equals("You have been eliminated!")) return Kind.ELIMINATED;
         if (GAME_END.matcher(line).matches()) return Kind.GAME_END;
         Matcher w = WINNERS.matcher(line);
         if (w.matches()) return hasToken(w.group(1), self) ? Kind.WIN : null;
