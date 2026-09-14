@@ -1,7 +1,8 @@
 # Launcher update proof handoff
 
 2026-09-12. Launcher auto-update 0.9.9 -> 0.10.0 investigation. Stage:
-`VERIFYING` (proof not yet captured).
+`PROVEN` on the Windows box as `agent` (see "Proof captured" below). Only the
+D1 event rows remain to be read from an owner-authenticated wrangler.
 
 ## Goal
 
@@ -28,7 +29,51 @@ equal to the manifest, and update-event rows.
    at "0% / Pause" and the Restart button never appears even when native code
    reaches `ready`. FIXED in this commit: `launcher/src-tauri/capabilities/default.json`.
 
-## Verified so far
+## Proof captured (2026-09-12, Windows box, user `agent`)
+
+Starter: 0.9.9 built from `6ad8678` on the box (`build-starter.ps1`, token read
+from the installed Lunar jar, URL and pinned pubkey compiled in; FileVersion
+0.9.9, sha256 `65203f500bd4afe1daf6bddb9342d62b430759c9c10bea075204ab40bdb7f6fa`).
+Installed 0.10.0 via the R2 setup exe (`/S`), then swapped the exe for the
+starter (original kept as `cobblify-launcher.exe.orig-0.10.0`).
+
+| Step | Evidence |
+|---|---|
+| Live manifest | `GET /launcher/update/windows/x86_64/0.9.9` -> 200, version 0.10.0, sizeBytes 15172237, sha256 `45593015fb5c206bc6238c915b912b4e42be52cb124ab4659e19246fe0d7ede6`, policy verifies |
+| Consent -> auto download | Clicked Enable; `launcher-preferences.json` gained `auto_update_enabled: true`; `~/.cobblify/updates/0.10.0.bundle` written, 15172237 bytes, sha256 equal to the manifest |
+| UI ready state | Screenshot: "0.10.0 downloaded / RESTART / LATER" (capabilities fix confirmed; no more stuck "0% / Pause") |
+| Restart -> install | Clicked Restart at 13:10; NSIS rewrote `uninstall.exe` at 13:11:02 and relaunched pid 20072 at 13:11:02 |
+| Installed exe | FileVersion 0.10.0, sha256 `d059a7092b7ee08de0100af203c0883066f4382bb38fce4ccfbcd4c89a30aed5`, byte-identical to the exe shipped inside the 0.10.0 setup |
+| Registry | HKCU Uninstall `Cobblify Launcher` DisplayVersion 0.10.0, MainBinaryName cobblify-launcher.exe |
+| pending-version | Written by `install_update`, gone after the relaunch (consumed by `report_completed_install`) |
+| Relaunched 0.10.0 | Shows "Unavailable / Retry" - expected: the CI-built 0.10.0 carries the `token\n` secret (root cause 2) and fails `updater_build_failed`; it cannot self-update until a post-fix CI build ships |
+
+Note: the manifest sha256 is the NSIS setup bundle, not the installed exe, so
+"installed exe equals manifest" is proven via bundle hash == manifest and
+installed exe == exe extracted by that bundle.
+
+Not yet read: D1 `launcher_update_events` rows for this run (the Mac `agent`
+account has no wrangler login). From an owner-authenticated shell:
+
+```sh
+cd server/stats-worker && npx wrangler d1 execute cobblify-launcher-update-events \
+  --remote -c wrangler.owner.toml --command "SELECT id, datetime(occurred_at,'unixepoch') AS at, event, current_version, target_version, platform FROM launcher_update_events WHERE occurred_at > strftime('%s','now') - 86400 ORDER BY id"
+```
+
+Expected for the run around 2026-09-12 20:07-20:11 UTC: check_ok,
+download_started, download_verified, install_started (current 0.9.9, target
+0.10.0), then post_update_started (current 0.10.0). Nothing after that: the
+relaunched CI 0.10.0 cannot post events (root cause 2).
+
+Box state left behind: install dir holds the updated 0.10.0 exe plus
+`cobblify-launcher.exe.orig-0.10.0`; `C:\Users\agent\proof\` holds the
+starter, setup exe, build/launch/shot/click scripts and screenshots; scheduled
+tasks `CobblifyAgentLaunch`, `CobblifyAgentShot`, `CobblifyAgentClick`
+(interactive, run as `agent`; the click target is read from
+`proof\click-target.txt` because `schtasks /change` prompts for a password).
+The Windows clone is clean at `6ad8678`.
+
+## Verified before this (old `human` account)
 
 - Debug 0.9.9 build (same source as the 0.9.9 CI commit 3ffaf47, token read
   from the installed jar, built on the Windows box) with the fixed manifest:

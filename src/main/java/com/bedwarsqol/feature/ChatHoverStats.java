@@ -55,7 +55,7 @@ public final class ChatHoverStats {
         ClientSettings cfg = BedwarsQol.config;
         if (cfg == null || !cfg.playerStats || !cfg.playerStatsChatHover) return null;
         if (hovered == null) return null;
-        if (!HypixelContext.isSupportedBedwarsSurface()) return null;
+        if (!HypixelContext.isOnHypixel()) return null;
         // No backend configured (user-set or baked) -> we could never fill the card; leave vanilla alone.
         if (!cfg.backendTarget().isConfigured()) return null;
 

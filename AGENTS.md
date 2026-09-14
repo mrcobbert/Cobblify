@@ -11,8 +11,8 @@
   are identical but touch `net.minecraft` and were left alone. Before changing a mirrored file,
   compare both trees and keep intentional equivalents synchronized.
 - `tools/tree-divergence.txt` declares every legitimate difference: pairs allowed to differ, and
-  files that exist on one side only. `tools/check-tree-drift.sh` enforces it and runs in CI ahead
-  of release publishing. If you make the trees differ, declare it there or CI fails.
+  files that exist on one side only. `tools/check-tree-drift.sh` enforces it; run it before you
+  finish. If you make the trees differ, declare it there or the check fails.
 - Writing **new** platform-neutral code? Put it straight in `common/`. Do not create a copy in each
   tree first - that is the duplication this layout exists to prevent.
 - **Moving an existing mirrored file** into `common/` is only correct if the two copies are already
@@ -22,27 +22,28 @@
   relevant checks first when available. Note `harness.LaneContrastTest` is a wall-clock benchmark,
   not a correctness test - it dominates the Forge suite runtime and is timing-sensitive.
 - `lunar/` pins a Java 8 toolchain and Gradle must be able to SEE a JDK 8: foojay auto-provisioning
-  (resolver 0.8.0) fails on Gradle 9.4 with `JvmVendorSpec ... IBM_SEMERU`. CI dodges it by
-  installing JDK 8 and passing `-Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64`; locally,
-  point `org.gradle.java.installations.paths` at a JDK 8 in `~/.gradle/gradle.properties`.
+  (resolver 0.8.0) fails on Gradle 9.4 with `JvmVendorSpec ... IBM_SEMERU`. Point
+  `org.gradle.java.installations.paths` at a JDK 8 in `~/.gradle/gradle.properties`.
+- There is no per-push CI. The only workflows are the manual launcher release pair
+  (`Launcher Update Candidate`, `Promote Launcher Update`); every other check runs locally.
 - The `launcher/` Tauri app builds and tests on Windows as well as macOS - see `launcher/README.md`,
-  "Build on Windows". Do not treat CI as the only way to run a launcher change.
+  "Build on Windows".
 
 ## Windows build box
 
 - A Windows 11 machine is reachable from this Mac as `ssh win` (Tailscale +
   OpenSSH, key auth, PowerShell 5.1 shell). Clone lives at
-  `C:\Users\human\Cobblify`. Rust, Node 22, git and the launcher toolchain are
+  `C:\Users\agent\Cobblify`. Rust, Node 22, git and the launcher toolchain are
   installed; see `launcher/README.md` "Build on Windows" for the build commands.
 - The box has no GitHub credentials. Ship code to it by pushing from the Mac:
-  `git push win <branch>`, then `ssh win 'cd C:\Users\human\Cobblify; git checkout <branch>'`.
+  `git push win <branch>`, then `ssh win 'cd C:\Users\agent\Cobblify; git checkout <branch>'`.
   The clone uses `receive.denyCurrentBranch=updateInstead`, so a push refuses
   if the Windows working tree is dirty.
-- Run builds and tests with `ssh win 'cd C:\Users\human\Cobblify\launcher; <command>'`.
+- Run builds and tests with `ssh win 'cd C:\Users\agent\Cobblify\launcher; <command>'`.
   PowerShell prints git's stderr (e.g. "Switched to branch") as a red
   NativeCommandError; that is not a failure, check the exit code and output.
 - This is for iteration and manual verification. Release exes still come from
-  CI (`package-windows-bundle.sh` checks provenance).
+  the `Launcher Update Candidate` workflow.
 
 ## Safety
 
