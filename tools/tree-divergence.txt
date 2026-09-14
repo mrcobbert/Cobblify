@@ -82,6 +82,9 @@ one-sided main forge com/bedwarsqol/feature/AutoGg.java
 one-sided main forge com/bedwarsqol/feature/BlockOverlayRenderer.java
 one-sided main forge com/bedwarsqol/feature/TntFuseDisplay.java
 
+# Session Stats adapter: Forge-only until the Lunar wiring phase lands (then divergent).
+one-sided main forge com/bedwarsqol/feature/SessionStatsWatch.java
+
 # Generic chat QOL is Forge-only; Lunar ships it natively.
 one-sided main forge com/bedwarsqol/feature/ChatCopyAccess.java
 one-sided main forge com/bedwarsqol/mixin/GuiNewChatMixin.java
