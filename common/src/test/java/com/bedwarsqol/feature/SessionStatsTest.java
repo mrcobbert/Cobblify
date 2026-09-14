@@ -95,6 +95,22 @@ public class SessionStatsTest {
     }
 
     @Test
+    public void lateVictoryMovesASettledLossToAWin() {
+        SessionStats s = new SessionStats();
+        s.onGameStart(1);
+        feed(s, "You have been eliminated!", "1st Killer - Alex - 9");
+        assertEquals(1, s.losses());
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(0, s.losses());
+        assertEquals(1, s.wins());
+        assertEquals(SessionStats.Outcome.WIN, s.outcome());
+        // Nothing further moves it again.
+        feed(s, "GAME OVER!", "VICTORY!", "1st Killer - Alex - 9");
+        assertEquals(0, s.losses());
+        assertEquals(1, s.wins());
+    }
+
+    @Test
     public void unresolvedEndCountsNothingAndIsReported() {
         SessionStats s = new SessionStats();
         s.onGameStart(1);

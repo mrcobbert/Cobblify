@@ -48,6 +48,15 @@ public class SessionChatLineTest {
     }
 
     @Test
+    public void envelopeVariations() {
+        assertEquals(Kind.KILL, parse("Steve's heart was pierced by Self."));                    // BM:130 possessive victim
+        assertEquals(Kind.FINAL_KILL, parse("Steve's heart was pierced by Self. FINAL KILL!"));
+        assertEquals(Kind.KILL, parse("Steve was shot into limbo by Self"));                      // BM:141 no period
+        assertEquals(Kind.FINAL_KILL, parse("Steve was shot into limbo by Self FINAL KILL!"));
+        assertEquals(Kind.DEATH, SessionChatLine.parse("Self's heart was pierced by Steve.", SELF));
+    }
+
+    @Test
     public void possessiveKillShapes() {
         assertEquals(Kind.KILL, parse("Steve was fried by Self's Golem."));                       // BM:181
         assertEquals(Kind.KILL, parse("Steve was pushed by Self's holiday spirit."));             // BM:169
@@ -94,6 +103,10 @@ public class SessionChatLineTest {
     public void otherPlayersBedsAreIgnored() {
         assertNull(parse("BED DESTRUCTION > Red Bed was destroyed by Steve!"));
         assertNull(parse("BED DESTRUCTION > Red Bed was destroyed by Selfish!"));
+        // Breaker position, not incidental words in the cosmetic.
+        assertNull(SessionChatLine.parse("BED DESTRUCTION > Blue Bed was melted by Alex's holiday spirit!", "holiday"));
+        assertNull(SessionChatLine.parse("BED DESTRUCTION > Aqua Bed has left the game after seeing Alex!", "game"));
+        assertNull(SessionChatLine.parse("BED DESTRUCTION > Red Bed was destroyed by Alex!", "Bed"));
     }
 
     // ---- outcome ----

@@ -11,9 +11,11 @@ package com.bedwarsqol.feature;
  *
  * <p>Outcome: WIN and LOSS signals set the game's outcome (WIN overrides LOSS, LOSS never
  * overrides WIN — an eliminated player whose team comes back is a Hypixel win). GAME_END marks the
- * end of the game. The win or loss is recorded exactly once, when both are known, in either order.
- * A game that ended without a known outcome is reported as unresolved to the caller of the next
- * {@link #onGameStart} / {@link #reset} and counts nothing.
+ * end of the game. The win or loss is recorded exactly once, when both are known, in either order;
+ * a VICTORY that lands after a loss was already settled (eliminated, killer row, then the team's
+ * comeback title) moves that game from the losses to the wins. A game that ended without a known
+ * outcome is reported as unresolved to the caller of the next {@link #onGameStart} /
+ * {@link #reset} and counts nothing.
  */
 public final class SessionStats {
 
@@ -108,6 +110,11 @@ public final class SessionStats {
                 beds++;
                 break;
             case WIN:
+                if (settled && outcome == Outcome.LOSS) {
+                    // The killer row settled a loss before the victory title arrived: move it.
+                    losses--;
+                    wins++;
+                }
                 outcome = Outcome.WIN;
                 settle();
                 break;

@@ -48,13 +48,16 @@ public final class SessionChatLine {
     }
 
     private static final String NAME = "[A-Za-z0-9_]{3,16}";
-    private static final String FINAL_SUFFIX = " FINAL KILL!";
 
-    /** Victim first, then a body ending in "." or in the "final #n" cosmetic, optional FINAL KILL!. */
+    /**
+     * Victim first (optionally possessive: "Steve's heart was pierced by …"), then a body that
+     * normally ends in "." or in the "final #n" cosmetic — the terminator is optional because one
+     * sourced template ("was shot into limbo by {player}") carries none — then optional FINAL KILL!.
+     */
     private static final Pattern DEATH_LINE =
-            Pattern.compile("^(" + NAME + ") (.+?)(?:\\.|#[0-9,]+\\.?)( FINAL KILL!)?$");
+            Pattern.compile("^(" + NAME + ")(?:'s)? (.+?)(?:\\.|#[0-9,]+\\.?)?( FINAL KILL!)?$");
     private static final Pattern PREPOSITION =
-            Pattern.compile("(?:^|\\s)(?:by|to|with|for|of|from|against|fighting|escape|meet) (" + NAME + ")$");
+            Pattern.compile("(?:^|\\s)(?:by|to|with|for|of|from|against|fighting|escape|meet|seeing) (" + NAME + ")$");
     private static final Pattern POSSESSIVE = Pattern.compile("(?:^|\\s)(" + NAME + ")'s(?:\\s|$)");
     private static final Pattern SELF_DEATH_NO_KILLER = Pattern.compile(
             "^(?:fell into the void|died|hit the ground too hard|burned to death|drowned|was blown up"
@@ -89,12 +92,19 @@ public final class SessionChatLine {
         if (self == null || self.isEmpty()) return null;
 
         Matcher b = BED.matcher(line);
-        if (b.matches()) return hasToken(b.group(1), self) ? Kind.BED_BREAK : null;
+        if (b.matches()) {
+            // Same killer-position rule as death lines: "… by Self!", "… by Self's holiday spirit!",
+            // "… after seeing Self!". Never an incidental word elsewhere in the cosmetic.
+            String rest = b.group(1).trim();
+            if (rest.endsWith("!")) rest = rest.substring(0, rest.length() - 1).trim();
+            String breaker = killerOf(rest);
+            return breaker != null && breaker.equalsIgnoreCase(self) ? Kind.BED_BREAK : null;
+        }
 
         Matcher d = DEATH_LINE.matcher(line);
         if (!d.matches()) return null;
         String victim = d.group(1);
-        String tail = d.group(2);
+        String tail = d.group(2).trim();
         boolean fin = d.group(3) != null;
         boolean victimIsSelf = victim.equalsIgnoreCase(self);
         String killer = killerOf(tail);
