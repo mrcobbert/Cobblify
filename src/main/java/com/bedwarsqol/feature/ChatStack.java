@@ -2,6 +2,7 @@ package com.bedwarsqol.feature;
 
 import net.minecraft.util.ChatComponentStyle;
 import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.ChatStyle;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 
@@ -15,9 +16,10 @@ import java.util.List;
  * {@link ChatStackCore} holds the platform-neutral rules; {@code GuiNewChatMixin} wires both.
  *
  * <p>Only vanilla-style components are ever mutated: a {@link ChatComponentStyle} whose sibling list
- * is exactly {@code java.util.ArrayList} (a subclass may swap the protected field), so an add followed
- * by a remove cannot fail between the two steps. Reads never mutate: {@link #baseText} strips the
- * counter's formatted suffix and {@link #withoutCounter} edits a copy. A foreign
+ * is exactly {@code java.util.ArrayList} (a subclass may swap the protected field), and the edit goes
+ * straight to that list — never through an overridable {@code appendSibling} — so once the reads have
+ * succeeded nothing between the add and the remove can throw. Reads never mutate: {@link #baseText}
+ * strips the counter's formatted suffix and {@link #withoutCounter} edits a copy. A foreign
  * {@link IChatComponent} that throws while flattening simply makes the line unstackable.
  */
 @SuppressWarnings("unchecked")
@@ -79,10 +81,18 @@ public final class ChatStack {
         }
     }
 
-    /** The last {@link Counter} among {@code c}'s direct siblings, or null. */
+    /** The last {@link Counter} among {@code c}'s direct siblings, or null; null too when reading throws. */
     public static Counter counterOf(IChatComponent c) {
         if (c == null) return null;
-        List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
+        try {
+            return counterOf((List<IChatComponent>) c.getSiblings());
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Counter counterOf(List<IChatComponent> sibs) {
+        if (sibs == null) return null;
         for (int i = sibs.size() - 1; i >= 0; i--) {
             if (sibs.get(i) instanceof Counter) return (Counter) sibs.get(i);
         }
@@ -108,55 +118,60 @@ public final class ChatStack {
 
     /**
      * Append a fresh counter for {@code n}, then detach the previous one; returns the detached one
-     * (or null). Add-then-remove on the vanilla list cannot fail between the two steps; should a
-     * foreign sibling list throw part-way, the partial step is undone best-effort before rethrowing.
+     * (or null). No overridable mutator runs: the two steps vanilla's {@code appendSibling} performs
+     * (parent-style link, then add) are done directly on the {@code ArrayList} that
+     * {@link #stackable} verified — a final class whose add/remove cannot fail part-way — so once
+     * the reads at the top have succeeded the edit cannot throw. Refuses any other list.
      */
     public static Counter setCounter(IChatComponent c, int n) {
-        Counter old = counterOf(c);
+        ArrayList<IChatComponent> sibs = vanillaSiblings(c); // virtual read; nothing mutated if it throws
+        ChatStyle parent = c.getChatStyle();                  // virtual read; likewise
+        Counter old = counterOf(sibs);
         Counter fresh = new Counter(n);
-        c.appendSibling(fresh); // vanilla: parent-style link, then siblings.add; nothing changes if add throws
-        if (old != null) {
-            List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
-            try {
-                sibs.remove(indexOfIdentity(sibs, old));
-            } catch (Throwable t) {
-                try {
-                    int i = indexOfIdentity(sibs, fresh);
-                    if (i >= 0) sibs.remove(i);
-                } catch (Throwable ignored) { }
-                throw t;
-            }
-        }
+        fresh.getChatStyle().setParentStyle(parent);
+        sibs.add(fresh);
+        if (old != null) sibs.remove(indexOfIdentity(sibs, old));
         return old;
     }
 
     /** Undo {@link #setCounter}: drop the current counter and re-attach {@code previous} if any. */
     public static void restoreCounter(IChatComponent c, Counter previous) {
-        Counter current = counterOf(c);
+        ArrayList<IChatComponent> sibs = vanillaSiblings(c);
+        Counter current = counterOf(sibs);
+        if (current != null) sibs.remove(indexOfIdentity(sibs, current));
+        if (previous != null) sibs.add(previous); // its parent style is still linked to c
+    }
+
+    /** The component's sibling list, only if it is exactly the vanilla {@code ArrayList}. */
+    private static ArrayList<IChatComponent> vanillaSiblings(IChatComponent c) {
         List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
-        if (current != null) {
-            int i = indexOfIdentity(sibs, current);
-            if (i >= 0) sibs.remove(i);
+        if (sibs == null || sibs.getClass() != ArrayList.class) {
+            throw new IllegalStateException("not a vanilla sibling list: " + (sibs == null ? null : sibs.getClass()));
         }
-        if (previous != null) c.appendSibling(previous);
+        return (ArrayList<IChatComponent>) sibs;
     }
 
     /**
      * {@code c} itself when it carries no counter, else a copy without it — what Copy Chat copies.
      * The original is never touched: the counter is removed from the copy ({@link Counter#createCopy}
-     * keeps the marker type, so it is still recognisable there).
+     * keeps the marker type, so it is still recognisable there). Never throws: a component that
+     * cannot be read or copied is returned as-is, exactly as Copy Chat treated every line before.
      */
     public static IChatComponent withoutCounter(IChatComponent c) {
         if (counterOf(c) == null) return c;
-        IChatComponent copy = c.createCopy();
-        List<IChatComponent> sibs = (List<IChatComponent>) copy.getSiblings();
-        for (int i = sibs.size() - 1; i >= 0; i--) {
-            if (sibs.get(i) instanceof Counter) {
-                sibs.remove(i);
-                break;
+        try {
+            IChatComponent copy = c.createCopy();
+            List<IChatComponent> sibs = (List<IChatComponent>) copy.getSiblings();
+            for (int i = sibs.size() - 1; i >= 0; i--) {
+                if (sibs.get(i) instanceof Counter) {
+                    sibs.remove(i);
+                    break;
+                }
             }
+            return copy;
+        } catch (Throwable t) {
+            return c;
         }
-        return copy;
     }
 
     /** {@code ChatComponentText.equals} compares by value; the counter must be found by identity. */

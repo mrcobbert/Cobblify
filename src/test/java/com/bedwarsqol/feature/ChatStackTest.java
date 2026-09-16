@@ -205,35 +205,48 @@ public class ChatStackTest {
     }
 
     @Test
-    public void addFailureLeavesTheComponentUntouched() {
-        ThrowsOnAdd list = new ThrowsOnAdd();
-        Foreign line = new Foreign(list);
-        Counter old = new Counter(2);
-        list.seed(old);
-        String before = line.getFormattedText();
-        try {
-            ChatStack.setCounter(line, 3);
-            fail("expected the add to throw");
-        } catch (UnsupportedOperationException expected) { }
-        assertEquals(before, line.getFormattedText());
-        assertEquals(1, line.getSiblings().size());
-        assertSame(old, ChatStack.counterOf(line));
+    public void setCounterRefusesAnythingButTheVanillaListWithoutTouchingIt() {
+        for (List<IChatComponent> hostile : java.util.Arrays.<List<IChatComponent>>asList(
+                new ThrowsOnAdd(), new MutatesThenThrowsOnRemove(), new ThrowsOnFirstRemove())) {
+            Foreign line = new Foreign(hostile);
+            Counter old = new Counter(2);
+            if (hostile instanceof ThrowsOnAdd) ((ThrowsOnAdd) hostile).seed(old); else hostile.add(old);
+            String before = line.getFormattedText();
+            try {
+                ChatStack.setCounter(line, 3);
+                fail("expected refusal for " + hostile.getClass().getSimpleName());
+            } catch (IllegalStateException expected) { }
+            assertEquals(before, line.getFormattedText());
+            assertEquals(1, line.getSiblings().size());
+            assertSame(old, ChatStack.counterOf(line));
+        }
+    }
+
+    /** Keeps the vanilla list but overrides the mutator to mutate-then-throw. */
+    private static final class ThrowingAppender extends ChatComponentText {
+        ThrowingAppender(String s) { super(s); }
+        @Override public IChatComponent appendSibling(IChatComponent component) {
+            super.appendSibling(component);
+            throw new UnsupportedOperationException("appendSibling");
+        }
     }
 
     @Test
-    public void removeFailureUndoesTheFreshCounter() {
-        ThrowsOnFirstRemove list = new ThrowsOnFirstRemove();
-        Foreign line = new Foreign(list);
-        Counter old = new Counter(2);
-        line.appendSibling(old);
-        String before = line.getFormattedText();
-        try {
-            ChatStack.setCounter(line, 3);
-            fail("expected the remove to throw");
-        } catch (UnsupportedOperationException expected) { }
-        assertEquals(before, line.getFormattedText());
-        assertEquals(1, line.getSiblings().size());
-        assertSame(old, ChatStack.counterOf(line));
+    public void setCounterNeverCallsTheOverridableAppender() {
+        ThrowingAppender line = new ThrowingAppender("A");
+        assertTrue(ChatStack.stackable(line));
+        Counter previous = ChatStack.setCounter(line, 2); // would throw after mutating via appendSibling
+        assertNull(previous);
+        assertEquals("A (x2)", line.getUnformattedText());
+        assertEquals(2, ChatStack.counterOf(line).n);
+        // Parent-style link is in place: the root's colour propagates to the counter's formatting.
+        line.getChatStyle().setBold(true);
+        assertTrue(ChatStack.counterOf(line).getChatStyle().getBold());
+        Counter c2 = ChatStack.setCounter(line, 3);
+        assertEquals("A (x3)", line.getUnformattedText());
+        ChatStack.restoreCounter(line, c2);
+        assertEquals("A (x2)", line.getUnformattedText());
+        assertSame(c2, ChatStack.counterOf(line));
     }
 
     @Test
@@ -274,6 +287,22 @@ public class ChatStackTest {
         assertNotNull(ChatStack.counterOf(a));
 
         assertSame("no counter: same object", b, ChatStack.withoutCounter(b));
+    }
+
+    /** Prints and flattens fine, but its sibling list is unreadable. */
+    private static final class UnreadableSiblings extends ChatComponentText {
+        UnreadableSiblings(String s) { super(s); }
+        @Override public List<IChatComponent> getSiblings() { throw new IllegalStateException("siblings"); }
+    }
+
+    @Test
+    public void withoutCounterNeverThrowsAndReturnsUnreadableLinesAsIs() {
+        UnreadableSiblings line = new UnreadableSiblings("A");
+        assertSame(line, ChatStack.withoutCounter(line));
+        assertNull(ChatStack.counterOf(line));
+        assertFalse(ChatStack.stackable(line));
+        Hostile hostile = new Hostile();
+        assertSame(hostile, ChatStack.withoutCounter(hostile)); // no counter, no throw
     }
 
     @Test
