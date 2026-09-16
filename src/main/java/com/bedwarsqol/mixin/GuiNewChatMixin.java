@@ -3,15 +3,16 @@ package com.bedwarsqol.mixin;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatCopyAccess;
+import com.bedwarsqol.feature.ChatStack;
+import com.bedwarsqol.feature.ChatStackCore;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.GuiNewChat;
 import net.minecraft.client.gui.GuiUtilRenderComponents;
 import net.minecraft.client.gui.ScaledResolution;
-import net.minecraft.util.ChatComponentText;
-import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.MathHelper;
+import org.apache.logging.log4j.Logger;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -33,14 +34,20 @@ import java.util.List;
  * 32,767 while the toggle is on (effectively unlimited, still memory-bounded).
  *
  * <p><b>Stack Spam Messages</b>: consecutive identical lines collapse into the original line, edited
- * in place with a gray {@code (xN)} counter, so chat never jumps. The last-printed non-blank line is
- * remembered at the end of {@code setChatLine} (its formatted text plus the exact {@link ChatLine}
- * objects it produced in both lists); when the next print matches it, the print is cancelled and the
- * remembered lines are swapped for re-wrapped ones carrying the counter, at the same indices. Any
- * different non-blank line simply overwrites the memory, which is what makes stacking consecutive-only.
- * With time-based stacking on, a repeat older than the configured window starts a fresh line instead.
- * With ignore-blanks on, whitespace-only lines are invisible to the stacker: they neither stack nor
- * break a chain. Lines carrying a server deletion id are never touched.
+ * in place with a gray {@code (xN)} counter, so chat never jumps. The last-printed stackable line is
+ * remembered at the end of {@code setChatLine} as the live component object the chat stores plus its
+ * {@code chatLines} entry. When the next print matches its <i>current</i> text (holders that
+ * {@link com.bedwarsqol.feature.ChatNameTags} patched since count), the print is cancelled, a
+ * {@link ChatStack.Counter} sibling is appended to that same component — never a copy, so the line
+ * keeps its identity and keeps receiving back-patches — and its wrapped rows are swapped at the
+ * position the {@code chatLines} order implies (not by remembered objects, which
+ * {@code refreshChat()} invalidates). The cancelled print still writes vanilla's {@code [CHAT]} log
+ * line. Any different non-blank line overwrites the memory, which is what makes stacking
+ * consecutive-only. With time-based stacking on, a repeat older than the configured window starts a
+ * fresh line instead. With ignore-blanks on, whitespace-only lines are invisible to the stacker:
+ * they neither stack nor break a chain. Decorative lines (no letter or digit — Hypixel's separator
+ * bars) are never a target and always break the chain. Lines carrying a server deletion id, and
+ * foreign component implementations, are never touched. Copy Chat strips the counter.
  *
  * <p><b>Copy Chat</b> ({@link ChatCopyAccess}): resolves the raw mouse position to the full original
  * message. The drawn index math mirrors vanilla {@code getChatComponent}; the drawn line is mapped
@@ -60,6 +67,8 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
     @Shadow public abstract int getChatWidth();
     @Shadow public abstract float getChatScale();
     @Shadow public abstract int getLineCount();
+    @Shadow public abstract void scroll(int amount);
+    @Shadow @Final private static Logger logger;
 
     // ---- Unlimited Chat ----
 
@@ -73,67 +82,82 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
 
     // ---- Stack Spam Messages ----
 
-    /** Formatted text of the last stackable line printed (null = no chain). */
-    @Unique private String bedwarsqol$lastFormatted;
-    /** The component that produced it, kept pristine so the counter can be re-appended per repeat. */
+    /** The live component of the last stackable line printed (null = no chain). It is the object
+     *  stored in {@code chatLines}; the counter is appended to it in place, never to a copy. */
     @Unique private IChatComponent bedwarsqol$lastComponent;
+    /** The {@code chatLines} entry wrapping it, replaced on each repeat (fresh fade timer). */
+    @Unique private ChatLine bedwarsqol$lastChatLine;
     @Unique private long bedwarsqol$lastStackMs;
     @Unique private int bedwarsqol$stackCount;
-    /** The exact list entries the last line occupies, replaced in place on each repeat. */
-    @Unique private ChatLine bedwarsqol$lastChatLine;
-    @Unique private final List<ChatLine> bedwarsqol$lastDrawn = new ArrayList<ChatLine>();
 
+    /**
+     * Ordering is the safety guarantee: every call that can throw runs before the first mutation;
+     * the one fallible call after it ({@code split} of the mutated component) is rolled back on
+     * failure; the list writes come last and cannot throw. Any failure resets the chain and lets
+     * vanilla print the line.
+     */
     @Inject(method = "printChatMessageWithOptionalDeletion", at = @At("HEAD"), cancellable = true)
     private void bedwarsqol$stackSpam(IChatComponent component, int id, CallbackInfo ci) {
         ClientSettings cfg = BedwarsQol.config;
         if (cfg == null || !cfg.chatStackSpam || id != 0 || component == null) return;
-        if (bedwarsqol$lastFormatted == null || bedwarsqol$lastChatLine == null) return;
-
-        String formatted = component.getFormattedText();
-        if (!bedwarsqol$lastFormatted.equals(formatted)) return;
-        if (cfg.chatStackIgnoreBlanks && bedwarsqol$isBlank(formatted)) return;
-
-        long now = System.currentTimeMillis();
-        if (cfg.chatStackTimeBased && now - bedwarsqol$lastStackMs > (long) (cfg.chatStackWindowSec * 1000f)) {
-            return; // repeat too old: let it print as a fresh line (setChatLine re-captures it)
-        }
-
-        int idx = chatLines.indexOf(bedwarsqol$lastChatLine);
-        if (idx < 0) return; // original line gone (trimmed/deleted): print normally
-
-        // Replace the message entry in place with a counter-carrying copy.
-        bedwarsqol$stackCount++;
-        bedwarsqol$lastStackMs = now;
-        IChatComponent stacked = bedwarsqol$lastComponent.createCopy();
-        ChatComponentText counter = new ChatComponentText(" (x" + bedwarsqol$stackCount + ")");
-        counter.getChatStyle().setColor(EnumChatFormatting.GRAY);
-        stacked.appendSibling(counter);
-        int updateCounter = mc.ingameGUI.getUpdateCounter();
-        ChatLine replacement = new ChatLine(updateCounter, stacked, 0);
-        chatLines.set(idx, replacement);
-        bedwarsqol$lastChatLine = replacement;
-
-        // Swap the drawn (wrapped) lines at the same position; the counter can change the wrap count.
-        int insertAt = Integer.MAX_VALUE;
-        for (ChatLine old : bedwarsqol$lastDrawn) {
-            int i = drawnChatLines.indexOf(old);
-            if (i >= 0) {
-                drawnChatLines.remove(i);
-                if (i < insertAt) insertAt = i;
+        IChatComponent target = bedwarsqol$lastComponent;
+        if (target == null || bedwarsqol$lastChatLine == null) return;
+        try {
+            // -- fallible reads, nothing mutated yet --
+            String candidate = ChatStack.safeFormatted(component);
+            if (candidate == null) return;
+            if (cfg.chatStackIgnoreBlanks && ChatStackCore.blank(ChatStackCore.plain(candidate))) return;
+            long now = System.currentTimeMillis();
+            String base = ChatStack.baseText(target);
+            if (!ChatStackCore.shouldStack(base, candidate, cfg.chatStackTimeBased,
+                    ChatStackCore.windowMs(cfg.chatStackWindowSec), bedwarsqol$lastStackMs, now)) {
+                return; // different line, or repeat too old: print fresh (setChatLine re-captures)
             }
-        }
-        if (insertAt == Integer.MAX_VALUE) insertAt = 0;
-        List<ChatLine> fresh = new ArrayList<ChatLine>();
-        for (IChatComponent part : bedwarsqol$split(stacked)) {
-            // Newest-first list: within one message the later wrapped slices sit at lower indices,
-            // matching setChatLine's add(0, ...) loop.
-            fresh.add(0, new ChatLine(updateCounter, part, 0));
-        }
-        drawnChatLines.addAll(insertAt, fresh);
-        bedwarsqol$lastDrawn.clear();
-        bedwarsqol$lastDrawn.addAll(fresh);
+            String logLine = ChatStack.safeUnformatted(component);
+            if (logLine == null) return;
+            int idx = chatLines.indexOf(bedwarsqol$lastChatLine);
+            if (idx < 0) return; // original gone (F3+D, trimmed, foreign surgery): print normally
+            // Rows are located by position, not by remembered objects: refreshChat() rebuilds
+            // drawnChatLines with new ChatLine instances, but the concatenation order is stable.
+            int[] rowsAbove = new int[idx];
+            for (int i = 0; i < idx; i++) rowsAbove[i] = bedwarsqol$split(chatLines.get(i).getChatComponent()).size();
+            int start = ChatStackCore.rowStart(rowsAbove, idx);
+            int oldRows = bedwarsqol$split(target).size();
+            // The two lists are capped independently (messages vs rows); a message can outlive its rows.
+            if (!ChatStackCore.targetPresent(start, oldRows, drawnChatLines.size())) return;
 
-        ci.cancel();
+            // -- the one mutation before the lists, with rollback --
+            int count = bedwarsqol$stackCount + 1;
+            ChatStack.Counter previous = ChatStack.setCounter(target, count);
+            List<IChatComponent> parts;
+            try {
+                parts = bedwarsqol$split(target);
+            } catch (Throwable t) {
+                ChatStack.restoreCounter(target, previous);
+                throw t;
+            }
+
+            // -- list writes: cannot throw --
+            int updateCounter = mc.ingameGUI.getUpdateCounter();
+            ChatLine replacement = new ChatLine(updateCounter, target, 0);
+            chatLines.set(idx, replacement);
+            List<ChatLine> fresh = new ArrayList<ChatLine>(parts.size());
+            for (IChatComponent part : parts) {
+                // Newest-first list: within one message the later wrapped slices sit at lower
+                // indices, matching setChatLine's add(0, ...) loop.
+                fresh.add(0, new ChatLine(updateCounter, part, 0));
+            }
+            ChatStackCore.replaceRows(drawnChatLines, start, oldRows, fresh);
+            int delta = ChatStackCore.scrollDelta(getChatOpen(), scrollPos, oldRows, fresh.size());
+            if (delta != 0) scroll(delta); // keep a scrolled-up reader's view, as setChatLine does
+            bedwarsqol$lastChatLine = replacement;
+            bedwarsqol$stackCount = count;
+            bedwarsqol$lastStackMs = now;
+            logger.info("[CHAT] " + logLine); // the line vanilla would have logged for this receipt
+            ci.cancel();
+        } catch (Throwable t) {
+            bedwarsqol$resetStackState();
+        }
     }
 
     @Inject(method = "setChatLine", at = @At("RETURN"))
@@ -144,31 +168,41 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
             bedwarsqol$resetStackState();
             return;
         }
-        if (id != 0) {
-            bedwarsqol$resetStackState(); // deletable server lines break the chain and are never stacked
-            return;
-        }
-        String formatted = component.getFormattedText();
-        if (cfg.chatStackIgnoreBlanks && bedwarsqol$isBlank(formatted)) return; // invisible to the stacker
-
-        bedwarsqol$lastFormatted = formatted;
-        bedwarsqol$lastComponent = component;
-        bedwarsqol$lastStackMs = System.currentTimeMillis();
-        bedwarsqol$stackCount = 1;
-        bedwarsqol$lastChatLine = chatLines.isEmpty() ? null : chatLines.get(0);
-        bedwarsqol$lastDrawn.clear();
-        int wrapped = bedwarsqol$split(component).size();
-        for (int i = 0; i < wrapped && i < drawnChatLines.size(); i++) {
-            bedwarsqol$lastDrawn.add(drawnChatLines.get(i));
+        try {
+            if (id != 0 || !ChatStack.stackable(component)) {
+                // Deletable server lines are never stacked; nor is a foreign component whose sibling
+                // list we cannot mutate atomically. Either breaks the chain.
+                bedwarsqol$resetStackState();
+                return;
+            }
+            String formatted = ChatStack.safeFormatted(component);
+            if (formatted == null) {
+                bedwarsqol$resetStackState();
+                return;
+            }
+            switch (ChatStackCore.captureAction(ChatStackCore.plain(formatted), cfg.chatStackIgnoreBlanks)) {
+                case TRANSPARENT:
+                    return; // invisible to the stacker: neither a target nor a chain-breaker
+                case RESET:
+                    bedwarsqol$resetStackState(); // decorative bar: prints as vanilla, breaks the chain
+                    return;
+                case CAPTURE:
+                default:
+                    break;
+            }
+            bedwarsqol$lastComponent = component;
+            bedwarsqol$lastChatLine = chatLines.isEmpty() ? null : chatLines.get(0);
+            bedwarsqol$lastStackMs = System.currentTimeMillis();
+            bedwarsqol$stackCount = 1;
+        } catch (Throwable t) {
+            bedwarsqol$resetStackState();
         }
     }
 
     @Unique
     private void bedwarsqol$resetStackState() {
-        bedwarsqol$lastFormatted = null;
         bedwarsqol$lastComponent = null;
         bedwarsqol$lastChatLine = null;
-        bedwarsqol$lastDrawn.clear();
         bedwarsqol$stackCount = 0;
     }
 
@@ -177,12 +211,6 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
     private List<IChatComponent> bedwarsqol$split(IChatComponent component) {
         int width = MathHelper.floor_float((float) getChatWidth() / getChatScale());
         return GuiUtilRenderComponents.splitText(component, width, mc.fontRendererObj, false, false);
-    }
-
-    @Unique
-    private static boolean bedwarsqol$isBlank(String formatted) {
-        String plain = EnumChatFormatting.getTextWithoutFormattingCodes(formatted);
-        return plain == null || plain.trim().isEmpty();
     }
 
     // ---- Copy Chat ----
@@ -208,9 +236,9 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
         int cursor = 0;
         for (ChatLine line : chatLines) {
             int wrapped = bedwarsqol$split(line.getChatComponent()).size();
-            if (drawnIdx < cursor + wrapped) return line.getChatComponent();
+            if (drawnIdx < cursor + wrapped) return ChatStack.withoutCounter(line.getChatComponent());
             cursor += wrapped;
         }
-        return drawnChatLines.get(drawnIdx).getChatComponent();
+        return ChatStack.withoutCounter(drawnChatLines.get(drawnIdx).getChatComponent());
     }
 }

@@ -125,13 +125,17 @@ public class ClientSettings {
      * chat within a session. F3+D still clears; nothing is written to disk.
      */
     public boolean chatKeepHistory = true;
-    /** Stack Spam Messages: collapse consecutive identical chat lines into one line with a gray (xN). */
+    /**
+     * Stack Spam Messages: collapse consecutive identical chat lines into one line with a gray (xN).
+     * The counter is edited into the original line in place; absorbed repeats are still written to
+     * the game log. Decorative lines (no letter or digit, e.g. Hypixel's separator bars) never stack.
+     */
     public boolean chatStackSpam = true;
     /** Sub of Stack Spam: only stack when the repeat arrives within {@link #chatStackWindowSec} of the last. */
     public boolean chatStackTimeBased = true;
     /** Seconds a line stays stackable when time-based stacking is on (1-30). */
     public float chatStackWindowSec = 5.0f;
-    /** Sub of Stack Spam: blank lines never stack and never break a stacking chain. */
+    /** Sub of Stack Spam: whitespace-only lines never stack and never break a stacking chain. */
     public boolean chatStackIgnoreBlanks = true;
     /** Chat Notifications: master toggle for the chat-driven sound alerts below. */
     public boolean chatNotifications = true;
