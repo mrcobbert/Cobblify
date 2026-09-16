@@ -86,6 +86,7 @@ one-sided main forge com/bedwarsqol/feature/TntFuseDisplay.java
 
 # Generic chat QOL is Forge-only; Lunar ships it natively.
 one-sided main forge com/bedwarsqol/feature/ChatCopyAccess.java
+one-sided main forge com/bedwarsqol/feature/ChatStack.java
 one-sided main forge com/bedwarsqol/mixin/GuiNewChatMixin.java
 one-sided main forge com/bedwarsqol/mixin/MinecraftChatClearMixin.java
 
@@ -106,6 +107,7 @@ one-sided test forge com/bedwarsqol/feature/AlertCopyReasonTest.java
 one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
+one-sided test forge com/bedwarsqol/feature/ChatStackTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
 one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
