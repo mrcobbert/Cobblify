@@ -58,11 +58,22 @@ public final class ChatStackCore {
         return true;
     }
 
-    /** The capture decision for a printed line, given the Ignore Blank Lines toggle. */
+    /** The capture decision for a printed line's text alone, given the Ignore Blank Lines toggle. */
     public static Capture captureAction(String plain, boolean ignoreBlanks) {
         if (blank(plain)) return ignoreBlanks ? Capture.TRANSPARENT : Capture.CAPTURE;
         if (decorative(plain)) return Capture.RESET;
         return Capture.CAPTURE;
+    }
+
+    /**
+     * The full capture decision: a line carrying a server deletion id, or one whose component cannot
+     * be read or mutated safely, is never a target and always breaks the chain; otherwise the text
+     * rule above applies.
+     */
+    public static Capture captureAction(boolean deletableId, boolean unreadable, String plain,
+                                        boolean ignoreBlanks) {
+        if (deletableId || unreadable) return Capture.RESET;
+        return captureAction(plain, ignoreBlanks);
     }
 
     /** The configured window in milliseconds; never negative. */

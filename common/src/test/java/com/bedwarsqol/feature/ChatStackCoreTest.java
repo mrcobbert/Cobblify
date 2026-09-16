@@ -67,6 +67,73 @@ public class ChatStackCoreTest {
         assertEquals(Capture.CAPTURE, ChatStackCore.captureAction("Dewier: gg", false));
     }
 
+    @Test
+    public void deletableOrUnreadableLinesAlwaysReset() {
+        assertEquals(Capture.RESET, ChatStackCore.captureAction(true, false, "A", true));
+        assertEquals(Capture.RESET, ChatStackCore.captureAction(false, true, "A", true));
+        assertEquals(Capture.RESET, ChatStackCore.captureAction(true, false, "   ", true)); // even a blank
+        assertEquals(Capture.CAPTURE, ChatStackCore.captureAction(false, false, "A", true));
+        assertEquals(Capture.TRANSPARENT, ChatStackCore.captureAction(false, false, "   ", true));
+    }
+
+    /**
+     * A minimal model of the mixin's chain state, driven by the same two rules the mixin calls:
+     * {@code captureAction} at print, {@code shouldStack} at the next receipt. Pins consecutive-only
+     * stacking, the deletable-id chain break, and blank transparency across a chain.
+     */
+    private static final class Chain {
+        String base; int count;
+        boolean receive(String plain, boolean deletable, boolean ignoreBlanks) {
+            if (base != null && !deletable && ChatStackCore.shouldStack(base, plain, false, 0, 0, 0)) {
+                count++;
+                return true; // absorbed
+            }
+            switch (ChatStackCore.captureAction(deletable, false, plain, ignoreBlanks)) {
+                case TRANSPARENT: break;
+                case RESET: base = null; count = 0; break;
+                default: base = plain; count = 1;
+            }
+            return false;
+        }
+    }
+
+    @Test
+    public void chainIsConsecutiveOnly() {
+        Chain c = new Chain();
+        assertFalse(c.receive("A", false, true));
+        assertTrue(c.receive("A", false, true));
+        assertEquals(2, c.count);
+        assertFalse(c.receive("B", false, true));   // B moves the chain on
+        assertFalse(c.receive("A", false, true));   // A again is a fresh line, not (x3)
+        assertEquals(1, c.count);
+        assertEquals("A", c.base);
+    }
+
+    @Test
+    public void deletableIdBreaksTheChainAndIsNeverAbsorbed() {
+        Chain c = new Chain();
+        assertFalse(c.receive("A", false, true));
+        assertFalse(c.receive("A", true, true));    // same text, deletable: printed, chain broken
+        assertNull(c.base);
+        assertFalse(c.receive("A", false, true));   // starts over
+        assertEquals(1, c.count);
+    }
+
+    @Test
+    public void blanksAreTransparentAcrossAChainOnlyWhenIgnored() {
+        Chain c = new Chain();
+        assertFalse(c.receive("A", false, true));
+        assertFalse(c.receive("", false, true));    // transparent
+        assertTrue(c.receive("A", false, true));    // still stacks
+        Chain d = new Chain();
+        assertFalse(d.receive("A", false, false));
+        assertFalse(d.receive("", false, false));   // captured: chain moves to the blank
+        assertFalse(d.receive("A", false, false));  // fresh
+        assertTrue(d.receive("A", false, false));
+        assertTrue(d.receive("", false, false) == false); // different from base A
+        assertTrue(d.receive("", false, false));    // two blanks stack when not ignored
+    }
+
     // ---- shouldStack ----------------------------------------------------------------------------
 
     @Test

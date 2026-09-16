@@ -93,8 +93,9 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
     /**
      * Ordering is the safety guarantee: every call that can throw runs before the first mutation;
      * the one fallible call after it ({@code split} of the mutated component) is rolled back on
-     * failure; the list writes come last and cannot throw. Any failure resets the chain and lets
-     * vanilla print the line.
+     * failure; the list writes come last and cannot throw, and the print is cancelled before the
+     * log call, which is guarded on its own. Any failure before the cancel resets the chain and
+     * lets vanilla print the line.
      */
     @Inject(method = "printChatMessageWithOptionalDeletion", at = @At("HEAD"), cancellable = true)
     private void bedwarsqol$stackSpam(IChatComponent component, int id, CallbackInfo ci) {
@@ -102,6 +103,7 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
         if (cfg == null || !cfg.chatStackSpam || id != 0 || component == null) return;
         IChatComponent target = bedwarsqol$lastComponent;
         if (target == null || bedwarsqol$lastChatLine == null) return;
+        String logLine;
         try {
             // -- fallible reads, nothing mutated yet --
             String candidate = ChatStack.safeFormatted(component);
@@ -113,7 +115,7 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
                     ChatStackCore.windowMs(cfg.chatStackWindowSec), bedwarsqol$lastStackMs, now)) {
                 return; // different line, or repeat too old: print fresh (setChatLine re-captures)
             }
-            String logLine = ChatStack.safeUnformatted(component);
+            logLine = ChatStack.safeUnformatted(component);
             if (logLine == null) return;
             int idx = chatLines.indexOf(bedwarsqol$lastChatLine);
             if (idx < 0) return; // original gone (F3+D, trimmed, foreign surgery): print normally
@@ -148,15 +150,21 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
                 fresh.add(0, new ChatLine(updateCounter, part, 0));
             }
             ChatStackCore.replaceRows(drawnChatLines, start, oldRows, fresh);
-            int delta = ChatStackCore.scrollDelta(getChatOpen(), scrollPos, start, oldRows, fresh.size());
-            if (delta != 0) scroll(delta); // keep a scrolled-up reader's view when the swap is below it
             bedwarsqol$lastChatLine = replacement;
             bedwarsqol$stackCount = count;
             bedwarsqol$lastStackMs = now;
-            logger.info("[CHAT] " + logLine); // the line vanilla would have logged for this receipt
-            ci.cancel();
+            ci.cancel(); // the stack is committed; nothing below may undo or duplicate it
+            int delta = ChatStackCore.scrollDelta(getChatOpen(), scrollPos, start, oldRows, fresh.size());
+            if (delta != 0) scroll(delta); // keep a scrolled-up reader's view when the swap is below it
         } catch (Throwable t) {
             bedwarsqol$resetStackState();
+            return;
+        }
+        try {
+            logger.info("[CHAT] " + logLine); // the line vanilla would have logged for this receipt
+        } catch (Throwable ignored) {
+            // A throwing appender (ignoreExceptions=false) must not turn a committed stack into a
+            // duplicate print; vanilla's own log call would have thrown out of the packet task too.
         }
     }
 
@@ -169,22 +177,15 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
             return;
         }
         try {
-            if (id != 0 || !ChatStack.stackable(component)) {
-                // Deletable server lines are never stacked; nor is a foreign component whose sibling
-                // list we cannot mutate atomically. Either breaks the chain.
-                bedwarsqol$resetStackState();
-                return;
-            }
-            String formatted = ChatStack.safeFormatted(component);
-            if (formatted == null) {
-                bedwarsqol$resetStackState();
-                return;
-            }
-            switch (ChatStackCore.captureAction(ChatStackCore.plain(formatted), cfg.chatStackIgnoreBlanks)) {
+            String formatted = ChatStack.stackable(component) ? ChatStack.safeFormatted(component) : null;
+            switch (ChatStackCore.captureAction(id != 0, formatted == null,
+                    ChatStackCore.plain(formatted), cfg.chatStackIgnoreBlanks)) {
                 case TRANSPARENT:
                     return; // invisible to the stacker: neither a target nor a chain-breaker
                 case RESET:
-                    bedwarsqol$resetStackState(); // decorative bar: prints as vanilla, breaks the chain
+                    // Deletable server line, foreign/throwing component, or decorative bar: never a
+                    // target, and it breaks the chain.
+                    bedwarsqol$resetStackState();
                     return;
                 case CAPTURE:
                 default:
