@@ -204,11 +204,27 @@ public class ChatStackCoreTest {
     // ---- scrollDelta ----------------------------------------------------------------------------
 
     @Test
-    public void scrollDeltaMirrorsVanilla() {
-        assertEquals(0, ChatStackCore.scrollDelta(false, 5, 1, 2)); // chat closed
-        assertEquals(0, ChatStackCore.scrollDelta(true, 0, 1, 2));  // at the bottom
-        assertEquals(1, ChatStackCore.scrollDelta(true, 3, 1, 2));  // grew by a row
-        assertEquals(-1, ChatStackCore.scrollDelta(true, 3, 2, 1)); // shrank by a row
-        assertEquals(0, ChatStackCore.scrollDelta(true, 3, 2, 2));
+    public void scrollDeltaMirrorsVanillaForATargetBelowTheViewport() {
+        // Newest-first indices: the viewport shows [scrollPos, scrollPos + lineCount). A target at
+        // index 0 with scrollPos 3 sits below everything the reader scrolled past.
+        assertEquals(0, ChatStackCore.scrollDelta(false, 3, 0, 1, 2)); // chat closed
+        assertEquals(0, ChatStackCore.scrollDelta(true, 0, 0, 1, 2));  // at the bottom
+        assertEquals(1, ChatStackCore.scrollDelta(true, 3, 0, 1, 2));  // grew by a row
+        assertEquals(-1, ChatStackCore.scrollDelta(true, 3, 0, 2, 1)); // shrank by a row
+        assertEquals(0, ChatStackCore.scrollDelta(true, 3, 0, 2, 2));  // same size
+        // Vanilla's own case: a brand-new row at index 0 (oldRows 0) scrolls by one.
+        assertEquals(1, ChatStackCore.scrollDelta(true, 1, 0, 0, 1));
+    }
+
+    @Test
+    public void scrollDeltaIgnoresATargetAtOrAboveTheViewport() {
+        // start 1, one row, scrollPos 1: the target's row IS the viewport's bottom row (index 1).
+        assertEquals(0, ChatStackCore.scrollDelta(true, 1, 1, 1, 2));
+        // Entirely above the viewport (older than what is shown).
+        assertEquals(0, ChatStackCore.scrollDelta(true, 2, 5, 1, 2));
+        // Straddling the viewport edge: partially visible, no compensation.
+        assertEquals(0, ChatStackCore.scrollDelta(true, 2, 1, 3, 4));
+        // Two-row target ending exactly at the viewport edge is still fully below it.
+        assertEquals(2, ChatStackCore.scrollDelta(true, 3, 1, 2, 4));
     }
 }

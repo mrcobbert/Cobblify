@@ -119,9 +119,15 @@ public final class ChatStackCore {
 
     /**
      * Vanilla scrolls one row per added row while the reader is scrolled up, so the view keeps its
-     * place; the in-place swap must do the same for the net change in rows.
+     * place; it can, because a new message always lands at index 0, below every row the reader
+     * scrolled past. The in-place swap changes rows at {@code [start, start+oldRows)}: only when that
+     * whole range sits below the viewport ({@code start + oldRows <= scrollPos}) do the visible rows
+     * shift, by the net change. A target inside or above the viewport moves nothing the reader sees
+     * past, so no compensation is due.
      */
-    public static int scrollDelta(boolean chatOpen, int scrollPos, int oldRows, int newRows) {
-        return chatOpen && scrollPos > 0 ? newRows - oldRows : 0;
+    public static int scrollDelta(boolean chatOpen, int scrollPos, int start, int oldRows, int newRows) {
+        if (!chatOpen || scrollPos <= 0) return 0;
+        if (start + oldRows > scrollPos) return 0;
+        return newRows - oldRows;
     }
 }

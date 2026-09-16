@@ -148,8 +148,8 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
                 fresh.add(0, new ChatLine(updateCounter, part, 0));
             }
             ChatStackCore.replaceRows(drawnChatLines, start, oldRows, fresh);
-            int delta = ChatStackCore.scrollDelta(getChatOpen(), scrollPos, oldRows, fresh.size());
-            if (delta != 0) scroll(delta); // keep a scrolled-up reader's view, as setChatLine does
+            int delta = ChatStackCore.scrollDelta(getChatOpen(), scrollPos, start, oldRows, fresh.size());
+            if (delta != 0) scroll(delta); // keep a scrolled-up reader's view when the swap is below it
             bedwarsqol$lastChatLine = replacement;
             bedwarsqol$stackCount = count;
             bedwarsqol$lastStackMs = now;
