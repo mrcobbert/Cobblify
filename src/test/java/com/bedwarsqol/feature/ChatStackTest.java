@@ -66,6 +66,12 @@ public class ChatStackTest {
         assertTrue(ChatStack.stackable(new ChatComponentTranslation("chat.type.text", "a", "b")));
         assertFalse(ChatStack.stackable(new Hostile()));
         assertFalse(ChatStack.stackable(null));
+        // A ChatComponentStyle subclass that swapped its sibling list for anything but the vanilla
+        // ArrayList (a subclass included) is not trusted with an in-place edit.
+        assertFalse(ChatStack.stackable(new Foreign(new ThrowsOnAdd())));
+        assertFalse(ChatStack.stackable(new Foreign(new MutatesThenThrowsOnRemove())));
+        assertFalse(ChatStack.stackable(new Foreign(java.util.Collections.<IChatComponent>emptyList())));
+        assertTrue(ChatStack.stackable(new Foreign(new ArrayList<IChatComponent>())));
     }
 
     // ---- setCounter -----------------------------------------------------------------------------
@@ -182,6 +188,14 @@ public class ChatStackTest {
         void seed(IChatComponent c) { super.add(c); }
     }
 
+    /** Removes, then throws: the corruption shape a detach-to-read helper cannot survive. */
+    private static final class MutatesThenThrowsOnRemove extends ArrayList<IChatComponent> {
+        @Override public IChatComponent remove(int i) {
+            super.remove(i);
+            throw new UnsupportedOperationException("remove");
+        }
+    }
+
     private static final class ThrowsOnFirstRemove extends ArrayList<IChatComponent> {
         boolean armed = true;
         @Override public IChatComponent remove(int i) {
@@ -220,6 +234,26 @@ public class ChatStackTest {
         assertEquals(before, line.getFormattedText());
         assertEquals(1, line.getSiblings().size());
         assertSame(old, ChatStack.counterOf(line));
+    }
+
+    @Test
+    public void readsNeverMutateEvenOnAMutatingThenThrowingList() {
+        MutatesThenThrowsOnRemove list = new MutatesThenThrowsOnRemove();
+        Foreign line = new Foreign(list);
+        line.appendSibling(new ChatComponentText("A"));
+        Counter old = new Counter(2);
+        line.appendSibling(old);
+        String before = line.getFormattedText();
+
+        assertEquals(new Foreign(new ArrayList<IChatComponent>()).appendSibling(new ChatComponentText("A")).getFormattedText(),
+                ChatStack.baseText(line));
+        IChatComponent copy = ChatStack.withoutCounter(line);
+        assertEquals("A", copy.getUnformattedText());
+        assertNull(ChatStack.counterOf(copy));
+
+        assertEquals("original untouched", before, line.getFormattedText());
+        assertSame(old, ChatStack.counterOf(line));
+        assertEquals(2, line.getSiblings().size());
     }
 
     // ---- withoutCounter -------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -13,10 +14,11 @@ import java.util.List;
  * stored line keeps its identity and {@link ChatNameTags}' spliced holders keep back-patching it.
  * {@link ChatStackCore} holds the platform-neutral rules; {@code GuiNewChatMixin} wires both.
  *
- * <p>Only vanilla-style components ({@link ChatComponentStyle}) are ever mutated: their sibling list
- * is the vanilla {@code ArrayList}, so an add followed by a remove cannot fail between the two steps.
- * Every read here is guarded — a foreign {@link IChatComponent} implementation that throws while
- * flattening simply makes the line unstackable.
+ * <p>Only vanilla-style components are ever mutated: a {@link ChatComponentStyle} whose sibling list
+ * is exactly {@code java.util.ArrayList} (a subclass may swap the protected field), so an add followed
+ * by a remove cannot fail between the two steps. Reads never mutate: {@link #baseText} strips the
+ * counter's formatted suffix and {@link #withoutCounter} edits a copy. A foreign
+ * {@link IChatComponent} that throws while flattening simply makes the line unstackable.
  */
 @SuppressWarnings("unchecked")
 public final class ChatStack {
@@ -42,9 +44,19 @@ public final class ChatStack {
         }
     }
 
-    /** Whether the stacker may mutate {@code c}: a vanilla-style component with the vanilla sibling list. */
+    /**
+     * Whether the stacker may mutate {@code c}: a vanilla-style component whose sibling list is the
+     * vanilla {@code ArrayList} itself — not a subclass, not a wrapper — so list edits cannot throw
+     * part-way. Never throws.
+     */
     public static boolean stackable(IChatComponent c) {
-        return c instanceof ChatComponentStyle;
+        if (!(c instanceof ChatComponentStyle)) return false;
+        try {
+            List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
+            return sibs != null && sibs.getClass() == ArrayList.class;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** {@code c.getFormattedText()}, or null when the component throws (foreign implementations). */
@@ -80,19 +92,18 @@ public final class ChatStack {
     /**
      * The formatted text of {@code c} with its counter detached — the comparison key a repeat must
      * match. Read live, so holders that {@link ChatNameTags} has patched since the line printed count.
-     * Null when the component throws.
+     * Read-only: the counter is the last direct sibling, so its own formatted text is the exact
+     * suffix of the whole; that suffix is stripped rather than the counter detached. Null when the
+     * component throws or the suffix does not match (then the line is simply not stacked).
      */
     public static String baseText(IChatComponent c) {
+        String full = safeFormatted(c);
+        if (full == null) return null;
         Counter counter = counterOf(c);
-        if (counter == null) return safeFormatted(c);
-        List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
-        int at = indexOfIdentity(sibs, counter);
-        sibs.remove(at);
-        try {
-            return safeFormatted(c);
-        } finally {
-            sibs.add(at, counter);
-        }
+        if (counter == null) return full;
+        String tail = safeFormatted(counter);
+        if (tail == null || !full.endsWith(tail)) return null;
+        return full.substring(0, full.length() - tail.length());
     }
 
     /**
@@ -130,18 +141,22 @@ public final class ChatStack {
         if (previous != null) c.appendSibling(previous);
     }
 
-    /** {@code c} itself when it carries no counter, else a copy without it — what Copy Chat copies. */
+    /**
+     * {@code c} itself when it carries no counter, else a copy without it — what Copy Chat copies.
+     * The original is never touched: the counter is removed from the copy ({@link Counter#createCopy}
+     * keeps the marker type, so it is still recognisable there).
+     */
     public static IChatComponent withoutCounter(IChatComponent c) {
-        Counter counter = counterOf(c);
-        if (counter == null) return c;
-        List<IChatComponent> sibs = (List<IChatComponent>) c.getSiblings();
-        int at = indexOfIdentity(sibs, counter);
-        sibs.remove(at);
-        try {
-            return c.createCopy();
-        } finally {
-            sibs.add(at, counter);
+        if (counterOf(c) == null) return c;
+        IChatComponent copy = c.createCopy();
+        List<IChatComponent> sibs = (List<IChatComponent>) copy.getSiblings();
+        for (int i = sibs.size() - 1; i >= 0; i--) {
+            if (sibs.get(i) instanceof Counter) {
+                sibs.remove(i);
+                break;
+            }
         }
+        return copy;
     }
 
     /** {@code ChatComponentText.equals} compares by value; the counter must be found by identity. */
