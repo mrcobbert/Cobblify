@@ -262,7 +262,7 @@ jobs:
             "$BUILD_VERSION" 0.0.0 "Dev build from $GITHUB_REF_NAME" \
             "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             "$mac" "$mac.sig" "$win" "$win.sig" ../candidate/policy.json.sig
-      - name: Upload dev artifacts, then switch the dev channel
+      - name: Refuse to move the dev channel backwards
         working-directory: server/stats-worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -270,6 +270,25 @@ jobs:
           BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
         run: |
           npm ci
+          # The channel only ever advances. A lower version would never be offered to a
+          # launcher already on the current dev build, and retention would delete it.
+          if npx wrangler r2 object get "$BUCKET/channels/dev.json" --file "$RUNNER_TEMP/current-dev.json" --remote; then
+            current=$(jq -r .version "$RUNNER_TEMP/current-dev.json")
+            order=$(node ../../launcher/tools/semver-compare.mjs "$BUILD_VERSION" "$current")
+            if [ "$order" != 1 ]; then
+              echo "dev channel is already at $current; $BUILD_VERSION is not newer. Bump the branch's pins first." >&2
+              exit 1
+            fi
+          else
+            echo "no dev channel yet; $BUILD_VERSION will be the first"
+          fi
+      - name: Upload dev artifacts, then switch the dev channel
+        working-directory: server/stats-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
+        run: |
           mac=$(find ../../candidate -maxdepth 1 -name '*.app.tar.gz' -type f -print -quit)
           win=$(find ../../candidate -maxdepth 1 -name '*-setup.exe' -type f -print -quit)
           npx wrangler r2 object put "$BUCKET/releases/$BUILD_VERSION/Cobblify-Launcher-macos-universal.app.tar.gz" --file "$mac" --remote
@@ -283,8 +302,9 @@ jobs:
           R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
         run: |
-          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | grep -e '-dev[.]' | sort -Vu)
-          printf '%s\n' "$versions" | sort -Vr | tail -n +3 | while read -r old; do
+          # Never the build the channel now points at, whatever the version sort says.
+          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | grep -e '-dev[.]' | grep -v -x -F "$BUILD_VERSION" | sort -Vu)
+          printf '%s\n' "$versions" | sort -Vr | tail -n +2 | while read -r old; do
             [ -z "$old" ] || aws s3 rm "s3://$BUCKET/releases/$old/" --recursive --endpoint-url "$R2_ENDPOINT"
           done
       - name: Summary

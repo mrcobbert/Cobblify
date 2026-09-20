@@ -33,6 +33,10 @@ export function createUpdateController(invoke, deps = {}) {
     autoUpdateEnabled: false,
     autoUpdatePrompted: false,
     updateChannel: "stable",
+    /** True from the first preference read; the channel box is shown from then on. */
+    channelLoaded: false,
+    /** True while a channel save is in flight; the box is disabled and clicks are dropped. */
+    channelSaving: false,
   };
 
   const notify = () => onChange({ ...state });
@@ -57,7 +61,7 @@ export function createUpdateController(invoke, deps = {}) {
       updateStatus(invoke),
     ]);
     if (gen !== generation) return;
-    merge({ ...status, ...prefs });
+    merge({ ...status, ...prefs, channelLoaded: true });
     await check(false);
   }
 
@@ -105,12 +109,22 @@ export function createUpdateController(invoke, deps = {}) {
    * the click (a waiting dev build appears, or "Up to date" is confirmed).
    */
   async function setUpdateChannel(channel) {
-    const reply = await saveUpdateChannel(invoke, channel);
+    // One save at a time: a second click while the first is on disk would race the
+    // file lock and could persist the earlier choice last.
+    if (state.channelSaving) return;
+    merge({ channelSaving: true });
+    let reply;
+    try {
+      reply = await saveUpdateChannel(invoke, channel);
+    } catch (_) {
+      reply = { status: "not_saved" };
+    }
     if (reply.status !== "saved" && reply.status !== "reconciled") {
-      merge({ state: "error", diagnosticCode: "preference_not_saved", manual: true });
+      merge({ channelSaving: false, state: "error", diagnosticCode: "preference_not_saved", manual: true });
       return;
     }
     merge({
+      channelSaving: false,
       autoUpdateEnabled: reply.autoUpdateEnabled,
       autoUpdatePrompted: reply.autoUpdatePrompted,
       updateChannel: reply.updateChannel ?? "stable",

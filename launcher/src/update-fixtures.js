@@ -31,6 +31,8 @@ const snap = (extra = {}) =>
       autoUpdateEnabled: false,
       autoUpdatePrompted: true,
       updateChannel: "stable",
+      channelLoaded: true,
+      channelSaving: false,
       manual: false,
     },
     extra,

@@ -71,6 +71,8 @@ test("a demo fixture and a live backend snapshot of the same state project ident
       autoUpdateEnabled: fixture.autoUpdateEnabled,
       autoUpdatePrompted: fixture.autoUpdatePrompted,
       updateChannel: fixture.updateChannel,
+      channelLoaded: fixture.channelLoaded,
+      channelSaving: fixture.channelSaving,
       manual: fixture.manual,
     };
     if (fixture.availableVersion) live.availableVersion = fixture.availableVersion;

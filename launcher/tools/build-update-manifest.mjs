@@ -2,36 +2,14 @@
 import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 
+import { compareVersions, isValidVersion } from "./semver-compare.mjs";
+
 const [output, version, minimumVersion, notes, releaseNotesUrl, macArtifact, macSignatureFile, winArtifact, winSignatureFile, policySignatureFile] = process.argv.slice(2);
 if (![output, version, minimumVersion, notes, releaseNotesUrl, macArtifact, macSignatureFile, winArtifact, winSignatureFile, policySignatureFile].every(Boolean)) {
   throw new Error("missing update manifest argument");
 }
-const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
-if (!semver.test(version) || !semver.test(minimumVersion)) throw new Error("invalid release version");
-// semver §11.4: numeric pre-release identifiers compare as numbers (dev.10 > dev.9).
-const comparePre = (a, b) => {
-  const l = a.split("."), r = b.split(".");
-  for (let i = 0; i < Math.min(l.length, r.length); i++) {
-    if (l[i] === r[i]) continue;
-    const ln = /^\d+$/.test(l[i]), rn = /^\d+$/.test(r[i]);
-    if (ln && rn) return Number(l[i]) - Number(r[i]);
-    if (ln !== rn) return ln ? -1 : 1;
-    return l[i] < r[i] ? -1 : 1;
-  }
-  return l.length - r.length;
-};
-const compare = (left, right) => {
-  const [lCore, lPre] = left.split(/-(.*)/s, 2);
-  const [rCore, rPre] = right.split(/-(.*)/s, 2);
-  const l = lCore.split(".").map(Number);
-  const r = rCore.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if (l[i] !== r[i]) return l[i] - r[i];
-  if (lPre == null && rPre != null) return 1;
-  if (lPre != null && rPre == null) return -1;
-  if (lPre == null && rPre == null) return 0;
-  return comparePre(lPre, rPre);
-};
-if (compare(minimumVersion, version) > 0) throw new Error("minimum supported version exceeds release version");
+if (!isValidVersion(version) || !isValidVersion(minimumVersion)) throw new Error("invalid release version");
+if (compareVersions(minimumVersion, version) > 0) throw new Error("minimum supported version exceeds release version");
 
 const artifact = async (file, signatureFile, key) => {
   const bytes = await readFile(file);

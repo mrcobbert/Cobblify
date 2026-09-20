@@ -744,8 +744,11 @@ function syncUpdateUi() {
     ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
     : 0;
   updateProgressFill.style.width = `${percent}%`;
+  // Belongs to the updater, not the launch targets: visible as soon as the preference is
+  // known, even on a machine with nothing installed yet.
+  devChannelWrap.hidden = !snapshot.channelLoaded;
   devChannelInput.checked = snapshot.updateChannel === "dev";
-  devChannelInput.disabled = snapshot.state === "checking";
+  devChannelInput.disabled = snapshot.channelSaving || snapshot.state === "checking";
   updateBlocksLaunch = view.blocksLaunch;
   syncLaunchUi();
 }
@@ -763,7 +766,7 @@ for (const button of [updatePrimary, updateSecondary]) {
 
 function applyPreviewUpdate(key) {
   previewUpdateKey = PREVIEW_UPDATE[key] ? key : "consent";
-  updateController.acceptStatus(resolvePreviewUpdate(previewUpdateKey));
+  updateController.acceptStatus({ ...resolvePreviewUpdate(previewUpdateKey), channelLoaded: true });
 }
 
 function syncLaunchUi() {
@@ -797,8 +800,6 @@ function syncLaunchUi() {
   overlayWrap.hidden = !st.showAutoJoinSwitch;
   overlayInput.checked = st.optimisticOverlay;
   overlayInput.disabled = autoJoinInput.disabled;
-  // The dev-channel box sits with the launch preferences but belongs to the updater.
-  devChannelWrap.hidden = !st.showAutoJoinSwitch;
   repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
   cancelLaunch.hidden = !showsCancelLaunch({
     activeOutcome: st.activeOutcome,
@@ -1897,7 +1898,6 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
-    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     repairPref.hidden = false;
     prefError.textContent = "Preference file is invalid.";
@@ -1910,7 +1910,6 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = false;
     overlayWrap.hidden = false;
-    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
   } else if (kind === "overlayOff") {
@@ -1918,7 +1917,6 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
-    devChannelWrap.hidden = false;
     overlayInput.checked = false;
     params.set("state", "lunarReady");
   } else if (kind === "bothReady") {
@@ -1926,7 +1924,6 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
-    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     params.set("state", "bothReady");
   } else if (
@@ -1944,7 +1941,6 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
-    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     applyPreviewUpdate(kind);
     params.set("state", "lunarReady");

@@ -105,6 +105,38 @@ test("the dev-channel box saves the channel, then checks right away", async () =
   assert.equal(h.controller.getState().updateChannel, "stable");
 });
 
+test("the channel box is hidden until preferences load, then shown regardless of launch targets", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "dev", health: "valid" } });
+  assert.equal(h.controller.getState().channelLoaded, false);
+  await h.controller.bootstrap();
+  assert.equal(h.controller.getState().channelLoaded, true);
+  assert.equal(h.controller.getState().updateChannel, "dev");
+});
+
+test("a second click while a channel save is in flight is dropped, so disk ends on the last accepted choice", async () => {
+  const calls = [];
+  let release;
+  const invoke = async (command, args) => {
+    calls.push({ command, args });
+    if (command === "set_update_channel") {
+      await new Promise((resolve) => { release = resolve; });
+      return { status: "saved", autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: args.channel };
+    }
+    if (command === "update_preferences") return { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" };
+    return { state: "current", currentVersion: "0.9.1" };
+  };
+  const controller = createUpdateController(invoke, { schedule: () => 1, cancelSchedule: () => {}, random: () => 0.5 });
+  await controller.bootstrap();
+  const first = controller.setUpdateChannel("dev");
+  assert.equal(controller.getState().channelSaving, true);
+  await controller.setUpdateChannel("stable"); // dropped: nothing sent while saving
+  assert.equal(calls.filter((c) => c.command === "set_update_channel").length, 1);
+  release();
+  await first;
+  assert.equal(controller.getState().channelSaving, false);
+  assert.equal(controller.getState().updateChannel, "dev");
+});
+
 test("a channel the backend could not save surfaces as a preference error and keeps the old channel", async () => {
   const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" } });
   await h.controller.bootstrap();
@@ -119,5 +151,6 @@ test("a channel the backend could not save surfaces as a preference error and ke
   assert.equal(controller.getState().state, "error");
   assert.equal(controller.getState().diagnosticCode, "preference_not_saved");
   assert.equal(controller.getState().updateChannel, "stable");
+  assert.equal(controller.getState().channelSaving, false);
   assert.deepEqual(calls, ["set_update_channel"]);
 });

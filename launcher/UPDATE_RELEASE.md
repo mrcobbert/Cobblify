@@ -78,9 +78,13 @@ cutting a dev build (the normal release convention); a dev build cut from pins
 equal to current stable is never offered. Once the plain version is promoted,
 opted-in launchers move onto it like everyone else.
 
+The dev channel only moves forward: the job refuses a build whose version is
+not newer than the one `channels/dev.json` already names (bump the branch's
+pins if you need to test an older line). It keeps the build it just published
+plus the newest other dev prefix; promotion's retention ignores dev prefixes.
+
 Dev builds are never promoted: `Promote Launcher Update` refuses any version
-containing `-`. Release the plain version with a fresh candidate. The dev job
-keeps the newest two dev release prefixes; promotion's retention ignores them.
+containing `-`. Release the plain version with a fresh candidate.
 
 ## Privacy and diagnostics
 

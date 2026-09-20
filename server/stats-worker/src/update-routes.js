@@ -28,7 +28,14 @@ function json(body, status = 200) {
 function parseVersion(value) {
   const match = VERSION_RE.exec(value || "");
   if (!match) return null;
-  return { numbers: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: match[4] || null };
+  return { numbers: [match[1], match[2], match[3]], prerelease: match[4] || null };
+}
+
+// Numeric identifiers compare by length then digit-wise (no leading zeros in semver), which
+// stays exact for identifiers beyond Number's safe range.
+function compareNumeric(a, b) {
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
+  return a === b ? 0 : a < b ? -1 : 1;
 }
 
 // semver.org §11.4: dot-separated identifiers, numeric ones compare as numbers and rank below
@@ -44,7 +51,11 @@ function comparePrerelease(a, b) {
     if (l === r) continue;
     const ln = /^\d+$/.test(l);
     const rn = /^\d+$/.test(r);
-    if (ln && rn) return Number(l) < Number(r) ? -1 : 1;
+    if (ln && rn) {
+      const c = compareNumeric(l, r);
+      if (c !== 0) return c;
+      continue;
+    }
     if (ln !== rn) return ln ? -1 : 1;
     return l < r ? -1 : 1;
   }
@@ -57,7 +68,8 @@ export function compareVersions(a, b) {
   const right = parseVersion(b);
   if (!left || !right) return null;
   for (let i = 0; i < 3; i++) {
-    if (left.numbers[i] !== right.numbers[i]) return left.numbers[i] < right.numbers[i] ? -1 : 1;
+    const c = compareNumeric(left.numbers[i], right.numbers[i]);
+    if (c !== 0) return c;
   }
   if (left.prerelease === right.prerelease) return 0;
   if (left.prerelease == null) return 1;
