@@ -129,6 +129,10 @@ export function createUpdateController(invoke, deps = {}) {
       autoUpdatePrompted: reply.autoUpdatePrompted,
       updateChannel: reply.updateChannel ?? "stable",
     });
+    // A check already in flight (the six-hour timer, say) asked for the old channel.
+    // Retire it so its answer is discarded and nothing downloads from it, then ask again.
+    generation += 1;
+    busy = false;
     await check(true);
   }
 

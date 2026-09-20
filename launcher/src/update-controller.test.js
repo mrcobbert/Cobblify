@@ -154,3 +154,59 @@ test("a channel the backend could not save surfaces as a preference error and ke
   assert.equal(controller.getState().channelSaving, false);
   assert.deepEqual(calls, ["set_update_channel"]);
 });
+
+test("a check in flight when the channel changes is discarded and never starts a download", async () => {
+  const calls = [];
+  const pending = {};
+  const invoke = (command, args) => {
+    calls.push({ command, args });
+    if (command === "update_preferences") {
+      return Promise.resolve({ autoUpdateEnabled: true, autoUpdatePrompted: true, updateChannel: "dev", health: "valid" });
+    }
+    if (command === "update_status") return Promise.resolve({ state: "current", currentVersion: "0.10.0" });
+    if (command === "check_for_update") {
+      return new Promise((resolve) => { (pending.checks ??= []).push(resolve); });
+    }
+    if (command === "set_update_channel") {
+      return new Promise((resolve) => { pending.save = resolve; });
+    }
+    if (command === "start_update") {
+      return Promise.resolve({ state: "downloading", availableVersion: args?.v ?? "0.11.0-dev.41", downloadedBytes: 0, sizeBytes: 10 });
+    }
+    return Promise.resolve(undefined);
+  };
+  const timers = [];
+  const controller = createUpdateController(invoke, {
+    schedule: (fn) => (timers.push(fn), timers.length),
+    cancelSchedule: () => {},
+    random: () => 0.5,
+  });
+  const boot = controller.bootstrap();
+  await Promise.resolve(); await Promise.resolve();
+  pending.checks.shift()({ state: "current", currentVersion: "0.10.0" }); // bootstrap's check
+  await boot;
+
+  // User unticks the box; while the save is on disk the six-hour timer fires a check
+  // that still asks the dev channel.
+  const save = controller.setUpdateChannel("stable");
+  await Promise.resolve();
+  const timerCheck = timers.at(-1)();
+  await Promise.resolve();
+  assert.equal(pending.checks.length, 1, "the scheduled check is in flight");
+
+  pending.save({ status: "saved", autoUpdateEnabled: true, autoUpdatePrompted: true, updateChannel: "stable" });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(pending.checks.length, 2, "the channel change asked again immediately");
+
+  // The stale dev answer arrives now: it must be ignored, not downloaded.
+  pending.checks[0]({ state: "available", availableVersion: "0.11.0-dev.41", currentVersion: "0.10.0" });
+  await timerCheck;
+  assert.equal(calls.some((c) => c.command === "start_update"), false);
+  assert.notEqual(controller.getState().state, "downloading");
+
+  pending.checks[1]({ state: "current", currentVersion: "0.10.0" });
+  await save;
+  assert.equal(controller.getState().updateChannel, "stable");
+  assert.equal(controller.getState().state, "current");
+  assert.equal(calls.filter((c) => c.command === "check_for_update").length, 3);
+});

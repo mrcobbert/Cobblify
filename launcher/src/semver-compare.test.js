@@ -26,4 +26,9 @@ test("malformed versions are rejected rather than ordered", () => {
   assert.equal(compareVersions("0.14.0+build", "0.14.0"), null);
   assert.equal(isValidVersion("0.14.1-dev.41"), true);
   assert.equal(isValidVersion("v0.14.1"), false);
+  assert.equal(isValidVersion("0.14.1-dev..41"), false);
+  assert.equal(isValidVersion("0.14.1-dev.041"), false);
+  assert.equal(isValidVersion("0.14.1-"), false);
+  assert.equal(isValidVersion("0.14.1-dev.0"), true);
+  assert.equal(isValidVersion("0.14.1-0a"), true);
 });

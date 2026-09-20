@@ -11,7 +11,9 @@ const PLATFORM_RE = /^(darwin|windows)$/;
 // Tauri reports the running CPU architecture even when the macOS artifact is
 // universal, so stable manifests publish both darwin aliases to one R2 key.
 const ARCH_RE = /^(universal|x86_64|aarch64)$/;
-const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/;
+// SemVer 2.0.0 §9: every pre-release identifier is non-empty and a numeric one has no
+// leading zeros, so nothing a comparator would misorder can reach the channel choice.
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
 const EVENT_RE = /^(check_ok|check_failed|download_started|download_paused|download_verified|install_started|post_update_started)$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 

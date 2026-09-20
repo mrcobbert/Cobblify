@@ -146,7 +146,20 @@ test("pre-release identifiers compare per semver, not as strings", () => {
   assert.equal(compareVersions("1.0.0-dev.9007199254740992", "1.0.0-dev.9007199254740993"), -1);
   assert.equal(compareVersions("1.0.0-dev.9007199254740993", "1.0.0-dev.9007199254740993"), 0);
   assert.equal(compareVersions("99999999999999999999.0.0", "9999999999999999999.0.0"), 1);
-  assert.equal(compareVersions("0.11.0-dev.010", "0.11.0-dev.9"), 1);
+  // §9: empty identifiers and numeric identifiers with leading zeros are not versions at all.
+  assert.equal(compareVersions("0.11.0-dev.010", "0.11.0-dev.9"), null);
+  assert.equal(compareVersions("0.11.0-dev..41", "0.11.0"), null);
+  assert.equal(compareVersions("0.11.0-", "0.11.0"), null);
+  assert.equal(compareVersions("0.11.0-dev.0", "0.11.0-dev.1"), -1);
+  assert.equal(compareVersions("0.11.0-0a.1", "0.11.0"), -1);
+});
+
+test("a malformed dev manifest never displaces stable", async () => {
+  for (const version of ["0.11.0-dev..41", "0.11.0-dev.041", "0.11.0-", "0.11.0-dev.41+build"]) {
+    const e = envWithDev(JSON.stringify({ ...devManifest, version }));
+    assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.10.0?channel=dev"), null, version);
+    assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.9.1?channel=dev"), "0.10.0", version);
+  }
 });
 
 test("metadata is fail closed without an authenticated identity or owner bindings", async () => {

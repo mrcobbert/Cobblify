@@ -6,7 +6,7 @@
  *
  * CLI: `node semver-compare.mjs A B` prints -1, 0 or 1 and exits 0; exits 2 on a bad version.
  */
-const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/;
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
 
 function parse(value) {
   const match = VERSION_RE.exec(value || "");
