@@ -5,6 +5,7 @@ import {
   pauseUpdate,
   resumeUpdate,
   setAutoUpdate as saveAutoUpdate,
+  setUpdateChannel as saveUpdateChannel,
   startUpdate,
   updatePreferences,
   updateStatus,
@@ -31,6 +32,7 @@ export function createUpdateController(invoke, deps = {}) {
     currentVersion: "",
     autoUpdateEnabled: false,
     autoUpdatePrompted: false,
+    updateChannel: "stable",
   };
 
   const notify = () => onChange({ ...state });
@@ -89,11 +91,31 @@ export function createUpdateController(invoke, deps = {}) {
     merge({
       autoUpdateEnabled: reply.autoUpdateEnabled,
       autoUpdatePrompted: reply.autoUpdatePrompted,
+      ...(reply.updateChannel ? { updateChannel: reply.updateChannel } : {}),
     });
     if (!gameActive && enabled && (state.state === "available" || state.state === "critical_required")) {
       const next = await startUpdate(invoke);
       if (next) merge(next);
     }
+  }
+
+  /**
+   * The "Test dev builds" checkbox. Saving the channel is enough for the next
+   * scheduled check; a fresh check right away is what makes the row answer
+   * the click (a waiting dev build appears, or "Up to date" is confirmed).
+   */
+  async function setUpdateChannel(channel) {
+    const reply = await saveUpdateChannel(invoke, channel);
+    if (reply.status !== "saved" && reply.status !== "reconciled") {
+      merge({ state: "error", diagnosticCode: "preference_not_saved", manual: true });
+      return;
+    }
+    merge({
+      autoUpdateEnabled: reply.autoUpdateEnabled,
+      autoUpdatePrompted: reply.autoUpdatePrompted,
+      updateChannel: reply.updateChannel ?? "stable",
+    });
+    await check(true);
   }
 
   async function action(name) {
@@ -137,6 +159,7 @@ export function createUpdateController(invoke, deps = {}) {
     bootstrap,
     check,
     setAutoUpdate,
+    setUpdateChannel,
     action,
     acceptStatus,
     setGameActive,

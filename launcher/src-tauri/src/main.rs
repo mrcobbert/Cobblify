@@ -978,6 +978,20 @@ async fn set_auto_update(enabled: bool) -> Result<UpdatePreferenceSaveReply, Str
         .map_err(|e| format!("{e:?}"))
 }
 
+#[tauri::command]
+async fn set_update_channel(channel: String) -> Result<UpdatePreferenceSaveReply, String> {
+    let home = home()?;
+    let channel = match channel.as_str() {
+        "stable" => preferences::UpdateChannel::Stable,
+        "dev" => preferences::UpdateChannel::Dev,
+        other => return Err(format!("unknown update channel: {other}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || preferences::set_update_channel(&home, channel))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:?}"))
+}
+
 async fn set_preference(
     key: lifecycle::PrefKey,
     enabled: bool,
@@ -2780,6 +2794,7 @@ fn main() {
             set_auto_join_hypixel,
             set_use_external_overlay,
             set_auto_update,
+            set_update_channel,
             updater::update_status,
             updater::check_for_update,
             updater::start_update,

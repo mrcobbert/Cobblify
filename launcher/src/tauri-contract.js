@@ -23,6 +23,7 @@ export const CMD = {
   openSetupLocation: "open_setup_location",
   updatePreferences: "update_preferences",
   setAutoUpdate: "set_auto_update",
+  setUpdateChannel: "set_update_channel",
   updateStatus: "update_status",
   checkForUpdate: "check_for_update",
   startUpdate: "start_update",
@@ -50,6 +51,11 @@ export function updatePreferences(invoke) {
 
 export function setAutoUpdate(invoke, enabled) {
   return invoke(CMD.setAutoUpdate, { enabled });
+}
+
+/** @param {"stable"|"dev"} channel */
+export function setUpdateChannel(invoke, channel) {
+  return invoke(CMD.setUpdateChannel, { channel });
 }
 
 export function updateStatus(invoke) {

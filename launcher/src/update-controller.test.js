@@ -15,6 +15,10 @@ function harness({ status, prefs } = {}) {
     if (command === "set_auto_update") {
       return { status: "saved", autoUpdateEnabled: args.enabled, autoUpdatePrompted: true };
     }
+    if (command === "set_update_channel") {
+      // Native answers with the whole update-preference view, channel included.
+      return { status: "saved", autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: args.channel };
+    }
     return replies[command];
   };
   const timers = [];
@@ -82,4 +86,38 @@ test("auto-update can be enabled and disabled after the first-run choice", async
     h.calls.filter((call) => call.command === "set_auto_update").map((call) => call.args),
     [{ enabled: true }, { enabled: false }],
   );
+});
+
+test("the dev-channel box saves the channel, then checks right away", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" } });
+  await h.controller.bootstrap();
+  assert.equal(h.controller.getState().updateChannel, "stable");
+  const before = h.calls.length;
+
+  await h.controller.setUpdateChannel("dev");
+  assert.equal(h.controller.getState().updateChannel, "dev");
+  assert.deepEqual(
+    h.calls.slice(before).map((call) => [call.command, call.args]),
+    [["set_update_channel", { channel: "dev" }], ["check_for_update", { manual: true }]],
+  );
+
+  await h.controller.setUpdateChannel("stable");
+  assert.equal(h.controller.getState().updateChannel, "stable");
+});
+
+test("a channel the backend could not save surfaces as a preference error and keeps the old channel", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" } });
+  await h.controller.bootstrap();
+  const calls = [];
+  const invoke = async (command, args) => {
+    calls.push(command);
+    if (command === "set_update_channel") return { status: "not_saved", diagnostic: "disk full" };
+    return { state: "current", currentVersion: "0.9.1" };
+  };
+  const controller = createUpdateController(invoke, { schedule: () => 1, cancelSchedule: () => {}, random: () => 0.5 });
+  await controller.setUpdateChannel("dev");
+  assert.equal(controller.getState().state, "error");
+  assert.equal(controller.getState().diagnosticCode, "preference_not_saved");
+  assert.equal(controller.getState().updateChannel, "stable");
+  assert.deepEqual(calls, ["set_update_channel"]);
 });

@@ -66,6 +66,8 @@ const autoJoinWrap = el("auto-join-wrap");
 const autoJoinInput = el("auto-join");
 const overlayWrap = el("overlay-wrap");
 const overlayInput = el("use-overlay");
+const devChannelWrap = el("dev-channel-wrap");
+const devChannelInput = el("dev-channel");
 const prefError = el("pref-error");
 const repairPref = el("repair-pref");
 const cancelLaunch = el("cancel-launch");
@@ -361,7 +363,20 @@ function previewInvoke(command, args) {
     return Promise.resolve({
       autoUpdateEnabled: snap.autoUpdateEnabled,
       autoUpdatePrompted: snap.autoUpdatePrompted,
+      updateChannel: snap.updateChannel,
       health: "valid",
+    });
+  }
+
+  if (command === "set_update_channel") {
+    // Ticking the box in the browser preview shows a waiting dev build; unticking returns to stable.
+    previewUpdateKey = args?.channel === "dev" ? "availableDev" : "current";
+    const snap = resolvePreviewUpdate(previewUpdateKey);
+    return Promise.resolve({
+      status: "saved",
+      autoUpdateEnabled: snap.autoUpdateEnabled,
+      autoUpdatePrompted: snap.autoUpdatePrompted,
+      updateChannel: snap.updateChannel,
     });
   }
 
@@ -374,6 +389,7 @@ function previewInvoke(command, args) {
       status: "saved",
       autoUpdateEnabled: args?.enabled ?? false,
       autoUpdatePrompted: true,
+      updateChannel: resolvePreviewUpdate(previewUpdateKey).updateChannel,
     });
   }
 
@@ -728,9 +744,15 @@ function syncUpdateUi() {
     ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
     : 0;
   updateProgressFill.style.width = `${percent}%`;
+  devChannelInput.checked = snapshot.updateChannel === "dev";
+  devChannelInput.disabled = snapshot.state === "checking";
   updateBlocksLaunch = view.blocksLaunch;
   syncLaunchUi();
 }
+
+devChannelInput.addEventListener("change", () => {
+  updateController.setUpdateChannel(devChannelInput.checked ? "dev" : "stable");
+});
 
 for (const button of [updatePrimary, updateSecondary]) {
   button.addEventListener("click", () => {
@@ -775,6 +797,8 @@ function syncLaunchUi() {
   overlayWrap.hidden = !st.showAutoJoinSwitch;
   overlayInput.checked = st.optimisticOverlay;
   overlayInput.disabled = autoJoinInput.disabled;
+  // The dev-channel box sits with the launch preferences but belongs to the updater.
+  devChannelWrap.hidden = !st.showAutoJoinSwitch;
   repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
   cancelLaunch.hidden = !showsCancelLaunch({
     activeOutcome: st.activeOutcome,
@@ -1873,6 +1897,7 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
+    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     repairPref.hidden = false;
     prefError.textContent = "Preference file is invalid.";
@@ -1885,6 +1910,7 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = false;
     overlayWrap.hidden = false;
+    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
   } else if (kind === "overlayOff") {
@@ -1892,6 +1918,7 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
+    devChannelWrap.hidden = false;
     overlayInput.checked = false;
     params.set("state", "lunarReady");
   } else if (kind === "bothReady") {
@@ -1899,6 +1926,7 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
+    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     params.set("state", "bothReady");
   } else if (
@@ -1916,6 +1944,7 @@ function showPreview(kind) {
     autoJoinWrap.hidden = false;
     autoJoinInput.checked = true;
     overlayWrap.hidden = false;
+    devChannelWrap.hidden = false;
     overlayInput.checked = true;
     applyPreviewUpdate(kind);
     params.set("state", "lunarReady");

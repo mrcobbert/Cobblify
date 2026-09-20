@@ -1,4 +1,4 @@
-//! Backend-owned auto-join preference at `~/.cobblify/launcher-preferences.json`.
+//! Backend-owned launcher preferences at `~/.cobblify/launcher-preferences.json`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -29,11 +29,45 @@ pub struct LaunchPreferencesView {
     pub diagnostic: Option<String>,
 }
 
+/// Which release channel the updater asks for. `Dev` is the opt-in "Test dev builds"
+/// checkbox; the Worker then answers with the newer of stable and dev. Anything the
+/// preference file holds that is not exactly `"dev"` reads as `Stable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    Stable,
+    Dev,
+}
+
+impl UpdateChannel {
+    pub fn parse(value: &str) -> Self {
+        if value == "dev" {
+            UpdateChannel::Dev
+        } else {
+            UpdateChannel::Stable
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "stable",
+            UpdateChannel::Dev => "dev",
+        }
+    }
+}
+
+impl Default for UpdateChannel {
+    fn default() -> Self {
+        UpdateChannel::Stable
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePreferencesView {
     pub auto_update_enabled: bool,
     pub auto_update_prompted: bool,
+    pub update_channel: UpdateChannel,
     pub health: PreferenceHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
@@ -66,12 +100,16 @@ pub enum UpdatePreferenceSaveReply {
         auto_update_enabled: bool,
         #[serde(rename = "autoUpdatePrompted")]
         auto_update_prompted: bool,
+        #[serde(rename = "updateChannel")]
+        update_channel: UpdateChannel,
     },
     Reconciled {
         #[serde(rename = "autoUpdateEnabled")]
         auto_update_enabled: bool,
         #[serde(rename = "autoUpdatePrompted")]
         auto_update_prompted: bool,
+        #[serde(rename = "updateChannel")]
+        update_channel: UpdateChannel,
     },
     NotSaved { diagnostic: String },
     Indeterminate,
@@ -90,6 +128,15 @@ struct PreferenceDoc {
     auto_update_enabled: bool,
     #[serde(default)]
     auto_update_prompted: bool,
+    /// Stored as the channel name so a hand-edited or future value never invalidates the file.
+    #[serde(default)]
+    update_channel: String,
+}
+
+impl PreferenceDoc {
+    fn channel(&self) -> UpdateChannel {
+        UpdateChannel::parse(&self.update_channel)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,18 +232,21 @@ impl LockedPrefs {
             Ok(doc) => UpdatePreferencesView {
                 auto_update_enabled: doc.auto_update_enabled,
                 auto_update_prompted: doc.auto_update_prompted,
+                update_channel: doc.channel(),
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
             Err(ReadOutcome::Missing) => UpdatePreferencesView {
                 auto_update_enabled: false,
                 auto_update_prompted: false,
+                update_channel: UpdateChannel::Stable,
                 health: PreferenceHealth::Missing,
                 diagnostic: None,
             },
             Err(ReadOutcome::Invalid(msg)) => UpdatePreferencesView {
                 auto_update_enabled: false,
                 auto_update_prompted: false,
+                update_channel: UpdateChannel::Stable,
                 health: PreferenceHealth::Invalid,
                 diagnostic: Some(msg),
             },
@@ -241,16 +291,29 @@ impl LockedPrefs {
         let mut doc = read_fields_lenient(&path);
         doc.auto_update_enabled = enabled;
         doc.auto_update_prompted = true;
-        match write_doc(&path, &doc) {
+        Self::update_reply(write_doc(&path, &doc), &doc)
+    }
+
+    fn write_update_channel(&self, channel: UpdateChannel) -> UpdatePreferenceSaveReply {
+        let path = pref_path(&self.home);
+        let mut doc = read_fields_lenient(&path);
+        doc.update_channel = channel.as_str().to_string();
+        Self::update_reply(write_doc(&path, &doc), &doc)
+    }
+
+    fn update_reply(outcome: Result<(), SaveOutcome>, doc: &PreferenceDoc) -> UpdatePreferenceSaveReply {
+        match outcome {
             Ok(()) => UpdatePreferenceSaveReply::Saved {
                 auto_update_enabled: doc.auto_update_enabled,
                 auto_update_prompted: doc.auto_update_prompted,
+                update_channel: doc.channel(),
             },
             Err(SaveOutcome::NotSaved(msg)) => UpdatePreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => UpdatePreferenceSaveReply::Indeterminate,
             Err(SaveOutcome::Reconciled(current)) => UpdatePreferenceSaveReply::Reconciled {
                 auto_update_enabled: current.auto_update_enabled,
                 auto_update_prompted: current.auto_update_prompted,
+                update_channel: current.channel(),
             },
         }
     }
@@ -270,6 +333,7 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
         use_external_overlay: true,
         auto_update_enabled: false,
         auto_update_prompted: false,
+        update_channel: String::new(),
     };
     let Ok(mut file) = File::open(path) else {
         return defaults();
@@ -287,6 +351,11 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
         use_external_overlay: field("use_external_overlay", true),
         auto_update_enabled: field("auto_update_enabled", false),
         auto_update_prompted: field("auto_update_prompted", false),
+        update_channel: map
+            .get("update_channel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
@@ -380,6 +449,23 @@ pub fn set_auto_update(
 ) -> Result<UpdatePreferenceSaveReply, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
     Ok(locked.write_auto_update(enabled))
+}
+
+pub fn set_update_channel(
+    home: &Path,
+    channel: UpdateChannel,
+) -> Result<UpdatePreferenceSaveReply, PreferenceReadError> {
+    let locked = LockedPrefs::acquire(home)?;
+    Ok(locked.write_update_channel(channel))
+}
+
+/// The channel the updater should ask for. Any problem reading preferences means stable:
+/// a broken file must never make a launcher fetch dev builds.
+pub fn update_channel(home: &Path) -> UpdateChannel {
+    match update_preferences(home) {
+        Ok(view) if view.health == PreferenceHealth::Valid => view.update_channel,
+        _ => UpdateChannel::Stable,
+    }
 }
 
 #[cfg(test)]
@@ -483,11 +569,80 @@ mod tests {
             UpdatePreferenceSaveReply::Saved {
                 auto_update_enabled: true,
                 auto_update_prompted: true,
+                ..
             }
         ));
         let launch = launch_preferences(&home).unwrap();
         assert!(!launch.auto_join_hypixel);
         assert!(!launch.use_external_overlay);
+    }
+
+    #[test]
+    fn update_channel_defaults_to_stable_and_round_trips() {
+        let home = temp_home();
+        assert_eq!(update_channel(&home), UpdateChannel::Stable);
+        assert_eq!(update_preferences(&home).unwrap().update_channel, UpdateChannel::Stable);
+
+        let reply = set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        assert!(matches!(
+            reply,
+            UpdatePreferenceSaveReply::Saved {
+                update_channel: UpdateChannel::Dev,
+                ..
+            }
+        ));
+        assert_eq!(update_channel(&home), UpdateChannel::Dev);
+        assert_eq!(update_preferences(&home).unwrap().update_channel, UpdateChannel::Dev);
+
+        set_update_channel(&home, UpdateChannel::Stable).unwrap();
+        assert_eq!(update_channel(&home), UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn update_channel_leaves_every_other_preference_alone() {
+        let home = temp_home();
+        set_auto_join_hypixel(&home, false).unwrap();
+        set_use_external_overlay(&home, false).unwrap();
+        set_auto_update(&home, true).unwrap();
+        set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        let launch = launch_preferences(&home).unwrap();
+        assert!(!launch.auto_join_hypixel);
+        assert!(!launch.use_external_overlay);
+        let update = update_preferences(&home).unwrap();
+        assert!(update.auto_update_enabled);
+        assert!(update.auto_update_prompted);
+        assert_eq!(update.update_channel, UpdateChannel::Dev);
+        // And the reverse: an auto-update change keeps the channel.
+        set_auto_update(&home, false).unwrap();
+        assert_eq!(update_channel(&home), UpdateChannel::Dev);
+    }
+
+    #[test]
+    fn unknown_or_broken_channel_values_read_as_stable() {
+        let home = temp_home();
+        let dir = ensure_cobblify_dir(&home).unwrap();
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":true,"update_channel":"nightly"}"#,
+        )
+        .unwrap();
+        let view = update_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert_eq!(view.update_channel, UpdateChannel::Stable);
+        assert_eq!(update_channel(&home), UpdateChannel::Stable);
+
+        // A file that does not parse never yields dev, even if the text says so.
+        fs::write(dir.join(PREF_FILE), r#"{"update_channel":"dev""#).unwrap();
+        assert_eq!(update_channel(&home), UpdateChannel::Stable);
+
+        // Salvage on save keeps a stored dev channel when another field is junk.
+        fs::write(
+            dir.join(PREF_FILE),
+            r#"{"auto_join_hypixel":"yes","update_channel":"dev"}"#,
+        )
+        .unwrap();
+        set_auto_update(&home, true).unwrap();
+        assert_eq!(update_channel(&home), UpdateChannel::Dev);
     }
 
     #[test]
