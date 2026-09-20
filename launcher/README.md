@@ -269,6 +269,12 @@ official `lunarclient://play?serverAddress=play.hypixel.net` deep link and Prism
 argument). The UI does not narrate Hypixel connectivity until a verified live lobby
 snapshot proves it.
 
+**Test dev builds (update channel).** A third checkbox in the same row switches the
+updater to the opt-in dev channel (`update_channel` in the same preference file). Ticked,
+the launcher is offered whichever of the stable and dev channels is newer and labels a
+`-dev.N` build as a dev build in the update strip; unticked, nothing about the update
+request changes. See `UPDATE_RELEASE.md`, "Dev channel", for how a build gets there.
+
 **Lobby writer identity and session binding.** Every `lobby.json` snapshot carries
 `jvmPid` and `jvmStartTimeMs` from the exporting JVM (operational metadata only — never
 argv). Each JVM writes through its own temp file (`lobby.<pid>.<start>.tmp`) before an
