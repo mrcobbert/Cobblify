@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { rowCells, rowChips, rowClasses, rowKind, rowModel, sectionSpans, tierOf } from "./row-model.js";
+import { colorClass, rowCells, rowChips, rowClasses, rowKind, rowModel, sectionSpans, tierOf } from "./row-model.js";
 
 // A9: the row is drawn from exported decisions only. Nothing here derives a tier,
 // a cheater flag or a badge from stats or tag names.
@@ -42,16 +42,61 @@ test("cheater class follows the exported flag, not the chips", () => {
   assert.deepEqual(rowClasses({ ...base, cheater: true, seraphThreat: 5 }), ["prow", "t0", "cheater"]);
 });
 
-test("chips render the exported label with safe for positive and cheat otherwise", () => {
+test("the priority badge leads as its glyph, then every tag label, each in its colour", () => {
   const p = {
     ...base,
     chips: [chip("BC", "§6", "Blatant Cheater"), chip("SL", "§a", "Safelisted", true)],
     badge: chip("BC", "§6", "Blatant Cheater"),
   };
   assert.deepEqual(rowChips(p), [
+    { cls: "badge cheat", text: "BC", color: "§6" },
     { cls: "cheat", text: "Blatant Cheater", color: "§6" },
     { cls: "safe", text: "Safelisted", color: "§a" },
   ]);
+  // A positive badge (safelist alone) is drawn as a safe glyph.
+  const safe = { ...base, chips: [chip("SL", "§a", "Safelisted", true)], badge: chip("SL", "§a", "Safelisted", true) };
+  assert.equal(rowChips(safe)[0].cls, "badge safe");
+  // The A7 fixture: Sniper + Caution + Safelisted → badge S in §4, three labels in their colours.
+  const golden = {
+    ...base,
+    fkdrTier: 2,
+    badge: chip("S", "§4", "Sniper"),
+    chips: [chip("S", "§4", "Sniper"), chip("C", "§6", "Caution"), chip("SL", "§a", "Safelisted", true)],
+  };
+  assert.deepEqual(rowChips(golden), [
+    { cls: "badge cheat", text: "S", color: "§4" },
+    { cls: "cheat", text: "Sniper", color: "§4" },
+    { cls: "cheat", text: "Caution", color: "§6" },
+    { cls: "safe", text: "Safelisted", color: "§a" },
+  ]);
+  // A null badge draws no glyph.
+  assert.deepEqual(rowChips({ ...base, badge: null, chips: [chip("C", "§6", "Caution")] }), [
+    { cls: "cheat", text: "Caution", color: "§6" },
+  ]);
+});
+
+test("exported colours become chip classes so unverified and verified blacklists differ", () => {
+  assert.equal(colorClass("§4"), "mc-4");
+  assert.equal(colorClass("§c"), "mc-c");
+  assert.equal(colorClass("§A"), "mc-a");
+  assert.equal(colorClass(""), "");
+  assert.equal(colorClass(undefined), "");
+  assert.equal(colorClass("§z"), "");
+  assert.notEqual(colorClass("§4"), colorClass("§c"));
+});
+
+test("the mode the numbers came from is shown when it is not Overall", () => {
+  assert.deepEqual(rowChips({ ...base, mode: "4s" }), [{ cls: "mode", text: "4s stats" }]);
+  assert.deepEqual(rowChips({ ...base, mode: "Overall" }), []);
+  assert.deepEqual(rowChips({ ...base, mode: "" }), []);
+  // Order: badge, labels, mode, threat.
+  const all = { ...base, mode: "Solo", seraphThreat: 2, badge: chip("BOT", "§e", "Bot"), chips: [chip("BOT", "§e", "Bot")] };
+  assert.deepEqual(
+    rowChips(all).map((c) => c.cls),
+    ["badge cheat", "cheat", "mode", "neutral"],
+  );
+  // Never on a row without numbers.
+  assert.deepEqual(rowChips({ ...base, state: "NICKED", nicked: true, mode: "4s" }), [{ cls: "nick", text: "Nicked" }]);
 });
 
 test("a known threat level is a neutral chip, never an alarm", () => {

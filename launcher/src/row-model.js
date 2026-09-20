@@ -6,6 +6,8 @@
 
 import { isActive, presenceBadge } from "./roster-identity.js";
 
+const COLOR_CODES = "0123456789abcdef";
+
 const n2 = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "—");
 const nInt = (v) =>
   typeof v === "number" && Number.isFinite(v) ? Math.round(v).toLocaleString() : "—";
@@ -35,7 +37,18 @@ export function tierOf(p) {
   return Number.isInteger(t) ? Math.min(3, Math.max(0, t)) : 0;
 }
 
-/** Chips in the order they are drawn: presence, then state, then identity and tags. */
+/** The stylesheet class for an exported § colour code ("§4" → "mc-4"); "" when none. */
+export function colorClass(color) {
+  const s = String(color ?? "");
+  const code = s.length >= 2 && s[0] === "§" ? s[1].toLowerCase() : "";
+  return code && COLOR_CODES.includes(code) ? `mc-${code}` : "";
+}
+
+/**
+ * Chips in the order they are drawn: presence, state, identity, then the mod's single
+ * priority badge (its glyph, in its colour), every tag's label (in its colour), the
+ * mode the numbers came from when it is not Overall, and the threat level.
+ */
 export function rowChips(p) {
   const chips = [];
   const out = presenceBadge(p);
@@ -46,8 +59,15 @@ export function rowChips(p) {
   if (kind === "nicked") chips.push({ cls: "nick", text: "Nicked" });
   if (p?.nicked && p.realName) chips.push({ cls: "nick", text: `nick→${p.realName}` });
   if (kind === "stats") {
+    const b = p?.badge;
+    if (b && typeof b === "object") {
+      chips.push({ cls: b.positive ? "badge safe" : "badge cheat", text: b.code, color: b.color });
+    }
     for (const c of p?.chips ?? []) {
       chips.push({ cls: c.positive ? "safe" : "cheat", text: c.label, color: c.color });
+    }
+    if (typeof p?.mode === "string" && p.mode && p.mode !== "Overall") {
+      chips.push({ cls: "mode", text: `${p.mode} stats` });
     }
     if (Number.isInteger(p?.seraphThreat) && p.seraphThreat >= 0) {
       chips.push({ cls: "neutral", text: `threat ${p.seraphThreat}` });
@@ -96,8 +116,6 @@ export function rowModel(p) {
 // ── Minecraft § colour codes → spans ─────────────────────────────────────────
 // The mod exports the rank with its own colour codes (e.g. "§b[MVP§c+§b]") so a
 // player's custom plus colour survives; this only maps each code to a class.
-
-const COLOR_CODES = "0123456789abcdef";
 
 /** Split a §-coded string into [{cls, text}] segments; format codes are dropped, §r resets. */
 export function sectionSpans(codes) {

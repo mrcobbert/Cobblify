@@ -31,6 +31,6 @@ for (const [file, text] of sources) {
 
 test("main.js draws rows only through the row model", () => {
   const [, main] = sources.find(([f]) => f === "main.js");
-  assert.match(main, /import \{ rowModel, sectionSpans \} from "\.\/row-model\.js"/);
+  assert.match(main, /import \{ colorClass, rowModel, sectionSpans \} from "\.\/row-model\.js"/);
   assert.match(main, /const m = rowModel\(p\);/);
 });

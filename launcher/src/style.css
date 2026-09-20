@@ -1126,6 +1126,40 @@ kbd {
   color: var(--ink-3);
   border: 1px dotted var(--line-2);
 }
+/* which mode the numbers came from, when not Overall (forced /bw mode or the live game) */
+.dash .chip.mode {
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+  text-transform: none;
+}
+/* the mod's single priority badge: its glyph in its own colour */
+.dash .chip.badge {
+  color: var(--chip, var(--ink-1));
+  border: 1px solid var(--chip, var(--line-2));
+  background: transparent;
+  letter-spacing: 0.12em;
+}
+/* every tag chip keeps the mod's exported § colour as a left accent */
+.dash .chip.cheat,
+.dash .chip.safe {
+  border-left: 3px solid var(--chip, transparent);
+}
+.dash .chip.mc-0 { --chip: #000000; }
+.dash .chip.mc-1 { --chip: #0000aa; }
+.dash .chip.mc-2 { --chip: #00aa00; }
+.dash .chip.mc-3 { --chip: #00aaaa; }
+.dash .chip.mc-4 { --chip: #aa0000; }
+.dash .chip.mc-5 { --chip: #aa00aa; }
+.dash .chip.mc-6 { --chip: #ffaa00; }
+.dash .chip.mc-7 { --chip: #aaaaaa; }
+.dash .chip.mc-8 { --chip: #555555; }
+.dash .chip.mc-9 { --chip: #5555ff; }
+.dash .chip.mc-a { --chip: #55ff55; }
+.dash .chip.mc-b { --chip: #55ffff; }
+.dash .chip.mc-c { --chip: #ff5555; }
+.dash .chip.mc-d { --chip: #ff55ff; }
+.dash .chip.mc-e { --chip: #ffff55; }
+.dash .chip.mc-f { --chip: #ffffff; }
 
 /* confirmed cheater row — inverted accent bar */
 .prow.cheater .sweat-bar {

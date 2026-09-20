@@ -35,7 +35,7 @@ import { createUpdateController } from "./update-controller.js";
 import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
-import { rowModel, sectionSpans } from "./row-model.js";
+import { colorClass, rowModel, sectionSpans } from "./row-model.js";
 import {
   abortLaunchSession,
   quitApp,
@@ -1178,7 +1178,12 @@ function teamClass(name) {
   return slug ? ` team-${slug}` : "";
 }
 
-const chipHtml = (c) => `<span class="chip ${c.cls}">${esc(c.text)}</span>`;
+// A chip carries the mod's colour as a class (see .dash .chip.mc-*); the
+// style decides how much of that colour the sheet shows.
+const chipHtml = (c) => {
+  const mc = colorClass(c.color);
+  return `<span class="chip ${c.cls}${mc ? ` ${mc}` : ""}">${esc(c.text)}</span>`;
+};
 const cellHtml = (c) =>
   c.skeleton
     ? `<div class="stat ${c.cls}"><span class="skel" style="width:${c.width}px"></span></div>`
