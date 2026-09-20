@@ -101,7 +101,7 @@ syncHomeLayout();
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
  *   ?update=consent|checking|available|critical|downloading|…  updater row
- *   ?ctx=lobby|joining|waiting|disconnected  lobby dashboard / joining / waiting
+ *   ?ctx=lobby|unsupported|joining|waiting|disconnected  lobby dashboard / joining / waiting
  *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
@@ -185,6 +185,7 @@ const PREVIEW_LOBBY = {
     yourParty: PREVIEW_PARTY,
     players: [P.shadow, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.aqua, P.bread, P.cool, P.nick, P.grandpa, P.lag],
   }),
+  unsupported: previewSnap("LOBBY", { seq: 1002, dashboardEligible: false }),
   queueSolo: previewSnap("QUEUE", {
     seq: 1010,
     mode: "Solos",

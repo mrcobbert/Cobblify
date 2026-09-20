@@ -27,12 +27,14 @@ divergent main com/bedwarsqol/BedwarsQol.java
 divergent main com/bedwarsqol/bedwars/GeneratorTracker.java
 divergent main com/bedwarsqol/feature/ChatNameTags.java
 divergent main com/bedwarsqol/feature/GameRosterChat.java
+divergent main com/bedwarsqol/feature/HeightLimitWatch.java
 divergent main com/bedwarsqol/feature/LobbyChatWatch.java
 divergent main com/bedwarsqol/feature/NametagStats.java
 divergent main com/bedwarsqol/feature/NickUtils.java
 divergent main com/bedwarsqol/feature/PartyJoinAlert.java
 divergent main com/bedwarsqol/feature/QueueAlert.java
 divergent main com/bedwarsqol/feature/SeraphAlert.java
+divergent main com/bedwarsqol/feature/SessionStatsWatch.java
 divergent main com/bedwarsqol/feature/SweatReport.java
 divergent main com/bedwarsqol/feature/UrchinAlert.java
 divergent main com/bedwarsqol/stats/BedwarsModeDetector.java
@@ -85,6 +87,7 @@ one-sided main forge com/bedwarsqol/feature/TntFuseDisplay.java
 
 # Generic chat QOL is Forge-only; Lunar ships it natively.
 one-sided main forge com/bedwarsqol/feature/ChatCopyAccess.java
+one-sided main forge com/bedwarsqol/feature/ChatStack.java
 one-sided main forge com/bedwarsqol/mixin/GuiNewChatMixin.java
 one-sided main forge com/bedwarsqol/mixin/MinecraftChatClearMixin.java
 
@@ -105,6 +108,7 @@ one-sided test forge com/bedwarsqol/feature/AlertCopyReasonTest.java
 one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
+one-sided test forge com/bedwarsqol/feature/ChatStackTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
 one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java

@@ -9,6 +9,14 @@ import java.util.Locale;
 
 public class ClientSettings {
 
+    /**
+     * Stamp of the last {@link #migrate} pass. Gson leaves an absent member at its initialiser, so
+     * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
+     * migrates as a no-op. Older builds ignore the key.
+     */
+    static final int CURRENT_SETTINGS_VERSION = 1;
+    public int settingsVersion = 0;
+
     public int defaultTextSize = 1;
     /** Global Text/Image style for every HUD element that supports it. 0 = text, 1 = icons + numbers. */
     public int hudDisplayMode = 1;
@@ -33,15 +41,31 @@ public class ClientSettings {
     public boolean genTimersEnabled = false;
     /** One shared toggle: draws a matching panel behind BOTH the diamond and emerald timer boxes. */
     public boolean genTimersBackgroundEnabled = false;
-    public int diamondTimerHudX = 5;
+    public int diamondTimerHudX = -5; // right-anchored: negative keeps the box inside the screen
     public int diamondTimerHudY = 5;
     public int diamondTimerHudAnchor = 2; // top-right by default
     public float diamondTimerHudScale = 1.0f;
 
-    public int emeraldTimerHudX = 5;
+    public int emeraldTimerHudX = -5;
     public int emeraldTimerHudY = 27;
     public int emeraldTimerHudAnchor = 2;
     public float emeraldTimerHudScale = 1.0f;
+
+    /** Session Stats: Lunar-layout game + session tally; always drawn on its panel (no Background toggle). */
+    public boolean sessionStatsEnabled = false;
+    public boolean sessionStatsInGameOnly = false;
+    public int sessionStatsHudX = -5;
+    public int sessionStatsHudY = 60;
+    public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
+    public float sessionStatsHudScale = 1.0f;
+
+    /** Height Limit: Lunar-style map name, build limit (highest placeable Y) and blocks left below it. */
+    public boolean heightLimitEnabled = false;
+    public boolean heightLimitInGameOnly = false;
+    public int heightLimitHudX = 5;
+    public int heightLimitHudY = 5;
+    public int heightLimitHudAnchor = 3; // middle-left
+    public float heightLimitHudScale = 1.0f;
 
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
@@ -205,7 +229,25 @@ public class ClientSettings {
     /** Hide the server-sent header/footer text above and below the tab player list. */
     public boolean tabHideHeaderFooter = false;
 
+    /**
+     * One-time config upgrades, stamped by {@link #settingsVersion}.
+     * <ul>
+     * <li>v1: the right-anchored HUDs (session stats, diamond/emerald timers) shipped with
+     * {@code X = +5}, which places the box 5 GUI px past the right screen edge. A box still at the
+     * shipped value on the top-right anchor moves to {@code -5}; anything the user moved is kept.</li>
+     * </ul>
+     */
+    void migrate() {
+        if (settingsVersion < 1) {
+            if (sessionStatsHudAnchor == 2 && sessionStatsHudX == 5) sessionStatsHudX = -5;
+            if (diamondTimerHudAnchor == 2 && diamondTimerHudX == 5) diamondTimerHudX = -5;
+            if (emeraldTimerHudAnchor == 2 && emeraldTimerHudX == 5) emeraldTimerHudX = -5;
+        }
+        settingsVersion = CURRENT_SETTINGS_VERSION;
+    }
+
     public void sanitize() {
+        migrate();
         defaultTextSize = clamp(defaultTextSize, 0, 2);
         hudDisplayMode = clamp(hudDisplayMode, 0, 1);
         hudFont = clamp(hudFont, 0, 1);
@@ -218,6 +260,10 @@ public class ClientSettings {
         if (diamondTimerHudScale < 0.3f || diamondTimerHudScale > 10.0f) diamondTimerHudScale = defaultTextSizeScale();
         emeraldTimerHudAnchor = clamp(emeraldTimerHudAnchor, 0, 8);
         if (emeraldTimerHudScale < 0.3f || emeraldTimerHudScale > 10.0f) emeraldTimerHudScale = defaultTextSizeScale();
+        sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, 0, 8);
+        if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
+        heightLimitHudAnchor = clamp(heightLimitHudAnchor, 0, 8);
+        if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
 
@@ -264,6 +310,8 @@ public class ClientSettings {
         inventoryHudScale = scale;
         diamondTimerHudScale = scale;
         emeraldTimerHudScale = scale;
+        sessionStatsHudScale = scale;
+        heightLimitHudScale = scale;
     }
 
     public void save() {

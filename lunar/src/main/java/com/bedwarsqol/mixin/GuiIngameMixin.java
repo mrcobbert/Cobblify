@@ -1,6 +1,7 @@
 package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.GuiBlur;
 import net.minecraft.client.gui.GuiIngame;
 import net.minecraft.client.gui.ScaledResolution;
@@ -18,6 +19,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Large (1.0) leaves the vanilla render untouched. Purely visual; the scoreboard data is untouched.
  *
  * VERIFIED against 1.8.9 MCP-named bytecode: protected void renderScoreboard(ScoreObjective, ScaledResolution).
+ *
+ * Also observes titles for the Session Stats tally: Hypixel announces the Bedwars outcome as a title
+ * (gold VICTORY! / red GAME OVER!), which is a more reliable win/loss signal than the chat block.
+ * public void displayTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut) — the
+ * inject forwards the title text and changes nothing about the vanilla display. require = 0 so a
+ * Weave mapping miss degrades to the chat-only outcome signal instead of failing the mixin.
  */
 @Mixin(GuiIngame.class)
 public class GuiIngameMixin {
@@ -49,6 +56,11 @@ public class GuiIngameMixin {
     @Inject(method = "renderScoreboard", at = @At("RETURN"))
     private void bedwarsqol$scaleScoreboardEnd(ScoreObjective objective, ScaledResolution sr, CallbackInfo ci) {
         GlStateManager.popMatrix();
+    }
+
+    @Inject(method = "displayTitle", at = @At("HEAD"), require = 0)
+    private void bedwarsqol$observeTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut, CallbackInfo ci) {
+        if (title != null) SessionStatsWatch.onTitle(title);
     }
 
     /** While the settings GUI's world-blur is up, skip the whole vanilla HUD so the blurred backdrop

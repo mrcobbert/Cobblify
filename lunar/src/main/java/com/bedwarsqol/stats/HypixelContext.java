@@ -102,6 +102,19 @@ public final class HypixelContext {
      * absent. Used both to detect the queue and to title the launcher dashboard.
      */
     public static String sidebarModeLabel() {
+        return sidebarValue("Mode:");
+    }
+
+    /**
+     * The sidebar {@code Map: <name>} value the Bedwars pregame queue prints (e.g. {@code Lighthouse}),
+     * or {@code null} when absent. Feeds the Height Limit HUD when no Mod API location event arrives.
+     */
+    public static String sidebarMapLabel() {
+        return sidebarValue("Map:");
+    }
+
+    /** The text after {@code label} on the first sidebar line containing it, trimmed; {@code null} if none. */
+    private static String sidebarValue(String label) {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.theWorld == null) return null;
         Scoreboard board = mc.theWorld.getScoreboard();
@@ -113,9 +126,9 @@ public final class HypixelContext {
             String line = EnumChatFormatting.getTextWithoutFormattingCodes(
                     ScorePlayerTeam.formatPlayerName(team, score.getPlayerName()));
             if (line == null) continue;
-            int i = line.indexOf("Mode:");
+            int i = line.indexOf(label);
             if (i < 0) continue;
-            String v = line.substring(i + 5).trim();
+            String v = line.substring(i + label.length()).trim();
             if (!v.isEmpty()) return v;
         }
         return null;

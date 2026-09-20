@@ -3,7 +3,11 @@ package com.bedwarsqol.command;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatNameTags;
+import com.bedwarsqol.feature.HeightLimitCore;
+import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.ModChat;
+import com.bedwarsqol.feature.SessionStats;
+import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.SettingsGui;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.ProviderKeySubmitter;
@@ -105,6 +109,12 @@ public class BedwarsQolCommand extends CommandBase {
             case "seraphkey":
                 handleSeraphKey(sender, args);
                 return;
+            case "session":
+                handleSession(sender, args);
+                return;
+            case "heightlimit":
+                handleHeightLimit(sender);
+                return;
             default:
                 // A non-reserved first token is a player name → stats card.
                 BedwarsStatsCommand.showStats(args);
@@ -143,8 +153,46 @@ public class BedwarsQolCommand extends CommandBase {
         send(sender, "§f/cobblify statstoken <token> §7— set the backend token");
         send(sender, "§f/cobblify urchin <player> §7— community Urchin tags for a player");
         send(sender, "§f/cobblify seraph <player> §7— Seraph tags for a player");
+        send(sender, "§f/cobblify session [reset] §7— this session's Bedwars tally");
+        send(sender, "§f/cobblify heightlimit §7— current map, build limit and how it was determined");
         send(sender, "§f/cobblify help §7— this page");
         send(sender, "§7§m------------------------------");
+    }
+
+    private void handleHeightLimit(ICommandSender sender) {
+        HeightLimitCore core = HeightLimitWatch.core();
+        String map = core.map();
+        send(sender, "§7§m----§r §6§lHeight Limit §r§7§m----");
+        if (map == null) {
+            send(sender, "§7Not on a Bedwars map server (no location event or sidebar Map: line yet).");
+        } else {
+            double feet = Minecraft.getMinecraft().thePlayer == null ? 0 : Minecraft.getMinecraft().thePlayer.posY;
+            send(sender, "§fMap §7— §f" + map + (core.mode() == null ? "" : " §7(" + core.mode() + ")"));
+            send(sender, "§fHeight Limit §7— §f" + (core.limit() < 0 ? "?" : core.limit())
+                    + " §7(" + core.source().name().toLowerCase() + ")  §fDistance §7— §f"
+                    + (core.limit() < 0 ? "?" : core.distance(feet)));
+        }
+        send(sender, "§7" + core.describe());
+        send(sender, "§7Learned maps: " + core.learnedCount() + " (~/.cobblify/height-limits.txt)");
+    }
+
+    private void handleSession(ICommandSender sender, String[] args) {
+        if (args.length >= 2 && "reset".equalsIgnoreCase(args[1])) {
+            SessionStatsWatch.reset();
+            send(sender, "§eSession stats reset.");
+            return;
+        }
+        // Same rows as the HUD panel.
+        SessionStats s = SessionStatsWatch.core();
+        send(sender, "§7§m----§r §6§lGame§r §7§m----");
+        send(sender, "§7Finals §f" + s.gameFinals() + "  §7Beds §f" + s.gameBeds() + "  §7Kills §f" + s.gameKills());
+        send(sender, "§7§m----§r §6§lSession§r §7§m----");
+        send(sender, "§7Finals §f" + s.finalKills() + " §7/ FKDR §f" + SessionStats.formatRatio(s.fkdr()));
+        send(sender, "§7Beds §f" + s.beds() + " §7/ BBLR §f" + SessionStats.formatRatio(s.bblr()));
+        send(sender, "§7Kills §f" + s.kills() + " §7/ KDR §f" + SessionStats.formatRatio(s.kdr()));
+        send(sender, "§7Wins §f" + s.wins() + " §7/ WLR §f" + SessionStats.formatRatio(s.wlr()));
+        send(sender, "§7Winstreak §f" + s.winstreak() + "  §7Session Games §f" + s.games()
+                + "  §7Session Time §f" + s.elapsed(System.currentTimeMillis()) + "   §8(/cobblify session reset)");
     }
 
     private void handleMode(ICommandSender sender, String[] args) {

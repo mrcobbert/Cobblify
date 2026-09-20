@@ -38,7 +38,7 @@ public class BedwarsQol implements ModInitializer {
 
     public static final String MODID = "bedwarsqol";
     public static final String NAME = "Cobblify";
-    public static final String VERSION = "0.10.1";
+    public static final String VERSION = "0.12.0";
 
     public static ClientSettings config;
 
@@ -68,6 +68,8 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(new SeraphAlert());
         EventBus.subscribe(new QueueAlert());
         EventBus.subscribe(new com.bedwarsqol.feature.LobbyChatWatch());
+        EventBus.subscribe(new com.bedwarsqol.feature.SessionStatsWatch());
+        EventBus.subscribe(new com.bedwarsqol.feature.HeightLimitWatch());
 
         CommandBus.register(new BedwarsQolCommand());
 

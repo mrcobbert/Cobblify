@@ -103,16 +103,24 @@ jobs:
           BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          existing=$(aws s3api list-objects-v2 \
+          # R2 omits KeyCount when the prefix is empty (the CLI then prints "None"), which
+          # read as "exists" and blocked every promotion. Count Contents instead - a missing
+          # list is an empty one - and keep a CLI failure distinct from a real collision.
+          if ! existing=$(aws s3api list-objects-v2 \
             --bucket "$BUCKET" \
             --prefix "releases/$RELEASE_VERSION/" \
             --endpoint-url "$R2_ENDPOINT" \
-            --query KeyCount \
-            --output text)
-          if [ "$existing" != 0 ]; then
-            echo "release $RELEASE_VERSION already exists; refusing to overwrite immutable artifacts" >&2
+            --query 'length(Contents || `[]`)' \
+            --output text 2>&1); then
+            echo "cannot list releases/$RELEASE_VERSION/: $existing" >&2
             exit 1
           fi
+          case "$existing" in
+            0|None) ;;
+            *)
+              echo "release $RELEASE_VERSION already exists ($existing object(s)); refusing to overwrite immutable artifacts" >&2
+              exit 1 ;;
+          esac
       - name: Upload immutable artifacts, then atomically promote stable
         working-directory: server/stats-worker
         env:

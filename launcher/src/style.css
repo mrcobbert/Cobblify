@@ -1199,6 +1199,16 @@ kbd {
   color: var(--ink-4);
   padding: 6px 4px;
 }
+/* The unsupported note is one line with no roster to align to, so it sits at
+   the middle of the window rather than the left of a band under the header:
+   centered text, and the header band pulled back out of the dash's vertical
+   centering. */
+.sheet.bare {
+  transform: translateY(calc(var(--header-band) / -2));
+}
+.sheet.bare .empty-note {
+  text-align: center;
+}
 
 /* responsive: drop the lowest-signal stats before things get cramped.
    Measured per column - --cols is redeclared on the rows themselves because a
