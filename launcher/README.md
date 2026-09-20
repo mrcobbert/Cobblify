@@ -278,6 +278,19 @@ within strict bounds. A pre-existing alive writer is detected before native disp
 surfaces **Game Already Running** with **Try Again**; stale files from prior sessions
 never activate the dashboard.
 
+**`lobby.json` is contract v2 and the launcher only draws it.** Every presentation decision
+about a player - FKDR tier, cheater flag, single priority badge, gated tag chips, which mode the
+numbers came from, nick reveal with the real account's stats - is made once in the mod by
+`PlayerCard` (the same policy the tab list and chat use, honouring the Urchin / Seraph / Nick
+Utils / Auto Denick toggles, tag expiry, the identity gate and the forced `/bw mode`) and exported
+verbatim. `row-model.js` arranges those fields into classes, chips and cells; nothing in the
+launcher derives a tier, a cheater flag or a badge, and `main-no-policy.test.js` pins that. The
+shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `invalid/`,
+`valid-v1/`) are consumed by the mod's DTO test, `lobby-contract.test.js` and the Rust validator
+tests, so the three copies of the shape cannot drift. A well-formed v1 file from an older mod jar
+still binds the session but the dashboard shows "Update Cobblify to use the overlay" instead of a
+roster.
+
 **The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a
 per-launch baseline; only snapshots from a JVM born after that baseline and still alive
 at poll time can connect. Forge cosmetic progress still comes from the remembered
