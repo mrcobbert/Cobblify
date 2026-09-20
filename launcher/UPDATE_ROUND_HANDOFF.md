@@ -57,6 +57,7 @@ Ship a real launcher update through the auto-updater, in two parts:
 - Version bump for the release: every source `tools/check-release-version.sh`
   pins (`gradle.properties`, `lunar/build.gradle.kts`, Lunar `BedwarsQol.VERSION`,
   `launcher/package.json`, `package-lock.json`, `Cargo.toml`, `tauri.conf.json`)
-  plus the `cobblify-launcher` entry in `Cargo.lock`. 0.12.0 as of 2026-09-14.
+  plus the `cobblify-launcher` entry in `Cargo.lock`. 0.13.0 as of 2026-09-20
+  (overlay unification: lobby.json v2, launcher draws the mod's decisions).
 - The release pair is now `Launcher Update Candidate` (`launcher-update.yml`)
   then `Promote Launcher Update` (`launcher-promote.yml`), both manual.
