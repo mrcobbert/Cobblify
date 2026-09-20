@@ -1106,6 +1106,44 @@ kbd {
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
 }
 
+/* out of the game (disconnected / eliminated / gone) — the row stays where it
+   was so the team never shrinks; dimming carries the meaning, the chip names
+   it, and an eliminated name is struck. Greyscale on purpose: the sheet's only
+   alarm colour is the Target flag. */
+.prow.is-out {
+  opacity: 0.42;
+}
+.prow.is-out .sweat-bar {
+  background: transparent;
+  box-shadow: none;
+}
+.prow.is-out .fkdr {
+  text-shadow: none;
+}
+.prow.is-eliminated .pn {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.dash .chip.out {
+  color: var(--ink-2);
+  background: var(--surf-3);
+  border: 1px solid var(--line-2);
+}
+/* a team with nobody left: neutral border, the rail names it, names go grey */
+.team.is-eliminated {
+  --team: var(--line-2);
+}
+.team.is-eliminated .agg {
+  color: var(--ink-4);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.team.is-eliminated .pn {
+  color: var(--ink-3);
+  text-shadow: none;
+}
+
 /* Hypixel-accurate team colors — names at full strength, the box border held
    back so eight of them on one screen read as scope, not as eight alarms. */
 .team-red { --team: rgba(255, 85, 85, 0.5); }

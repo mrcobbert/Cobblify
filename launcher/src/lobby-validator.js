@@ -2,6 +2,8 @@
 
 const LIVE = new Set(["LOBBY", "QUEUE", "GAME"]);
 const STATES = new Set(["OK", "NICKED", "NEVER_PLAYED", "ERROR", "LOADING"]);
+/** Standing in the current game (mod ≥ roster memory). Absent on older mod jars = ACTIVE. */
+const PRESENCE = new Set(["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"]);
 
 function isFiniteNumber(n) {
   return typeof n === "number" && Number.isFinite(n);
@@ -29,6 +31,7 @@ function validPlayer(p) {
   if (!Array.isArray(p.seraphTags) || !Array.isArray(p.urchinTags)) return false;
   for (const t of p.seraphTags) if (typeof t !== "string") return false;
   for (const t of p.urchinTags) if (typeof t !== "string") return false;
+  if (p.presence !== undefined && !PRESENCE.has(p.presence)) return false;
   return true;
 }
 

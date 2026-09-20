@@ -11,6 +11,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /** Pins launcher queue/game titles against Hypixel sidebar and detector labels. */
@@ -250,6 +251,37 @@ public class LobbyExportTest {
         assertTrue(LobbyExport.sawUnsupportedMode());
         LobbyExport.evaluate(true, true, false, false, null, null, 4000L);
         assertFalse(LobbyExport.sawUnsupportedMode());
+    }
+
+    /** A6: the roster's presence rides each game row onto the player and into the JSON. */
+    @Test
+    public void gameRowsCarryPresenceIntoPlayersAndTeams() {
+        LobbyExport.EvalResult game = LobbyExport.evaluate(true, true, false, true, "Solo", null, 1000L);
+        assertTrue(game.scanFullRoster);
+        LobbyExport.Lobby lobby = new LobbyExport.Lobby();
+        LobbyExport.applySnapshot(lobby, game, Collections.<String>emptyList(),
+                Arrays.asList(new LobbyExport.TabRow("Alice", "Red"),
+                        new LobbyExport.TabRow("Bob", "Blue", GameRoster.ELIMINATED),
+                        new LobbyExport.TabRow("Carol", "Blue", null)),
+                null, null, new RecordingSink());
+        assertEquals(3, lobby.players.size());
+        assertEquals(GameRoster.ACTIVE, lobby.players.get(0).presence);
+        assertEquals(GameRoster.ELIMINATED, lobby.players.get(1).presence);
+        assertEquals(GameRoster.ACTIVE, lobby.players.get(2).presence); // null row presence → ACTIVE
+        assertEquals(2, lobby.teams.size());
+        assertEquals("Blue", lobby.teams.get(1).name);
+        assertEquals(GameRoster.ELIMINATED, lobby.teams.get(1).players.get(0).presence);
+        assertSame(lobby.players.get(1), lobby.teams.get(1).players.get(0));
+    }
+
+    @Test
+    public void playerJsonCarriesPresence() {
+        LobbyExport.Player p = new LobbyExport.Player("Alice");
+        com.google.gson.JsonObject tree = new com.google.gson.Gson().toJsonTree(p).getAsJsonObject();
+        assertEquals("ACTIVE", tree.get("presence").getAsString());
+        p.presence = GameRoster.MISSING;
+        tree = new com.google.gson.Gson().toJsonTree(p).getAsJsonObject();
+        assertEquals("MISSING", tree.get("presence").getAsString());
     }
 
     private static final class RecordingSink implements LobbyExport.FetchSink {

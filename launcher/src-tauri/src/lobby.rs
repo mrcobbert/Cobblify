@@ -18,6 +18,8 @@ use crate::process_liveness::{
 
 const LIVE_CONTEXTS: &[&str] = &["LOBBY", "QUEUE", "GAME"];
 const PLAYER_STATES: &[&str] = &["OK", "NICKED", "NEVER_PLAYED", "ERROR", "LOADING"];
+/// Standing in the current game; absent on older mod jars (= ACTIVE). Any other value is malformed.
+const PLAYER_PRESENCE: &[&str] = &["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1033,6 +1035,14 @@ fn valid_player(p: &Value) -> bool {
             return false;
         }
     }
+    if let Some(presence) = obj.get("presence") {
+        if !presence
+            .as_str()
+            .is_some_and(|p| PLAYER_PRESENCE.contains(&p))
+        {
+            return false;
+        }
+    }
     true
 }
 
@@ -1543,6 +1553,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_lobby(dir.path(), pid, 1, "LOBBY", true);
         assert!(!preexisting_writer(dir.path()));
+    }
+
+    fn player_json(presence: Option<Value>) -> Value {
+        let mut p = serde_json::json!({
+            "name": "Alice", "state": "OK", "nicked": false, "realName": null, "rank": "[MVP+]",
+            "fkdr": 6.8, "wlr": 4.4, "finalKills": 17700, "kd": 3.6, "seraphThreat": -1,
+            "seraphTags": [], "urchinTags": []
+        });
+        if let Some(v) = presence {
+            p["presence"] = v;
+        }
+        p
+    }
+
+    #[test]
+    fn player_presence_is_optional_and_closed() {
+        assert!(valid_player(&player_json(None)));
+        for ok in ["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"] {
+            assert!(valid_player(&player_json(Some(Value::from(ok)))), "{ok}");
+        }
+        assert!(!valid_player(&player_json(Some(Value::from("DEAD")))));
+        assert!(!valid_player(&player_json(Some(Value::from("active")))));
+        assert!(!valid_player(&player_json(Some(Value::Null))));
+        assert!(!valid_player(&player_json(Some(Value::from(1)))));
     }
 
     #[test]

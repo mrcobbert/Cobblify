@@ -96,3 +96,33 @@ test("jvmStartTimeMs above safe integer is rejected", () => {
 test("jvmStartTimeMs non-integer is rejected", () => {
   assert.ok(!isValidLobbySnapshot({ ...baseSnap, jvmStartTimeMs: 1.5 }));
 });
+
+test("player presence is optional and closed", () => {
+  const player = {
+    name: "x",
+    state: "OK",
+    nicked: false,
+    realName: null,
+    rank: "",
+    fkdr: 1,
+    wlr: 1,
+    kd: 1,
+    finalKills: 0,
+    seraphThreat: 0,
+    seraphTags: [],
+    urchinTags: [],
+  };
+  // Older mod jars omit it.
+  assert.ok(isValidLobbySnapshot({ ...baseSnap, players: [player] }));
+  for (const presence of ["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"]) {
+    assert.ok(isValidLobbySnapshot({ ...baseSnap, players: [{ ...player, presence }] }), presence);
+    assert.ok(
+      isValidLobbySnapshot({ ...baseSnap, teams: [{ name: "Red", players: [{ ...player, presence }] }] }),
+      presence,
+    );
+  }
+  assert.ok(!isValidLobbySnapshot({ ...baseSnap, players: [{ ...player, presence: "DEAD" }] }));
+  assert.ok(!isValidLobbySnapshot({ ...baseSnap, players: [{ ...player, presence: "active" }] }));
+  assert.ok(!isValidLobbySnapshot({ ...baseSnap, players: [{ ...player, presence: null }] }));
+  assert.ok(!isValidLobbySnapshot({ ...baseSnap, players: [{ ...player, presence: 1 }] }));
+});

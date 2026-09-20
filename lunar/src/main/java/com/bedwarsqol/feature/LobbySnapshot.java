@@ -16,6 +16,7 @@ import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,10 +30,15 @@ import java.util.regex.Pattern;
  * debounce. Everything here touches only vanilla {@code net.minecraft} types that map identically on
  * Forge and Weave, so this file is byte-identical in both trees (not a declared divergence).
  *
+ * <p>During a game the roster comes from {@link GameRoster}, not the raw tab list: Hypixel drops a
+ * player from tab while they respawn, disconnect or are eliminated, and the roster remembers everyone
+ * seen this session with a chat-derived presence, so those removals never reshuffle the launcher.
+ *
  * <p>Security: the snapshot carries player IGNs and public stats only. It reads tab names, team colours
- * and cached stats — never a UUID/xuid/token/argv/accounts.json (the local player's own IGN is fine).
- * Fail-soft: any missing world/handler/player just yields a smaller snapshot (MENU with no roster),
- * never a throw into the game thread.
+ * and cached stats — never a UUID/xuid/token/argv/accounts.json (the local player's own IGN is fine;
+ * tab UUIDs are remembered per game solely to key the stats cache and are never exported). Fail-soft:
+ * any missing world/handler/player just yields a smaller snapshot (MENU with no roster), never a throw
+ * into the game thread.
  */
 public final class LobbySnapshot {
 
@@ -43,6 +49,10 @@ public final class LobbySnapshot {
     private static final long CAPTURE_INTERVAL_MS = 400L;
     private static volatile long lastCaptureMs;
 
+    /** Tab UUIDs seen this game session, so a remembered-but-absent player still keys the cache. */
+    private static final Map<String, UUID> KNOWN_IDS = new HashMap<String, UUID>();
+    private static int knownIdsSession = Integer.MIN_VALUE;
+
     private LobbySnapshot() {}
 
     /** Build and submit a snapshot, throttled. Never throws. */
@@ -51,13 +61,13 @@ public final class LobbySnapshot {
         if (now - lastCaptureMs < CAPTURE_INTERVAL_MS) return;
         lastCaptureMs = now;
         try {
-            LobbyExport.submit(build(mc));
+            LobbyExport.submit(build(mc, now));
         } catch (Throwable ignored) {
             // never propagate into the game thread
         }
     }
 
-    private static LobbyExport.Lobby build(Minecraft mc) {
+    private static LobbyExport.Lobby build(Minecraft mc, long now) {
         LobbyExport.Lobby lobby = new LobbyExport.Lobby();
         boolean inHypixel = HypixelContext.isOnHypixel();
         boolean queue = HypixelContext.isInBedwarsQueue();
@@ -113,22 +123,49 @@ public final class LobbySnapshot {
             }
         }
 
+        // In a game the sheet is the remembered roster, not this instant's tab list.
+        final int session = GameSessionTracker.currentSessionId();
+        final boolean remembered = r.scanFullRoster && "GAME".equals(r.context);
+        if ("MENU".equals(r.context)) {
+            GameRoster.INSTANCE.reset();
+            KNOWN_IDS.clear();
+        } else if (remembered) {
+            if (session != knownIdsSession) {
+                KNOWN_IDS.clear();
+                knownIdsSession = session;
+            }
+            KNOWN_IDS.putAll(ids);
+            tab = GameRoster.INSTANCE.observe(session, now, tab, new GameRoster.TeamResolver() {
+                public String teamOf(String name) {
+                    return teamName(TeamColors.code(name));
+                }
+            });
+        }
+
         List<String> extra = (r.eligible && "QUEUE".equals(r.context))
-                ? LobbyChatState.queueTypers(GameSessionTracker.currentSessionId())
+                ? LobbyChatState.queueTypers(session)
                 : null;
         LobbyExport.applySnapshot(lobby, r, LobbyChatState.party(), tab, extra,
                 new LobbyExport.PlayerFactory() {
                     public LobbyExport.Player player(String name) {
-                        return LobbySnapshot.player(name, ids.get(name));
+                        LobbyExport.Player p = LobbySnapshot.player(name, idOf(name, ids, remembered));
+                        return remembered ? GameRoster.INSTANCE.withRetainedStats(name, p) : p;
                     }
                 },
                 new LobbyExport.FetchSink() {
                     public void fetch(LobbyExport.TabRow row) {
-                        UUID id = ids.get(row.name);
+                        UUID id = idOf(row.name, ids, remembered);
                         if (id != null) StatsCache.ensureFetched(id, StatsCache.PRIORITY_TAB);
                     }
                 });
         return lobby;
+    }
+
+    /** This capture's tab UUID for {@code name}, else the one remembered for the game when in one. */
+    private static UUID idOf(String name, Map<String, UUID> ids, boolean remembered) {
+        UUID id = ids.get(name);
+        if (id == null && remembered) id = KNOWN_IDS.get(name);
+        return id;
     }
 
     /** Build one player row: identity from name/UUID, stats from the cache (LOADING when not yet resolved). */
