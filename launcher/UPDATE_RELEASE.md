@@ -53,8 +53,38 @@ If a candidate fails testing, do not run promotion. Build a higher corrected
 version instead.
 
 Promotion retains the newest three immutable release prefixes. There is no
-beta channel, staged rollout, remote rollback button, or per-device enrollment;
-to recover from a bad stable release, ship a higher corrected version.
+staged rollout, remote rollback button, or per-device enrollment; to recover
+from a bad stable release, ship a higher corrected version.
+
+## Dev channel
+
+Every launcher has a **Test dev builds (unstable)** checkbox under the launch
+preferences, off by default. It stores `update_channel: "dev"` in
+`launcher-preferences.json`; the updater then asks the Worker for
+`?channel=dev` and is answered with whichever of `channels/stable.json` and
+`channels/dev.json` is the newer version. Unticked launchers send exactly the
+request they always have and never see the dev channel.
+
+To put a build on it, run `Launcher Update Candidate` with `publish_dev`
+ticked. The run builds `<version>-dev.<run number>` (the repo pins stay at the
+plain version; only the launcher's reported version changes), and a
+`publish-dev` job uploads `releases/<that version>/` and writes
+`channels/dev.json`. Its policy floor is `0.0.0`, so a dev build never forces
+an update; stable's floor still applies whenever stable is the newer manifest.
+
+Because `<version>-dev.N` sorts *below* `<version>`, a dev build is offered only
+to launchers older than the branch's pins. Bump the pins on the branch before
+cutting a dev build (the normal release convention); a dev build cut from pins
+equal to current stable is never offered. Once the plain version is promoted,
+opted-in launchers move onto it like everyone else.
+
+The dev channel only moves forward: the job refuses a build whose version is
+not newer than the one `channels/dev.json` already names (bump the branch's
+pins if you need to test an older line). It keeps the build it just published
+plus the newest other dev prefix; promotion's retention ignores dev prefixes.
+
+Dev builds are never promoted: `Promote Launcher Update` refuses any version
+containing `-`. Release the plain version with a fresh candidate.
 
 ## Privacy and diagnostics
 

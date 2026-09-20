@@ -1,4 +1,8 @@
-const CHANNEL_KEY = "channels/stable.json";
+// Every launcher reads stable. A launcher whose "Test dev builds" preference is on asks for
+// `?channel=dev` and receives whichever of stable/dev is the newer version, so opting out (or
+// forgetting to) converges on stable as soon as stable moves past the dev build.
+const STABLE_CHANNEL_KEY = "channels/stable.json";
+const DEV_CHANNEL_KEY = "channels/dev.json";
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_EVENT_BYTES = 2 * 1024;
 const TICKET_SECONDS = 15 * 60;
@@ -7,7 +11,9 @@ const PLATFORM_RE = /^(darwin|windows)$/;
 // Tauri reports the running CPU architecture even when the macOS artifact is
 // universal, so stable manifests publish both darwin aliases to one R2 key.
 const ARCH_RE = /^(universal|x86_64|aarch64)$/;
-const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/;
+// SemVer 2.0.0 §9: every pre-release identifier is non-empty and a numeric one has no
+// leading zeros, so nothing a comparator would misorder can reach the channel choice.
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
 const EVENT_RE = /^(check_ok|check_failed|download_started|download_paused|download_verified|install_started|post_update_started)$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 
@@ -24,20 +30,53 @@ function json(body, status = 200) {
 function parseVersion(value) {
   const match = VERSION_RE.exec(value || "");
   if (!match) return null;
-  return { numbers: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: match[4] || null };
+  return { numbers: [match[1], match[2], match[3]], prerelease: match[4] || null };
 }
 
-function compareVersions(a, b) {
+// Numeric identifiers compare by length then digit-wise (no leading zeros in semver), which
+// stays exact for identifiers beyond Number's safe range.
+function compareNumeric(a, b) {
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
+  return a === b ? 0 : a < b ? -1 : 1;
+}
+
+// semver.org §11.4: dot-separated identifiers, numeric ones compare as numbers and rank below
+// alphanumeric ones, and a longer list wins when every shared identifier is equal. This is what
+// makes `dev.10` newer than `dev.9`.
+function comparePrerelease(a, b) {
+  const left = a.split(".");
+  const right = b.split(".");
+  const shared = Math.min(left.length, right.length);
+  for (let i = 0; i < shared; i++) {
+    const l = left[i];
+    const r = right[i];
+    if (l === r) continue;
+    const ln = /^\d+$/.test(l);
+    const rn = /^\d+$/.test(r);
+    if (ln && rn) {
+      const c = compareNumeric(l, r);
+      if (c !== 0) return c;
+      continue;
+    }
+    if (ln !== rn) return ln ? -1 : 1;
+    return l < r ? -1 : 1;
+  }
+  if (left.length === right.length) return 0;
+  return left.length < right.length ? -1 : 1;
+}
+
+export function compareVersions(a, b) {
   const left = parseVersion(a);
   const right = parseVersion(b);
   if (!left || !right) return null;
   for (let i = 0; i < 3; i++) {
-    if (left.numbers[i] !== right.numbers[i]) return left.numbers[i] < right.numbers[i] ? -1 : 1;
+    const c = compareNumeric(left.numbers[i], right.numbers[i]);
+    if (c !== 0) return c;
   }
   if (left.prerelease === right.prerelease) return 0;
   if (left.prerelease == null) return 1;
   if (right.prerelease == null) return -1;
-  return left.prerelease.localeCompare(right.prerelease);
+  return comparePrerelease(left.prerelease, right.prerelease);
 }
 
 function bytesToBase64Url(bytes) {
@@ -68,8 +107,8 @@ function base64UrlToBytes(value) {
   }
 }
 
-async function readStableManifest(bucket) {
-  const object = await bucket.get(CHANNEL_KEY);
+async function readManifest(bucket, key) {
+  const object = await bucket.get(key);
   if (!object || object.size > MAX_MANIFEST_BYTES) return null;
   let manifest;
   try {
@@ -84,6 +123,17 @@ async function readStableManifest(bucket) {
   return manifest;
 }
 
+// Stable is always the baseline. A missing or malformed dev manifest never breaks a dev
+// request; it just means "nothing newer than stable".
+async function readChannelManifest(bucket, channel) {
+  const stable = await readManifest(bucket, STABLE_CHANNEL_KEY);
+  if (channel !== "dev") return stable;
+  const dev = await readManifest(bucket, DEV_CHANNEL_KEY);
+  if (!dev) return stable;
+  if (!stable) return dev;
+  return compareVersions(dev.version, stable.version) > 0 ? dev : stable;
+}
+
 export async function handleUpdateMetadata(request, env, auth, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (!auth?.identity) return json({ error: "unauthorized" }, 403);
   if (!env.UPDATE_BUCKET || !env.UPDATE_URL_SECRET) return json({ error: "updates_unavailable" }, 503);
@@ -94,7 +144,7 @@ export async function handleUpdateMetadata(request, env, auth, nowSeconds = Math
   if (!PLATFORM_RE.test(target) || !ARCH_RE.test(arch) || !parseVersion(currentVersion)) {
     return json({ error: "invalid_update_target" }, 400);
   }
-  const manifest = await readStableManifest(env.UPDATE_BUCKET);
+  const manifest = await readChannelManifest(env.UPDATE_BUCKET, url.searchParams.get("channel"));
   if (!manifest) return json({ error: "invalid_release_manifest" }, 503);
   const comparison = compareVersions(currentVersion, manifest.version);
   if (comparison == null) return json({ error: "invalid_version" }, 400);

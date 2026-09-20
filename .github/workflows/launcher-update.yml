@@ -6,6 +6,10 @@ on:
       version:
         description: Exact repo version to build
         required: true
+      publish_dev:
+        description: Also publish this build to the opt-in dev channel as <version>-dev.<run number>
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,6 +17,11 @@ permissions:
 concurrency:
   group: launcher-update-${{ inputs.version }}
   cancel-in-progress: false
+
+# A dev build carries a pre-release version so it sorts below the release it precedes;
+# the pins in the repo (and every mod jar) stay at the plain version.
+env:
+  BUILD_VERSION: ${{ inputs.publish_dev && format('{0}-dev.{1}', inputs.version, github.run_number) || inputs.version }}
 
 jobs:
   macos:
@@ -72,8 +81,8 @@ jobs:
           npm ci
           npm test
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          npx tauri build --target universal-apple-darwin --bundles app --ci \
-            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
+          npx tauri build --target universal-apple-darwin --bundles app --ci --config "$config"
           bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/macos"
           app_count=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d | wc -l | tr -d '[:space:]')
           test "$app_count" = 1
@@ -156,8 +165,8 @@ jobs:
         run: |
           npm ci
           npm test
-          npx tauri build --bundles nsis --ci \
-            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
+          npx tauri build --bundles nsis --ci --config "$config"
           bundle_dir="src-tauri/target/release/bundle/nsis"
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe.sig' -type f | wc -l | tr -d '[:space:]')" = 1
@@ -183,15 +192,21 @@ jobs:
           mkdir candidate-metadata
           jq -n \
             --arg version "$RELEASE_VERSION" \
+            --arg buildVersion "$BUILD_VERSION" \
             --arg commit "$GITHUB_SHA" \
             --arg runId "$GITHUB_RUN_ID" \
-            '{version: $version, commit: $commit, runId: $runId}' \
+            '{version: $version, buildVersion: $buildVersion, commit: $commit, runId: $runId}' \
             > candidate-metadata/candidate.json
           {
             echo "## Candidate ready"
             echo
-            echo "Test the Mac artifact from run \`$GITHUB_RUN_ID\`."
-            echo "If it passes, run **Promote Launcher Update** with candidate run ID \`$GITHUB_RUN_ID\`."
+            if [ "$BUILD_VERSION" != "$RELEASE_VERSION" ]; then
+              echo "Dev build \`$BUILD_VERSION\`; the publish-dev job puts it on the dev channel."
+              echo "Dev builds are never promoted: release the plain version with a fresh candidate."
+            else
+              echo "Test the Mac artifact from run \`$GITHUB_RUN_ID\`."
+              echo "If it passes, run **Promote Launcher Update** with candidate run ID \`$GITHUB_RUN_ID\`."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
@@ -199,3 +214,104 @@ jobs:
           path: candidate-metadata/candidate.json
           retention-days: 30
           if-no-files-found: error
+
+  # Opt-in only. Writes releases/<version>-dev.<run>/ and channels/dev.json; never stable.
+  # Launchers with "Test dev builds" ticked ask for the dev channel and get whichever of
+  # stable/dev is newer, so a dev build reaches only launchers older than this branch's pins.
+  publish-dev:
+    if: ${{ inputs.publish_dev }}
+    needs: [macos, windows, ready]
+    runs-on: ubuntu-latest
+    environment: launcher-stable
+    concurrency:
+      group: launcher-dev-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: launcher-update-*-${{ inputs.version }}
+          path: candidate
+          merge-multiple: true
+      - name: Validate the build this run produced
+        run: |
+          test "$(jq -r .buildVersion candidate/candidate.json)" = "$BUILD_VERSION"
+          test "$(jq -r .runId candidate/candidate.json)" = "$GITHUB_RUN_ID"
+          case "$BUILD_VERSION" in *-dev.*) ;; *) echo "not a dev version: $BUILD_VERSION" >&2; exit 1 ;; esac
+          test "$(find candidate -maxdepth 1 -name '*.app.tar.gz' -type f | wc -l | tr -d '[:space:]')" = 1
+          test "$(find candidate -maxdepth 1 -name '*.app.tar.gz.sig' -type f | wc -l | tr -d '[:space:]')" = 1
+          test "$(find candidate -maxdepth 1 -name '*-setup.exe' -type f | wc -l | tr -d '[:space:]')" = 1
+          test "$(find candidate -maxdepth 1 -name '*-setup.exe.sig' -type f | wc -l | tr -d '[:space:]')" = 1
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build and sign the dev manifest
+        working-directory: launcher
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # Dev builds never force an update: the floor is 0.0.0. Stable's floor still applies
+          # whenever stable is the newer of the two manifests.
+          printf '{"minimumSupportedVersion":"0.0.0"}' > ../candidate/policy.json
+          npm ci
+          npx tauri signer sign ../candidate/policy.json
+          mac=$(find ../candidate -maxdepth 1 -name '*.app.tar.gz' -type f -print -quit)
+          win=$(find ../candidate -maxdepth 1 -name '*-setup.exe' -type f -print -quit)
+          node tools/build-update-manifest.mjs ../candidate/dev.json \
+            "$BUILD_VERSION" 0.0.0 "Dev build from $GITHUB_REF_NAME" \
+            "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "$mac" "$mac.sig" "$win" "$win.sig" ../candidate/policy.json.sig
+      - name: Refuse to move the dev channel backwards
+        working-directory: server/stats-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
+        run: |
+          npm ci
+          # The channel only ever advances. A lower version would never be offered to a
+          # launcher already on the current dev build, and retention would delete it.
+          if npx wrangler r2 object get "$BUCKET/channels/dev.json" --file "$RUNNER_TEMP/current-dev.json" --remote; then
+            current=$(jq -r .version "$RUNNER_TEMP/current-dev.json")
+            order=$(node ../../launcher/tools/semver-compare.mjs "$BUILD_VERSION" "$current")
+            if [ "$order" != 1 ]; then
+              echo "dev channel is already at $current; $BUILD_VERSION is not newer. Bump the branch's pins first." >&2
+              exit 1
+            fi
+          else
+            echo "no dev channel yet; $BUILD_VERSION will be the first"
+          fi
+      - name: Upload dev artifacts, then switch the dev channel
+        working-directory: server/stats-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
+        run: |
+          mac=$(find ../../candidate -maxdepth 1 -name '*.app.tar.gz' -type f -print -quit)
+          win=$(find ../../candidate -maxdepth 1 -name '*-setup.exe' -type f -print -quit)
+          npx wrangler r2 object put "$BUCKET/releases/$BUILD_VERSION/Cobblify-Launcher-macos-universal.app.tar.gz" --file "$mac" --remote
+          npx wrangler r2 object put "$BUCKET/releases/$BUILD_VERSION/Cobblify-Launcher-windows-x86_64-setup.exe" --file "$win" --remote
+          npx wrangler r2 object put "$BUCKET/channels/dev.json" --file ../../candidate/dev.json --content-type application/json --remote
+      - name: Retain only the newest two dev releases
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
+        run: |
+          # Never the build the channel now points at, whatever the version sort says.
+          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | grep -e '-dev[.]' | grep -v -x -F "$BUILD_VERSION" | sort -Vu)
+          printf '%s\n' "$versions" | sort -Vr | tail -n +2 | while read -r old; do
+            [ -z "$old" ] || aws s3 rm "s3://$BUCKET/releases/$old/" --recursive --endpoint-url "$R2_ENDPOINT"
+          done
+      - name: Summary
+        run: |
+          {
+            echo "## Dev channel updated"
+            echo
+            echo "\`channels/dev.json\` now points at \`$BUILD_VERSION\`."
+            echo "Launchers with **Test dev builds (unstable)** ticked and a version below \`${{ inputs.version }}\` will be offered it on their next check."
+          } >> "$GITHUB_STEP_SUMMARY"

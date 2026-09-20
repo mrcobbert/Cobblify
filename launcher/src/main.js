@@ -66,6 +66,8 @@ const autoJoinWrap = el("auto-join-wrap");
 const autoJoinInput = el("auto-join");
 const overlayWrap = el("overlay-wrap");
 const overlayInput = el("use-overlay");
+const devChannelWrap = el("dev-channel-wrap");
+const devChannelInput = el("dev-channel");
 const prefError = el("pref-error");
 const repairPref = el("repair-pref");
 const cancelLaunch = el("cancel-launch");
@@ -361,7 +363,20 @@ function previewInvoke(command, args) {
     return Promise.resolve({
       autoUpdateEnabled: snap.autoUpdateEnabled,
       autoUpdatePrompted: snap.autoUpdatePrompted,
+      updateChannel: snap.updateChannel,
       health: "valid",
+    });
+  }
+
+  if (command === "set_update_channel") {
+    // Ticking the box in the browser preview shows a waiting dev build; unticking returns to stable.
+    previewUpdateKey = args?.channel === "dev" ? "availableDev" : "current";
+    const snap = resolvePreviewUpdate(previewUpdateKey);
+    return Promise.resolve({
+      status: "saved",
+      autoUpdateEnabled: snap.autoUpdateEnabled,
+      autoUpdatePrompted: snap.autoUpdatePrompted,
+      updateChannel: snap.updateChannel,
     });
   }
 
@@ -374,6 +389,7 @@ function previewInvoke(command, args) {
       status: "saved",
       autoUpdateEnabled: args?.enabled ?? false,
       autoUpdatePrompted: true,
+      updateChannel: resolvePreviewUpdate(previewUpdateKey).updateChannel,
     });
   }
 
@@ -728,9 +744,18 @@ function syncUpdateUi() {
     ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
     : 0;
   updateProgressFill.style.width = `${percent}%`;
+  // Belongs to the updater, not the launch targets: visible as soon as the preference is
+  // known, even on a machine with nothing installed yet.
+  devChannelWrap.hidden = !snapshot.channelLoaded;
+  devChannelInput.checked = snapshot.updateChannel === "dev";
+  devChannelInput.disabled = snapshot.channelSaving || snapshot.state === "checking";
   updateBlocksLaunch = view.blocksLaunch;
   syncLaunchUi();
 }
+
+devChannelInput.addEventListener("change", () => {
+  updateController.setUpdateChannel(devChannelInput.checked ? "dev" : "stable");
+});
 
 for (const button of [updatePrimary, updateSecondary]) {
   button.addEventListener("click", () => {
@@ -741,7 +766,7 @@ for (const button of [updatePrimary, updateSecondary]) {
 
 function applyPreviewUpdate(key) {
   previewUpdateKey = PREVIEW_UPDATE[key] ? key : "consent";
-  updateController.acceptStatus(resolvePreviewUpdate(previewUpdateKey));
+  updateController.acceptStatus({ ...resolvePreviewUpdate(previewUpdateKey), channelLoaded: true });
 }
 
 function syncLaunchUi() {

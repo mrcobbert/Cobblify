@@ -53,6 +53,10 @@ test("preview update fixtures cover every distinct updater row", () => {
   assert.equal(updateView(PREVIEW_UPDATE.installing).blocksLaunch, false);
   assert.equal(updateView(PREVIEW_UPDATE.updateError).title, "Unavailable");
   assert.equal(updateView(PREVIEW_UPDATE.updateErrorManual).title, "Check failed");
+  assert.equal(updateView(PREVIEW_UPDATE.currentDev).detail, "0.10.0-dev.41 · dev build");
+  assert.equal(updateView(PREVIEW_UPDATE.availableDev).title, "0.10.0-dev.41 available");
+  assert.equal(updateView(PREVIEW_UPDATE.availableDev).detail, "dev build");
+  assert.equal(updateView(PREVIEW_UPDATE.available).detail, "");
 });
 
 test("a demo fixture and a live backend snapshot of the same state project identically", () => {
@@ -66,6 +70,9 @@ test("a demo fixture and a live backend snapshot of the same state project ident
       critical: fixture.critical,
       autoUpdateEnabled: fixture.autoUpdateEnabled,
       autoUpdatePrompted: fixture.autoUpdatePrompted,
+      updateChannel: fixture.updateChannel,
+      channelLoaded: fixture.channelLoaded,
+      channelSaving: fixture.channelSaving,
       manual: fixture.manual,
     };
     if (fixture.availableVersion) live.availableVersion = fixture.availableVersion;

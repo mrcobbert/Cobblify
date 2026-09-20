@@ -5,6 +5,7 @@ import {
   pauseUpdate,
   resumeUpdate,
   setAutoUpdate as saveAutoUpdate,
+  setUpdateChannel as saveUpdateChannel,
   startUpdate,
   updatePreferences,
   updateStatus,
@@ -31,6 +32,11 @@ export function createUpdateController(invoke, deps = {}) {
     currentVersion: "",
     autoUpdateEnabled: false,
     autoUpdatePrompted: false,
+    updateChannel: "stable",
+    /** True from the first preference read; the channel box is shown from then on. */
+    channelLoaded: false,
+    /** True while a channel save is in flight; the box is disabled and clicks are dropped. */
+    channelSaving: false,
   };
 
   const notify = () => onChange({ ...state });
@@ -55,7 +61,7 @@ export function createUpdateController(invoke, deps = {}) {
       updateStatus(invoke),
     ]);
     if (gen !== generation) return;
-    merge({ ...status, ...prefs });
+    merge({ ...status, ...prefs, channelLoaded: true });
     await check(false);
   }
 
@@ -89,11 +95,45 @@ export function createUpdateController(invoke, deps = {}) {
     merge({
       autoUpdateEnabled: reply.autoUpdateEnabled,
       autoUpdatePrompted: reply.autoUpdatePrompted,
+      ...(reply.updateChannel ? { updateChannel: reply.updateChannel } : {}),
     });
     if (!gameActive && enabled && (state.state === "available" || state.state === "critical_required")) {
       const next = await startUpdate(invoke);
       if (next) merge(next);
     }
+  }
+
+  /**
+   * The "Test dev builds" checkbox. Saving the channel is enough for the next
+   * scheduled check; a fresh check right away is what makes the row answer
+   * the click (a waiting dev build appears, or "Up to date" is confirmed).
+   */
+  async function setUpdateChannel(channel) {
+    // One save at a time: a second click while the first is on disk would race the
+    // file lock and could persist the earlier choice last.
+    if (state.channelSaving) return;
+    merge({ channelSaving: true });
+    let reply;
+    try {
+      reply = await saveUpdateChannel(invoke, channel);
+    } catch (_) {
+      reply = { status: "not_saved" };
+    }
+    if (reply.status !== "saved" && reply.status !== "reconciled") {
+      merge({ channelSaving: false, state: "error", diagnosticCode: "preference_not_saved", manual: true });
+      return;
+    }
+    merge({
+      channelSaving: false,
+      autoUpdateEnabled: reply.autoUpdateEnabled,
+      autoUpdatePrompted: reply.autoUpdatePrompted,
+      updateChannel: reply.updateChannel ?? "stable",
+    });
+    // A check already in flight (the six-hour timer, say) asked for the old channel.
+    // Retire it so its answer is discarded and nothing downloads from it, then ask again.
+    generation += 1;
+    busy = false;
+    await check(true);
   }
 
   async function action(name) {
@@ -137,6 +177,7 @@ export function createUpdateController(invoke, deps = {}) {
     bootstrap,
     check,
     setAutoUpdate,
+    setUpdateChannel,
     action,
     acceptStatus,
     setGameActive,

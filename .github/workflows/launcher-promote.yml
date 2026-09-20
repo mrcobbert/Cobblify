@@ -67,7 +67,13 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
+          # Dev builds (<version>-dev.<run>) live on the dev channel only; stable is always a
+          # plain version built by a candidate run without publish_dev.
+          case "$RELEASE_VERSION" in
+            *-*) echo "refusing to promote pre-release version $RELEASE_VERSION" >&2; exit 1 ;;
+          esac
           test "$(jq -r .version candidate/candidate.json)" = "$RELEASE_VERSION"
+          test "$(jq -r '.buildVersion // .version' candidate/candidate.json)" = "$RELEASE_VERSION"
           test "$(jq -r .runId candidate/candidate.json)" = "$CANDIDATE_RUN_ID"
           test "$(jq -r .commit candidate/candidate.json)" = "$(jq -r .head_sha "$RUNNER_TEMP/run.json")"
           test "$(find candidate -maxdepth 1 -name '*.app.tar.gz' -type f | wc -l | tr -d '[:space:]')" = 1
@@ -142,7 +148,8 @@ jobs:
           R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET: ${{ vars.COBBLIFY_UPDATE_BUCKET }}
         run: |
-          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | sort -Vu)
+          # Dev releases are pruned by their own publish job; keep them out of this count.
+          versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix releases/ --endpoint-url "$R2_ENDPOINT" --query 'Contents[].Key' --output text | tr '\t' '\n' | awk -F/ 'NF >= 3 {print $2}' | grep -v -e '-' | sort -Vu)
           printf '%s\n' "$versions" | sort -Vr | tail -n +4 | while read -r old; do
             [ -z "$old" ] || aws s3 rm "s3://$BUCKET/releases/$old/" --recursive --endpoint-url "$R2_ENDPOINT"
           done

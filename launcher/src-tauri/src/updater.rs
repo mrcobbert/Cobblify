@@ -15,6 +15,8 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::io::AsyncWriteExt;
 
+use crate::preferences::{self, UpdateChannel};
+
 const EVENT_NAME: &str = "updater://status";
 
 #[derive(Clone)]
@@ -230,11 +232,9 @@ impl UpdaterService {
                 });
             }
         };
-        let endpoint = format!(
-            "{}/launcher/update/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}",
-            endpoint.trim_end_matches('/')
-        );
-        let endpoint = match endpoint.parse() {
+        // Read the channel on every check so the checkbox takes effect without a restart.
+        let channel = preferences::update_channel(&self.home);
+        let endpoint = match endpoint_for(endpoint, channel).parse() {
             Ok(value) => value,
             Err(_) => return self.check_fail(app, "invalid_update_endpoint"),
         };
@@ -325,6 +325,20 @@ impl UpdaterService {
         self.send_event("check_failed");
         snapshot
     }
+}
+
+/// The metadata URL the Tauri updater expands. Stable launchers send exactly what they always
+/// have; only the opt-in dev channel adds a query parameter, which the Worker reads to answer
+/// with the newer of stable and dev.
+fn endpoint_for(base: &str, channel: UpdateChannel) -> String {
+    let mut endpoint = format!(
+        "{}/launcher/update/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}",
+        base.trim_end_matches('/')
+    );
+    if channel == UpdateChannel::Dev {
+        endpoint.push_str("?channel=dev");
+    }
+    endpoint
 }
 
 fn version_is_below(current: &str, minimum: &str) -> Result<bool, ()> {
@@ -769,6 +783,34 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry, tauri_plugin_updater::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_endpoint_is_unchanged_and_dev_adds_the_channel_query() {
+        let stable = endpoint_for("https://stats.example/", UpdateChannel::Stable);
+        assert_eq!(
+            stable,
+            "https://stats.example/launcher/update/{{target}}/{{arch}}/{{current_version}}"
+        );
+        let dev = endpoint_for("https://stats.example", UpdateChannel::Dev);
+        assert_eq!(dev, format!("{stable}?channel=dev"));
+        // Both are valid URLs once the updater expands the placeholders.
+        let expanded = dev
+            .replace("{{target}}", "windows")
+            .replace("{{arch}}", "x86_64")
+            .replace("{{current_version}}", "0.14.0");
+        let url: reqwest::Url = expanded.parse().unwrap();
+        assert_eq!(url.path(), "/launcher/update/windows/x86_64/0.14.0");
+        assert_eq!(url.query(), Some("channel=dev"));
+    }
+
+    #[test]
+    fn a_dev_build_is_below_its_release_and_above_the_previous_one() {
+        assert_eq!(version_is_below("0.14.1-dev.41", "0.14.1"), Ok(true));
+        assert_eq!(version_is_below("0.14.0", "0.14.1-dev.41"), Ok(true));
+        assert_eq!(version_is_below("0.14.1-dev.41", "0.14.0"), Ok(false));
+        assert_eq!(version_is_below("0.14.1-dev.41", "0.14.1-dev.9"), Ok(false));
+        assert_eq!(version_is_below("0.14.1-dev.41", "0.0.0"), Ok(false));
+    }
 
     #[test]
     fn bundled_tauri_config_can_initialize_the_updater_plugin() {

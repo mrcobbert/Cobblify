@@ -15,6 +15,10 @@ function harness({ status, prefs } = {}) {
     if (command === "set_auto_update") {
       return { status: "saved", autoUpdateEnabled: args.enabled, autoUpdatePrompted: true };
     }
+    if (command === "set_update_channel") {
+      // Native answers with the whole update-preference view, channel included.
+      return { status: "saved", autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: args.channel };
+    }
     return replies[command];
   };
   const timers = [];
@@ -82,4 +86,127 @@ test("auto-update can be enabled and disabled after the first-run choice", async
     h.calls.filter((call) => call.command === "set_auto_update").map((call) => call.args),
     [{ enabled: true }, { enabled: false }],
   );
+});
+
+test("the dev-channel box saves the channel, then checks right away", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" } });
+  await h.controller.bootstrap();
+  assert.equal(h.controller.getState().updateChannel, "stable");
+  const before = h.calls.length;
+
+  await h.controller.setUpdateChannel("dev");
+  assert.equal(h.controller.getState().updateChannel, "dev");
+  assert.deepEqual(
+    h.calls.slice(before).map((call) => [call.command, call.args]),
+    [["set_update_channel", { channel: "dev" }], ["check_for_update", { manual: true }]],
+  );
+
+  await h.controller.setUpdateChannel("stable");
+  assert.equal(h.controller.getState().updateChannel, "stable");
+});
+
+test("the channel box is hidden until preferences load, then shown regardless of launch targets", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "dev", health: "valid" } });
+  assert.equal(h.controller.getState().channelLoaded, false);
+  await h.controller.bootstrap();
+  assert.equal(h.controller.getState().channelLoaded, true);
+  assert.equal(h.controller.getState().updateChannel, "dev");
+});
+
+test("a second click while a channel save is in flight is dropped, so disk ends on the last accepted choice", async () => {
+  const calls = [];
+  let release;
+  const invoke = async (command, args) => {
+    calls.push({ command, args });
+    if (command === "set_update_channel") {
+      await new Promise((resolve) => { release = resolve; });
+      return { status: "saved", autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: args.channel };
+    }
+    if (command === "update_preferences") return { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" };
+    return { state: "current", currentVersion: "0.9.1" };
+  };
+  const controller = createUpdateController(invoke, { schedule: () => 1, cancelSchedule: () => {}, random: () => 0.5 });
+  await controller.bootstrap();
+  const first = controller.setUpdateChannel("dev");
+  assert.equal(controller.getState().channelSaving, true);
+  await controller.setUpdateChannel("stable"); // dropped: nothing sent while saving
+  assert.equal(calls.filter((c) => c.command === "set_update_channel").length, 1);
+  release();
+  await first;
+  assert.equal(controller.getState().channelSaving, false);
+  assert.equal(controller.getState().updateChannel, "dev");
+});
+
+test("a channel the backend could not save surfaces as a preference error and keeps the old channel", async () => {
+  const h = harness({ prefs: { autoUpdateEnabled: false, autoUpdatePrompted: true, updateChannel: "stable", health: "valid" } });
+  await h.controller.bootstrap();
+  const calls = [];
+  const invoke = async (command, args) => {
+    calls.push(command);
+    if (command === "set_update_channel") return { status: "not_saved", diagnostic: "disk full" };
+    return { state: "current", currentVersion: "0.9.1" };
+  };
+  const controller = createUpdateController(invoke, { schedule: () => 1, cancelSchedule: () => {}, random: () => 0.5 });
+  await controller.setUpdateChannel("dev");
+  assert.equal(controller.getState().state, "error");
+  assert.equal(controller.getState().diagnosticCode, "preference_not_saved");
+  assert.equal(controller.getState().updateChannel, "stable");
+  assert.equal(controller.getState().channelSaving, false);
+  assert.deepEqual(calls, ["set_update_channel"]);
+});
+
+test("a check in flight when the channel changes is discarded and never starts a download", async () => {
+  const calls = [];
+  const pending = {};
+  const invoke = (command, args) => {
+    calls.push({ command, args });
+    if (command === "update_preferences") {
+      return Promise.resolve({ autoUpdateEnabled: true, autoUpdatePrompted: true, updateChannel: "dev", health: "valid" });
+    }
+    if (command === "update_status") return Promise.resolve({ state: "current", currentVersion: "0.10.0" });
+    if (command === "check_for_update") {
+      return new Promise((resolve) => { (pending.checks ??= []).push(resolve); });
+    }
+    if (command === "set_update_channel") {
+      return new Promise((resolve) => { pending.save = resolve; });
+    }
+    if (command === "start_update") {
+      return Promise.resolve({ state: "downloading", availableVersion: args?.v ?? "0.11.0-dev.41", downloadedBytes: 0, sizeBytes: 10 });
+    }
+    return Promise.resolve(undefined);
+  };
+  const timers = [];
+  const controller = createUpdateController(invoke, {
+    schedule: (fn) => (timers.push(fn), timers.length),
+    cancelSchedule: () => {},
+    random: () => 0.5,
+  });
+  const boot = controller.bootstrap();
+  await Promise.resolve(); await Promise.resolve();
+  pending.checks.shift()({ state: "current", currentVersion: "0.10.0" }); // bootstrap's check
+  await boot;
+
+  // User unticks the box; while the save is on disk the six-hour timer fires a check
+  // that still asks the dev channel.
+  const save = controller.setUpdateChannel("stable");
+  await Promise.resolve();
+  const timerCheck = timers.at(-1)();
+  await Promise.resolve();
+  assert.equal(pending.checks.length, 1, "the scheduled check is in flight");
+
+  pending.save({ status: "saved", autoUpdateEnabled: true, autoUpdatePrompted: true, updateChannel: "stable" });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(pending.checks.length, 2, "the channel change asked again immediately");
+
+  // The stale dev answer arrives now: it must be ignored, not downloaded.
+  pending.checks[0]({ state: "available", availableVersion: "0.11.0-dev.41", currentVersion: "0.10.0" });
+  await timerCheck;
+  assert.equal(calls.some((c) => c.command === "start_update"), false);
+  assert.notEqual(controller.getState().state, "downloading");
+
+  pending.checks[1]({ state: "current", currentVersion: "0.10.0" });
+  await save;
+  assert.equal(controller.getState().updateChannel, "stable");
+  assert.equal(controller.getState().state, "current");
+  assert.equal(calls.filter((c) => c.command === "check_for_update").length, 3);
 });

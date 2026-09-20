@@ -4,6 +4,14 @@
  * backend snapshot of the same state render identically. Release notes
  * never enter this row.
  */
+/** Dev-channel builds are versioned `<next>-dev.<run>`; the row says so instead of hiding it. */
+const DEV_BUILD_RE = /-dev\.\d+$/;
+export const DEV_BUILD_LABEL = "dev build";
+
+function isDevBuild(version) {
+  return typeof version === "string" && DEV_BUILD_RE.test(version);
+}
+
 function autoToggle(enabled) {
   return {
     secondaryAction: enabled ? "disable" : "enable",
@@ -40,6 +48,7 @@ export function updateView(snapshot) {
       return {
         ...common,
         title: `${version} available`,
+        detail: isDevBuild(version) ? DEV_BUILD_LABEL : "",
         primaryAction: "download",
         primaryLabel: "Update",
         ...autoToggle(snapshot.autoUpdateEnabled),
@@ -94,7 +103,9 @@ export function updateView(snapshot) {
         ...common,
         kind: "current",
         title: "Up to date",
-        detail: snapshot.currentVersion || "",
+        detail: isDevBuild(snapshot.currentVersion)
+          ? `${snapshot.currentVersion} · ${DEV_BUILD_LABEL}`
+          : snapshot.currentVersion || "",
         primaryAction: "check",
         primaryLabel: "Check",
         ...autoToggle(snapshot.autoUpdateEnabled),

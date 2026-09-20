@@ -11,6 +11,7 @@ import {
   resetSessionEnd,
   setAutoJoinHypixel,
   setAutoUpdate,
+  setUpdateChannel,
   setUseExternalOverlay,
   checkForUpdate,
   updatePreferences,
@@ -67,6 +68,7 @@ test("updater commands keep native names and arguments behind the adapter", asyn
   await updateStatus(invoke);
   await checkForUpdate(invoke, false);
   await setAutoUpdate(invoke, true);
+  await setUpdateChannel(invoke, "dev");
   await startUpdate(invoke);
   await pauseUpdate(invoke);
   await resumeUpdate(invoke);
@@ -77,6 +79,7 @@ test("updater commands keep native names and arguments behind the adapter", asyn
     { cmd: "update_status", args: undefined },
     { cmd: "check_for_update", args: { manual: false } },
     { cmd: "set_auto_update", args: { enabled: true } },
+    { cmd: "set_update_channel", args: { channel: "dev" } },
     { cmd: "start_update", args: undefined },
     { cmd: "pause_update", args: undefined },
     { cmd: "resume_update", args: undefined },
