@@ -1,0 +1,15 @@
+{
+  "v": 2,
+  "seq": 3,
+  "jvmPid": 4242,
+  "jvmStartTimeMs": 1700000000000,
+  "context": "MENU",
+  "inHypixel": false,
+  "dashboardEligible": false,
+  "self": null,
+  "mode": null,
+  "partyCount": null,
+  "yourParty": [],
+  "players": [],
+  "teams": []
+}

@@ -5,8 +5,10 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.stats.BedwarsMode;
 import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
+import com.bedwarsqol.stats.EligibilitySnapshot;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.stats.PlayerCard;
 import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.StatsCache;
 import com.bedwarsqol.stats.UrchinTag;
@@ -168,35 +170,29 @@ public final class LobbySnapshot {
         return id;
     }
 
-    /** Build one player row: identity from name/UUID, stats from the cache (LOADING when not yet resolved). */
+    /** Cache reads for {@link PlayerCard}; the only stats access the snapshot performs. */
+    private static final PlayerCard.Source SOURCE = new PlayerCard.Source() {
+        public BedwarsStats byUuid(UUID uuid) { return StatsCache.getCached(uuid); }
+        public BedwarsStats byName(String name) { return StatsCache.getCachedByName(name); }
+        public void fetchByName(String name) { StatsCache.ensureFetchedByName(name, StatsCache.PRIORITY_TAB); }
+    };
+
+    /**
+     * Build one player row through {@link PlayerCard}: the same toggles, eligibility gate, display
+     * mode and denick rule the tab list and chat use, so the overlay never disagrees with them.
+     */
     private static LobbyExport.Player player(String name, UUID uuid) {
+        ClientSettings cfg = BedwarsQol.config;
+        PlayerCard.Toggles toggles = cfg == null ? PlayerCard.Toggles.ALL_OFF
+                : new PlayerCard.Toggles(cfg.urchinTags, cfg.seraphTags, cfg.nickUtils, cfg.autoDenick);
+        EligibilitySnapshot snap = EligibilitySnapshot.current();
+        boolean urchinEligible = uuid != null && UrchinTag.badgeAllowed(snap, name, uuid);
+        boolean seraphEligible = uuid != null && SeraphTag.badgeAllowed(snap, name, uuid);
+        PlayerCard card = PlayerCard.build(SOURCE, name, uuid, BedwarsModeDetector.displayMode(cfg),
+                toggles, urchinEligible, seraphEligible, Denicks.realNameForNick(name),
+                System.currentTimeMillis());
         LobbyExport.Player p = new LobbyExport.Player(name);
-        String real = Denicks.realNameForNick(name);
-        if (real != null) {
-            p.nicked = true;
-            p.realName = real;
-        }
-        BedwarsStats st = StatsCache.getCached(uuid);
-        if (st == null) st = StatsCache.getCachedByName(name);
-        if (st == null) {
-            p.state = "LOADING";
-            return p;
-        }
-        switch (st.state) {
-            case OK:           p.state = "OK"; break;
-            case NEVER_PLAYED: p.state = "NEVER_PLAYED"; break;
-            case NICKED:       p.state = "NICKED"; p.nicked = true; break;
-            case ERROR:        p.state = "ERROR"; break;
-            default:           p.state = "LOADING"; break;
-        }
-        p.rank = LobbyExport.stripColors(st.rankPrefix);
-        p.fkdr = st.fkdr;
-        p.wlr = st.wlr;
-        p.finalKills = st.finalKills;
-        p.kd = st.kd;
-        p.seraphThreat = st.seraphThreat;
-        for (SeraphTag t : st.seraphTags) p.seraphTags.add(t.displayName());
-        for (UrchinTag t : st.urchinTags) p.urchinTags.add(t.displayName());
+        p.apply(card);
         return p;
     }
 

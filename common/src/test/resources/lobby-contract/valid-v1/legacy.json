@@ -1,0 +1,71 @@
+{
+  "v": 1,
+  "seq": 9,
+  "jvmPid": 4242,
+  "jvmStartTimeMs": 1700000000000,
+  "context": "GAME",
+  "inHypixel": true,
+  "dashboardEligible": true,
+  "self": "you_",
+  "mode": "Solos",
+  "partyCount": null,
+  "yourParty": [
+    {
+      "name": "you_",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "fkdr": 5.9,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "seraphThreat": -1,
+      "seraphTags": [],
+      "urchinTags": []
+    }
+  ],
+  "players": [
+    {
+      "name": "Sweat",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "fkdr": 12.5,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "seraphThreat": -1,
+      "seraphTags": [],
+      "urchinTags": [
+        "Blatant Cheater"
+      ],
+      "presence": "ACTIVE"
+    }
+  ],
+  "teams": [
+    {
+      "name": "Red",
+      "players": [
+        {
+          "name": "Sweat",
+          "state": "OK",
+          "nicked": false,
+          "realName": null,
+          "rank": "",
+          "fkdr": 12.5,
+          "wlr": 0.0,
+          "finalKills": 0,
+          "kd": 0.0,
+          "seraphThreat": -1,
+          "seraphTags": [],
+          "urchinTags": [
+            "Blatant Cheater"
+          ],
+          "presence": "ACTIVE"
+        }
+      ]
+    }
+  ]
+}

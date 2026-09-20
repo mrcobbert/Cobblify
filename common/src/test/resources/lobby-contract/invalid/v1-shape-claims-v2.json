@@ -1,0 +1,318 @@
+{
+  "v": 2,
+  "seq": 1,
+  "jvmPid": 4242,
+  "jvmStartTimeMs": 1700000000000,
+  "context": "GAME",
+  "inHypixel": true,
+  "dashboardEligible": true,
+  "self": "you_",
+  "mode": "4v4v4v4",
+  "partyCount": null,
+  "yourParty": [
+    {
+      "name": "you_",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 5.9,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 2,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    }
+  ],
+  "players": [
+    {
+      "name": "Sweat",
+      "state": "OK",
+      "nicked": true,
+      "realName": "RealSweat",
+      "rank": "[MVP+]",
+      "rankCodes": "§b[MVP§c+§b]",
+      "mode": "4s",
+      "fkdr": 12.5,
+      "wlr": 4.2,
+      "finalKills": 12345,
+      "kd": 3.1,
+      "fkdrTier": 3,
+      "cheater": true,
+      "badge": {
+        "code": "BC",
+        "color": "§6",
+        "label": "Blatant Cheater",
+        "positive": false
+      },
+      "seraphThreat": 4,
+      "presence": "ELIMINATED",
+      "urchinTags": [
+        "Blatant Cheater"
+      ]
+    },
+    {
+      "name": "Newbie",
+      "state": "LOADING",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 0.0,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 0,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    },
+    {
+      "name": "iToxicWaffle",
+      "state": "NICKED",
+      "nicked": true,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 0.0,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 0,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    },
+    {
+      "name": "FirstGame",
+      "state": "NEVER_PLAYED",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 0.0,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 0,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    },
+    {
+      "name": "Flaky",
+      "state": "ERROR",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 0.0,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 0,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    },
+    {
+      "name": "Mid",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "[VIP]",
+      "rankCodes": "§a[VIP]",
+      "mode": "Overall",
+      "fkdr": 3.4,
+      "wlr": 1.1,
+      "finalKills": 900,
+      "kd": 1.5,
+      "fkdrTier": 1,
+      "cheater": false,
+      "badge": {
+        "code": "SL",
+        "color": "§a",
+        "label": "Safelisted",
+        "positive": true
+      },
+      "chips": [
+        {
+          "code": "SL",
+          "color": "§a",
+          "label": "Safelisted",
+          "positive": true
+        }
+      ],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    }
+  ],
+  "teams": [
+    {
+      "name": "Red",
+      "players": [
+        {
+          "name": "Sweat",
+          "state": "OK",
+          "nicked": true,
+          "realName": "RealSweat",
+          "rank": "[MVP+]",
+          "rankCodes": "§b[MVP§c+§b]",
+          "mode": "4s",
+          "fkdr": 12.5,
+          "wlr": 4.2,
+          "finalKills": 12345,
+          "kd": 3.1,
+          "fkdrTier": 3,
+          "cheater": true,
+          "badge": {
+            "code": "BC",
+            "color": "§6",
+            "label": "Blatant Cheater",
+            "positive": false
+          },
+          "seraphThreat": 4,
+          "presence": "ELIMINATED",
+          "urchinTags": [
+            "Blatant Cheater"
+          ]
+        },
+        {
+          "name": "Newbie",
+          "state": "LOADING",
+          "nicked": false,
+          "realName": null,
+          "rank": "",
+          "rankCodes": "",
+          "mode": "Overall",
+          "fkdr": 0.0,
+          "wlr": 0.0,
+          "finalKills": 0,
+          "kd": 0.0,
+          "fkdrTier": 0,
+          "cheater": false,
+          "badge": null,
+          "chips": [],
+          "seraphThreat": -1,
+          "presence": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "name": "Blue",
+      "players": [
+        {
+          "name": "iToxicWaffle",
+          "state": "NICKED",
+          "nicked": true,
+          "realName": null,
+          "rank": "",
+          "rankCodes": "",
+          "mode": "Overall",
+          "fkdr": 0.0,
+          "wlr": 0.0,
+          "finalKills": 0,
+          "kd": 0.0,
+          "fkdrTier": 0,
+          "cheater": false,
+          "badge": null,
+          "chips": [],
+          "seraphThreat": -1,
+          "presence": "ACTIVE"
+        },
+        {
+          "name": "FirstGame",
+          "state": "NEVER_PLAYED",
+          "nicked": false,
+          "realName": null,
+          "rank": "",
+          "rankCodes": "",
+          "mode": "Overall",
+          "fkdr": 0.0,
+          "wlr": 0.0,
+          "finalKills": 0,
+          "kd": 0.0,
+          "fkdrTier": 0,
+          "cheater": false,
+          "badge": null,
+          "chips": [],
+          "seraphThreat": -1,
+          "presence": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "name": "Green",
+      "players": [
+        {
+          "name": "Flaky",
+          "state": "ERROR",
+          "nicked": false,
+          "realName": null,
+          "rank": "",
+          "rankCodes": "",
+          "mode": "Overall",
+          "fkdr": 0.0,
+          "wlr": 0.0,
+          "finalKills": 0,
+          "kd": 0.0,
+          "fkdrTier": 0,
+          "cheater": false,
+          "badge": null,
+          "chips": [],
+          "seraphThreat": -1,
+          "presence": "ACTIVE"
+        },
+        {
+          "name": "Mid",
+          "state": "OK",
+          "nicked": false,
+          "realName": null,
+          "rank": "[VIP]",
+          "rankCodes": "§a[VIP]",
+          "mode": "Overall",
+          "fkdr": 3.4,
+          "wlr": 1.1,
+          "finalKills": 900,
+          "kd": 1.5,
+          "fkdrTier": 1,
+          "cheater": false,
+          "badge": {
+            "code": "SL",
+            "color": "§a",
+            "label": "Safelisted",
+            "positive": true
+          },
+          "chips": [
+            {
+              "code": "SL",
+              "color": "§a",
+              "label": "Safelisted",
+              "positive": true
+            }
+          ],
+          "seraphThreat": -1,
+          "presence": "ACTIVE"
+        }
+      ]
+    }
+  ]
+}
