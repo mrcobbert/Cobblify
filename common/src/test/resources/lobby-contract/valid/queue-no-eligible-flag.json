@@ -1,0 +1,53 @@
+{
+  "v": 2,
+  "seq": 3,
+  "jvmPid": 4242,
+  "jvmStartTimeMs": 1700000000000,
+  "context": "QUEUE",
+  "inHypixel": true,
+  "self": "you_",
+  "mode": "Doubles",
+  "partyCount": 3,
+  "yourParty": [
+    {
+      "name": "you_",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 5.9,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 2,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    },
+    {
+      "name": "duo_diff",
+      "state": "OK",
+      "nicked": false,
+      "realName": null,
+      "rank": "",
+      "rankCodes": "",
+      "mode": "Overall",
+      "fkdr": 7.2,
+      "wlr": 0.0,
+      "finalKills": 0,
+      "kd": 0.0,
+      "fkdrTier": 2,
+      "cheater": false,
+      "badge": null,
+      "chips": [],
+      "seraphThreat": -1,
+      "presence": "ACTIVE"
+    }
+  ],
+  "players": [],
+  "teams": []
+}

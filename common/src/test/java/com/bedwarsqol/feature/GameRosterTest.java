@@ -1,5 +1,6 @@
 package com.bedwarsqol.feature;
 
+import com.bedwarsqol.stats.PlayerCard;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -221,7 +222,10 @@ public class GameRosterTest {
         ok.kd = 3.6;
         ok.rank = "[MVP+]";
         ok.seraphThreat = 2;
-        ok.urchinTags.add("GHOST");
+        ok.fkdrTier = 2;
+        ok.cheater = true;
+        ok.badge = new PlayerCard.Chip("BC", "§6", "Blatant Cheater", false);
+        ok.chips.add(ok.badge);
         assertSame(ok, r.withRetainedStats("Alice", ok));
 
         LobbyExport.Player loading = new LobbyExport.Player("Alice");
@@ -233,7 +237,11 @@ public class GameRosterTest {
         assertEquals(17700, served.finalKills);
         assertEquals("[MVP+]", served.rank);
         assertEquals(2, served.seraphThreat);
-        assertEquals(Arrays.asList("GHOST"), served.urchinTags);
+        assertEquals(2, served.fkdrTier);
+        assertTrue(served.cheater);
+        assertEquals("BC", served.badge.code);
+        assertEquals(1, served.chips.size());
+        assertEquals("Blatant Cheater", served.chips.get(0).label);
 
         LobbyExport.Player error = new LobbyExport.Player("Alice");
         error.state = "ERROR";

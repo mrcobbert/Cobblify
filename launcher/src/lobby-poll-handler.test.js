@@ -12,18 +12,22 @@ const pp = {
   nicked: false,
   realName: null,
   rank: "",
+  rankCodes: "",
+  mode: "Overall",
   fkdr: 1,
   wlr: 1,
   finalKills: 0,
   kd: 1,
+  fkdrTier: 0,
+  cheater: false,
+  badge: null,
+  chips: [],
   seraphThreat: -1,
-  seraphTags: [],
-  urchinTags: [],
 };
 
 function liveSnap(extra = {}) {
   return {
-    v: 1,
+    v: 2,
     seq: 1,
     jvmPid: 42,
     jvmStartTimeMs: 1_700_000_000_000,

@@ -1,4 +1,7 @@
+import { isOutdatedSnapshot } from "./lobby-validator.js";
+
 const NOTE = "Not Available";
+const OUTDATED = "Update Cobblify to use the overlay";
 
 /** Absent flag (old mod) is eligible. Only an explicit false hides the roster. */
 export function isDashboardEligible(d) {
@@ -18,8 +21,15 @@ export function viewUnsupported(d) {
   return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true };
 }
 
-/** Choose the unsupported empty state or the caller's normal roster view. */
+/** A well-formed snapshot from an older mod jar: the launcher cannot draw its rows. */
+export function viewOutdated() {
+  const note = `<div class="empty-note">${OUTDATED}</div>`;
+  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true };
+}
+
+/** Choose the outdated note, the unsupported empty state, or the caller's normal roster view. */
 export function dashboardView(d, fallbackViewOf) {
+  if (isOutdatedSnapshot(d)) return viewOutdated();
   return isDashboardEligible(d) ? fallbackViewOf(d) : viewUnsupported(d);
 }
 
@@ -37,3 +47,4 @@ export function nextLiveDashboard(d, { firstLiveSeen = false, wasDisconnected = 
 }
 
 export const UNSUPPORTED_NOTE = NOTE;
+export const OUTDATED_NOTE = OUTDATED;

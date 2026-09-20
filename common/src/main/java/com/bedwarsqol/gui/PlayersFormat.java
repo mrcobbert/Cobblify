@@ -1,6 +1,7 @@
 package com.bedwarsqol.gui;
 
 import com.bedwarsqol.stats.BedwarsStats;
+import com.bedwarsqol.stats.PlayerCard;
 import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.UrchinTag;
 
@@ -96,15 +97,7 @@ public final class PlayersFormat {
      * Seraph. Callers pass already gating-filtered lists.
      */
     public static Chip chipFor(List<UrchinTag> urchin, long nowMs, List<SeraphTag> seraph) {
-        UrchinTag u = UrchinTag.priority(urchin, nowMs);
-        SeraphTag s = SeraphTag.priority(seraph);
-        int uRank = u == null ? Integer.MIN_VALUE : 100 + u.severity();               // Urchin = danger band
-        int sRank;
-        if (s == null) sRank = Integer.MIN_VALUE;
-        else if ("safelist".equals(s.kind)) sRank = s.severity();                     // positive, low band
-        else sRank = 100 + s.severity();                                              // danger band
-        if (uRank == Integer.MIN_VALUE && sRank == Integer.MIN_VALUE) return null;
-        if (sRank >= uRank) return new Chip(sectionColorToRgb(s.color()), s.displayIcon());
-        return new Chip(sectionColorToRgb(u.color()), u.displayIcon());
+        PlayerCard.Chip c = PlayerCard.priorityBadge(urchin, nowMs, seraph);
+        return c == null ? null : new Chip(sectionColorToRgb(c.color), c.code);
     }
 }

@@ -35,6 +35,7 @@ import { createUpdateController } from "./update-controller.js";
 import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
+import { colorClass, rowModel, sectionSpans } from "./row-model.js";
 import {
   abortLaunchSession,
   quitApp,
@@ -109,6 +110,17 @@ syncHomeLayout();
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
 
 // ── preview sample data ─────────────────────────────────────────────────────
+// Shaped exactly like a v2 lobby.json row: the mod has already decided the
+// tier, the cheater flag, the badge and the chips, so the sample carries them.
+const RANK_CODES = {
+  "[MVP++]": "§6[MVP§c++§6]",
+  "[MVP+]": "§b[MVP§c+§b]",
+  "[MVP]": "§b[MVP]",
+  "[VIP+]": "§a[VIP§6+§a]",
+  "[VIP]": "§a[VIP]",
+};
+const chip = (code, color, label, positive = false) => ({ code, color, label, positive });
+const tagged = (chips, cheater) => ({ chips, badge: chips[0] ?? null, cheater });
 const pp = (o) =>
   Object.assign(
     {
@@ -116,34 +128,38 @@ const pp = (o) =>
       nicked: false,
       realName: null,
       rank: "",
+      rankCodes: RANK_CODES[o.rank] ?? "",
+      mode: "Overall",
       fkdr: 0,
       wlr: 0,
       finalKills: 0,
       kd: 0,
+      fkdrTier: 0,
+      cheater: false,
+      badge: null,
+      chips: [],
       seraphThreat: -1,
-      seraphTags: [],
-      urchinTags: [],
     },
     o,
   );
 
 const P = {
-  you: pp({ name: "you_", rank: "[MVP+]", fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
-  duo: pp({ name: "duo_diff", rank: "[VIP+]", fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
-  third: pp({ name: "third_wheeler", rank: "[MVP]", fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
-  clutch: pp({ name: "clutch_or_kick", rank: "[VIP]", fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
-  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, seraphTags: ["REACH"], urchinTags: ["BLATANT"] }),
-  wallhax: pp({ name: "wallhax_", rank: "[VIP]", fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, urchinTags: ["GHOST"] }),
-  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
-  zenith: pp({ name: "ok_zenith", rank: "[MVP+]", fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
-  prot: pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
-  frost: pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
-  moss: pp({ name: "mossling", rank: "[MVP]", fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
-  ogre: pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
-  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdr: 2.1, wlr: 1.4, finalKills: 3120, kd: 1.6 }),
-  virus: pp({ name: "notavirus_exe", rank: "[VIP+]", fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, urchinTags: ["AUTOCLICK"] }),
-  bread: pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
-  cool: pp({ name: "coolkid2013", rank: "", fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
+  you: pp({ name: "you_", rank: "[MVP+]", fkdrTier: 2, fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
+  duo: pp({ name: "duo_diff", rank: "[VIP+]", fkdrTier: 2, fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
+  third: pp({ name: "third_wheeler", rank: "[MVP]", fkdrTier: 1, fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
+  clutch: pp({ name: "clutch_or_kick", rank: "[VIP]", fkdrTier: 0, fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
+  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdrTier: 3, fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, ...tagged([chip("BC", "§6", "Blatant Cheater"), chip("BL", "§4", "Blacklisted (verified)")], true) }),
+  wallhax: pp({ name: "wallhax_", rank: "[VIP]", fkdrTier: 3, fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, ...tagged([chip("CC", "§6", "Closet Cheater")], true) }),
+  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdrTier: 3, fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
+  zenith: pp({ name: "ok_zenith", rank: "[MVP+]", fkdrTier: 2, fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
+  prot: pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdrTier: 2, fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
+  frost: pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdrTier: 1, fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
+  moss: pp({ name: "mossling", rank: "[MVP]", fkdrTier: 1, fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
+  ogre: pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdrTier: 1, fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
+  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdrTier: 1, fkdr: 2.1, ...tagged([chip("SL", "§a", "Safelisted", true)], false), wlr: 1.4, finalKills: 3120, kd: 1.6 }),
+  virus: pp({ name: "notavirus_exe", rank: "[VIP+]", fkdrTier: 0, fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, ...tagged([chip("S", "§4", "Sniper")], false) }),
+  bread: pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdrTier: 0, fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
+  cool: pp({ name: "coolkid2013", rank: "", fkdrTier: 0, fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
   nick: pp({ name: "iToxicWaffle", rank: "", state: "NICKED", nicked: true }),
   grandpa: pp({ name: "Grandpa_Joe", rank: "", state: "NEVER_PLAYED" }),
   lag: pp({ name: "lagswitch99", rank: "[VIP]", state: "LOADING" }),
@@ -1113,24 +1129,12 @@ function fitDash() {
 }
 
 // ── dashboard rendering (from ~/.cobblify/lobby.json) ───────────────────────
-const CHEAT_TAG = /BLATANT|GHOST|REACH|AUTOCLICK/i;
+// Every decision on a row was made in the mod (see row-model.js); this only
+// draws the model it is handed.
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
-}
-const n2 = (v) => (typeof v === "number" && isFinite(v) ? v.toFixed(2) : "—");
-const nInt = (v) => (typeof v === "number" && isFinite(v) ? Math.round(v).toLocaleString() : "—");
-const tier = (f) => (f >= 10 ? 3 : f >= 6 ? 2 : f >= 3 ? 1 : 0);
-
-function isCheater(p) {
-  const seraphTags = p.seraphTags ?? [];
-  const urchinTags = p.urchinTags ?? [];
-  return (
-    (typeof p.seraphThreat === "number" && p.seraphThreat >= 3) ||
-    urchinTags.length > 0 ||
-    seraphTags.some((t) => CHEAT_TAG.test(t))
   );
 }
 
@@ -1141,42 +1145,21 @@ const bySweat = sortRoster;
 function pname(p, chips) {
   const flags = chips && chips.length ? `<span class="flags-inline">${chips.join("")}</span>` : "";
   return `<div class="pname"><span class="sweat-bar"></span>
-    <div class="identity">${rankHtml(p.rank)}<span class="pn">${esc(p.name)}</span></div>${flags}</div>`;
+    <div class="identity">${rankHtml(p)}<span class="pn">${esc(p.name)}</span></div>${flags}</div>`;
 }
 
-function rankHtml(rank) {
-  const raw = String(rank ?? "").trim();
-  if (!raw) return "";
-  const inner = raw.replace(/^\[/, "").replace(/\]$/, "");
-  const tag = (html) => `<span class="rank">${html}</span>`;
-  switch (inner.toUpperCase()) {
-    case "MVP++":
-      return tag(`<span class="r-gold">[MVP<span class="r-red">++</span>]</span>`);
-    case "MVP+":
-      return tag(`<span class="r-aqua">[MVP+]</span>`);
-    case "MVP":
-      return tag(`<span class="r-aqua">[MVP]</span>`);
-    case "VIP+":
-      return tag(`<span class="r-green">[VIP<span class="r-gold">+</span>]</span>`);
-    case "VIP":
-      return tag(`<span class="r-green">[VIP]</span>`);
-    case "YOUTUBE":
-      return tag(`<span class="r-red">[<span class="r-white">YOUTUBE</span>]</span>`);
-    case "ADMIN":
-      return tag(`<span class="r-red">[ADMIN]</span>`);
-    case "OWNER":
-      return tag(`<span class="r-red">[OWNER]</span>`);
-    case "MOJANG":
-      return tag(`<span class="r-gold">[MOJANG]</span>`);
-    case "GM":
-      return tag(`<span class="r-darkgreen">[GM]</span>`);
-    case "MOD":
-      return tag(`<span class="r-darkgreen">[MOD]</span>`);
-    case "HELPER":
-      return tag(`<span class="r-blue">[HELPER]</span>`);
-    default:
-      return tag(esc(raw));
+// The mod exports the rank with its own § colour codes; each code becomes a
+// class. A row with no codes falls back to the plain label.
+function rankHtml(p) {
+  const spans = sectionSpans(p.rankCodes);
+  if (spans.length) {
+    const inner = spans
+      .map((s) => (s.cls ? `<span class="${s.cls}">${esc(s.text)}</span>` : esc(s.text)))
+      .join("");
+    return `<span class="rank">${inner}</span>`;
   }
+  const raw = String(p.rank ?? "").trim();
+  return raw ? `<span class="rank">${esc(raw)}</span>` : "";
 }
 
 const TEAM_SLUG = {
@@ -1195,60 +1178,26 @@ function teamClass(name) {
   return slug ? ` team-${slug}` : "";
 }
 
+// A chip carries the mod's colour as a class (see .dash .chip.mc-*); the
+// style decides how much of that colour the sheet shows.
+const chipHtml = (c) => {
+  const mc = colorClass(c.color);
+  return `<span class="chip ${c.cls}${mc ? ` ${mc}` : ""}">${esc(c.text)}</span>`;
+};
+const cellHtml = (c) =>
+  c.skeleton
+    ? `<div class="stat ${c.cls}"><span class="skel" style="width:${c.width}px"></span></div>`
+    : `<div class="stat${c.muted ? " muted" : ""} ${c.cls}">${esc(c.text)}</div>`;
+
 // A player who is out of the game keeps their row - dimmed, badged, and
 // struck through once eliminated - so the team never shrinks or reorders
-// under the reader. The badge leads the flag strip; the stat cells are the
-// same cells every other row gets.
-function outClass(p) {
-  if (isActive(p)) return "";
-  return p.presence === "ELIMINATED" ? " is-out is-eliminated" : " is-out";
-}
-
-function outChip(p) {
-  const badge = presenceBadge(p);
-  return badge ? [`<span class="chip out">${badge}</span>`] : [];
-}
-
+// under the reader. The model decides the classes, chips and cells.
 function row(p, teamName) {
-  const teamCls = teamClass(teamName) + outClass(p);
-  const lead = outChip(p);
-  if (p.state === "LOADING") {
-    return `<div class="prow loading${teamCls}">
-      ${pname(p, [...lead, '<span class="chip state">resolving</span>'])}
-      <div class="stat fkdr"><span class="skel" style="width:28px"></span></div>
-      <div class="stat cell-wlr"><span class="skel" style="width:24px"></span></div>
-      <div class="stat cell-finals"><span class="skel" style="width:34px"></span></div>
-      <div class="stat cell-kd"><span class="skel" style="width:22px"></span></div></div>`;
-  }
-
-  if (p.state === "NEVER_PLAYED" || p.state === "ERROR") {
-    const lbl = p.state === "ERROR" ? "error" : "never played";
-    return `<div class="prow${teamCls}">
-      ${pname(p, [...lead, `<span class="chip state">${lbl}</span>`])}
-      <div class="stat muted fkdr">—</div><div class="stat muted cell-wlr">—</div>
-      <div class="stat muted cell-finals">—</div><div class="stat muted cell-kd">—</div></div>`;
-  }
-
-  if (p.state === "NICKED" && !p.realName) {
-    return `<div class="prow${teamCls}">
-      ${pname(p, [...lead, '<span class="chip nick">nick</span>'])}
-      <div class="stat muted fkdr">?</div><div class="stat muted cell-wlr">?</div>
-      <div class="stat muted cell-finals">?</div><div class="stat muted cell-kd">?</div></div>`;
-  }
-
-  const t = tier(p.fkdr ?? 0);
-  const cheat = isCheater(p);
-  const chips = [...lead];
-  if (p.nicked && p.realName) chips.push(`<span class="chip nick">nick→${esc(p.realName)}</span>`);
-  (p.seraphTags ?? []).forEach((s) => chips.push(`<span class="chip cheat">${esc(s)}</span>`));
-  (p.urchinTags ?? []).forEach((s) => chips.push(`<span class="chip cheat">${esc(s)}</span>`));
-
-  return `<div class="prow t${t} ${cheat ? "cheater" : ""}${teamCls}">
-    ${pname(p, chips)}
-    <div class="stat fkdr">${n2(p.fkdr)}</div>
-    <div class="stat cell-wlr">${n2(p.wlr)}</div>
-    <div class="stat cell-finals">${nInt(p.finalKills)}</div>
-    <div class="stat cell-kd">${n2(p.kd)}</div></div>`;
+  const m = rowModel(p);
+  const cls = [...m.classes, teamClass(teamName).trim()].filter(Boolean).join(" ");
+  return `<div class="${cls}">
+    ${pname(p, m.chips.map(chipHtml))}
+    ${m.cells.map(cellHtml).join("")}</div>`;
 }
 
 // ── column layout ───────────────────────────────────────────────────────────

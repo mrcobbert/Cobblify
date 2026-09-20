@@ -1,4 +1,17 @@
-/** Complete v1 lobby snapshot validator for acknowledgement. */
+/**
+ * Lobby snapshot validator for acknowledgement.
+ *
+ * Two shapes are recognised. v2 is the current contract: every presentation decision
+ * (tier, cheater, badge, chips, mode, nick reveal) is made in the mod and exported, and
+ * the launcher only draws. v1 is the shape older mod jars still write; it is accepted so
+ * the writer binding and session tracking keep working, but the dashboard shows an
+ * "update Cobblify" note for it instead of a roster (see dashboard-view.js).
+ *
+ * The fixtures under common/src/test/resources/lobby-contract are the shared truth for this
+ * file, the Rust validator and the mod's DTO test.
+ */
+
+export const CONTRACT_VERSION = 2;
 
 const LIVE = new Set(["LOBBY", "QUEUE", "GAME"]);
 const STATES = new Set(["OK", "NICKED", "NEVER_PLAYED", "ERROR", "LOADING"]);
@@ -17,7 +30,7 @@ function isSafeJsPositiveInt(n) {
   return Number.isInteger(n) && n > 0 && n <= Number.MAX_SAFE_INTEGER;
 }
 
-function validPlayer(p) {
+function validCommonPlayer(p) {
   if (!p || typeof p !== "object") return false;
   if (typeof p.name !== "string") return false;
   if (typeof p.state !== "string" || !STATES.has(p.state)) return false;
@@ -28,14 +41,37 @@ function validPlayer(p) {
   if (!isFiniteNumber(p.fkdr) || !isFiniteNumber(p.wlr) || !isFiniteNumber(p.kd)) return false;
   if (!isSafeInt(p.finalKills)) return false;
   if (!isSafeInt(p.seraphThreat)) return false;
-  if (!Array.isArray(p.seraphTags) || !Array.isArray(p.urchinTags)) return false;
-  for (const t of p.seraphTags) if (typeof t !== "string") return false;
-  for (const t of p.urchinTags) if (typeof t !== "string") return false;
   if (p.presence !== undefined && !PRESENCE.has(p.presence)) return false;
   return true;
 }
 
-function validTeam(t) {
+function validPlayerV1(p) {
+  if (!validCommonPlayer(p)) return false;
+  if (!Array.isArray(p.seraphTags) || !Array.isArray(p.urchinTags)) return false;
+  for (const t of p.seraphTags) if (typeof t !== "string") return false;
+  for (const t of p.urchinTags) if (typeof t !== "string") return false;
+  return true;
+}
+
+export function validChip(c) {
+  if (!c || typeof c !== "object") return false;
+  if (typeof c.code !== "string" || typeof c.color !== "string" || typeof c.label !== "string") return false;
+  return typeof c.positive === "boolean";
+}
+
+function validPlayerV2(p) {
+  if (!validCommonPlayer(p)) return false;
+  if (typeof p.rankCodes !== "string") return false;
+  if (typeof p.mode !== "string") return false;
+  if (!Number.isInteger(p.fkdrTier) || p.fkdrTier < 0 || p.fkdrTier > 3) return false;
+  if (typeof p.cheater !== "boolean") return false;
+  if (!("badge" in p)) return false;
+  if (p.badge !== null && !validChip(p.badge)) return false;
+  if (!Array.isArray(p.chips) || !p.chips.every(validChip)) return false;
+  return true;
+}
+
+function validTeam(t, validPlayer) {
   if (!t || typeof t !== "object") return false;
   if (typeof t.name !== "string") return false;
   if (!Array.isArray(t.players)) return false;
@@ -48,7 +84,8 @@ function validTeam(t) {
  */
 export function isValidLobbySnapshot(d) {
   if (!d || typeof d !== "object") return false;
-  if (d.v !== 1) return false;
+  const validPlayer = d.v === 2 ? validPlayerV2 : d.v === 1 ? validPlayerV1 : null;
+  if (!validPlayer) return false;
   if (!isSafeInt(d.seq)) return false;
   if (!isSafeInt(d.jvmPid) || d.jvmPid <= 0) return false;
   if (!isSafeJsPositiveInt(d.jvmStartTimeMs)) return false;
@@ -68,8 +105,13 @@ export function isValidLobbySnapshot(d) {
   }
   if (!d.yourParty.every(validPlayer)) return false;
   if (!d.players.every(validPlayer)) return false;
-  if (!d.teams.every(validTeam)) return false;
+  if (!d.teams.every((t) => validTeam(t, validPlayer))) return false;
   return true;
+}
+
+/** A well-formed snapshot from a mod jar older than this launcher's contract. */
+export function isOutdatedSnapshot(d) {
+  return Boolean(d) && typeof d === "object" && Number.isInteger(d.v) && d.v < CONTRACT_VERSION;
 }
 
 export function classifyLive(snapshot) {

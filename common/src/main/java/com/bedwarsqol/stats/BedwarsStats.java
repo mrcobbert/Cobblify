@@ -205,10 +205,24 @@ public final class BedwarsStats {
      * flagged as a threat (the old ramp painted both {@code <1} and {@code >=10} red).
      */
     public static String fkdrColor(double fkdr) {
-        if (fkdr < 2.0)  return "§f";  // White  - low threat
-        if (fkdr < 5.0)  return "§e";  // Yellow
-        if (fkdr < 10.0) return "§6";  // Orange (gold)
-        return "§c";                   // Red    - sweat
+        switch (fkdrTier(fkdr)) {
+            case 0:  return "§f";  // White  - low threat
+            case 1:  return "§e";  // Yellow
+            case 2:  return "§6";  // Orange (gold)
+            default: return "§c";  // Red    - sweat
+        }
+    }
+
+    /**
+     * THE FKDR threshold table: tier 0 below 2, 1 below 5, 2 below 10, 3 at 10 and above. Every
+     * surface that colours or classes an FKDR (nametag/tab/chat colour, overlay row tier) derives
+     * from this one function, so the tiers can never drift apart again.
+     */
+    public static int fkdrTier(double fkdr) {
+        if (fkdr < 2.0)  return 0;
+        if (fkdr < 5.0)  return 1;
+        if (fkdr < 10.0) return 2;
+        return 3;
     }
 
     /** Skill ramp by WLR: White &lt; 1 &rarr; Green 1-2 &rarr; Yellow 2-3 &rarr; Gold 3-5 &rarr; Red 5+. */
@@ -268,7 +282,7 @@ public final class BedwarsStats {
         }
         ModeStats m = statsFor(mode);
         StringBuilder header = new StringBuilder("§6§lBedWars");
-        String modeTag = hoverModeTag(mode);
+        String modeTag = modeLabel(mode);
         if (modeTag != null) header.append(" §r§7(").append(modeTag).append("§7)");
         if (bedwarsLevel > 0) header.append(" §r").append(starTag(bedwarsLevel));
         if (showRank && !rankPrefix.isEmpty()) header.append(" §r").append(rankPrefix);
@@ -280,12 +294,12 @@ public final class BedwarsStats {
     }
 
     /**
-     * Short label for the mode the hover card is actually showing — {@code Solo}/{@code 2s}/{@code 3s}/
+     * Short label for the mode a stats display is actually showing — {@code Solo}/{@code 2s}/{@code 3s}/
      * {@code 4s} — or {@code null} for overall. Returns null when a specific mode was requested but the
      * player has no games there, because {@link #statsFor} then falls back to overall and labelling it
      * with the requested mode would misrepresent the numbers on screen.
      */
-    private String hoverModeTag(BedwarsMode mode) {
+    public String modeLabel(BedwarsMode mode) {
         switch (mode) {
             case SOLO:    return solo    != null && solo.hasGames()    ? "Solo" : null;
             case DOUBLES: return doubles != null && doubles.hasGames() ? "2s"   : null;

@@ -3,6 +3,7 @@ package com.bedwarsqol.feature;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.bedwarsqol.stats.PlayerCard;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -378,7 +379,7 @@ public final class LobbyExport {
 
     /** Root of {@code lobby.json}; {@code seq} and writer identity are injected by the writer. */
     public static final class Lobby {
-        public final int v = 1;
+        public final int v = 2;
         public long jvmPid;
         public long jvmStartTimeMs;
         public String context = "MENU";     // MENU | LOBBY | QUEUE | GAME
@@ -401,24 +402,52 @@ public final class LobbyExport {
         }
     }
 
+    /**
+     * One overlay row. Every presentation decision (tier, cheater, badge, chips, mode, nick reveal)
+     * is filled from a {@link PlayerCard}; the launcher draws these fields and derives nothing.
+     */
     public static final class Player {
         public String name;
         public String state = "LOADING";     // OK|NICKED|NEVER_PLAYED|ERROR|LOADING
         public boolean nicked;
-        public String realName;              // de-nicked real IGN, else null
+        public String realName;              // verified + revealed real IGN, else null
         public String rank = "";             // plain text, no color codes
+        public String rankCodes = "";        // the same label with its §-color codes
+        public String mode = PlayerCard.OVERALL; // Overall|Solo|2s|3s|4s - where the numbers came from
         public double fkdr;
         public double wlr;
         public int finalKills;
         public double kd;
-        public int seraphThreat = -1;        // -1 = unknown
-        public List<String> seraphTags = new ArrayList<String>();
-        public List<String> urchinTags = new ArrayList<String>();
+        public int fkdrTier;                 // 0..3, BedwarsStats.fkdrTier
+        public boolean cheater;              // priority tag is a cheater type
+        public PlayerCard.Chip badge;        // single priority chip, or null
+        public List<PlayerCard.Chip> chips = new ArrayList<PlayerCard.Chip>();
+        public int seraphThreat = -1;        // display only; -1 = unknown / gated
         /** ACTIVE|DISCONNECTED|ELIMINATED|MISSING — standing in the current game; see {@link GameRoster}. */
         public String presence = GameRoster.ACTIVE;
 
         public Player(String name) {
             this.name = name;
+        }
+
+        /** Copy every decision from {@code c}; {@code name} and {@code presence} are left alone. */
+        public void apply(PlayerCard c) {
+            if (c == null) return;
+            state = c.stateName();
+            nicked = c.nicked;
+            realName = c.realName;
+            rank = c.rank;
+            rankCodes = c.rankCodes;
+            mode = c.modeLabel;
+            fkdr = c.fkdr;
+            wlr = c.wlr;
+            finalKills = c.finalKills;
+            kd = c.kd;
+            fkdrTier = c.fkdrTier;
+            cheater = c.cheater;
+            badge = c.badge;
+            chips = new ArrayList<PlayerCard.Chip>(c.chips);
+            seraphThreat = c.seraphThreat;
         }
     }
 

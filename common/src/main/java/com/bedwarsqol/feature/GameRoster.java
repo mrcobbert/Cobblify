@@ -216,13 +216,17 @@ public final class GameRoster {
         p.nicked = src.nicked;
         p.realName = src.realName;
         p.rank = src.rank;
+        p.rankCodes = src.rankCodes;
+        p.mode = src.mode;
         p.fkdr = src.fkdr;
         p.wlr = src.wlr;
         p.finalKills = src.finalKills;
         p.kd = src.kd;
+        p.fkdrTier = src.fkdrTier;
+        p.cheater = src.cheater;
+        p.badge = src.badge; // immutable
+        p.chips.addAll(src.chips);
         p.seraphThreat = src.seraphThreat;
-        p.seraphTags.addAll(src.seraphTags);
-        p.urchinTags.addAll(src.urchinTags);
         p.presence = src.presence;
         return p;
     }
