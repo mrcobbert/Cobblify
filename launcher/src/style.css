@@ -1012,6 +1012,23 @@ kbd {
 .rank .r-white { color: var(--mc-white); text-shadow: var(--name-shadow); }
 .rank .r-blue { color: var(--mc-blue); text-shadow: var(--name-shadow); }
 .rank .r-darkgreen { color: var(--mc-darkgreen); text-shadow: var(--name-shadow); }
+/* Minecraft § colour codes, as exported by the mod in rankCodes */
+.rank .mc-0 { color: #000000; text-shadow: var(--name-shadow); }
+.rank .mc-1 { color: #0000aa; text-shadow: var(--name-shadow); }
+.rank .mc-2 { color: #00aa00; text-shadow: var(--name-shadow); }
+.rank .mc-3 { color: #00aaaa; text-shadow: var(--name-shadow); }
+.rank .mc-4 { color: #aa0000; text-shadow: var(--name-shadow); }
+.rank .mc-5 { color: #aa00aa; text-shadow: var(--name-shadow); }
+.rank .mc-6 { color: #ffaa00; text-shadow: var(--name-shadow); }
+.rank .mc-7 { color: #aaaaaa; text-shadow: var(--name-shadow); }
+.rank .mc-8 { color: #555555; text-shadow: var(--name-shadow); }
+.rank .mc-9 { color: #5555ff; text-shadow: var(--name-shadow); }
+.rank .mc-a { color: #55ff55; text-shadow: var(--name-shadow); }
+.rank .mc-b { color: #55ffff; text-shadow: var(--name-shadow); }
+.rank .mc-c { color: #ff5555; text-shadow: var(--name-shadow); }
+.rank .mc-d { color: #ff55ff; text-shadow: var(--name-shadow); }
+.rank .mc-e { color: #ffff55; text-shadow: var(--name-shadow); }
+.rank .mc-f { color: #ffffff; text-shadow: var(--name-shadow); }
 .pn {
   font-weight: 600;
   font-size: 14.5px;
@@ -1098,6 +1115,16 @@ kbd {
 .dash .chip.state {
   color: var(--ink-3);
   border: 1px solid var(--line-2);
+}
+/* a positive signal (Seraph safelist): the one chip allowed a colour */
+.dash .chip.safe {
+  color: var(--mc-green);
+  border: 1px solid var(--mc-green);
+}
+/* display-only data (Seraph threat level): never an alarm */
+.dash .chip.neutral {
+  color: var(--ink-3);
+  border: 1px dotted var(--line-2);
 }
 
 /* confirmed cheater row — inverted accent bar */

@@ -20,6 +20,8 @@ const LIVE_CONTEXTS: &[&str] = &["LOBBY", "QUEUE", "GAME"];
 const PLAYER_STATES: &[&str] = &["OK", "NICKED", "NEVER_PLAYED", "ERROR", "LOADING"];
 /// Standing in the current game; absent on older mod jars (= ACTIVE). Any other value is malformed.
 const PLAYER_PRESENCE: &[&str] = &["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"];
+/// Contract versions this launcher admits: v1 (older mod jars; rows are not drawn) and v2.
+const CONTRACT_VERSIONS: &[u64] = &[1, 2];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -992,10 +994,8 @@ fn is_finite_number(v: &Value) -> bool {
     v.as_f64().is_some_and(|f| f.is_finite())
 }
 
-fn valid_player(p: &Value) -> bool {
-    let Some(obj) = p.as_object() else {
-        return false;
-    };
+/// Fields every contract version shares.
+fn valid_common_player(obj: &serde_json::Map<String, Value>) -> bool {
     if !obj.get("name").and_then(|v| v.as_str()).is_some() {
         return false;
     }
@@ -1027,6 +1027,25 @@ fn valid_player(p: &Value) -> bool {
     if !fk.is_some_and(is_safe_int) || !threat.is_some_and(is_safe_int) {
         return false;
     }
+    if let Some(presence) = obj.get("presence") {
+        let Some(p) = presence.as_str() else {
+            return false;
+        };
+        if !PLAYER_PRESENCE.contains(&p) {
+            return false;
+        }
+    }
+    true
+}
+
+/// v1: tags as display-name string lists (older mod jars).
+fn valid_player_v1(p: &Value) -> bool {
+    let Some(obj) = p.as_object() else {
+        return false;
+    };
+    if !valid_common_player(obj) {
+        return false;
+    }
     for tag_key in ["seraphTags", "urchinTags"] {
         let Some(tags) = obj.get(tag_key).and_then(|v| v.as_array()) else {
             return false;
@@ -1035,18 +1054,67 @@ fn valid_player(p: &Value) -> bool {
             return false;
         }
     }
-    if let Some(presence) = obj.get("presence") {
-        if !presence
-            .as_str()
-            .is_some_and(|p| PLAYER_PRESENCE.contains(&p))
-        {
+    true
+}
+
+/// One exported chip: badge glyph, § colour, label, positive-or-danger.
+fn valid_chip(c: &Value) -> bool {
+    let Some(obj) = c.as_object() else {
+        return false;
+    };
+    for key in ["code", "color", "label"] {
+        if !obj.get(key).and_then(|v| v.as_str()).is_some() {
             return false;
         }
+    }
+    obj.get("positive").and_then(|v| v.as_bool()).is_some()
+}
+
+/// v2: the mod's decisions travel with the row; the launcher draws them.
+fn valid_player_v2(p: &Value) -> bool {
+    let Some(obj) = p.as_object() else {
+        return false;
+    };
+    if !valid_common_player(obj) {
+        return false;
+    }
+    if !obj.get("rankCodes").and_then(|v| v.as_str()).is_some() {
+        return false;
+    }
+    if !obj.get("mode").and_then(|v| v.as_str()).is_some() {
+        return false;
+    }
+    match obj.get("fkdrTier").and_then(|v| v.as_i64()) {
+        Some(t) if (0..=3).contains(&t) => {}
+        _ => return false,
+    }
+    if obj.get("cheater").and_then(|v| v.as_bool()).is_none() {
+        return false;
+    }
+    let Some(badge) = obj.get("badge") else {
+        return false;
+    };
+    if !badge.is_null() && !valid_chip(badge) {
+        return false;
+    }
+    let Some(chips) = obj.get("chips").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    if !chips.iter().all(valid_chip) {
+        return false;
     }
     true
 }
 
-fn valid_team(t: &Value) -> bool {
+fn valid_player_for(version: u64) -> fn(&Value) -> bool {
+    if version == 2 {
+        valid_player_v2
+    } else {
+        valid_player_v1
+    }
+}
+
+fn valid_team(t: &Value, valid_player: fn(&Value) -> bool) -> bool {
     let Some(obj) = t.as_object() else {
         return false;
     };
@@ -1064,9 +1132,13 @@ fn validate_snapshot_shape(value: &Value) -> bool {
     let Some(obj) = value.as_object() else {
         return false;
     };
-    if obj.get("v").and_then(|v| v.as_u64()) != Some(1) {
+    let Some(version) = obj.get("v").and_then(|v| v.as_u64()) else {
+        return false;
+    };
+    if !CONTRACT_VERSIONS.contains(&version) {
         return false;
     }
+    let valid_player = valid_player_for(version);
     let seq = obj.get("seq").and_then(|v| v.as_i64());
     if !seq.is_some_and(is_safe_int) {
         return false;
@@ -1110,7 +1182,7 @@ fn validate_snapshot_shape(value: &Value) -> bool {
             return false;
         };
         if key == "teams" {
-            if !arr.iter().all(valid_team) {
+            if !arr.iter().all(|t| valid_team(t, valid_player)) {
                 return false;
             }
         } else if !arr.iter().all(valid_player) {
@@ -1558,6 +1630,19 @@ mod tests {
     fn player_json(presence: Option<Value>) -> Value {
         let mut p = serde_json::json!({
             "name": "Alice", "state": "OK", "nicked": false, "realName": null, "rank": "[MVP+]",
+            "rankCodes": "§b[MVP§c+§b]", "mode": "Overall",
+            "fkdr": 6.8, "wlr": 4.4, "finalKills": 17700, "kd": 3.6, "fkdrTier": 2,
+            "cheater": false, "badge": null, "chips": [], "seraphThreat": -1
+        });
+        if let Some(v) = presence {
+            p["presence"] = v;
+        }
+        p
+    }
+
+    fn player_json_v1(presence: Option<Value>) -> Value {
+        let mut p = serde_json::json!({
+            "name": "Alice", "state": "OK", "nicked": false, "realName": null, "rank": "[MVP+]",
             "fkdr": 6.8, "wlr": 4.4, "finalKills": 17700, "kd": 3.6, "seraphThreat": -1,
             "seraphTags": [], "urchinTags": []
         });
@@ -1569,14 +1654,22 @@ mod tests {
 
     #[test]
     fn player_presence_is_optional_and_closed() {
-        assert!(valid_player(&player_json(None)));
-        for ok in ["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"] {
-            assert!(valid_player(&player_json(Some(Value::from(ok)))), "{ok}");
+        for (valid, mk) in [
+            (valid_player_v2 as fn(&Value) -> bool, player_json as fn(Option<Value>) -> Value),
+            (valid_player_v1, player_json_v1),
+        ] {
+            assert!(valid(&mk(None)));
+            for ok in ["ACTIVE", "DISCONNECTED", "ELIMINATED", "MISSING"] {
+                assert!(valid(&mk(Some(Value::from(ok)))), "{ok}");
+            }
+            assert!(!valid(&mk(Some(Value::from("DEAD")))));
+            assert!(!valid(&mk(Some(Value::from("active")))));
+            assert!(!valid(&mk(Some(Value::Null))));
+            assert!(!valid(&mk(Some(Value::from(1)))));
         }
-        assert!(!valid_player(&player_json(Some(Value::from("DEAD")))));
-        assert!(!valid_player(&player_json(Some(Value::from("active")))));
-        assert!(!valid_player(&player_json(Some(Value::Null))));
-        assert!(!valid_player(&player_json(Some(Value::from(1)))));
+        // Shapes do not cross versions.
+        assert!(!valid_player_v2(&player_json_v1(None)));
+        assert!(!valid_player_v1(&player_json(None)));
     }
 
     #[test]
@@ -1590,6 +1683,49 @@ mod tests {
             "inHypixel": false
         });
         assert!(!validate_snapshot_shape(&value));
+    }
+
+    /// A8: the shared fixtures under common/src/test/resources/lobby-contract are the truth
+    /// for this validator, the JS validator and the mod's DTO test.
+    fn contract_fixtures(sub: &str) -> Vec<(String, Value)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../common/src/test/resources/lobby-contract")
+            .join(sub);
+        let mut out: Vec<(String, Value)> = fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("fixture dir {}: {e}", dir.display()))
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .map(|p| {
+                let text = fs::read_to_string(&p).unwrap();
+                (p.file_name().unwrap().to_string_lossy().into_owned(), serde_json::from_str(&text).unwrap())
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(!out.is_empty(), "no fixtures in {}", dir.display());
+        out
+    }
+
+    #[test]
+    fn every_valid_v2_fixture_is_accepted() {
+        for (name, value) in contract_fixtures("valid") {
+            assert!(validate_snapshot_shape(&value), "valid/{name} rejected");
+            assert_eq!(value.get("v").and_then(|v| v.as_u64()), Some(2), "valid/{name}");
+        }
+    }
+
+    #[test]
+    fn every_invalid_fixture_is_rejected() {
+        for (name, value) in contract_fixtures("invalid") {
+            assert!(!validate_snapshot_shape(&value), "invalid/{name} accepted");
+        }
+    }
+
+    #[test]
+    fn a_legacy_v1_fixture_still_binds() {
+        for (name, value) in contract_fixtures("valid-v1") {
+            assert!(validate_snapshot_shape(&value), "valid-v1/{name} rejected");
+            assert_eq!(value.get("v").and_then(|v| v.as_u64()), Some(1), "valid-v1/{name}");
+        }
     }
 
     // ── D4d: the exact absence machine ──────────────────────────────────
