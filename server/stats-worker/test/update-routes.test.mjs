@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   cleanupUpdateEvents,
+  compareVersions,
   handleUpdateDownload,
   handleUpdateEvent,
   handleUpdateMetadata,
@@ -51,6 +52,32 @@ function env() {
   return { UPDATE_BUCKET: new FakeBucket(), UPDATE_URL_SECRET: "ticket-secret-that-is-long-enough" };
 }
 
+// A dev build is cut from a branch whose pins are already bumped, so its version is a
+// pre-release of the *next* stable: newer than what players run, older than that release.
+const devManifest = {
+  ...manifest,
+  version: "0.11.0-dev.41",
+  minimumSupportedVersion: "0.0.0",
+  notes: "Dev build.",
+  platforms: {
+    "darwin-universal": { ...manifest.platforms["darwin-universal"], key: "releases/0.11.0-dev.41/cobblify.app.tar.gz" },
+  },
+};
+
+function envWithDev(dev = JSON.stringify(devManifest)) {
+  const e = env();
+  e.UPDATE_BUCKET.objects.set("channels/dev.json", dev);
+  return e;
+}
+
+async function versionOffered(e, path) {
+  const response = await handleUpdateMetadata(new Request(`https://worker${path}`), e, { identity: "friend" }, 1_000);
+  if (response.status === 204) return null;
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return JSON.parse(text).version;
+}
+
 test("current clients receive 204 while older clients receive signed platform metadata", async () => {
   const current = await handleUpdateMetadata(
     new Request("https://worker/launcher/update/darwin/universal/0.10.0"), env(),
@@ -69,6 +96,51 @@ test("current clients receive 204 while older clients receive signed platform me
   assert.equal(body.minimumSupportedVersion, "0.9.0");
   assert.match(body.url, /^https:\/\/worker\/launcher\/download\?/);
   assert.doesNotMatch(body.url, /ticket-secret/);
+});
+
+test("stable requests never see the dev channel, even when it is newer", async () => {
+  const e = envWithDev();
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.9.1"), "0.10.0");
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.9.1?channel=stable"), "0.10.0");
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.9.1?channel=nightly"), "0.10.0");
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.10.0"), null);
+});
+
+test("dev requests get the newer of stable and dev", async () => {
+  const e = envWithDev();
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.10.0?channel=dev"), "0.11.0-dev.41");
+  // Already on that dev build: nothing newer.
+  assert.equal(await versionOffered(e, "/launcher/update/darwin/universal/0.11.0-dev.41?channel=dev"), null);
+  // Stable moved past the dev build: stable wins, so opted-in launchers converge on it.
+  const newerStable = envWithDev();
+  newerStable.UPDATE_BUCKET.objects.set("channels/stable.json", JSON.stringify({
+    ...manifest, version: "0.11.0",
+    platforms: { "darwin-universal": { ...manifest.platforms["darwin-universal"], key: "releases/0.11.0/cobblify.app.tar.gz" } },
+  }));
+  assert.equal(await versionOffered(newerStable, "/launcher/update/darwin/universal/0.11.0-dev.41?channel=dev"), "0.11.0");
+});
+
+test("dev requests fall back to stable when the dev manifest is missing or malformed", async () => {
+  assert.equal(await versionOffered(env(), "/launcher/update/darwin/universal/0.9.1?channel=dev"), "0.10.0");
+  assert.equal(await versionOffered(envWithDev("{not json"), "/launcher/update/darwin/universal/0.9.1?channel=dev"), "0.10.0");
+  assert.equal(await versionOffered(envWithDev(JSON.stringify({ ...devManifest, schema: 2 })), "/launcher/update/darwin/universal/0.9.1?channel=dev"), "0.10.0");
+  // Dev manifest present but stable broken: dev still serves.
+  const noStable = envWithDev();
+  noStable.UPDATE_BUCKET.objects.delete("channels/stable.json");
+  assert.equal(await versionOffered(noStable, "/launcher/update/darwin/universal/0.9.1?channel=dev"), "0.11.0-dev.41");
+});
+
+test("pre-release identifiers compare per semver, not as strings", () => {
+  assert.equal(compareVersions("0.11.0-dev.10", "0.11.0-dev.9"), 1);
+  assert.equal(compareVersions("0.11.0-dev.9", "0.11.0-dev.10"), -1);
+  assert.equal(compareVersions("0.11.0-dev.10", "0.11.0-dev.10"), 0);
+  assert.equal(compareVersions("0.11.0", "0.11.0-dev.10"), 1);
+  assert.equal(compareVersions("0.11.0-dev.10", "0.11.0"), -1);
+  assert.equal(compareVersions("0.11.0-dev.1", "0.10.9"), 1);
+  assert.equal(compareVersions("0.11.0-alpha", "0.11.0-alpha.1"), -1);
+  assert.equal(compareVersions("0.11.0-1", "0.11.0-a"), -1);
+  assert.equal(compareVersions("0.11.0-dev.10", "0.11.0-dev.9.1"), 1);
+  assert.equal(compareVersions("0.11.0-dev.10", "bogus"), null);
 });
 
 test("metadata is fail closed without an authenticated identity or owner bindings", async () => {
