@@ -5,12 +5,9 @@ import com.google.gson.GsonBuilder;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.io.Reader;
-import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 
 public final class SettingsManager {
@@ -47,8 +44,10 @@ public final class SettingsManager {
         File parent = file.getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) return;
 
-        try (Writer writer = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8)) {
-            GSON.toJson(settings, writer);
+        // Serialise first, then swap the bytes in through a temp file + rename: a crash mid-save
+        // must never leave an empty cobblify.json that reads back as "all defaults" next launch.
+        try {
+            AtomicFileWrite.write(file, GSON.toJson(settings).getBytes(StandardCharsets.UTF_8));
         } catch (IOException ignored) {
         }
     }
