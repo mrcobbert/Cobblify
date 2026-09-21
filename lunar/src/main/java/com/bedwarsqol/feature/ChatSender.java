@@ -1,5 +1,6 @@
 package com.bedwarsqol.feature;
 
+import com.bedwarsqol.stats.HypixelContext;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.network.NetHandlerPlayClient;
@@ -8,9 +9,14 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,6 +33,14 @@ import java.util.regex.Pattern;
  * recognised: since ~Aug 2024 Hypixel anonymizes the names in them (junk like {@code vj3x1s4w18}), so
  * those shapes can never be trusted to name a real player and must never drive lookups or tags, no
  * matter what context the caller believes it is in.
+ *
+ * <p>A typed line whose head is a <i>bare</i> name ({@code "Steve: hi"} — a Default-rank player, who
+ * wears no rank bracket) is corroborated against the tab list, so a server label ({@code "Warning: …"})
+ * is never mistaken for a player. The pregame queue is the one place that check cannot work: its tab
+ * carries only junk names, and Bedwars stars are hidden there too, so every rankless player's chat
+ * arrives as exactly that bare shape. There, and only there, the head is trusted without the tab
+ * (minus {@link #LABEL_WORDS}) — otherwise every unranked player in the queue silently gets no tag,
+ * no hover card and no queue alert. See {@link #senderFromHead(String, Predicate, boolean)}.
  *
  * <p>{@code /party list} roster lines are the one colon shape whose names sit <i>after</i> the colon,
  * and they get their own accessor ({@link #rosterMembers}) rather than a sender — see
@@ -46,6 +60,11 @@ public final class ChatSender {
 
     /** The sender username named by this chat component, or null. */
     public static String extractName(IChatComponent component) {
+        return extractName(component, IN_TAB, HypixelContext.isInBedwarsQueue());
+    }
+
+    /** {@link #extractName(IChatComponent)} with its two context inputs supplied — see {@link #senderFromHead}. */
+    static String extractName(IChatComponent component, Predicate<String> inTab, boolean anonymizedQueue) {
         String raw = plainText(component);
         if (raw == null) return null;
 
@@ -53,7 +72,7 @@ public final class ChatSender {
         if (shaped != null) return shaped;
 
         int colon = raw.indexOf(':');
-        if (colon > 0) return senderFromHead(raw.substring(0, colon));
+        if (colon > 0) return senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue);
 
         // No colon and no known server shape: trust only a lone name token (the rank-card name
         // component), so prose like "Bob has joined" can't drive a bogus lookup on "joined".
@@ -68,10 +87,15 @@ public final class ChatSender {
      * actually typed always names its real sender (Hypixel never anonymizes typed chat).
      */
     public static String typedChatName(IChatComponent component) {
+        return typedChatName(component, IN_TAB, HypixelContext.isInBedwarsQueue());
+    }
+
+    /** {@link #typedChatName(IChatComponent)} with its two context inputs supplied — see {@link #senderFromHead}. */
+    static String typedChatName(IChatComponent component, Predicate<String> inTab, boolean anonymizedQueue) {
         String raw = plainText(component);
         if (raw == null) return null;
         int colon = raw.indexOf(':');
-        return colon > 0 ? senderFromHead(raw.substring(0, colon)) : null;
+        return colon > 0 ? senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue) : null;
     }
 
     /** The component's text stripped of formatting codes and trimmed; null when effectively empty. */
@@ -95,13 +119,31 @@ public final class ChatSender {
         return m.find() ? m.group(1) : null;
     }
 
+    /** The live tab list, as {@link #senderFromHead}'s corroboration input. */
+    private static final Predicate<String> IN_TAB = name -> uuidInTab(name) != null;
+
+    /**
+     * Words a server line can put in front of a colon that are not players ({@code "Warning: …"}),
+     * for the one case nothing else can rule them out: a bare single-token head in the anonymized
+     * queue. Best-effort by nature — wherever the tab list is real it stays the guard, and a real
+     * player who happens to be named one of these merely goes untagged in the queue.
+     */
+    static final Set<String> LABEL_WORDS = new HashSet<String>(Arrays.asList(
+            "warning", "cooldown", "reminder", "tip", "hint", "note", "notice", "error", "info",
+            "alert", "achievement", "reward", "rewards", "quest", "stats", "statistics"));
+
     /**
      * The sender from a chat line's pre-colon head. A rank/level/guild bracket or a channel prefix
      * ("From", "Party >", "Guild >", …) means the trailing token is the name. A bare head with
-     * neither is trusted only when it is a single token actually in our tab list, so system labels
-     * ("Command Failed:", "Cooldown:") aren't mistaken for players.
+     * neither is trusted only when it is a single token that {@code inTab} vouches for, so system
+     * labels ("Command Failed:", "Cooldown:") aren't mistaken for players — except in the
+     * {@code anonymizedQueue}, where the tab vouches for no one (Hypixel junks every name in the
+     * pregame queue's tab) and a rankless player's typed chat is precisely this bare shape: there it
+     * is trusted unless the token is a {@link #LABEL_WORDS} entry. The two context inputs are
+     * parameters so the rule is testable without a client; the public one-argument callers read
+     * the live tab and sidebar.
      */
-    private static String senderFromHead(String head) {
+    static String senderFromHead(String head, Predicate<String> inTab, boolean anonymizedQueue) {
         String lower = head.trim().toLowerCase();
         boolean channel = lower.startsWith("to ") || lower.startsWith("from ")
                 || lower.startsWith("party ") || lower.startsWith("guild ")
@@ -114,7 +156,8 @@ public final class ChatSender {
         String last = tokens.get(tokens.size() - 1);
         if (hadBracket || channel) return last;
         if (tokens.size() != 1) return null;
-        return uuidInTab(last) != null ? last : null;
+        if (inTab.test(last)) return last;
+        return anonymizedQueue && !LABEL_WORDS.contains(last.toLowerCase(Locale.ROOT)) ? last : null;
     }
 
     /**
