@@ -44,17 +44,59 @@ public class AtomicFileWriteTest {
 
     @Test
     public void aFailedWriteLeavesTheOldFileUntouched() throws Exception {
-        File target = tmp.newFile("cobblify.json");
+        File target = new File(tmp.newFolder("cfg"), "cobblify.json");
         Files.write(target.toPath(), utf8("{\"keep\":true}"));
-        // Make the temp path unwritable by planting a directory where the temp file would go.
-        File blocker = new File(tmp.getRoot(), "cobblify.json.tmp");
-        assertTrue(blocker.mkdir());
+        // Make the temp file impossible to create by taking away the parent's write permission.
+        File parent = target.getParentFile();
+        if (!parent.setWritable(false, false)) return; // filesystem cannot express this; nothing to pin
         try {
-            AtomicFileWrite.write(target, utf8("{\"never\":1}"));
-            fail("expected the write to fail");
-        } catch (IOException expected) {
-            // fine
+            if (parent.canWrite()) return; // running as a user the permission does not bind (root)
+            try {
+                AtomicFileWrite.write(target, utf8("{\"never\":1}"));
+                fail("expected the write to fail");
+            } catch (IOException expected) {
+                // fine
+            }
+            assertEquals("{\"keep\":true}", new String(Files.readAllBytes(target.toPath()), StandardCharsets.UTF_8));
+        } finally {
+            parent.setWritable(true, false);
         }
-        assertEquals("{\"keep\":true}", new String(Files.readAllBytes(target.toPath()), StandardCharsets.UTF_8));
+    }
+
+    /** Overlapping saves never share a temp file: the result is exactly one caller's payload, intact. */
+    @Test
+    public void concurrentWritesYieldOneWholePayloadAndNoLeftovers() throws Exception {
+        final File target = new File(tmp.newFolder("cfg"), "cobblify.json");
+        final int n = 8;
+        final byte[][] payloads = new byte[n][];
+        for (int i = 0; i < n; i++) {
+            StringBuilder sb = new StringBuilder("{\"writer\":").append(i).append(",\"pad\":\"");
+            for (int k = 0; k < 20000; k++) sb.append((char) ('a' + i));
+            payloads[i] = utf8(sb.append("\"}").toString());
+        }
+        final java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        final java.util.List<Throwable> errors = java.util.Collections.synchronizedList(new java.util.ArrayList<Throwable>());
+        Thread[] threads = new Thread[n];
+        for (int i = 0; i < n; i++) {
+            final int w = i;
+            threads[i] = new Thread(() -> {
+                try {
+                    go.await();
+                    for (int r = 0; r < 5; r++) AtomicFileWrite.write(target, payloads[w]);
+                } catch (Throwable t) {
+                    errors.add(t);
+                }
+            });
+            threads[i].start();
+        }
+        go.countDown();
+        for (Thread t : threads) t.join();
+        assertTrue(errors.toString(), errors.isEmpty());
+        byte[] got = Files.readAllBytes(target.toPath());
+        boolean whole = false;
+        for (byte[] p : payloads) whole |= java.util.Arrays.equals(p, got);
+        assertTrue("final file is not any single payload intact (" + got.length + " bytes)", whole);
+        String[] leftovers = target.getParentFile().list();
+        assertEquals(java.util.Arrays.toString(leftovers), 1, leftovers.length);
     }
 }
