@@ -3,9 +3,8 @@ package com.bedwarsqol.config;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
+import com.bedwarsqol.stats.StatsMode;
 import org.lwjgl.input.Keyboard;
-
-import java.util.Locale;
 
 public class ClientSettings {
 
@@ -102,9 +101,13 @@ public class ClientSettings {
     /** Chat Stats: prepend the sender's FKDR (or [New] for a never-played account) to their chat lines. */
     public boolean playerStatsChat = true;
     /**
-     * Which gamemode's FKDR the in-chat Chat Stats bracket shows. {@code "auto"} follows the detected
-     * game mode (overall in the lobby); the fixed values {@code overall}/{@code solo}/{@code doubles}/
-     * {@code threes}/{@code fours} always show that mode. Set with {@code /bw mode <...>}.
+     * The ONE stats display mode, for every surface that shows a player's Bedwars numbers (chat
+     * bracket, hover card, tab list, nametags, denick line, Players page, launcher overlay).
+     * {@code "auto"} follows the detected game mode (overall in the lobby); the fixed values
+     * {@code overall}/{@code solo}/{@code doubles}/{@code threes}/{@code fours} always show that mode,
+     * stamped on each number. Set with {@code /bw mode <...>}; vocabulary in
+     * {@link com.bedwarsqol.stats.StatsMode}. The JSON key keeps its original chat-era name so an
+     * existing file still loads.
      */
     public String chatStatsMode = "auto";
     /** When in an active Bedwars game, broadcast one condensed sweat line to party chat once. */
@@ -339,26 +342,13 @@ public class ClientSettings {
         handPosZ = clampf(handPosZ, -1.0f, 1.0f);
         handScale = clampf(handScale, 0.5f, 2.0f);
 
-        chatStatsMode = normalizeChatStatsMode(chatStatsMode);
+        chatStatsMode = StatsMode.normalize(chatStatsMode);
 
         if (statsBackendUrl == null) statsBackendUrl = "";
         statsBackendUrl = statsBackendUrl.trim();
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
         if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;
-    }
-
-    /** Coerce {@link #chatStatsMode} to a known token, defaulting anything unrecognised to "auto". */
-    private static String normalizeChatStatsMode(String mode) {
-        if (mode == null) return "auto";
-        switch (mode.trim().toLowerCase(Locale.US)) {
-            case "overall": return "overall";
-            case "solo": return "solo";
-            case "doubles": return "doubles";
-            case "threes": return "threes";
-            case "fours": return "fours";
-            default: return "auto";
-        }
     }
 
     public float defaultTextSizeScale() {

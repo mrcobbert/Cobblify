@@ -72,10 +72,10 @@ public final class ChatHoverStats {
             return lines;
         }
 
-        // Honour /bw mode here too: same resolver as the inline FKDR bracket (forced mode, else live
-        // per-game detection), so setting e.g. 4s switches the hover card to 4s-specific stats.
+        // Same resolver and label rule as every other stats surface (forced /bw mode, else live
+        // per-game detection): a forced 4s names (4s), or (All) when the player has no 4s games.
         List<String> statLines = stats.formatForHoverCard(BedwarsModeDetector.displayMode(cfg),
-                cfg.playerStatsShowRank);
+                cfg.playerStatsShowRank, BedwarsModeDetector.isForced(cfg));
         if (statLines.isEmpty()) return lines.isEmpty() ? null : lines;
         if (!lines.isEmpty()) lines.add("");
         lines.addAll(statLines);

@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -76,8 +75,6 @@ public final class ChatNameTags {
 
     /** ~0.5s between back-patch passes: cheap, and async stats rarely land faster than this anyway. */
     private static final int TICK_INTERVAL = 10;
-    /** Width-matched to {@code [x.xx]} so the line doesn't jump when async FKDR lands. */
-    private static final String FKDR_PENDING = "§7[-.--]§r ";
     /** Cap on tracked lines; oldest beyond this simply stop back-patching (their last render sticks). */
     private static final int MAX_TRACKED = 100;
     /**
@@ -309,10 +306,12 @@ public final class ChatNameTags {
     }
 
     /**
-     * The stats bracket a player's name is annotated with: their current-mode FKDR, or {@code [New]} for
+     * The stats bracket a player's name is annotated with: their display-mode FKDR, or {@code [New]} for
      * an account with no Bedwars games, and "" when Chat Stats is off or the lookup ended in a state we
      * don't annotate. While stats are still fetching, a width-matched placeholder reserves the slot so
-     * the line doesn't shift when the real FKDR back-patches.
+     * the line doesn't shift when the real FKDR back-patches. The text itself is built by
+     * {@link BedwarsStats#chatBracket} so it follows the same forced-mode label rule as the tab list,
+     * nametags and hover card ({@code [4s x.xx]}, or {@code [All x.xx]} after a fallback to overall).
      *
      * <p>Chat Stats (a Hypixel Stats sub-toggle) owns this bracket; {@code [New]} rides with the FKDR
      * here, not with the Nick Utils tags. Shared by the single-sender line head and the per-member
@@ -320,21 +319,10 @@ public final class ChatNameTags {
      */
     private static String fkdrBracket(BedwarsStats st, ClientSettings cfg) {
         if (!chatStatsEnabled(cfg)) return "";
-        if (st == null) return FKDR_PENDING;
-        if (st.state == BedwarsStats.State.OK) {
-            double fkdr = st.statsFor(chatDisplayMode(cfg)).fkdr;
-            return "§7[" + BedwarsStats.fkdrColor(fkdr) + fmt2(fkdr) + "§7]§r ";
-        }
-        if (st.state == BedwarsStats.State.NEVER_PLAYED) return "§7[New]§r ";
-        return "";
-    }
-
-    /**
-     * The gamemode whose FKDR the chat bracket shows: the user's forced {@code /bw mode} choice, or —
-     * when that is "auto" — the live per-game detection ({@link BedwarsModeDetector}, overall in a lobby).
-     */
-    private static BedwarsMode chatDisplayMode(ClientSettings cfg) {
-        return BedwarsModeDetector.displayMode(cfg);
+        BedwarsMode mode = BedwarsModeDetector.displayMode(cfg);
+        boolean labelled = BedwarsModeDetector.isForced(cfg);
+        if (st == null) return BedwarsStats.pendingChatBracket(mode, labelled);
+        return st.chatBracket(mode, labelled);
     }
 
     /**
@@ -702,10 +690,6 @@ public final class ChatNameTags {
         } catch (Throwable ignored) { }
         chatIntFields = ints.toArray(new Field[0]);
         chatBoolFields = bools.toArray(new Field[0]);
-    }
-
-    private static String fmt2(double d) {
-        return String.format(Locale.US, "%.2f", d);
     }
 
     /** One annotated chat line: the mutable head (FKDR) and tail (name tag) siblings we own. */

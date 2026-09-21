@@ -44,14 +44,26 @@ public final class BedwarsModeDetector {
     }
 
     /**
-     * The mode a stats display should use: the user's forced {@code /bw mode} choice
-     * (all/solo/2s/3s/4s), or — when that is {@code auto} — the live per-game {@link #current()}
-     * detection ({@link BedwarsMode#UNKNOWN} in a lobby, which callers render as overall). Shared by the
-     * inline chat FKDR bracket and the chat hover card so both honour {@code /bw mode} identically.
+     * The mode every stats DISPLAY uses: the user's forced {@code /bw mode} choice (all/solo/2s/3s/4s),
+     * or — when that is {@code auto} — the live per-game {@link #current()} detection
+     * ({@link BedwarsMode#UNKNOWN} in a lobby, which callers render as overall). Chat bracket, hover
+     * card, tab list, nametags, the denick line, the Players page and the launcher overlay all resolve
+     * through here so one command moves every surface together. Game LOGIC (generator timing, the sweat
+     * report, the lobby export's sidebar label) keeps reading {@link #current()}: forcing a display mode
+     * must not change what game the mod thinks it is in.
      */
     public static BedwarsMode displayMode(ClientSettings cfg) {
-        BedwarsMode forced = cfg == null ? null : BedwarsMode.fromToken(cfg.chatStatsMode);
+        BedwarsMode forced = cfg == null ? null : StatsMode.forced(cfg.chatStatsMode);
         return forced != null ? forced : current();
+    }
+
+    /**
+     * True when the user has forced a display mode — the signal for a surface to stamp the mode its
+     * numbers came from ({@code 4s …}, or {@code All …} after a fallback). Auto mode stamps nothing:
+     * the numbers already match the game on screen.
+     */
+    public static boolean isForced(ClientSettings cfg) {
+        return cfg != null && StatsMode.isForced(cfg.chatStatsMode);
     }
 
     public static void reset() {

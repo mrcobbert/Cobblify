@@ -8,6 +8,8 @@ import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.render.Theme;
+import com.bedwarsqol.stats.BedwarsMode;
+import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.EligibilitySnapshot;
 import com.bedwarsqol.stats.HypixelContext;
@@ -2357,7 +2359,12 @@ public class SettingsGui extends GuiScreen {
                         y + (playersRowH + sq) / 2f, 1.5f, applyAlpha(chip.argb, a));
                 rightX -= sq + 6;
             }
-            String fkdr = BedwarsStats.fkdrColor(st.overall.fkdr) + PlayersFormat.fmt2(st.overall.fkdr);
+            // The row's one number follows the global display mode like every other surface; the
+            // detail card beneath keeps its Overall hero + per-mode cards, which need no label.
+            BedwarsMode rowMode = BedwarsModeDetector.displayMode(cfg);
+            String rowLabel = st.labelFor(rowMode, BedwarsModeDetector.isForced(cfg));
+            double rowFkdr = st.statsFor(rowMode).fkdr;
+            String fkdr = BedwarsStats.fkdrColor(rowFkdr) + (rowLabel == null ? "" : rowLabel + " ") + PlayersFormat.fmt2(rowFkdr);
             float fw = GuiRender.textWidth(fkdr, scale, MED);
             GuiRender.text(fkdr, rightX - fw, ty, scale, applyAlpha(GuiTheme.TEXT_HI, a), MED);
             GuiRender.text(ellipsize(name, scale, (rightX - fw - 8) - (x1 + 6)), x1 + 6, ty, scale,

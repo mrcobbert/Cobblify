@@ -12,12 +12,15 @@ import com.bedwarsqol.gui.SettingsGui;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.ProviderKeySubmitter;
 import com.bedwarsqol.stats.StatsCache;
+import com.bedwarsqol.stats.StatsMode;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IChatComponent;
 import net.weavemc.api.command.Command;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -30,6 +33,13 @@ public class BedwarsQolCommand extends Command {
 
     public BedwarsQolCommand() {
         super("cobblify", "bw", "bedwarsqol", "hypixelclient");
+    }
+
+    /** Weave hands over the tokens after the command word (unlike {@link #execute}); see {@link CommandCompletion}. */
+    @Override
+    public String[] getSuggestions(String[] args, BlockPos pos) {
+        List<String> out = CommandCompletion.suggest(args);
+        return out.isEmpty() ? null : out.toArray(new String[0]);
     }
 
     @Override
@@ -127,7 +137,7 @@ public class BedwarsQolCommand extends Command {
         send("§f/cobblify §7— open the settings menu");
         send("§f/cobblify <player> §7— a player's Bedwars stats");
         send("§f/cobblify stats §7— your own stats");
-        send("§f/cobblify mode <auto|all|solo|2s|3s|4s> §7— chat FKDR gamemode");
+        send("§f/cobblify mode <auto|all|solo|2s|3s|4s> §7— stats gamemode on every surface (§fshow§7 prints it)");
         send("§f/cobblify statsurl <url> §7— set the stats backend");
         send("§f/cobblify statstoken <token> §7— set the backend token");
         send("§f/cobblify urchin <player> §7— community Urchin tags for a player");
@@ -174,48 +184,38 @@ public class BedwarsQolCommand extends Command {
                 + "  §7Session Time §f" + s.elapsed(System.currentTimeMillis()) + "   §8(/cobblify session reset)");
     }
 
+    /**
+     * {@code /cobblify mode [show|<word>]} — the ONE stats display mode. Every surface that shows a
+     * player's Bedwars numbers (chat bracket, hover card, tab list, nametags, denick line, Players page,
+     * launcher overlay) resolves through {@code BedwarsModeDetector.displayMode}, so this switch moves
+     * them all together; a forced mode is stamped on each number ({@code 4s …}, or {@code All …} when
+     * the player has no games in it). The vocabulary lives in {@link StatsMode}.
+     */
     private void handleMode(String[] args) {
         ClientSettings cfg = settings();
         if (args.length < 2 || "show".equalsIgnoreCase(args[1])) {
-            send("§eChat stats FKDR mode: §f" + modeLabel(cfg.chatStatsMode));
-            send("§7Change with §f/cobblify mode <auto|all|solo|2s|3s|4s>§7.");
+            send("§eStats mode: §f" + StatsMode.describe(cfg.chatStatsMode));
+            send("§7Change with §f/cobblify mode <" + String.join("|", StatsMode.OPTIONS) + ">§7.");
             return;
         }
-        String canonical = canonicalMode(args[1]);
+        String canonical = StatsMode.parse(args[1]);
         if (canonical == null) {
-            send("§cUnknown mode '§f" + args[1] + "§c'. Options: §fauto, all, solo, 2s, 3s, 4s§c.");
+            send("§cUnknown mode '§f" + args[1] + "§c'. Options: §f" + String.join(", ", StatsMode.OPTIONS) + "§c.");
+            return;
+        }
+        // The mode only exists to pick which numbers Hypixel Stats shows; with the module off there is
+        // nothing for it to change, so say so instead of reporting a success nobody can see.
+        if (!cfg.playerStats) {
+            send("§cHypixel Stats is disabled. Enable it in /cobblify.");
             return;
         }
         cfg.chatStatsMode = canonical;
         cfg.save();
-        send("§aChat now shows §f" + modeLabel(canonical) + "§a FKDR. Updating existing lines…");
+        String what = StatsMode.isForced(canonical)
+                ? "§f" + StatsMode.describe(canonical) + "§a stats, labelled"
+                : "§fAuto§a stats (the mode of the game you are in)";
+        send("§aStats now show " + what + ". Updating chat…");
         ChatNameTags.refreshDisplayMode();
-    }
-
-    /** Canonical stored token for a user-typed mode word, or null when unrecognised. */
-    private static String canonicalMode(String raw) {
-        switch (raw.trim().toLowerCase(Locale.US)) {
-            case "auto": case "detect": case "default": return "auto";
-            case "all": case "overall": return "overall";
-            case "solo": case "solos": case "1s": case "1v1": return "solo";
-            case "doubles": case "double": case "2s": case "2v2v2v2": return "doubles";
-            case "threes": case "three": case "3s": case "3v3v3v3": return "threes";
-            case "fours": case "four": case "4s": case "4v4v4v4": return "fours";
-            default: return null;
-        }
-    }
-
-    /** Human label for a stored mode token. */
-    private static String modeLabel(String canonical) {
-        if (canonical == null) return "Auto (per-game)";
-        switch (canonical) {
-            case "overall": return "Overall";
-            case "solo": return "Solo";
-            case "doubles": return "Doubles (2v2v2v2)";
-            case "threes": return "3v3v3v3";
-            case "fours": return "4v4v4v4";
-            default: return "Auto (per-game)";
-        }
     }
 
     private void handleStatsUrl(String[] args) {

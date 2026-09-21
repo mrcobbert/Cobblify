@@ -81,7 +81,8 @@ built-in backend). See `server/stats-worker/README.md` for Worker details.
 
 ### AntiSnipe (opponent intel — needs the stats backend)
 
-- **Hypixel Stats** - opponents' BedWars stats on nametag + tab (level, rank, FKDR, WLR)
+- **Hypixel Stats** - opponents' BedWars stats on nametag + tab (level, rank, FKDR, WLR), in chat (`[4.45]` in front of the name, hover for the full card) and on the Players page
+  - `/cobblify mode <auto|all|solo|2s|3s|4s>` (also `/bw mode`) picks which gamemode's numbers every one of those surfaces shows. `auto` (default) follows the game you are in - overall in the lobby. A forced mode is stamped on every number so you always know what you are reading: `[4s 4.45]`, or `[All 2.10]` when that player has no games in the mode you chose and the overall block is shown instead. `/cobblify mode show` prints the current setting; it is remembered across launches.
 - **Party Report** - announce flagged/sweaty enemies to party chat once per game
 
 
