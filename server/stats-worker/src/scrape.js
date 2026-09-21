@@ -356,6 +356,8 @@ async function scrapeAndCache(player, env, ctx, source) {
 
   const parsed = parseBedwarsFromHtml(scraped.html, player);
   if (parsed.success === true) {
+    // Bare code, no player identifier: the count is the signal, the name is player data.
+    if (parsed.modesError) console.warn("BEDWARS_MODES_UNPARSED");
     const profile = parseProfile(scraped.html);
     if (profile.displayName) parsed.displayName = profile.displayName;
     parsed.rank = profile.rank;

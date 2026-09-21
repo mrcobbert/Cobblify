@@ -34,8 +34,11 @@ export function parseBedwarsFromHtml(html, player) {
   }
 
   const modes = {};
+  let modesFound = 0;
   for (const key of Object.keys(MODE_PREFIXES)) {
-    modes[key] = stripFound(readMode(tokens, MODE_PREFIXES[key]));
+    const m = readMode(tokens, MODE_PREFIXES[key]);
+    modesFound += m.found;
+    modes[key] = stripFound(m);
   }
 
   const body = {
@@ -49,8 +52,18 @@ export function parseBedwarsFromHtml(html, player) {
     kills: overall.kills,
     deaths: overall.deaths,
     overall: stripFound(overall),
-    modes,
   };
+
+  // The forum prints every per-mode row even for a never-played account (verified 2026-09-20:
+  // Notch's page carries all 24 "Solo/Doubles/3v3v3v3/4v4v4v4 <stat>" labels at 0), so overall
+  // resolving while NO per-mode label resolves is markup drift, not a player state. Serving the
+  // all-zero modes would make every forced /bw mode silently fall back to overall for everyone;
+  // omitting them makes the client render "All" (the honest fallback) and flags the drift.
+  if (modesFound === 0) {
+    body.modesError = "parse_failed";
+  } else {
+    body.modes = modes;
+  }
 
   if (isEmpty(overall)) {
     return { ...body, state: "NEVER_PLAYED" };
