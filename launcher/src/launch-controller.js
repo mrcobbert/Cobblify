@@ -77,6 +77,13 @@ export function createLaunchController(invoke, { onChange } = {}) {
   let activeOutcome = null;
   /** @type {'idle' | 'loading' | 'done'} */
   let launchPhase = "idle";
+  /**
+   * @type {'lunar' | 'forge' | null} The target that owns the current launch
+   * session, from the click until the session resets to idle. Only its button
+   * is projected while set: the other target leaves the row instead of
+   * mirroring a phase it never entered.
+   */
+  let launchKind = null;
   /** @type {LaunchButtonView[]} */
   let launchButtons = [];
 
@@ -229,8 +236,9 @@ export function createLaunchController(invoke, { onChange } = {}) {
    */
   function projectLaunchButtons(ready, phase = "idle") {
     const active = activeOutcome != null;
+    const shows = (kind) => launchKind == null || launchKind === kind;
     const buttons = [];
-    if (ready.lunarReady) {
+    if (ready.lunarReady && shows("lunar")) {
       buttons.push({
         kind: "lunar",
         label: lunarLabel(optimisticAutoJoin, phase),
@@ -238,7 +246,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
         enabled: !launchBusy && !prefSaving && !prefUncertain && !active,
       });
     }
-    if (ready.forgeReady) {
+    if (ready.forgeReady && shows("forge")) {
       buttons.push({
         kind: "forge",
         label: forgeLabel(optimisticAutoJoin, phase),
@@ -262,6 +270,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
     }
     launchBusy = true;
     launchPhase = "loading";
+    launchKind = kind;
     refreshGen += 1;
     const gen = ++operationGen;
     notify();
@@ -292,9 +301,11 @@ export function createLaunchController(invoke, { onChange } = {}) {
         }
       } else if (reply.status === "preexisting_game") {
         launchPhase = "idle";
+        launchKind = null;
         hooks.onLaunchReply(reply);
       } else if (reply.status === "rejected") {
         launchPhase = "idle";
+        launchKind = null;
         if (reply.code === "stale_preference" && reply.preferences) {
           optimisticAutoJoin = reply.preferences.autoJoinHypixel;
           confirmedAutoJoin = reply.preferences.autoJoinHypixel;
@@ -315,6 +326,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
       if (gen !== operationGen) return;
       launchBusy = false;
       launchPhase = "idle";
+      launchKind = null;
       prefError = String(e);
       notify();
     }
@@ -377,6 +389,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
         launchGen,
         pollGen,
         launchPhase,
+        launchKind,
         showAutoJoinSwitch: launchButtons.length > 0,
         stageLabels: (autoJoin = true) => (autoJoin ? STAGE_LABEL_ON : STAGE_LABEL_OFF),
         classifyLive,
@@ -413,6 +426,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
     resetLaunchSession(view) {
       activeOutcome = null;
       launchPhase = "idle";
+      launchKind = null;
       prefError = null;
       if (view) syncFromView(view);
       notify();

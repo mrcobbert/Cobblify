@@ -501,8 +501,6 @@ function render(status) {
 
   const lunarReady = ready.some((t) => t.kind === "lunar");
   const forgeReady = ready.some((t) => t.kind === "forge");
-  el("launch").hidden = !lunarReady;
-  el("launch-forge").hidden = !forgeReady;
   launchController.projectLaunchButtons({ lunarReady, forgeReady });
   syncLaunchUi();
 
@@ -775,24 +773,29 @@ function syncLaunchUi() {
   const lunarReady = ready.some((t) => t.kind === "lunar");
   const forgeReady = ready.some((t) => t.kind === "forge");
   const buttons = launchController.projectForCurrentPhase({ lunarReady, forgeReady });
+  const lunarButton = buttons.find((b) => b.kind === "lunar");
+  const forgeButton = buttons.find((b) => b.kind === "forge");
+  // The projection decides who is in the row: a target that is not installed,
+  // or the one that was NOT clicked while the other's session runs, is absent
+  // and therefore hidden. Only the launched button narrates.
+  launch.hidden = !lunarButton;
+  launchForge.hidden = !forgeButton;
   // A re-render must never clobber live stage narration with the generic
   // phase label: the launch button IS the progress surface now.
   const narration = { launchPhase: st.launchPhase, narratingKind: stageNarrationKind };
-  if (lunarReady && buttons.find((b) => b.kind === "lunar")) {
-    const b = buttons.find((x) => x.kind === "lunar");
+  if (lunarButton) {
     if (!keepsStageNarration({ ...narration, kind: "lunar" })) {
-      el("launch-label").textContent = b.label;
+      el("launch-label").textContent = lunarButton.label;
     }
-    launch.disabled = !b.enabled || updateBlocksLaunch;
-    launch.classList.toggle("is-loading", b.loading);
+    launch.disabled = !lunarButton.enabled || updateBlocksLaunch;
+    launch.classList.toggle("is-loading", lunarButton.loading);
   }
-  if (forgeReady && buttons.find((b) => b.kind === "forge")) {
-    const b = buttons.find((x) => x.kind === "forge");
+  if (forgeButton) {
     if (!keepsStageNarration({ ...narration, kind: "forge" })) {
-      el("launch-forge-label").textContent = b.label;
+      el("launch-forge-label").textContent = forgeButton.label;
     }
-    launchForge.disabled = !b.enabled || updateBlocksLaunch;
-    launchForge.classList.toggle("is-loading", b.loading);
+    launchForge.disabled = !forgeButton.enabled || updateBlocksLaunch;
+    launchForge.classList.toggle("is-loading", forgeButton.loading);
   }
   autoJoinWrap.hidden = !st.showAutoJoinSwitch;
   autoJoinInput.checked = st.optimisticAutoJoin;
