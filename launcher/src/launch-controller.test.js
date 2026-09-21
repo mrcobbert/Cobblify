@@ -327,6 +327,112 @@ test("auto-join-on launch settles into the in-game joining label", async () => {
   assert.equal(done[0].loading, false);
 });
 
+// ---- the launched target owns the row --------------------------------------------------------
+// With both targets installed, a launch must not make the OTHER button spin or
+// narrate: it leaves the row for the whole session and returns on reset.
+
+const BOTH_READY = { lunarReady: true, forgeReady: true };
+const launchedReply = (generation) => ({
+  status: "launched",
+  generation,
+  outcome: { autoJoinHypixel: true, useExternalOverlay: true, action: "game_launch_requested" },
+});
+const noHooks = { onLaunchReply() {}, onProgressStart() {} };
+
+for (const [kind, other] of [
+  ["forge", "lunar"],
+  ["lunar", "forge"],
+]) {
+  test(`launching ${kind} projects only the ${kind} button for the whole session`, async () => {
+    const cmd = kind === "forge" ? CMD.launchForge : CMD.launchLunar;
+    let release;
+    const invoke = fakeInvoke({
+      ...baseHandlers,
+      [cmd]: () => new Promise((resolve) => (release = () => resolve(launchedReply(4)))),
+    });
+    const ctrl = createLaunchController(invoke);
+    await ctrl.refreshPreferences();
+    assert.deepEqual(
+      ctrl.projectForCurrentPhase(BOTH_READY).map((b) => b.kind),
+      ["lunar", "forge"],
+    );
+
+    // From the click, before the backend has even answered.
+    const pending = ctrl.launch(kind, noHooks);
+    assert.equal(ctrl.getState().launchKind, kind);
+    let buttons = ctrl.projectForCurrentPhase(BOTH_READY);
+    assert.deepEqual(buttons.map((b) => b.kind), [kind]);
+    assert.equal(buttons[0].loading, true);
+    assert.equal(buttons[0].label, "Heading to Hypixel");
+
+    release();
+    await pending;
+    buttons = ctrl.projectForCurrentPhase(BOTH_READY);
+    assert.deepEqual(buttons.map((b) => b.kind), [kind]);
+    assert.equal(buttons[0].loading, true);
+
+    // Settled in game: still only the launched target, no longer spinning.
+    ctrl.settleLaunchPhase();
+    buttons = ctrl.projectForCurrentPhase(BOTH_READY);
+    assert.deepEqual(buttons.map((b) => b.kind), [kind]);
+    assert.equal(buttons[0].loading, false);
+    assert.equal(ctrl.getState().showAutoJoinSwitch, true);
+
+    // The session ends: the other target comes back, idle.
+    ctrl.invalidateSession();
+    ctrl.resetLaunchSession();
+    assert.equal(ctrl.getState().launchKind, null);
+    buttons = ctrl.projectForCurrentPhase(BOTH_READY);
+    assert.deepEqual(buttons.map((b) => b.kind), ["lunar", "forge"]);
+    assert.ok(buttons.every((b) => !b.loading && b.enabled));
+    assert.ok(buttons.find((b) => b.kind === other));
+  });
+}
+
+test("a launch that never dispatches gives the row back at once", async () => {
+  const replies = {
+    rejected: { status: "rejected", code: "launch_cooldown", message: "wait" },
+    preexisting_game: { status: "preexisting_game" },
+  };
+  for (const [name, reply] of Object.entries(replies)) {
+    const invoke = fakeInvoke({ ...baseHandlers, [CMD.launchForge]: () => reply });
+    const ctrl = createLaunchController(invoke);
+    await ctrl.refreshPreferences();
+    await ctrl.launch("forge", noHooks);
+    assert.equal(ctrl.getState().launchKind, null, name);
+    assert.deepEqual(
+      ctrl.projectForCurrentPhase(BOTH_READY).map((b) => b.kind),
+      ["lunar", "forge"],
+      name,
+    );
+  }
+  // A thrown invoke is the same story.
+  const invoke = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchForge]: () => {
+      throw new Error("ipc down");
+    },
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("forge", noHooks);
+  assert.equal(ctrl.getState().launchKind, null);
+  assert.deepEqual(
+    ctrl.projectForCurrentPhase(BOTH_READY).map((b) => b.kind),
+    ["lunar", "forge"],
+  );
+});
+
+test("a single installed target is unaffected by row ownership", async () => {
+  const invoke = fakeInvoke({ ...baseHandlers, [CMD.launchLunar]: () => launchedReply(5) });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  await ctrl.launch("lunar", noHooks);
+  const buttons = ctrl.projectForCurrentPhase({ lunarReady: true, forgeReady: false });
+  assert.deepEqual(buttons.map((b) => b.kind), ["lunar"]);
+  assert.equal(buttons[0].loading, true);
+});
+
 test("settleLaunchPhase reaches done for an auto-join-on launch", async () => {
   const invoke = fakeInvoke({
     ...baseHandlers,
