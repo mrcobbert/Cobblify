@@ -175,4 +175,24 @@ public class ClientSettingsConfigTest {
         assertEquals(GuiTheme.Accent.RED, GuiTheme.fromToken("RED"));
         assertEquals(GuiTheme.Accent.BLUE, GuiTheme.fromToken("blue"));
     }
+
+    /** {@code /bw mode} persists under its original JSON key and survives a save/load; garbage sanitises to auto. */
+    @Test
+    public void statsModeRoundTripsAndSanitises() {
+        ClientSettings s = new ClientSettings();
+        s.chatStatsMode = "fours";
+        s.sanitize();
+        String json = GSON.toJson(s);
+        assertTrue(json.contains("\"chatStatsMode\":\"fours\""));
+        ClientSettings back = GSON.fromJson(json, ClientSettings.class);
+        back.sanitize();
+        assertEquals("fours", back.chatStatsMode);
+
+        ClientSettings hand = GSON.fromJson("{\"chatStatsMode\":\"4s\"}", ClientSettings.class);
+        hand.sanitize();
+        assertEquals("auto", hand.chatStatsMode); // a typed synonym is not a stored token
+        ClientSettings absent = GSON.fromJson("{}", ClientSettings.class);
+        absent.sanitize();
+        assertEquals("auto", absent.chatStatsMode);
+    }
 }
