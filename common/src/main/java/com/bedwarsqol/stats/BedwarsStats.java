@@ -320,9 +320,10 @@ public final class BedwarsStats {
     /**
      * The tag a labelled surface stamps on numbers rendered for {@code mode}: {@code null} when not
      * labelling (auto mode — nothing is stamped), else the mode's short label when its block has games
-     * or {@code All} when {@link #statsFor} fell back to the overall block.
+     * or {@code All} when {@link #statsFor} fell back to the overall block. Public for the surfaces that
+     * compose their own line (the denick report, the Players page row) so they follow the same rule.
      */
-    private String labelFor(BedwarsMode mode, boolean labelMode) {
+    public String labelFor(BedwarsMode mode, boolean labelMode) {
         if (!labelMode) return null;
         String own = modeLabel(mode);
         return own != null ? own : BedwarsMode.UNKNOWN.shortLabel();

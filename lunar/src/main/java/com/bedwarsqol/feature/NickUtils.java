@@ -406,7 +406,8 @@ public final class NickUtils {
         }
 
         reportSent = true;
-        BedwarsMode mode = BedwarsModeDetector.current();
+        BedwarsMode mode = BedwarsModeDetector.displayMode(cfg);
+        boolean labelled = BedwarsModeDetector.isForced(cfg);
         for (String[] d : denicks) {
             String nick = d[0], real = d[1];
             char col = teamColorChar(nick);
@@ -417,7 +418,9 @@ public final class NickUtils {
                 String fkdr = "";
                 if (st != null && st.state == BedwarsStats.State.OK) {
                     double f = st.statsFor(mode).fkdr;
-                    fkdr = " §7[" + BedwarsStats.fkdrColor(f) + "FKDR " + fmt2(f) + "§7]";
+                    // Same label rule as the chat bracket: the mode the number came from, when forced.
+                    String label = st.labelFor(mode, labelled);
+                    fkdr = " §7[" + BedwarsStats.fkdrColor(f) + (label == null ? "" : label + " ") + "FKDR " + fmt2(f) + "§7]";
                 }
                 local(mc, nc + nick + " §7is Nicked, §adenick successful. Real Name: " + rc + real + fkdr);
             } else {
