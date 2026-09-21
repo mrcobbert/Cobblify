@@ -243,6 +243,16 @@ public final class BedwarsStats {
     }
 
     public String formatForNametag(BedwarsMode mode, boolean showRank) {
+        return formatForNametag(mode, showRank, false);
+    }
+
+    /**
+     * Nametag line: {@code FKDR x.xx}, star/rank prefix first. With {@code labelMode} (the user has
+     * forced a mode with {@code /bw mode}) the mode the numbers actually came from is stamped in
+     * front — {@code 4s FKDR x.xx}, or {@code All FKDR x.xx} when the player has no games in the
+     * forced mode and {@link #statsFor} fell back to overall — so a fallback is never disguised.
+     */
+    public String formatForNametag(BedwarsMode mode, boolean showRank, boolean labelMode) {
         // A transient fetch failure renders nothing (like a still-loading player) — see specialLabel;
         // falling through would paint a real player as a misleading "FKDR 0.00" for the error TTL.
         if (state == State.ERROR) return null;
@@ -251,20 +261,71 @@ public final class BedwarsStats {
         ModeStats m = statsFor(mode);
         StringBuilder sb = new StringBuilder();
         appendPrefix(sb, showRank);
-        sb.append(fkdrColor(m.fkdr)).append("FKDR ").append(fmt2(m.fkdr)).append("§r");
+        sb.append(fkdrColor(m.fkdr));
+        String label = labelFor(mode, labelMode);
+        if (label != null) sb.append(label).append(' ');
+        sb.append("FKDR ").append(fmt2(m.fkdr)).append("§r");
         return sb.toString();
     }
 
     public String formatForTab(BedwarsMode mode, boolean showRank) {
+        return formatForTab(mode, showRank, false);
+    }
+
+    /** Tab-list cell; the same {@code labelMode} rule as {@link #formatForNametag(BedwarsMode, boolean, boolean)}. */
+    public String formatForTab(BedwarsMode mode, boolean showRank, boolean labelMode) {
         if (state == State.ERROR) return null; // same render-nothing contract as formatForNametag
         String special = specialLabel();
         if (special != null) return special;
         ModeStats m = statsFor(mode);
         StringBuilder sb = new StringBuilder();
         appendPrefix(sb, showRank);
-        sb.append("§7FKDR: ").append(fkdrColor(m.fkdr)).append(fmt2(m.fkdr))
+        sb.append("§7");
+        String label = labelFor(mode, labelMode);
+        if (label != null) sb.append(label).append(' ');
+        sb.append("FKDR: ").append(fkdrColor(m.fkdr)).append(fmt2(m.fkdr))
                 .append(" §7WLR: §f").append(fmt2(m.wlr));
         return sb.toString();
+    }
+
+    /**
+     * The leading Chat Stats bracket for a chat line: {@code [x.xx]} coloured by threat, {@code [New]}
+     * for a never-played account, {@code ""} for every other state (nicked / error render nothing in
+     * chat). Under {@code labelMode} the bracket carries the mode its number came from —
+     * {@code [4s x.xx]}, or {@code [All x.xx]} after a fallback to overall. Trailing space included so
+     * it can be spliced straight in front of the rank tag.
+     */
+    public String chatBracket(BedwarsMode mode, boolean labelMode) {
+        if (state == State.OK) {
+            double v = statsFor(mode).fkdr;
+            String label = labelFor(mode, labelMode);
+            return "§7[" + (label == null ? "" : label + " ") + fkdrColor(v) + fmt2(v) + "§7]§r ";
+        }
+        if (state == State.NEVER_PLAYED) return "§7[New]§r ";
+        return "";
+    }
+
+    /**
+     * The placeholder a chat line wears while its stats are still fetching: width-matched to the
+     * resolved {@link #chatBracket} so the line does not jump when the number lands. Under
+     * {@code labelMode} it carries the forced mode's own label ({@code [4s -.--]}) — the outcome it
+     * resolves to whenever the player has games there; the {@code All} fallback is width-identical in
+     * the vanilla font for 2s/3s/4s and one label wider for Solo.
+     */
+    public static String pendingChatBracket(BedwarsMode mode, boolean labelMode) {
+        String label = labelMode ? mode.shortLabel() : null;
+        return "§7[" + (label == null ? "" : label + " ") + "-.--]§r ";
+    }
+
+    /**
+     * The tag a labelled surface stamps on numbers rendered for {@code mode}: {@code null} when not
+     * labelling (auto mode — nothing is stamped), else the mode's short label when its block has games
+     * or {@code All} when {@link #statsFor} fell back to the overall block.
+     */
+    private String labelFor(BedwarsMode mode, boolean labelMode) {
+        if (!labelMode) return null;
+        String own = modeLabel(mode);
+        return own != null ? own : BedwarsMode.UNKNOWN.shortLabel();
     }
 
     /**
@@ -273,6 +334,16 @@ public final class BedwarsStats {
      * can fall back to the vanilla card alone.
      */
     public java.util.List<String> formatForHoverCard(BedwarsMode mode, boolean showRank) {
+        return formatForHoverCard(mode, showRank, false);
+    }
+
+    /**
+     * Hover card with the same {@code labelMode} rule as the other surfaces: the header names the
+     * mode the numbers came from whenever it is a specific one ({@code (4s)}, as today), and under
+     * {@code labelMode} also names {@code (All)} after a fallback so a forced mode never shows
+     * overall numbers unmarked.
+     */
+    public java.util.List<String> formatForHoverCard(BedwarsMode mode, boolean showRank, boolean labelMode) {
         java.util.List<String> out = new java.util.ArrayList<String>();
         switch (state) {
             case NICKED:       out.add("§6§lBedWars §r§8(nicked / not found)"); return out;
@@ -282,7 +353,7 @@ public final class BedwarsStats {
         }
         ModeStats m = statsFor(mode);
         StringBuilder header = new StringBuilder("§6§lBedWars");
-        String modeTag = modeLabel(mode);
+        String modeTag = labelMode ? labelFor(mode, true) : modeLabel(mode);
         if (modeTag != null) header.append(" §r§7(").append(modeTag).append("§7)");
         if (bedwarsLevel > 0) header.append(" §r").append(starTag(bedwarsLevel));
         if (showRank && !rankPrefix.isEmpty()) header.append(" §r").append(rankPrefix);
@@ -300,13 +371,15 @@ public final class BedwarsStats {
      * with the requested mode would misrepresent the numbers on screen.
      */
     public String modeLabel(BedwarsMode mode) {
+        ModeStats own;
         switch (mode) {
-            case SOLO:    return solo    != null && solo.hasGames()    ? "Solo" : null;
-            case DOUBLES: return doubles != null && doubles.hasGames() ? "2s"   : null;
-            case THREES:  return threes  != null && threes.hasGames()  ? "3s"   : null;
-            case FOURS:   return fours   != null && fours.hasGames()   ? "4s"   : null;
-            default:      return null;
+            case SOLO:    own = solo;    break;
+            case DOUBLES: own = doubles; break;
+            case THREES:  own = threes;  break;
+            case FOURS:   own = fours;   break;
+            default:      return null; // overall: never labelled here (PlayerCard maps null → "Overall")
         }
+        return own != null && own.hasGames() ? mode.shortLabel() : null;
     }
 
     /** The bracketed label for non-OK states (or null when stats should render). */
