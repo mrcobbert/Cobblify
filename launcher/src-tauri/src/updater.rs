@@ -764,12 +764,15 @@ pub async fn install_update(
         .map_err(|_| "Verified update cache could not be read.".to_string())?;
     fs::write(service.installed_marker_path(), &update.version)
         .map_err(|_| "The post-update verification marker could not be written.".to_string())?;
-    let snapshot = service.set_status(&app, |status| status.state = UpdateState::Installing);
+    service.set_status(&app, |status| status.state = UpdateState::Installing);
     service.send_event("install_started");
     update
         .install(bytes)
         .map_err(|_| "The updater could not start installation.".to_string())?;
-    Ok(snapshot)
+    // Windows never returns from install: the plugin hands off to the NSIS installer
+    // and exits, and the installer relaunches us. macOS swaps the bundle in place and
+    // returns, so without this the old process sits on "Installing…" forever.
+    app.restart()
 }
 
 pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry, tauri_plugin_updater::Config> {
