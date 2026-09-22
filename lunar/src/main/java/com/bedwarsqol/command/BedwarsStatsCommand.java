@@ -180,11 +180,16 @@ public final class BedwarsStatsCommand {
         return String.format(Locale.US, "%.2f", d);
     }
 
+    /**
+     * Print a line locally. Most calls come from the fetch executor, so the only look at client
+     * state happens inside the scheduled task, on the client thread: the player can be gone by the
+     * time it runs (a disconnect between fetch and reply), and checking here as well would be both
+     * an off-thread read and a stale answer.
+     */
     private static void sendChat(String msg) {
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc == null || mc.thePlayer == null) return;
+        if (mc == null) return;
         IChatComponent c = ModChat.mark(new ChatComponentText(msg));
-        // thePlayer can be gone by the time the task runs (a disconnect between fetch and reply).
         mc.addScheduledTask(() -> {
             if (mc.thePlayer != null) mc.thePlayer.addChatMessage(c);
         });
