@@ -3,6 +3,7 @@ package com.bedwarsqol.config;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
+import com.bedwarsqol.stats.StatsBackendUrl;
 import com.bedwarsqol.stats.StatsMode;
 import org.lwjgl.input.Keyboard;
 
@@ -278,7 +279,10 @@ public class ClientSettings {
         chatStatsMode = StatsMode.normalize(chatStatsMode);
 
         if (statsBackendUrl == null) statsBackendUrl = "";
-        statsBackendUrl = statsBackendUrl.trim();
+        // Only ever hold a URL the command would accept today. A build before the https-only rule
+        // saved whatever was typed, and an http:// one would keep sending the token in clear on
+        // every request; dropping it here falls back to the baked backend, or to none.
+        statsBackendUrl = StatsBackendUrl.normalizeOrEmpty(statsBackendUrl);
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
         if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;

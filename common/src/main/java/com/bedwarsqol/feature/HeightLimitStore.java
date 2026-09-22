@@ -62,7 +62,8 @@ public final class HeightLimitStore {
         try {
             // AtomicFileWrite creates the parent directory and renames the finished bytes into place.
             AtomicFileWrite.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
-        } catch (IOException ignored) {
+        } catch (Exception ignored) {
+            // Silent by contract, and AtomicFileWrite can also throw unchecked (a bad path).
         }
     }
 }

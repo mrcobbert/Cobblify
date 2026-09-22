@@ -195,4 +195,33 @@ public class ClientSettingsConfigTest {
         absent.sanitize();
         assertEquals("auto", absent.chatStatsMode);
     }
+
+    /**
+     * Interim code review, I2: the https-only rule guarded only {@code /cobblify statsurl}. A URL
+     * saved by an older build was loaded verbatim, so an {@code http://} one kept carrying the
+     * backend token in clear on every request, which is the harm the fix was for.
+     */
+    @Test
+    public void aStoredInsecureBackendUrlIsDroppedOnLoad() {
+        for (String stored : new String[] {
+                "http://my-box:8787", "my-worker.workers.dev", "https://user:pass@x", "ht tp://bad" }) {
+            ClientSettings s = new ClientSettings();
+            s.statsBackendUrl = stored;
+            s.statsBackendToken = "user-token";
+            s.sanitize();
+            assertEquals("kept an unusable URL: " + stored, "", s.statsBackendUrl);
+            BackendTarget t = s.backendTarget();
+            assertFalse("the user token must not ride on " + stored, "user-token".equals(t.token));
+        }
+    }
+
+    @Test
+    public void aStoredHttpsBackendUrlSurvivesLoad() {
+        ClientSettings s = new ClientSettings();
+        s.statsBackendUrl = "https://my-own.example/";
+        s.statsBackendToken = "user-token";
+        s.sanitize();
+        assertEquals("https://my-own.example", s.statsBackendUrl);
+        assertEquals("user-token", s.backendTarget().token);
+    }
 }

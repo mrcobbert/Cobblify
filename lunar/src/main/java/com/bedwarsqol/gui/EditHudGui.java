@@ -47,8 +47,8 @@ public class EditHudGui extends GuiScreen {
 
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
-        // Re-establish the 2D GUI orthographic projection ourselves (BedwarsHudRenderer cancels the
-        // in-game overlay while the blur is active, which otherwise skips vanilla's setupOverlayRendering).
+        // Re-establish the 2D GUI orthographic projection ourselves (GuiIngameMixin cancels
+        // renderGameOverlay while the blur is active, which otherwise skips vanilla's setupOverlayRendering).
         mc.entityRenderer.setupOverlayRendering();
         GuiBlur.update(); // render the world blur onto the framebuffer before anything draws on top
         if (GuiBlur.isActive()) GuiRender.rect(0, 0, width, height, SCRIM);

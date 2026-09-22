@@ -190,8 +190,15 @@ public final class OutgoingChatCore {
     /**
      * Player submitted from chat. Cancels optional automation and opens the quiet window.
      * Does not enqueue or send.
+     *
+     * <p>A gg parked behind a report ({@link #deferredAutoGg}) is optional automation too, so it
+     * goes here with the rest. Without that the gg's fate was decided by where the pacing gap
+     * happened to fall: cancelling the report released the gg into the AUTO slot, and the typed
+     * line then cleared that slot again and dropped it with no notice, but only when the gap was
+     * closed. Typing now cancels it either way.
      */
     public void onUserIntent(long nowMs) {
+        deferredAutoGg = null; // before cancelSweat, whose release path would re-queue it
         OutgoingChatRequest dropped = queue.cancelOptional();
         cancelSweat(dropped, SweatCancelReason.INTERRUPTED);
         lastManualMs = nowMs;

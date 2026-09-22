@@ -22,4 +22,14 @@ public final class StatsBackendUrl {
         while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
         return ScraperBackendClient.validateSecretUrl(s) == null ? s : null;
     }
+
+    /**
+     * As {@link #normalize}, but a refused URL becomes {@code ""} — the shape a settings field
+     * holds, where empty means "no backend configured" and falls back to the baked pair.
+     */
+    public static String normalizeOrEmpty(String raw) {
+        String url = normalize(raw);
+        return url == null ? "" : url;
+    }
+
 }

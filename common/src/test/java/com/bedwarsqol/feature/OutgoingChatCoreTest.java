@@ -617,4 +617,34 @@ public class OutgoingChatCoreTest {
         assertEquals("exactly one gg for the game", 1, ggs);
         assertTrue(core.queue().isEmpty());
     }
+
+    /**
+     * Interim code review, I1: typing cancels optional automation, and that has to include a gg
+     * parked behind a report. It used to depend on where the 2.5 s gap fell - the gg survived a
+     * typed line when the gap was open and vanished with no notice when it was closed.
+     */
+    @Test
+    public void typedChatCancelsADeferredAutoGgWhateverThePacing() {
+        for (long typedAt : new long[] {300L, 3000L}) {
+            core = new OutgoingChatCore();
+            OutgoingChatCore.InterceptResult first = core.interceptPlayerSend("gg wp", ctx, 0L);
+            core.acknowledgeDelivered(first.decision.send, 0L);
+            core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 100L);
+            core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 200L);
+
+            OutgoingChatCore.InterceptResult typed = core.interceptPlayerSend("nice", ctx, typedAt);
+            if (typed.decision.send != null) core.acknowledgeDelivered(typed.decision.send, typedAt);
+
+            java.util.List<String> wire = new java.util.ArrayList<String>();
+            for (long now = typedAt; now <= typedAt + 40_000L; now += OutgoingChatPolicy.MIN_GAP_MS) {
+                OutgoingChatCore.Decision d = core.tick(ctx, now, false, allOn);
+                if (d.send == null) continue;
+                wire.add(d.send.text);
+                core.acknowledgeDelivered(d.send, now);
+            }
+            assertFalse("typed at " + typedAt + ": a cancelled gg reached the wire " + wire,
+                    wire.contains("gg"));
+            assertNull("typed at " + typedAt + ": AUTO slot left occupied", core.queue().peekAuto());
+        }
+    }
 }
