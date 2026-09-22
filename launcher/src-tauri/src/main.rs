@@ -309,8 +309,10 @@ fn set_up_lunar_with(
 ///     agent behind us.
 ///   * 1 - an I/O error; the message is on stderr.
 ///
-/// Both refusals are taken BEFORE the first write, so a non-zero exit always
-/// means "nothing was changed" and the hook can simply abort the uninstall.
+/// The two REFUSALS (3, 4) are taken before the first write, so they alone
+/// guarantee nothing was changed. A 1 can follow a rewritten `launcher.json`
+/// whose jar deletion then failed, which is "partially undone, look at
+/// `~/.weave`". The hook aborts the uninstall on any non-zero exit either way.
 /// Never shows a dialog: the installer owns the UI, and this runs headless.
 pub(crate) fn uninstall_lunar_integration_with(
     lunar_running: impl Fn() -> Result<bool, String>,

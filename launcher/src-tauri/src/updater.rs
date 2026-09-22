@@ -1301,9 +1301,54 @@ mod tests {
         let (state, reason, arm_waiter) = pause_for_game();
         assert_eq!(state, UpdateState::Paused);
         assert_eq!(reason, "game_active");
-        assert!(
-            arm_waiter,
-            "a pause nobody wakes up from leaves the update stuck until the next launch"
+        assert!(arm_waiter);
+    }
+
+    /// The production half of this file: everything before the test module, with comment
+    /// lines dropped. Counting names in prose is not a test; counting them in code is.
+    fn production_source() -> String {
+        let source = include_str!("updater.rs");
+        let body = &source[..source.find("#[cfg(test)]").expect("a test module")];
+        body.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Outcome review I1. The decision above is a constant, so asserting it proves nothing
+    /// about the code that acts on it: deleting both `arm_game_exit_waiter` calls left the
+    /// whole suite green, and an install paused during a game would then never wake. An
+    /// `AppHandle` cannot be constructed in a unit test, so the call sites are pinned in
+    /// the source instead - the same technique as `download_client_has_no_total_deadline`.
+    #[test]
+    fn every_game_pause_arms_the_exit_waiter() {
+        let code = production_source();
+        // Calls, not definitions: a call reads `let (..) = pause_for_game();`.
+        let pauses = code.matches("= pause_for_game()").count();
+        let arms = code.matches("arm_game_exit_waiter(").count()
+            - code.matches("fn arm_game_exit_waiter(").count();
+        assert_eq!(pauses, 2, "the download loop and install_update are the two pause sites");
+        assert_eq!(
+            arms, pauses,
+            "every pause site must arm the waiter: {arms} arming calls for {pauses} pauses"
+        );
+        assert_eq!(
+            code.matches("Some(\"game_active\".into())").count(),
+            0,
+            "a pause must go through pause_for_game(), not an inline game_active literal"
+        );
+    }
+
+    /// Outcome review O1. `verify_cached` hands back the bytes it checked, and
+    /// `install_update` must install those - a second read of the file would install
+    /// whatever is there by then, verified or not (L8).
+    #[test]
+    fn the_installer_never_re_reads_the_verified_cache() {
+        let code = production_source();
+        assert_eq!(
+            code.matches("fs::read(").count(),
+            1,
+            "only verify_cached may read the cached bundle"
         );
     }
 
