@@ -1,6 +1,6 @@
 //! Launch routes, preflight, and native dispatch.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
@@ -405,6 +405,23 @@ fn open_play_hypixel() -> Result<(), String> {
     Err("Lunar launch is not supported on this platform.".to_string())
 }
 
+/// The Lunar Client executable under a `%LOCALAPPDATA%\Programs` directory,
+/// or `None` when neither observed layout is present.
+///
+/// TWO layouts exist in the field (L6): the spaced `Lunar Client` directory
+/// and the squashed `lunarclient` one, in that order of preference. Every
+/// caller must try both - `open_launcher` hard-coded the squashed name and
+/// told anyone with the other layout that Lunar was not installed. Pure path
+/// logic, compiled on every platform so its test runs on the Mac too; only
+/// the Windows call sites consult it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn lunar_exe_in(programs: &Path) -> Option<PathBuf> {
+    ["Lunar Client", "lunarclient"]
+        .into_iter()
+        .map(|dir| programs.join(dir).join("Lunar Client.exe"))
+        .find(|candidate| candidate.is_file())
+}
+
 pub fn open_lunar_app_only() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -420,15 +437,8 @@ pub fn open_lunar_app_only() -> Result<(), String> {
     #[cfg(windows)]
     {
         let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set.")?;
-        let programs = std::path::PathBuf::from(local).join("Programs");
-        let candidates = [
-            programs.join("Lunar Client/Lunar Client.exe"),
-            programs.join("lunarclient/Lunar Client.exe"),
-        ];
-        let exe = candidates
-            .iter()
-            .find(|p| p.is_file())
-            .ok_or("Lunar Client is not installed.")?;
+        let programs = PathBuf::from(local).join("Programs");
+        let exe = lunar_exe_in(&programs).ok_or("Lunar Client is not installed.")?;
         Command::new(exe)
             .spawn()
             .map_err(|e| format!("Cannot open Lunar Client: {e}"))?;
@@ -445,6 +455,28 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// L6. Both layouts have been seen under `%LOCALAPPDATA%\Programs`:
+    /// the spaced `Lunar Client` directory and the squashed `lunarclient`
+    /// one. The lookup is pure path logic, so it is proven on every
+    /// platform against a temp directory rather than only on Windows.
+    #[test]
+    fn lunar_exe_in_finds_either_observed_install_layout() {
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(lunar_exe_in(empty.path()), None, "neither layout present");
+
+        let spaced = tempfile::tempdir().unwrap();
+        let spaced_exe = spaced.path().join("Lunar Client").join("Lunar Client.exe");
+        std::fs::create_dir_all(spaced_exe.parent().unwrap()).unwrap();
+        std::fs::write(&spaced_exe, b"exe").unwrap();
+        assert_eq!(lunar_exe_in(spaced.path()), Some(spaced_exe));
+
+        let squashed = tempfile::tempdir().unwrap();
+        let squashed_exe = squashed.path().join("lunarclient").join("Lunar Client.exe");
+        std::fs::create_dir_all(squashed_exe.parent().unwrap()).unwrap();
+        std::fs::write(&squashed_exe, b"exe").unwrap();
+        assert_eq!(lunar_exe_in(squashed.path()), Some(squashed_exe));
+    }
 
     /// Drive one auto-join click, recording the effects in order.
     fn drive_auto_join(open_ok: bool) -> (Result<(), String>, Vec<&'static str>) {

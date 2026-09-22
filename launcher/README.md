@@ -77,10 +77,30 @@ Before writing it:
   exit and would clobber the edit
 - preserves any other JVM args, and replaces a stale Weave javaagent rather than
   appending a second one
+- reads the user's arguments from `settings.jvmArgs` when that key is present
+  (Lunar's own UI writes it), falling back to `settings.jvm-args` only when it
+  is absent, then writes both keys
 - refuses to touch the file at all if the JSON is unparseable
 
 It also installs the jars into `~/.weave/` using a same-directory temp file plus
 an atomic rename, so a running game never sees a half-written jar.
+
+**Uninstalling on Windows undoes that registration first.** The NSIS
+uninstaller's `NSIS_HOOK_PREUNINSTALL` (`src-tauri/nsis/hooks.nsh`) runs
+`cobblify-launcher.exe --uninstall-lunar-integration`, which strips the Weave
+`-javaagent:` from both jvm keys in `launcher.json` and deletes only the two
+jars the launcher installed - `~/.weave/Weave-Loader-Agent-*.jar` and
+`~/.weave/mods/Cobblify-Lunar-*.jar` - removing `mods/` and `.weave` only if
+they end up empty. The exit code is the contract: `0` done, `3` Lunar is
+running or cannot be determined, `4` another launcher process is alive, `1` an
+I/O error. Both refusals happen before the first write, so anything non-zero
+means nothing was changed and the hook shows a message and aborts the
+uninstall. They are not paranoia: Lunar rewrites `launcher.json` when it exits
+and would put back a javaagent whose jar had just been deleted, and the NSIS
+template's own running-app check happens *after* this hook. Residual race: a
+Lunar or Cobblify process started in the milliseconds between the check and
+the write is not covered. `launcher.json.bak-cobblify` is deliberately left in
+place - it is the user's pristine pre-Cobblify copy.
 
 ## Forge
 
@@ -231,7 +251,12 @@ box during the dev loop and in `Launcher Update Candidate`. Beyond that, as of
 - **Windows `launcher.json` has been observed** on a real Windows machine
   (2026-08-13). A fresh Windows install carries no jvm keys at all and Lunar
   writes camelCase `jvmArgs` only; the schema guard accepts that shape and
-  still refuses missing-settings, non-string, or divergent files.
+  still refuses missing-settings and non-string files. Because Lunar edits
+  `jvmArgs` alone, the two spellings diverge as soon as a user changes their
+  arguments after setup, so a present `jvmArgs` (empty included - that is a
+  cleared setting) is authoritative and `jvm-args` is read only when the
+  camelCase key is absent. The guard used to refuse that divergence outright,
+  which reverted the user's flags to whatever Cobblify last wrote.
 - **Not exercised by real play:** the bounded "Still Waiting for Hypixel"
   state, and the refusal to attach to a game that was already running before
   the launch. Both are covered by tests only. Still-waiting may be hard to

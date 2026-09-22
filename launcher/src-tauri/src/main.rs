@@ -215,6 +215,21 @@ const NEVER_RUN_LUNAR: &str =
 /// `~/.weave/` being created on a machine that has no Lunar. Once `launcher.json` exists,
 /// everything below is what it has always been.
 fn set_up_lunar(res: &resources::Resources, home: &Path) -> TargetStatus {
+    set_up_lunar_with(proc::lunar_running_checked, res, home)
+}
+
+/// The running check is injected so its POSITION is testable. It has to come
+/// before `install_lunar` (L7): `register` holds a check of its own, but by
+/// the time it runs the two jars are already in `~/.weave` and the directory
+/// has been created on a machine whose setup then reports `blocked`. The
+/// check here is the gate on writing anything at all; `register` keeps its
+/// own (the state can change in between, and it is the one guarding the
+/// `launcher.json` write itself).
+fn set_up_lunar_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    res: &resources::Resources,
+    home: &Path,
+) -> TargetStatus {
     if !home.join(".lunarclient").exists() {
         return TargetStatus::new("lunar", "absent", "Lunar Client is not installed.")
             .with_issue(issue::MISSING_LAUNCHER);
@@ -223,6 +238,18 @@ fn set_up_lunar(res: &resources::Resources, home: &Path) -> TargetStatus {
     if !launcher_json.exists() {
         return TargetStatus::new("lunar", "blocked", NEVER_RUN_LUNAR)
             .with_issue(issue::UNINITIALIZED_LUNAR);
+    }
+    match lunar_running() {
+        Err(e) => {
+            return TargetStatus::new("lunar", "error", e.clone())
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e);
+        }
+        Ok(true) => {
+            return TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
+                .with_issue(issue::RUNNING_LUNAR);
+        }
+        Ok(false) => {}
     }
     let jars = match &res.lunar {
         Ok(j) => j,
@@ -265,6 +292,56 @@ fn set_up_lunar(res: &resources::Resources, home: &Path) -> TargetStatus {
                 .with_detail(e)
         }
     }
+}
+
+/// `--uninstall-lunar-integration`: undo what Lunar setup did, for the NSIS
+/// uninstaller (R3). Uninstalling the launcher otherwise leaves Lunar
+/// pointed at a `-javaagent:` whose jar is about to be deleted, which is a
+/// Lunar that will not start.
+///
+/// The return value is an EXIT CODE, and it is the hook's whole contract:
+///
+///   * 0 - the agent is unregistered and our jars are gone.
+///   * 3 - Lunar is running, or it cannot be determined whether it is. Lunar
+///     rewrites `launcher.json` on exit and would put the javaagent back,
+///     pointing at a jar that no longer exists.
+///   * 4 - another copy of this launcher is alive and can re-register the
+///     agent behind us.
+///   * 1 - an I/O error; the message is on stderr.
+///
+/// Both refusals are taken BEFORE the first write, so a non-zero exit always
+/// means "nothing was changed" and the hook can simply abort the uninstall.
+/// Never shows a dialog: the installer owns the UI, and this runs headless.
+pub(crate) fn uninstall_lunar_integration_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    other_launcher_running: impl Fn() -> bool,
+    home: &Path,
+) -> i32 {
+    match lunar_running() {
+        Err(e) => {
+            eprintln!("Cannot tell whether Lunar Client is running: {e}");
+            return 3;
+        }
+        Ok(true) => {
+            eprintln!("Lunar Client is running.");
+            return 3;
+        }
+        Ok(false) => {}
+    }
+    if other_launcher_running() {
+        eprintln!("Another Cobblify launcher process is running.");
+        return 4;
+    }
+
+    if let Err(e) = lunar_config::unregister(&home.join(".lunarclient/settings/launcher.json")) {
+        eprintln!("{e}");
+        return 1;
+    }
+    if let Err(e) = install::uninstall_lunar(&home.join(".weave")) {
+        eprintln!("{e}");
+        return 1;
+    }
+    0
 }
 
 // ── Forge ───────────────────────────────────────────────────────────────────────
@@ -689,10 +766,10 @@ fn open_launcher(
                 {
                     let local =
                         std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set.")?;
-                    let exe = PathBuf::from(local).join("Programs/lunarclient/Lunar Client.exe");
-                    if !exe.is_file() {
-                        return Err("Lunar Client is not installed.".to_string());
-                    }
+                    let programs = PathBuf::from(local).join("Programs");
+                    // L6: both install layouts, exactly as `open_lunar_app_only` sees them.
+                    let exe = launch::lunar_exe_in(&programs)
+                        .ok_or("Lunar Client is not installed.")?;
                     std::process::Command::new(&exe)
                         .spawn()
                         .map_err(|e| format!("Cannot open Lunar Client: {e}"))?;
@@ -1773,6 +1850,139 @@ async fn launch_progress(
 mod tests {
     use super::*;
 
+    // R3: `--uninstall-lunar-integration`. The exit code IS the contract -
+    // the NSIS pre-uninstall hook aborts the whole uninstall on anything
+    // non-zero - and every refusal has to happen before the first write.
+
+    /// A home that looks exactly like a completed Lunar setup.
+    fn installed_lunar_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join(".lunarclient/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
+        let args = format!("-Xmx4G -javaagent:{}", agent.display());
+        let config = serde_json::json!({"settings": {"jvm-args": args, "jvmArgs": args}});
+        std::fs::write(
+            settings.join("launcher.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join(".weave/mods")).unwrap();
+        std::fs::write(&agent, b"agent").unwrap();
+        std::fs::write(
+            home.path().join(".weave/mods/Cobblify-Lunar-0.8.1.jar"),
+            b"mod",
+        )
+        .unwrap();
+        home
+    }
+
+    fn launcher_json_text(home: &Path) -> String {
+        std::fs::read_to_string(home.join(".lunarclient/settings/launcher.json")).unwrap()
+    }
+
+    /// Nothing at all was written: the agent is still registered and both
+    /// jars are still on disk.
+    fn assert_integration_intact(home: &Path) {
+        assert!(launcher_json_text(home).contains("-javaagent:"));
+        assert!(home.join(".weave/Weave-Loader-Agent-1.3.3.jar").exists());
+        assert!(home.join(".weave/mods/Cobblify-Lunar-0.8.1.jar").exists());
+    }
+
+    /// Lunar rewrites `launcher.json` when it exits, so stripping the agent
+    /// under a running Lunar would be reverted - resurrecting a javaagent
+    /// whose jar this uninstall is about to delete, which is a Lunar that
+    /// will not start.
+    #[test]
+    fn uninstall_integration_refuses_while_lunar_runs() {
+        let home = installed_lunar_home();
+        let code = uninstall_lunar_integration_with(|| Ok(true), || false, home.path());
+        assert_eq!(code, 3);
+        assert_integration_intact(home.path());
+    }
+
+    #[test]
+    fn uninstall_integration_refuses_when_undeterminable() {
+        let home = installed_lunar_home();
+        let code = uninstall_lunar_integration_with(
+            || Err("Cannot tell whether Lunar is running.".to_string()),
+            || false,
+            home.path(),
+        );
+        assert_eq!(code, 3);
+        assert_integration_intact(home.path());
+    }
+
+    /// The NSIS template's own running-app check happens AFTER the
+    /// pre-uninstall hook, so a launcher still running could re-register the
+    /// agent between our write and the uninstaller removing the files.
+    #[test]
+    fn uninstall_integration_refuses_with_another_launcher() {
+        let home = installed_lunar_home();
+        let code = uninstall_lunar_integration_with(|| Ok(false), || true, home.path());
+        assert_eq!(code, 4);
+        assert_integration_intact(home.path());
+    }
+
+    #[test]
+    fn uninstall_integration_strips_the_agent_and_removes_our_jars() {
+        let home = installed_lunar_home();
+        std::fs::write(home.path().join(".weave/mods/Other.jar"), b"theirs").unwrap();
+
+        let code = uninstall_lunar_integration_with(|| Ok(false), || false, home.path());
+        assert_eq!(code, 0);
+
+        let config = launcher_json_text(home.path());
+        assert!(!config.contains("-javaagent:"), "{config}");
+        assert!(config.contains("-Xmx4G"), "the user's own flags survive");
+        assert!(!home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar").exists());
+        assert!(!home.path().join(".weave/mods/Cobblify-Lunar-0.8.1.jar").exists());
+        assert!(
+            home.path().join(".weave/mods/Other.jar").exists(),
+            "another Weave mod is never removed"
+        );
+    }
+
+    /// L7. The running check must gate the jar INSTALL, not only the
+    /// `launcher.json` write. `install_lunar` creates `~/.weave` and drops
+    /// two jars into it before `register` ever asks whether Lunar is up, so
+    /// a user who ran setup with Lunar open ended with files on disk, no
+    /// agent registered, and a "quit Lunar" message - and `~/.weave` created
+    /// on a machine whose Lunar setup never completed.
+    #[test]
+    fn lunar_setup_reports_running_lunar_before_writing_any_jar() {
+        fn lunar_home() -> tempfile::TempDir {
+            let home = tempfile::tempdir().unwrap();
+            let settings = home.path().join(".lunarclient/settings");
+            std::fs::create_dir_all(&settings).unwrap();
+            std::fs::write(settings.join("launcher.json"), r#"{"settings":{}}"#).unwrap();
+            home
+        }
+        let bundle = tempfile::tempdir().unwrap();
+        resources::tests::write_bundle(bundle.path(), b"mod", b"agent", b"forge");
+        let res = resources::verify(bundle.path()).unwrap();
+
+        let home = lunar_home();
+        let status = set_up_lunar_with(|| Ok(true), &res, home.path());
+        assert_eq!(status.state, "blocked");
+        assert_eq!(status.issue, Some(issue::RUNNING_LUNAR));
+        assert!(
+            !home.path().join(".weave").exists(),
+            "no jar may be written while Lunar is running"
+        );
+
+        // An undeterminable state is an error, and equally writes nothing.
+        let home = lunar_home();
+        let status = set_up_lunar_with(
+            || Err("Cannot tell whether Lunar is running.".to_string()),
+            &res,
+            home.path(),
+        );
+        assert_eq!(status.state, "error");
+        assert_eq!(status.issue, Some(issue::SETUP_ERROR));
+        assert!(!home.path().join(".weave").exists());
+    }
+
     /// Regression lock: the forbidden parameter shipped once (Aug 5) and
     /// could silently move a friend off 1.8.9.
     #[test]
@@ -2759,6 +2969,24 @@ mod tests {
 }
 
 fn main() {
+    // R3: the NSIS pre-uninstall hook runs this exe with one argument and
+    // acts on its exit code. It must never reach `tauri::Builder` - there is
+    // no window, no event loop and nobody to see a dialog.
+    if std::env::args().nth(1).as_deref() == Some("--uninstall-lunar-integration") {
+        let code = match home() {
+            Ok(home) => uninstall_lunar_integration_with(
+                proc::lunar_running_checked,
+                proc::another_launcher_running,
+                &home,
+            ),
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
+
     tauri::Builder::default()
         .plugin(updater::plugin())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

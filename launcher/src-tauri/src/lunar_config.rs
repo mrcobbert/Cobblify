@@ -2,8 +2,15 @@
 //!
 //! `~/.lunarclient/settings/launcher.json` holds ALL of Lunar's settings, so this is the
 //! highest-risk operation in the launcher. Verified 2026-08-04: the file is JSON, the JVM
-//! arguments live in `settings.jvm-args` AND `settings.jvmArgs` (both present, same value),
-//! and the field is global rather than per-profile.
+//! arguments live in `settings.jvm-args` AND `settings.jvmArgs` (both present, same value
+//! on a file this writer last touched), and the field is global rather than per-profile.
+//!
+//! The two spellings DIVERGE in normal use (L1, 2026-09-22): Lunar's own launcher UI
+//! writes `jvmArgs` and never the dashed key, so once a user edits their arguments the
+//! dashed key still holds what Cobblify wrote last. `read_jvm_args` therefore treats a
+//! present `jvmArgs` - empty included - as the authoritative value and only falls back to
+//! `jvm-args` when the camelCase key is absent. Both keys are still written, so a file
+//! this launcher has touched converges back to agreeing.
 //!
 //! Rules, all enforced below: back up once and never overwrite the backup; refuse to write
 //! while Lunar is running (it rewrites this file on exit and would clobber the edit); parse
@@ -105,6 +112,69 @@ fn apply(launcher_json: &Path, agent_path: &Path) -> Result<(), String> {
     write_atomic(launcher_json, &updated)
 }
 
+/// Removes Cobblify's Weave javaagent from Lunar's config - the uninstall
+/// counterpart of `apply`, and the only writer here that takes a token away.
+///
+/// Deliberately narrower than `apply`: it strips `is_weave_javaagent` tokens
+/// from whichever of the two keys is PRESENT as a string and leaves every
+/// other key, value and spelling exactly as it found them, because by the
+/// time this runs Cobblify is being removed and the file belongs entirely to
+/// Lunar again. A key Lunar never had is never created; a file that holds no
+/// agent of ours is not rewritten at all; the `.bak-cobblify` copy is left in
+/// place as the user's pristine pre-Cobblify state.
+///
+/// A missing file is success (nothing of ours is registered). Unparseable
+/// JSON is still a hard refusal - the same rule as `apply`, for the same
+/// reason: this file holds ALL of Lunar's settings.
+pub fn unregister(launcher_json: &Path) -> Result<(), String> {
+    let raw = match fs::read_to_string(launcher_json) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Cannot read {}: {e}", launcher_json.display())),
+    };
+    let mut root: Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "{} is not valid JSON ({e}). Cobblify will not overwrite it.",
+            launcher_json.display()
+        )
+    })?;
+    // No settings object means nothing of ours can be registered, so there is
+    // nothing to remove and no reason to touch the file.
+    let Some(settings) = root
+        .get_mut("settings")
+        .and_then(|settings| settings.as_object_mut())
+    else {
+        return Ok(());
+    };
+
+    let mut changed = false;
+    for key in JVM_ARGS_KEYS {
+        let stripped = match settings.get(key) {
+            Some(Value::String(existing)) => {
+                let kept = split_args(existing)
+                    .into_iter()
+                    .filter(|token| !is_weave_javaagent(token))
+                    .collect::<Vec<String>>()
+                    .join(" ");
+                if kept == *existing {
+                    continue;
+                }
+                kept
+            }
+            _ => continue,
+        };
+        settings.insert(key.to_string(), Value::String(stripped));
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+
+    let updated = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("Cannot serialise {}: {e}", launcher_json.display()))?;
+    write_atomic(launcher_json, &updated)
+}
+
 fn not_an_object(path: &Path) -> String {
     format!(
         "{} does not have the expected shape. Cobblify will not overwrite it.",
@@ -122,9 +192,15 @@ fn not_an_object(path: &Path) -> String {
 /// object - but a fresh install has NO jvm keys at all; Lunar's launcher UI
 /// creates `jvmArgs` (camelCase only) the first time arguments are set.
 /// Absent keys are therefore a verified-legitimate state and are accepted
-/// exactly as on the Mac (the writer creates both spellings). A missing
-/// `settings` object, non-string keys, and divergent values remain refused -
-/// those shapes have still never been seen.
+/// exactly as on the Mac (the writer creates both spellings).
+///
+/// Divergent values were refused here until 2026-09-22 (L1). That refusal
+/// was wrong about the field: because Lunar edits `jvmArgs` alone, ANY user
+/// who changes their arguments after a Cobblify setup leaves the two keys
+/// disagreeing, and the launcher would then refuse Lunar setup forever.
+/// `read_jvm_args` resolves the disagreement deterministically (camelCase
+/// wins) instead. A missing `settings` object and non-string keys remain
+/// refused - those shapes have still never been seen.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
     let obj = root.as_object().ok_or_else(|| not_an_object(path))?;
@@ -141,11 +217,9 @@ fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
         )
     })?;
 
-    let mut values: Vec<&str> = Vec::new();
     for key in JVM_ARGS_KEYS {
         match settings.get(key) {
-            None | Some(Value::Null) => {}
-            Some(Value::String(s)) => values.push(s),
+            None | Some(Value::Null) | Some(Value::String(_)) => {}
             Some(_) => {
                 return Err(format!(
                     "settings.{key} in {} is not a string. Cobblify will not overwrite it.",
@@ -153,26 +227,32 @@ fn windows_schema_guard(root: &Value, path: &Path) -> Result<(), String> {
                 ))
             }
         }
-    }
-    let nonempty: Vec<&&str> = values.iter().filter(|s| !s.is_empty()).collect();
-    if nonempty.len() == 2 && nonempty[0] != nonempty[1] {
-        return Err(format!(
-            "jvm-args and jvmArgs disagree in {}. Cobblify will not overwrite it - send a screenshot of this message.",
-            path.display()
-        ));
     }
     Ok(())
 }
 
+/// Which of the two spellings is the user's CURRENT intent.
+///
+/// `jvmArgs` wins whenever it is present as a string, even an empty one
+/// (L1): Lunar's own launcher UI writes that key and only that key, so it is
+/// the live value, while `jvm-args` holds whatever Cobblify wrote there last
+/// - a stale agent path and none of the flags the user has set since. An
+/// empty `jvmArgs` is the user having cleared their arguments, not a missing
+/// value, so it must not fall back. Only an absent (or null) `jvmArgs` reads
+/// the dashed key, which is what an older Cobblify-only file looks like.
+///
+/// Both keys are still type-checked before either is used: a non-string in
+/// EITHER spelling is a shape this writer refuses, whichever one it would
+/// have read.
 fn read_jvm_args(settings: &Map<String, Value>, path: &Path) -> Result<String, String> {
-    let mut found = String::new();
+    let mut chosen: Option<&String> = None;
     for key in JVM_ARGS_KEYS {
         match settings.get(key) {
             None | Some(Value::Null) => {}
             Some(Value::String(s)) => {
-                if found.is_empty() {
-                    found = s.clone();
-                }
+                // JVM_ARGS_KEYS is ["jvm-args", "jvmArgs"], so the camelCase
+                // key is seen second and overwrites the dashed one.
+                chosen = Some(s);
             }
             Some(_) => {
                 return Err(format!(
@@ -182,7 +262,7 @@ fn read_jvm_args(settings: &Map<String, Value>, path: &Path) -> Result<String, S
             }
         }
     }
-    Ok(found)
+    Ok(chosen.cloned().unwrap_or_default())
 }
 
 /// Splits on unquoted whitespace, keeping each token exactly as written (quotes included) so
@@ -376,6 +456,53 @@ mod tests {
         );
     }
 
+    /// L1. The two keys diverge in the field: Lunar's own launcher UI writes
+    /// `jvmArgs`, so the user's real arguments live there while `jvm-args`
+    /// keeps whatever Cobblify wrote last - a STALE agent path and none of
+    /// the user's flags. Taking the dashed key first (the old rule) silently
+    /// reverted `-Xmx8G`. The camelCase key is authoritative.
+    #[test]
+    fn divergent_keys_prefer_jvm_args_and_keep_user_flags() {
+        let stale = "-javaagent:/Users/tester/.weave/Weave-Loader-Agent-1.2.0.jar";
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvm-args":"{stale}","jvmArgs":"-Xmx8G {stale}"}}}}"#
+        ));
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(dashed, format!("-Xmx8G -javaagent:{AGENT}"));
+        assert_eq!(camel, dashed);
+        assert_eq!(dashed.matches("-javaagent:").count(), 1);
+    }
+
+    /// L1 / round-1 I3. An empty `jvmArgs` is the user having CLEARED their
+    /// arguments in Lunar's UI. A present key is authoritative even when
+    /// empty, so a stale dashed key cannot resurrect what they removed.
+    #[test]
+    fn cleared_jvm_args_is_authoritative_over_a_stale_dashed_key() {
+        let f = Fixture::new(r#"{"settings":{"jvm-args":"-Xmx8G","jvmArgs":""}}"#);
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(dashed, format!("-javaagent:{AGENT}"));
+        assert_eq!(camel, dashed);
+    }
+
+    /// L1 / round-1 I5. Preferring `jvmArgs` must not cost the existing rule
+    /// that a foreign agent is never dropped - and that rule is only
+    /// observable through the key we now read.
+    #[test]
+    fn a_foreign_javaagent_in_jvm_args_is_preserved_over_the_dashed_key() {
+        let f = Fixture::new(
+            r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-javaagent:/opt/other/profiler.jar"}}"#,
+        );
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(
+            dashed,
+            format!("-javaagent:/opt/other/profiler.jar -javaagent:{AGENT}")
+        );
+        assert_eq!(camel, dashed);
+    }
+
     #[test]
     fn a_stale_weave_agent_is_replaced_not_duplicated() {
         let stale = "-javaagent:/Users/tester/.weave/Weave-Loader-Agent-1.2.0.jar";
@@ -481,10 +608,6 @@ mod tests {
             guard(r#"{"settings":{"jvm-args":["-Xmx4G"]}}"#).is_err(),
             "non-string key"
         );
-        assert!(
-            guard(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx8G"}}"#).is_err(),
-            "divergent non-empty keys must not be silently collapsed"
-        );
     }
 
     #[test]
@@ -495,6 +618,11 @@ mod tests {
             guard(r#"{"settings":{"jvm-args":"","jvmArgs":"-Xmx4G"}}"#).is_ok(),
             "empty-vs-value matches the Mac read semantics"
         );
+        assert!(
+            guard(r#"{"settings":{"jvm-args":"-Xmx4G","jvmArgs":"-Xmx8G"}}"#).is_ok(),
+            "L1: divergence is the NORMAL field state - Lunar's UI writes jvmArgs \
+             while jvm-args keeps what Cobblify last wrote; jvmArgs wins"
+        );
         assert!(guard(r#"{"settings":{"jvm-args":"","jvmArgs":""}}"#).is_ok());
         assert!(
             guard(r#"{"settings":{}}"#).is_ok(),
@@ -504,6 +632,53 @@ mod tests {
             guard(r#"{"settings":{"jvm-args":null,"jvmArgs":null}}"#).is_ok(),
             "null keys read as absent"
         );
+    }
+
+    // Uninstall (R3). `unregister` is the only writer that REMOVES a token,
+    // and it must be as conservative about the user's file as `apply` is.
+
+    #[test]
+    fn unregister_strips_only_weave_agents() {
+        let stale = "/Users/tester/.weave/Weave-Loader-Agent-1.2.0.jar";
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"resolution":"1920x1080","jvm-args":"-Xmx4G -javaagent:/opt/other/profiler.jar -javaagent:{AGENT}","jvmArgs":"-Xmx4G -javaagent:/opt/other/profiler.jar -javaagent:{stale}"}}}}"#
+        ));
+        unregister(&f.json).unwrap();
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(dashed, "-Xmx4G -javaagent:/opt/other/profiler.jar");
+        assert_eq!(camel, dashed);
+        let value: Value = serde_json::from_str(&fs::read_to_string(&f.json).unwrap()).unwrap();
+        assert_eq!(value["settings"]["resolution"], "1920x1080");
+    }
+
+    #[test]
+    fn unregister_leaves_an_absent_key_absent() {
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvmArgs":"-Xmx4G -javaagent:{AGENT}"}}}}"#
+        ));
+        unregister(&f.json).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(&f.json).unwrap()).unwrap();
+        assert_eq!(value["settings"]["jvmArgs"], "-Xmx4G");
+        assert!(
+            value["settings"].get("jvm-args").is_none(),
+            "uninstall must not invent a key Lunar never had"
+        );
+    }
+
+    #[test]
+    fn unregister_on_missing_file_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(unregister(&dir.path().join("launcher.json")).is_ok());
+        assert!(!dir.path().join("launcher.json").exists());
+    }
+
+    #[test]
+    fn unregister_refuses_malformed_json() {
+        let broken = "{ this is not json";
+        let f = Fixture::new(broken);
+        let err = unregister(&f.json).unwrap_err();
+        assert!(err.contains("is not valid JSON"), "{err}");
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), broken);
     }
 
     // The register seam: refusal ORDER is the contract. An undeterminable

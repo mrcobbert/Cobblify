@@ -308,7 +308,7 @@ fn reject_unexpected_jars(dir: &Path, manifest: &Manifest) -> Result<(), String>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const MOD: &str = "Cobblify-Lunar-0.8.1.jar";
@@ -331,8 +331,10 @@ mod tests {
         fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
-    /// The seven-key bundle this change introduces.
-    fn write_bundle(dir: &Path, mod_bytes: &[u8], agent_bytes: &[u8], forge_bytes: &[u8]) {
+    /// The seven-key bundle this change introduces. `pub(crate)` so `main.rs`'s
+    /// setup tests can build a real, verifiable bundle instead of a hand-made
+    /// `Resources`.
+    pub(crate) fn write_bundle(dir: &Path, mod_bytes: &[u8], agent_bytes: &[u8], forge_bytes: &[u8]) {
         fs::write(dir.join(MOD), mod_bytes).unwrap();
         fs::write(dir.join(AGENT), agent_bytes).unwrap();
         fs::write(dir.join(FORGE), forge_bytes).unwrap();
