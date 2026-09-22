@@ -252,10 +252,17 @@ public final class OutgoingChatCore {
         if (held.notice != null) return new InterceptResult(true, held);
         if (gapOpen) {
             // Older lines are waiting: the oldest goes now, the new one keeps its place in line.
-            return new InterceptResult(true, Decision.send(queue.pollNext(), false));
+            // Through the same tick as the runtime flush, so a head whose context went stale or
+            // whose hold expired is noticed, never sent (code review G, I1).
+            return new InterceptResult(true, tick(ctx, nowMs, false, ALL_ENABLED));
         }
         return new InterceptResult(true, held);
     }
+
+    /** Feature toggles are the runtime's to apply on its next flush; the intercept sends MANUAL only. */
+    private static final FeatureGate ALL_ENABLED = new FeatureGate() {
+        public boolean enabled(OutgoingChatKind kind) { return true; }
+    };
 
     /** Append a typed line to the held FIFO. Only the cap can refuse it, and that is reported. */
     private Decision holdManual(String message, LiveContext ctx, long nowMs) {

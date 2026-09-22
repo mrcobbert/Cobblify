@@ -380,6 +380,26 @@ public class OutgoingChatCoreTest {
         assertTrue(core.queue().isEmpty());
     }
 
+    /** Code review G, I1: the intercept's fast path must validate the head like a tick does. */
+    @Test
+    public void typedLineWithGapOpenNoticesAStaleHeadInsteadOfSendingIt() {
+        OutgoingChatCore.InterceptResult a = core.interceptPlayerSend("a", ctx, 1000L);
+        core.acknowledgeDelivered(a.decision.send, 1000L);
+        core.interceptPlayerSend("b", ctx, 1500L); // held under session 1
+        OutgoingChatCore.LiveContext session2 = new OutgoingChatCore.LiveContext(2, "hypixel.net", true, 0);
+        OutgoingChatCore.InterceptResult c = core.interceptPlayerSend("c", session2, 3500L);
+        assertTrue(c.handled);
+        assertNull(c.decision.send);
+        assertEquals(1, c.decision.notices.size());
+        assertEquals("b", c.decision.notices.get(0).text);
+        assertEquals("context changed", c.decision.noticeWhy);
+        assertEquals(1, core.queue().heldManualCount()); // c waits its turn
+        OutgoingChatCore.Decision next = core.tick(session2, 3600L, false, allOn);
+        assertEquals("c", next.send.text);
+        core.acknowledgeDelivered(next.send, 3600L);
+        assertTrue(core.queue().isEmpty());
+    }
+
     @Test
     public void offHypixelTypedChatIsNotIntercepted() {
         OutgoingChatCore.LiveContext off = onHypixel(false);
