@@ -3,6 +3,10 @@
 # Fails when the Forge tree and the Lunar tree diverge in a way that
 # tools/tree-divergence.txt does not declare.
 #
+# Three mirrored tree pairs are compared: the main and test java roots and the
+# main resource roots (the jars ship the same fonts, icons and CA bundle, so a
+# one-sided asset edit is as real a divergence as a one-sided source edit).
+#
 # Comparison uses the git index: each tracked path's <mode, object id> pair.
 #
 #   * Two paths hold identical content exactly when their object ids match, so
@@ -33,6 +37,13 @@
 #        2 = cannot check (git or tool failure, unusable path, content filters
 #            active, unmerged index, unsupported object format, bad manifest)
 #
+# A declared-divergent .java pair is checked once more, against a stripped copy
+# of each side: if the two differ only in comments or whitespace the declaration
+# is itself an error, because it licenses the pair to drift for real later. The
+# strip filter is deliberately simple and deliberately one-sided - see
+# strip_comments - so it can only make two copies look MORE different than they
+# are, never less.
+#
 # Scope: the git index. An untracked or unstaged change is not compared until it
 # is staged; the run says so. What this cannot catch at all: one commit editing
 # both copies differently. That is a review problem, not a tooling one.
@@ -53,8 +64,10 @@ trap 'rm -rf "$tmpd"' EXIT
 norm="$tmpd/norm"; raw="$tmpd/raw"; tmp1="$tmpd/t1"; union="$tmpd/union"
 main_f="$tmpd/main_f"; main_l="$tmpd/main_l"
 test_f="$tmpd/test_f"; test_l="$tmpd/test_l"
+res_f="$tmpd/res_f";   res_l="$tmpd/res_l"
 
-TREES="src/main/java lunar/src/main/java src/test/java lunar/src/test/java"
+TREES="src/main/java lunar/src/main/java src/test/java lunar/src/test/java \
+       src/main/resources lunar/src/main/resources"
 
 failures=0
 fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
@@ -150,7 +163,8 @@ list_tree() { # <dir> <outfile>
 }
 
 for spec in "src/main/java:$main_f" "lunar/src/main/java:$main_l" \
-            "src/test/java:$test_f" "lunar/src/test/java:$test_l"; do
+            "src/test/java:$test_f" "lunar/src/test/java:$test_l" \
+            "src/main/resources:$res_f" "lunar/src/main/resources:$res_l"; do
   d=${spec%:*}; o=${spec##*:}
   list_tree "$d" "$o"
   case $? in
@@ -188,8 +202,22 @@ $offenders
   fi
 fi
 
-forge_list() { [ "$1" = main ] && echo "$main_f" || echo "$test_f"; }
-lunar_list() { [ "$1" = main ] && echo "$main_l" || echo "$test_l"; }
+forge_list() { # <tree>
+  case "$1" in
+    main) echo "$main_f" ;;
+    test) echo "$test_f" ;;
+    res)  echo "$res_f" ;;
+    *)    die "internal: unknown tree '$1'" ;;
+  esac
+}
+lunar_list() { # <tree>
+  case "$1" in
+    main) echo "$main_l" ;;
+    test) echo "$test_l" ;;
+    res)  echo "$res_l" ;;
+    *)    die "internal: unknown tree '$1'" ;;
+  esac
+}
 
 # The path goes through the environment, NOT `awk -v`: -v assignments interpret
 # backslash escapes, so a path literally containing `\t` would become a tab and
@@ -209,7 +237,7 @@ declared_side() {
 
 # --- pass A: everything in either index must be declared or identical -------
 
-for tree in main test; do
+for tree in main test res; do
   { paths_of "$(forge_list "$tree")"; paths_of "$(lunar_list "$tree")"; } > "$tmp1" \
     || die "could not build the $tree path list"
   LC_ALL=C sort -u "$tmp1" > "$union" || die "sort failed while building the $tree path union"
@@ -231,6 +259,67 @@ for tree in main test; do
   done < "$union"
 done
 
+# --- the comment-only rule for declared-divergent java pairs ----------------
+#
+# Comments, blank lines and leading/trailing whitespace removed, so two copies
+# of a declared-divergent file can be compared for SUBSTANTIVE difference.
+#
+# The filter is deliberately simple and deliberately one-sided: it never tries
+# to parse Java. A line containing a double quote is copied through from that
+# quote onwards, comment markers and all, so nothing inside a string literal is
+# ever deleted. That under-strips - a trailing `// note` on a line that also
+# holds a string survives - and under-stripping can only make two copies look
+# MORE different than they are. So the rule below errs toward accepting a pair
+# as legitimately divergent and never toward hiding a real difference.
+strip_comments() { # <infile> <outfile>
+  awk '
+    BEGIN { inblk = 0 }
+    {
+      line = $0; out = ""
+      while (length(line) > 0) {
+        if (inblk) {                       # inside /* ... */: drop until it closes
+          i = index(line, "*/")
+          if (i == 0) { line = "" } else { line = substr(line, i + 2); inblk = 0 }
+          continue
+        }
+        if (index(line, "\"") > 0) {       # a string may start here: keep the rest verbatim
+          out = out line; line = ""; continue
+        }
+        b = index(line, "/*"); l = index(line, "//")
+        if (l > 0 && (b == 0 || l < b)) {  # line comment: drop it and the rest of the line
+          out = out substr(line, 1, l - 1); line = ""; continue
+        }
+        if (b > 0) {                       # block comment opens here
+          out = out substr(line, 1, b - 1); line = substr(line, b + 2); inblk = 1; continue
+        }
+        out = out line; line = ""
+      }
+      sub(/^[ \t]+/, "", out); sub(/[ \t]+$/, "", out)
+      if (out != "") print out
+    }
+  ' "$1" > "$2"
+}
+
+# A declaration that records only differing commentary is worse than no
+# declaration: it licenses the pair to drift for real, unnoticed, later.
+check_comment_only() { # <tree> <path> <forge id> <lunar id>
+  local tree=$1 p=$2 fid=$3 lid=$4 st
+  git cat-file blob "$fid" > "$tmpd/bf" \
+    || die "could not read the Forge blob $fid for '$tree $p'"
+  git cat-file blob "$lid" > "$tmpd/bl" \
+    || die "could not read the Lunar blob $lid for '$tree $p'"
+  strip_comments "$tmpd/bf" "$tmpd/bfs" \
+    || die "the comment filter failed on the Forge copy of '$tree $p'"
+  strip_comments "$tmpd/bl" "$tmpd/bls" \
+    || die "the comment filter failed on the Lunar copy of '$tree $p'"
+  cmp -s "$tmpd/bfs" "$tmpd/bls"; st=$?
+  case $st in
+    0) fail "manifest: 'divergent $tree $p' but the two copies differ only in comments or whitespace; make them identical and remove the entry." ;;
+    1) ;;
+    *) die "cmp failed on the stripped copies of '$tree $p'; refusing to pass the pair as legitimately divergent" ;;
+  esac
+}
+
 # --- pass B: every declared entry must still describe reality ---------------
 
 while IFS= read -r line; do
@@ -239,7 +328,7 @@ while IFS= read -r line; do
   tree=${rest%%|*}; rest=${rest#*|}
 
   case "$tree" in
-    main|test) ;;
+    main|test|res) ;;
     *) fail "manifest: unknown tree '$tree' in: $line"; continue ;;
   esac
 
@@ -251,6 +340,16 @@ while IFS= read -r line; do
       fail "manifest: 'divergent $tree $p' but the file is missing from $([ -z "$fk" ] && echo Forge || echo Lunar). Remove the entry, or declare it one-sided."
     elif [ "$fk" = "$lk" ]; then
       fail "manifest: 'divergent $tree $p' but the two copies are now identical. Remove the stale entry."
+    else
+      # The keys differ, so the bytes differ. Java sources get the stronger
+      # test: differing only in commentary is not a legitimate divergence.
+      case "$tree" in
+        main|test)
+          case "$p" in
+            *.java) check_comment_only "$tree" "$p" "${fk#* }" "${lk#* }" ;;
+          esac
+          ;;
+      esac
     fi
   else
     want=${rest%%|*}; p=${rest#*|}
@@ -289,6 +388,7 @@ count_pairs() { # <forge list> <lunar list>
 }
 pairs=$(count_pairs "$main_f" "$main_l") || die "could not count mirrored main pairs"
 tpairs=$(count_pairs "$test_f" "$test_l") || die "could not count mirrored test pairs"
+rpairs=$(count_pairs "$res_f" "$res_l")   || die "could not count mirrored res pairs"
 decl=$(grep -c . "$norm")
 
 # This check reads the index, so a purely local edit is invisible to it. In CI
@@ -307,7 +407,7 @@ else
 fi
 
 if [ "$failures" -eq 0 ]; then
-  echo "tree drift check: OK ($pairs mirrored main pairs, $tpairs mirrored test pairs, $decl declared exceptions)"
+  echo "tree drift check: OK ($pairs mirrored main pairs, $tpairs mirrored test pairs, $rpairs mirrored res pairs, $decl declared exceptions)"
   echo "  scope: git index contents - an untracked or unstaged change is not compared until it is staged."
   exit 0
 fi

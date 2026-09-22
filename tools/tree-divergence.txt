@@ -8,13 +8,17 @@
 #   divergent <tree> <path>          - present in both trees, allowed to differ
 #   one-sided <tree> <side> <path>   - present on <side> only
 #
-#   <tree> = main | test        <side> = forge | lunar
-#   <path> is package-relative, e.g. com/bedwarsqol/gui/SettingsGui.java
+#   <tree> = main | test | res  <side> = forge | lunar
+#   <path> is package-relative for main and test, e.g.
+#     com/bedwarsqol/gui/SettingsGui.java, and relative to the resources root
+#     for res, e.g. mixins.bedwarsqol.json
 #
 # Entries are validated in both directions. A `divergent` entry whose two copies
 # have become identical fails, as does a `one-sided` entry that appears in both
-# trees, on the wrong side, or in neither. Stale entries are errors, not noise -
-# a manifest nobody prunes stops being a safety net.
+# trees, on the wrong side, or in neither. A `divergent` java entry whose two
+# copies differ only in comments or whitespace fails too - make them identical
+# and drop the entry. Stale entries are errors, not noise - a manifest nobody
+# prunes stops being a safety net.
 
 # ---------------------------------------------------------------------------
 # divergent: same path in both trees, contents legitimately differ
@@ -69,11 +73,14 @@ divergent main com/bedwarsqol/gui/render/Icons.java
 # Forge takes scissor-clip parameters; Weave's overlay event is not cancellable.
 divergent main com/bedwarsqol/gui/render/GuiBlur.java
 
-# Mixins: Lunar adds require = 0 so a mapping miss degrades to a no-op.
+# Mixins: the Lunar copies spell out require = 0 on their injectors, GuiChatMixin
+# lacks the Forge-only chat hooks and GuiIngameMixin adds the blur HUD cancel.
+# require = 0 is already Mixin's default (defaultRequire 0; neither mixins JSON
+# sets it), so a mapping miss silently no-ops in BOTH trees; the explicit value
+# documents that, it does not add safety.
 divergent main com/bedwarsqol/mixin/GuiChatMixin.java
 divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
 divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
-divergent main com/bedwarsqol/mixin/GuiScreenMixin.java
 divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
 
 # ---------------------------------------------------------------------------
@@ -126,3 +133,16 @@ one-sided test forge net/minecraftforge/fml/common/Loader.java
 # Pins the Gson stale-key path for configs written by builds that had the
 # removed anticheat module. Platform-independent; could be shared later.
 one-sided test lunar com/bedwarsqol/config/ClientSettingsStaleKeysTest.java
+
+# ---------------------------------------------------------------------------
+# res: the mirrored resource roots, src/main/resources and
+# lunar/src/main/resources. Paths are relative to those roots.
+# ---------------------------------------------------------------------------
+
+# Forge mod descriptor; Weave reads the jar manifest instead.
+one-sided res forge mcmod.info
+
+# Forge carries the refmap and lists the Forge-only mixins (GuiNewChatMixin,
+# MinecraftChatClearMixin, C01PacketChatMessageMixin); the Lunar config has no
+# refmap and asks for minVersion 0.8.
+divergent res mixins.bedwarsqol.json

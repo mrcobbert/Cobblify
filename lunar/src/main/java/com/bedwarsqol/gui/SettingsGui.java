@@ -794,6 +794,9 @@ public class SettingsGui extends GuiScreen {
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         // Resolve the accent once per frame — every accent-sensitive element reads it (live recolour).
         accent = GuiTheme.fromToken(settings().guiAccent);
+        // Re-establish the 2D GUI orthographic projection ourselves (BedwarsHudRenderer cancels the
+        // in-game overlay while the panel is open, which otherwise skips vanilla's setupOverlayRendering).
+        mc.entityRenderer.setupOverlayRendering();
         GuiBlur.update(); // render the world blur onto the framebuffer before anything draws on top
         advanceScroll();
         // Remap the host cursor into the fixed-"Large" virtual space the panel is laid out in.

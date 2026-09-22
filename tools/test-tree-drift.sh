@@ -44,19 +44,40 @@ done)
 DIVERGENT=$(awk '$1=="divergent" && $2=="main" { print $3; exit }' "$MANIFEST")
 ONESIDED=$(awk '$1=="one-sided" && $2=="main" && $3=="forge" { print $4; exit }' "$MANIFEST")
 
-for v in MIRROR DIVERGENT ONESIDED; do
+# The same two shapes under the mirrored resource trees, which are compared too.
+RES_MIRROR=$(comm -12 <(listing src/main/resources) <(listing lunar/src/main/resources) | while read -r f; do
+  cmp -s "src/main/resources/$f" "lunar/src/main/resources/$f" || continue
+  grep -Fq " $f" "$MANIFEST" && continue
+  echo "$f"; break
+done)
+# Derived from the tree rather than from the manifest: an undeclared one-sided
+# resource would already fail the baseline case, so whatever this finds is the
+# declared one - and the fixture exists before the declaration does.
+RES_ONESIDED=$(comm -23 <(listing src/main/resources) <(listing lunar/src/main/resources) | head -1)
+
+for v in MIRROR DIVERGENT ONESIDED RES_MIRROR RES_ONESIDED; do
   eval "val=\$$v"
   [ -n "$val" ] || { echo "cannot derive fixture $v from the current tree"; exit 1; }
 done
 echo "fixtures: mirror=$MIRROR divergent=$DIVERGENT one-sided=$ONESIDED"
+echo "          res-mirror=$RES_MIRROR res-one-sided=$RES_ONESIDED"
 echo
 
 # --- harness ----------------------------------------------------------------
 
 clone() {
   local d; d=$(mktemp -d) || return 1
-  git clone -q --depth 1 "file://$repo" "$d/c" 2>/dev/null || return 1
-  cp "$repo/$CHECK" "$d/c/$CHECK" && chmod +x "$d/c/$CHECK"
+  git clone -q --depth 1 "file://$repo" "$d/c" 2>/dev/null || { rm -rf "$d"; return 1; }
+  # The checker AND the manifest come from the working tree, not from the cloned
+  # commit: the two evolve together, so a clone that kept its committed manifest
+  # would judge a new checker rule against the old declarations, and a manifest
+  # edit could not be tested until after it had been committed.
+  #
+  # Everything else in the clone is HEAD. A case that depends on an uncommitted
+  # source edit therefore stays red until that edit is committed - which is the
+  # point: the checker and its manifest are under test, the tree is the subject.
+  cp "$repo/$CHECK" "$d/c/$CHECK" && chmod +x "$d/c/$CHECK" \
+    && cp "$repo/$MANIFEST" "$d/c/$MANIFEST" || { rm -rf "$d"; return 1; }
   echo "$d"
 }
 
@@ -119,6 +140,13 @@ cp "src/main/java/$DIVERGENT" "lunar/src/main/java/$DIVERGENT"
 git add -- "lunar/src/main/java/$DIVERGENT"
 CMD
 
+# A declaration that only records differing commentary is worse than no
+# declaration: it licenses the two copies to drift for real later.
+run "comment-only divergence is reported" 1 "differ only in comments or whitespace" <<CMD
+{ cat "src/main/java/$DIVERGENT"; printf '// comment only\n'; } > "lunar/src/main/java/$DIVERGENT"
+git add -- "lunar/src/main/java/$DIVERGENT"
+CMD
+
 run "one-sided file now in both trees" 1 "exists in BOTH trees" <<CMD
 mkdir -p "lunar/src/main/java/\$(dirname "$ONESIDED")"
 cp "src/main/java/$ONESIDED" "lunar/src/main/java/$ONESIDED"
@@ -134,6 +162,25 @@ CMD
 
 run "one-sided file deleted from both" 1 "exists in NEITHER tree" <<CMD
 git rm -q -- "src/main/java/$ONESIDED"
+CMD
+
+# --- the resource trees -----------------------------------------------------
+#
+# src/main/resources and lunar/src/main/resources are mirrored too: the jars
+# ship the same fonts, icons and CA bundle, and a one-sided asset edit is as
+# real a divergence as a one-sided source edit.
+
+echo "resource trees:"
+
+run "undeclared resource edit is drift" 1 "differs between trees but is not declared" <<CMD
+printf '\n' >> "lunar/src/main/resources/$RES_MIRROR"
+git add -- "lunar/src/main/resources/$RES_MIRROR"
+CMD
+
+run "one-sided resource now in both trees" 1 "exists in BOTH trees" <<CMD
+mkdir -p "lunar/src/main/resources/\$(dirname "$RES_ONESIDED")"
+cp "src/main/resources/$RES_ONESIDED" "lunar/src/main/resources/$RES_ONESIDED"
+git add -- "lunar/src/main/resources/$RES_ONESIDED"
 CMD
 
 # --- pathnames --------------------------------------------------------------
@@ -265,6 +312,14 @@ if [ -n "$d" ]; then
     printf '  [ OK ] %-44s %s pairs\n' "reported pair count is truthful" "$got"; pass=$((pass+1))
   else
     printf '  [BAD ] %-44s reported %s, actual %s\n' "reported pair count is truthful" "$got" "$want"; fail=$((fail+1))
+  fi
+  rwant=$(cd "$c" && comm -12 <(git ls-files src/main/resources | sed 's|^src/main/resources/||' | LC_ALL=C sort) \
+                              <(git ls-files lunar/src/main/resources | sed 's|^lunar/src/main/resources/||' | LC_ALL=C sort) | wc -l | tr -d ' ')
+  rgot=$(printf '%s' "$out" | sed -n 's/.*, \([0-9][0-9]*\) mirrored res pairs.*/\1/p')
+  if [ "$rwant" = "$rgot" ]; then
+    printf '  [ OK ] %-44s %s pairs\n' "reported res pair count is truthful" "$rgot"; pass=$((pass+1))
+  else
+    printf '  [BAD ] %-44s reported %s, actual %s\n' "reported res pair count is truthful" "$rgot" "$rwant"; fail=$((fail+1))
   fi
   rm -rf "$d"
 fi

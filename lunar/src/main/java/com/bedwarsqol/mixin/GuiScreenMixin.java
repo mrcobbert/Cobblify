@@ -19,8 +19,8 @@ import java.util.List;
  * screens, merge in the hovered player's stats, draw the combined card ourselves, and cancel the
  * vanilla draw so there is a single tooltip. See {@link ChatHoverStats}.
  *
- * <p>Also notifies {@link OutgoingChat} on every chat-GUI submit so client commands still
- * cancel optional automation and open the quiet window.
+ * <p>Also notifies {@link OutgoingChat} on every chat-GUI submit so client commands (which never
+ * reach {@code EntityPlayerSP}) still cancel optional automation and open the quiet window.
  */
 @Mixin(GuiScreen.class)
 public abstract class GuiScreenMixin {
@@ -38,6 +38,7 @@ public abstract class GuiScreenMixin {
 
     @Inject(method = "sendChatMessage(Ljava/lang/String;Z)V", at = @At("HEAD"))
     private void bedwarsqol$outgoingUserIntent(String msg, boolean addToChat, CallbackInfo ci) {
+        // Only the chat GUI — other screens that call sendChatMessage must not cancel automation.
         if (!((Object) this instanceof GuiChat)) return;
         if (OutgoingChat.get().isPassthrough()) return;
         OutgoingChat.get().onUserIntent(msg);
