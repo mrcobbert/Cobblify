@@ -164,6 +164,26 @@ fn safe_leaf(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Our Forge releases are named `<prefix>-<major>.<minor>.<patch>.jar`, and the launcher
+/// depends on that shape: `forge::classify` derives the release prefix from this very name
+/// by cutting at its last `-`, and judges every Cobblify-looking jar in `mods/` against
+/// it. A name with no `-` makes the prefix the whole name and the judgement meaningless,
+/// so the shape is checked where the name enters the launcher.
+fn is_release_jar_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".jar") else {
+        return false;
+    };
+    let Some((prefix, version)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    !prefix.is_empty()
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The Forge pair is all-or-nothing. Half a record must never be usable: a name without a
 /// digest would enter the allow list and never be hashed.
 fn fold_forge(
@@ -177,6 +197,11 @@ fn fold_forge(
                 return Err(
                     "manifest declares an empty forge_jar or forge_sha256.".to_string()
                 );
+            }
+            if !is_release_jar_name(&jar) {
+                return Err(format!(
+                    "manifest declares forge_jar {jar}, which is not named <prefix>-<major>.<minor>.<patch>.jar."
+                ));
             }
             Ok(Some(ForgeRes { jar, sha256 }))
         }
@@ -461,13 +486,49 @@ pub(crate) mod tests {
     #[test]
     fn forge_pair_is_all_or_nothing() {
         assert!(fold_forge(None, None).unwrap().is_none());
-        assert!(fold_forge(Some("a.jar".into()), Some("ff".into()))
+        // A release-shaped name: the name rule is asserted separately, below.
+        assert!(fold_forge(Some(FORGE.into()), Some("ff".into()))
             .unwrap()
             .is_some());
-        assert!(fold_forge(Some("a.jar".into()), None).is_err());
+        assert!(fold_forge(Some(FORGE.into()), None).is_err());
         assert!(fold_forge(None, Some("ff".into())).is_err());
         assert!(fold_forge(Some(String::new()), Some("ff".into())).is_err());
-        assert!(fold_forge(Some("a.jar".into()), Some(String::new())).is_err());
+        assert!(fold_forge(Some(FORGE.into()), Some(String::new())).is_err());
+    }
+
+    /// L10: the stale-jar classifier derives our release prefix from this name by cutting
+    /// at its last `-`. A name without one makes the prefix the whole name, and every
+    /// Cobblify-looking jar in `mods/` is then judged against a prefix that leaves no
+    /// version behind. The manifest is where that shape is checked.
+    #[test]
+    fn a_forge_jar_without_a_dashed_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lunar_only(dir.path(), b"mod", b"agent");
+        let manifest = format!(
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":"Cobblify.jar","forge_sha256":"ff"}}"#,
+            sha(b"mod"),
+            sha(b"agent")
+        );
+        fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+        let err = verify_detailed(dir.path()).unwrap_err();
+        assert!(
+            err.contains("<prefix>-<major>.<minor>.<patch>.jar"),
+            "the error must name the rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_dashed_release_name_is_the_shape_the_manifest_wants() {
+        assert!(fold_forge(Some(FORGE.into()), Some("ff".into()))
+            .unwrap()
+            .is_some());
+        assert!(fold_forge(Some("Cobblify-0.8.1.jar".into()), Some("ff".into())).is_ok());
+        // A dash, but no version after it.
+        assert!(fold_forge(Some("Cobblify-dev.jar".into()), Some("ff".into())).is_err());
+        // A version, but nothing before the dash.
+        assert!(fold_forge(Some("-0.8.1.jar".into()), Some("ff".into())).is_err());
+        // Two-part versions are not the shape either.
+        assert!(fold_forge(Some("Cobblify-0.8.jar".into()), Some("ff".into())).is_err());
     }
 
     /// Round-3 I1: serde cannot tell an absent key from an explicit `null`, and this is

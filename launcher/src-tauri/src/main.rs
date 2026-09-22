@@ -627,22 +627,13 @@ fn refresh_setup(
     ctx: tauri::State<'_, SetupContext>,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<Status, String> {
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .try_refresh()
-        .map_err(lifecycle_err)?;
-    let home = home()?;
-    let (next, forge_state) = rebuild_setup(&home, &ctx);
-    *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
-    *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .release();
-    Ok(next)
+    with_claim(&session.coordinator, Coordinator::try_refresh, || {
+        let home = home()?;
+        let (next, forge_state) = rebuild_setup(&home, &ctx);
+        *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
+        Ok(next)
+    })
 }
 
 #[derive(Serialize)]
@@ -693,30 +684,20 @@ fn get_launcher(
     kind: String,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<LauncherInfo, String> {
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .try_setup()
-        .map_err(lifecycle_err)?;
-    let kind = parse_launcher_kind(&kind)?;
-    let home = home()?;
-    let installed = match kind {
-        "lunar" => home.join(".lunarclient").exists(),
-        "forge" => forge::prism_installed(),
-        _ => unreachable!(),
-    };
-    let download_url = launcher_download_url(kind);
-    let result = open_download_url(download_url).map(|()| LauncherInfo {
-        installed,
-        download_url,
-    });
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .release();
-    result
+    with_claim(&session.coordinator, Coordinator::try_setup, || {
+        let kind = parse_launcher_kind(&kind)?;
+        let home = home()?;
+        let installed = match kind {
+            "lunar" => home.join(".lunarclient").exists(),
+            "forge" => forge::prism_installed(),
+            _ => unreachable!(),
+        };
+        let download_url = launcher_download_url(kind);
+        open_download_url(download_url).map(|()| LauncherInfo {
+            installed,
+            download_url,
+        })
+    })
 }
 
 fn open_path(path: &Path) -> Result<(), String> {
@@ -973,6 +954,28 @@ fn lifecycle_err(e: LifecycleError) -> String {
         LifecycleError::Active => "active".into(),
         LifecycleError::PreferenceUncertain => "preference_uncertain".into(),
     }
+}
+
+/// Runs `body` under a lifecycle claim (`try_refresh` or `try_setup`) that is released on EVERY
+/// exit path.
+///
+/// The lock is held only to claim and to release, never across the body, so a slow setup
+/// cannot block admission checks. What it buys is that the release is not on the happy
+/// path: a `?` between the claim and the release - which is what these commands used to
+/// do - leaves the coordinator out of `Idle` forever, and every later setup, save or
+/// launch is refused as busy until the app restarts.
+fn with_claim<T>(
+    coordinator: &Mutex<Coordinator>,
+    claim: impl FnOnce(&mut Coordinator) -> Result<(), LifecycleError>,
+    body: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    claim(&mut coordinator.lock().unwrap_or_else(|e| e.into_inner())).map_err(lifecycle_err)?;
+    let result = body();
+    coordinator
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .release();
+    result
 }
 
 fn launch_rejection(code: &'static str) -> LaunchReply {
@@ -2206,6 +2209,37 @@ mod tests {
         lobby.latch_terminal_for_test("game_session_ended");
         drop(lobby);
         parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
+    }
+
+    /// L9: `refresh_setup` and `get_launcher` claimed the coordinator and then used `?`
+    /// before releasing it. One failing `home()` - or a download page that will not open -
+    /// left the lifecycle stuck out of `Idle`, and every later setup, save or launch was
+    /// refused as busy until the app was restarted.
+    #[test]
+    fn a_failing_setup_body_still_releases_the_claim() {
+        let coordinator = Mutex::new(Coordinator::default());
+
+        let failed: Result<(), String> =
+            with_claim(&coordinator, Coordinator::try_setup, || Err("no home directory".to_string()));
+
+        assert_eq!(failed, Err("no home directory".to_string()));
+        assert_eq!(
+            coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Idle,
+            "the claim must be released on the error path"
+        );
+        assert!(
+            coordinator.lock().unwrap().try_setup().is_ok(),
+            "the next setup must be admissible"
+        );
+        coordinator.lock().unwrap().release();
+
+        // And the success path still returns its value and releases.
+        assert_eq!(with_claim(&coordinator, Coordinator::try_refresh, || Ok(7)), Ok(7));
+        assert_eq!(
+            coordinator.lock().unwrap().state(),
+            lifecycle::Lifecycle::Idle
+        );
     }
 
     #[test]

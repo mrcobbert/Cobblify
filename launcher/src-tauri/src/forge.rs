@@ -259,7 +259,11 @@ fn detect_prism(env: &Env) -> Vec<Candidate> {
 /// Prism keeps the game files in a subdirectory of the instance, not the instance root
 /// itself - `.minecraft` on most layouts, `minecraft` on others. Neither existing yet is
 /// normal for a freshly created instance, in which case `.minecraft` is the one Prism will
-/// make.
+/// make - on the instance's first launch, which may well come AFTER the user points
+/// Cobblify at it. Detection offers such an instance, so the adopt paths
+/// (`classify_picked`, `revalidate`) accept that not-yet-created directory too: the
+/// instance root's `mmc-pack.json` is what proves the target, and `install` creates
+/// `<gameDir>/mods` regardless.
 fn prism_game_dir(instance: &Path) -> PathBuf {
     for name in [".minecraft", "minecraft"] {
         let candidate = instance.join(name);
@@ -331,9 +335,20 @@ fn prism_candidate(instance_root: &Path, compat: Compat) -> Candidate {
     }
 }
 
+/// The one path that is allowed not to exist yet: the game directory Prism itself will
+/// create inside an instance whose marker we can already read. Narrow on purpose - the
+/// name alone proves nothing, so the parent must carry `mmc-pack.json`.
+fn is_unborn_prism_game_dir(dir: &Path) -> bool {
+    if !matches!(dir_name(dir).as_str(), ".minecraft" | "minecraft") {
+        return false;
+    }
+    dir.parent()
+        .is_some_and(|inst| inst.join("mmc-pack.json").is_file())
+}
+
 /// Re-reads a remembered Prism instance from its stored game directory.
 pub fn classify_picked(dir: &Path) -> Result<Candidate, String> {
-    if !dir.is_dir() {
+    if !dir.is_dir() && !is_unborn_prism_game_dir(dir) {
         return Err("That is not a folder.".to_string());
     }
     let game_dir = if dir_name(dir).eq_ignore_ascii_case("mods") {
@@ -388,10 +403,13 @@ fn classify(name: &str, our_name: &str) -> Verdict {
         return Verdict::Ignore;
     }
     let prefix = release_prefix(our_name).to_ascii_lowercase();
+    // `release_prefix` returns the WHOLE name when it carries no `-`, so the remainder can
+    // be empty or shorter than `".jar"` - cutting four bytes off it blindly panicked.
     if let Some(rest) = lower.strip_prefix(&prefix) {
-        let version = &rest[..rest.len() - 4];
-        if is_semver(version) {
-            return Verdict::Quarantine;
+        if let Some(version) = rest.strip_suffix(".jar") {
+            if is_semver(version) {
+                return Verdict::Quarantine;
+            }
         }
     }
     Verdict::Block
@@ -468,22 +486,52 @@ fn quarantine(path: &Path) -> Result<PathBuf, String> {
 /// same mod id. Symlinks are handled by the caller (always reported, never quarantined);
 /// here only the entry's own location and name matter, cased the way the platform's own
 /// filesystem cases them.
+///
+/// Which is exactly why the name comparison cannot be byte-exact everywhere. On a
+/// case-FOLDING volume - APFS by default, and every Windows volume - `cobblify-....jar`
+/// and `Cobblify-....jar` in one directory are ONE entry under two spellings. Treating the
+/// user's lower-cased file as a separate jar set the same file aside twice and failed the
+/// whole install. So a caseless name match ALSO exempts the entry, but only when the two
+/// paths are proven to be the same file: same device, same inode. Two distinct hard links
+/// share an inode but not a caseless name, so they stay on the quarantine path - a second
+/// directory entry is a second mod candidate however it is stored.
 fn is_destination_entry(path: &Path, dest: &Path) -> bool {
     if path.parent() != dest.parent() {
         return false;
     }
     match (path.file_name(), dest.file_name()) {
         (Some(a), Some(b)) => {
+            if a == b {
+                return true;
+            }
             #[cfg(windows)]
             {
                 a.to_string_lossy()
                     .eq_ignore_ascii_case(&b.to_string_lossy())
             }
-            #[cfg(not(windows))]
+            #[cfg(unix)]
             {
-                a == b
+                a.to_string_lossy()
+                    .eq_ignore_ascii_case(&b.to_string_lossy())
+                    && is_same_file(path, dest)
+            }
+            #[cfg(not(any(windows, unix)))]
+            {
+                false
             }
         }
+        _ => false,
+    }
+}
+
+/// Same device and same inode - the two names address one file. A destination that does
+/// not exist yet, or either path being unreadable, answers "no", which keeps the caller on
+/// the quarantine path it would have taken before.
+#[cfg(unix)]
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
         _ => false,
     }
 }
@@ -688,7 +736,9 @@ pub fn revalidate(saved: &SavedTarget) -> Option<Candidate> {
         return None;
     }
     let game_dir = PathBuf::from(&saved.game_dir);
-    if !game_dir.is_dir() {
+    // The instance must still be there; its game directory may be one Prism has not made
+    // yet, exactly as when the target was chosen.
+    if !game_dir.is_dir() && !is_unborn_prism_game_dir(&game_dir) {
         return None;
     }
     let fresh = classify_picked(&game_dir).ok()?;
@@ -704,6 +754,9 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     const OURS: &str = "Cobblify-1.8.9-forge-0.9.0.jar";
+
+    /// A Prism `mmc-pack.json` that `judge_mmc` confirms.
+    const CONFIRMED_PACK: &[u8] = br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#;
 
     fn sha(bytes: &[u8]) -> String {
         Sha256::digest(bytes)
@@ -766,6 +819,17 @@ mod tests {
             classify("cobblify-1.8.9-forge-0.9.0.jar", OURS),
             Verdict::Quarantine
         );
+    }
+
+    /// L10: `release_prefix` returns the WHOLE name when it carries no `-`, so the
+    /// remainder after stripping the prefix can be shorter than `".jar"` - and slicing
+    /// four bytes off it panicked, taking the whole install down.
+    #[test]
+    fn a_name_that_is_exactly_the_release_prefix_blocks_instead_of_panicking() {
+        assert_eq!(classify("cobblify.jar", "Cobblify.jar"), Verdict::Block);
+        assert_eq!(classify("Cobblify.jar", "Cobblify.jar"), Verdict::Block);
+        // The remainder is short but non-empty, and still not a version.
+        assert_eq!(classify("cobblify.jar.jar", "Cobblify.jar"), Verdict::Block);
     }
 
     #[test]
@@ -852,6 +916,94 @@ mod tests {
             b"the user's own build",
             "the user's bytes must survive verbatim"
         );
+    }
+
+    /// Which branch of `is_destination_entry` a run exercises depends on the volume, and
+    /// both are legitimate; the probe only names which one ran.
+    fn volume_folds_case(dir: &Path) -> bool {
+        let probe = dir.join("PROBE-CASE");
+        fs::write(&probe, b"").unwrap();
+        let folds = dir.join("probe-case").exists();
+        fs::remove_file(&probe).unwrap();
+        folds
+    }
+
+    fn entries_named(dir: &Path, p: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut out: Vec<String> = read_dir_strict(dir)
+            .unwrap()
+            .iter()
+            .map(|e| dir_name(e))
+            .filter(|n| p(n))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// L11: on a case-folding volume `mods/cobblify-...0.9.0.jar` IS our destination, so
+    /// quarantining it and then quarantining the destination moved the same file twice and
+    /// failed the install outright. The user had to run setup again for it to succeed.
+    ///
+    /// On a case-sensitive volume the lowercase file is an independent entry that the
+    /// caseless classifier sets aside - a different path to the same outcome, which is why
+    /// the assertions below hold on both.
+    #[test]
+    fn case_variant_of_our_name_installs_in_one_attempt() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join(OURS.to_ascii_lowercase()), b"the user's own build").unwrap();
+        println!(
+            "case_variant_of_our_name_installs_in_one_attempt: volume folds case = {}",
+            volume_folds_case(&mods)
+        );
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(
+            fs::read(mods.join(OURS)).unwrap(),
+            b"forge",
+            "our jar must be installed on the first attempt"
+        );
+        let set_aside = entries_named(&mods, |n| n.contains(DISABLED_SUFFIX));
+        assert_eq!(set_aside.len(), 1, "{set_aside:?}");
+        assert_eq!(
+            fs::read(mods.join(&set_aside[0])).unwrap(),
+            b"the user's own build",
+            "the user's bytes must survive verbatim, exactly once"
+        );
+        let loadable = entries_named(&mods, |n| n.to_ascii_lowercase().ends_with(".jar"));
+        assert_eq!(loadable.len(), 1, "{loadable:?}");
+    }
+
+    /// The inode exemption must not swallow a DISTINCT directory entry that happens to
+    /// share an inode: Forge builds a mod candidate per entry, so a hard link named as an
+    /// older release still loads a second `bedwarsqol`.
+    #[test]
+    fn distinct_hard_link_of_an_older_release_is_still_quarantined() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let current = mods.join(OURS);
+        fs::write(&current, b"forge").unwrap();
+        let older = mods.join("Cobblify-1.8.9-forge-0.8.0.jar");
+        fs::hard_link(&current, &older).unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(out.quarantined.len(), 1, "{:?}", out.quarantined);
+        assert!(!older.exists(), "the older-named link must be set aside");
+        assert_eq!(
+            fs::read(mods.join(format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}"))).unwrap(),
+            b"forge"
+        );
+        let loadable = entries_named(&mods, |n| n.to_ascii_lowercase().ends_with(".jar"));
+        assert_eq!(loadable, vec![OURS.to_string()], "{loadable:?}");
     }
 
     #[test]
@@ -972,6 +1124,78 @@ mod tests {
 
         fs::create_dir_all(inst.path().join(".minecraft")).unwrap();
         assert_eq!(prism_game_dir(inst.path()), inst.path().join(".minecraft"));
+    }
+
+    /// L5: Prism creates `.minecraft` on the instance's FIRST launch, so a brand-new
+    /// instance is offerable (detection judges the `mmc-pack.json`) but had no game
+    /// directory yet - and every adopt path refused it, leaving the user with an instance
+    /// the launcher offered and then would not install into.
+    #[test]
+    fn a_fresh_prism_instance_without_a_game_dir_is_adoptable() {
+        let home = tempfile::tempdir().unwrap();
+        let appdata = tempfile::tempdir().unwrap();
+        let env = Env {
+            home: home.path().to_path_buf(),
+            appdata: Some(appdata.path().to_path_buf()),
+        };
+        let inst = env
+            .app_support()
+            .unwrap()
+            .join("PrismLauncher/instances/Fresh");
+        fs::create_dir_all(&inst).unwrap();
+        fs::write(inst.join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
+        let game_dir = inst.join(".minecraft");
+
+        let found = detect(&env);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].compat, Compat::Confirmed);
+        assert_eq!(found[0].game_dir, game_dir);
+        assert!(!game_dir.exists(), "Prism has not made it yet");
+
+        let picked = classify_picked(&game_dir).unwrap();
+        assert_eq!(picked.compat, Compat::Confirmed);
+        assert_eq!(picked.game_dir, game_dir);
+
+        let saved = SavedTarget {
+            game_dir: game_dir.display().to_string(),
+            validated_by: ValidatedBy::Marker,
+            marker: Some("mmc-pack.json".to_string()),
+        };
+        assert!(
+            revalidate(&saved).is_some(),
+            "a remembered fresh instance must survive a restart"
+        );
+
+        let src = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let out = install(&jar, &game_dir).unwrap();
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(fs::read(game_dir.join("mods").join(OURS)).unwrap(), b"forge");
+    }
+
+    /// The exemption is narrow: only the directory Prism itself will create, and only
+    /// inside something the marker proves is an instance.
+    #[test]
+    fn a_missing_folder_is_adoptable_only_as_a_prism_game_dir() {
+        let plain = tempfile::tempdir().unwrap();
+        assert!(
+            classify_picked(&plain.path().join(".minecraft")).is_err(),
+            "no mmc-pack.json beside it: the name alone proves nothing"
+        );
+
+        let inst = tempfile::tempdir().unwrap();
+        fs::write(inst.path().join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
+        let saves = inst.path().join("saves");
+        assert!(
+            classify_picked(&saves).is_err(),
+            "a missing folder Prism would not create is still not a folder"
+        );
+        let saved = SavedTarget {
+            game_dir: saves.display().to_string(),
+            validated_by: ValidatedBy::Marker,
+            marker: Some("mmc-pack.json".to_string()),
+        };
+        assert!(revalidate(&saved).is_none());
     }
 
     // ── detection ──────────────────────────────────────────────────────────────

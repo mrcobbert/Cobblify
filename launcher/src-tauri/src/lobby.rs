@@ -922,11 +922,16 @@ struct WriterFields {
     jvm_start_ms: i64,
 }
 
+/// The mod reads `jvmPid` out of a Java `int`, and `lobby-validator.js` caps it at the
+/// same `2^31 - 1`. Accepting more here would let a snapshot the frontend refuses bind a
+/// session in the backend - the two validators have to agree on every field.
+const MAX_WRITER_PID: u64 = 2_147_483_647;
+
 fn parse_writer_fields(value: &Value) -> Option<WriterFields> {
     let obj = value.as_object()?;
     let pid = obj.get("jvmPid")?.as_u64()?;
     let jvm_start = obj.get("jvmStartTimeMs")?.as_i64()?;
-    if pid == 0 || pid > u32::MAX as u64 || jvm_start <= 0 {
+    if pid == 0 || pid > MAX_WRITER_PID || jvm_start <= 0 {
         return None;
     }
     Some(WriterFields {
@@ -1152,6 +1157,14 @@ fn validate_snapshot_shape(value: &Value) -> bool {
     }
     if obj.get("inHypixel").and_then(|v| v.as_bool()).is_none() {
         return false;
+    }
+    // Optional, and the exporter omits it entirely when it has nothing to say. PRESENT it
+    // must be a real boolean - `null` included - matching `lobby-validator.js`'s
+    // `"dashboardEligible" in d && typeof d.dashboardEligible !== "boolean"`.
+    if let Some(eligible) = obj.get("dashboardEligible") {
+        if !eligible.is_boolean() {
+            return false;
+        }
     }
     if !obj.contains_key("self") {
         return false;
@@ -1683,6 +1696,56 @@ mod tests {
             "inHypixel": false
         });
         assert!(!validate_snapshot_shape(&value));
+    }
+
+    /// The `write_lobby` shape as a value, so a single field can be varied.
+    fn snapshot_json(pid: u64) -> Value {
+        serde_json::json!({
+            "v": 1,
+            "seq": 1,
+            "jvmPid": pid,
+            "jvmStartTimeMs": 1_700_000_000_000i64,
+            "context": "LOBBY",
+            "inHypixel": true,
+            "self": null,
+            "mode": null,
+            "partyCount": null,
+            "yourParty": [],
+            "players": [],
+            "teams": []
+        })
+    }
+
+    /// L15: the mod publishes `jvmPid` from a Java `int`, and `lobby-validator.js` caps it
+    /// at `2^31 - 1`. This validator accepted anything up to `u32::MAX`, so a snapshot the
+    /// frontend refuses could still bind a session here.
+    #[test]
+    fn a_writer_pid_beyond_the_java_int_range_is_refused() {
+        assert!(validate_snapshot_shape(&snapshot_json(2_147_483_647)));
+        assert!(!validate_snapshot_shape(&snapshot_json(2_147_483_648)));
+        assert!(!validate_snapshot_shape(&snapshot_json(0)));
+    }
+
+    /// L15: `lobby-validator.js` rejects a PRESENT `dashboardEligible` that is not a
+    /// boolean - `null` included. Absent is fine; the exporter omits it.
+    #[test]
+    fn a_present_dashboard_eligible_must_be_a_boolean() {
+        let with = |v: Value| {
+            let mut s = snapshot_json(4242);
+            s.as_object_mut()
+                .unwrap()
+                .insert("dashboardEligible".to_string(), v);
+            s
+        };
+        assert!(
+            validate_snapshot_shape(&snapshot_json(4242)),
+            "absent is fine"
+        );
+        assert!(validate_snapshot_shape(&with(Value::Bool(true))));
+        assert!(validate_snapshot_shape(&with(Value::Bool(false))));
+        assert!(!validate_snapshot_shape(&with(Value::Null)));
+        assert!(!validate_snapshot_shape(&with(Value::from("yes"))));
+        assert!(!validate_snapshot_shape(&with(Value::from(1))));
     }
 
     /// A8: the shared fixtures under common/src/test/resources/lobby-contract are the truth
