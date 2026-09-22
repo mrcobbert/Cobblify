@@ -297,15 +297,22 @@ fn is_weave_javaagent(token: &str) -> bool {
     let Some(rest) = token.strip_prefix("-javaagent:") else {
         return false;
     };
+    // Caseless on every platform, like the jar matching in `install.rs`: on NTFS and on a
+    // case-folding Mac volume `.WEAVE\WEAVE-LOADER-AGENT-1.3.3.JAR` names the jar the
+    // launcher installed, and uninstall must strip the argument for the same jar it deletes.
     let path = Path::new(rest.trim_matches('"'));
     let in_weave_dir = path
         .parent()
         .and_then(|parent| parent.file_name())
-        .is_some_and(|name| name == OsStr::new(".weave"));
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case(".weave"));
     let weave_name = path
         .file_name()
         .and_then(OsStr::to_str)
-        .is_some_and(|name| name.starts_with("Weave-Loader-Agent"));
+        .is_some_and(|name| {
+            name.len() >= "Weave-Loader-Agent".len()
+                && name[.."Weave-Loader-Agent".len()].eq_ignore_ascii_case("Weave-Loader-Agent")
+        });
     in_weave_dir || weave_name
 }
 
@@ -636,6 +643,36 @@ mod tests {
 
     // Uninstall (R3). `unregister` is the only writer that REMOVES a token,
     // and it must be as conservative about the user's file as `apply` is.
+
+    /// Code review round 1, I1: `uninstall_lunar` matches the jar names caselessly, so the
+    /// argument that names them must be stripped caselessly too - or an upper-cased alias
+    /// keeps pointing Lunar at a jar that is gone.
+    #[test]
+    fn an_upper_cased_weave_agent_path_is_recognised() {
+        // The path separator is the host's: a backslash is a file-name byte on Unix.
+        #[cfg(windows)]
+        let alias = "-javaagent:C:\\Users\\Alice\\.WEAVE\\WEAVE-LOADER-AGENT-1.3.3.JAR";
+        #[cfg(not(windows))]
+        let alias = "-javaagent:/Users/alice/.WEAVE/WEAVE-LOADER-AGENT-1.3.3.JAR";
+        assert!(is_weave_javaagent(alias));
+        assert!(is_weave_javaagent("-javaagent:/Users/t/.Weave/weave-loader-agent-1.2.0.jar"));
+        assert!(!is_weave_javaagent("-javaagent:/opt/other/Profiler.jar"));
+
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias}","jvmArgs":"-Xmx4G {alias}"}}}}"#
+        ));
+        unregister(&f.json).unwrap();
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(dashed, "-Xmx4G");
+        assert_eq!(camel, "-Xmx4G");
+
+        // And setup replaces it instead of adding a second agent beside it.
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias}","jvmArgs":"-Xmx4G {alias}"}}}}"#
+        ));
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        assert_eq!(f.jvm_args().0, format!("-Xmx4G -javaagent:{AGENT}"));
+    }
 
     #[test]
     fn unregister_strips_only_weave_agents() {

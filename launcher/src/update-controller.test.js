@@ -30,7 +30,7 @@ function harness({ status, prefs, rejects = {} } = {}) {
     cancelSchedule: () => {},
     random: () => 0.5,
   });
-  return { controller, calls, timers };
+  return { controller, calls, timers, replies };
 }
 
 test("bootstrap merges backend status with the separate update preference", async () => {
@@ -234,4 +234,20 @@ test("a refused update action surfaces as a retryable error carrying the backend
     assert.equal(state.manual, true);
     assert.equal(state.message, reason);
   }
+});
+
+// Code review round 1, O1: the reason shown under "Check failed" must be the check's own.
+test("a later check does not keep showing an earlier action's reason", async () => {
+  const h = harness({ status: { state: "ready", currentVersion: "0.9.1", availableVersion: "0.10.0" }, rejects: { install_update: "The updater could not start installation." } });
+  await h.controller.bootstrap();
+  await h.controller.action("install");
+  assert.equal(h.controller.getState().message, "The updater could not start installation.");
+  h.replies.check_for_update = { state: "error", diagnosticCode: "check_failed", currentVersion: "0.9.1" };
+  await h.controller.check(true);
+  assert.equal(h.controller.getState().state, "error");
+  assert.equal(h.controller.getState().message, null);
+  // A fresh backend status event clears it too.
+  await h.controller.action("install");
+  h.controller.acceptStatus({ state: "current", currentVersion: "0.9.1" });
+  assert.equal(h.controller.getState().message, null);
 });

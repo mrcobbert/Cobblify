@@ -41,7 +41,11 @@ export function createUpdateController(invoke, deps = {}) {
 
   const notify = () => onChange({ ...state });
   const merge = (next) => {
-    state = { ...state, ...next };
+    // A message belongs to the state that produced it. A new state that carries none
+    // (a later check, a backend status event) must not keep showing an earlier action's
+    // reason under its own title.
+    const cleared = next && typeof next.state === "string" && !("message" in next) ? { message: null } : {};
+    state = { ...state, ...cleared, ...next };
     notify();
   };
 

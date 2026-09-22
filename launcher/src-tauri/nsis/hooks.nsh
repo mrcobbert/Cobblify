@@ -15,8 +15,10 @@
 ; not start. The exe undoes its own Lunar registration when it is run with
 ; this one argument, and reports the outcome as an exit code: 0 done, 3 Lunar
 ; is running (or cannot be determined), 4 another launcher process is alive,
-; 1 an I/O error. Anything non-zero means NOTHING was changed, so the
-; uninstall aborts and the user can quit Lunar and run it again. The
+; 1 an I/O error. 3 and 4 are refused before the first write, so nothing
+; was changed; 1 may follow a rewritten launcher.json (the jar deletion
+; failed). On any non-zero exit the uninstall aborts and the user can quit
+; Lunar and run it again. The
 ; template's own running-app check happens after this hook, which is why the
 ; exe checks for a live launcher itself.
 !macro NSIS_HOOK_PREUNINSTALL

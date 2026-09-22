@@ -264,3 +264,45 @@ test("a roster render that throws still shows a visible dashboard with an error 
   assert.equal(dash.querySelector(".dash-error"), null);
   assert.equal(dash.classList.contains("on"), true);
 });
+
+// Code review round 1 coverage gap (A-J2): the real window, not a fake controller. The
+// first live snapshot's acknowledge is still in flight when the user cancels the launch;
+// the reset commits home, then the ack resolves. The dashboard must stay closed.
+test("an acknowledge that resolves after Cancel Launch committed home does not reopen the dashboard (J2)", async () => {
+  // Leave the dashboard the J7 test ended on: the backend reports the session ended.
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  replies.reset_session_end = () => ({ status: "ok", preferences: PREFS });
+  await waitFor(() => stage.dataset.view === "home" && launch.disabled === false, {
+    label: "home after the previous session ended",
+  });
+
+  let resolveAck;
+  const ackSeen = new Promise((resolveSeen) => {
+    replies.acknowledge_lobby_snapshot = () =>
+      new Promise((resolve) => {
+        resolveAck = resolve;
+        resolveSeen();
+      });
+  });
+  replies.launch_lunar = () => LAUNCHED;
+  replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 3 }), token: 3 });
+  replies.abort_launch_session = () => ({ status: "ok", preferences: PREFS });
+  launch.click();
+  await ackSeen;
+  assert.equal(stage.dataset.view, "home", "the home view is held until the ack lands");
+
+  // Cancel while the ack is pending: the reset invalidates the session and commits home.
+  replies.lobby_state = () => ({ kind: "unavailable", reason: "missing_file" });
+  el("cancel-launch").click();
+  await waitFor(() => launch.disabled === false && launch.hidden === false, {
+    label: "a launchable home after Cancel",
+  });
+  assert.equal(stage.dataset.view, "home");
+
+  // Now the stale ack resolves.
+  resolveAck({});
+  await tick(50);
+  assert.equal(stage.dataset.view, "home", "a stale ack must not flip the view to the dashboard");
+  assert.equal(dash.classList.contains("on"), false);
+  assert.equal(dash.querySelector(".sheet"), null);
+});

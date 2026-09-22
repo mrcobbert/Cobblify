@@ -93,9 +93,11 @@ jars the launcher installed - `~/.weave/Weave-Loader-Agent-*.jar` and
 `~/.weave/mods/Cobblify-Lunar-*.jar` - removing `mods/` and `.weave` only if
 they end up empty. The exit code is the contract: `0` done, `3` Lunar is
 running or cannot be determined, `4` another launcher process is alive, `1` an
-I/O error. Both refusals happen before the first write, so anything non-zero
-means nothing was changed and the hook shows a message and aborts the
-uninstall. They are not paranoia: Lunar rewrites `launcher.json` when it exits
+I/O error. Both refusals (`3`, `4`) happen before the first write, so they
+guarantee nothing was changed; a `1` can come after `launcher.json` was already
+rewritten (the jar deletion failed), so it means "partially undone, look at
+`~/.weave`". On any non-zero exit the hook shows a message and aborts the
+uninstall so the user can retry. They are not paranoia: Lunar rewrites `launcher.json` when it exits
 and would put back a javaagent whose jar had just been deleted, and the NSIS
 template's own running-app check happens *after* this hook. Residual race: a
 Lunar or Cobblify process started in the milliseconds between the check and
