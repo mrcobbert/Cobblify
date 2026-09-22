@@ -281,11 +281,11 @@ impl UpdaterService {
             }
             Err(_) => return self.check_fail(app, "check_failed"),
         };
-        let trusted = match trusted_metadata(&update, pubkey) {
+        let current = self.status().current_version;
+        let trusted = match trusted_metadata(&update, &current, pubkey) {
             Ok(metadata) => metadata,
             Err(code) => return self.check_fail(app, code),
         };
-        let current = self.status().current_version;
         let critical =
             version_is_below(&current, &trusted.minimum_supported_version).unwrap_or(false);
         let cache = self.cache_path(&update.version);
@@ -390,14 +390,68 @@ fn decode_signature(encoded: &str) -> Result<Signature, &'static str> {
     Signature::decode(text).map_err(|_| "invalid_signature")
 }
 
-fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'static str> {
-    let policy = update
-        .raw_json
+/// The signed release blob (L4). Everything the client acts on - the version it is about to
+/// install, the minimum the policy enforces, and the hash and size of the bytes it will verify -
+/// is inside this string, signed with the same key as the policy and the artifacts. The unsigned
+/// top-level copies of these fields exist only for launchers older than this check.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedRelease {
+    schema: u64,
+    version: String,
+    minimum_supported_version: String,
+    platforms: std::collections::HashMap<String, ReleasePlatform>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleasePlatform {
+    #[allow(dead_code)]
+    key: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+/// The manifest key this build downloads: `{target}-{arch}`. `target` is the OS name the
+/// updater substituted into the endpoint (`darwin`/`windows`), `arch` the CPU it runs on - the
+/// same pair the Worker selected the artifact by.
+fn platform_key(target: &str) -> String {
+    format!("{target}-{}", std::env::consts::ARCH)
+}
+
+fn trusted_metadata(
+    update: &Update,
+    current: &str,
+    pubkey: &str,
+) -> Result<TrustedMetadata, &'static str> {
+    trusted_metadata_from(
+        &update.raw_json,
+        &update.version,
+        update.body.clone(),
+        &platform_key(&update.target),
+        current,
+        pubkey,
+    )
+}
+
+/// Everything the updater trusts about an offered release, derived from the manifest the
+/// plugin fetched. `version` is the plugin's parsed `release.version` and `current` the
+/// running version; both are re-checked against the SIGNED release blob so a manifest cannot
+/// offer an older signed bundle under a newer number (rollback) or swap the hash the download
+/// is checked against.
+fn trusted_metadata_from(
+    raw: &serde_json::Value,
+    version: &str,
+    body: Option<String>,
+    platform: &str,
+    current: &str,
+    pubkey: &str,
+) -> Result<TrustedMetadata, &'static str> {
+    let policy = raw
         .get("policy")
         .and_then(|v| v.as_str())
         .ok_or("missing_policy")?;
-    let policy_signature = update
-        .raw_json
+    let policy_signature = raw
         .get("policySignature")
         .and_then(|v| v.as_str())
         .ok_or("missing_policy_signature")?;
@@ -406,8 +460,7 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     key.verify(policy.as_bytes(), &signature, true)
         .map_err(|_| "untrusted_policy")?;
     let signed: SignedPolicy = serde_json::from_str(policy).map_err(|_| "invalid_policy")?;
-    let stated_minimum = update
-        .raw_json
+    let stated_minimum = raw
         .get("minimumSupportedVersion")
         .and_then(|v| v.as_str())
         .ok_or("missing_minimum_version")?;
@@ -415,11 +468,40 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     {
         return Err("policy_mismatch");
     }
-    let sha256 = update
-        .raw_json
-        .get("sha256")
+
+    // L4: the release blob. Required - the first manifest this launcher can be offered was
+    // built by the tool that emits it, so a manifest without one is not ours to install.
+    let release = raw
+        .get("release")
         .and_then(|v| v.as_str())
-        .ok_or("missing_sha256")?;
+        .ok_or("missing_release")?;
+    let release_signature = raw
+        .get("releaseSignature")
+        .and_then(|v| v.as_str())
+        .ok_or("missing_release_signature")?;
+    let signature = decode_signature(release_signature)?;
+    key.verify(release.as_bytes(), &signature, true)
+        .map_err(|_| "untrusted_release")?;
+    let release: SignedRelease = serde_json::from_str(release).map_err(|_| "invalid_release")?;
+    if release.schema != 1 {
+        return Err("release_schema");
+    }
+    if release.version != version {
+        return Err("release_mismatch");
+    }
+    let offered = Version::parse(&release.version).map_err(|_| "invalid_release")?;
+    let running = Version::parse(current).map_err(|_| "invalid_current_version")?;
+    if offered <= running {
+        return Err("release_not_newer");
+    }
+    if release.minimum_supported_version != signed.minimum_supported_version {
+        return Err("policy_mismatch");
+    }
+    let entry = release
+        .platforms
+        .get(platform)
+        .ok_or("unsupported_platform")?;
+    let sha256 = entry.sha256.as_str();
     if sha256.len() != 64
         || !sha256
             .bytes()
@@ -427,17 +509,11 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     {
         return Err("invalid_sha256");
     }
-    let size_bytes = update
-        .raw_json
-        .get("sizeBytes")
-        .and_then(|v| v.as_u64())
-        .ok_or("missing_size")?;
     Ok(TrustedMetadata {
         sha256: sha256.into(),
-        size_bytes,
-        notes: update.body.clone(),
-        release_notes_url: update
-            .raw_json
+        size_bytes: entry.size_bytes,
+        notes: body,
+        release_notes_url: raw
             .get("releaseNotesUrl")
             .and_then(|v| v.as_str())
             .map(str::to_owned),
@@ -574,7 +650,8 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
         let Some(pubkey) = service.pubkey else {
             return;
         };
-        let Ok(trusted) = trusted_metadata(&update, pubkey) else {
+        let current = inner.status.current_version.clone();
+        let Ok(trusted) = trusted_metadata(&update, &current, pubkey) else {
             return;
         };
         (update, pubkey, trusted.sha256, trusted.size_bytes)
@@ -872,7 +949,8 @@ pub async fn install_update(
     let pubkey = service
         .pubkey
         .ok_or_else(|| "Updater is not configured.".to_string())?;
-    let trusted = trusted_metadata(&update, pubkey).map_err(str::to_string)?;
+    let current = service.status().current_version;
+    let trusted = trusted_metadata(&update, &current, pubkey).map_err(str::to_string)?;
     // The installer gets the bytes that were just hashed and signature checked - reading the
     // file a second time would install whatever is there now, verified or not.
     let Some(bytes) = verify_cached(&path, &trusted.sha256, &update.signature, pubkey)
@@ -985,6 +1063,115 @@ mod tests {
     const TEST_BUNDLE_SHA256: &str =
         "92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3";
     const TEST_BUNDLE_BYTES: &[u8] = b"update-bytes";
+
+    // L4 fixtures: signed with the same throwaway key as TEST_PUBKEY (generated 2026-09-22).
+    // `TEST_RELEASE` names version 0.16.0, minimum 0.9.1 and the sha256/size of
+    // TEST_BUNDLE_BYTES for every shipped platform key.
+    const TEST_POLICY: &str = "{\"minimumSupportedVersion\":\"0.9.1\"}";
+    const TEST_POLICY_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0RMTmsyM2tuUThueFhYSnpubHBwTVJSeEJybysrd0NDSmpQWjNPZFFRdVZDRWhmZmJsZWQwWUphWDBPQTZzWFZuTU1acEppOHh4TjhKWGNNTEk4eVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY1NDM5CWZpbGU6cG9saWN5Lmpzb24Kd3dBSFlVTnpKVk5GQlRMMXBFK1RSSDB1S05ZL1BBVUlZZWtGYXprKzR0M2hOaXZ1ZzZHZm1VdHBHdmk0NEJsZmcrcnNESWxITHErcE95NlM5OWNqRGc9PQo=";
+    const TEST_RELEASE: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.9.1\",\"platforms\":{\"darwin-universal\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-aarch64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"windows-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-windows-x86_64-setup.exe\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0RvSVowWmdPK2dzLzlKWDhKb25uMHFtQTJmT2tSNGd6aFRYWWxTMG1rMEZwSldaaDN2RXZ0U1VQV3NLQ0VLa05RVkI3MHhIbERYTnpxSXIrNDVRZ1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY1NDM5CWZpbGU6cmVsZWFzZS5qc29uClBOamhkOGtITXlqWXFaU0hQUGE1clBuMXJLc3RJU2xqaUhtNldTZ2VsQWJDU3pxc0FobkdPNHF5WTh2OFRpK05DMm15OVBwVXBPenVSNU93QWo2V0F3PT0K";
+    /// Same blob with `minimumSupportedVersion` 0.0.0: validly signed, disagrees with the policy.
+    const TEST_RELEASE_MIN0: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.0.0\",\"platforms\":{\"darwin-universal\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-aarch64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"windows-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-windows-x86_64-setup.exe\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_MIN0_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0R2LzhwZ3ZtclRLdDZrc3BNM2pWZUR3WGdvL1U0cFQ5S2hubnVCeHdYc0NPQUlSTDZvVTZPcHR2NXNRamcyMG5pTmRBK1QzRThRWWR4Y2lqK1pHbncwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY3NjYxCWZpbGU6cmVsZWFzZS1taW4wLmpzb24KSVpBNGFOT2VmQmFFYWRIS0djc0lCZUFMSVVFWlBuVnltNzFYdUZTMWlQYVZiTDdPUnVrMDc0WkpqQ2lyMGVLVjF3OERUdk5JUXZKSUk0TDkwWElYQ1E9PQo=";
+    /// Validly signed blob that lists no platform this build could download.
+    const TEST_RELEASE_NO_PLATFORM: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.9.1\",\"platforms\":{\"linux-x86_64\":{\"key\":\"releases/0.16.0/none\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_NO_PLATFORM_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0tCSnFuZXo5VlVxK09CUEpGUWYySWtYUWd4Q2xEV3FSakZ3NzAxamVRekdYaG5yaWRGbnM5a25aMFgvK0pJbFVkaUEvaXQ0ZXFBaVA2bTlXeHNnbFFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY3NjYxCWZpbGU6cmVsZWFzZS1ub3BsYXQuanNvbgpsTG8yUlB0QlNPbWV2MmJWT1JERXF6NXFzd1dSZzRrL0ZFUFZKKzhCODdzQmZvRlR1N1Q4WHlydTkzaEllVGo3QkdlL2xHdUZiK0FTK0l5WEd2WUFDQT09Cg==";
+
+    fn manifest_for_this_build() -> serde_json::Value {
+        serde_json::json!({
+            "version": "0.16.0",
+            "notes": "notes",
+            "releaseNotesUrl": "https://example.invalid/notes",
+            "minimumSupportedVersion": "0.9.1",
+            "policy": TEST_POLICY,
+            "policySignature": TEST_POLICY_SIGNATURE,
+            "release": TEST_RELEASE,
+            "releaseSignature": TEST_RELEASE_SIGNATURE,
+            // The unsigned copies an older launcher reads. Deliberately WRONG here: the new
+            // check must take the hash and size from the signed blob, never from these.
+            "sha256": "0".repeat(64),
+            "sizeBytes": 999,
+        })
+    }
+
+    fn host_platform() -> String {
+        let target = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+        platform_key(target)
+    }
+
+    fn trusted(raw: &serde_json::Value, version: &str, current: &str) -> Result<TrustedMetadata, &'static str> {
+        trusted_metadata_from(raw, version, Some("notes".into()), &host_platform(), current, TEST_PUBKEY)
+    }
+
+    #[test]
+    fn release_blob_is_verified_and_supplies_hash_size_and_minimum() {
+        let raw = manifest_for_this_build();
+        let trusted = trusted(&raw, "0.16.0", "0.15.1").expect("valid manifest");
+        assert_eq!(trusted.sha256, TEST_BUNDLE_SHA256);
+        assert_eq!(trusted.size_bytes, TEST_BUNDLE_BYTES.len() as u64);
+        assert_eq!(trusted.minimum_supported_version, "0.9.1");
+        assert_eq!(trusted.release_notes_url.as_deref(), Some("https://example.invalid/notes"));
+    }
+
+    #[test]
+    fn release_blob_is_required() {
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("release");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_release");
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("releaseSignature");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_release_signature");
+    }
+
+    #[test]
+    fn release_blob_with_a_signature_for_other_bytes_is_untrusted() {
+        let mut raw = manifest_for_this_build();
+        // A real signature from the same key, over the policy instead of the release.
+        raw["releaseSignature"] = serde_json::Value::String(TEST_POLICY_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "untrusted_release");
+    }
+
+    #[test]
+    fn offered_version_must_match_the_signed_one() {
+        let raw = manifest_for_this_build();
+        // The manifest's unsigned version was bumped past the signed 0.16.0.
+        assert_eq!(trusted(&raw, "0.16.1", "0.15.1").unwrap_err(), "release_mismatch");
+    }
+
+    #[test]
+    fn a_signed_release_that_is_not_newer_than_the_running_version_is_rejected() {
+        let raw = manifest_for_this_build();
+        assert_eq!(trusted(&raw, "0.16.0", "0.16.0").unwrap_err(), "release_not_newer");
+        assert_eq!(trusted(&raw, "0.16.0", "0.17.0").unwrap_err(), "release_not_newer");
+        assert_eq!(trusted(&raw, "0.16.0", "0.16.0-dev.3").map(|t| t.size_bytes), Ok(12));
+    }
+
+    #[test]
+    fn release_minimum_must_agree_with_the_signed_policy() {
+        let mut raw = manifest_for_this_build();
+        raw["release"] = serde_json::Value::String(TEST_RELEASE_MIN0.into());
+        raw["releaseSignature"] = serde_json::Value::String(TEST_RELEASE_MIN0_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "policy_mismatch");
+    }
+
+    #[test]
+    fn a_release_without_this_platform_is_unsupported() {
+        let mut raw = manifest_for_this_build();
+        raw["release"] = serde_json::Value::String(TEST_RELEASE_NO_PLATFORM.into());
+        raw["releaseSignature"] = serde_json::Value::String(TEST_RELEASE_NO_PLATFORM_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "unsupported_platform");
+    }
+
+    #[test]
+    fn the_policy_path_still_guards_before_the_release_blob() {
+        let mut raw = manifest_for_this_build();
+        raw["minimumSupportedVersion"] = serde_json::Value::String("0.0.0".into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "policy_mismatch");
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("policy");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_policy");
+    }
 
     /// L3: a body that trickles in over longer than the read timeout, with every gap shorter
     /// than it, must still arrive whole. The PRODUCTION constructor is under test - only its

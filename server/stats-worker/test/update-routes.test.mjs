@@ -210,3 +210,55 @@ test("scheduled cleanup deletes events older than exactly thirty days", async ()
   assert.match(seen[0].sql, /DELETE FROM launcher_update_events/);
   assert.equal(seen[0].value, 3_000_000_000 - 30 * 24 * 60 * 60);
 });
+
+// L4: the signed release blob is passed through verbatim when present, and its absence keeps
+// the manifest published before it existed serving.
+const signedRelease = JSON.stringify({
+  schema: 1,
+  version: "0.10.0",
+  minimumSupportedVersion: "0.9.0",
+  platforms: { "darwin-universal": { key: "releases/0.10.0/cobblify.app.tar.gz", sha256: "a".repeat(64), sizeBytes: 12 } },
+});
+
+async function metadataFor(e, path = "/launcher/update/darwin/universal/0.9.1") {
+  const response = await handleUpdateMetadata(new Request(`https://worker${path}`), e, { identity: "friend" }, 1_000);
+  return { status: response.status, body: response.status === 200 ? await response.json() : await response.text() };
+}
+
+test("a manifest without the release blob still serves, and the reply carries no release fields", async () => {
+  const { status, body } = await metadataFor(env());
+  assert.equal(status, 200);
+  assert.equal("release" in body, false);
+  assert.equal("releaseSignature" in body, false);
+});
+
+test("the release blob and its signature pass through exactly as published", async () => {
+  const e = env();
+  e.UPDATE_BUCKET.objects.set("channels/stable.json", JSON.stringify({
+    ...manifest, release: signedRelease, releaseSignature: "trusted-release-signature",
+  }));
+  const { status, body } = await metadataFor(e);
+  assert.equal(status, 200);
+  assert.equal(body.release, signedRelease);
+  assert.equal(body.releaseSignature, "trusted-release-signature");
+  // The fields launchers before 0.16.0 read are untouched.
+  assert.equal(body.policy, manifest.policy);
+  assert.equal(body.policySignature, manifest.policySignature);
+  assert.equal(body.sha256, "a".repeat(64));
+});
+
+test("an incoherent release blob is an invalid manifest, not a silent pass-through", async () => {
+  for (const patch of [
+    { release: signedRelease },
+    { release: 42, releaseSignature: "sig" },
+    { release: "{not json", releaseSignature: "sig" },
+    { release: JSON.stringify({ schema: 1, version: "0.9.9", platforms: {} }), releaseSignature: "sig" },
+    { release: JSON.stringify({ schema: 2, version: "0.10.0", platforms: {} }), releaseSignature: "sig" },
+  ]) {
+    const e = env();
+    e.UPDATE_BUCKET.objects.set("channels/stable.json", JSON.stringify({ ...manifest, ...patch }));
+    const { status, body } = await metadataFor(e);
+    assert.equal(status, 503, JSON.stringify(patch));
+    assert.match(body, /invalid_release_manifest/);
+  }
+});
