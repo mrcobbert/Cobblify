@@ -137,6 +137,11 @@ public final class OutgoingChatCore {
     private boolean sweatPartlySent;
     /** Most recent sweat request, reused as the context template for follow-up lines. */
     private OutgoingChatRequest sweatHead;
+    /**
+     * An AutoGG a report line pushed out of the AUTO slot. It waits here until the report leaves
+     * that slot, so a late report costs the gg its turn in the queue but never the send itself.
+     */
+    private OutgoingChatRequest deferredAutoGg;
     private boolean incInFlight;
     private long lastIncDeliveredMs = Long.MIN_VALUE / 4;
     /** The held typed line currently at the head of the FIFO, and when it got there (hold timeout base). */
@@ -160,6 +165,7 @@ public final class OutgoingChatCore {
         lastIncDeliveredMs = Long.MIN_VALUE / 4;
         manualHead = null;
         manualHeadSinceMs = 0L;
+        deferredAutoGg = null;
     }
 
     public static boolean isSlashCommand(String text) {
@@ -270,7 +276,11 @@ public final class OutgoingChatCore {
     public void submit(OutgoingChatKind kind, String text, LiveContext ctx, long nowMs) {
         if (text == null || text.isEmpty() || kind == null) return;
         OutgoingChatRequest request = newRequest(kind, text, ctx, nowMs);
-        OutgoingChatQueue.Displacement d = queue.enqueue(request);
+        // A newer gg supersedes one still waiting behind a report: only one "gg" per game.
+        if (kind == OutgoingChatKind.AUTOGG) deferredAutoGg = null;
+        OutgoingChatQueue.Displacement d = kind == OutgoingChatKind.SWEAT
+                ? enqueueSweat(request)
+                : queue.enqueue(request);
         // MANUAL/INC enqueue clears AUTO as an interrupt.
         if (d.optional != null) {
             if (d.optional.kind == OutgoingChatKind.SWEAT) {
@@ -339,12 +349,15 @@ public final class OutgoingChatCore {
     public void markSweatDone() {
         sweatFlight = SweatFlight.DONE;
         clearSweatBatch();
+        releaseDeferredAutoGg();
     }
 
     public void resetSweatForNewGame() {
         queue.cancelKind(OutgoingChatKind.SWEAT);
         sweatFlight = SweatFlight.IDLE;
         clearSweatBatch();
+        // A new game means last game's gg is void, so it is dropped here rather than released.
+        deferredAutoGg = null;
     }
 
     /** Move the next batch line into the queue under the head's context. False when none remain. */
@@ -353,10 +366,33 @@ public final class OutgoingChatCore {
         OutgoingChatRequest next = new OutgoingChatRequest(
                 OutgoingChatKind.SWEAT, sweatRemaining.pollFirst(),
                 sweatHead.sessionId, sweatHead.serverKey, true, true, sweatHead.partyEpoch, nowMs);
-        queue.enqueue(next);
+        enqueueSweat(next);
         sweatHead = next;
         sweatFlight = SweatFlight.IN_FLIGHT;
         return true;
+    }
+
+    /**
+     * The one way a report line enters the queue. A report takes the AUTO slot from a queued
+     * AutoGG; remembering it here is what keeps that gg from being dropped silently.
+     */
+    private OutgoingChatQueue.Displacement enqueueSweat(OutgoingChatRequest request) {
+        OutgoingChatQueue.Displacement d = queue.enqueue(request);
+        if (d.priorSameSlot != null && d.priorSameSlot.kind == OutgoingChatKind.AUTOGG) {
+            deferredAutoGg = d.priorSameSlot;
+        }
+        return d;
+    }
+
+    /**
+     * Put a report-displaced AutoGG back once the AUTO slot is free. It re-enters as an ordinary
+     * AUTO line, so pacing, the quiet window and the staleness checks all still apply to it.
+     */
+    private void releaseDeferredAutoGg() {
+        if (deferredAutoGg == null || queue.peekAuto() != null) return;
+        OutgoingChatRequest gg = deferredAutoGg;
+        deferredAutoGg = null;
+        queue.enqueue(gg);
     }
 
     private void clearSweatBatch() {
@@ -368,6 +404,8 @@ public final class OutgoingChatCore {
     // ---- cancel / world -----------------------------------------------------
 
     public Decision cancelKind(OutgoingChatKind kind) {
+        // Cancelling AutoGG must reach a deferred gg as well, queued or not.
+        if (kind == OutgoingChatKind.AUTOGG) deferredAutoGg = null;
         OutgoingChatRequest dropped = queue.cancelKind(kind);
         if (dropped == null) return Decision.none();
         if (dropped.kind == OutgoingChatKind.SWEAT) {
@@ -386,6 +424,7 @@ public final class OutgoingChatCore {
         OutgoingChatRequest auto = queue.peekAuto();
         queue.clear();
         manualHead = null;
+        deferredAutoGg = null;
         if (inc != null) incInFlight = false;
         if (auto != null && auto.kind == OutgoingChatKind.SWEAT) {
             sweatFlight = SweatFlight.DONE;
@@ -517,6 +556,7 @@ public final class OutgoingChatCore {
             if (!enqueueNextSweat(nowMs)) {
                 sweatFlight = SweatFlight.DONE;
                 clearSweatBatch();
+                releaseDeferredAutoGg();
             }
         }
         if (request.kind == OutgoingChatKind.INC) {
@@ -546,6 +586,8 @@ public final class OutgoingChatCore {
             sweatFlight = SweatFlight.DONE;
             clearSweatBatch();
         }
+        // Either way the report has left the AUTO slot, so the gg it displaced may have it back.
+        releaseDeferredAutoGg();
     }
 
     /** Only safe interruptions keep Sweat retryable; party/context ends are final. */

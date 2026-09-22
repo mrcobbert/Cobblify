@@ -464,4 +464,137 @@ public class OutgoingChatCoreTest {
         assertEquals("too many held", r17.decision.noticeWhy);
         assertEquals(16, core.queue().heldManualCount());
     }
+
+    // ---- M3: a report must never swallow the AutoGG it displaced ----------------------------
+
+    @Test
+    public void sweatDisplacingAutoGgSendsBoth() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 10L);
+        assertEquals(OutgoingChatKind.SWEAT, core.queue().peekAuto().kind);
+
+        OutgoingChatCore.Decision first = core.tick(ctx, 100L, false, allOn);
+        assertEquals("/pc s1", first.send.text);
+        core.acknowledgeDelivered(first.send, 100L);
+        OutgoingChatCore.Decision second = core.tick(ctx, 700L, false, allOn);
+        assertEquals("/pc s2", second.send.text);
+        core.acknowledgeDelivered(second.send, 700L);
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+
+        // The gg waits out the normal gap after the report's last line, then goes.
+        assertNull(core.tick(ctx, 800L, false, allOn).send);
+        OutgoingChatCore.Decision gg = core.tick(ctx, 3300L, false, allOn);
+        assertNotNull("the displaced AutoGG must still be sent", gg.send);
+        assertEquals("gg", gg.send.text);
+        assertEquals(OutgoingChatKind.AUTOGG, gg.send.kind);
+        core.acknowledgeDelivered(gg.send, 3300L);
+        assertTrue(core.queue().isEmpty());
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+    }
+
+    @Test
+    public void cancelAutoGgAlsoDropsADeferredOne() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 10L);
+        core.cancelKind(OutgoingChatKind.AUTOGG); // AutoGG re-armed: that gg is void
+
+        OutgoingChatCore.Decision first = core.tick(ctx, 100L, false, allOn);
+        assertEquals("/pc s1", first.send.text);
+        core.acknowledgeDelivered(first.send, 100L);
+        OutgoingChatCore.Decision second = core.tick(ctx, 700L, false, allOn);
+        assertEquals("/pc s2", second.send.text);
+        core.acknowledgeDelivered(second.send, 700L);
+
+        assertNull(core.tick(ctx, 3300L, false, allOn).send);
+        assertNull(core.tick(ctx, 10000L, false, allOn).send);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    @Test
+    public void newGameDropsADeferredGg() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 10L);
+        core.resetSweatForNewGame();
+        assertTrue(core.queue().isEmpty());
+
+        assertNull(core.tick(ctx, 3300L, false, allOn).send);
+        assertNull(core.tick(ctx, 10000L, false, allOn).send);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    @Test
+    public void autoGgReplacingAutoGgIsNotDeferred() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 10L);
+
+        OutgoingChatCore.Decision only = core.tick(ctx, 2600L, false, allOn);
+        assertEquals("gg", only.send.text);
+        core.acknowledgeDelivered(only.send, 2600L);
+        assertTrue(core.queue().isEmpty());
+        // One gg was queued twice, not two ggs: nothing is owed afterwards.
+        assertNull(core.tick(ctx, 6000L, false, allOn).send);
+        assertNull(core.tick(ctx, 20000L, false, allOn).send);
+    }
+
+    /** Review I1: an INC interrupting a half-sent report must not cost the gg either. */
+    @Test
+    public void interruptedPartlySentReportStillSendsTheGg() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 10L);
+
+        OutgoingChatCore.Decision first = core.tick(ctx, 100L, false, allOn);
+        assertEquals("/pc s1", first.send.text);
+        core.acknowledgeDelivered(first.send, 100L);
+
+        // INC displaces the queued second line: the report goes RETRYABLE and frees the AUTO slot.
+        assertTrue(core.submitInc("/pc INC", ctx, 200L, 0L));
+        assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
+        assertNotNull("the gg returns to the AUTO slot the report vacated", core.queue().peekAuto());
+        assertEquals(OutgoingChatKind.AUTOGG, core.queue().peekAuto().kind);
+
+        // Resuming line two displaces the gg again: deferred once more, not dropped.
+        assertTrue(core.consumeSweatRetry(300L));
+        assertEquals(OutgoingChatKind.SWEAT, core.queue().peekAuto().kind);
+
+        assertNull(core.tick(ctx, 500L, false, allOn).send);
+        OutgoingChatCore.Decision inc = core.tick(ctx, 2600L, false, allOn);
+        assertEquals("/pc INC", inc.send.text);
+        core.acknowledgeDelivered(inc.send, 2600L);
+        OutgoingChatCore.Decision second = core.tick(ctx, 3100L, false, allOn);
+        assertEquals("/pc s2", second.send.text);
+        core.acknowledgeDelivered(second.send, 3100L);
+        assertEquals(OutgoingChatCore.SweatFlight.DONE, core.sweatFlight());
+
+        OutgoingChatCore.Decision gg = core.tick(ctx, 5600L, false, allOn);
+        assertNotNull("the displaced AutoGG must survive the interruption", gg.send);
+        assertEquals("gg", gg.send.text);
+        assertEquals(OutgoingChatKind.AUTOGG, gg.send.kind);
+        core.acknowledgeDelivered(gg.send, 5600L);
+        assertTrue(core.queue().isEmpty());
+        assertNull(core.tick(ctx, 20000L, false, allOn).send); // exactly once
+    }
+
+    @Test
+    public void aNewerAutoGgSupersedesADeferredOne() {
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 0L);
+        core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, 10L); // gg deferred
+        core.submit(OutgoingChatKind.AUTOGG, "gg", ctx, 20L); // replaces the report: sweat RETRYABLE
+        assertEquals(OutgoingChatCore.SweatFlight.RETRYABLE, core.sweatFlight());
+        int ggs = 0;
+        long now = 100L;
+        for (int i = 0; i < 12; i++, now += OutgoingChatPolicy.MIN_GAP_MS) {
+            if (core.sweatFlight() == OutgoingChatCore.SweatFlight.RETRYABLE) {
+                core.consumeSweatRetry(now);
+                if (core.sweatFlight() == OutgoingChatCore.SweatFlight.IDLE) {
+                    core.submitSweat(java.util.Arrays.asList("/pc s1", "/pc s2"), ctx, now);
+                }
+            }
+            OutgoingChatCore.Decision d = core.tick(ctx, now, false, allOn);
+            if (d.send == null) continue;
+            if ("gg".equals(d.send.text)) ggs++;
+            core.acknowledgeDelivered(d.send, now);
+        }
+        assertEquals("exactly one gg for the game", 1, ggs);
+        assertTrue(core.queue().isEmpty());
+    }
 }
