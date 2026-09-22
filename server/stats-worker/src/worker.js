@@ -50,6 +50,19 @@ const CHALLENGE_RE =
 
 const NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
 
+/**
+ * Decode one path segment. `decodeURIComponent` raises URIError on a malformed escape (%zz, a
+ * truncated UTF-8 sequence), which used to leave fetch() and become a 500; null lets the route
+ * answer its own 400 instead.
+ */
+function decodeSegment(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch (_) {
+    return null;
+  }
+}
+
 // &prio=1 marks a request a human is waiting on: it is served first by the shared origin gate,
 // which reorders work without ever raising the origin request rate.
 const laneFor = (url) => (url.searchParams.get("prio") === "1" ? LANE_HIGH : LANE_LOW);
@@ -99,8 +112,17 @@ export default {
     // Batch must be matched before the single /bedwars/<name> route ("batch" is a valid name pattern).
     if (path === "/bedwars/batch") {
       if (auth.denied) return auth.denied;
+      // URLSearchParams never throws on a malformed escape (it substitutes U+FFFD), so the RAW
+      // query is strict-checked first - otherwise a bad escape reaches the name filter as garbage.
+      try {
+        decodeURIComponent(url.search);
+      } catch (_) {
+        return jsonResponse({ success: false, error: "malformed_query" }, 400);
+      }
       const namesParam = url.searchParams.get("names") || "";
-      const names = namesParam.split(",").map((s) => decodeURIComponent(s.trim())).filter(Boolean);
+      // searchParams.get already decoded once. A second decode threw URIError on a name that
+      // legitimately encodes a "%" (names=%25zz -> "%zz", dropped below as invalid, never a 400).
+      const names = namesParam.split(",").map((s) => s.trim()).filter(Boolean);
       if (names.length === 0) {
         return jsonResponse({ success: false, error: "no_names" }, 400);
       }
@@ -143,9 +165,9 @@ export default {
     const bedwars = path.match(/^\/bedwars\/([^/]+)$/);
     if (bedwars) {
       if (auth.denied) return auth.denied;
-      const player = decodeURIComponent(bedwars[1]);
-      if (!NAME_RE.test(player)) {
-        return jsonResponse({ success: false, error: "invalid_player_name", player }, 400);
+      const player = decodeSegment(bedwars[1]);
+      if (player === null || !NAME_RE.test(player)) {
+        return jsonResponse({ success: false, error: "invalid_player_name", player: player ?? bedwars[1] }, 400);
       }
       const fresh = url.searchParams.get("fresh") === "1";
       const body = await getBedwars(player, env, ctx, fresh, laneFor(url));
@@ -195,9 +217,9 @@ export default {
       if (!urchinAllowed(auth, request)) {
         return jsonResponse({ success: false, error: "unauthorized" }, 403);
       }
-      const player = decodeURIComponent(urchin[1]);
-      if (!NAME_RE.test(player)) {
-        return jsonResponse({ success: false, error: "invalid_player_name", player }, 400);
+      const player = decodeSegment(urchin[1]);
+      if (player === null || !NAME_RE.test(player)) {
+        return jsonResponse({ success: false, error: "invalid_player_name", player: player ?? urchin[1] }, 400);
       }
       if (!urchinCapable(env)) {
         return jsonResponse({
@@ -225,7 +247,8 @@ export default {
       if (!seraphAllowed(auth, request)) {
         return jsonResponse({ success: false, error: "unauthorized" }, 403);
       }
-      const uuid = normalizeUuid(decodeURIComponent(seraph[1]));
+      const rawUuid = decodeSegment(seraph[1]);
+      const uuid = rawUuid === null ? null : normalizeUuid(rawUuid);
       if (!uuid) {
         return jsonResponse({ success: false, error: "invalid_uuid" }, 400);
       }
@@ -248,9 +271,9 @@ export default {
     const test = path.match(/^\/test\/([^/]+)$/);
     if (test) {
       if (auth.denied) return auth.denied;
-      const player = decodeURIComponent(test[1]);
-      if (!NAME_RE.test(player)) {
-        return jsonResponse({ error: "invalid_player_name", player }, 400);
+      const player = decodeSegment(test[1]);
+      if (player === null || !NAME_RE.test(player)) {
+        return jsonResponse({ error: "invalid_player_name", player: player ?? test[1] }, 400);
       }
       return jsonResponse(await probeHypixelPlayer(player, env));
     }

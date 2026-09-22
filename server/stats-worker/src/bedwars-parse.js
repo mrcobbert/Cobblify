@@ -1,5 +1,8 @@
 /** Parse aggregate + per-mode Bedwars stats from hypixel.net/player HTML. */
 
+const SECTION_MARKER_PREFIX = "stats-content-";
+const BEDWARS_MARKER = SECTION_MARKER_PREFIX + "bedwars";
+
 const MODE_PREFIXES = {
   solo: "Solo ",
   doubles: "Doubles ",
@@ -9,7 +12,7 @@ const MODE_PREFIXES = {
 
 export function parseBedwarsFromHtml(html, player) {
   const lower = html.toLowerCase();
-  const idx = lower.indexOf("stats-content-bedwars");
+  const idx = lower.indexOf(BEDWARS_MARKER);
   if (idx < 0) {
     if (html.length < 50_000 && CHALLENGE_RE.test(html)) {
       return { success: false, state: "ERROR", error: "cloudflare_block", displayName: player };
@@ -17,7 +20,13 @@ export function parseBedwarsFromHtml(html, player) {
     return { success: false, state: "NICKED", displayName: player };
   }
 
-  const section = html.slice(idx, idx + 20_000);
+  // Section ownership: the forum gives every game its own `stats-content-<game>` block (one open
+  // and one close marker each), so the Bedwars section ends at the NEXT such marker. A flat window
+  // reached past it - on the live page the Bedwars content ends 19,257 bytes after its marker and
+  // the SkyWars marker sits at +21,367 (measured 2026-09-22) - so a Bedwars label missing from a
+  // drifted page could be answered by the following game's identically-named row.
+  const next = lower.indexOf(SECTION_MARKER_PREFIX, idx + BEDWARS_MARKER.length);
+  const section = html.slice(idx, next < 0 ? idx + 20_000 : next);
   const text = section.replace(/<[^>]+>/g, "\n");
   const tokens = text.split(/\n/).map((s) => s.trim()).filter(Boolean);
 
@@ -26,10 +35,14 @@ export function parseBedwarsFromHtml(html, player) {
   // "Kills" from colliding with "Final Kills" or "Solo Kills".
   const overall = readMode(tokens, "");
 
-  // We located the Bedwars section but resolved none of the expected overall labels.
-  // That means the page markup changed (or was a challenge/partial render), not that
-  // the player is new — fail loudly instead of silently reporting them as [New].
-  if (overall.found === 0) {
+  // We located the Bedwars section but at least one of the six overall labels did not resolve.
+  // That means the page markup changed (or was a challenge/partial render), not that the player
+  // is new: the forum prints all six overall rows even for a never-played account
+  // (hypixel.net/player/Notch, verified live 2026-09-22 - all six present at 0, no empty cells).
+  // A partial parse would be served as zeros and cached for 15 minutes, so fail loudly instead;
+  // parse_failed is a transient negative (L1 only, 90 s) and self-heals. The PER-MODE policy is
+  // deliberately different - a partial per-mode parse is still served, see the guard below.
+  if (overall.found < 6) {
     return { success: false, state: "ERROR", error: "parse_failed", displayName: player };
   }
 
@@ -106,8 +119,11 @@ function readExact(tokens, label) {
   for (let i = 0; i < tokens.length - 1; i++) {
     if (tokens[i] === label) {
       const raw = tokens[i + 1].replace(/,/g, "");
-      const n = parseInt(raw, 10);
-      return Number.isFinite(n) ? n : 0;
+      // An empty <td></td> contributes no token, so "the next token" is the next LABEL. Reading
+      // that as 0 invented a value AND shifted the meaning of the rows after it, so anything that
+      // is not a plain integer means this row's value is missing, not zero.
+      if (!/^\d+$/.test(raw)) return null;
+      return parseInt(raw, 10);
     }
   }
   return null;
