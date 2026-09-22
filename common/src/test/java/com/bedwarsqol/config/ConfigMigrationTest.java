@@ -9,7 +9,10 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Arrays;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -89,5 +92,26 @@ public class ConfigMigrationTest {
 
         assertTrue(newFile.isFile());
         assertEquals("{}", read(newFile));
+    }
+
+    /**
+     * The migration writes atomically: nothing but the two settings files is left in the directory
+     * (no {@code *.tmp} sibling) and the new file's bytes equal the old file's exactly, even for a
+     * payload far larger than one write buffer.
+     */
+    @Test
+    public void copyLeavesOnlyTheTwoFilesAndExactBytes() throws Exception {
+        File oldFile = tmp.newFile("bedwarsqol.json");
+        StringBuilder sb = new StringBuilder("{\"pad\":\"");
+        while (sb.length() < 100 * 1024) sb.append("abcdefghij0123456789");
+        write(oldFile, sb.append("\"}").toString());
+        File newFile = new File(tmp.getRoot(), "cobblify.json");
+
+        ConfigMigration.copySettingsIfNeeded(oldFile, newFile);
+
+        String[] names = tmp.getRoot().list();
+        Arrays.sort(names);
+        assertArrayEquals(new String[]{"bedwarsqol.json", "cobblify.json"}, names);
+        assertArrayEquals(Files.readAllBytes(oldFile.toPath()), Files.readAllBytes(newFile.toPath()));
     }
 }

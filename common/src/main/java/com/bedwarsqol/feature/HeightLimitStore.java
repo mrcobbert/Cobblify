@@ -1,13 +1,12 @@
 package com.bedwarsqol.feature;
 
+import com.bedwarsqol.config.AtomicFileWrite;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,6 +16,10 @@ import java.util.Map;
  * lines in {@code ~/.cobblify/height-limits.txt} — the same well-known directory on Forge and
  * Lunar as the diag log, so one path works for every install and the file is human-editable.
  * Silent on I/O failure; a missing or unreadable file is just an empty map.
+ *
+ * <p>A save renders the whole file and hands it to {@link AtomicFileWrite} instead of truncating
+ * the live one and printing into it: a crash between those two moments used to leave a header-only
+ * file, and every limit the mod had learned over months of games was lost.
  */
 public final class HeightLimitStore {
 
@@ -51,13 +54,14 @@ public final class HeightLimitStore {
 
     public static void save(File file, Map<String, Integer> learnedByName) {
         if (file == null || learnedByName == null) return;
-        File parent = file.getParentFile();
-        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) return;
-        try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-            out.println("# Bedwars build limits learned in-game (highest placeable Y). Overrides the shipped table.");
-            for (Map.Entry<String, Integer> e : learnedByName.entrySet()) {
-                out.println(e.getKey().replace('=', ' ').trim() + "=" + e.getValue());
-            }
+        StringBuilder text = new StringBuilder();
+        text.append("# Bedwars build limits learned in-game (highest placeable Y). Overrides the shipped table.\n");
+        for (Map.Entry<String, Integer> e : learnedByName.entrySet()) {
+            text.append(e.getKey().replace('=', ' ').trim()).append('=').append(e.getValue()).append('\n');
+        }
+        try {
+            // AtomicFileWrite creates the parent directory and renames the finished bytes into place.
+            AtomicFileWrite.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
         } catch (IOException ignored) {
         }
     }
