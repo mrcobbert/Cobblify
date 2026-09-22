@@ -359,6 +359,7 @@ launcher/
     src/lunar_config.rs the launcher.json edit
     resources/          empty in git; THREE jars + manifest injected at package time
   tools/          test-drive, check-state, test-injection, app-inject-lib
-  friend/         READ ME FIRST.txt - ships to friends inside the bundle.
+  friend/         READ ME FIRST.txt - ships to friends inside the bundle;
+                  MAC INSTALL.txt - rides inside the release .dmg.
                   Lives OUTSIDE dist/ because Vite wipes dist/ on every build.
 ```

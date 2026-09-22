@@ -38,8 +38,9 @@ old immutable releases.
 
 1. Align every version source; `tools/check-release-version.sh` must pass.
 2. Run `Launcher Update Candidate` manually with the exact version.
-3. After it finishes, download and test its Mac installation ZIP. Record the run
-   ID shown in the workflow summary.
+3. After it finishes, download and test its Mac install image
+   (`Cobblify-Launcher-<version>.dmg`: the app, an Applications link and
+   `MAC INSTALL.txt`). Record the run ID shown in the workflow summary.
 4. If it passes, manually run `Promote Launcher Update` with that candidate run
    ID, version, minimum supported version, short notes, and a public HTTPS
    release-notes URL.
