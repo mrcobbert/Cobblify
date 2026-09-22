@@ -11,6 +11,7 @@ import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.SettingsGui;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.ProviderKeySubmitter;
+import com.bedwarsqol.stats.StatsBackendUrl;
 import com.bedwarsqol.stats.StatsCache;
 import com.bedwarsqol.stats.StatsMode;
 import net.minecraft.client.Minecraft;
@@ -71,7 +72,9 @@ public class BedwarsQolCommand extends CommandBase {
     public void processCommand(ICommandSender sender, String[] args) {
         // Guard the whole dispatch so a failing subcommand can never escape as an unhandled command.
         try {
-            dispatch(sender, args);
+            // Vanilla/Forge split the typed line on a single space, so a doubled space arrives as an
+            // empty token and a subcommand would read it as its argument (F11).
+            dispatch(sender, CommandArgs.dropEmpty(args));
         } catch (Throwable t) {
             try { send(sender, "§cCommand failed: §f" + describe(t)); } catch (Throwable ignored) { }
         }
@@ -575,20 +578,28 @@ public class BedwarsQolCommand extends CommandBase {
             send(sender, "§aCleared stats backend URL (stats disabled until set again).");
             return;
         }
-        String url = args[1].trim();
-        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        String url = StatsBackendUrl.normalize(args[1]);
+        if (url == null) {
+            send(sender, "§cStats backend URL must be an https:// URL, e.g. §fhttps://my-worker.workers.dev§c.");
+            return;
+        }
         cfg.statsBackendUrl = url;
         cfg.save();
         send(sender, "§aSaved stats backend URL.");
     }
 
+    /**
+     * {@code /cobblify statstoken <token|clear|show>} — sets/clears the shared backend token. The token
+     * never reaches chat history (the set path aborts unless the scrub is verified) and {@code show}
+     * reports only its length, never any of its characters.
+     */
     private void handleStatsToken(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
         if (args.length < 2 || "show".equalsIgnoreCase(args[1])) {
             if (cfg.statsBackendToken.isEmpty()) {
                 send(sender, "§eNo stats token set (requests sent unauthenticated).");
             } else {
-                send(sender, "§aStats token: §f" + mask(cfg.statsBackendToken));
+                send(sender, "§aStats token: §fset §7(" + cfg.statsBackendToken.length() + " characters)");
             }
             return;
         }
@@ -598,15 +609,33 @@ public class BedwarsQolCommand extends CommandBase {
             send(sender, "§aCleared stats token (requests now unauthenticated).");
             return;
         }
+        // Fail closed: never save the token unless the raw command line is verified gone from
+        // up-arrow history, or it would sit there for the rest of the session (F5).
+        if (!scrubStatsTokenHistory()) {
+            send(sender, "§cCould not clear the command from chat history - token not saved.");
+            return;
+        }
         cfg.statsBackendToken = args[1].trim();
         cfg.save();
         send(sender, "§aSaved stats token.");
     }
 
-    /** First/last 4 chars only — never echo a full secret to chat. */
-    private static String mask(String s) {
-        if (s.length() <= 8) return "****";
-        return s.substring(0, 4) + "…" + s.substring(s.length() - 4);
+    /**
+     * Remove any {@code /bw|bedwarsqol|hypixelclient|cobblify statstoken ...} lines from the up-arrow
+     * history and verify. Returns true only when the history is confirmed clear; a null/unavailable
+     * chat GUI or an unverifiable removal fails closed (false), so the caller aborts before the token
+     * is saved.
+     */
+    private static boolean scrubStatsTokenHistory() {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.ingameGUI == null) return false;
+        java.util.List<String> sent;
+        try {
+            sent = mc.ingameGUI.getChatGUI().getSentMessages();
+        } catch (Throwable t) {
+            return false;
+        }
+        return StatsTokenScrub.scrubKeyEntries(sent);
     }
 
     private static ClientSettings settings() {
