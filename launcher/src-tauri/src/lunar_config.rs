@@ -658,8 +658,10 @@ mod tests {
         assert!(is_weave_javaagent("-javaagent:/Users/t/.Weave/weave-loader-agent-1.2.0.jar"));
         assert!(!is_weave_javaagent("-javaagent:/opt/other/Profiler.jar"));
 
+        // Inside the JSON fixture a backslash must be escaped; the parsed value is `alias`.
+        let alias_json = alias.replace('\\', "\\\\");
         let f = Fixture::new(&format!(
-            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias}","jvmArgs":"-Xmx4G {alias}"}}}}"#
+            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias_json}","jvmArgs":"-Xmx4G {alias_json}"}}}}"#
         ));
         unregister(&f.json).unwrap();
         let (dashed, camel) = f.jvm_args();
@@ -668,7 +670,7 @@ mod tests {
 
         // And setup replaces it instead of adding a second agent beside it.
         let f = Fixture::new(&format!(
-            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias}","jvmArgs":"-Xmx4G {alias}"}}}}"#
+            r#"{{"settings":{{"jvm-args":"-Xmx4G {alias_json}","jvmArgs":"-Xmx4G {alias_json}"}}}}"#
         ));
         apply(&f.json, Path::new(AGENT)).unwrap();
         assert_eq!(f.jvm_args().0, format!("-Xmx4G -javaagent:{AGENT}"));
