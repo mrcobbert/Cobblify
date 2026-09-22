@@ -101,7 +101,11 @@ public final class BedwarsModeDetector {
         }
     }
 
-    /** Read a {@code Mode: <Solo|Doubles|3v3v3v3|4v4v4v4>} line from the sidebar (pregame). */
+    /**
+     * Read a {@code Mode: <Solo|Doubles|3v3v3v3|4v4v4v4>} line from the sidebar (pregame). The
+     * label is mapped by the shared exact-label rule, so 4v4, Castle and the dream variants stay
+     * {@link BedwarsMode#UNKNOWN} (= overall stats).
+     */
     private static BedwarsMode detectFromModeLine() {
         Scoreboard board = scoreboard();
         if (board == null) return BedwarsMode.UNKNOWN;
@@ -115,12 +119,7 @@ public final class BedwarsModeDetector {
             if (line == null) continue;
             int i = line.indexOf("Mode:");
             if (i < 0) continue;
-            String v = line.substring(i + 5).trim().toLowerCase();
-            if (v.contains("solo")) return BedwarsMode.SOLO;
-            if (v.contains("doubles")) return BedwarsMode.DOUBLES;
-            if (v.contains("3v3v3v3")) return BedwarsMode.THREES;
-            if (v.contains("4v4v4v4")) return BedwarsMode.FOURS;
-            return BedwarsMode.UNKNOWN; // 4v4, Castle, or some dream mode we don't map → overall
+            return SidebarModeLabel.toMode(line.substring(i + 5).trim());
         }
         return BedwarsMode.UNKNOWN;
     }
