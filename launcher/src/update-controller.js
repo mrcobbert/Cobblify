@@ -148,13 +148,16 @@ export function createUpdateController(invoke, deps = {}) {
       install: installUpdate,
       defer: deferUpdate,
     };
-    if (name === "enable") return setAutoUpdate(true);
-    if (name === "disable") return setAutoUpdate(false);
-    if (name === "dismiss_consent") return setAutoUpdate(false);
-    if (name === "check") return check(true);
-    const command = commands[name];
-    if (!command) return;
     try {
+      // Enable and Disable go through the preference save, which starts a download of its
+      // own; that download can be refused too, and its rejection belongs in this row like
+      // any other. Everything the row can dispatch is inside this one guard.
+      if (name === "enable") return await setAutoUpdate(true);
+      if (name === "disable") return await setAutoUpdate(false);
+      if (name === "dismiss_consent") return await setAutoUpdate(false);
+      if (name === "check") return await check(true);
+      const command = commands[name];
+      if (!command) return;
       const next = await command(invoke);
       if (next) merge(next);
     } catch (error) {

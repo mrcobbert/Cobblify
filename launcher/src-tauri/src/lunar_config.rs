@@ -306,13 +306,14 @@ fn is_weave_javaagent(token: &str) -> bool {
         .and_then(|parent| parent.file_name())
         .and_then(OsStr::to_str)
         .is_some_and(|name| name.eq_ignore_ascii_case(".weave"));
-    let weave_name = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .is_some_and(|name| {
-            name.len() >= "Weave-Loader-Agent".len()
-                && name[.."Weave-Loader-Agent".len()].eq_ignore_ascii_case("Weave-Loader-Agent")
-        });
+    // Compared as BYTES: a `str` slice at a fixed index would panic on a foreign agent whose
+    // name has a multi-byte character straddling that byte (`...é.jar`), and this predicate
+    // decides whether a user's own javaagent is preserved.
+    let weave_name = path.file_name().and_then(OsStr::to_str).is_some_and(|name| {
+        const PREFIX: &[u8] = b"Weave-Loader-Agent";
+        let bytes = name.as_bytes();
+        bytes.len() >= PREFIX.len() && bytes[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+    });
     in_weave_dir || weave_name
 }
 
@@ -647,6 +648,28 @@ mod tests {
     /// Code review round 1, I1: `uninstall_lunar` matches the jar names caselessly, so the
     /// argument that names them must be stripped caselessly too - or an upper-cased alias
     /// keeps pointing Lunar at a jar that is gone.
+    /// Code review round 2, I1: the caseless prefix check must not slice a `str` at a fixed
+    /// byte index. A foreign agent whose name carries a multi-byte character across that
+    /// index used to panic, taking the whole cleanup - and setup - down with it.
+    #[test]
+    fn a_foreign_agent_with_a_multibyte_name_is_preserved_not_a_panic() {
+        let foreign = "-javaagent:/opt/profiler/12345678901234567\u{e9}.jar";
+        assert!(!is_weave_javaagent(foreign));
+
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvm-args":"-Xmx4G {foreign}","jvmArgs":"-Xmx4G {foreign}"}}}}"#
+        ));
+        unregister(&f.json).unwrap();
+        assert_eq!(f.jvm_args().0, format!("-Xmx4G {foreign}"));
+
+        // Setup keeps it too, and still adds ours beside it.
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        assert_eq!(
+            f.jvm_args().0,
+            format!("-Xmx4G {foreign} -javaagent:{AGENT}")
+        );
+    }
+
     #[test]
     fn an_upper_cased_weave_agent_path_is_recognised() {
         // The path separator is the host's: a backslash is a file-name byte on Unix.

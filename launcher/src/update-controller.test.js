@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createUpdateController } from "./update-controller.js";
+import { updateView } from "./update-view.js";
 
 function harness({ status, prefs, rejects = {} } = {}) {
   const calls = [];
@@ -250,4 +251,28 @@ test("a later check does not keep showing an earlier action's reason", async () 
   await h.controller.action("install");
   h.controller.acceptStatus({ state: "current", currentVersion: "0.9.1" });
   assert.equal(h.controller.getState().message, null);
+});
+
+// Code review round 2, I3: Enable starts a download through the preference save, and that
+// download can be refused. The row is the only surface for it.
+test("a download refused through Enable surfaces in the row like any other action (I3)", async () => {
+  const reason = "The updater could not start download.";
+  const h = harness({
+    status: { state: "available", currentVersion: "0.9.1", availableVersion: "0.16.0", autoUpdatePrompted: true },
+    rejects: { start_update: reason },
+  });
+  h.controller.acceptStatus({
+    state: "available",
+    currentVersion: "0.9.1",
+    availableVersion: "0.16.0",
+    autoUpdateEnabled: false,
+    autoUpdatePrompted: true,
+  });
+  await h.controller.action("enable");
+  const state = h.controller.getState();
+  assert.equal(state.state, "error");
+  assert.equal(state.message, reason);
+  assert.equal(state.diagnosticCode, "action_failed");
+  assert.equal(updateView(state).primaryAction, "check");
+  assert.equal(updateView(state).detail, reason);
 });

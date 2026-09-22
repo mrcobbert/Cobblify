@@ -495,7 +495,7 @@ fn quarantine(path: &Path) -> Result<PathBuf, String> {
 /// paths are proven to be the same file: same device, same inode. Two distinct hard links
 /// share an inode but not a caseless name, so they stay on the quarantine path - a second
 /// directory entry is a second mod candidate however it is stored.
-fn is_destination_entry(path: &Path, dest: &Path) -> bool {
+fn is_destination_entry(path: &Path, dest: &Path, dest_entry_present: bool) -> bool {
     if path.parent() != dest.parent() {
         return false;
     }
@@ -511,8 +511,15 @@ fn is_destination_entry(path: &Path, dest: &Path) -> bool {
             }
             #[cfg(unix)]
             {
-                a.to_string_lossy()
-                    .eq_ignore_ascii_case(&b.to_string_lossy())
+                // Same inode is NOT the same directory entry. On a case-folding volume a
+                // case variant is the destination's own entry under the name the filesystem
+                // stored, and the listing therefore holds no entry spelled exactly like the
+                // destination. On a case-sensitive volume the destination has its own entry
+                // and a case variant beside it is a SECOND, independently loadable file -
+                // even when the two are hard links - so it must stay on the quarantine path.
+                !dest_entry_present
+                    && a.to_string_lossy()
+                        .eq_ignore_ascii_case(&b.to_string_lossy())
                     && is_same_file(path, dest)
             }
             #[cfg(not(any(windows, unix)))]
@@ -591,7 +598,11 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
         if !root.is_dir() {
             continue;
         }
-        for path in read_dir_strict(&root)? {
+        let entries = read_dir_strict(&root)?;
+        // Whether this directory lists the destination under its exact name; the case-alias
+        // exemption below is only sound when it does not.
+        let dest_entry_present = entries.iter().any(|entry| entry == &dest);
+        for path in entries {
             let meta = fs::symlink_metadata(&path)
                 .map_err(|e| ForgeError::from(format!("Cannot read {}: {e}", path.display())))?;
             if meta.is_dir() {
@@ -608,7 +619,7 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
                 conflicts.push(path.display().to_string());
                 continue;
             }
-            if is_destination_entry(&path, &dest) {
+            if is_destination_entry(&path, &dest, dest_entry_present) {
                 continue;
             }
             match classify(&name, &jar.name) {
@@ -981,6 +992,41 @@ mod tests {
     /// The inode exemption must not swallow a DISTINCT directory entry that happens to
     /// share an inode: Forge builds a mod candidate per entry, so a hard link named as an
     /// older release still loads a second `bedwarsqol`.
+    /// Code review round 2, I2. Same inode is not the same directory entry. The exemption
+    /// may only fire when the listing holds no entry spelled exactly like the destination:
+    /// that is what tells a case-folding volume's single entry apart from a case-sensitive
+    /// volume's two independently loadable ones.
+    #[cfg(unix)]
+    #[test]
+    fn a_case_variant_is_the_destination_only_when_the_listing_has_no_exact_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let dest = mods.join("Cobblify-1.8.9-forge-0.9.0.jar");
+        fs::write(&dest, b"ours").unwrap();
+        let variant = mods.join("cobblify-1.8.9-forge-0.9.0.jar");
+
+        if is_same_file(&variant, &dest) {
+            // Case-folding volume: ONE entry, reached by either spelling.
+            assert!(
+                is_destination_entry(&variant, &dest, false),
+                "the folded volume's only entry is the destination"
+            );
+            assert!(
+                !is_destination_entry(&variant, &dest, true),
+                "a listing that already names the destination means this is a second entry"
+            );
+        } else {
+            // Case-sensitive volume: two entries, hard-linked to one file.
+            fs::hard_link(&dest, &variant).unwrap();
+            assert!(is_same_file(&variant, &dest));
+            assert!(
+                !is_destination_entry(&variant, &dest, true),
+                "a second loadable entry is never the destination, hard link or not"
+            );
+        }
+    }
+
     #[test]
     fn distinct_hard_link_of_an_older_release_is_still_quarantined() {
         let src = tempfile::tempdir().unwrap();
