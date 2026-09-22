@@ -105,6 +105,22 @@ test("the rate probe sends the token on every request", async () => {
   }
 });
 
+test("the rate probe also names the variable when it is refused", async () => {
+  // A12: BOTH probes must explain a 401. The rate probe used to count it as "other" and
+  // finish both sweeps reporting ok=0, which reads as an origin problem, not a missing token.
+  const { server, base } = await startGatedWorker();
+  try {
+    const env = { ...process.env, WORKER_URL: base, RATE_PROBE_N: "1" };
+    delete env.WORKER_TOKEN;
+    const run = await runScript(process.execPath, [RATE_PROBE], { env });
+    assert.equal(run.status, 1, run.stdout + run.stderr);
+    assert.match(run.stdout + run.stderr, /WORKER_TOKEN/);
+    assert.doesNotMatch(run.stdout, /done/);
+  } finally {
+    await close(server);
+  }
+});
+
 test("deploy-and-test.sh deploys the config it was given", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cobblify-deploy-"));
   try {

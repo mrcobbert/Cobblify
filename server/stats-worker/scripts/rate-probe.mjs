@@ -29,11 +29,20 @@ async function hit(name) {
   }
 }
 
+// A token-gated deployment answers EVERY route 401, so the first one is conclusive: it was
+// counted as "other" and both sweeps ran to completion, reporting a rate limit that was really
+// a missing credential. Same diagnostic as run-worker-probe.mjs.
+function unauthorized() {
+  console.error("Unauthorized (401): this deployment is token-gated. Set WORKER_TOKEN to one of its STATS_TOKEN entries.");
+  process.exit(1);
+}
+
 async function sweep(intervalMs, n, tag) {
   let ok = 0, r429 = 0, other = 0;
   for (let i = 0; i < n; i++) {
     const name = "Rp" + tag + i + Math.floor(Date.now() / 1000) % 1000; // distinct, valid, uncached
     const res = await hit(name.slice(0, 16));
+    if (res.status === 401) unauthorized();
     const is429 = res.err === "http_429" || res.status === 429;
     if (is429) r429++; else if (res.state || res.status === 200) ok++; else other++;
     process.stdout.write(`  [${tag}] ${name.slice(0,16).padEnd(16)} ${res.status} ${(res.err||res.state||"ok").padEnd(13)} ${res.ms}ms\n`);
