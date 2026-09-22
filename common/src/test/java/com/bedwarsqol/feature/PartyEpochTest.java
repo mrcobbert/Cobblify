@@ -108,4 +108,51 @@ public class PartyEpochTest {
         assertEquals(0, epoch.current());
         assertTrue(epoch.inParty());
     }
+
+    // ---- M2: leader-side joins and invites restore membership ------------------------------
+
+    private static PartyEpoch partyless() {
+        PartyEpoch epoch = new PartyEpoch();
+        assertFalse(epoch.observeChat("You are not in a party."));
+        assertFalse(epoch.inParty());
+        return epoch;
+    }
+
+    @Test
+    public void leaderSideJoinRestoresMembership() {
+        for (String join : new String[] {
+                "[MVP+] Alex joined the party.",
+                "[VIP] Bob has joined the party!",
+                "Alex joined the party." }) {
+            PartyEpoch epoch = partyless();
+            assertFalse("bumped on: " + join, epoch.observeChat(join));
+            assertTrue("not restored by: " + join, epoch.inParty());
+            assertEquals(0, epoch.current());
+        }
+    }
+
+    @Test
+    public void inviteLinesRestoreMembership() {
+        for (String invite : new String[] {
+                "You invited [VIP] Bob to the party! They have 60 seconds to accept.",
+                "[MVP+] Lead invited [VIP] Bob to the party!" }) {
+            PartyEpoch epoch = partyless();
+            assertFalse("bumped on: " + invite, epoch.observeChat(invite));
+            assertTrue("not restored by: " + invite, epoch.inParty());
+            assertEquals(0, epoch.current());
+        }
+    }
+
+    @Test
+    public void lobbyChatCannotSpoofJoinOrInvite() {
+        for (String spoof : new String[] {
+                "[VIP] ixdine: bob joined the party",
+                "[MVP++] Linkze: you invited me to the party",
+                "[83✫] [VIP] ixdine: Alex joined the party.",
+                "Steve invited everyone to the party at his house" }) {
+            PartyEpoch epoch = partyless();
+            assertFalse(epoch.observeChat(spoof));
+            assertFalse("restored by spoof: " + spoof, epoch.inParty());
+        }
+    }
 }

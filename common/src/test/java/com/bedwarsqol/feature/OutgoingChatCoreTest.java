@@ -317,4 +317,151 @@ public class OutgoingChatCoreTest {
         assertFalse(OutgoingChatCore.requiresParty(OutgoingChatKind.MANUAL));
         assertFalse(OutgoingChatCore.requiresParty(OutgoingChatKind.AUTOGG));
     }
+
+    // ---- M1: typed chat is never dropped, and only Hypixel is paced -------------------------
+
+    private static OutgoingChatCore.LiveContext onHypixel(boolean on) {
+        return new OutgoingChatCore.LiveContext(1, "hypixel.net", true, 0, true, on);
+    }
+
+    /** Keeps the gap closed for a tick: a dummy manual line "just" went out. */
+    private void closeGap(long nowMs) {
+        core.acknowledgeDelivered(core.newRequest(OutgoingChatKind.MANUAL, "x", ctx, nowMs), nowMs);
+    }
+
+    @Test
+    public void typedChatIsNeverDroppedInsideTheGap() {
+        OutgoingChatCore.InterceptResult a = core.interceptPlayerSend("a", ctx, 1000L);
+        assertTrue(a.handled);
+        assertEquals("a", a.decision.send.text);
+        assertTrue(a.decision.notices.isEmpty());
+        core.acknowledgeDelivered(a.decision.send, 1000L);
+
+        OutgoingChatCore.InterceptResult b = core.interceptPlayerSend("b", ctx, 1500L);
+        assertTrue(b.handled);
+        assertNull(b.decision.send);
+        assertTrue(b.decision.notices.isEmpty());
+        OutgoingChatCore.InterceptResult c = core.interceptPlayerSend("c", ctx, 2000L);
+        assertTrue(c.handled);
+        assertNull(c.decision.send);
+        assertTrue(c.decision.notices.isEmpty());
+        assertEquals(2, core.queue().heldManualCount());
+
+        OutgoingChatCore.Decision early = core.tick(ctx, 3000L, false, allOn);
+        assertNull(early.send);
+        assertTrue(early.notices.isEmpty());
+        OutgoingChatCore.Decision second = core.tick(ctx, 3500L, false, allOn);
+        assertEquals("b", second.send.text);
+        core.acknowledgeDelivered(second.send, 3500L);
+        assertNull(core.tick(ctx, 5000L, false, allOn).send);
+        OutgoingChatCore.Decision third = core.tick(ctx, 6000L, false, allOn);
+        assertEquals("c", third.send.text);
+        core.acknowledgeDelivered(third.send, 6000L);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    /** Review B1: a line typed after the gap re-opens must not overtake a line still held. */
+    @Test
+    public void typedLineArrivingWithTheGapOpenGoesBehindTheHeldOnes() {
+        OutgoingChatCore.InterceptResult a = core.interceptPlayerSend("a", ctx, 1000L);
+        core.acknowledgeDelivered(a.decision.send, 1000L);
+        OutgoingChatCore.InterceptResult b = core.interceptPlayerSend("b", ctx, 1500L);
+        assertNull(b.decision.send);
+        // Gap open again, no tick has run yet: the oldest held line goes, the new one waits.
+        OutgoingChatCore.InterceptResult c = core.interceptPlayerSend("c", ctx, 3500L);
+        assertTrue(c.handled);
+        assertEquals("b", c.decision.send.text);
+        assertTrue(c.decision.notices.isEmpty());
+        core.acknowledgeDelivered(c.decision.send, 3500L);
+        assertEquals(1, core.queue().heldManualCount());
+        OutgoingChatCore.Decision last = core.tick(ctx, 6000L, false, allOn);
+        assertEquals("c", last.send.text);
+        core.acknowledgeDelivered(last.send, 6000L);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    @Test
+    public void offHypixelTypedChatIsNotIntercepted() {
+        OutgoingChatCore.LiveContext off = onHypixel(false);
+        OutgoingChatCore.InterceptResult r = core.interceptPlayerSend("hello", off, 1000L);
+        assertFalse(r.handled);
+        assertNull(r.decision.send);
+        assertTrue(r.decision.notices.isEmpty());
+        assertTrue(core.queue().isEmpty());
+        assertEquals(1000L, core.lastManualMs()); // the quiet window still opens
+        OutgoingChatCore.InterceptResult slash = core.interceptPlayerSend("/pc hi", off, 1100L);
+        assertFalse(slash.handled);
+        assertTrue(core.queue().isEmpty());
+        // And the same lines ON Hypixel are handled, as before.
+        assertTrue(core.interceptPlayerSend("hello", onHypixel(true), 5000L).handled);
+    }
+
+    @Test
+    public void heldManualsAreNoticedOnWorldChange() {
+        OutgoingChatCore.InterceptResult a = core.interceptPlayerSend("a", ctx, 1000L);
+        core.acknowledgeDelivered(a.decision.send, 1000L);
+        core.interceptPlayerSend("b", ctx, 1500L);
+        core.interceptPlayerSend("c", ctx, 2000L);
+        OutgoingChatCore.Decision inv = core.invalidateAll();
+        assertEquals(2, inv.notices.size());
+        assertEquals("b", inv.notices.get(0).text);
+        assertEquals("c", inv.notices.get(1).text);
+        assertEquals("world change", inv.noticeWhy);
+        assertEquals("b", inv.notice.text);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    @Test
+    public void heldManualTimesOutFromWhenItReachesTheHead() {
+        closeGap(1000L);
+        core.interceptPlayerSend("b", ctx, 1500L);
+        core.interceptPlayerSend("c", ctx, 2000L);
+        long max = OutgoingChatPolicy.MANUAL_HOLD_MAX_MS;
+
+        closeGap(2500L); // b reaches the head on this first tick
+        OutgoingChatCore.Decision first = core.tick(ctx, 2500L, false, allOn);
+        assertNull(first.send);
+        assertTrue(first.notices.isEmpty());
+
+        closeGap(2500L + max - 1);
+        OutgoingChatCore.Decision notYet = core.tick(ctx, 2500L + max - 1, false, allOn);
+        assertTrue(notYet.notices.isEmpty());
+
+        closeGap(2500L + max);
+        OutgoingChatCore.Decision timedOut = core.tick(ctx, 2500L + max, false, allOn);
+        assertEquals(1, timedOut.notices.size());
+        assertEquals("b", timedOut.notices.get(0).text);
+        assertEquals("timed out", timedOut.noticeWhy);
+
+        // c's clock starts when c becomes the head, not when it was typed.
+        long cHead = 2500L + max + 100L;
+        closeGap(cHead);
+        assertTrue(core.tick(ctx, cHead, false, allOn).notices.isEmpty());
+        closeGap(cHead + max - 1);
+        assertTrue(core.tick(ctx, cHead + max - 1, false, allOn).notices.isEmpty());
+        closeGap(cHead + max);
+        OutgoingChatCore.Decision cOut = core.tick(ctx, cHead + max, false, allOn);
+        assertEquals("c", cOut.notices.get(0).text);
+        assertEquals("timed out", cOut.noticeWhy);
+        assertTrue(core.queue().isEmpty());
+    }
+
+    @Test
+    public void sixteenHeldLinesIsTheCapAndTheSeventeenthIsNoticed() {
+        closeGap(1000L);
+        for (int i = 1; i <= 16; i++) {
+            OutgoingChatCore.InterceptResult r = core.interceptPlayerSend("m" + i, ctx, 1000L + i);
+            assertTrue(r.handled);
+            assertNull(r.decision.send);
+            assertTrue("line " + i + " held silently", r.decision.notices.isEmpty());
+        }
+        assertEquals(16, core.queue().heldManualCount());
+        OutgoingChatCore.InterceptResult r17 = core.interceptPlayerSend("m17", ctx, 1017L);
+        assertTrue(r17.handled);
+        assertNull(r17.decision.send);
+        assertEquals(1, r17.decision.notices.size());
+        assertEquals("m17", r17.decision.notices.get(0).text);
+        assertEquals("too many held", r17.decision.noticeWhy);
+        assertEquals(16, core.queue().heldManualCount());
+    }
 }

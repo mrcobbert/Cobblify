@@ -28,8 +28,9 @@ public final class OutgoingChatPolicy {
     public static final long QUIET_AFTER_MANUAL_MS = 2000L;
 
     /**
-     * How long a held manual message may wait for pacing before we surface a local notice instead
-     * of sending into a changed context. Never silently drop held text.
+     * How long a held manual message may wait for pacing, measured from when it reaches the head
+     * of the held FIFO, before we surface a local notice instead of sending into a changed context.
+     * Never silently drop held text.
      */
     public static final long MANUAL_HOLD_MAX_MS = 12_000L;
 
