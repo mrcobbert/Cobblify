@@ -172,4 +172,27 @@ public class ChatSenderTest {
             assertNull(ChatSender.extractName(line("Party Leader: [VIP] SrCobb ●"), NOBODY_IN_TAB, queue));
         }
     }
+
+    // ---- hover on a message-body or suffix leaf (F1) -----------------------------------------------
+
+    /** Hypixel puts the hover on the name leaf and the body "§f: hello" in a sibling; the mod's own
+     *  " (Nicked)" suffix is another. Neither names a sender, whatever the tab or the queue says. */
+    @Test
+    public void bodyAndSuffixLeavesHaveNoSender() {
+        for (String leaf : new String[] {
+                ": hello", " (Nicked)", "(Nicked)", ": nice one", "§f: hello", " §7(§cNicked§7)" }) {
+            assertNull("leaf: " + leaf, ChatSender.extractName(line(leaf), STEVE_IN_TAB, false));
+            assertNull("leaf in queue: " + leaf, ChatSender.extractName(line(leaf), NOBODY_IN_TAB, true));
+        }
+    }
+
+    @Test
+    public void nameLeavesStillResolve() {
+        assertEquals("Steve", ChatSender.extractName(line("[MVP+] Steve"), NOBODY_IN_TAB, false));
+        assertEquals("Steve", ChatSender.extractName(line("Steve"), NOBODY_IN_TAB, false));
+        assertEquals("Steve", ChatSender.extractName(line("§b[MVP§c+§b] Steve§f: hi"), NOBODY_IN_TAB, false));
+        assertEquals("Steve", ChatSender.extractName(line("Party > [VIP] Steve: hi"), NOBODY_IN_TAB, false));
+        // A decorated lone token is not the bare name leaf.
+        assertNull(ChatSender.extractName(line("Steve ●"), NOBODY_IN_TAB, false));
+    }
 }

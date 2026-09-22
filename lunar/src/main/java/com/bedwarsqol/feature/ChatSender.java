@@ -45,6 +45,11 @@ import java.util.regex.Pattern;
  * <p>{@code /party list} roster lines are the one colon shape whose names sit <i>after</i> the colon,
  * and they get their own accessor ({@link #rosterMembers}) rather than a sender — see
  * {@link #isRosterLabel}.
+ *
+ * <p>The hover path hands over the single chat <i>leaf</i> under the cursor, not the whole line.
+ * Hypixel keeps the name in one leaf and the body ({@code §f: hello}) in a sibling, and the mod
+ * appends its own {@code  (Nicked)} suffix leaf; a leaf that begins with the colon, or whose
+ * only name-shaped token is wrapped in other characters, is therefore never a sender.
  */
 public final class ChatSender {
 
@@ -72,12 +77,16 @@ public final class ChatSender {
         if (shaped != null) return shaped;
 
         int colon = raw.indexOf(':');
+        if (colon == 0) return null; // a message-body leaf: the text starts with the colon
         if (colon > 0) return senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue);
 
         // No colon and no known server shape: trust only a lone name token (the rank-card name
-        // component), so prose like "Bob has joined" can't drive a bogus lookup on "joined".
-        List<String> tokens = nameTokens(BRACKET_TAG.matcher(raw).replaceAll(" "));
-        return tokens.size() == 1 ? tokens.get(0) : null;
+        // component), so prose like "Bob has joined" can't drive a bogus lookup on "joined". The
+        // token must be the whole text once rank/guild brackets are gone: "(Nicked)" and "Steve ●"
+        // contain a name-shaped token but are not a name leaf.
+        String bare = BRACKET_TAG.matcher(raw).replaceAll(" ").trim();
+        List<String> tokens = nameTokens(bare);
+        return tokens.size() == 1 && tokens.get(0).equals(bare) ? tokens.get(0) : null;
     }
 
     /**
