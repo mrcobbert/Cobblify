@@ -88,23 +88,30 @@ jobs:
           test "$app_count" = 1
           app=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d -print -quit)
           codesign --verify --deep --strict "$app"
+          # The install image is a plain hdiutil disk image, not Tauri's dmg bundle: that
+          # one lays the window out through Finder AppleScript, which needs automation
+          # permission the runner cannot grant. The Applications link is the drag target
+          # and the readme rides inside, so the one .dmg is the whole Mac install.
           install_dir="$RUNNER_TEMP/Cobblify-Mac-${{ inputs.version }}"
           mkdir "$install_dir"
           cp -R "$app" "$install_dir/"
           cp "friend/MAC INSTALL.txt" "$install_dir/"
-          install_zip="$bundle_dir/Cobblify-Launcher-macos-universal.zip"
-          ditto -c -k --sequesterRsrc "$install_dir" "$install_zip"
-          verify_dir="$RUNNER_TEMP/verify-mac-zip"
-          mkdir "$verify_dir"
-          ditto -x -k "$install_zip" "$verify_dir"
+          ln -s /Applications "$install_dir/Applications"
+          install_dmg="$bundle_dir/Cobblify-Launcher-$BUILD_VERSION.dmg"
+          hdiutil create -srcfolder "$install_dir" -volname "Cobblify Launcher" -fs HFS+ -format UDZO -ov "$install_dmg"
+          verify_dir="$RUNNER_TEMP/verify-mac-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$verify_dir" "$install_dmg"
           codesign --verify --deep --strict "$verify_dir/$(basename "$app")"
+          test -f "$verify_dir/MAC INSTALL.txt"
+          test "$(readlink "$verify_dir/Applications")" = /Applications
+          hdiutil detach "$verify_dir"
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-macos-${{ inputs.version }}
           path: |
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/Cobblify-Launcher-macos-universal.zip
+            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/Cobblify-Launcher-*.dmg
           retention-days: 30
           if-no-files-found: error
 
