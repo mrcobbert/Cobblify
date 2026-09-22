@@ -150,8 +150,20 @@ export function createUpdateController(invoke, deps = {}) {
     if (name === "check") return check(true);
     const command = commands[name];
     if (!command) return;
-    const next = await command(invoke);
-    if (next) merge(next);
+    try {
+      const next = await command(invoke);
+      if (next) merge(next);
+    } catch (error) {
+      // Native refused the action, or the bridge failed. This row is the only
+      // surface the user has for it: an unhandled rejection left the row on
+      // its old state, so a refused install looked like nothing happened.
+      merge({
+        state: "error",
+        diagnosticCode: "action_failed",
+        message: String(error),
+        manual: true,
+      });
+    }
   }
 
   function acceptStatus(next) {

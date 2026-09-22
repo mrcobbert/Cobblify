@@ -679,6 +679,14 @@ const connectionShell = createConnectionShell({
       onAction: () => {
         connection.clearForcedMode();
         connectionShell.hide();
+        // Hiding the shell is not leaving the screen: the dashboard view is
+        // still the one on top, with the launch panel behind it. A retry that
+        // is rejected or throws reports on the home view, so the return to
+        // home happens HERE, before the retry - a retry that succeeds routes
+        // itself away again through onLaunchReply.
+        dash.classList.remove("on");
+        stage.dataset.view = "home";
+        syncLaunchUi();
         launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
       },
     },
@@ -745,7 +753,10 @@ function syncUpdateUi() {
   // Belongs to the updater, not the launch targets: visible as soon as the preference is
   // known, even on a machine with nothing installed yet.
   devChannelWrap.hidden = !snapshot.channelLoaded;
-  devChannelInput.checked = snapshot.updateChannel === "dev";
+  // Not while the save is in flight: the snapshot still carries the OLD
+  // channel, so re-rendering from it would visibly undo the tick the user
+  // just made and is waiting on.
+  if (!snapshot.channelSaving) devChannelInput.checked = snapshot.updateChannel === "dev";
   devChannelInput.disabled = snapshot.channelSaving || snapshot.state === "checking";
   updateBlocksLaunch = view.blocksLaunch;
   syncLaunchUi();
@@ -1040,15 +1051,25 @@ const launchHooks = {
   },
 };
 
+/**
+ * A launch that never produced a session - rejected by the backend, or the
+ * bridge threw - leaves the app on an ordinary home, which is exactly where
+ * the focus/background refresh belongs. Only a live session keeps the refresh
+ * suppressed; its own reset-to-home clears the flag.
+ */
+function releaseRefreshUnlessLive() {
+  if (launchController.getState().activeOutcome == null) suppressRefresh = false;
+}
+
 launch.addEventListener("click", () => {
   lastLaunchKind = "lunar";
   suppressRefresh = true;
-  launchController.launch("lunar", launchHooks);
+  launchController.launch("lunar", launchHooks).finally(releaseRefreshUnlessLive);
 });
 launchForge.addEventListener("click", () => {
   lastLaunchKind = "forge";
   suppressRefresh = true;
-  launchController.launch("forge", launchHooks);
+  launchController.launch("forge", launchHooks).finally(releaseRefreshUnlessLive);
 });
 // The pre-live escape hatch. The backend has nothing to latch on yet, so
 // this takes the forcing abort; the orchestrator handles the rest exactly
@@ -1121,8 +1142,18 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
       if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
       else delete dash.dataset.teams;
       fitDash();
-    } catch {
-      return;
+    } catch (e) {
+      // The dashboard view is already up (it has to be: the dash is
+      // display:none until then, so the column plan cannot measure it). A
+      // render that throws used to return from here, leaving that view on
+      // screen with an empty, never-shown roster - a black window with no
+      // way back. Say so instead, and keep the next snapshot free to redraw.
+      console.error(e);
+      dash.replaceChildren(node("div", "dash-error", `The roster could not be drawn. ${String(e)}`));
+      delete dash.dataset.ctx;
+      delete dash.dataset.teams;
+      lastView = null;
+      lastKey = null;
     }
   }
   dash.classList.add("on");

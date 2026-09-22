@@ -230,20 +230,31 @@ function pageInsetPx(el) {
 
 /**
  * @param {HTMLCanvasElement} canvas
- * @returns {{ setMood(name: string): void, relayout(): void, dispose(): void }|null} null if WebGL is unavailable
+ * @param {{ Renderer?: typeof THREE.WebGLRenderer }} [opts] the renderer class,
+ *   injectable so a test can fail one the way a real driver does
+ * @returns {{ setMood(name: string): void, relayout(): void, dispose(): void }|null} null if the scene cannot boot
  */
-export function createHeroScene(canvas) {
-  let renderer;
+export function createHeroScene(canvas, { Renderer = THREE.WebGLRenderer } = {}) {
+  // The boot used to guard only the context creation, so anything that threw
+  // AFTER it - a context lost at setPixelRatio, a shader compile, a bad
+  // uniform - escaped module evaluation and took the whole window with it:
+  // main.js has already marked the stage `lit` by then. The hero is
+  // decoration; the launcher is not. Report it and carry on without it.
   try {
-    renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      alpha: true,
-      powerPreference: "low-power",
-    });
-  } catch {
+    return buildHeroScene(canvas, Renderer);
+  } catch (e) {
+    console.error(e);
     return null;
   }
+}
+
+function buildHeroScene(canvas, Renderer) {
+  const renderer = new Renderer({
+    canvas,
+    antialias: true,
+    alpha: true,
+    powerPreference: "low-power",
+  });
 
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearAlpha(0);

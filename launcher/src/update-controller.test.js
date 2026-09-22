@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createUpdateController } from "./update-controller.js";
 
-function harness({ status, prefs } = {}) {
+function harness({ status, prefs, rejects = {} } = {}) {
   const calls = [];
   const replies = {
     update_preferences: prefs ?? { autoUpdateEnabled: false, autoUpdatePrompted: false, health: "missing" },
@@ -12,6 +12,9 @@ function harness({ status, prefs } = {}) {
   };
   const invoke = async (command, args) => {
     calls.push({ command, args });
+    // `rejects` scripts a backend Err for one command, the shape a refusing
+    // native updater answers with.
+    if (rejects[command]) throw rejects[command];
     if (command === "set_auto_update") {
       return { status: "saved", autoUpdateEnabled: args.enabled, autoUpdatePrompted: true };
     }
@@ -209,4 +212,26 @@ test("a check in flight when the channel changes is discarded and never starts a
   assert.equal(controller.getState().updateChannel, "stable");
   assert.equal(controller.getState().state, "current");
   assert.equal(calls.filter((c) => c.command === "check_for_update").length, 3);
+});
+
+test("a refused update action surfaces as a retryable error carrying the backend's reason (J3)", async () => {
+  // Native owns downloads and installs; when it refuses, the row is the only
+  // place the user can learn why. The refusal used to reject into nothing.
+  const cases = [
+    ["install", "install_update", "The updater could not start installation."],
+    ["resume", "resume_update", "The download could not be resumed."],
+    ["download", "start_update", "The download could not be started."],
+  ];
+  for (const [action, command, reason] of cases) {
+    const h = harness({ rejects: { [command]: reason } });
+    await h.controller.bootstrap();
+
+    await h.controller.action(action);
+
+    const state = h.controller.getState();
+    assert.equal(state.state, "error", `${action} leaves the row in error`);
+    assert.equal(state.diagnosticCode, "action_failed");
+    assert.equal(state.manual, true);
+    assert.equal(state.message, reason);
+  }
 });
