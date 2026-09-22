@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export async function verifyFileSha256(file, expected) {
   if (!/^[0-9a-f]{64}$/.test(expected)) {
@@ -22,8 +22,23 @@ export async function verifyFileSha256(file, expected) {
   }
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
-if (import.meta.url === invokedPath) {
+// The CLI runs only when this file IS the entry point. The old guards compared the invoked
+// path (symlink unresolved, spaces unencoded) with import.meta.url, so a symlinked or
+// space-containing invocation silently ran nothing - exit 0 without verifying, or empty
+// output where an ordering was expected. Compare real paths, and treat any resolution
+// error as "not the entry point" so importing this module still runs nothing.
+function isMainModule() {
+  try {
+    return (
+      Boolean(process.argv[1]) &&
+      realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   const [file, expected] = process.argv.slice(2);
   if (!file || !expected) {
     console.error("usage: verify-file-sha256.mjs <file> <expected-sha256>");

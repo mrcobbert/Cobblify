@@ -279,15 +279,21 @@ jobs:
           npm ci
           # The channel only ever advances. A lower version would never be offered to a
           # launcher already on the current dev build, and retention would delete it.
-          if npx wrangler r2 object get "$BUCKET/channels/dev.json" --file "$RUNNER_TEMP/current-dev.json" --remote; then
+          # Any failure other than "no such key" used to be treated as "no dev channel yet",
+          # which skipped the forward-only guard entirely: classify the read instead.
+          if out=$(npx wrangler r2 object get "$BUCKET/channels/dev.json" --file "$RUNNER_TEMP/current-dev.json" --remote 2>&1); then
             current=$(jq -r .version "$RUNNER_TEMP/current-dev.json")
             order=$(node ../../launcher/tools/semver-compare.mjs "$BUILD_VERSION" "$current")
             if [ "$order" != 1 ]; then
               echo "dev channel is already at $current; $BUILD_VERSION is not newer. Bump the branch's pins first." >&2
               exit 1
             fi
-          else
+          elif printf '%s\n' "$out" | grep -q 'The specified key does not exist'; then
             echo "no dev channel yet; $BUILD_VERSION will be the first"
+          else
+            printf '%s\n' "$out" >&2
+            echo "could not read channels/dev.json; refusing to publish blind" >&2
+            exit 1
           fi
       - name: Upload dev artifacts, then switch the dev channel
         working-directory: server/stats-worker

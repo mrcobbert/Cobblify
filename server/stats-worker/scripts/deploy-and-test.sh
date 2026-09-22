@@ -22,8 +22,14 @@ if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] && ! npx wrangler whoami 2>/dev/null | g
   exit 1
 fi
 
-echo "Deploying Worker..."
-deploy_out=$(npx wrangler deploy 2>&1)
+# The owner must pass WRANGLER_CONFIG=wrangler.owner.toml. A plain deploy uses
+# wrangler.toml, which on the owner account strips the STATS_KV, R2 and D1 bindings and
+# silently disables the providers and launcher updates (README, "Two deployment
+# configs"). WORKER_TOKEN, if set, passes through the environment to the probe below.
+config="${WRANGLER_CONFIG:-wrangler.toml}"
+
+echo "Deploying Worker with $config..."
+deploy_out=$(npx wrangler deploy -c "$config" 2>&1)
 echo "$deploy_out"
 
 # wrangler deploy prints: https://bedwarsqol-stats.<subdomain>.workers.dev

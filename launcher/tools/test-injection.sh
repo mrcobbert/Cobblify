@@ -49,6 +49,42 @@ refuses() { # <description> <command...>
   ok "$what"
 }
 
+# Section 0 needs no launcher build, so it runs even where the .app below is missing.
+echo "== 0. the Weave agent lookup used by test-drive.command =="
+#
+# test-drive.command located the agent with `find "$HOME/.weave" ... | head -1`. Under its
+# own `set -euo pipefail` a missing ~/.weave made find exit 1, the pipeline failed, and the
+# script died with a bare find error before reaching the die() that explains what to do.
+# So the lookup must print nothing and still return 0 when there is nothing to find.
+#
+# Each probe runs as a STANDALONE subshell, never as an `if` condition: bash suppresses
+# -e throughout a condition, and this case would then pass even if the lookup aborted.
+probe() { # <description> <directory> <expected path, empty for none>
+  local what=$1 dir=$2 want=$3 rc
+  set +e
+  ( set -euo pipefail
+    got=$(cobblify_find_weave_agent "$dir")
+    [ "$got" = "$want" ] || { echo "printed '$got', expected '$want'"; exit 2; }
+    echo "the caller's own check was reached"
+  ) > "$tmpd/agent-lookup.out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ] || ! grep -q "the caller's own check was reached" "$tmpd/agent-lookup.out"; then
+    sed 's/^/        /' "$tmpd/agent-lookup.out" >&2
+    fail "$what (exit $rc)"
+  fi
+  ok "$what"
+}
+
+weave_dir="$tmpd/weave"
+mkdir -p "$weave_dir"
+: > "$weave_dir/Weave-Loader-Agent-1.3.3.jar"
+
+probe "a missing agent directory yields no path and does not abort a pipefail caller" \
+  "$tmpd/no-such-dir" ""
+probe "an installed agent jar is found" \
+  "$weave_dir" "$weave_dir/Weave-Loader-Agent-1.3.3.jar"
+
 app_src="$repo_root/$COBBLIFY_APP_BUILD_DIR/$COBBLIFY_APP_NAME"
 [ -d "$app_src" ] || die "no launcher build at $app_src
 Build it first: cd \"$repo_root/launcher\" && npm run tauri build -- --bundles app"

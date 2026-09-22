@@ -16,8 +16,22 @@ if (!base) {
 const url = `${base}/test/${encodeURIComponent(player)}`;
 console.log(`Worker probe: GET ${url}\n`);
 
-const res = await fetch(url, { headers: { Accept: "application/json" } });
+// A token-gated deployment answers every route 401, which used to reach the verdict
+// logic as an unrecognised body and print "INCONCLUSIVE: inspect JSON above".
+const headers = {
+  Accept: "application/json",
+  ...(process.env.WORKER_TOKEN ? { "X-BedwarsQol-Token": process.env.WORKER_TOKEN } : {}),
+};
+
+const res = await fetch(url, { headers });
 const text = await res.text();
+
+if (res.status === 401) {
+  console.error("Unauthorized (401): this deployment is token-gated. Set WORKER_TOKEN to one of its STATS_TOKEN entries.");
+  console.error(text.slice(0, 200));
+  process.exit(1);
+}
+
 let data;
 try {
   data = JSON.parse(text);
