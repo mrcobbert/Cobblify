@@ -120,6 +120,19 @@ async function readManifest(bucket, key) {
   if (!parseVersion(manifest.minimumSupportedVersion)) return null;
   if (typeof manifest.policy !== "string" || typeof manifest.policySignature !== "string") return null;
   if (!manifest.platforms || typeof manifest.platforms !== "object") return null;
+  // The signed release blob (launcher 0.16.0+). Optional here so the manifest published before
+  // it existed keeps serving; when present it must be a coherent pair, or the launcher would
+  // reject it anyway and this route would be lying about what it offers.
+  if (manifest.release !== undefined || manifest.releaseSignature !== undefined) {
+    if (typeof manifest.release !== "string" || typeof manifest.releaseSignature !== "string") return null;
+    let release;
+    try {
+      release = JSON.parse(manifest.release);
+    } catch (_) {
+      return null;
+    }
+    if (release?.schema !== 1 || release.version !== manifest.version) return null;
+  }
   return manifest;
 }
 
@@ -174,6 +187,9 @@ export async function handleUpdateMetadata(request, env, auth, nowSeconds = Math
     minimumSupportedVersion: manifest.minimumSupportedVersion,
     policy: manifest.policy,
     policySignature: manifest.policySignature,
+    // Passed through untouched when the manifest carries them: the launcher verifies the
+    // signature over the exact string.
+    ...(manifest.release !== undefined ? { release: manifest.release, releaseSignature: manifest.releaseSignature } : {}),
   });
 }
 

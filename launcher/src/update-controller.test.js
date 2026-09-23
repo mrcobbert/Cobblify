@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createUpdateController } from "./update-controller.js";
+import { updateView } from "./update-view.js";
 
-function harness({ status, prefs } = {}) {
+function harness({ status, prefs, rejects = {} } = {}) {
   const calls = [];
   const replies = {
     update_preferences: prefs ?? { autoUpdateEnabled: false, autoUpdatePrompted: false, health: "missing" },
@@ -12,6 +13,9 @@ function harness({ status, prefs } = {}) {
   };
   const invoke = async (command, args) => {
     calls.push({ command, args });
+    // `rejects` scripts a backend Err for one command, the shape a refusing
+    // native updater answers with.
+    if (rejects[command]) throw rejects[command];
     if (command === "set_auto_update") {
       return { status: "saved", autoUpdateEnabled: args.enabled, autoUpdatePrompted: true };
     }
@@ -27,7 +31,7 @@ function harness({ status, prefs } = {}) {
     cancelSchedule: () => {},
     random: () => 0.5,
   });
-  return { controller, calls, timers };
+  return { controller, calls, timers, replies };
 }
 
 test("bootstrap merges backend status with the separate update preference", async () => {
@@ -209,4 +213,66 @@ test("a check in flight when the channel changes is discarded and never starts a
   assert.equal(controller.getState().updateChannel, "stable");
   assert.equal(controller.getState().state, "current");
   assert.equal(calls.filter((c) => c.command === "check_for_update").length, 3);
+});
+
+test("a refused update action surfaces as a retryable error carrying the backend's reason (J3)", async () => {
+  // Native owns downloads and installs; when it refuses, the row is the only
+  // place the user can learn why. The refusal used to reject into nothing.
+  const cases = [
+    ["install", "install_update", "The updater could not start installation."],
+    ["resume", "resume_update", "The download could not be resumed."],
+    ["download", "start_update", "The download could not be started."],
+  ];
+  for (const [action, command, reason] of cases) {
+    const h = harness({ rejects: { [command]: reason } });
+    await h.controller.bootstrap();
+
+    await h.controller.action(action);
+
+    const state = h.controller.getState();
+    assert.equal(state.state, "error", `${action} leaves the row in error`);
+    assert.equal(state.diagnosticCode, "action_failed");
+    assert.equal(state.manual, true);
+    assert.equal(state.message, reason);
+  }
+});
+
+// Code review round 1, O1: the reason shown under "Check failed" must be the check's own.
+test("a later check does not keep showing an earlier action's reason", async () => {
+  const h = harness({ status: { state: "ready", currentVersion: "0.9.1", availableVersion: "0.10.0" }, rejects: { install_update: "The updater could not start installation." } });
+  await h.controller.bootstrap();
+  await h.controller.action("install");
+  assert.equal(h.controller.getState().message, "The updater could not start installation.");
+  h.replies.check_for_update = { state: "error", diagnosticCode: "check_failed", currentVersion: "0.9.1" };
+  await h.controller.check(true);
+  assert.equal(h.controller.getState().state, "error");
+  assert.equal(h.controller.getState().message, null);
+  // A fresh backend status event clears it too.
+  await h.controller.action("install");
+  h.controller.acceptStatus({ state: "current", currentVersion: "0.9.1" });
+  assert.equal(h.controller.getState().message, null);
+});
+
+// Code review round 2, I3: Enable starts a download through the preference save, and that
+// download can be refused. The row is the only surface for it.
+test("a download refused through Enable surfaces in the row like any other action (I3)", async () => {
+  const reason = "The updater could not start download.";
+  const h = harness({
+    status: { state: "available", currentVersion: "0.9.1", availableVersion: "0.16.0", autoUpdatePrompted: true },
+    rejects: { start_update: reason },
+  });
+  h.controller.acceptStatus({
+    state: "available",
+    currentVersion: "0.9.1",
+    availableVersion: "0.16.0",
+    autoUpdateEnabled: false,
+    autoUpdatePrompted: true,
+  });
+  await h.controller.action("enable");
+  const state = h.controller.getState();
+  assert.equal(state.state, "error");
+  assert.equal(state.message, reason);
+  assert.equal(state.diagnosticCode, "action_failed");
+  assert.equal(updateView(state).primaryAction, "check");
+  assert.equal(updateView(state).detail, reason);
 });

@@ -20,6 +20,28 @@ function autoToggle(enabled) {
 }
 
 export function updateView(snapshot) {
+  const common = {
+    kind: snapshot.state,
+    detail: "",
+    secondaryAction: null,
+    secondaryLabel: null,
+    blocksLaunch: snapshot.critical === true && snapshot.state !== "installing",
+  };
+
+  // A failure outranks the consent gate. A check or an install that failed
+  // before the first-run choice was made used to render "Stay current?",
+  // which has no Retry and no way back to the error the backend reported.
+  if (snapshot.state === "error") {
+    return {
+      ...common,
+      title: snapshot.manual ? "Check failed" : "Unavailable",
+      // The backend's own reason, so a refused action is readable in the row.
+      detail: snapshot.message ?? "",
+      primaryAction: "check",
+      primaryLabel: "Retry",
+    };
+  }
+
   if (!snapshot.autoUpdatePrompted && snapshot.critical !== true) {
     return {
       kind: "consent",
@@ -33,13 +55,6 @@ export function updateView(snapshot) {
     };
   }
 
-  const common = {
-    kind: snapshot.state,
-    detail: "",
-    secondaryAction: null,
-    secondaryLabel: null,
-    blocksLaunch: snapshot.critical === true && snapshot.state !== "installing",
-  };
   const version = snapshot.availableVersion || snapshot.currentVersion || "";
   switch (snapshot.state) {
     case "checking":
@@ -90,13 +105,6 @@ export function updateView(snapshot) {
       };
     case "installing":
       return { ...common, title: "Installing…", primaryAction: null, primaryLabel: null };
-    case "error":
-      return {
-        ...common,
-        title: snapshot.manual ? "Check failed" : "Unavailable",
-        primaryAction: "check",
-        primaryLabel: "Retry",
-      };
     case "current":
     default:
       return {

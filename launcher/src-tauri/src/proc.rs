@@ -49,6 +49,37 @@ fn pids_where(matches: impl Fn(&Path) -> bool) -> Vec<u32> {
         .collect()
 }
 
+/// True when ANOTHER process is running the same executable as this one.
+///
+/// Used only by `--uninstall-lunar-integration` (R3). The NSIS template runs
+/// its own "app is still running" check AFTER the pre-uninstall hook, so at
+/// hook time a launcher can still be live - and a live launcher re-registers
+/// the Weave agent on its next setup pass, between our write and the
+/// uninstaller deleting the jar it points at.
+///
+/// Compared by executable FILE NAME, case-insensitively: the uninstaller
+/// launches the copy in `$INSTDIR` while the user's running copy may have
+/// been started from anywhere, and NTFS preserves case without honouring it.
+/// Fail-closed - with no readable path for our own executable there is
+/// nothing to compare, and the honest answer for a destructive operation is
+/// "assume one is running".
+pub fn another_launcher_running() -> bool {
+    let Ok(own_exe) = std::env::current_exe() else {
+        return true;
+    };
+    let Some(own_name) = own_exe.file_name() else {
+        return true;
+    };
+    let own_pid = std::process::id();
+    exe_snapshot().processes().iter().any(|(pid, process)| {
+        pid.as_u32() != own_pid
+            && process
+                .exe()
+                .and_then(Path::file_name)
+                .is_some_and(|name| caseless_component_eq(name, own_name))
+    })
+}
+
 /// True when the Lunar Client Electron app is running. Lunar rewrites
 /// `launcher.json` on exit, so setup must not touch that file while it is up.
 #[cfg(target_os = "macos")]

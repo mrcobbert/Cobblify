@@ -70,3 +70,30 @@ test("release notes never change the compact row", () => {
     assert.deepEqual(noted, live, extra.state);
   }
 });
+
+test("the error row carries the backend's reason as its detail (J3)", () => {
+  const view = updateView({
+    ...base,
+    state: "error",
+    manual: true,
+    message: "The updater could not start installation.",
+  });
+  assert.equal(view.kind, "error");
+  assert.equal(view.title, "Check failed");
+  assert.equal(view.detail, "The updater could not start installation.");
+  assert.equal(view.primaryAction, "check");
+  assert.equal(view.primaryLabel, "Retry");
+  // An error with nothing to say keeps the row's fixed copy.
+  assert.equal(updateView({ ...base, state: "error", manual: true }).detail, "");
+});
+
+test("a failure is shown even before the consent choice is made (J4)", () => {
+  // The consent gate used to run first, so a failed check or install during
+  // first run rendered "Stay current?" - and Retry was unreachable.
+  const view = updateView({ ...base, state: "error", autoUpdatePrompted: false, manual: true });
+  assert.equal(view.kind, "error");
+  assert.equal(view.title, "Check failed");
+  assert.equal(view.primaryAction, "check");
+  assert.equal(view.primaryLabel, "Retry");
+  assert.equal(view.blocksLaunch, false);
+});

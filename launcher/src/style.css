@@ -1414,6 +1414,19 @@ kbd {
 .stage[data-view="dash"] .panel {
   display: none;
 }
+/* J7: a roster render that threw says so instead of leaving the dash black. */
+.dash-error {
+  justify-self: center;
+  align-self: center;
+  max-width: 60ch;
+  padding: 24px;
+  text-align: center;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2, #aeb0b4);
+  opacity: 0.85;
+}
 /* The version chip rides shotgun: the id header turns into a row so the chip
    sits beside the wordmark, fading in as the tuck settles. */
 .stage[data-view="dash"] .id {

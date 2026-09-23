@@ -315,3 +315,56 @@ test("first live ineligible poll enters, later eligible poll restores the roster
   assert.equal(steps[1].view.title, "Main Lobby");
   assert.deepEqual(steps[1].view.blocks[0].rows, ["LobbySteve"]);
 });
+
+// J2: an acknowledge that resolves AFTER the session reset committed must not
+// revive the dashboard. The reset invalidates the launch generation first;
+// the handler re-reads it after the await and discards the stale result.
+test("an ack that resolves after the reset committed is discarded", async () => {
+  const connection = createConnectionModel({ graceMs: 2000 });
+  connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  const shell = createConnectionShell({
+    titleEl: fakeEl(),
+    subEl: fakeEl(),
+    shellEl: fakeEl(),
+    clearRoster: () => {},
+    stopProgress: () => {},
+    showDash: () => {},
+    hideDash: () => {},
+    clock: () => 0,
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: clearTimeout,
+  });
+  let resolveAck;
+  const launchController = {
+    launchGen: 1,
+    getState() {
+      return { launchGen: this.launchGen };
+    },
+    acknowledgeSnapshot: () => new Promise((resolve) => { resolveAck = resolve; }),
+  };
+  let applied = 0;
+  let dashOpens = 0;
+  const pending = handleLobbyPoll(
+    { kind: "snapshot", snapshot: liveSnap(), token: 7 },
+    {
+      connection,
+      connectionShell: shell,
+      launchController,
+      manualRouteSubtitle: null,
+      homeUntilLive: true,
+      firstLiveSeen: false,
+      applyLobbySnapshot: () => { applied += 1; },
+      resetToHome: () => {},
+      stopLobbyPolling: () => {},
+      setStageDash: () => { dashOpens += 1; },
+      now: 0,
+    },
+  );
+  // The user clicked Cancel while the ack was in flight: the reset committed.
+  launchController.launchGen = 0;
+  connection.reset();
+  resolveAck();
+  await pending;
+  assert.equal(applied, 0, "stale ack must not open the dashboard");
+  assert.equal(dashOpens, 0);
+});

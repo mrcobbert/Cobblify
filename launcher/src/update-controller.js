@@ -41,7 +41,11 @@ export function createUpdateController(invoke, deps = {}) {
 
   const notify = () => onChange({ ...state });
   const merge = (next) => {
-    state = { ...state, ...next };
+    // A message belongs to the state that produced it. A new state that carries none
+    // (a later check, a backend status event) must not keep showing an earlier action's
+    // reason under its own title.
+    const cleared = next && typeof next.state === "string" && !("message" in next) ? { message: null } : {};
+    state = { ...state, ...cleared, ...next };
     notify();
   };
 
@@ -144,14 +148,29 @@ export function createUpdateController(invoke, deps = {}) {
       install: installUpdate,
       defer: deferUpdate,
     };
-    if (name === "enable") return setAutoUpdate(true);
-    if (name === "disable") return setAutoUpdate(false);
-    if (name === "dismiss_consent") return setAutoUpdate(false);
-    if (name === "check") return check(true);
-    const command = commands[name];
-    if (!command) return;
-    const next = await command(invoke);
-    if (next) merge(next);
+    try {
+      // Enable and Disable go through the preference save, which starts a download of its
+      // own; that download can be refused too, and its rejection belongs in this row like
+      // any other. Everything the row can dispatch is inside this one guard.
+      if (name === "enable") return await setAutoUpdate(true);
+      if (name === "disable") return await setAutoUpdate(false);
+      if (name === "dismiss_consent") return await setAutoUpdate(false);
+      if (name === "check") return await check(true);
+      const command = commands[name];
+      if (!command) return;
+      const next = await command(invoke);
+      if (next) merge(next);
+    } catch (error) {
+      // Native refused the action, or the bridge failed. This row is the only
+      // surface the user has for it: an unhandled rejection left the row on
+      // its old state, so a refused install looked like nothing happened.
+      merge({
+        state: "error",
+        diagnosticCode: "action_failed",
+        message: String(error),
+        manual: true,
+      });
+    }
   }
 
   function acceptStatus(next) {

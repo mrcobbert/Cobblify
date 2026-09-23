@@ -532,6 +532,14 @@ impl LobbySession {
     }
 
     #[cfg(test)]
+    /// Test seam: binds a writer as if a snapshot from it had been acknowledged, with an
+    /// arbitrary OS birth. This is how a test builds the PID-reuse state (L2): the bound
+    /// proof carries an older birth than the live process that now owns that pid.
+    #[cfg(test)]
+    pub fn bind_writer_for_test(&mut self, writer: WriterProof) {
+        self.bound_writer = Some(writer);
+    }
+
     pub fn latch_terminal_for_test(&mut self, reason: &'static str) {
         self.terminal_reason = Some(reason);
     }
@@ -621,6 +629,17 @@ impl LobbySession {
                 reason: Some("process_unavailable".into()),
             };
         };
+        // L2: the bound writer's pid is now owned by a process with a DIFFERENT birth. That is
+        // PID reuse - our writer is gone, whatever the new owner is - so the question is the
+        // bound writer's presence, answered by the identity check (a birth mismatch is
+        // `DefinitelyGone`). Deciding this here, before the baseline and clock checks below,
+        // is what lets the absence machine latch: those checks would otherwise answer
+        // `predates_baseline`/`jvm_clock` about the stranger for as long as it lives.
+        if let Some(bound) = self.bound_writer.clone() {
+            if bound.pid == fields.pid && bound.os_birth_ns != os_birth_ns {
+                return self.poll_bound_presence(&bound, Some("pid_reused"));
+            }
+        }
         let writer = WriterProof {
             pid: fields.pid,
             jvm_start_ms: fields.jvm_start_ms,
@@ -922,11 +941,16 @@ struct WriterFields {
     jvm_start_ms: i64,
 }
 
+/// The mod reads `jvmPid` out of a Java `int`, and `lobby-validator.js` caps it at the
+/// same `2^31 - 1`. Accepting more here would let a snapshot the frontend refuses bind a
+/// session in the backend - the two validators have to agree on every field.
+const MAX_WRITER_PID: u64 = 2_147_483_647;
+
 fn parse_writer_fields(value: &Value) -> Option<WriterFields> {
     let obj = value.as_object()?;
     let pid = obj.get("jvmPid")?.as_u64()?;
     let jvm_start = obj.get("jvmStartTimeMs")?.as_i64()?;
-    if pid == 0 || pid > u32::MAX as u64 || jvm_start <= 0 {
+    if pid == 0 || pid > MAX_WRITER_PID || jvm_start <= 0 {
         return None;
     }
     Some(WriterFields {
@@ -1152,6 +1176,14 @@ fn validate_snapshot_shape(value: &Value) -> bool {
     }
     if obj.get("inHypixel").and_then(|v| v.as_bool()).is_none() {
         return false;
+    }
+    // Optional, and the exporter omits it entirely when it has nothing to say. PRESENT it
+    // must be a real boolean - `null` included - matching `lobby-validator.js`'s
+    // `"dashboardEligible" in d && typeof d.dashboardEligible !== "boolean"`.
+    if let Some(eligible) = obj.get("dashboardEligible") {
+        if !eligible.is_boolean() {
+            return false;
+        }
     }
     if !obj.contains_key("self") {
         return false;
@@ -1457,6 +1489,79 @@ mod tests {
         ));
     }
 
+    /// L2. The bound writer's pid is now owned by a DIFFERENT process (the game exited and
+    /// the OS reused the pid inside the grace, common on Windows). The poll used to answer
+    /// `predates_baseline`/`jvm_clock` for that process before ever asking whether the bound
+    /// writer is still there, so the absence machine was never fed and the session could
+    /// not end while the reusing process lived.
+    #[test]
+    fn pid_reuse_by_a_live_process_ends_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = LobbySession::default();
+        let clock = ManualClock::new();
+        session.set_clock(clock.clock());
+        let probe = ScriptedProbe::new();
+        session.set_probe(probe.boxed());
+        let baseline = SystemTime::now();
+        session.reset_for_launch(1, baseline, false);
+        // A live process with a real birth `b` owns the pid ...
+        let (pid, start_ms, mut child) = spawn_post_baseline_writer();
+        let live_birth = process_liveness::process_birth_ns(pid).expect("child birth");
+        // ... but the session bound that pid under an OLDER birth and start time: our
+        // writer is gone, and its last lobby.json (still naming its own start time) is
+        // what the poll keeps reading.
+        let old_start_ms = start_ms - 60_000;
+        session.bind_writer_for_test(WriterProof {
+            pid,
+            jvm_start_ms: old_start_ms,
+            os_birth_ns: live_birth - 60_000_000_000,
+        });
+        probe.set_check(pid, IdentityCheck::DefinitelyGone);
+        write_lobby(dir.path(), pid, old_start_ms, "LOBBY", true);
+
+        for _ in 0..2 {
+            let poll = session.poll(dir.path(), SystemTime::now());
+            assert!(
+                matches!(
+                    poll,
+                    LobbyPoll::Unavailable { reason: Some(ref r) } if r == "pid_reused" || r == "grace"
+                ),
+                "expected the presence machine to be fed, got {poll:?}"
+            );
+            clock.advance(Duration::from_millis(250));
+        }
+        clock.advance(Duration::from_millis(1200));
+        let poll = session.poll(dir.path(), SystemTime::now());
+        assert!(
+            matches!(poll, LobbyPoll::SessionEnded { reason: "game_session_ended" }),
+            "expected game_session_ended after the grace, got {poll:?}"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// Negative control for L2: the same pid with the SAME birth is our writer, alive, and
+    /// its snapshot is still offered.
+    #[test]
+    fn a_bound_writer_with_the_same_birth_is_still_our_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = LobbySession::default();
+        let baseline = SystemTime::now();
+        session.reset_for_launch(1, baseline, false);
+        let (pid, start_ms, mut child) = spawn_post_baseline_writer();
+        let live_birth = process_liveness::process_birth_ns(pid).expect("child birth");
+        session.bind_writer_for_test(WriterProof {
+            pid,
+            jvm_start_ms: start_ms,
+            os_birth_ns: live_birth,
+        });
+        write_lobby(dir.path(), pid, start_ms, "LOBBY", true);
+        let poll = session.poll(dir.path(), SystemTime::now());
+        assert!(matches!(poll, LobbyPoll::Snapshot { .. }), "got {poll:?}");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     #[test]
     fn unverified_replacement_does_not_terminalize_bound_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -1683,6 +1788,56 @@ mod tests {
             "inHypixel": false
         });
         assert!(!validate_snapshot_shape(&value));
+    }
+
+    /// The `write_lobby` shape as a value, so a single field can be varied.
+    fn snapshot_json(pid: u64) -> Value {
+        serde_json::json!({
+            "v": 1,
+            "seq": 1,
+            "jvmPid": pid,
+            "jvmStartTimeMs": 1_700_000_000_000i64,
+            "context": "LOBBY",
+            "inHypixel": true,
+            "self": null,
+            "mode": null,
+            "partyCount": null,
+            "yourParty": [],
+            "players": [],
+            "teams": []
+        })
+    }
+
+    /// L15: the mod publishes `jvmPid` from a Java `int`, and `lobby-validator.js` caps it
+    /// at `2^31 - 1`. This validator accepted anything up to `u32::MAX`, so a snapshot the
+    /// frontend refuses could still bind a session here.
+    #[test]
+    fn a_writer_pid_beyond_the_java_int_range_is_refused() {
+        assert!(validate_snapshot_shape(&snapshot_json(2_147_483_647)));
+        assert!(!validate_snapshot_shape(&snapshot_json(2_147_483_648)));
+        assert!(!validate_snapshot_shape(&snapshot_json(0)));
+    }
+
+    /// L15: `lobby-validator.js` rejects a PRESENT `dashboardEligible` that is not a
+    /// boolean - `null` included. Absent is fine; the exporter omits it.
+    #[test]
+    fn a_present_dashboard_eligible_must_be_a_boolean() {
+        let with = |v: Value| {
+            let mut s = snapshot_json(4242);
+            s.as_object_mut()
+                .unwrap()
+                .insert("dashboardEligible".to_string(), v);
+            s
+        };
+        assert!(
+            validate_snapshot_shape(&snapshot_json(4242)),
+            "absent is fine"
+        );
+        assert!(validate_snapshot_shape(&with(Value::Bool(true))));
+        assert!(validate_snapshot_shape(&with(Value::Bool(false))));
+        assert!(!validate_snapshot_shape(&with(Value::Null)));
+        assert!(!validate_snapshot_shape(&with(Value::from("yes"))));
+        assert!(!validate_snapshot_shape(&with(Value::from(1))));
     }
 
     /// A8: the shared fixtures under common/src/test/resources/lobby-contract are the truth

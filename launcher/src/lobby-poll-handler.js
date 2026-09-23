@@ -54,15 +54,16 @@ export async function handleLobbyPoll(poll, deps) {
   if (!isValidLobbySnapshot(snapshot)) return;
   const kind = classifyLive(snapshot);
   if (kind === "invalid" || kind === "other") return;
+  // The generation the ack is for. A session reset invalidates it before any
+  // UI change, so an ack that resolves after Cancel/Back-to-Home committed is
+  // recognised here and dropped instead of reviving a dead dashboard (J2).
+  const generation = deps.launchController.getState().launchGen;
   try {
-    await deps.launchController.acknowledgeSnapshot(
-      poll.token,
-      deps.launchController.getState().launchGen,
-      snapshot,
-    );
+    await deps.launchController.acknowledgeSnapshot(poll.token, generation, snapshot);
   } catch {
     return;
   }
+  if (deps.launchController.getState().launchGen !== generation) return;
   const before = deps.connection.stateAt(now);
   const { mode } = deps.connection.tick(kind === "live" ? "live" : "non_live", now);
   if (mode === "connected" && kind === "live") {

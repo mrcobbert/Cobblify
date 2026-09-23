@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use crate::resources::{sha256_file, LunarJars};
 
 const MOD_JAR_PREFIX: &str = "Cobblify-Lunar-";
+const AGENT_JAR_PREFIX: &str = "Weave-Loader-Agent-";
 
 /// A jar copied into place beside its destination and hash-verified, not yet visible under
 /// its real name. Dropping one without committing removes the temp file, which is what
@@ -152,6 +153,56 @@ pub fn install_lunar(jars: &LunarJars, weave_dir: &Path) -> Result<Installed, St
     })
 }
 
+/// Removes what `install_lunar` put on disk, and nothing else (R3).
+///
+/// Only two name shapes are deleted - the Weave loader agent in `<weave>` and
+/// Cobblify's mod jar in `<weave>/mods` - because Weave is a general-purpose
+/// loader: a user may well have other mods in that directory, and an
+/// uninstaller that emptied it would be taking files it never wrote. The two
+/// directories are then removed if and only if they are empty, so a machine
+/// that only ever had `~/.weave` because of Cobblify is left clean while
+/// anybody else's setup is left intact.
+///
+/// A missing directory is success: there is nothing of ours to remove.
+pub fn uninstall_lunar(weave_dir: &Path) -> Result<(), String> {
+    if !weave_dir.exists() {
+        return Ok(());
+    }
+    remove_our_jars(weave_dir, AGENT_JAR_PREFIX)?;
+
+    let mods_dir = weave_dir.join("mods");
+    if mods_dir.exists() {
+        remove_our_jars(&mods_dir, MOD_JAR_PREFIX)?;
+        // Both of these fail, harmlessly, on a directory that still holds
+        // someone else's files - which is exactly the wanted behaviour.
+        let _ = fs::remove_dir(&mods_dir);
+    }
+    let _ = fs::remove_dir(weave_dir);
+    Ok(())
+}
+
+fn remove_our_jars(dir: &Path, prefix: &str) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_our_jar_name(&name, prefix) {
+            fs::remove_file(entry.path())
+                .map_err(|e| format!("Cannot remove {}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Caseless for the same reason `is_conflicting_name` is on Windows: NTFS
+/// preserves case but ignores it, so a jar Weave loads as ours can be spelled
+/// differently on disk than we wrote it. Jar names are ASCII by construction,
+/// so ASCII folding is exact.
+fn is_our_jar_name(name: &str, prefix: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with(&prefix.to_ascii_lowercase()) && lower.ends_with(".jar")
+}
+
 fn conflicting_mod_jars(mods_dir: &Path, ours: &str) -> Result<Vec<PathBuf>, String> {
     let entries =
         fs::read_dir(mods_dir).map_err(|e| format!("Cannot read {}: {e}", mods_dir.display()))?;
@@ -216,6 +267,44 @@ mod tests {
             agent_name: "Weave-Loader-Agent-1.3.3.jar".into(),
             agent_sha256: sha(agent_bytes),
         }
+    }
+
+    /// R3. The uninstaller runs against a directory that is not ours: Weave
+    /// is a general-purpose loader and a user may run other mods through it.
+    #[test]
+    fn uninstall_lunar_removes_only_our_jars() {
+        let weave = tempfile::tempdir().unwrap();
+        let mods = weave.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(weave.path().join("Weave-Loader-Agent-1.3.3.jar"), b"agent").unwrap();
+        fs::write(mods.join("Cobblify-Lunar-0.8.1.jar"), b"mod").unwrap();
+        fs::write(mods.join("Other.jar"), b"someone else's mod").unwrap();
+        fs::write(weave.path().join("weave.log"), b"log").unwrap();
+
+        uninstall_lunar(weave.path()).unwrap();
+
+        assert!(!weave.path().join("Weave-Loader-Agent-1.3.3.jar").exists());
+        assert!(!mods.join("Cobblify-Lunar-0.8.1.jar").exists());
+        assert!(mods.join("Other.jar").exists(), "a user's mod must survive");
+        assert!(weave.path().join("weave.log").exists(), "so must Weave's own files");
+        assert!(mods.exists(), "a mods directory with anything left in it stays");
+    }
+
+    /// A `.weave` that held nothing but our two jars is removed entirely -
+    /// the point of the uninstall is to leave no trace on a machine that
+    /// only ever had Weave because of Cobblify.
+    #[test]
+    fn uninstall_lunar_removes_an_emptied_weave_directory_and_tolerates_a_missing_one() {
+        let base = tempfile::tempdir().unwrap();
+        let weave = base.path().join(".weave");
+        fs::create_dir_all(weave.join("mods")).unwrap();
+        fs::write(weave.join("Weave-Loader-Agent-1.3.3.jar"), b"agent").unwrap();
+        fs::write(weave.join("mods/Cobblify-Lunar-0.8.1.jar"), b"mod").unwrap();
+
+        uninstall_lunar(&weave).unwrap();
+        assert!(!weave.exists());
+
+        uninstall_lunar(&base.path().join("nothing-here")).unwrap();
     }
 
     #[test]

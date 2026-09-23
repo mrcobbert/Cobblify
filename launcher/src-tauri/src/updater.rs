@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use futures_util::StreamExt;
@@ -18,6 +18,16 @@ use tokio::io::AsyncWriteExt;
 use crate::preferences::{self, UpdateChannel};
 
 const EVENT_NAME: &str = "updater://status";
+
+/// How long the download may spend opening the connection.
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the download may go without receiving any bytes. This is deliberately a per-read
+/// budget, not a deadline on the whole transfer: a big bundle on a slow line is not a failure.
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the download loop may stop to scan for a running game and emit progress.
+const CHUNK_REPORT_INTERVAL: Duration = Duration::from_millis(500);
+/// ...and how much progress forces a report before that interval is up.
+const CHUNK_REPORT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct UpdaterService {
@@ -157,11 +167,17 @@ impl UpdaterService {
     }
 
     pub fn report_completed_install(&self) {
+        let current_version = self.status().current_version;
+        // Startup is the one moment we know which version is actually running, so it is where
+        // bundles for that version and older ones stop being worth their disk space.
+        if let Ok(current) = Version::parse(&current_version) {
+            prune_update_cache(&self.home.join(".cobblify/updates"), &current);
+        }
         let marker = self.installed_marker_path();
         let Ok(version) = fs::read_to_string(&marker) else {
             return;
         };
-        if version.trim() == self.status().current_version {
+        if version.trim() == current_version {
             self.send_event("post_update_started");
             let _ = fs::remove_file(marker);
         }
@@ -265,16 +281,18 @@ impl UpdaterService {
             }
             Err(_) => return self.check_fail(app, "check_failed"),
         };
-        let trusted = match trusted_metadata(&update, pubkey) {
+        let current = self.status().current_version;
+        let trusted = match trusted_metadata(&update, &current, pubkey) {
             Ok(metadata) => metadata,
             Err(code) => return self.check_fail(app, code),
         };
-        let current = self.status().current_version;
         let critical =
             version_is_below(&current, &trusted.minimum_supported_version).unwrap_or(false);
         let cache = self.cache_path(&update.version);
-        let cached_ready =
-            verify_cached(&cache, &trusted.sha256, &update.signature, pubkey).unwrap_or(false);
+        let cached_ready = verify_cached(&cache, &trusted.sha256, &update.signature, pubkey)
+            .ok()
+            .flatten()
+            .is_some();
         let downloaded = if cached_ready {
             trusted.size_bytes
         } else {
@@ -372,14 +390,68 @@ fn decode_signature(encoded: &str) -> Result<Signature, &'static str> {
     Signature::decode(text).map_err(|_| "invalid_signature")
 }
 
-fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'static str> {
-    let policy = update
-        .raw_json
+/// The signed release blob (L4). Everything the client acts on - the version it is about to
+/// install, the minimum the policy enforces, and the hash and size of the bytes it will verify -
+/// is inside this string, signed with the same key as the policy and the artifacts. The unsigned
+/// top-level copies of these fields exist only for launchers older than this check.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedRelease {
+    schema: u64,
+    version: String,
+    minimum_supported_version: String,
+    platforms: std::collections::HashMap<String, ReleasePlatform>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleasePlatform {
+    #[allow(dead_code)]
+    key: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+/// The manifest key this build downloads: `{target}-{arch}`. `target` is the OS name the
+/// updater substituted into the endpoint (`darwin`/`windows`), `arch` the CPU it runs on - the
+/// same pair the Worker selected the artifact by.
+fn platform_key(target: &str) -> String {
+    format!("{target}-{}", std::env::consts::ARCH)
+}
+
+fn trusted_metadata(
+    update: &Update,
+    current: &str,
+    pubkey: &str,
+) -> Result<TrustedMetadata, &'static str> {
+    trusted_metadata_from(
+        &update.raw_json,
+        &update.version,
+        update.body.clone(),
+        &platform_key(&update.target),
+        current,
+        pubkey,
+    )
+}
+
+/// Everything the updater trusts about an offered release, derived from the manifest the
+/// plugin fetched. `version` is the plugin's parsed `release.version` and `current` the
+/// running version; both are re-checked against the SIGNED release blob so a manifest cannot
+/// offer an older signed bundle under a newer number (rollback) or swap the hash the download
+/// is checked against.
+fn trusted_metadata_from(
+    raw: &serde_json::Value,
+    version: &str,
+    body: Option<String>,
+    platform: &str,
+    current: &str,
+    pubkey: &str,
+) -> Result<TrustedMetadata, &'static str> {
+    let policy = raw
         .get("policy")
         .and_then(|v| v.as_str())
         .ok_or("missing_policy")?;
-    let policy_signature = update
-        .raw_json
+    let policy_signature = raw
         .get("policySignature")
         .and_then(|v| v.as_str())
         .ok_or("missing_policy_signature")?;
@@ -388,8 +460,7 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     key.verify(policy.as_bytes(), &signature, true)
         .map_err(|_| "untrusted_policy")?;
     let signed: SignedPolicy = serde_json::from_str(policy).map_err(|_| "invalid_policy")?;
-    let stated_minimum = update
-        .raw_json
+    let stated_minimum = raw
         .get("minimumSupportedVersion")
         .and_then(|v| v.as_str())
         .ok_or("missing_minimum_version")?;
@@ -397,11 +468,40 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     {
         return Err("policy_mismatch");
     }
-    let sha256 = update
-        .raw_json
-        .get("sha256")
+
+    // L4: the release blob. Required - the first manifest this launcher can be offered was
+    // built by the tool that emits it, so a manifest without one is not ours to install.
+    let release = raw
+        .get("release")
         .and_then(|v| v.as_str())
-        .ok_or("missing_sha256")?;
+        .ok_or("missing_release")?;
+    let release_signature = raw
+        .get("releaseSignature")
+        .and_then(|v| v.as_str())
+        .ok_or("missing_release_signature")?;
+    let signature = decode_signature(release_signature)?;
+    key.verify(release.as_bytes(), &signature, true)
+        .map_err(|_| "untrusted_release")?;
+    let release: SignedRelease = serde_json::from_str(release).map_err(|_| "invalid_release")?;
+    if release.schema != 1 {
+        return Err("release_schema");
+    }
+    if release.version != version {
+        return Err("release_mismatch");
+    }
+    let offered = Version::parse(&release.version).map_err(|_| "invalid_release")?;
+    let running = Version::parse(current).map_err(|_| "invalid_current_version")?;
+    if offered <= running {
+        return Err("release_not_newer");
+    }
+    if release.minimum_supported_version != signed.minimum_supported_version {
+        return Err("policy_mismatch");
+    }
+    let entry = release
+        .platforms
+        .get(platform)
+        .ok_or("unsupported_platform")?;
+    let sha256 = entry.sha256.as_str();
     if sha256.len() != 64
         || !sha256
             .bytes()
@@ -409,17 +509,11 @@ fn trusted_metadata(update: &Update, pubkey: &str) -> Result<TrustedMetadata, &'
     {
         return Err("invalid_sha256");
     }
-    let size_bytes = update
-        .raw_json
-        .get("sizeBytes")
-        .and_then(|v| v.as_u64())
-        .ok_or("missing_size")?;
     Ok(TrustedMetadata {
         sha256: sha256.into(),
-        size_bytes,
-        notes: update.body.clone(),
-        release_notes_url: update
-            .raw_json
+        size_bytes: entry.size_bytes,
+        notes: body,
+        release_notes_url: raw
             .get("releaseNotesUrl")
             .and_then(|v| v.as_str())
             .map(str::to_owned),
@@ -431,25 +525,120 @@ fn partial_len(path: &Path) -> u64 {
     fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Verifies a cached bundle and hands back the exact bytes that were hashed and signature
+/// checked. Callers that install must use these bytes: re-reading the file would install
+/// content that nothing verified.
 fn verify_cached(
     path: &Path,
     expected_sha: &str,
     encoded_signature: &str,
     encoded_pubkey: &str,
-) -> Result<bool, &'static str> {
+) -> Result<Option<Vec<u8>>, &'static str> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
     let digest = format!("{:x}", Sha256::digest(&bytes));
     if digest != expected_sha {
-        return Ok(false);
+        return Ok(None);
     }
     let key = decode_public_key(encoded_pubkey)?;
     let signature = decode_signature(encoded_signature)?;
     key.verify(&bytes, &signature, true)
         .map_err(|_| "artifact_signature_failed")?;
-    Ok(true)
+    Ok(Some(bytes))
+}
+
+/// L14: drops cached bundles the running launcher can no longer install - anything at or
+/// below the running version. Names that are not `<semver>.bundle`/`.partial` are left alone.
+fn prune_update_cache(dir: &Path, current: &Version) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(version) = name
+            .strip_suffix(".bundle")
+            .or_else(|| name.strip_suffix(".partial"))
+        else {
+            continue;
+        };
+        let Ok(version) = Version::parse(version) else {
+            continue;
+        };
+        if version <= *current {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// L3: the one place the download builds its HTTP client. Bounds the connect and the per-read
+/// wait; never the whole request, which would kill a download that is slow but alive.
+fn download_client(connect: Duration, read: Duration) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .read_timeout(read)
+        .build()
+}
+
+/// L12: keeps the per-chunk work in the download loop down to one report per
+/// `CHUNK_REPORT_INTERVAL` or per `CHUNK_REPORT_BYTES`, whichever comes first. The first
+/// chunk always reports, so a download shows progress (and notices a game) immediately.
+struct ChunkThrottle {
+    last: Option<Instant>,
+    last_bytes: u64,
+}
+
+impl ChunkThrottle {
+    fn new() -> Self {
+        Self {
+            last: None,
+            last_bytes: 0,
+        }
+    }
+
+    fn due(&mut self, now: Instant, offset: u64) -> bool {
+        let due = match self.last {
+            None => true,
+            Some(last) => {
+                now.saturating_duration_since(last) >= CHUNK_REPORT_INTERVAL
+                    || offset.saturating_sub(self.last_bytes) >= CHUNK_REPORT_BYTES
+            }
+        };
+        if due {
+            self.last = Some(now);
+            self.last_bytes = offset;
+        }
+        due
+    }
+}
+
+/// L13: the single decision both pause-for-a-running-game paths take. The download loop and
+/// `install_update` must agree, or one of them pauses without anything to wake it up.
+fn pause_for_game() -> (UpdateState, &'static str, bool) {
+    (UpdateState::Paused, "game_active", true)
+}
+
+/// L13: re-checks once the game exits, and resumes the download if there is still one to do.
+/// A cached bundle comes back as `Ready`, so this only restarts an unfinished download.
+fn arm_game_exit_waiter(service: UpdaterService, app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        while crate::proc::game_jvm_running(&service.home) {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if service.status().pause_reason.as_deref() == Some("game_active") {
+            let next = service.check(&app, false).await;
+            if matches!(
+                next.state,
+                UpdateState::Available | UpdateState::CriticalRequired
+            ) {
+                begin_download(app, &service);
+            }
+        }
+    });
 }
 
 async fn download_update(service: UpdaterService, app: AppHandle) {
@@ -461,7 +650,8 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
         let Some(pubkey) = service.pubkey else {
             return;
         };
-        let Ok(trusted) = trusted_metadata(&update, pubkey) else {
+        let current = inner.status.current_version.clone();
+        let Ok(trusted) = trusted_metadata(&update, &current, pubkey) else {
             return;
         };
         (update, pubkey, trusted.sha256, trusted.size_bytes)
@@ -477,7 +667,10 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
     }
     let existing = partial_len(&partial);
     if existing == expected_size
-        && verify_cached(&partial, &expected_sha, &update.signature, pubkey).unwrap_or(false)
+        && verify_cached(&partial, &expected_sha, &update.signature, pubkey)
+            .ok()
+            .flatten()
+            .is_some()
     {
         if cache.exists() {
             let _ = tokio::fs::remove_file(&cache).await;
@@ -498,10 +691,7 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
     } else {
         0
     };
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-    {
+    let client = match download_client(DOWNLOAD_CONNECT_TIMEOUT, DOWNLOAD_READ_TIMEOUT) {
         Ok(client) => client,
         Err(_) => {
             service.fail(&app, "download_client_failed");
@@ -540,6 +730,7 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
         }
     };
     let mut stream = response.bytes_stream();
+    let mut throttle = ChunkThrottle::new();
     while let Some(chunk) = stream.next().await {
         if service.pause_requested.load(Ordering::SeqCst) {
             service.set_status(&app, |status| {
@@ -549,29 +740,20 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
             finish_task(&service);
             return;
         }
-        if crate::proc::game_jvm_running(&service.home) {
+        // The game scan and the status event are the expensive part of this loop; a chunk can
+        // be a few kilobytes, so both are rate limited rather than run per chunk.
+        let report = throttle.due(Instant::now(), offset);
+        if report && crate::proc::game_jvm_running(&service.home) {
+            let (state, reason, arm_waiter) = pause_for_game();
             service.set_status(&app, |status| {
-                status.state = UpdateState::Paused;
-                status.pause_reason = Some("game_active".into());
+                status.state = state;
+                status.pause_reason = Some(reason.into());
             });
             service.send_event("download_paused");
             finish_task(&service);
-            let waiting_service = service.clone();
-            let waiting_app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                while crate::proc::game_jvm_running(&waiting_service.home) {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-                if waiting_service.status().pause_reason.as_deref() == Some("game_active") {
-                    let next = waiting_service.check(&waiting_app, false).await;
-                    if matches!(
-                        next.state,
-                        UpdateState::Available | UpdateState::CriticalRequired
-                    ) {
-                        begin_download(waiting_app, &waiting_service);
-                    }
-                }
-            });
+            if arm_waiter {
+                arm_game_exit_waiter(service.clone(), app.clone());
+            }
             return;
         }
         let chunk = match chunk {
@@ -588,7 +770,9 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
             return;
         }
         offset += chunk.len() as u64;
-        service.set_status(&app, |status| status.downloaded_bytes = offset);
+        if report {
+            service.set_status(&app, |status| status.downloaded_bytes = offset);
+        }
     }
     if file.flush().await.is_err() || offset != expected_size {
         service.fail(&app, "download_size_mismatch");
@@ -596,7 +780,11 @@ async fn download_update(service: UpdaterService, app: AppHandle) {
         return;
     }
     drop(file);
-    if !verify_cached(&partial, &expected_sha, &update.signature, pubkey).unwrap_or(false) {
+    if verify_cached(&partial, &expected_sha, &update.signature, pubkey)
+        .ok()
+        .flatten()
+        .is_none()
+    {
         service.fail(&app, "artifact_verification_failed");
         finish_task(&service);
         return;
@@ -739,10 +927,16 @@ pub async fn install_update(
         crate::lifecycle::Lifecycle::Launching | crate::lifecycle::Lifecycle::Active
     );
     if active_session || crate::proc::game_jvm_running(&service.home) {
-        return Ok(service.set_status(&app, |status| {
-            status.state = UpdateState::Paused;
-            status.pause_reason = Some("game_active".into());
-        }));
+        let (state, reason, arm_waiter) = pause_for_game();
+        let snapshot = service.set_status(&app, |status| {
+            status.state = state;
+            status.pause_reason = Some(reason.into());
+        });
+        // Without this the row sat on "paused" until the user launched something else.
+        if arm_waiter {
+            arm_game_exit_waiter(UpdaterService::clone(&service), app);
+        }
+        return Ok(snapshot);
     }
     let (update, path) = {
         let inner = service.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -755,13 +949,16 @@ pub async fn install_update(
     let pubkey = service
         .pubkey
         .ok_or_else(|| "Updater is not configured.".to_string())?;
-    let trusted = trusted_metadata(&update, pubkey).map_err(str::to_string)?;
-    if !verify_cached(&path, &trusted.sha256, &update.signature, pubkey).unwrap_or(false) {
+    let current = service.status().current_version;
+    let trusted = trusted_metadata(&update, &current, pubkey).map_err(str::to_string)?;
+    // The installer gets the bytes that were just hashed and signature checked - reading the
+    // file a second time would install whatever is there now, verified or not.
+    let Some(bytes) = verify_cached(&path, &trusted.sha256, &update.signature, pubkey)
+        .ok()
+        .flatten()
+    else {
         return Ok(service.fail(&app, "artifact_verification_failed"));
-    }
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|_| "Verified update cache could not be read.".to_string())?;
+    };
     fs::write(service.installed_marker_path(), &update.version)
         .map_err(|_| "The post-update verification marker could not be written.".to_string())?;
     service.set_status(&app, |status| status.state = UpdateState::Installing);
@@ -857,6 +1054,338 @@ mod tests {
         if option_env!("COBBLIFY_UPDATE_URL").is_none() {
             assert_eq!(service.configured(), Err("updater_unconfigured"));
         }
+    }
+
+    // Throwaway test key, generated 2026-09-22 for this cycle's fixtures. It signs nothing
+    // that ships; the production key lives only in the release workflow's secrets.
+    const TEST_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4REExMTE2OTZENzU4RDgKUldUWVdOZVdGaEhhT0FxYy9aWkthRVlGOW1xQnJncDdyWFhHTUR6MUxBaHl1YmQwRWI3TllicksK";
+    const TEST_BUNDLE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0dnMTBqdnNNTW5DcE5relBaVHBHeVJtbmo4d2FXTEFoNUVXL1RjYnU2amtyZXZUa2Zicng4Q3o4aHNxcWgwQXhGYTdqTkYzdjVIWkVvd0Y2YmxVRlFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY1NDM5CWZpbGU6YnVuZGxlLmJpbgo1ZGtQL21rZlRLaWVacFR1UVJMbjJpNlNoWmJOM3BFUzJmYzEvQklsd3BrTHpFbklUSGZEdEd1VkpjRWNweXBPQ3BlOEJRY0k5c1JYYm12N2lQMTFEZz09Cg==";
+    const TEST_BUNDLE_SHA256: &str =
+        "92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3";
+    const TEST_BUNDLE_BYTES: &[u8] = b"update-bytes";
+
+    // L4 fixtures: signed with the same throwaway key as TEST_PUBKEY (generated 2026-09-22).
+    // `TEST_RELEASE` names version 0.16.0, minimum 0.9.1 and the sha256/size of
+    // TEST_BUNDLE_BYTES for every shipped platform key.
+    const TEST_POLICY: &str = "{\"minimumSupportedVersion\":\"0.9.1\"}";
+    const TEST_POLICY_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0RMTmsyM2tuUThueFhYSnpubHBwTVJSeEJybysrd0NDSmpQWjNPZFFRdVZDRWhmZmJsZWQwWUphWDBPQTZzWFZuTU1acEppOHh4TjhKWGNNTEk4eVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY1NDM5CWZpbGU6cG9saWN5Lmpzb24Kd3dBSFlVTnpKVk5GQlRMMXBFK1RSSDB1S05ZL1BBVUlZZWtGYXprKzR0M2hOaXZ1ZzZHZm1VdHBHdmk0NEJsZmcrcnNESWxITHErcE95NlM5OWNqRGc9PQo=";
+    const TEST_RELEASE: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.9.1\",\"platforms\":{\"darwin-universal\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-aarch64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"windows-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-windows-x86_64-setup.exe\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0RvSVowWmdPK2dzLzlKWDhKb25uMHFtQTJmT2tSNGd6aFRYWWxTMG1rMEZwSldaaDN2RXZ0U1VQV3NLQ0VLa05RVkI3MHhIbERYTnpxSXIrNDVRZ1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY1NDM5CWZpbGU6cmVsZWFzZS5qc29uClBOamhkOGtITXlqWXFaU0hQUGE1clBuMXJLc3RJU2xqaUhtNldTZ2VsQWJDU3pxc0FobkdPNHF5WTh2OFRpK05DMm15OVBwVXBPenVSNU93QWo2V0F3PT0K";
+    /// Same blob with `minimumSupportedVersion` 0.0.0: validly signed, disagrees with the policy.
+    const TEST_RELEASE_MIN0: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.0.0\",\"platforms\":{\"darwin-universal\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-aarch64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"darwin-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-macos-universal.app.tar.gz\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12},\"windows-x86_64\":{\"key\":\"releases/0.16.0/Cobblify-Launcher-windows-x86_64-setup.exe\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_MIN0_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0R2LzhwZ3ZtclRLdDZrc3BNM2pWZUR3WGdvL1U0cFQ5S2hubnVCeHdYc0NPQUlSTDZvVTZPcHR2NXNRamcyMG5pTmRBK1QzRThRWWR4Y2lqK1pHbncwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY3NjYxCWZpbGU6cmVsZWFzZS1taW4wLmpzb24KSVpBNGFOT2VmQmFFYWRIS0djc0lCZUFMSVVFWlBuVnltNzFYdUZTMWlQYVZiTDdPUnVrMDc0WkpqQ2lyMGVLVjF3OERUdk5JUXZKSUk0TDkwWElYQ1E9PQo=";
+    /// Validly signed blob that lists no platform this build could download.
+    const TEST_RELEASE_NO_PLATFORM: &str = "{\"schema\":1,\"version\":\"0.16.0\",\"minimumSupportedVersion\":\"0.9.1\",\"platforms\":{\"linux-x86_64\":{\"key\":\"releases/0.16.0/none\",\"sha256\":\"92439dd4e7652a0414d2cd9d220e8d2767ed71f9005327223fc5d12b7a5065c3\",\"sizeBytes\":12}}}";
+    const TEST_RELEASE_NO_PLATFORM_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWVdOZVdGaEhhT0tCSnFuZXo5VlVxK09CUEpGUWYySWtYUWd4Q2xEV3FSakZ3NzAxamVRekdYaG5yaWRGbnM5a25aMFgvK0pJbFVkaUEvaXQ0ZXFBaVA2bTlXeHNnbFFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMDY3NjYxCWZpbGU6cmVsZWFzZS1ub3BsYXQuanNvbgpsTG8yUlB0QlNPbWV2MmJWT1JERXF6NXFzd1dSZzRrL0ZFUFZKKzhCODdzQmZvRlR1N1Q4WHlydTkzaEllVGo3QkdlL2xHdUZiK0FTK0l5WEd2WUFDQT09Cg==";
+
+    fn manifest_for_this_build() -> serde_json::Value {
+        serde_json::json!({
+            "version": "0.16.0",
+            "notes": "notes",
+            "releaseNotesUrl": "https://example.invalid/notes",
+            "minimumSupportedVersion": "0.9.1",
+            "policy": TEST_POLICY,
+            "policySignature": TEST_POLICY_SIGNATURE,
+            "release": TEST_RELEASE,
+            "releaseSignature": TEST_RELEASE_SIGNATURE,
+            // The unsigned copies an older launcher reads. Deliberately WRONG here: the new
+            // check must take the hash and size from the signed blob, never from these.
+            "sha256": "0".repeat(64),
+            "sizeBytes": 999,
+        })
+    }
+
+    fn host_platform() -> String {
+        let target = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+        platform_key(target)
+    }
+
+    fn trusted(raw: &serde_json::Value, version: &str, current: &str) -> Result<TrustedMetadata, &'static str> {
+        trusted_metadata_from(raw, version, Some("notes".into()), &host_platform(), current, TEST_PUBKEY)
+    }
+
+    #[test]
+    fn release_blob_is_verified_and_supplies_hash_size_and_minimum() {
+        let raw = manifest_for_this_build();
+        let trusted = trusted(&raw, "0.16.0", "0.15.1").expect("valid manifest");
+        assert_eq!(trusted.sha256, TEST_BUNDLE_SHA256);
+        assert_eq!(trusted.size_bytes, TEST_BUNDLE_BYTES.len() as u64);
+        assert_eq!(trusted.minimum_supported_version, "0.9.1");
+        assert_eq!(trusted.release_notes_url.as_deref(), Some("https://example.invalid/notes"));
+    }
+
+    #[test]
+    fn release_blob_is_required() {
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("release");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_release");
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("releaseSignature");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_release_signature");
+    }
+
+    #[test]
+    fn release_blob_with_a_signature_for_other_bytes_is_untrusted() {
+        let mut raw = manifest_for_this_build();
+        // A real signature from the same key, over the policy instead of the release.
+        raw["releaseSignature"] = serde_json::Value::String(TEST_POLICY_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "untrusted_release");
+    }
+
+    #[test]
+    fn offered_version_must_match_the_signed_one() {
+        let raw = manifest_for_this_build();
+        // The manifest's unsigned version was bumped past the signed 0.16.0.
+        assert_eq!(trusted(&raw, "0.16.1", "0.15.1").unwrap_err(), "release_mismatch");
+    }
+
+    #[test]
+    fn a_signed_release_that_is_not_newer_than_the_running_version_is_rejected() {
+        let raw = manifest_for_this_build();
+        assert_eq!(trusted(&raw, "0.16.0", "0.16.0").unwrap_err(), "release_not_newer");
+        assert_eq!(trusted(&raw, "0.16.0", "0.17.0").unwrap_err(), "release_not_newer");
+        assert_eq!(trusted(&raw, "0.16.0", "0.16.0-dev.3").map(|t| t.size_bytes), Ok(12));
+    }
+
+    #[test]
+    fn release_minimum_must_agree_with_the_signed_policy() {
+        let mut raw = manifest_for_this_build();
+        raw["release"] = serde_json::Value::String(TEST_RELEASE_MIN0.into());
+        raw["releaseSignature"] = serde_json::Value::String(TEST_RELEASE_MIN0_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "policy_mismatch");
+    }
+
+    #[test]
+    fn a_release_without_this_platform_is_unsupported() {
+        let mut raw = manifest_for_this_build();
+        raw["release"] = serde_json::Value::String(TEST_RELEASE_NO_PLATFORM.into());
+        raw["releaseSignature"] = serde_json::Value::String(TEST_RELEASE_NO_PLATFORM_SIGNATURE.into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "unsupported_platform");
+    }
+
+    #[test]
+    fn the_policy_path_still_guards_before_the_release_blob() {
+        let mut raw = manifest_for_this_build();
+        raw["minimumSupportedVersion"] = serde_json::Value::String("0.0.0".into());
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "policy_mismatch");
+        let mut raw = manifest_for_this_build();
+        raw.as_object_mut().unwrap().remove("policy");
+        assert_eq!(trusted(&raw, "0.16.0", "0.15.1").unwrap_err(), "missing_policy");
+    }
+
+    /// L3: a body that trickles in over longer than the read timeout, with every gap shorter
+    /// than it, must still arrive whole. The PRODUCTION constructor is under test - only its
+    /// read timeout is shortened, so a whole-request deadline of the same length would fail.
+    #[test]
+    fn trickled_body_completes_under_read_timeout() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2000\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            stream.flush().unwrap();
+            for chunk in 0..8 {
+                if chunk > 0 {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                stream.write_all(&[b'c'; 250]).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let client = download_client(Duration::from_secs(15), Duration::from_millis(700))
+            .expect("the production download client must build");
+        let url = format!("http://{address}/Cobblify-Launcher.bundle");
+        let started = std::time::Instant::now();
+        let body = tauri::async_runtime::block_on(async move {
+            let response = client.get(url).send().await.expect("request must reach the trickle server");
+            response.bytes().await.expect("the trickled body must arrive whole")
+        });
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert_eq!(body.len(), 2000, "every trickled chunk must be read");
+        assert!(
+            elapsed >= Duration::from_millis(2100),
+            "the body is meant to take longer than the read timeout to arrive, took {elapsed:?}"
+        );
+    }
+
+    /// L8: the bytes the installer hands to Tauri must be the ones that were hashed and
+    /// signature-checked, so `verify_cached` returns them instead of a bare yes/no.
+    #[test]
+    fn verify_cached_returns_the_bytes_it_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("0.16.0.bundle");
+        fs::write(&bundle, TEST_BUNDLE_BYTES).unwrap();
+
+        let verified = verify_cached(&bundle, TEST_BUNDLE_SHA256, TEST_BUNDLE_SIGNATURE, TEST_PUBKEY)
+            .expect("a signed bundle must verify")
+            .expect("a signed bundle must be accepted");
+        assert_eq!(verified, TEST_BUNDLE_BYTES);
+        assert_eq!(verified, fs::read(&bundle).unwrap());
+
+        let tampered = dir.path().join("tampered.bundle");
+        fs::write(&tampered, b"other-bytes!").unwrap();
+        assert_eq!(
+            verify_cached(&tampered, TEST_BUNDLE_SHA256, TEST_BUNDLE_SIGNATURE, TEST_PUBKEY),
+            Ok(None),
+            "content that does not hash to the trusted sha256 is not a cache hit"
+        );
+
+        let wrong_sha = "0".repeat(64);
+        assert_eq!(
+            verify_cached(&bundle, &wrong_sha, TEST_BUNDLE_SIGNATURE, TEST_PUBKEY),
+            Ok(None),
+            "the trusted sha256 has to match the bytes on disk"
+        );
+    }
+
+    /// L12: the per-chunk game scan and status event are the expensive part of the download
+    /// loop. They may run at most once per 500 ms or per MiB, and always on the first chunk.
+    #[test]
+    fn chunk_throttle_reports_on_time_or_bytes() {
+        let start = std::time::Instant::now();
+        let mut throttle = ChunkThrottle::new();
+
+        let mut due = 0;
+        let mut offset = 0u64;
+        for millis in 0..100u64 {
+            offset += 10 * 1024;
+            if throttle.due(start + Duration::from_millis(millis), offset) {
+                due += 1;
+            }
+        }
+        assert_eq!(
+            due, 1,
+            "100 chunks over 99 ms and under a MiB are one report: the first"
+        );
+
+        assert!(
+            throttle.due(start + Duration::from_millis(100), offset + 1024 * 1024),
+            "a MiB of progress reports before the timer is up"
+        );
+        assert!(
+            !throttle.due(start + Duration::from_millis(101), offset + 1024 * 1024 + 1),
+            "the byte budget restarts from the report that was just made"
+        );
+        assert!(
+            throttle.due(
+                start + Duration::from_millis(601),
+                offset + 1024 * 1024 + 2
+            ),
+            "500 ms of progress reports before the byte budget is up"
+        );
+    }
+
+    /// L13: both callers that find a game running take the same decision - pause with
+    /// `game_active` AND arm the waiter that re-checks once the game exits.
+    #[test]
+    fn pause_for_game_pauses_and_arms_the_exit_waiter() {
+        let (state, reason, arm_waiter) = pause_for_game();
+        assert_eq!(state, UpdateState::Paused);
+        assert_eq!(reason, "game_active");
+        assert!(arm_waiter);
+    }
+
+    /// The production half of this file: everything before the test module, with comment
+    /// lines dropped. Counting names in prose is not a test; counting them in code is.
+    fn production_source() -> String {
+        let source = include_str!("updater.rs");
+        let body = &source[..source.find("#[cfg(test)]").expect("a test module")];
+        body.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Outcome review I1. The decision above is a constant, so asserting it proves nothing
+    /// about the code that acts on it: deleting both `arm_game_exit_waiter` calls left the
+    /// whole suite green, and an install paused during a game would then never wake. An
+    /// `AppHandle` cannot be constructed in a unit test, so the call sites are pinned in
+    /// the source instead - the same technique as `download_client_has_no_total_deadline`.
+    #[test]
+    fn every_game_pause_arms_the_exit_waiter() {
+        let code = production_source();
+        // Calls, not definitions: a call reads `let (..) = pause_for_game();`.
+        let pauses = code.matches("= pause_for_game()").count();
+        let arms = code.matches("arm_game_exit_waiter(").count()
+            - code.matches("fn arm_game_exit_waiter(").count();
+        assert_eq!(pauses, 2, "the download loop and install_update are the two pause sites");
+        assert_eq!(
+            arms, pauses,
+            "every pause site must arm the waiter: {arms} arming calls for {pauses} pauses"
+        );
+        assert_eq!(
+            code.matches("Some(\"game_active\".into())").count(),
+            0,
+            "a pause must go through pause_for_game(), not an inline game_active literal"
+        );
+    }
+
+    /// Outcome review O1. `verify_cached` hands back the bytes it checked, and
+    /// `install_update` must install those - a second read of the file would install
+    /// whatever is there by then, verified or not (L8).
+    #[test]
+    fn the_installer_never_re_reads_the_verified_cache() {
+        let code = production_source();
+        assert_eq!(
+            code.matches("fs::read(").count(),
+            1,
+            "only verify_cached may read the cached bundle"
+        );
+    }
+
+    /// L14: bundles for versions we are already running (or have passed) are dead weight.
+    #[test]
+    fn prune_removes_bundles_at_or_below_the_running_version() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "0.15.0.bundle",
+            "0.15.1.partial",
+            "0.16.0.partial",
+            "junk.bundle",
+        ] {
+            fs::write(dir.path().join(name), b"x").unwrap();
+        }
+
+        prune_update_cache(dir.path(), &Version::parse("0.15.1").unwrap());
+
+        let mut left: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["0.16.0.partial".to_string(), "junk.bundle".to_string()]);
+    }
+
+    /// L3: the download client must bound the connect and per-read waits, never the whole
+    /// request. A total deadline kills a slow-but-alive download, so re-adding one has to
+    /// fail a test even though the 60 s case is not something a test can sit through.
+    #[test]
+    fn download_client_has_no_total_deadline() {
+        let source = include_str!("updater.rs");
+        let whole_request_deadline = format!(".{}(", "timeout");
+        assert!(
+            !source.contains(&whole_request_deadline),
+            "updater.rs must bound connect and read waits only, never the whole request"
+        );
     }
 
     #[test]
