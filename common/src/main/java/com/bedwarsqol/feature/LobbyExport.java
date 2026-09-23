@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.bedwarsqol.stats.PlayerCard;
+import com.bedwarsqol.stats.SidebarModeLabel;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -365,16 +366,13 @@ public final class LobbyExport {
         }
     }
 
-    /** Exact label, case-insensitive, optionally followed only by whitespace/symbol decoration. */
+    /**
+     * Exact label, case-insensitive, optionally followed only by whitespace/symbol decoration.
+     * The rule itself lives in {@link SidebarModeLabel}, so the launcher titles here and the
+     * in-game mode detector read a sidebar label the same way.
+     */
     private static boolean isLabelWithDecoration(String value, String label) {
-        if (value.length() < label.length()
-                || !value.regionMatches(true, 0, label, 0, label.length())) return false;
-        for (int i = label.length(); i < value.length();) {
-            int codePoint = value.codePointAt(i);
-            if (Character.isLetterOrDigit(codePoint)) return false;
-            i += Character.charCount(codePoint);
-        }
-        return true;
+        return SidebarModeLabel.isLabelWithDecoration(value, label);
     }
 
     /** Root of {@code lobby.json}; {@code seq} and writer identity are injected by the writer. */

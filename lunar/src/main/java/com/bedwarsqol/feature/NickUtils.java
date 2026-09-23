@@ -296,7 +296,6 @@ public final class NickUtils {
         Denicks.publishVerified(verified);
 
         publishIdentity(confirmedRows);
-
         return consistent > 0;
     }
 

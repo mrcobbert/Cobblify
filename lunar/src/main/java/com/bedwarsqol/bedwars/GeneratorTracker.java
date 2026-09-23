@@ -1,5 +1,6 @@
 package com.bedwarsqol.bedwars;
 
+import com.bedwarsqol.feature.ChatSender;
 import com.bedwarsqol.stats.BedwarsMode;
 import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.HypixelContext;
@@ -100,6 +101,9 @@ public final class GeneratorTracker {
      * Hypixel broadcasts a chat line when a generator tiers up (e.g. "Generators upgraded to
      * Diamond II"). Catching it corrects the tier/interval immediately even while we're out of
      * range of the hologram — the one case the wall-clock extrapolation could otherwise miss.
+     *
+     * <p>Only the broadcast counts: a line a player typed is never a broadcast, so a teammate asking
+     * for "the diamond generator to 2" cannot re-anchor the countdown ({@link GeneratorUpgradeParse}).
      */
     @SubscribeEvent
     public void onChat(ChatEvent.Received event) {
@@ -112,7 +116,7 @@ public final class GeneratorTracker {
         boolean diamond = lower.contains("diamond");
         boolean emerald = lower.contains("emerald");
         if (!diamond && !emerald) return;
-        int tier = tierFromMessage(msg);
+        int tier = GeneratorUpgradeParse.tier(msg, ChatSender.typedChatName(event.getMessage()));
         if (tier < 1) return;
         long now = System.currentTimeMillis();
         if (diamond) applyUpgrade(true, tier, now);
@@ -133,28 +137,6 @@ public final class GeneratorTracker {
             emeraldValue = interval;
             emeraldTime = now;
         }
-    }
-
-    /** Extract a tier (1-3) from an upgrade message: a standalone roman numeral, else a digit. */
-    private static int tierFromMessage(String msg) {
-        java.util.regex.Matcher rm =
-                java.util.regex.Pattern.compile("\\b(IV|III|II|I)\\b").matcher(msg.toUpperCase());
-        int tier = -1;
-        while (rm.find()) tier = romanToken(rm.group(1)); // last standalone roman wins ("Diamond II")
-        if (tier >= 1) return tier;
-        java.util.regex.Matcher dm = java.util.regex.Pattern.compile("\\b([1-3])\\b").matcher(msg);
-        while (dm.find()) {
-            try { tier = Integer.parseInt(dm.group(1)); } catch (NumberFormatException ignored) { }
-        }
-        return tier;
-    }
-
-    private static int romanToken(String t) {
-        if ("IV".equals(t)) return 4;
-        if ("III".equals(t)) return 3;
-        if ("II".equals(t)) return 2;
-        if ("I".equals(t)) return 1;
-        return -1;
     }
 
     private static void update() {

@@ -35,12 +35,13 @@ public final class BedwarsModeDetector {
 
     private static final int TICK_INTERVAL = 10; // ~0.5s
 
-    private static volatile BedwarsMode latched = BedwarsMode.UNKNOWN;
+    /** The transition rule, and the only state; see {@link ModeLatch} for why it is not a bare field. */
+    private static final ModeLatch LATCH = new ModeLatch();
     private int ticks;
 
     /** The current mode, latched for the game. {@link BedwarsMode#UNKNOWN} until known. */
     public static BedwarsMode current() {
-        return latched;
+        return LATCH.current();
     }
 
     /**
@@ -67,7 +68,7 @@ public final class BedwarsModeDetector {
     }
 
     public static void reset() {
-        latched = BedwarsMode.UNKNOWN;
+        LATCH.reset();
     }
 
     @SubscribeEvent
@@ -85,28 +86,27 @@ public final class BedwarsModeDetector {
 
     private static void update() {
         if (!HypixelContext.isInBedwars()) {
-            latched = BedwarsMode.UNKNOWN;
+            LATCH.reset();
             return;
         }
-        // Pregame sidebar names the mode exactly — prefer it and keep it fresh.
-        BedwarsMode pregame = detectFromModeLine();
-        if (pregame != BedwarsMode.UNKNOWN) {
-            latched = pregame;
-            return;
-        }
-        // Active game has no Mode: line. Keep the pregame value; only infer if we never got one.
-        if (latched == BedwarsMode.UNKNOWN && HypixelContext.isInActiveBedwarsGame()) {
-            BedwarsMode byColor = detectByTeamColors();
-            if (byColor != BedwarsMode.UNKNOWN) latched = byColor;
-        }
+        // The pregame sidebar names the mode exactly; the active game has no such line, so a client
+        // that never saw one counts nametag colours instead. Which of those applies - and why an
+        // unmappable label has to be remembered rather than merely mapped to UNKNOWN - is
+        // ModeLatch's business.
+        LATCH.observe(sidebarModeLabel(), HypixelContext.isInActiveBedwarsGame(),
+                BedwarsModeDetector::detectByTeamColors);
     }
 
-    /** Read a {@code Mode: <Solo|Doubles|3v3v3v3|4v4v4v4>} line from the sidebar (pregame). */
-    private static BedwarsMode detectFromModeLine() {
+    /**
+     * The raw {@code Mode: <X>} value the pregame sidebar prints, or null when it has no such line
+     * (the hub, and every active game). Mapping it to a {@link BedwarsMode} is the latch's job, so
+     * that "no label" and "a label we do not map" stay distinguishable here.
+     */
+    private static String sidebarModeLabel() {
         Scoreboard board = scoreboard();
-        if (board == null) return BedwarsMode.UNKNOWN;
+        if (board == null) return null;
         ScoreObjective sidebar = board.getObjectiveInDisplaySlot(1);
-        if (sidebar == null) return BedwarsMode.UNKNOWN;
+        if (sidebar == null) return null;
 
         for (Score score : board.getSortedScores(sidebar)) {
             ScorePlayerTeam team = board.getPlayersTeam(score.getPlayerName());
@@ -115,14 +115,9 @@ public final class BedwarsModeDetector {
             if (line == null) continue;
             int i = line.indexOf("Mode:");
             if (i < 0) continue;
-            String v = line.substring(i + 5).trim().toLowerCase();
-            if (v.contains("solo")) return BedwarsMode.SOLO;
-            if (v.contains("doubles")) return BedwarsMode.DOUBLES;
-            if (v.contains("3v3v3v3")) return BedwarsMode.THREES;
-            if (v.contains("4v4v4v4")) return BedwarsMode.FOURS;
-            return BedwarsMode.UNKNOWN; // 4v4, Castle, or some dream mode we don't map → overall
+            return line.substring(i + 5).trim();
         }
-        return BedwarsMode.UNKNOWN;
+        return null;
     }
 
     /**

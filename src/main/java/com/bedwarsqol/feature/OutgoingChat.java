@@ -21,6 +21,7 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
  * Optional automation pauses while the chat GUI is open and is cancelled on stale context or when
  * the player submits normal chat / INC. Held manual text is never silently dropped. Slash commands
  * bypass pacing but still update send clocks. Party epoch only invalidates party-targeted sends.
+ * Off Hypixel nothing is intercepted: typed chat goes straight through vanilla.
  */
 public final class OutgoingChat {
 
@@ -158,7 +159,7 @@ public final class OutgoingChat {
         // Drain until idle or waiting on pacing — at most a few steps (send + notices).
         for (int i = 0; i < 4; i++) {
             OutgoingChatCore.Decision d = core.tick(liveContext(), nowMs, chatOpen, features);
-            if (d.send == null && d.notice == null) break;
+            if (d.send == null && d.notices.isEmpty()) break;
             applyDecision(d, nowMs);
             if (d.send != null) break; // one wire send per flush burst
         }
@@ -166,7 +167,7 @@ public final class OutgoingChat {
 
     private void applyDecision(OutgoingChatCore.Decision d, long nowMs) {
         if (d == null) return;
-        if (d.notice != null) noticeHeldManualInvalid(d.notice, d.noticeWhy);
+        for (OutgoingChatRequest held : d.notices) noticeHeldManualInvalid(held, d.noticeWhy);
         if (d.send != null) dispatch(d.send, nowMs);
     }
 
@@ -188,7 +189,8 @@ public final class OutgoingChat {
                 currentServerKey(),
                 HypixelContext.isInActiveBedwarsGame(),
                 partyEpoch.current(),
-                partyEpoch.inParty());
+                partyEpoch.inParty(),
+                HypixelContext.isOnHypixel());
     }
 
     private static boolean featureEnabled(OutgoingChatKind kind) {

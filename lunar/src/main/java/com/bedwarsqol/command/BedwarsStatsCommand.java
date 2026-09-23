@@ -50,9 +50,10 @@ public final class BedwarsStatsCommand {
                 : Minecraft.getMinecraft().getSession().getUsername();
 
         sendChat("§7Fetching Bedwars stats for §f" + name + "§7...");
+        final UUID local = localUuid(name); // client state is read here, never on EXEC
         EXEC.submit(() -> {
             try {
-                UUID uuid = resolveUuid(name);
+                UUID uuid = local != null ? local : MojangNameResolver.resolve(name);
                 if (uuid == null) {
                     printCard(name, BedwarsStats.nicked());
                     return;
@@ -71,31 +72,35 @@ public final class BedwarsStatsCommand {
         });
     }
 
-    /** Resolve a name to a UUID, preferring the local tab/world (no external call). */
-    private static UUID resolveUuid(String name) throws java.io.IOException {
+    /**
+     * The UUID for {@code name} from the local player or the tab list, or null when the name is not
+     * there (the caller then asks Mojang off-thread).
+     *
+     * <p><b>Client thread only</b>: the tab map is a HashMap mutated by S38 packets, so iterating it
+     * from the command's executor throws ConcurrentModificationException during lobby churn.
+     */
+    private static UUID localUuid(String name) {
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc != null) {
-            if (mc.thePlayer != null && mc.thePlayer.getGameProfile() != null
-                    && name.equalsIgnoreCase(mc.thePlayer.getGameProfile().getName())
-                    && mc.thePlayer.getGameProfile().getId() != null) {
-                return mc.thePlayer.getGameProfile().getId();
-            }
-            NetHandlerPlayClient net = mc.getNetHandler();
-            if (net != null) {
-                NetworkPlayerInfo info = net.getPlayerInfo(name);
-                if (info != null && info.getGameProfile() != null && info.getGameProfile().getId() != null) {
-                    return info.getGameProfile().getId();
-                }
-                for (NetworkPlayerInfo i : net.getPlayerInfoMap()) {
-                    GameProfile gp = i.getGameProfile();
-                    if (gp != null && gp.getId() != null && gp.getName() != null
-                            && gp.getName().equalsIgnoreCase(name)) {
-                        return gp.getId();
-                    }
-                }
+        if (mc == null) return null;
+        if (mc.thePlayer != null && mc.thePlayer.getGameProfile() != null
+                && name.equalsIgnoreCase(mc.thePlayer.getGameProfile().getName())
+                && mc.thePlayer.getGameProfile().getId() != null) {
+            return mc.thePlayer.getGameProfile().getId();
+        }
+        NetHandlerPlayClient net = mc.getNetHandler();
+        if (net == null) return null;
+        NetworkPlayerInfo info = net.getPlayerInfo(name);
+        if (info != null && info.getGameProfile() != null && info.getGameProfile().getId() != null) {
+            return info.getGameProfile().getId();
+        }
+        for (NetworkPlayerInfo i : net.getPlayerInfoMap()) {
+            GameProfile gp = i.getGameProfile();
+            if (gp != null && gp.getId() != null && gp.getName() != null
+                    && gp.getName().equalsIgnoreCase(name)) {
+                return gp.getId();
             }
         }
-        return MojangNameResolver.resolve(name);
+        return null;
     }
 
     private static void printCard(String name, BedwarsStats stats) {
@@ -175,10 +180,18 @@ public final class BedwarsStatsCommand {
         return String.format(Locale.US, "%.2f", d);
     }
 
+    /**
+     * Print a line locally. Most calls come from the fetch executor, so the only look at client
+     * state happens inside the scheduled task, on the client thread: the player can be gone by the
+     * time it runs (a disconnect between fetch and reply), and checking here as well would be both
+     * an off-thread read and a stale answer.
+     */
     private static void sendChat(String msg) {
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc == null || mc.thePlayer == null) return;
+        if (mc == null) return;
         IChatComponent c = ModChat.mark(new ChatComponentText(msg));
-        mc.addScheduledTask(() -> mc.thePlayer.addChatMessage(c));
+        mc.addScheduledTask(() -> {
+            if (mc.thePlayer != null) mc.thePlayer.addChatMessage(c);
+        });
     }
 }

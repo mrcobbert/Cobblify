@@ -54,24 +54,38 @@ public final class OutgoingChatCore {
         public final int partyEpoch;
         /** False only once Hypixel has told us we are partyless; unknown counts as in a party. */
         public final boolean inParty;
+        /**
+         * Whether the client is on Hypixel. The pacer exists for Hypixel's chat limits; anywhere
+         * else (singleplayer, other servers) typed chat is not intercepted at all.
+         */
+        public final boolean onHypixel;
 
         public LiveContext(int sessionId, String serverKey, boolean activeGame, int partyEpoch) {
-            this(sessionId, serverKey, activeGame, partyEpoch, true);
+            this(sessionId, serverKey, activeGame, partyEpoch, true, true);
         }
 
         public LiveContext(int sessionId, String serverKey, boolean activeGame, int partyEpoch,
                            boolean inParty) {
+            this(sessionId, serverKey, activeGame, partyEpoch, inParty, true);
+        }
+
+        public LiveContext(int sessionId, String serverKey, boolean activeGame, int partyEpoch,
+                           boolean inParty, boolean onHypixel) {
             this.sessionId = sessionId;
             this.serverKey = serverKey == null ? "" : serverKey;
             this.activeGame = activeGame;
             this.partyEpoch = partyEpoch;
             this.inParty = inParty;
+            this.onHypixel = onHypixel;
         }
     }
 
     /** Result of deciding what the runtime should do for one tick / intercept. */
     public static final class Decision {
         public final OutgoingChatRequest send;
+        /** Held lines that will not be sent and must be reported to the player; never null. */
+        public final List<OutgoingChatRequest> notices;
+        /** The first of {@link #notices}, or null — kept for callers that report one at a time. */
         public final OutgoingChatRequest notice;
         public final String noticeWhy;
         /** When true, {@link #send} bypasses pacing (slash commands). */
@@ -79,22 +93,35 @@ public final class OutgoingChatCore {
 
         public Decision(OutgoingChatRequest send, boolean bypassPacing,
                         OutgoingChatRequest notice, String noticeWhy) {
+            this(send, bypassPacing,
+                    notice == null ? Collections.<OutgoingChatRequest>emptyList()
+                            : Collections.singletonList(notice), noticeWhy);
+        }
+
+        public Decision(OutgoingChatRequest send, boolean bypassPacing,
+                        List<OutgoingChatRequest> notices, String noticeWhy) {
             this.send = send;
             this.bypassPacing = bypassPacing;
-            this.notice = notice;
+            this.notices = notices == null ? Collections.<OutgoingChatRequest>emptyList()
+                    : Collections.unmodifiableList(notices);
+            this.notice = this.notices.isEmpty() ? null : this.notices.get(0);
             this.noticeWhy = noticeWhy;
         }
 
         public static Decision send(OutgoingChatRequest req, boolean bypass) {
-            return new Decision(req, bypass, null, null);
+            return new Decision(req, bypass, (OutgoingChatRequest) null, null);
         }
 
         public static Decision notice(OutgoingChatRequest req, String why) {
             return new Decision(null, false, req, why);
         }
 
+        public static Decision notices(List<OutgoingChatRequest> reqs, String why) {
+            return new Decision(null, false, reqs, why);
+        }
+
         public static Decision none() {
-            return new Decision(null, false, null, null);
+            return new Decision(null, false, (OutgoingChatRequest) null, null);
         }
     }
 
@@ -110,8 +137,16 @@ public final class OutgoingChatCore {
     private boolean sweatPartlySent;
     /** Most recent sweat request, reused as the context template for follow-up lines. */
     private OutgoingChatRequest sweatHead;
+    /**
+     * An AutoGG a report line pushed out of the AUTO slot. It waits here until the report leaves
+     * that slot, so a late report costs the gg its turn in the queue but never the send itself.
+     */
+    private OutgoingChatRequest deferredAutoGg;
     private boolean incInFlight;
     private long lastIncDeliveredMs = Long.MIN_VALUE / 4;
+    /** The held typed line currently at the head of the FIFO, and when it got there (hold timeout base). */
+    private OutgoingChatRequest manualHead;
+    private long manualHeadSinceMs;
 
     public OutgoingChatQueue queue() { return queue; }
     public long lastSendMs() { return lastSendMs; }
@@ -128,6 +163,9 @@ public final class OutgoingChatCore {
         clearSweatBatch();
         incInFlight = false;
         lastIncDeliveredMs = Long.MIN_VALUE / 4;
+        manualHead = null;
+        manualHeadSinceMs = 0L;
+        deferredAutoGg = null;
     }
 
     public static boolean isSlashCommand(String text) {
@@ -152,8 +190,15 @@ public final class OutgoingChatCore {
     /**
      * Player submitted from chat. Cancels optional automation and opens the quiet window.
      * Does not enqueue or send.
+     *
+     * <p>A gg parked behind a report ({@link #deferredAutoGg}) is optional automation too, so it
+     * goes here with the rest. Without that the gg's fate was decided by where the pacing gap
+     * happened to fall: cancelling the report released the gg into the AUTO slot, and the typed
+     * line then cleared that slot again and dropped it with no notice, but only when the gap was
+     * closed. Typing now cancels it either way.
      */
     public void onUserIntent(long nowMs) {
+        deferredAutoGg = null; // before cancelSweat, whose release path would re-queue it
         OutgoingChatRequest dropped = queue.cancelOptional();
         cancelSweat(dropped, SweatCancelReason.INTERRUPTED);
         lastManualMs = nowMs;
@@ -187,39 +232,51 @@ public final class OutgoingChatCore {
     }
 
     /**
-     * Decide how to handle a player-originated send. Slash commands always bypass pacing.
-     * Returns a send decision and/or a notice for a displaced prior manual.
+     * Decide how to handle a player-originated send. Off Hypixel nothing is intercepted: the line
+     * is not handled and vanilla sends it. On Hypixel slash commands always bypass pacing; a typed
+     * line goes out now when the gap is open and nothing older is held, otherwise it joins the back
+     * of the held FIFO (and, if the gap is open, the oldest held line goes out in its place, so
+     * wire order is always typing order). A typed line is never dropped: the only refusal is the
+     * FIFO cap, and that comes back as a notice.
      */
     public InterceptResult interceptPlayerSend(String message, LiveContext ctx, long nowMs) {
         if (message == null || message.isEmpty()) return new InterceptResult(false, Decision.none());
         onUserIntent(nowMs);
+        if (ctx == null || !ctx.onHypixel) return new InterceptResult(false, Decision.none());
 
         if (isSlashCommand(message)) {
             OutgoingChatRequest req = newRequest(OutgoingChatKind.MANUAL, message, ctx, nowMs);
             return new InterceptResult(true, Decision.send(req, true));
         }
 
-        if (OutgoingChatPolicy.canSend(OutgoingChatKind.MANUAL, nowMs, lastSendMs, lastManualMs, false)) {
+        boolean gapOpen = OutgoingChatPolicy.canSend(OutgoingChatKind.MANUAL, nowMs, lastSendMs, lastManualMs, false);
+        if (queue.heldManualCount() == 0 && gapOpen) {
             return new InterceptResult(true,
                     Decision.send(newRequest(OutgoingChatKind.MANUAL, message, ctx, nowMs), false));
         }
 
-        Decision holdSide = holdManual(message, ctx, nowMs);
-        return new InterceptResult(true, holdSide);
+        Decision held = holdManual(message, ctx, nowMs);
+        if (held.notice != null) return new InterceptResult(true, held);
+        if (gapOpen) {
+            // Older lines are waiting: the oldest goes now, the new one keeps its place in line.
+            // Through the same tick as the runtime flush, so a head whose context went stale or
+            // whose hold expired is noticed, never sent (code review G, I1).
+            return new InterceptResult(true, tick(ctx, nowMs, false, ALL_ENABLED));
+        }
+        return new InterceptResult(true, held);
     }
 
+    /** Feature toggles are the runtime's to apply on its next flush; the intercept sends MANUAL only. */
+    private static final FeatureGate ALL_ENABLED = new FeatureGate() {
+        public boolean enabled(OutgoingChatKind kind) { return true; }
+    };
+
+    /** Append a typed line to the held FIFO. Only the cap can refuse it, and that is reported. */
     private Decision holdManual(String message, LiveContext ctx, long nowMs) {
         OutgoingChatRequest request = newRequest(OutgoingChatKind.MANUAL, message, ctx, nowMs);
         OutgoingChatQueue.Displacement d = queue.enqueue(request);
         cancelSweat(d.optional, SweatCancelReason.INTERRUPTED);
-        if (d.priorSameSlot != null && d.priorSameSlot.kind == OutgoingChatKind.MANUAL) {
-            OutgoingChatRequest older = d.priorSameSlot;
-            if (OutgoingChatPolicy.canSend(OutgoingChatKind.MANUAL, nowMs, lastSendMs, lastManualMs, false)
-                    && older.contextMatches(ctx.sessionId, ctx.serverKey, ctx.activeGame, ctx.partyEpoch)) {
-                return Decision.send(older, false);
-            }
-            return Decision.notice(older, "superseded");
-        }
+        if (d.rejected != null) return Decision.notice(d.rejected, "too many held");
         return Decision.none(); // held silently as next priority
     }
 
@@ -233,7 +290,11 @@ public final class OutgoingChatCore {
     public void submit(OutgoingChatKind kind, String text, LiveContext ctx, long nowMs) {
         if (text == null || text.isEmpty() || kind == null) return;
         OutgoingChatRequest request = newRequest(kind, text, ctx, nowMs);
-        OutgoingChatQueue.Displacement d = queue.enqueue(request);
+        // A newer gg supersedes one still waiting behind a report: only one "gg" per game.
+        if (kind == OutgoingChatKind.AUTOGG) deferredAutoGg = null;
+        OutgoingChatQueue.Displacement d = kind == OutgoingChatKind.SWEAT
+                ? enqueueSweat(request)
+                : queue.enqueue(request);
         // MANUAL/INC enqueue clears AUTO as an interrupt.
         if (d.optional != null) {
             if (d.optional.kind == OutgoingChatKind.SWEAT) {
@@ -302,12 +363,15 @@ public final class OutgoingChatCore {
     public void markSweatDone() {
         sweatFlight = SweatFlight.DONE;
         clearSweatBatch();
+        releaseDeferredAutoGg();
     }
 
     public void resetSweatForNewGame() {
         queue.cancelKind(OutgoingChatKind.SWEAT);
         sweatFlight = SweatFlight.IDLE;
         clearSweatBatch();
+        // A new game means last game's gg is void, so it is dropped here rather than released.
+        deferredAutoGg = null;
     }
 
     /** Move the next batch line into the queue under the head's context. False when none remain. */
@@ -316,10 +380,33 @@ public final class OutgoingChatCore {
         OutgoingChatRequest next = new OutgoingChatRequest(
                 OutgoingChatKind.SWEAT, sweatRemaining.pollFirst(),
                 sweatHead.sessionId, sweatHead.serverKey, true, true, sweatHead.partyEpoch, nowMs);
-        queue.enqueue(next);
+        enqueueSweat(next);
         sweatHead = next;
         sweatFlight = SweatFlight.IN_FLIGHT;
         return true;
+    }
+
+    /**
+     * The one way a report line enters the queue. A report takes the AUTO slot from a queued
+     * AutoGG; remembering it here is what keeps that gg from being dropped silently.
+     */
+    private OutgoingChatQueue.Displacement enqueueSweat(OutgoingChatRequest request) {
+        OutgoingChatQueue.Displacement d = queue.enqueue(request);
+        if (d.priorSameSlot != null && d.priorSameSlot.kind == OutgoingChatKind.AUTOGG) {
+            deferredAutoGg = d.priorSameSlot;
+        }
+        return d;
+    }
+
+    /**
+     * Put a report-displaced AutoGG back once the AUTO slot is free. It re-enters as an ordinary
+     * AUTO line, so pacing, the quiet window and the staleness checks all still apply to it.
+     */
+    private void releaseDeferredAutoGg() {
+        if (deferredAutoGg == null || queue.peekAuto() != null) return;
+        OutgoingChatRequest gg = deferredAutoGg;
+        deferredAutoGg = null;
+        queue.enqueue(gg);
     }
 
     private void clearSweatBatch() {
@@ -331,6 +418,8 @@ public final class OutgoingChatCore {
     // ---- cancel / world -----------------------------------------------------
 
     public Decision cancelKind(OutgoingChatKind kind) {
+        // Cancelling AutoGG must reach a deferred gg as well, queued or not.
+        if (kind == OutgoingChatKind.AUTOGG) deferredAutoGg = null;
         OutgoingChatRequest dropped = queue.cancelKind(kind);
         if (dropped == null) return Decision.none();
         if (dropped.kind == OutgoingChatKind.SWEAT) {
@@ -344,10 +433,12 @@ public final class OutgoingChatCore {
     }
 
     public Decision invalidateAll() {
-        OutgoingChatRequest held = queue.peekManual();
+        List<OutgoingChatRequest> held = queue.drainManuals();
         OutgoingChatRequest inc = queue.peekInc();
         OutgoingChatRequest auto = queue.peekAuto();
         queue.clear();
+        manualHead = null;
+        deferredAutoGg = null;
         if (inc != null) incInFlight = false;
         if (auto != null && auto.kind == OutgoingChatKind.SWEAT) {
             sweatFlight = SweatFlight.DONE;
@@ -356,7 +447,7 @@ public final class OutgoingChatCore {
             sweatFlight = SweatFlight.DONE;
             clearSweatBatch();
         }
-        if (held != null) return Decision.notice(held, "world change");
+        if (!held.isEmpty()) return Decision.notices(held, "world change");
         return Decision.none();
     }
 
@@ -395,10 +486,18 @@ public final class OutgoingChatCore {
             return Decision.none();
         }
 
-        if (next.kind == OutgoingChatKind.MANUAL
-                && OutgoingChatPolicy.manualHoldExpired(next.enqueuedAtMs, nowMs)) {
-            OutgoingChatRequest dropped = queue.pollNext();
-            return Decision.notice(dropped, "timed out");
+        if (next.kind == OutgoingChatKind.MANUAL) {
+            if (next != manualHead) {
+                // The hold timeout counts from when a line reaches the head of the FIFO: a line
+                // behind others has not been waiting on pacing yet, it has been waiting on them.
+                manualHead = next;
+                manualHeadSinceMs = nowMs;
+            }
+            if (OutgoingChatPolicy.manualHoldExpired(manualHeadSinceMs, nowMs)) {
+                OutgoingChatRequest dropped = queue.pollNext();
+                manualHead = null;
+                return Decision.notice(dropped, "timed out");
+            }
         }
 
         // A report already underway keeps its lines at the old ~0.5s cadence; everything else
@@ -471,6 +570,7 @@ public final class OutgoingChatCore {
             if (!enqueueNextSweat(nowMs)) {
                 sweatFlight = SweatFlight.DONE;
                 clearSweatBatch();
+                releaseDeferredAutoGg();
             }
         }
         if (request.kind == OutgoingChatKind.INC) {
@@ -500,6 +600,8 @@ public final class OutgoingChatCore {
             sweatFlight = SweatFlight.DONE;
             clearSweatBatch();
         }
+        // Either way the report has left the AUTO slot, so the gg it displaced may have it back.
+        releaseDeferredAutoGg();
     }
 
     /** Only safe interruptions keep Sweat retryable; party/context ends are final. */

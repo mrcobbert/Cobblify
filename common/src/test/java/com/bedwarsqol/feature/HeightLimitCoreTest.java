@@ -1,17 +1,23 @@
 package com.bedwarsqol.feature;
 
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class HeightLimitCoreTest {
+
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
 
     private static final Object W1 = new Object();
     private static final Object W2 = new Object();
@@ -230,5 +236,27 @@ public class HeightLimitCoreTest {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
         }
+    }
+
+    /**
+     * The save writes atomically and replaces the whole file: the directory holds nothing but the
+     * target (no {@code *.tmp} sibling) and a second save leaves only its own entries behind.
+     */
+    @Test
+    public void saveLeavesNoTempFileAndReplacesEverything() throws Exception {
+        File dir = tmp.newFolder("limits");
+        File f = new File(dir, "height-limits.txt");
+        Map<String, Integer> first = new LinkedHashMap<>();
+        first.put("A", 1);
+        first.put("B", 2);
+        HeightLimitStore.save(f, first);
+        Map<String, Integer> second = new LinkedHashMap<>();
+        second.put("C", 3);
+        HeightLimitStore.save(f, second);
+
+        assertArrayEquals(new String[]{"height-limits.txt"}, dir.list());
+        Map<String, Integer> out = HeightLimitStore.load(f);
+        assertEquals(1, out.size());
+        assertEquals(Integer.valueOf(3), out.get("C"));
     }
 }

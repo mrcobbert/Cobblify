@@ -251,6 +251,9 @@ public class SettingsGui extends GuiScreen {
     private static final int DD_BG = 0xFF1E1A14;            // menu surface (fully opaque, slightly elevated)
     private static final int DD_ITEM_SELECTED = 0xFF3A342A; // subtle selection
     private static final int DD_ITEM_HOVER = 0xFF4A4238;    // brighter hovered row
+    // Pad above the first option row and below the last. Shared by the list layout, the hover test and
+    // the click, so the row the cursor highlights is always the row a click applies (F10).
+    private static final float DD_PAD_Y = 2f;
     // Always-reserved gutter on the right of the content column so card width is identical whether or
     // not the scrollbar is showing (the thin scrollbar lives inside this band).
     private static final int SCROLL_GUTTER = 7;
@@ -791,6 +794,9 @@ public class SettingsGui extends GuiScreen {
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         // Resolve the accent once per frame — every accent-sensitive element reads it (live recolour).
         accent = GuiTheme.fromToken(settings().guiAccent);
+        // Re-establish the 2D GUI orthographic projection ourselves (GuiIngameMixin cancels
+        // renderGameOverlay while the panel is open, which otherwise skips vanilla's setupOverlayRendering).
+        mc.entityRenderer.setupOverlayRendering();
         GuiBlur.update(); // render the world blur onto the framebuffer before anything draws on top
         advanceScroll();
         // Remap the host cursor into the fixed-"Large" virtual space the panel is laid out in.
@@ -1157,13 +1163,12 @@ public class SettingsGui extends GuiScreen {
     private float[] dropdownListGeom() {
         int n = ddOptions.length;
         float itemH = clampf(ddY2 - ddY1, 10f, 16f);
-        float padY = 2f;
         float maxOpt = 0f;
         for (String o : ddOptions) maxOpt = Math.max(maxOpt, GuiRender.textWidth(o, ddScale, MED));
         float w = maxOpt + ddPad * 2f;
         float x2 = ddX2;
         float x1 = x2 - w;
-        float totalH = n * itemH + padY * 2f;
+        float totalH = n * itemH + DD_PAD_Y * 2f;
         float y1 = ddY2 + 2f;
         float limitTop = contentTop;
         float limitBottom = panelY + panelH - pad;
@@ -1179,17 +1184,22 @@ public class SettingsGui extends GuiScreen {
         if (openDropdownKind == 0 || ddOptions == null) return;
         float[] g = dropdownListGeom();
         float x1 = g[0], y1 = g[1], x2 = g[2], y2 = g[3], itemH = g[4];
-        float padY = 2f, r = 2.5f;
+        float r = 2.5f;
         GuiRender.roundedRect(x1, y1, x2, y2, r, DD_BG);
         int sel = stepperIndex(settings(), openDropdownKind);
         float inset = 0.5f;
         float rr = r - inset;
         int last = ddOptions.length - 1;
         int n = ddOptions.length;
+        // The hovered row comes from the same rule as the click (F10, I2). The old per-row containment
+        // test was inclusive at both ends, so a boundary pixel painted two rows while the click applied
+        // the one above the highlight.
+        int hoverIdx = GuiRender.inside(mouseX, mouseY, x1, y1, x2, y2)
+                ? DropdownHit.indexAt(mouseY, y1, DD_PAD_Y, itemH, n) : -1;
         for (int i = 0; i < n; i++) {
-            float iy1 = y1 + padY + i * itemH;
+            float iy1 = DropdownHit.rowTop(y1, DD_PAD_Y, itemH, i);
             float iy2 = iy1 + itemH;
-            boolean hover = GuiRender.inside(mouseX, mouseY, x1, iy1, x2, iy2);
+            boolean hover = i == hoverIdx;
             boolean selected = i == sel;
             if (hover || selected) {
                 float hTop = i == 0 ? y1 + inset : iy1;
@@ -1244,7 +1254,7 @@ public class SettingsGui extends GuiScreen {
             if (mouseButton == 0) {
                 float[] g = dropdownListGeom();
                 if (GuiRender.inside(mouseX, mouseY, g[0], g[1], g[2], g[3])) {
-                    int idx = clamp((int) Math.floor((mouseY - (g[1] + 3f)) / g[4]), 0, ddOptions.length - 1);
+                    int idx = DropdownHit.indexAt(mouseY, g[1], DD_PAD_Y, g[4], ddOptions.length);
                     int kind = openDropdownKind;
                     setStepperIndex(cfg, kind, idx);
                     closeDropdown();
@@ -2009,11 +2019,13 @@ public class SettingsGui extends GuiScreen {
     private void playersSearchKey(char typedChar, int keyCode) {
         if (keyCode == Keyboard.KEY_ESCAPE) {
             if (PlayersViewState.setQuery("")) playersScrollRender = 0f;
-            searchFocused = false;
+            playerSearchFocused = false; // the field that routed this key, so a second ESC can close the GUI (F8)
             return;
         }
         if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
-            triggerPlayerLookup();
+            // Off Hypixel there is nothing to look up, and the action row that offers it is not even
+            // built - Enter must not bypass that gate (F9).
+            if (HypixelContext.isOnHypixel()) triggerPlayerLookup();
             return;
         }
         if (keyCode == Keyboard.KEY_BACK) {
