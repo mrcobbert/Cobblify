@@ -5,13 +5,11 @@
 #
 #   bash ~/Downloads/bwqol-diag.command
 #
-# Reference values below are from Jacob's known-good machine (Aug 20, 2026).
+# The mod jar is identified by its OWN version (file name, else the version
+# constant inside it) - never by a pinned hash, which only ever matched one
+# release. The Weave loader below is a fixed dependency, so its hash still is a
+# reference value (loader 1.3.3).
 
-GOOD_JAR_SHA="089b67c631465fc99c64df32b2b2be2c2697872227938c90eaee4e4678acf73b"
-GOOD_JAR_NAME="Cobblify-Lunar-0.9.1.jar (built Aug 20, 550273 bytes)"
-# Forge counterpart (Prism instance mods folder), for reference:
-GOOD_FORGE_JAR_SHA="febff53630486440c80b786409b1dd18f282d30840c235997c44b289228bff04"
-GOOD_FORGE_JAR_NAME="Cobblify-1.8.9-forge-0.9.1.jar (built Aug 20, 1572484 bytes)"
 GOOD_LOADER_SHA="e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2"
 GOOD_LOADER_NAME="Weave-Loader-Agent-1.3.3.jar"
 
@@ -21,6 +19,7 @@ OUT="${BWQOL_OUT:-$HOME/Desktop/bwqol-diag.txt}"
 JAR_SUMMARY="no Cobblify/BedwarsQOL jar found in ~/.weave/mods"
 TOGGLE_SUMMARY="settings file not found"
 LOADER_SUMMARY="no Weave loader jar found in ~/.weave"
+LAST_JAR_VERSION=""
 NJARS=0
 
 sec() { { echo; echo "======== $1 ========"; } >> "$OUT"; }
@@ -29,20 +28,37 @@ marker_count() { # jar, marker -> count of matches inside ChatNameTags.class
     unzip -p "$1" com/bedwarsqol/feature/ChatNameTags.class 2>/dev/null | grep -ac "$2"
 }
 
+jar_version() { # jar -> X.Y.Z, or "unknown"
+    local jar="$1" ver
+    # The release name carries it: Cobblify-Lunar-0.15.1.jar,
+    # Cobblify-1.8.9-forge-0.15.1.jar, BedwarsQOL-Lunar-0.9.1.jar.
+    ver=$(basename "$jar" | sed -n 's/^.*-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.jar$/\1/p')
+    if [ -z "$ver" ]; then
+        # Renamed jar: read the BedwarsQol.VERSION constant out of the class
+        # bytes (the Weave manifest carries no version field).
+        ver=$(unzip -p "$jar" com/bedwarsqol/BedwarsQol.class 2>/dev/null \
+              | LC_ALL=C tr -c '[:alnum:]._-' '\n' \
+              | grep -E -m1 '^[0-9]+\.[0-9]+\.[0-9]+$')
+    fi
+    [ -n "$ver" ] || ver="unknown"
+    printf '%s' "$ver"
+}
+
 analyze_jar() {
-    local jar="$1" sha size verdict
+    local jar="$1" sha size verdict ver
     sha=$(shasum -a 256 "$jar" | awk '{print $1}')
     size=$(stat -f%z "$jar" 2>/dev/null)
+    ver=$(jar_version "$jar")
+    LAST_JAR_VERSION="$ver"
     {
         echo "file:    $jar"
         echo "size:    $size bytes"
         echo "date:    $(stat -f '%Sm' "$jar" 2>/dev/null)"
         echo "sha256:  $sha"
+        echo "version: $ver"
     } >> "$OUT"
 
-    if [ "$sha" = "$GOOD_JAR_SHA" ]; then
-        verdict="CURRENT - byte-identical to Jacob's working build"
-    elif ! unzip -l "$jar" 2>/dev/null | grep -q "weave.mod.json"; then
+    if ! unzip -l "$jar" 2>/dev/null | grep -q "weave.mod.json"; then
         verdict="WRONG BUILD - not a Weave mod (this looks like the Forge jar; Lunar needs the -Lunar jar)"
     elif ! unzip -l "$jar" 2>/dev/null | grep -q "com/bedwarsqol/feature/ChatNameTags.class"; then
         verdict="VERY OLD - no ChatNameTags class at all (0.2.0-era build)"
@@ -51,12 +67,12 @@ analyze_jar() {
     elif [ "$(marker_count "$jar" DECIDE_WINDOW_MS)" -eq 0 ] 2>/dev/null; then
         verdict="STALE - pre-Jul-2-01:19 build: missing the deferred-decision fix (random lines never get tagged). Replace with Jacob's jar."
     else
-        verdict="UNKNOWN BUILD - internal markers look current but bytes differ from Jacob's jar. Replace with Jacob's exact jar to rule it out."
+        verdict="LOOKS CURRENT - Cobblify $ver (internal markers present). Compare the version with the latest release."
     fi
     echo "verdict: $verdict" >> "$OUT"
-    # Keep the worst verdict as the summary (anything non-CURRENT wins).
+    # Keep the worst verdict as the summary (anything non-current wins).
     case "$JAR_SUMMARY" in
-        CURRENT*|"no Cobblify/BedwarsQOL jar found"*) JAR_SUMMARY="$verdict" ;;
+        "LOOKS CURRENT"*|CURRENT*|"no Cobblify/BedwarsQOL jar found"*) JAR_SUMMARY="$verdict" ;;
     esac
 }
 
@@ -174,10 +190,12 @@ ls -la "$HOME/Downloads/"*[Cc]obblify* "$HOME/Desktop/"*[Cc]obblify* \
     echo "Chat toggle:  $TOGGLE_SUMMARY"
     echo "Weave loader: $LOADER_SUMMARY"
     echo "Jars in mods: $NJARS"
-    echo "Expected jar: $GOOD_JAR_NAME"
+    echo "Detected version: ${LAST_JAR_VERSION:-n/a}"
     echo "================================================="
 } | tee -a "$OUT"
 
 echo ""
 echo ">>> Done. Send this file back on Discord:  $OUT"
-open -R "$OUT" 2>/dev/null
+# Reveal the report in Finder only for the double-click case; a caller that
+# chose the destination with BWQOL_OUT (tests, scripts) gets no Finder window.
+[ -n "${BWQOL_OUT:-}" ] || open -R "$OUT" 2>/dev/null

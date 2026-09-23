@@ -9,6 +9,14 @@ tags for the mod. Two deployment configs:
   binding. Deploy ONLY with `npm run deploy:owner` (a plain `wrangler deploy`
   strips the binding and silently disables the providers).
 
+To deploy and immediately probe the result, run
+`WRANGLER_CONFIG=wrangler.owner.toml WORKER_TOKEN=<token> npm run deploy-and-test`.
+`WRANGLER_CONFIG` selects the config that script deploys (default `wrangler.toml`,
+so the owner must set it, for the reason above) and it prints which one it used.
+Both probe scripts send `WORKER_TOKEN` as the `X-BedwarsQol-Token` header: a
+token-gated deployment answers 401 to every route without it, and the probe then
+says so and names the variable.
+
 The owner deployment can also serve private launcher updates. Add the
 `UPDATE_BUCKET` R2 and `UPDATE_EVENTS` D1 bindings documented in
 `wrangler.owner.toml`, apply `migrations/0001_launcher_update_events.sql`, and

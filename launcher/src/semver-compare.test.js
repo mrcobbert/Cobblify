@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { compareVersions, isValidVersion } from "../tools/semver-compare.mjs";
+
+const TOOL = fileURLToPath(new URL("../tools/semver-compare.mjs", import.meta.url));
 
 // The release tooling's ordering must agree with the Worker's and with the semver crate
 // the launcher uses: dev builds sit between the previous stable and their own release.
@@ -31,4 +38,32 @@ test("malformed versions are rejected rather than ordered", () => {
   assert.equal(isValidVersion("0.14.1-"), false);
   assert.equal(isValidVersion("0.14.1-dev.0"), true);
   assert.equal(isValidVersion("0.14.1-0a"), true);
+});
+
+// The dev and stable channel guards call this tool by path from a workflow step and read
+// its stdout: an ordering that prints nothing reads as "not newer" and refuses a perfectly
+// good release. A symlinked or space-containing invocation must still print.
+test("the CLI prints an ordering through a symlink and from a path containing a space", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "cobblify-semver-cli-"));
+  try {
+    const link = path.join(dir, "compare-through-link.mjs");
+    await symlink(TOOL, link);
+    const run = (tool, a, b) => spawnSync(process.execPath, [tool, a, b], { encoding: "utf8" });
+
+    const newer = run(link, "0.16.0", "0.15.1");
+    assert.equal(newer.status, 0);
+    assert.equal(newer.stdout.trim(), "1");
+    assert.equal(run(link, "0.15.1", "0.16.0").stdout.trim(), "-1");
+    assert.equal(run(link, "0.16.0", "0.16.0").stdout.trim(), "0");
+
+    const spaced = path.join(dir, "dir with space");
+    await mkdir(spaced);
+    const copy = path.join(spaced, "semver-compare.mjs");
+    await copyFile(TOOL, copy);
+    const spacedRun = run(copy, "0.16.0", "0.15.1");
+    assert.equal(spacedRun.status, 0);
+    assert.equal(spacedRun.stdout.trim(), "1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -51,7 +51,7 @@ cobblify_assert_blank_app "$app_src"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/lunar/build.gradle.kts" | head -1)
 [ -n "$version" ] || die "could not read version from lunar/build.gradle.kts"
 
-agent_src=$(find "$HOME/.weave" -maxdepth 1 -name 'Weave-Loader-Agent-*.jar' | head -1)
+agent_src=$(cobblify_find_weave_agent "$HOME/.weave")
 mod_src="$repo_root/lunar/build/libs/Cobblify-Lunar-$version.jar"
 forge_src="$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar"
 

@@ -53,9 +53,16 @@ old immutable releases.
 If a candidate fails testing, do not run promotion. Build a higher corrected
 version instead.
 
-Promotion retains the newest three immutable release prefixes. There is no
-staged rollout, remote rollback button, or per-device enrollment; to recover
-from a bad stable release, ship a higher corrected version.
+Promotion retains three immutable release prefixes: the one it just promoted plus
+the newest two others. It never deletes the release `channels/stable.json` names,
+whatever the version sort says - a hotfix promoted below the newest prefixes used
+to be deleted the moment it became stable.
+
+Promotion also refuses a version that is not newer than the one stable currently
+names, before anything is uploaded: launchers only update forward, so a version at
+or below the current one is never offered to anyone already on it. There is no
+staged rollout, remote rollback button, or per-device enrollment; to recover from a
+bad stable release, ship a higher corrected version.
 
 ## Dev channel
 
@@ -83,6 +90,10 @@ The dev channel only moves forward: the job refuses a build whose version is
 not newer than the one `channels/dev.json` already names (bump the branch's
 pins if you need to test an older line). It keeps the build it just published
 plus the newest other dev prefix; promotion's retention ignores dev prefixes.
+
+Only wrangler's "The specified key does not exist." counts as "no dev channel
+yet". Any other failure to read `channels/dev.json` - an auth or API error - now
+fails the publish instead of skipping the forward-only guard.
 
 Dev builds are never promoted: `Promote Launcher Update` refuses any version
 containing `-`. Release the plain version with a fresh candidate.

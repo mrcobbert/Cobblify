@@ -80,7 +80,6 @@ npm install --no-fund --no-audit || die "npm install failed"
 ok "Installed."
 
 # 4. Log in to Cloudflare (opens a browser)
-npx wrangler login
 LOGIN_STATUS="$(npx wrangler whoami 2>&1 || true)"
 if printf '%s' "$LOGIN_STATUS" | grep -qiE "not authenticated|not logged|wrangler login"; then
   say "A browser window will open — log in or sign up for Cloudflare, then click \"Allow\"."

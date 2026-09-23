@@ -6,6 +6,10 @@
  *
  * CLI: `node semver-compare.mjs A B` prints -1, 0 or 1 and exits 0; exits 2 on a bad version.
  */
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
 
 function parse(value) {
@@ -62,7 +66,23 @@ export function isValidVersion(value) {
   return parse(value) != null;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The CLI runs only when this file IS the entry point. The old guards compared the invoked
+// path (symlink unresolved, spaces unencoded) with import.meta.url, so a symlinked or
+// space-containing invocation silently ran nothing - exit 0 without verifying, or empty
+// output where an ordering was expected. Compare real paths, and treat any resolution
+// error as "not the entry point" so importing this module still runs nothing.
+function isMainModule() {
+  try {
+    return (
+      Boolean(process.argv[1]) &&
+      realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   const result = compareVersions(process.argv[2], process.argv[3]);
   if (result == null) {
     console.error(`invalid version: ${process.argv[2]} / ${process.argv[3]}`);

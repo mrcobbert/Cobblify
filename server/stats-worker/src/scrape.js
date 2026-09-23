@@ -392,7 +392,7 @@ const IN_FLIGHT = new Map(); // playerLower -> promise of { body, retry429? } (t
 function scrapeShared(player, env, ctx, lane, maxAttempts, source) {
   const key = player.toLowerCase();
   const existing = IN_FLIGHT.get(key);
-  if (existing) return existing;
+  if (existing) return ownCopy(existing);
   const writes = [];
   const trackedCtx = {
     waitUntil(p) {
@@ -417,7 +417,19 @@ function scrapeShared(player, env, ctx, lane, maxAttempts, source) {
       .then(() => Promise.all(writes))
       .finally(() => { if (IN_FLIGHT.get(key) === promise) IN_FLIGHT.delete(key); })
   );
-  return promise;
+  return ownCopy(promise);
+}
+
+/**
+ * Every caller of a shared scrape - the initiator included - gets its OWN shallow copy of the
+ * terminal result. The routes add per-identity provider fields (urchin*, seraph*, the
+ * "resolved unavailable" flags) to the body they receive, so handing joiners the initiator's
+ * object let one identity's fields ride into another identity's response (W1). The cache is
+ * unaffected: writeCached serialised the body before any route touched it. Shallow suffices
+ * because the routes only ADD top-level fields; overall/modes are never mutated in place.
+ */
+function ownCopy(shared) {
+  return shared.then((r) => (r && r.body ? { ...r, body: { ...r.body } } : r));
 }
 
 /** Single-player resolution: cache (unless fresh) then scrape. */

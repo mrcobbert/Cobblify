@@ -173,3 +173,16 @@ cobblify_sign_app() {
   codesign --verify --deep --strict "$app" \
     || die "codesign --verify --deep --strict failed for $app - refusing to ship an invalid bundle"
 }
+
+# Locates the installed Weave loader agent, if there is one.
+#
+# A missing directory or an empty match prints nothing and returns 0, so a caller running
+# under `set -euo pipefail` reaches its own die() with an explanation instead of aborting
+# on find's exit code - which is exactly what `find "$dir" ... | head -1` did when
+# ~/.weave was not there.
+# Usage: cobblify_find_weave_agent <directory>
+cobblify_find_weave_agent() {
+  local dir=$1
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 1 -name 'Weave-Loader-Agent-*.jar' -print -quit
+}
