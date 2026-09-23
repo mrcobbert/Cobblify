@@ -134,6 +134,10 @@ one-sided test forge net/minecraftforge/fml/common/Loader.java
 # removed anticheat module. Platform-independent; could be shared later.
 one-sided test lunar com/bedwarsqol/config/ClientSettingsStaleKeysTest.java
 
+# Lunar's sanitize keeps mouse-button key codes for the Weave KeybindRegistry;
+# Forge persists its KeyBindings in options.txt and never syncs them back.
+one-sided test lunar com/bedwarsqol/config/ClientSettingsMouseBindTest.java
+
 # ---------------------------------------------------------------------------
 # res: the mirrored resource roots, src/main/resources and
 # lunar/src/main/resources. Paths are relative to those roots.
