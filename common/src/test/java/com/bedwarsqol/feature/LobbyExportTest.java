@@ -83,6 +83,45 @@ public class LobbyExportTest {
     }
 
     @Test
+    public void sidebarRebuildGapKeepsHubEligible() {
+        long t0 = 10000L;
+        // Hypixel removes and re-adds the slot-1 objective when it updates the sidebar; a capture
+        // inside that gap sees no objective at all and must not flip the hub to "Not Available".
+        boolean held = LobbyExport.hubSidebarIsBedwars(false, false, t0, t0 + 400L);
+        assertTrue(held);
+        LobbyExport.EvalResult r = LobbyExport.evaluate(true, held, false, false, null, null, t0 + 400L);
+        assertEquals("LOBBY", r.context);
+        assertTrue(r.eligible);
+    }
+
+    @Test
+    public void gapLongerThanGraceDropsHub() {
+        long t0 = 10000L;
+        assertFalse(LobbyExport.hubSidebarIsBedwars(false, false, t0, t0 + 2500L));
+    }
+
+    @Test
+    public void presentNonBedwarsTitleIsImmediatelyIneligible() {
+        long t0 = 10000L;
+        // SkyWars hub: the objective is there and says something else. No grace, even right after
+        // a BedWars title was seen.
+        assertFalse(LobbyExport.hubSidebarIsBedwars(true, false, t0, t0 + 10L));
+    }
+
+    @Test
+    public void presentBedwarsTitleIsEligible() {
+        assertTrue(LobbyExport.hubSidebarIsBedwars(true, true, 0L, 10000L));
+    }
+
+    @Test
+    public void clearedGraceIsIneligible() {
+        // clearBedwarsGrace() on world change zeroes the timestamp; a missing objective on the new
+        // world must not inherit the old hub's verdict.
+        assertFalse(LobbyExport.hubSidebarIsBedwars(false, false, 0L, 10000L));
+        assertFalse(LobbyExport.hubSidebarIsBedwars(false, false, 0L, 500L));
+    }
+
+    @Test
     public void bedwarsHubIsEligibleWithoutAModeButNeverAutoFetches() {
         LobbyExport.EvalResult r = LobbyExport.evaluate(true, true, false, false, null, null);
         assertEquals("LOBBY", r.context);

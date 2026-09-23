@@ -233,6 +233,25 @@ public final class LobbyExport {
      * that line is absent. {@code retainedIfNoSidebar} is consulted only in that absent-line branch
      * (a present unsupported label clears retention; it must not fall back to a previous Solo).
      */
+    /**
+     * How long a BedWars sidebar verdict survives a <b>missing</b> slot-1 objective. Hypixel removes
+     * and re-adds the objective whenever it updates the sidebar; a sample taken inside that gap
+     * sees no objective at all.
+     */
+    public static final long SIDEBAR_GRACE_MS = 2000L;
+
+    /**
+     * Hub-eligibility input for {@link #evaluate}. A present objective is judged on its title alone,
+     * so a non-BedWars title (the SkyWars hub) is ineligible at once. A missing objective is
+     * "unknown": it keeps a BedWars title seen within {@link #SIDEBAR_GRACE_MS}. A world change
+     * zeroes {@code lastBedwarsMs}, so a hop to another hub cannot inherit the verdict.
+     */
+    public static boolean hubSidebarIsBedwars(boolean objectivePresent, boolean titleSaysBedwars,
+                                              long lastBedwarsMs, long nowMs) {
+        if (objectivePresent) return titleSaysBedwars;
+        return lastBedwarsMs > 0L && nowMs - lastBedwarsMs < SIDEBAR_GRACE_MS;
+    }
+
     public static EvalResult evaluate(boolean inHypixel, boolean rawInBedwars,
                                       boolean queue, boolean game,
                                       String sidebarMode, String retainedIfNoSidebar) {
