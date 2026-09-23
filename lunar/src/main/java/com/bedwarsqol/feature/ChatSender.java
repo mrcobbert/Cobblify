@@ -78,7 +78,7 @@ public final class ChatSender {
 
         int colon = raw.indexOf(':');
         if (colon == 0) return null; // a message-body leaf: the text starts with the colon
-        if (colon > 0) return senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue);
+        if (colon > 0) return senderBeforeColon(raw, colon, inTab, anonymizedQueue);
 
         // No colon and no known server shape: trust only a lone name token (the rank-card name
         // component), so prose like "Bob has joined" can't drive a bogus lookup on "joined". The
@@ -104,7 +104,18 @@ public final class ChatSender {
         String raw = plainText(component);
         if (raw == null) return null;
         int colon = raw.indexOf(':');
-        return colon > 0 ? senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue) : null;
+        return colon > 0 ? senderBeforeColon(raw, colon, inTab, anonymizedQueue) : null;
+    }
+
+    /**
+     * {@link #senderFromHead} for the head before {@code colon}. Typed chat is always
+     * {@code "Name: msg"}, so the anonymized-queue trust needs a space (or the end of a trimmed name
+     * leaf) after the colon; {@code https://…}, {@code 12:30} and {@code "k":"v"} don't get it.
+     */
+    private static String senderBeforeColon(String raw, int colon, Predicate<String> inTab,
+                                            boolean anonymizedQueue) {
+        boolean spaced = colon + 1 >= raw.length() || raw.charAt(colon + 1) == ' ';
+        return senderFromHead(raw.substring(0, colon), inTab, anonymizedQueue && spaced);
     }
 
     /** The component's text stripped of formatting codes and trimmed; null when effectively empty. */
@@ -139,7 +150,9 @@ public final class ChatSender {
      */
     static final Set<String> LABEL_WORDS = new HashSet<String>(Arrays.asList(
             "warning", "cooldown", "reminder", "tip", "hint", "note", "notice", "error", "info",
-            "alert", "achievement", "reward", "rewards", "quest", "stats", "statistics"));
+            "alert", "achievement", "reward", "rewards", "quest", "stats", "statistics",
+            "map", "mode", "server", "team", "status", "queue", "game", "lobby", "store", "discord",
+            "party"));
 
     /**
      * The sender from a chat line's pre-colon head. A rank/level/guild bracket or a channel prefix
@@ -148,9 +161,10 @@ public final class ChatSender {
      * labels ("Command Failed:", "Cooldown:") aren't mistaken for players — except in the
      * {@code anonymizedQueue}, where the tab vouches for no one (Hypixel junks every name in the
      * pregame queue's tab) and a rankless player's typed chat is precisely this bare shape: there it
-     * is trusted unless the token is a {@link #LABEL_WORDS} entry. The two context inputs are
-     * parameters so the rule is testable without a client; the public one-argument callers read
-     * the live tab and sidebar.
+     * is trusted only when the whole trimmed head is one clean username (the {@code /locraw} JSON
+     * head and {@code >>> X} are not) and is not a {@link #LABEL_WORDS} entry. The two context
+     * inputs are parameters so the rule is testable without a client; the public one-argument
+     * callers read the live tab and sidebar.
      */
     static String senderFromHead(String head, Predicate<String> inTab, boolean anonymizedQueue) {
         String lower = head.trim().toLowerCase();
@@ -166,7 +180,8 @@ public final class ChatSender {
         if (hadBracket || channel) return last;
         if (tokens.size() != 1) return null;
         if (inTab.test(last)) return last;
-        return anonymizedQueue && !LABEL_WORDS.contains(last.toLowerCase(Locale.ROOT)) ? last : null;
+        if (!anonymizedQueue || !NAME.matcher(head.trim()).matches()) return null;
+        return LABEL_WORDS.contains(last.toLowerCase(Locale.ROOT)) ? null : last;
     }
 
     /**
