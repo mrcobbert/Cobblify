@@ -116,6 +116,7 @@ one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
 one-sided test forge com/bedwarsqol/feature/ChatStackTest.java
+one-sided test forge com/bedwarsqol/feature/ModChatTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
 one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
