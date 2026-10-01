@@ -705,11 +705,12 @@ public class SettingsGui extends GuiScreen {
         // sections (GROUP header + its always-visible rows) identically.
         List<RowDef> moduleDefs = new ArrayList<RowDef>();
         List<List<RowDef>> childDefs = new ArrayList<List<RowDef>>();
+        boolean holdKeyOn = settings().sessionStatsHoldKey;
         for (RowDef rd : section.rows) {
             if (!rd.child) {
                 moduleDefs.add(rd);
                 childDefs.add(new ArrayList<RowDef>());
-            } else {
+            } else if (rowShown(rd.kind, holdKeyOn)) { // same filter as childrenOf (search view)
                 childDefs.get(childDefs.size() - 1).add(rd);
             }
         }
