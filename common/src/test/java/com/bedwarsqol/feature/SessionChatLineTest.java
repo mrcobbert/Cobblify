@@ -175,6 +175,121 @@ public class SessionChatLineTest {
         assertNull(parse("2nd Killer - Steve - 3"));
     }
 
+    /**
+     * The current end-of-game block names the winning team as {@code <Team> - <names>}: a 2026 log
+     * capture {@code "     Blue - FakeSlime, [VIP] Studying"} (emi-ran Bedwars-Overlay
+     * ParserTests.cs:203), Lunar's WIN/LOSS winner-row patterns (BedwarsUpdater), and the
+     * HypixelRecreation GameEndListener. Copies are in the cycle's evidence folder.
+     */
+    @Test
+    public void winnerRowCountsAWinWhenItNamesYou() {
+        assertEquals(Kind.WIN, parse("     Blue - FakeSlime, [VIP] Self"));
+        assertEquals(Kind.WIN, parse("     Blue - Self, [VIP] Studying"));
+        assertEquals(Kind.WIN, parse("Red - [MVP+] Self"));                    // solo: one name
+        assertEquals(Kind.WIN, parse("Green - [MVP++] Alex,Self"));            // recreation joins with ","
+        assertEquals(Kind.WIN, parse("Gray - self"));
+    }
+
+    @Test
+    public void winnerRowWithoutYouIsALoss() {
+        assertEquals(Kind.LOSS, parse("     Blue - FakeSlime, [VIP] Studying"));
+        assertEquals(Kind.LOSS, parse("Red - [MVP+] Selfish"));
+        assertEquals(Kind.LOSS, parse("Yellow - [VIP] Self2, Alex"));
+        assertEquals(Kind.LOSS, parse("Pink - [VIP] Alex, Self_"));
+    }
+
+    @Test
+    public void winnerRowNeedsAKnownSelf() {
+        assertNull(SessionChatLine.parse("Blue - Alex", null));
+        assertNull(SessionChatLine.parse("Blue - Alex", "", null));
+    }
+
+    @Test
+    public void rowsThatAreNotTheWinnerRow() {
+        assertEquals(Kind.GAME_END, parse("1st Killer - Self - 5"));
+        assertNull(parse("Self: Red - Self"));
+        assertNull(parse("[MVP+] Alex: Blue - Self"));
+        assertNull(parse("Red - not a name list here"));
+        assertNull(parse("Red - Self - 5"));
+        assertNull(parse("Purple - Self"));
+        assertNull(parse("Blue - "));
+        assertNull(parse("Bed Wars"));
+    }
+
+    // ---- nick ----
+
+    private static final String NICK = "Nicky";
+
+    private static Kind parseNicked(String line) {
+        return SessionChatLine.parse(line, SELF, NICK);
+    }
+
+    /** Hypixel prints a nicked player's nick in every game line, never the account name. */
+    @Test
+    public void nickIsCreditedLikeTheRealName() {
+        assertEquals(Kind.KILL, parseNicked("Steve was killed by Nicky."));
+        assertEquals(Kind.KILL, parseNicked("Steve was fried by Nicky's Golem."));
+        assertEquals(Kind.FINAL_KILL, parseNicked("Steve was killed by Nicky. FINAL KILL!"));
+        assertEquals(Kind.DEATH, parseNicked("Nicky was shot by Steve."));
+        assertEquals(Kind.DEATH, parseNicked("Nicky fell into the void."));
+        assertEquals(Kind.FINAL_DEATH, parseNicked("Nicky fell into the void. FINAL KILL!"));
+        assertEquals(Kind.BED_BREAK, parseNicked("BED DESTRUCTION > Red Bed was destroyed by Nicky!"));
+        assertEquals(Kind.BED_BREAK, parseNicked("BED DESTRUCTION > Blue Bed was melted by nicky's holiday spirit!"));
+        assertEquals(Kind.WIN, parseNicked("Winners: Alex, Nicky"));
+        assertEquals(Kind.WIN, parseNicked("     Blue - Alex, [VIP] Nicky"));
+        assertEquals(Kind.LOSS, parseNicked("     Blue - Alex, [VIP] Steve"));
+        assertEquals(Kind.KILL, parseNicked("Steve was killed by Self."));        // the account name still counts
+        assertEquals(Kind.KILL, SessionChatLine.parse("Steve was killed by Nicky.", null, NICK));
+    }
+
+    @Test
+    public void nickDoesNotCreditOtherNames() {
+        assertNull(parseNicked("Steve was killed by Nickyy."));
+        assertNull(parseNicked("Steve was killed by Alex."));
+        assertNull(parseNicked("Nickyy was shot by Steve."));
+        assertNull(parseNicked("BED DESTRUCTION > Red Bed was destroyed by Nick!"));
+        assertNull(parseNicked("Winners: Alex, Nickyy"));
+        assertNull(SessionChatLine.parse("Steve was fried by Alex's Golem.", SELF, "Golem"));
+        assertEquals(Kind.KILL, SessionChatLine.parse("Steve was killed by Self.", SELF, ""));
+    }
+
+    @Test
+    public void nickChangeLines() {
+        assertEquals("AmazingNick", SessionChatLine.parseNickChange("You are now nicked as AmazingNick!"));
+        assertEquals("AmazingNick", SessionChatLine.parseNickChange("  You are now nicked as AmazingNick!  "));
+        assertEquals("", SessionChatLine.parseNickChange("Your nick has been reset!"));
+        assertNull(SessionChatLine.parseNickChange("[MVP+] Steve: You are now nicked as Alex!"));
+        assertNull(SessionChatLine.parseNickChange("You are now nicked as !"));
+        assertNull(SessionChatLine.parseNickChange("Steve was killed by Self."));
+        assertNull(SessionChatLine.parseNickChange(null));
+    }
+
+    /** Same table as LobbySnapshot.teamName; the words TEAM ELIMINATED prints. */
+    @Test
+    public void teamColourWords() {
+        assertEquals("Red", SessionChatLine.teamForColourCode('c'));
+        assertEquals("Red", SessionChatLine.teamForColourCode('C'));
+        assertEquals("Blue", SessionChatLine.teamForColourCode('9'));
+        assertEquals("Green", SessionChatLine.teamForColourCode('a'));
+        assertEquals("Yellow", SessionChatLine.teamForColourCode('e'));
+        assertEquals("Aqua", SessionChatLine.teamForColourCode('b'));
+        assertEquals("White", SessionChatLine.teamForColourCode('f'));
+        assertEquals("Pink", SessionChatLine.teamForColourCode('d'));
+        assertEquals("Gray", SessionChatLine.teamForColourCode('8'));
+        assertEquals("Gray", SessionChatLine.teamForColourCode('7'));
+        assertNull(SessionChatLine.teamForColourCode('0'));
+        assertNull(SessionChatLine.teamForColourCode((char) 0));
+    }
+
+    @Test
+    public void maskSelfForTheDiagnosticLog() {
+        assertEquals("     Blue - <self>, [VIP] <nick>",
+                SessionChatLine.maskSelf("     Blue - Self, [VIP] Nicky", SELF, NICK));
+        assertEquals("Selfish - <self>", SessionChatLine.maskSelf("Selfish - self", SELF, null));
+        assertEquals("1st Killer - Alex - 5", SessionChatLine.maskSelf("1st Killer - Alex - 5", SELF, NICK));
+        assertNull(SessionChatLine.maskSelf(null, SELF, NICK));
+    }
+
     // ---- negatives ----
 
     @Test
