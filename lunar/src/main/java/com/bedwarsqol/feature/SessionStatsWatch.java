@@ -19,6 +19,11 @@ import net.weavemc.api.event.TickEvent;
  * armour stand seeds the streak. Observe-only: no chat event is cancelled or edited, nothing is
  * sent. Always running (the toggle only hides the HUD) so a session that started before the box
  * was enabled is not lost.
+ *
+ * <p>Weave hands a cancelled {@link ChatEvent.Received} to every subscriber and never posts
+ * action-bar messages, so the chat hook needs no priority or filter. Weave does not catch a
+ * subscriber's exception, though, so both entry points catch their own errors: the tally never
+ * breaks chat or titles.
  */
 public final class SessionStatsWatch {
 
@@ -51,17 +56,26 @@ public final class SessionStatsWatch {
 
     /** Called from the GuiIngame title inject with the raw (possibly formatted) title text. */
     public static void onTitle(String title) {
-        if (title == null || !acceptingEvents()) return;
-        CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
+        if (title == null) return;
+        try {
+            if (!acceptingEvents()) return;
+            CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
+        } catch (RuntimeException e) {
+            DiagLog.log("session: title handler failed " + e);
+        }
     }
 
     @SubscribeEvent
     public void onChat(ChatEvent.Received event) {
         if (event == null || event.getMessage() == null) return;
-        if (ModChat.isMarked(event.getMessage())) return;
-        if (!acceptingEvents()) return;
-        String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.getMessage().getUnformattedText());
-        CORE.onEvent(SessionChatLine.parse(plain, selfName()));
+        try {
+            if (ModChat.isMarked(event.getMessage())) return;
+            if (!acceptingEvents()) return;
+            String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.getMessage().getUnformattedText());
+            CORE.onEvent(SessionChatLine.parse(plain, selfName()));
+        } catch (RuntimeException e) {
+            DiagLog.log("session: chat handler failed " + e);
+        }
     }
 
     @SubscribeEvent

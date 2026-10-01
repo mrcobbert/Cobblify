@@ -8,6 +8,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityArmorStand;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
+import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
@@ -19,6 +20,12 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
  * armour stand seeds the streak. Observe-only: no chat event is cancelled or edited, nothing is
  * sent. Always running (the toggle only hides the HUD) so a session that started before the box
  * was enabled is not lost.
+ *
+ * <p>The chat hook runs at the highest priority and also receives cancelled events, so a
+ * chat-cleaner mod that hides a kill, death or bed line cannot hide it from the tally (the same
+ * subscription {@code GameRosterChat} uses). Action-bar messages, which Forge sends through the
+ * same event, are skipped. Both entry points catch their own errors: the tally never breaks chat
+ * or titles.
  */
 public final class SessionStatsWatch {
 
@@ -51,17 +58,27 @@ public final class SessionStatsWatch {
 
     /** Called from the GuiIngame title inject with the raw (possibly formatted) title text. */
     public static void onTitle(String title) {
-        if (title == null || !acceptingEvents()) return;
-        CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
+        if (title == null) return;
+        try {
+            if (!acceptingEvents()) return;
+            CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
+        } catch (RuntimeException e) {
+            DiagLog.log("session: title handler failed " + e);
+        }
     }
 
-    @SubscribeEvent
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void onChat(ClientChatReceivedEvent event) {
         if (event == null || event.message == null) return;
-        if (ModChat.isMarked(event.message)) return;
-        if (!acceptingEvents()) return;
-        String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.message.getUnformattedText());
-        CORE.onEvent(SessionChatLine.parse(plain, selfName()));
+        if (event.type == 2) return; // action bar
+        try {
+            if (ModChat.isMarked(event.message)) return;
+            if (!acceptingEvents()) return;
+            String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.message.getUnformattedText());
+            CORE.onEvent(SessionChatLine.parse(plain, selfName()));
+        } catch (RuntimeException e) {
+            DiagLog.log("session: chat handler failed " + e);
+        }
     }
 
     @SubscribeEvent
