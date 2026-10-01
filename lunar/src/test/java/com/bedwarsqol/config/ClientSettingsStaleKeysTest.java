@@ -132,4 +132,31 @@ public class ClientSettingsStaleKeysTest {
         assertTrue(out.contains("\"statsBackendUrl\":\"\""));
         assertTrue(out.contains("\"statsBackendToken\":\"\""));
     }
+
+    /** Session Stats hold key (2026-10-01): new defaults, and the removed In Game Only key drops. */
+    @Test
+    public void sessionStatsHoldKeyDefaultsAndInGameOnlyDrops() {
+        ClientSettings fresh = new ClientSettings();
+        assertFalse(fresh.sessionStatsHoldKey);
+        assertEquals(0, fresh.sessionStatsKeyCode);
+
+        ClientSettings old = GSON.fromJson("{\"sessionStatsEnabled\":true,\"sessionStatsInGameOnly\":true,\"guiSize\":1}",
+                ClientSettings.class);
+        old.sanitize();
+        assertTrue(old.sessionStatsEnabled);
+        assertFalse(old.sessionStatsHoldKey);
+        String out = GSON.toJson(old);
+        assertFalse("the removed In Game Only key is gone", out.contains("sessionStatsInGameOnly"));
+
+        ClientSettings bound = GSON.fromJson("{\"sessionStatsHoldKey\":true,\"sessionStatsKeyCode\":-97}",
+                ClientSettings.class);
+        bound.sanitize();
+        ClientSettings back = GSON.fromJson(GSON.toJson(bound), ClientSettings.class);
+        assertTrue(back.sessionStatsHoldKey);
+        assertEquals(-97, back.sessionStatsKeyCode);
+
+        ClientSettings bad = GSON.fromJson("{\"sessionStatsKeyCode\":9999}", ClientSettings.class);
+        bad.sanitize();
+        assertEquals("an unreadable key code resets to unbound", 0, bad.sessionStatsKeyCode);
+    }
 }
