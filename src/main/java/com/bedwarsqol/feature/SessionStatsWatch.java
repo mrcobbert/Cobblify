@@ -67,6 +67,7 @@ public final class SessionStatsWatch {
         if (title == null) return;
         try {
             if (!HypixelContext.isOnHypixel()) return;
+            CORE.onTick(true, System.currentTimeMillis()); // on Hypixel now, before any state lands
             SessionStats.Sample sample = sample();
             logStart(CORE.onGameTick(sample), sample);
             if (!acceptingEvents()) return;
@@ -94,6 +95,9 @@ public final class SessionStatsWatch {
     /** One colour-stripped chat line, from either platform's chat hook. */
     private static void onLine(String plain) {
         if (plain == null || !HypixelContext.isOnHypixel()) return;
+        // Mark the session as on Hypixel before any state lands, so leaving Hypixel clears it even if
+        // no periodic tick ran in between.
+        CORE.onTick(true, System.currentTimeMillis());
         CORE.onNickChange(SessionChatLine.parseNickChange(plain));
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
@@ -168,7 +172,10 @@ public final class SessionStatsWatch {
         if (CORE.onTick(onHypixel, System.currentTimeMillis())) {
             DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
         }
-        if (!onHypixel) return;
+        if (!onHypixel) {
+            sampledWorld = null; // never keep a world alive after leaving Hypixel
+            return;
+        }
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
         if (HypixelContext.isInBedwars() && !sample.active) {

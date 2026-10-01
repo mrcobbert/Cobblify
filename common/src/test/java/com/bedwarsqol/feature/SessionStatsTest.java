@@ -753,4 +753,22 @@ public class SessionStatsTest {
         s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
         assertEquals(1, s.wins());
     }
+
+    /**
+     * Code review round 2 I1: the adapters call {@code onTick(true, …)} before handling any Hypixel
+     * chat line or title, so state that arrives before the first periodic tick is still cleared when
+     * the player leaves Hypixel.
+     */
+    @Test
+    public void stateFromALineBeforeAnyPeriodicTickIsClearedOnLeaving() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 500L); // what the chat path does first
+        s.onNickChange("Nicky");
+        s.onGameTick(queue(1, 1));
+        s.onEvent(activeAs(1, 1, "Red"), SessionChatLine.parse("Steve was killed by Self.", SELF));
+        s.onTick(false, 1_000L);
+        assertNull(s.chatNick());
+        assertEquals(Integer.MIN_VALUE, s.gameSessionId());
+        assertEquals(0, s.kills());
+    }
 }
