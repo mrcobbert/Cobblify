@@ -2,6 +2,7 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
@@ -75,7 +76,7 @@ public class SettingsGui extends GuiScreen {
     private static final int K_ACCENT = 90;
     private static final int K_GRP_APPEARANCE = 91, K_GRP_HUD = 92;
     // Session Stats HUD (Lunar-style game + session tally) and its Reset action row.
-    private static final int K_SESSION = 120, K_SESSION_RESET = 123;
+    private static final int K_SESSION = 120, K_SESSION_HOLD = 122, K_SESSION_RESET = 123, K_SESSION_KEY = 126;
     // Height Limit HUD (Lunar-style map name / build limit / blocks left).
     private static final int K_HEIGHT = 124, K_HEIGHT_INGAME = 125;
     // Chat module: Lunar keeps only the two inc pieces (Lunar Client ships the generic chat QOL
@@ -173,6 +174,8 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Gen Timers", "Diamond and emerald timers", K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Background", K_GENTIMERS_BG, null, K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
+                    new RowDef(RowType.TOGGLE, "Hold Key to Show", K_SESSION_HOLD, null, K_SESSION),
+                    new RowDef(RowType.ACTION, "Key", K_SESSION_KEY, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION),
                     new RowDef(RowType.TOGGLE, "Height Limit", "Map name, build limit and blocks left", K_HEIGHT),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_HEIGHT_INGAME, null, K_HEIGHT)),
@@ -326,6 +329,9 @@ public class SettingsGui extends GuiScreen {
 
     private int selectedSection = 0; // open to HUD by default; a non-empty search overlays any section
     private final List<Card> cards = new ArrayList<Card>();
+    /** The Session Stats Key row is waiting for the next key or mouse button. */
+    private boolean capturingHoldKey;
+
     // Which module cards are expanded (by module kind). Empty = all collapsed (the default each open).
     private final java.util.Set<Integer> expandedModules = new java.util.HashSet<Integer>();
 
@@ -677,12 +683,18 @@ public class SettingsGui extends GuiScreen {
     /** All sub-option defs for a module, found by {@code parentKind} (kinds are globally unique). */
     private List<RowDef> childrenOf(RowDef module) {
         List<RowDef> kids = new ArrayList<RowDef>();
+        boolean holdKeyOn = settings().sessionStatsHoldKey;
         for (Section s : SECTIONS) {
             for (RowDef rd : s.rows) {
-                if (rd.child && rd.parentKind == module.kind) kids.add(rd);
+                if (rd.child && rd.parentKind == module.kind && rowShown(rd.kind, holdKeyOn)) kids.add(rd);
             }
         }
         return kids;
+    }
+
+    /** Rows that exist only while another option is on: the Session Stats Key row needs Hold Key to Show. */
+    private static boolean rowShown(int kind, boolean holdKeyOn) {
+        return kind != K_SESSION_KEY || holdKeyOn;
     }
 
     /** Lays {@link #cards} out as a single right-aligned column inside a viewport at {@code top} of height
@@ -998,7 +1010,7 @@ public class SettingsGui extends GuiScreen {
             }
             case ACTION: {
                 GuiRender.text(row.def.label, row.x + 2, labelY, lScale, labelColor, MED);
-                drawActionButton(row, actionLabel(row.def.kind), ddFontScale, enabled, mouseX, mouseY);
+                drawActionButton(row, actionLabel(row.def.kind, cfg), ddFontScale, enabled, mouseX, mouseY);
                 break;
             }
             case SLIDER: {
@@ -1114,14 +1126,36 @@ public class SettingsGui extends GuiScreen {
         drawCaret(caretLeft + caretW / 2f, (c[1] + c[3]) / 2f, caretW / 2f, caretW * 0.34f, open, enabled ? GuiTheme.TEXT_MID : GuiTheme.TEXT_LO);
     }
 
-    /** Button text for an ACTION row. */
-    private static String actionLabel(int kind) {
-        return kind == K_SESSION_RESET ? "Reset" : "Run";
+    /** Button text for an ACTION row; the Session Stats Key row shows its binding, or the capture prompt. */
+    private String actionLabel(int kind, ClientSettings cfg) {
+        if (kind == K_SESSION_RESET) return "Reset";
+        if (kind == K_SESSION_KEY) {
+            if (capturingHoldKey) return "Press a key...";
+            int code = cfg.sessionStatsKeyCode;
+            return SessionHoldKey.displayName(code, code > 0 ? Keyboard.getKeyName(code) : null);
+        }
+        return "Run";
     }
 
-    /** One-shot action rows: no stored value, just an effect. */
-    private static void runAction(int kind) {
+    /** One-shot action rows: no stored value, just an effect. The Key row starts waiting for a key. */
+    private void runAction(int kind) {
         if (kind == K_SESSION_RESET) SessionStatsWatch.reset();
+        if (kind == K_SESSION_KEY) capturingHoldKey = true;
+    }
+
+    /**
+     * Ends a Key-row capture with a {@link SessionHoldKey} result: a binding (0 clears it) is saved,
+     * {@code CANCEL} leaves the old one, {@code KEEP_WAITING} keeps the row waiting.
+     */
+    private void finishHoldKeyCapture(int binding) {
+        if (binding == SessionHoldKey.KEEP_WAITING) return;
+        capturingHoldKey = false;
+        if (binding != SessionHoldKey.CANCEL) {
+            ClientSettings cfg = settings();
+            cfg.sessionStatsKeyCode = binding;
+            cfg.save();
+        }
+        playClick();
     }
 
     /** Button rect [x1,y1,x2,y2] for an ACTION row: right-aligned like the dropdown trigger, sized to its text. */
@@ -1242,6 +1276,11 @@ public class SettingsGui extends GuiScreen {
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) {
+        if (capturingHoldKey) {
+            // The Session Stats Key row is waiting: this button is the binding, not a click on the screen.
+            finishHoldKeyCapture(SessionHoldKey.bindingForMouse(mouseButton));
+            return;
+        }
         super.mouseClicked(mouseX, mouseY, mouseButton);
         mouseX = Math.round(mouseX / uiScale);
         mouseY = Math.round(mouseY / uiScale);
@@ -1455,12 +1494,16 @@ public class SettingsGui extends GuiScreen {
                 toggle(cfg, row.def.kind);
                 playClick();
                 cfg.save();
+                if (row.def.kind == K_SESSION_HOLD) {
+                    capturingHoldKey = false;
+                    relayoutCards(); // the Key row appears or goes away
+                }
                 break;
             case STEPPER:
                 openDropdown(row, ddFontScale);
                 break;
             case ACTION: {
-                float[] c = actionRect(row, actionLabel(row.def.kind), ddFontScale);
+                float[] c = actionRect(row, actionLabel(row.def.kind, cfg), ddFontScale);
                 if (GuiRender.inside(mouseX, mouseY, c[0], c[1], c[2], c[3])) {
                     runAction(row.def.kind);
                     playClick();
@@ -1493,6 +1536,7 @@ public class SettingsGui extends GuiScreen {
 
     @Override
     public void onGuiClosed() {
+        capturingHoldKey = false;
         stopEditing();
         Keyboard.enableRepeatEvents(false);
         GuiBlur.end();
@@ -1612,6 +1656,10 @@ public class SettingsGui extends GuiScreen {
 
     @Override
     protected void keyTyped(char typedChar, int keyCode) {
+        if (capturingHoldKey) { // Esc cancels the capture here instead of closing the screen
+            finishHoldKeyCapture(SessionHoldKey.bindingForKey(keyCode));
+            return;
+        }
         if (openDropdownKind != 0) {
             if (keyCode == Keyboard.KEY_ESCAPE) { closeDropdown(); playClick(); }
             return;
@@ -1644,6 +1692,7 @@ public class SettingsGui extends GuiScreen {
             case K_INVENTORY: return cfg.inventoryHudEnabled;
             case K_GENTIMERS: return cfg.genTimersEnabled;
             case K_SESSION: return cfg.sessionStatsEnabled;
+            case K_SESSION_HOLD: return cfg.sessionStatsHoldKey;
             case K_HEIGHT: return cfg.heightLimitEnabled;
             case K_HEIGHT_INGAME: return cfg.heightLimitInGameOnly;
             case K_STATS: return cfg.playerStats;
@@ -1686,6 +1735,7 @@ public class SettingsGui extends GuiScreen {
             case K_INVENTORY: cfg.inventoryHudEnabled = !cfg.inventoryHudEnabled; break;
             case K_GENTIMERS: cfg.genTimersEnabled = !cfg.genTimersEnabled; break;
             case K_SESSION: cfg.sessionStatsEnabled = !cfg.sessionStatsEnabled; break;
+            case K_SESSION_HOLD: cfg.sessionStatsHoldKey = !cfg.sessionStatsHoldKey; break;
             case K_HEIGHT: cfg.heightLimitEnabled = !cfg.heightLimitEnabled; break;
             case K_HEIGHT_INGAME: cfg.heightLimitInGameOnly = !cfg.heightLimitInGameOnly; break;
             case K_STATS: cfg.playerStats = !cfg.playerStats; break;
