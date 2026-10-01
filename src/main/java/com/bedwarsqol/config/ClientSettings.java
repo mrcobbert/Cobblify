@@ -1,5 +1,6 @@
 package com.bedwarsqol.config;
 
+import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
@@ -77,7 +78,10 @@ public class ClientSettings {
 
     /** Session Stats: Lunar-layout game + session tally; always drawn on its panel (no Background toggle). */
     public boolean sessionStatsEnabled = false;
-    public boolean sessionStatsInGameOnly = false;
+    /** Hold Key to Show: the HUD stays hidden until {@link #sessionStatsKeyCode} is held. */
+    public boolean sessionStatsHoldKey = false;
+    /** Session Stats key: an LWJGL key code, a mouse button as button - 100, or 0 for unbound. */
+    public int sessionStatsKeyCode = 0;
     public int sessionStatsHudX = -5;
     public int sessionStatsHudY = 60;
     public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
@@ -327,6 +331,7 @@ public class ClientSettings {
         keystrokesHudAnchor = clamp(keystrokesHudAnchor, 0, 8);
         if (keystrokesHudScale < 0.3f || keystrokesHudScale > 10.0f) keystrokesHudScale = defaultTextSizeScale();
         sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, 0, 8);
+        if (!SessionHoldKey.isValidBinding(sessionStatsKeyCode)) sessionStatsKeyCode = 0;
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, 0, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();

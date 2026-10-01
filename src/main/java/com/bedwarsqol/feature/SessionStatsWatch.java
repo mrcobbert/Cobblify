@@ -14,6 +14,8 @@ import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
+import org.lwjgl.input.Keyboard;
+import org.lwjgl.input.Mouse;
 
 /**
  * Feeds {@link SessionStats} from the client: chat lines and titles are classified by
@@ -239,11 +241,27 @@ public final class SessionStatsWatch {
         return nick;
     }
 
-    /** Whether the box is currently allowed to draw (enabled, on Hypixel, In Game Only honoured). */
+    /**
+     * Whether the box draws now: enabled, always in the HUD editor, otherwise only on Hypixel, and in
+     * Hold Key to Show mode only while the Session Stats key is held with no screen open
+     * ({@link SessionHoldKey#hudVisible}).
+     */
     public static boolean visible(ClientSettings cfg, boolean example) {
-        if (cfg == null || !cfg.sessionStatsEnabled) return false;
-        if (example) return true;
-        if (!HypixelContext.isOnHypixel()) return false;
-        return !cfg.sessionStatsInGameOnly || HypixelContext.isInActiveBedwarsGame();
+        if (cfg == null) return false;
+        Minecraft mc = Minecraft.getMinecraft();
+        boolean screenOpen = mc != null && mc.currentScreen != null;
+        boolean keyDown = cfg.sessionStatsHoldKey && !screenOpen && holdKeyDown(cfg.sessionStatsKeyCode);
+        return SessionHoldKey.hudVisible(cfg.sessionStatsEnabled, example, HypixelContext.isOnHypixel(),
+                cfg.sessionStatsHoldKey, cfg.sessionStatsKeyCode, screenOpen, keyDown);
+    }
+
+    /** Whether the Session Stats key is held right now, read straight from the keyboard or mouse. */
+    private static boolean holdKeyDown(int code) {
+        if (code == 0) return false;
+        if (SessionHoldKey.isMouse(code)) {
+            int button = SessionHoldKey.mouseButton(code);
+            return button >= 0 && button < Mouse.getButtonCount() && Mouse.isButtonDown(button);
+        }
+        return code < Keyboard.KEYBOARD_SIZE && Keyboard.isKeyDown(code);
     }
 }
