@@ -44,9 +44,11 @@ public final class SessionStats {
 
     /**
      * The client at one moment, as far as game identity needs it: the GameSessionTracker id (only for
-     * the event latch and a same-world restart), a serial the adapter bumps whenever the world object
-     * changes, whether a Bed Wars game is active, whether the pregame queue is showing, and whether
-     * the player wears any armour (Lunar's test for "really in the game").
+     * the event latch), a serial the adapter bumps whenever the world object changes, whether a Bed
+     * Wars game is active, whether the pregame queue is showing, whether the player wears any armour
+     * (Lunar's test for "really in the game"), and the player's team colour word from the scoreboard
+     * (null when unknown). Taking the team with every sample means it is known before the first
+     * event of a game is applied.
      */
     public static final class Sample {
         public final int sessionId;
@@ -54,13 +56,15 @@ public final class SessionStats {
         public final boolean active;
         public final boolean inQueue;
         public final boolean armoured;
+        public final String ownTeam;
 
-        public Sample(int sessionId, int world, boolean active, boolean inQueue, boolean armoured) {
+        public Sample(int sessionId, int world, boolean active, boolean inQueue, boolean armoured, String ownTeam) {
             this.sessionId = sessionId;
             this.world = world;
             this.active = active;
             this.inQueue = inQueue;
             this.armoured = armoured;
+            this.ownTeam = ownTeam;
         }
     }
 
@@ -82,8 +86,6 @@ public final class SessionStats {
     private int queueWorld = NO_ID;
     /** The player wore armour in this game: leaving it before the end is a loss. */
     private boolean entered;
-    /** This block may become {@link #entered}: false for a block opened by a same-world restart. */
-    private boolean enterable;
     /** This game's settled outcome is in the current tally (not one zeroed by a manual reset). */
     private boolean countedInTally;
     private boolean unresolvedReported;
@@ -151,27 +153,30 @@ public final class SessionStats {
         if (s == null) return GameStart.NONE;
         if (s.inQueue) queueWorld = s.world;
         if (!s.active) return GameStart.NONE;
-        if (queueWorld == s.world) return openGame(s, true); // reached through this world's pregame queue
-        if (s.world == gameWorld) {
-            // A same-world restart (GameSessionTracker's debounced rising edge) is a new game only
-            // once the open one has ended; otherwise the id moved under the same game. Such a block is
-            // never counted as abandoned: without a queue it may be the same post-game, not a new game.
-            if (s.sessionId != gameSessionId && gameEndSeen) return openGame(s, false);
+        GameStart start;
+        if (queueWorld == s.world) {
+            start = openGame(s); // reached through this world's pregame queue
+        } else if (s.world == gameWorld) {
+            // Still the open game's world. Only a pregame queue starts another game here: the
+            // GameSessionTracker id can move under the same game (it lags a queue-opened game by up
+            // to a tick, and rises again on an active-objective flicker), so it only rebinds the latch.
             gameSessionId = s.sessionId;
-            if (enterable && s.armoured && !settled && !gameEndSeen) entered = true;
-            return GameStart.NONE;
-        }
-        if (entered && !gameEndSeen) {
+            if (s.armoured && !settled && !gameEndSeen) entered = true;
+            start = GameStart.NONE;
+        } else if (entered && !gameEndSeen) {
             // Straight into a running match with no queue: the unfinished game, rejoined. A
             // spectator comes back without armour, so none is needed here.
             gameSessionId = s.sessionId;
             gameWorld = s.world;
-            return GameStart.REJOINED;
+            start = GameStart.REJOINED;
+        } else {
+            start = openGame(s);
         }
-        return openGame(s, true);
+        if (s.armoured) observeOwnTeam(s.ownTeam);
+        return start;
     }
 
-    private GameStart openGame(Sample s, boolean mayEnter) {
+    private GameStart openGame(Sample s) {
         GameStart result = GameStart.NEW;
         if (entered && !gameEndSeen && !settled) {
             // The player walked out before the end: Hypixel records that as a loss.
@@ -193,8 +198,7 @@ public final class SessionStats {
         settled = false;
         countedInTally = false;
         unresolvedReported = false;
-        enterable = mayEnter;
-        entered = mayEnter && s.armoured;
+        entered = s.armoured;
         ownTeam = null;
         selfOut = false;
         return result;
@@ -369,9 +373,9 @@ public final class SessionStats {
         gameWorld = NO_ID;
         queueWorld = NO_ID;
         entered = false;
-        enterable = false;
         ownTeam = null;
         selfOut = false;
+        wasOnHypixel = false;
         return unresolved;
     }
 
@@ -396,8 +400,8 @@ public final class SessionStats {
         deaths = 0;
         beds = 0;
         bedsLost = 0;
+        // wasOnHypixel stays: leaving Hypixel after a manual reset must still end the session.
         sessionStartMs = -1L;
-        wasOnHypixel = false;
         return unresolved;
     }
 

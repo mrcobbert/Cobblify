@@ -116,7 +116,8 @@ public final class SessionStatsWatch {
 
     /**
      * The client now, for the core's game-entry check. The queue flag is only read outside an active
-     * game (HypixelContext's queue test already requires that), armour only inside one.
+     * game (HypixelContext's queue test already requires that); armour and the team colour only
+     * inside one, the team only while armoured, so a spectator team is never taken for the player's.
      */
     private static SessionStats.Sample sample() {
         Minecraft mc = Minecraft.getMinecraft();
@@ -126,8 +127,9 @@ public final class SessionStatsWatch {
             worldSerial++;
         }
         boolean active = HypixelContext.isInActiveBedwarsGame();
+        boolean armoured = active && wearingArmour(mc);
         return new SessionStats.Sample(GameSessionTracker.currentSessionId(), worldSerial, active,
-                !active && HypixelContext.isInBedwarsQueue(), active && wearingArmour(mc));
+                !active && HypixelContext.isInBedwarsQueue(), armoured, armoured ? ownTeamWord() : null);
     }
 
     private static boolean wearingArmour(Minecraft mc) {
@@ -165,9 +167,7 @@ public final class SessionStatsWatch {
         if (!onHypixel) return;
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
-        if (sample.armoured && sample.world == CORE.gameWorld()) {
-            CORE.observeOwnTeam(ownTeamWord());
-        } else if (HypixelContext.isInBedwars() && !sample.active) {
+        if (HypixelContext.isInBedwars() && !sample.active) {
             // Hub or pregame queue: the queue has no such stand and costs one pass over a small list.
             int seed = lobbyWinstreak(mc);
             if (seed >= 0) CORE.seedWinstreak(seed);

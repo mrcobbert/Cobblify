@@ -19,15 +19,20 @@ public class SessionStatsTest {
     }
 
     private static Sample queue(int sid, int world) {
-        return new Sample(sid, world, false, true, false);
+        return new Sample(sid, world, false, true, false, null);
     }
 
     private static Sample lobby(int sid, int world) {
-        return new Sample(sid, world, false, false, false);
+        return new Sample(sid, world, false, false, false, null);
     }
 
     private static Sample active(int sid, int world, boolean armoured) {
-        return new Sample(sid, world, true, false, armoured);
+        return new Sample(sid, world, true, false, armoured, null);
+    }
+
+    /** Active and armoured, with the scoreboard showing the player on {@code team}. */
+    private static Sample activeAs(int sid, int world, String team) {
+        return new Sample(sid, world, true, false, true, team);
     }
 
     /** A new game the way a client reaches one: its pregame queue, then active with armour, in a new world. */
@@ -481,9 +486,12 @@ public class SessionStatsTest {
         assertEquals(0, s.gameKills());
     }
 
-    /** A same-world restart without a queue: new only after the open game ended; else the id moved. */
+    /**
+     * In the open game's world the GameSessionTracker id can move (it lags a queue-opened game by a
+     * tick and rises again on an objective flicker). Only a pregame queue starts another game there.
+     */
     @Test
-    public void sameWorldIdChangeKeepsAnUnfinishedGame() {
+    public void aTrackerIdChangeInTheSameWorldIsTheSameGame() {
         SessionStats s = new SessionStats();
         play(s, 1);
         feed(s, "Steve was killed by Self.");
@@ -492,14 +500,78 @@ public class SessionStatsTest {
         assertEquals(1, s.gameKills());
         s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
         s.onGameTick(lobby(2, 1));
-        assertEquals(GameStart.NEW, s.onGameTick(active(3, 1, true)));
-        assertEquals(0, s.gameKills());
+        assertEquals(GameStart.NONE, s.onGameTick(active(3, 1, true))); // post-game flicker
+        assertEquals(1, s.gameKills());
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
         assertEquals(1, s.wins());
-        // That block came from a same-world restart, not a queue: it may be the post-game itself,
-        // so walking away from it never counts as a loss.
-        assertEquals(GameStart.NONE, s.onGameTick(active(3, 1, true)));
         assertEquals(GameStart.NEW, play(s, 4));
         assertEquals(0, s.losses());
+    }
+
+    /** Code review round 1 B1: the tracker catches up a tick after a queue-opened game settled. */
+    @Test
+    public void trackerCatchUpAfterAQueueOpenedGameCountsItOnce() {
+        SessionStats s = new SessionStats();
+        s.onGameTick(queue(7, 1));
+        s.onGameTick(active(7, 1, true));
+        feed(s, "Steve was killed by Self.");
+        s.onGameTick(lobby(7, 1));
+        s.onGameTick(queue(7, 1));
+        // The new game's winner row arrives before the tracker's tick, so its sample still says id 7.
+        assertEquals(GameStart.NEW_AFTER_ABANDONED,
+                s.onEvent(active(7, 1, true), SessionChatLine.parse("     Blue - Self, Alex", SELF)));
+        assertEquals(GameStart.NONE, s.onGameTick(active(8, 1, true))); // the tracker catches up
+        assertEquals(8, s.gameSessionId());
+        s.onEvent(active(8, 1, true), SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(1, s.wins());
+        assertEquals(1, s.losses());
+        assertEquals(2, s.games());
+    }
+
+    /** Code review round 1 I1: leaving Hypixel right after a manual reset still ends the session. */
+    @Test
+    public void leavingHypixelRightAfterAResetStillEndsTheSession() {
+        SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.seedWinstreak(4);
+        play(s, 1);
+        s.onGameTick(activeAs(1, 1, "Red"));
+        s.onNickChange("Nicky");
+        s.reset();
+        s.onTick(false, 2_000L); // disconnect before any further tick on Hypixel
+        assertEquals(Integer.MIN_VALUE, s.gameSessionId());
+        assertNull(s.chatNick());
+        assertNull(s.ownTeam());
+        assertEquals(0, s.winstreak());
+        s.onTick(true, 3_000L);
+        s.onGameTick(lobby(2, 2));
+        assertEquals(GameStart.NEW, s.onGameTick(active(3, 3, true))); // nothing to rejoin
+    }
+
+    /**
+     * Code review round 1 I2: the team comes with every sample, so it is known before the first event
+     * of a game is applied, even when that event is the player's own final death.
+     */
+    @Test
+    public void theTeamIsKnownBeforeAnEarlyFinalDeath() {
+        SessionStats s = new SessionStats();
+        s.onGameTick(queue(1, 1));
+        s.onEvent(activeAs(1, 1, "Red"), SessionChatLine.parse("Self fell into the void. FINAL KILL!", SELF));
+        assertEquals("Red", s.ownTeam());
+        s.onGameTick(new Sample(1, 1, true, false, true, "Gray")); // latched once out
+        assertEquals("Red", s.ownTeam());
+        assertTrue(s.onTeamEliminated(active(1, 1, false), "Red"));
+        assertEquals(1, s.losses());
+
+        SessionStats t = new SessionStats();
+        t.onGameTick(queue(1, 1));
+        assertTrue(t.onTeamEliminated(activeAs(1, 1, "Blue"), "Blue")); // before any periodic sample
+        assertEquals(1, t.losses());
+
+        SessionStats u = new SessionStats();
+        u.onGameTick(queue(1, 1));
+        u.onGameTick(new Sample(1, 1, true, false, false, "Gray")); // unarmoured: a spectator
+        assertNull(u.ownTeam());
     }
 
     /**
