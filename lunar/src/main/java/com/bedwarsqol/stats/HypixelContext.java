@@ -24,7 +24,7 @@ public final class HypixelContext {
     }
 
     /** How long a confirmed Bedwars context outlives the raw sidebar check (see {@link #isInBedwars}). */
-    private static final long CONTEXT_GRACE_MS = 2000L;
+    private static final long CONTEXT_GRACE_MS = LobbyExport.SIDEBAR_GRACE_MS;
     private static volatile long lastInBedwarsMs;
 
     /**
@@ -42,9 +42,17 @@ public final class HypixelContext {
         return System.currentTimeMillis() - lastInBedwarsMs < CONTEXT_GRACE_MS;
     }
 
-    /** Raw sidebar title, no grace. Overlay eligibility must not treat SkyWars as the BedWars hub. */
+    /**
+     * Hub eligibility from the sidebar. A present objective is judged on its title alone, so the
+     * SkyWars hub is ineligible at once. A missing objective (Hypixel's remove→re-add rebuild) keeps
+     * the last BedWars verdict for the grace, so the overlay does not flash "Not Available".
+     */
     public static boolean sidebarSaysBedwars() {
-        return rawIsInBedwars();
+        ScoreObjective objective = sidebarObjective();
+        boolean says = objective != null && titleSaysBedwars(objective);
+        long now = System.currentTimeMillis();
+        if (says) lastInBedwarsMs = now;
+        return LobbyExport.hubSidebarIsBedwars(objective != null, says, lastInBedwarsMs, now);
     }
 
     /** Drop the BedWars grace so a world change cannot leak hub eligibility into SkyWars. */
@@ -64,12 +72,19 @@ public final class HypixelContext {
     }
 
     private static boolean rawIsInBedwars() {
+        ScoreObjective objective = sidebarObjective();
+        return objective != null && titleSaysBedwars(objective);
+    }
+
+    private static ScoreObjective sidebarObjective() {
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc == null || mc.theWorld == null) return false;
+        if (mc == null || mc.theWorld == null) return null;
         Scoreboard board = mc.theWorld.getScoreboard();
-        if (board == null) return false;
-        ScoreObjective objective = board.getObjectiveInDisplaySlot(1);
-        if (objective == null) return false;
+        if (board == null) return null;
+        return board.getObjectiveInDisplaySlot(1);
+    }
+
+    private static boolean titleSaysBedwars(ScoreObjective objective) {
         String title = stripFormatting(objective.getDisplayName());
         if (title == null) return false;
         String upper = title.toUpperCase();

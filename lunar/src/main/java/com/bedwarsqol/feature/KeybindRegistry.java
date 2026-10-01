@@ -1,6 +1,8 @@
 package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.config.KeyCodes;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
 import net.weavemc.api.event.SubscribeEvent;
@@ -19,7 +21,11 @@ import java.util.Arrays;
  * after vanilla has already read {@code options.txt}, our config — not options.txt — is the source of
  * truth across restarts: each tick we copy any Controls rebind back into the config (and save), and the
  * actual key actions are fired from the config value by {@link SettingsKeyHandler}/{@link PauseKeyHandler}/
- * {@link IncSender}.
+ * {@link IncSender}/{@link PlayersKeyHandler}, from Weave's keyboard and mouse events.
+ *
+ * <p>A mouse bind is stored as {@code -100 + button}, like vanilla. {@link KeyCodes#reconcile} and the
+ * config's sanitize agree on what can be stored, so a rebind costs one save; a code the config cannot
+ * hold is pushed back onto the KeyBinding instead of being saved again every tick.
  */
 public final class KeybindRegistry {
 
@@ -53,24 +59,36 @@ public final class KeybindRegistry {
             registered = true;
         }
 
-        if (BedwarsQol.config == null) return;
-        boolean dirty = false;
-        if (settingsKey != null && settingsKey.getKeyCode() != BedwarsQol.config.settingsKeyCode) {
-            BedwarsQol.config.settingsKeyCode = settingsKey.getKeyCode();
-            dirty = true;
+        ClientSettings cfg = BedwarsQol.config;
+        if (cfg == null) return;
+        int s = synced(settingsKey, cfg.settingsKeyCode);
+        int p = synced(pauseKey, cfg.pauseKeyCode);
+        int i = synced(incKey, cfg.pcIncKeyCode);
+        int pl = synced(playersKey, cfg.playersKeyCode);
+        if (s != cfg.settingsKeyCode || p != cfg.pauseKeyCode
+                || i != cfg.pcIncKeyCode || pl != cfg.playersKeyCode) {
+            cfg.settingsKeyCode = s;
+            cfg.pauseKeyCode = p;
+            cfg.pcIncKeyCode = i;
+            cfg.playersKeyCode = pl;
+            cfg.save();
         }
-        if (pauseKey != null && pauseKey.getKeyCode() != BedwarsQol.config.pauseKeyCode) {
-            BedwarsQol.config.pauseKeyCode = pauseKey.getKeyCode();
-            dirty = true;
-        }
-        if (incKey != null && incKey.getKeyCode() != BedwarsQol.config.pcIncKeyCode) {
-            BedwarsQol.config.pcIncKeyCode = incKey.getKeyCode();
-            dirty = true;
-        }
-        if (playersKey != null && playersKey.getKeyCode() != BedwarsQol.config.playersKeyCode) {
-            BedwarsQol.config.playersKeyCode = playersKey.getKeyCode();
-            dirty = true;
-        }
-        if (dirty) BedwarsQol.config.save();
+        // The KeyBinding shows what the config holds after the save's sanitize, so the next tick
+        // compares equal instead of saving again.
+        boolean rebound = pushBack(settingsKey, cfg.settingsKeyCode)
+                | pushBack(pauseKey, cfg.pauseKeyCode)
+                | pushBack(incKey, cfg.pcIncKeyCode)
+                | pushBack(playersKey, cfg.playersKeyCode);
+        if (rebound) KeyBinding.resetKeyBindingArrayAndHash();
+    }
+
+    private static int synced(KeyBinding binding, int configCode) {
+        return binding == null ? configCode : KeyCodes.reconcile(binding.getKeyCode(), configCode);
+    }
+
+    private static boolean pushBack(KeyBinding binding, int configCode) {
+        if (binding == null || binding.getKeyCode() == configCode) return false;
+        binding.setKeyCode(configCode);
+        return true;
     }
 }

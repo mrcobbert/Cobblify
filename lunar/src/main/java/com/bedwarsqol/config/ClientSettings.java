@@ -285,10 +285,11 @@ public class ClientSettings {
         statsBackendUrl = StatsBackendUrl.normalizeOrEmpty(statsBackendUrl);
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
-        if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;
-        if (pauseKeyCode < 0) pauseKeyCode = Keyboard.KEY_NONE;
-        if (pcIncKeyCode < 0) pcIncKeyCode = Keyboard.KEY_NONE;
-        if (playersKeyCode < 0) playersKeyCode = Keyboard.KEY_NONE;
+        // Mouse binds (-100 + button, from the Controls menu) are kept; see KeyCodes.
+        settingsKeyCode = KeyCodes.sanitize(settingsKeyCode, Keyboard.KEY_RSHIFT);
+        pauseKeyCode = KeyCodes.sanitize(pauseKeyCode, Keyboard.KEY_NONE);
+        pcIncKeyCode = KeyCodes.sanitize(pcIncKeyCode, Keyboard.KEY_NONE);
+        playersKeyCode = KeyCodes.sanitize(playersKeyCode, Keyboard.KEY_NONE);
     }
 
     public float defaultTextSizeScale() {

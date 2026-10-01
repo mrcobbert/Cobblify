@@ -116,6 +116,7 @@ one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
 one-sided test forge com/bedwarsqol/feature/ChatStackTest.java
+one-sided test forge com/bedwarsqol/feature/ModChatTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
 one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
@@ -133,6 +134,10 @@ one-sided test forge net/minecraftforge/fml/common/Loader.java
 # Pins the Gson stale-key path for configs written by builds that had the
 # removed anticheat module. Platform-independent; could be shared later.
 one-sided test lunar com/bedwarsqol/config/ClientSettingsStaleKeysTest.java
+
+# Lunar's sanitize keeps mouse-button key codes for the Weave KeybindRegistry;
+# Forge persists its KeyBindings in options.txt and never syncs them back.
+one-sided test lunar com/bedwarsqol/config/ClientSettingsMouseBindTest.java
 
 # ---------------------------------------------------------------------------
 # res: the mirrored resource roots, src/main/resources and

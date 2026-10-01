@@ -147,6 +147,59 @@ public class ChatSenderTest {
         assertEquals("Warning", ChatSender.senderFromHead("Warning", name -> true, false));
     }
 
+    /** /locraw prints its JSON to chat; its head {"server" held the lone token "server". */
+    @Test
+    public void locrawJsonIsNotASenderInTheQueue() {
+        String locraw = "{\"server\":\"mini77BW\",\"gametype\":\"BEDWARS\",\"mode\":\"BEDWARS_EIGHT_TWO\","
+                + "\"map\":\"Lighthouse\"}";
+        assertNull(ChatSender.senderFromHead("{\"server\"", NOBODY_IN_TAB, true));
+        assertNull(ChatSender.extractName(line(locraw), NOBODY_IN_TAB, true));
+        assertNull(ChatSender.typedChatName(line(locraw), NOBODY_IN_TAB, true));
+        assertNull(ChatSender.extractName(line("{\"server\":\"limbo\"}"), NOBODY_IN_TAB, true));
+    }
+
+    /** In the queue the bare head must BE the name, not merely contain one. */
+    @Test
+    public void wrappedBareHeadsAreNotSendersInTheQueue() {
+        for (String text : new String[] {
+                "\"Steve\": hi", ">>> Steve: hi", "(Steve): hi", "+5 Tokens: earned", "Steve!: hi" }) {
+            assertNull(text, ChatSender.extractName(line(text), NOBODY_IN_TAB, true));
+            assertNull(text, ChatSender.typedChatName(line(text), NOBODY_IN_TAB, true));
+        }
+    }
+
+    /** Typed chat is always "Name: msg"; a colon not followed by a space is a URL, a time or JSON. */
+    @Test
+    public void colonWithoutASpaceIsNotTypedChatInTheQueue() {
+        assertNull(ChatSender.extractName(line("https://hypixel.net"), NOBODY_IN_TAB, true));
+        assertNull(ChatSender.typedChatName(line("http://example.com/x"), NOBODY_IN_TAB, true));
+        assertNull(ChatSender.extractName(line("Steve:hi"), NOBODY_IN_TAB, true));
+        // The hover path hands over a trimmed name leaf "Steve:" with the body in a sibling.
+        assertEquals("Steve", ChatSender.extractName(line("Steve: "), NOBODY_IN_TAB, true));
+    }
+
+    /** One-word server/mod labels that reach chat in the queue. */
+    @Test
+    public void moreLabelWordsAreNotSendersInTheQueue() {
+        for (String text : new String[] {
+                "Map: Lighthouse", "Mode: Solo", "Server: mini77BW", "Team: Red", "Status: online",
+                "Queue: 5/8", "Game: starting", "Lobby: 3", "Store: store.hypixel.net",
+                "Discord: discord.gg/x", "Party: none" }) {
+            assertNull(text, ChatSender.extractName(line(text), NOBODY_IN_TAB, true));
+        }
+    }
+
+    /** The tightening must not cost the shapes the queue rule exists for. */
+    @Test
+    public void realQueueChatStillResolves() {
+        assertEquals("Steve", ChatSender.extractName(line("Steve: hi"), NOBODY_IN_TAB, true));
+        assertEquals("Steve", ChatSender.extractName(line(" Steve : hi"), NOBODY_IN_TAB, true));
+        assertEquals("Steve", ChatSender.extractName(line("[4.30] Steve: hi"), NOBODY_IN_TAB, true));
+        assertEquals("Steve", ChatSender.extractName(line("[VIP] Steve: hi"), NOBODY_IN_TAB, true));
+        assertEquals("Steve", ChatSender.extractName(line("Steve: hi"), STEVE_IN_TAB, false));
+        assertEquals("Steve", ChatSender.extractName(line("Steve:hi"), STEVE_IN_TAB, false));
+    }
+
     @Test
     public void multiWordBareHeadsStayRejectedEverywhere() {
         assertNull(ChatSender.extractName(line("Command Failed: no such player"), NOBODY_IN_TAB, true));
