@@ -21,10 +21,16 @@ import java.util.regex.Pattern;
  * its text and none of the system lines here contain a colon, except the {@code Winners:} roll-call
  * which is matched by its anchored shape.
  *
+ * <p>"The local player" is the account name or, while the player is nicked on Hypixel, the nick:
+ * Hypixel prints the nick in every game line, so either name in the position rules above is
+ * credited.
+ *
  * <p>Shapes come from upstream sources, not from observation here: AxolotlClient's
  * {@code BedwarsMessages} (death / bed / game-end templates) and the {@code 1mshy/bedwars} and
- * {@code crow-1.8.9} mods (outcome tokens). The outcome TITLE ({@link #parseTitle}) is the primary
- * win/loss signal; the chat outcome shapes are the fallback.
+ * {@code crow-1.8.9} mods (outcome tokens). The end-of-game winner row
+ * ({@code "     Blue - FakeSlime, [VIP] Studying"}) follows a 2026 log capture and Lunar's own
+ * winner-row patterns. The outcome TITLE ({@link #parseTitle}) is the primary win/loss signal; the
+ * chat outcome shapes are the fallback.
  */
 public final class SessionChatLine {
 
@@ -74,6 +80,17 @@ public final class SessionChatLine {
     private static final Pattern WINSTREAK_HOLOGRAM =
             Pattern.compile("^Current Winstreak: ([0-9]{1,3}(?:,[0-9]{3})*|[0-9]{1,9})$");
     private static final Pattern WINNERS = Pattern.compile("^Winners?(?: -|:) (.+)$");
+    /** Optional rank tag in front of a name in the winner row, e.g. {@code [MVP++] }. */
+    private static final String RANK = "(?:\\[[^\\]\\s]+\\] )?";
+    /**
+     * The end-of-game winner row: the winning team's colour, then its players, each optionally
+     * ranked, comma separated. The strict name list keeps it off every other {@code " - "} row.
+     */
+    private static final Pattern WINNER_ROW = Pattern.compile(
+            "^(?:Red|Blue|Green|Yellow|Aqua|White|Pink|Gray|Grey) - (" + RANK + NAME
+                    + "(?:,\\s*" + RANK + NAME + ")*)$");
+    private static final Pattern RANK_PREFIX = Pattern.compile("^\\[[^\\]\\s]+\\] ");
+    private static final Pattern NICKED_AS = Pattern.compile("^You are now nicked as (" + NAME + ")!$");
     /** AxolotlClient BedwarsMessages.GAME_END, leading whitespace tolerated. */
     private static final Pattern GAME_END =
             Pattern.compile("^\\s*1st Killer - ?\\[?\\w*\\+*]? \\w+ - \\d+(?: Kills?)?$");
@@ -87,9 +104,21 @@ public final class SessionChatLine {
      * self disables attribution (only WIN/LOSS/GAME_END can then match).
      */
     public static Kind parse(String plain, String self) {
+        return parse(plain, self, null);
+    }
+
+    /**
+     * {@link #parse(String, String)} for a player who may be nicked: {@code nick} is the name Hypixel
+     * currently shows for them (null or empty when not nicked), and a line naming either name in an
+     * attributed position is theirs.
+     */
+    public static Kind parse(String plain, String self, String nick) {
         if (plain == null) return null;
         String line = plain.trim();
         if (line.isEmpty()) return null;
+        if (self != null && self.isEmpty()) self = null;
+        if (nick != null && nick.isEmpty()) nick = null;
+        boolean known = self != null || nick != null;
 
         // Colon-free system lines first; the only colon-bearing system shape is the winners roll-call.
         if (line.equals("VICTORY!") || line.equals("You won!")) return Kind.WIN;
@@ -97,7 +126,13 @@ public final class SessionChatLine {
         if (line.equals("You have been eliminated!")) return Kind.ELIMINATED;
         if (GAME_END.matcher(line).matches()) return Kind.GAME_END;
         Matcher w = WINNERS.matcher(line);
-        if (w.matches()) return hasToken(w.group(1), self) ? Kind.WIN : null;
+        if (w.matches()) return hasToken(w.group(1), self) || hasToken(w.group(1), nick) ? Kind.WIN : null;
+        Matcher row = WINNER_ROW.matcher(line);
+        if (row.matches()) {
+            // Every player sees the winning team's row: naming us is a win, naming only others a loss.
+            if (!known) return null;
+            return namesSelf(row.group(1), self, nick) ? Kind.WIN : Kind.LOSS;
+        }
         if (line.indexOf(':') >= 0) return null; // player-typed
 
         Matcher b = BED.matcher(line);
@@ -106,25 +141,25 @@ public final class SessionChatLine {
             // itself (Open-Meowtils BedTracker.java:110, Raven-Scripts session.java:304), so the local
             // team's loss needs no team lookup and no self name.
             if (b.group(1).equalsIgnoreCase("Your")) return Kind.BED_LOST;
-            if (self == null || self.isEmpty()) return null;
+            if (!known) return null;
             // Same killer-position rule as death lines: "… by Self!", "… by Self's holiday spirit!",
             // "… after seeing Self!". Never an incidental word elsewhere in the cosmetic.
             String rest = b.group(2).trim();
             if (rest.endsWith("!")) rest = rest.substring(0, rest.length() - 1).trim();
             String breaker = killerOf(rest);
-            return breaker != null && breaker.equalsIgnoreCase(self) ? Kind.BED_BREAK : null;
+            return isSelf(breaker, self, nick) ? Kind.BED_BREAK : null;
         }
 
-        if (self == null || self.isEmpty()) return null;
+        if (!known) return null;
 
         Matcher d = DEATH_LINE.matcher(line);
         if (!d.matches()) return null;
         String victim = d.group(1);
         String tail = d.group(2).trim();
         boolean fin = d.group(3) != null;
-        boolean victimIsSelf = victim.equalsIgnoreCase(self);
+        boolean victimIsSelf = isSelf(victim, self, nick);
         String killer = killerOf(tail);
-        boolean killerIsSelf = killer != null && killer.equalsIgnoreCase(self);
+        boolean killerIsSelf = isSelf(killer, self, nick);
 
         if (killerIsSelf && !victimIsSelf) return fin ? Kind.FINAL_KILL : Kind.KILL;
         if (victimIsSelf) {
@@ -132,6 +167,36 @@ public final class SessionChatLine {
             if (killer != null || SELF_DEATH_NO_KILLER.matcher(tail).matches()) return Kind.DEATH;
         }
         return null;
+    }
+
+    /**
+     * The nick a Hypixel nick line sets: the name for {@code You are now nicked as X!}, {@code ""}
+     * for {@code Your nick has been reset!}, {@code null} for any other line (Lunar's
+     * NicknameListener reads the same two lines).
+     */
+    public static String parseNickChange(String plain) {
+        if (plain == null) return null;
+        String line = plain.trim();
+        Matcher m = NICKED_AS.matcher(line);
+        if (m.matches()) return m.group(1);
+        return line.equals("Your nick has been reset!") ? "" : null;
+    }
+
+    /**
+     * {@code line} with every whole-token occurrence of the player's name replaced by {@code <self>}
+     * and of the nick by {@code <nick>}, so a diagnostic log can keep a row's shape without the
+     * player's own names.
+     */
+    public static String maskSelf(String line, String self, String nick) {
+        if (line == null) return null;
+        String out = maskToken(line, self, "<self>");
+        return maskToken(out, nick, "<nick>");
+    }
+
+    private static String maskToken(String line, String name, String mask) {
+        if (name == null || name.isEmpty()) return line;
+        return Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(name) + "(?![A-Za-z0-9_])",
+                Pattern.CASE_INSENSITIVE).matcher(line).replaceAll(Matcher.quoteReplacement(mask));
     }
 
     /** Map a colour-stripped title to an outcome: gold VICTORY! to winners, red GAME OVER! to the rest. */
@@ -170,6 +235,21 @@ public final class SessionChatLine {
         Matcher o = POSSESSIVE.matcher(tail);
         if (o.find()) return o.group(1);
         return null;
+    }
+
+    /** Whether {@code name} is the player's account name or nick (case-insensitive, whole name). */
+    static boolean isSelf(String name, String self, String nick) {
+        if (name == null) return false;
+        return (self != null && name.equalsIgnoreCase(self)) || (nick != null && name.equalsIgnoreCase(nick));
+    }
+
+    /** Whether a winner-row name list ({@code "Alex, [VIP] Self"}) names the player. */
+    static boolean namesSelf(String names, String self, String nick) {
+        for (String part : names.split(",")) {
+            String name = RANK_PREFIX.matcher(part.trim()).replaceFirst("");
+            if (isSelf(name, self, nick)) return true;
+        }
+        return false;
     }
 
     /** Whole-token, case-insensitive membership; never a prefix or substring match. */

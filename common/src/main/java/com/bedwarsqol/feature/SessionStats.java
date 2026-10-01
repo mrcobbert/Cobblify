@@ -53,6 +53,8 @@ public final class SessionStats {
     private int streakBeforeLoss;
     private long sessionStartMs = -1L;
     private boolean wasOnHypixel;
+    /** Nick from the last "You are now nicked as X!" line this session; memory only. */
+    private String chatNick;
 
     // ---- game block ----
 
@@ -105,6 +107,19 @@ public final class SessionStats {
 
     /** The session id the current game block belongs to (Integer.MIN_VALUE before any game). */
     public int gameSessionId() { return gameSessionId; }
+
+    /**
+     * A Hypixel nick line, as {@link SessionChatLine#parseNickChange} reports it: a name sets the
+     * remembered nick, {@code ""} clears it, {@code null} (any other line) is ignored. A manual
+     * {@link #reset} keeps it; leaving Hypixel clears it.
+     */
+    public void onNickChange(String nick) {
+        if (nick == null) return;
+        chatNick = nick.isEmpty() ? null : nick;
+    }
+
+    /** The nick learned from chat this session, or null. */
+    public String chatNick() { return chatNick; }
 
     /** Lobby hologram value; negative (no value) is ignored. */
     public void seedWinstreak(int value) {
@@ -194,11 +209,12 @@ public final class SessionStats {
         return unresolved;
     }
 
-    /** Leaving Hypixel: a full {@link #reset} that also drops the winstreak. */
+    /** Leaving Hypixel: a full {@link #reset} that also drops the winstreak and the chat nick. */
     public boolean endSession() {
         boolean unresolved = reset();
         winstreak = 0;
         streakBeforeLoss = 0;
+        chatNick = null;
         return unresolved;
     }
 

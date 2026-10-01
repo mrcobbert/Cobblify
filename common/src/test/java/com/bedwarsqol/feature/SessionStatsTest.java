@@ -5,6 +5,7 @@ import org.junit.Test;
 import static com.bedwarsqol.feature.SessionChatLine.Kind;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class SessionStatsTest {
@@ -338,5 +339,24 @@ public class SessionStatsTest {
         s.onTick(true, 20_000L);
         assertEquals(20_000L, s.sessionStartMs());
         assertFalse(s.reset());
+    }
+
+    /** "You are now nicked as X!" / "Your nick has been reset!" (Lunar NicknameListener), memory only. */
+    @Test
+    public void chatNickMemory() {
+        SessionStats s = new SessionStats();
+        assertNull(s.chatNick());
+        s.onNickChange(null);
+        assertNull(s.chatNick());
+        s.onNickChange("Nicky");
+        assertEquals("Nicky", s.chatNick());
+        s.reset(); // a manual reset is about the tally, not the player's name
+        assertEquals("Nicky", s.chatNick());
+        s.onNickChange("");
+        assertNull(s.chatNick());
+        s.onNickChange("Nicky");
+        s.onTick(true, 1_000L);
+        s.onTick(false, 2_000L); // leaving Hypixel
+        assertNull(s.chatNick());
     }
 }

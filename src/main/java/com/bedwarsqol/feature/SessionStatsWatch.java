@@ -4,6 +4,8 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityArmorStand;
 import net.minecraft.util.EnumChatFormatting;
@@ -14,9 +16,9 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 
 /**
  * Feeds {@link SessionStats} from the client: chat lines and titles are classified by
- * {@link SessionChatLine} against the local player's name, the tick drives the session clock and the
- * leave-Hypixel reset, and a new {@link GameSessionTracker} id inside an active game starts a new
- * game block. In the Bed Wars lobby the "Bed Wars Profile" hologram's {@code Current Winstreak}
+ * {@link SessionChatLine} against the local player's name and current nick, the tick drives the
+ * session clock and the leave-Hypixel reset, and a new {@link GameSessionTracker} id inside an
+ * active game starts a new game block. In the Bed Wars lobby the "Bed Wars Profile" hologram's {@code Current Winstreak}
  * armour stand seeds the streak. Observe-only: no chat event is cancelled or edited, nothing is
  * sent. Always running (the toggle only hides the HUD) so a session that started before the box
  * was enabled is not lost.
@@ -73,12 +75,25 @@ public final class SessionStatsWatch {
         if (event.type == 2) return; // action bar
         try {
             if (ModChat.isMarked(event.message)) return;
-            if (!acceptingEvents()) return;
-            String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.message.getUnformattedText());
-            CORE.onEvent(SessionChatLine.parse(plain, selfName()));
+            onLine(EnumChatFormatting.getTextWithoutFormattingCodes(event.message.getUnformattedText()));
         } catch (RuntimeException e) {
             DiagLog.log("session: chat handler failed " + e);
         }
+    }
+
+    /** One colour-stripped chat line, from either platform's chat hook. */
+    private static void onLine(String plain) {
+        if (plain == null || !HypixelContext.isOnHypixel()) return;
+        CORE.onNickChange(SessionChatLine.parseNickChange(plain));
+        if (!acceptingEvents()) return;
+        String self = selfName();
+        String nick = nickName();
+        SessionChatLine.Kind kind = SessionChatLine.parse(plain, self, nick);
+        if (plain.indexOf(':') < 0 && plain.contains(" - ")) {
+            // End-of-game rows (winner row, killer rows) keep their real shape in the log, without our names.
+            DiagLog.log("session: row \"" + SessionChatLine.maskSelf(plain, self, nick) + "\" -> " + kind);
+        }
+        CORE.onEvent(kind);
     }
 
     @SubscribeEvent
@@ -126,6 +141,39 @@ public final class SessionStatsWatch {
     private static String selfName() {
         Minecraft mc = Minecraft.getMinecraft();
         return mc == null || mc.thePlayer == null ? null : mc.thePlayer.getName();
+    }
+
+    /** Where the last nick came from (tab, chat or none); logged on change, never with the name. */
+    private static String nickSource = "none";
+
+    /**
+     * The name Hypixel shows for the player while they are nicked, or null. The client keeps the
+     * account name for the whole connection, but Hypixel renames the player's own tab-list row, which
+     * keeps their account UUID (Sk1er NickHider, Raven and proxhy read it the same way). The last
+     * "You are now nicked as X!" line is the fallback.
+     */
+    private static String nickName() {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.thePlayer == null) return null;
+        String real = mc.thePlayer.getName();
+        NetHandlerPlayClient net = mc.getNetHandler();
+        NetworkPlayerInfo own = net == null ? null : net.getPlayerInfo(mc.thePlayer.getUniqueID());
+        String shown = own == null || own.getGameProfile() == null ? null : own.getGameProfile().getName();
+        String chat = CORE.chatNick();
+        String nick = null;
+        String source = "none";
+        if (shown != null && !shown.equalsIgnoreCase(real)) {
+            nick = shown;
+            source = "tab";
+        } else if (chat != null && !chat.equalsIgnoreCase(real)) {
+            nick = chat;
+            source = "chat";
+        }
+        if (!source.equals(nickSource)) {
+            nickSource = source;
+            DiagLog.log("session: nick source=" + source);
+        }
+        return nick;
     }
 
     /** Whether the box is currently allowed to draw (enabled, on Hypixel, In Game Only honoured). */
