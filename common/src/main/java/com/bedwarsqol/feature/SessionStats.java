@@ -18,8 +18,17 @@ package com.bedwarsqol.feature;
  * blood). The win or loss is recorded exactly once, when both are known, in either order;
  * a VICTORY that lands after a loss was already settled (eliminated, killer row, then the team's
  * comeback title) moves that game from the losses to the wins. A game that ended without a known
- * outcome is reported as unresolved to the caller of the next {@link #onGameStart} /
- * {@link #reset} and counts nothing.
+ * outcome is reported as unresolved once, to whichever of the next game start or {@link #reset}
+ * comes first, and counts nothing.
+ *
+ * <p>Which game a line belongs to is decided by {@link #onGameTick}, which every event entry point
+ * runs first with a {@link Sample} of the client at that moment. A new Bed Wars game is always
+ * reached through its pregame queue; {@code /rejoin} puts the player straight into the running match.
+ * So a game that becomes active in a world that showed the queue is a new game, and one that becomes
+ * active in a new world without a queue, while the last game the player entered is unfinished, is
+ * that same game rejoined. A game the player entered (wore armour in) and left before any end
+ * signal is a loss, as Hypixel records it, counted when the next game opens. The player's own
+ * team being eliminated ({@link #onTeamEliminated}) settles the loss at once.
  *
  * <p>Winstreak is the player's live streak rather than a session counter: a settled win adds one,
  * a settled loss zeroes it (and the VICTORY-after-loss correction restores it), the Bed Wars lobby
@@ -30,14 +39,58 @@ public final class SessionStats {
 
     public enum Outcome { UNKNOWN, WIN, LOSS }
 
+    /** What a game-entry check returned; anything but NONE is worth a diagnostic line. */
+    public enum GameStart { NONE, NEW, REJOINED, NEW_AFTER_ABANDONED, NEW_AFTER_UNRESOLVED }
+
+    /**
+     * The client at one moment, as far as game identity needs it: the GameSessionTracker id (only for
+     * the event latch and a same-world restart), a serial the adapter bumps whenever the world object
+     * changes, whether a Bed Wars game is active, whether the pregame queue is showing, and whether
+     * the player wears any armour (Lunar's test for "really in the game").
+     */
+    public static final class Sample {
+        public final int sessionId;
+        public final int world;
+        public final boolean active;
+        public final boolean inQueue;
+        public final boolean armoured;
+
+        public Sample(int sessionId, int world, boolean active, boolean inQueue, boolean armoured) {
+            this.sessionId = sessionId;
+            this.world = world;
+            this.active = active;
+            this.inQueue = inQueue;
+            this.armoured = armoured;
+        }
+    }
+
+    private static final int NO_ID = Integer.MIN_VALUE;
+
     // ---- game block ----
     private int gameKills;
     private int gameFinals;
     private int gameBeds;
-    private int gameSessionId = Integer.MIN_VALUE;
+    private int gameSessionId = NO_ID;
     private Outcome outcome = Outcome.UNKNOWN;
     private boolean gameEndSeen;
     private boolean settled;
+
+    // ---- game identity ----
+    /** World serial of the open game block. */
+    private int gameWorld = NO_ID;
+    /** World serial in which the pregame queue was last seen, until a game opens there. */
+    private int queueWorld = NO_ID;
+    /** The player wore armour in this game: leaving it before the end is a loss. */
+    private boolean entered;
+    /** This block may become {@link #entered}: false for a block opened by a same-world restart. */
+    private boolean enterable;
+    /** This game's settled outcome is in the current tally (not one zeroed by a manual reset). */
+    private boolean countedInTally;
+    private boolean unresolvedReported;
+    /** Team colour word the player plays for in this game, latched once they are out. */
+    private String ownTeam;
+    /** The player was final-killed, eliminated, or saw their team eliminated in this game. */
+    private boolean selfOut;
 
     // ---- session block ----
     private int wins;
@@ -90,23 +143,98 @@ public final class SessionStats {
     }
 
     /**
-     * A new game began (a fresh {@code GameSessionTracker} id while in an active game). Zeroes the
-     * game block. Returns true when the previous game ended without a recorded outcome.
+     * Decide which game the client is in now and open a new game block when one began. Idempotent
+     * for an unchanged sample; every event entry point that takes a {@link Sample} runs it first, so
+     * a line from a game that just became active is never credited to the previous one.
      */
-    public boolean onGameStart(int sessionId) {
-        boolean unresolved = gameEndSeen && !settled;
+    public GameStart onGameTick(Sample s) {
+        if (s == null) return GameStart.NONE;
+        if (s.inQueue) queueWorld = s.world;
+        if (!s.active) return GameStart.NONE;
+        if (queueWorld == s.world) return openGame(s, true); // reached through this world's pregame queue
+        if (s.world == gameWorld) {
+            // A same-world restart (GameSessionTracker's debounced rising edge) is a new game only
+            // once the open one has ended; otherwise the id moved under the same game. Such a block is
+            // never counted as abandoned: without a queue it may be the same post-game, not a new game.
+            if (s.sessionId != gameSessionId && gameEndSeen) return openGame(s, false);
+            gameSessionId = s.sessionId;
+            if (enterable && s.armoured && !settled && !gameEndSeen) entered = true;
+            return GameStart.NONE;
+        }
+        if (entered && !gameEndSeen) {
+            // Straight into a running match with no queue: the unfinished game, rejoined. A
+            // spectator comes back without armour, so none is needed here.
+            gameSessionId = s.sessionId;
+            gameWorld = s.world;
+            return GameStart.REJOINED;
+        }
+        return openGame(s, true);
+    }
+
+    private GameStart openGame(Sample s, boolean mayEnter) {
+        GameStart result = GameStart.NEW;
+        if (entered && !gameEndSeen && !settled) {
+            // The player walked out before the end: Hypixel records that as a loss.
+            if (outcome != Outcome.WIN) outcome = Outcome.LOSS;
+            gameEndSeen = true;
+            settle();
+            result = GameStart.NEW_AFTER_ABANDONED;
+        } else if (gameEndSeen && !settled && !unresolvedReported) {
+            result = GameStart.NEW_AFTER_UNRESOLVED;
+        }
         gameKills = 0;
         gameFinals = 0;
         gameBeds = 0;
-        gameSessionId = sessionId;
+        gameSessionId = s.sessionId;
+        gameWorld = s.world;
+        queueWorld = NO_ID;
         outcome = Outcome.UNKNOWN;
         gameEndSeen = false;
         settled = false;
-        return unresolved;
+        countedInTally = false;
+        unresolvedReported = false;
+        enterable = mayEnter;
+        entered = mayEnter && s.armoured;
+        ownTeam = null;
+        selfOut = false;
+        return result;
     }
 
     /** The session id the current game block belongs to (Integer.MIN_VALUE before any game). */
     public int gameSessionId() { return gameSessionId; }
+
+    /** The world serial the current game block belongs to (Integer.MIN_VALUE before any game). */
+    public int gameWorld() { return gameWorld; }
+
+    /** The team colour word recorded for this game, or null. */
+    public String ownTeam() { return ownTeam; }
+
+    /**
+     * The player's team colour word while they are still in the game. Ignored once they were
+     * final-killed, eliminated or saw their team eliminated, because Hypixel may then move them to a
+     * spectator team.
+     */
+    public void observeOwnTeam(String team) {
+        if (team != null && !selfOut) ownTeam = team;
+    }
+
+    /**
+     * A {@code TEAM ELIMINATED > <team> Team has been eliminated!} line. When it names the player's
+     * own team (its colour, or "Your"), the game is lost whatever happens next: the loss is counted
+     * at once, and later end signals add nothing. Returns whether it was the player's team.
+     */
+    public boolean onTeamEliminated(Sample s, String team) {
+        onGameTick(s);
+        if (team == null) return false;
+        boolean ours = team.equalsIgnoreCase("Your") || (ownTeam != null && team.equalsIgnoreCase(ownTeam));
+        if (!ours) return false;
+        selfOut = true;
+        if (!settled && outcome != Outcome.WIN) {
+            outcome = Outcome.LOSS;
+            countOutcome();
+        }
+        return true;
+    }
 
     /**
      * A Hypixel nick line, as {@link SessionChatLine#parseNickChange} reports it: a name sets the
@@ -126,7 +254,14 @@ public final class SessionStats {
         if (value >= 0) winstreak = value;
     }
 
-    /** Feed one classified event (chat line or title). Null is ignored. */
+    /** Run the game-entry check for {@code s}, then feed {@code kind}. Returns the check's result. */
+    public GameStart onEvent(Sample s, SessionChatLine.Kind kind) {
+        GameStart start = onGameTick(s);
+        onEvent(kind);
+        return start;
+    }
+
+    /** Feed one classified event (chat line or title) to the open game. Null is ignored. */
     public void onEvent(SessionChatLine.Kind kind) {
         if (kind == null) return;
         switch (kind) {
@@ -143,6 +278,7 @@ public final class SessionStats {
                 break;
             case FINAL_DEATH:
                 finalDeaths++;
+                selfOut = true;
                 break;
             case BED_BREAK:
                 gameBeds++;
@@ -152,8 +288,9 @@ public final class SessionStats {
                 bedsLost++;
                 break;
             case WIN:
-                if (settled && outcome == Outcome.LOSS) {
-                    // The killer row settled a loss before the victory title arrived: move it.
+                if (settled && outcome == Outcome.LOSS && countedInTally) {
+                    // A loss was settled before the victory title arrived: move it. A loss counted
+                    // before a manual reset is no longer in this tally and stays as it is.
                     losses--;
                     wins++;
                     winstreak = streakBeforeLoss + 1;
@@ -169,6 +306,7 @@ public final class SessionStats {
                 break;
             case ELIMINATED:
                 if (outcome != Outcome.WIN) outcome = Outcome.LOSS;
+                selfOut = true;
                 settle();
                 break;
             case GAME_END:
@@ -182,7 +320,12 @@ public final class SessionStats {
 
     private void settle() {
         if (settled || !gameEndSeen || outcome == Outcome.UNKNOWN) return;
+        countOutcome();
+    }
+
+    private void countOutcome() {
         settled = true;
+        countedInTally = true;
         if (outcome == Outcome.WIN) {
             wins++;
             winstreak++;
@@ -209,27 +352,42 @@ public final class SessionStats {
         return unresolved;
     }
 
-    /** Leaving Hypixel: a full {@link #reset} that also drops the winstreak and the chat nick. */
+    /**
+     * Leaving Hypixel: a full {@link #reset} that also drops the winstreak, the chat nick and the open
+     * game, so nothing carries into the next connection.
+     */
     public boolean endSession() {
         boolean unresolved = reset();
         winstreak = 0;
         streakBeforeLoss = 0;
         chatNick = null;
+        outcome = Outcome.UNKNOWN;
+        gameEndSeen = false;
+        settled = false;
+        unresolvedReported = false;
+        gameSessionId = NO_ID;
+        gameWorld = NO_ID;
+        queueWorld = NO_ID;
+        entered = false;
+        enterable = false;
+        ownTeam = null;
+        selfOut = false;
         return unresolved;
     }
 
     /**
      * Zero the tally and stop the clock; the winstreak is kept (it is the player's live streak, not
-     * a session figure). Returns true when the current game ended unresolved.
+     * a session figure). The current game keeps its state: an undecided game still counts its
+     * outcome (or its abandonment) in the new tally, and a decided one stays decided, so it can never
+     * be counted again. Returns true when the current game ended unresolved and was not reported yet.
      */
     public boolean reset() {
-        boolean unresolved = gameEndSeen && !settled;
+        boolean unresolved = gameEndSeen && !settled && !unresolvedReported;
+        if (unresolved) unresolvedReported = true;
         gameKills = 0;
         gameFinals = 0;
         gameBeds = 0;
-        outcome = Outcome.UNKNOWN;
-        gameEndSeen = false;
-        settled = false;
+        countedInTally = false;
         wins = 0;
         losses = 0;
         finalKills = 0;

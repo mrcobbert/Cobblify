@@ -8,6 +8,7 @@ import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityArmorStand;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.EnumChatFormatting;
 import net.weavemc.api.event.ChatEvent;
 import net.weavemc.api.event.SubscribeEvent;
@@ -15,12 +16,13 @@ import net.weavemc.api.event.TickEvent;
 
 /**
  * Feeds {@link SessionStats} from the client: chat lines and titles are classified by
- * {@link SessionChatLine} against the local player's name and current nick, the tick drives the
- * session clock and the leave-Hypixel reset, and a new {@link GameSessionTracker} id inside an
- * active game starts a new game block. In the Bed Wars lobby the "Bed Wars Profile" hologram's {@code Current Winstreak}
- * armour stand seeds the streak. Observe-only: no chat event is cancelled or edited, nothing is
- * sent. Always running (the toggle only hides the HUD) so a session that started before the box
- * was enabled is not lost.
+ * {@link SessionChatLine} against the local player's name and current nick, and the tick drives
+ * the session clock and the leave-Hypixel reset. Every chat line, title and tick first hands the
+ * core a {@link SessionStats.Sample} of the client (world, active game, pregame queue, armour), so
+ * the core can tell a new game from a rejoined one before it counts anything. In the Bed Wars lobby
+ * the "Bed Wars Profile" hologram's {@code Current Winstreak} armour stand seeds the streak.
+ * Observe-only: no chat event is cancelled or edited, nothing is sent. Always running (the toggle
+ * only hides the HUD) so a session that started before the box was enabled is not lost.
  *
  * <p>Weave hands a cancelled {@link ChatEvent.Received} to every subscriber and never posts
  * action-bar messages, so the chat hook needs no priority or filter. Weave does not catch a
@@ -33,7 +35,9 @@ public final class SessionStatsWatch {
     private static final SessionStats CORE = new SessionStats();
 
     private int ticks;
-    private int lastSessionId = Integer.MIN_VALUE;
+    /** The world object last sampled and its serial; the serial changes whenever the world does. */
+    private static Object sampledWorld;
+    private static int worldSerial;
 
     /** The live tally; read on the client thread by the HUD and the command. */
     public static SessionStats core() {
@@ -60,8 +64,14 @@ public final class SessionStatsWatch {
     public static void onTitle(String title) {
         if (title == null) return;
         try {
+            if (!HypixelContext.isOnHypixel()) return;
+            SessionStats.Sample sample = sample();
+            logStart(CORE.onGameTick(sample), sample);
             if (!acceptingEvents()) return;
-            CORE.onEvent(SessionChatLine.parseTitle(EnumChatFormatting.getTextWithoutFormattingCodes(title)));
+            String plain = EnumChatFormatting.getTextWithoutFormattingCodes(title);
+            SessionChatLine.Kind kind = SessionChatLine.parseTitle(plain);
+            if (kind != null) DiagLog.log("session: title " + plain.trim() + " -> " + kind);
+            CORE.onEvent(sample, kind);
         } catch (RuntimeException e) {
             DiagLog.log("session: title handler failed " + e);
         }
@@ -82,7 +92,17 @@ public final class SessionStatsWatch {
     private static void onLine(String plain) {
         if (plain == null || !HypixelContext.isOnHypixel()) return;
         CORE.onNickChange(SessionChatLine.parseNickChange(plain));
+        SessionStats.Sample sample = sample();
+        logStart(CORE.onGameTick(sample), sample);
         if (!acceptingEvents()) return;
+        GameChatLine teamLine = GameChatLine.parse(plain);
+        if (teamLine != null && teamLine.kind == GameChatLine.Kind.TEAM_ELIMINATED) {
+            String own = CORE.ownTeam();
+            boolean ours = CORE.onTeamEliminated(sample, teamLine.team);
+            DiagLog.log("session: TEAM ELIMINATED " + teamLine.team + " own=" + (own == null ? "unknown" : own)
+                    + (ours ? " -> own team, loss" : " -> other team"));
+            return;
+        }
         String self = selfName();
         String nick = nickName();
         SessionChatLine.Kind kind = SessionChatLine.parse(plain, self, nick);
@@ -90,7 +110,46 @@ public final class SessionStatsWatch {
             // End-of-game rows (winner row, killer rows) keep their real shape in the log, without our names.
             DiagLog.log("session: row \"" + SessionChatLine.maskSelf(plain, self, nick) + "\" -> " + kind);
         }
-        CORE.onEvent(kind);
+        if (kind == SessionChatLine.Kind.ELIMINATED) DiagLog.log("session: You have been eliminated!");
+        CORE.onEvent(sample, kind);
+    }
+
+    /**
+     * The client now, for the core's game-entry check. The queue flag is only read outside an active
+     * game (HypixelContext's queue test already requires that), armour only inside one.
+     */
+    private static SessionStats.Sample sample() {
+        Minecraft mc = Minecraft.getMinecraft();
+        Object world = mc == null ? null : mc.theWorld;
+        if (world != sampledWorld) {
+            sampledWorld = world;
+            worldSerial++;
+        }
+        boolean active = HypixelContext.isInActiveBedwarsGame();
+        return new SessionStats.Sample(GameSessionTracker.currentSessionId(), worldSerial, active,
+                !active && HypixelContext.isInBedwarsQueue(), active && wearingArmour(mc));
+    }
+
+    private static boolean wearingArmour(Minecraft mc) {
+        if (mc == null || mc.thePlayer == null) return false;
+        for (ItemStack piece : mc.thePlayer.inventory.armorInventory) {
+            if (piece != null) return true;
+        }
+        return false;
+    }
+
+    private static void logStart(SessionStats.GameStart start, SessionStats.Sample s) {
+        if (start == SessionStats.GameStart.NONE) return;
+        DiagLog.log("session: game " + start + " world=" + s.world + " sid=" + s.sessionId
+                + " armoured=" + s.armoured);
+    }
+
+    /** The player's team colour word from the scoreboard, under the nick first while nicked. */
+    private static String ownTeamWord() {
+        String nick = nickName();
+        char code = nick == null ? 0 : TeamColors.code(nick);
+        if (code == 0) code = TeamColors.code(selfName());
+        return SessionChatLine.teamForColourCode(code);
     }
 
     @SubscribeEvent
@@ -103,15 +162,12 @@ public final class SessionStatsWatch {
         if (CORE.onTick(onHypixel, System.currentTimeMillis())) {
             DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
         }
-        if (!onHypixel) {
-            lastSessionId = Integer.MIN_VALUE;
-            return;
-        }
-        int sid = GameSessionTracker.currentSessionId();
-        if (sid != lastSessionId && HypixelContext.isInActiveBedwarsGame()) {
-            lastSessionId = sid;
-            if (CORE.onGameStart(sid)) DiagLog.log("session: unresolved game end sid=" + sid + " (next game)");
-        } else if (HypixelContext.isInBedwars() && !HypixelContext.isInActiveBedwarsGame()) {
+        if (!onHypixel) return;
+        SessionStats.Sample sample = sample();
+        logStart(CORE.onGameTick(sample), sample);
+        if (sample.armoured && sample.world == CORE.gameWorld()) {
+            CORE.observeOwnTeam(ownTeamWord());
+        } else if (HypixelContext.isInBedwars() && !sample.active) {
             // Hub or pregame queue: the queue has no such stand and costs one pass over a small list.
             int seed = lobbyWinstreak(mc);
             if (seed >= 0) CORE.seedWinstreak(seed);

@@ -264,6 +264,23 @@ public class SessionChatLineTest {
         assertNull(SessionChatLine.parseNickChange(null));
     }
 
+    /** Same table as LobbySnapshot.teamName; the words TEAM ELIMINATED prints. */
+    @Test
+    public void teamColourWords() {
+        assertEquals("Red", SessionChatLine.teamForColourCode('c'));
+        assertEquals("Red", SessionChatLine.teamForColourCode('C'));
+        assertEquals("Blue", SessionChatLine.teamForColourCode('9'));
+        assertEquals("Green", SessionChatLine.teamForColourCode('a'));
+        assertEquals("Yellow", SessionChatLine.teamForColourCode('e'));
+        assertEquals("Aqua", SessionChatLine.teamForColourCode('b'));
+        assertEquals("White", SessionChatLine.teamForColourCode('f'));
+        assertEquals("Pink", SessionChatLine.teamForColourCode('d'));
+        assertEquals("Gray", SessionChatLine.teamForColourCode('8'));
+        assertEquals("Gray", SessionChatLine.teamForColourCode('7'));
+        assertNull(SessionChatLine.teamForColourCode('0'));
+        assertNull(SessionChatLine.teamForColourCode((char) 0));
+    }
+
     @Test
     public void maskSelfForTheDiagnosticLog() {
         assertEquals("     Blue - <self>, [VIP] <nick>",

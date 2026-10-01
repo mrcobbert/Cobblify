@@ -199,6 +199,25 @@ public final class SessionChatLine {
                 Pattern.CASE_INSENSITIVE).matcher(line).replaceAll(Matcher.quoteReplacement(mask));
     }
 
+    /**
+     * The {@code TEAM ELIMINATED} colour word for a scoreboard colour code ({@code 'c'} is
+     * {@code Red}), the same table as {@code LobbySnapshot.teamName}; null for any other code.
+     */
+    public static String teamForColourCode(char code) {
+        switch (Character.toLowerCase(code)) {
+            case 'c': return "Red";
+            case '9': return "Blue";
+            case 'a': return "Green";
+            case 'e': return "Yellow";
+            case 'b': return "Aqua";
+            case 'f': return "White";
+            case 'd': return "Pink";
+            case '8':
+            case '7': return "Gray";
+            default:  return null;
+        }
+    }
+
     /** Map a colour-stripped title to an outcome: gold VICTORY! to winners, red GAME OVER! to the rest. */
     public static Kind parseTitle(String plainTitle) {
         if (plainTitle == null) return null;
