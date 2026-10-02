@@ -46,11 +46,6 @@ public class BedwarsHudRenderer {
     private static final float INV_ITEM_PAD = 2f;      // breathing room between a tile's inner edge and the item, all sides
     private static final float INV_TILE = INV_ITEM + 2f * INV_ITEM_PAD;  // 20px slot tile
     private static final float INV_PITCH = INV_TILE + INV_GAP;           // 22px cell-to-cell step
-    // Recessed-slot bevel — vanilla-flavored but expressed as subtle overlays on the dark HUD panel:
-    // a faint light face, a darker top/left inner shadow, and a whisper-light bottom/right highlight.
-    private static final int INV_SLOT_FILL = 0x33FFFFFF;       // ~20% white tile face: a clear lighter gray slot over the darker panel
-    private static final int INV_SLOT_SHADOW = 0x40000000;     // ~25% black inner shadow on top + left edges
-    private static final int INV_SLOT_HIGHLIGHT = 0x18FFFFFF;  // ~9% white highlight on bottom + right edges
     private static final float[] ANCHOR_X = {0f, 0.5f, 1f, 0f, 0.5f, 1f, 0f, 0.5f, 1f};
     private static final float[] ANCHOR_Y = {0f, 0f, 0f, 0.5f, 0.5f, 0.5f, 1f, 1f, 1f};
 
@@ -62,9 +57,9 @@ public class BedwarsHudRenderer {
     private static final float ICON_SIZE = 16f;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
 
-    // ----- Optional per-module "Background" panel -----
+    // ----- HUD panel (Height Limit and Session Stats, always on) -----
     // A flat, square-cornered translucent dark panel behind a HUD element (no border, no corner
-    // radius). One consistent grayscale treatment for every module, built on Theme.PANEL_HUD — the
+    // radius). One consistent grayscale treatment, built on Theme.PANEL_HUD — the
     // HUD-overlay fill the mod's palette reserves for over-the-world panels (scoreboard/tab list).
     // Padding scales with the element so it stays proportionate.
     private static final int HUD_BG_FILL = 0xD0121212;   // darker than Theme.PANEL_HUD (0xB01A1A1A): more opaque (alpha 0xB0->0xD0) + lower RGB
@@ -140,9 +135,10 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * The optional per-module "Background": a flat, square translucent panel (no corner radius, no
-     * border) behind a HUD element's content box expanded by a scale-aware padding. Drawn in GUI space
-     * BEFORE the element's content (and before any {@code pushMatrix}/scale used for item rendering).
+     * The always-on panel behind Height Limit and Session Stats: a flat, square translucent panel (no
+     * corner radius, no border) behind a HUD element's content box expanded by a scale-aware padding.
+     * Drawn in GUI space BEFORE the element's content (and before any {@code pushMatrix}/scale used for
+     * item rendering).
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
      * clean (texturing on, color white) state.
      */
@@ -155,42 +151,6 @@ public class BedwarsHudRenderer {
 
     private static void drawHudBackground(HudBox box, float scale) {
         drawHudBackground(box, scale, HUD_BG_FILL);
-    }
-
-    /**
-     * Per-row background chips for an icon-mode HUD (Gen Timers): one rounded panel hugging
-     * each row's number text — never a single connected column. Each chip wraps that row's actual drawn
-     * glyphs (measured in the BOLD weight the numbers render with) with compact, even padding, vertically
-     * centred on the visible glyph band so it sits dead-centre on the icon row at any scale and font.
-     *
-     * <p>Geometry mirrors the text draws ({@link #drawIconCounts}) exactly:
-     * origin {@code tx = box.x + iconSize + gap}, per-row {@code ty = box.y + i*lineStep + (iconSize-9)/2}.
-     * {@code bandTop}/{@code bandH} come from the active font so the chip hugs the ink (cap-top → digit
-     * baseline), not the 9px line cell — Inter via capTop/capHeight (digits overshoot 'H' by one atlas
-     * unit, hence 25/24); the vanilla font fills roughly the top 7px of its cell.
-     */
-    private static void drawTextBgChips(HudBox box, float iconLocal, List<String> texts, float scale) {
-        if (texts.isEmpty()) return;
-        FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-        float iconSize = iconLocal * scale;
-        float lineStep = iconSize + LINE_GAP * scale;
-        float tx = box.x + iconSize + POTION_ICON_TIMER_GAP * scale; // text origin X (matches the draw code)
-        float padX = 2.0f * scale, padY = 2.25f * scale;
-        float bandTop = hudVanillaFont ? 0f : BedwarsQolFont.capTop(scale, BedwarsQolFont.Weight.BOLD);
-        float bandH = hudVanillaFont ? 7f * scale
-                : BedwarsQolFont.capHeight(scale, BedwarsQolFont.Weight.BOLD) * (25f / 24f);
-        for (int i = 0; i < texts.size(); i++) {
-            String s = texts.get(i);
-            if (s == null || s.isEmpty()) continue;
-            float w = hudVanillaFont ? (fr != null ? fr.getStringWidth(s) * scale : 0f)
-                    : BedwarsQolFont.width(s, scale, BedwarsQolFont.Weight.BOLD);
-            if (w <= 0f) continue;
-            float ty = box.y + i * lineStep + (iconSize - TEXT_HEIGHT * scale) / 2f; // exact text draw ty
-            float gy = ty + bandTop;
-            float x1 = Math.round(tx - padX), y1 = Math.round(gy - padY);
-            float x2 = Math.round(tx + w + padX), y2 = Math.round(gy + bandH + padY);
-            GuiRender.roundedRect(x1, y1, x2, y2, Theme.CARD_R, HUD_BG_FILL);
-        }
     }
 
     private static void drawLines(FontRenderer fr, List<Line> lines, float x, float y, float scale) {
@@ -312,7 +272,7 @@ public class BedwarsHudRenderer {
 
     // ----- BedWars HUDs (mini inventory, diamond/emerald spawn timers) -----
 
-    /** These overlays only make sense inside an active BedWars game; the edit preview bypasses it. */
+    /** Whether a HUD's "In Game Only" is satisfied: an active BedWars game, or the edit preview. */
     private static boolean bedwarsActive(boolean example) {
         return example || HypixelContext.isInActiveBedwarsGame();
     }
@@ -332,8 +292,6 @@ public class BedwarsHudRenderer {
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = inventoryBox(mc, cfg, example);
         if (box == null) return;
-        // The panel + recessed slot grid are drawn inside drawMiniInventory's scaled matrix, so every
-        // gap (the panel margin and the inter-slot gutter alike) lives in one local space and scales as one.
         drawMiniInventory(mc, cfg, box.x, box.y, example);
     }
 
@@ -347,10 +305,6 @@ public class BedwarsHudRenderer {
         GlStateManager.pushMatrix();
         GlStateManager.translate(x, y, 0f);
         GlStateManager.scale(scale, scale, 1f);
-        // With the Background on, draw the dark panel and the recessed slot grid first (flat shapes,
-        // self-contained GL state) so the items render on top. Panel margin and inter-slot gutters are
-        // all INV_GAP, so the spacing reads as one consistent system.
-        if (cfg.inventoryBackgroundEnabled) drawInventoryPanel();
         GlStateManager.enableDepth();
         GlStateManager.enableRescaleNormal();
         RenderHelper.enableGUIStandardItemLighting();
@@ -376,34 +330,6 @@ public class BedwarsHudRenderer {
     private static float invPanelWidth() { return INV_COLS * INV_PITCH + INV_GAP; }
     private static float invPanelHeight() { return INV_ROWS * INV_PITCH + INV_GAP; }
 
-    /**
-     * The Background panel: a flat dark fill (matching every other module) plus a 9x3 grid of recessed
-     * slot tiles. Everything is laid out from INV_GAP/INV_PITCH, so the outer panel margin equals the
-     * gutter between tiles. Drawn in the inventory HUD's local (pre-scaled) space.
-     */
-    private static void drawInventoryPanel() {
-        GuiRender.roundedRect(0f, 0f, invPanelWidth(), invPanelHeight(), Theme.CARD_R, HUD_BG_FILL);
-        for (int r = 0; r < INV_ROWS; r++) {
-            for (int c = 0; c < INV_COLS; c++) {
-                drawSlotTile(INV_GAP + c * INV_PITCH, INV_GAP + r * INV_PITCH);
-            }
-        }
-    }
-
-    /**
-     * One recessed slot tile at local (tx, ty): a faint light face, a darker top/left inner shadow and a
-     * whisper-light bottom/right highlight — the vanilla "pressed-in" slot look, in subtle dark-theme
-     * overlays. 1px edges (local units) keep it crisp without a heavy border.
-     */
-    private static void drawSlotTile(float tx, float ty) {
-        float x2 = tx + INV_TILE, y2 = ty + INV_TILE;
-        GuiRender.rect(tx, ty, x2, y2, INV_SLOT_FILL);             // tile face
-        GuiRender.rect(tx, ty, x2, ty + 1f, INV_SLOT_SHADOW);      // top inner shadow
-        GuiRender.rect(tx, ty, tx + 1f, y2, INV_SLOT_SHADOW);      // left inner shadow
-        GuiRender.rect(tx, y2 - 1f, x2, y2, INV_SLOT_HIGHLIGHT);   // bottom highlight
-        GuiRender.rect(x2 - 1f, ty, x2, y2, INV_SLOT_HIGHLIGHT);   // right highlight
-    }
-
     /** The three storage rows of the inventory (main slots 9..35). The hotbar is excluded. */
     private static ItemStack[] miniInventorySlots(Minecraft mc, boolean example) {
         ItemStack[] out = new ItemStack[INV_COLS * INV_ROWS];
@@ -426,8 +352,8 @@ public class BedwarsHudRenderer {
     }
 
     private static HudBox timerBox(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
-        boolean enabled = cfg.genTimersEnabled;
-        if (!enabled || !bedwarsActive(example)) return null;
+        if (!cfg.genTimersEnabled) return null; // works anywhere unless "In Game Only" is set
+        if (cfg.genTimersInGameOnly && !bedwarsActive(example)) return null;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
         Size size = timerSize(mc, cfg, example, diamond);
         if (size.width <= 0f || size.height <= 0f) return null;
@@ -453,13 +379,6 @@ public class BedwarsHudRenderer {
         HudBox box = timerBox(mc, cfg, example, diamond);
         if (box == null) return;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
-        // One shared "Gen Timers" toggle gates both boxes; each draws its own matching panel.
-        if (cfg.genTimersBackgroundEnabled) {
-            // Icon mode: one chip hugging the countdown digits (not the gem icon). Text mode is all text.
-            if (cfg.hudDisplayMode == 1)
-                drawTextBgChips(box, ICON_SIZE, Collections.singletonList(timerValue(example, diamond)), scale);
-            else drawHudBackground(box, scale);
-        }
         if (cfg.hudDisplayMode == 1) {
             drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), box.x, box.y, scale);
         } else {
