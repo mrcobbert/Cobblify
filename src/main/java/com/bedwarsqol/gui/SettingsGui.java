@@ -9,6 +9,7 @@ import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.render.Theme;
+import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
@@ -238,7 +239,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.STEPPER, "Accent", K_ACCENT, ACCENT_LABELS, K_GRP_APPEARANCE),
                     new RowDef(RowType.STEPPER, "GUI Size", K_GUISIZE, GUI_SIZES, K_GRP_APPEARANCE),
                     new RowDef(RowType.GROUP, "HUD", K_GRP_HUD, (String[]) null),
-                    new RowDef(RowType.STEPPER, "HUD Size", K_HUDSIZE, TEXT_SIZES, K_GRP_HUD),
+                    new RowDef(RowType.STEPPER, "Default HUD Size", K_HUDSIZE, TEXT_SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Scoreboard Size", K_SCOREBOARD_SIZE, SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Tab List Size", K_STYLEDTAB_SIZE, SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Display", K_DISPLAY, DISPLAY_MODES, K_GRP_HUD),
@@ -438,6 +439,24 @@ public class SettingsGui extends GuiScreen {
     /** Reopen on the section the user last viewed this session (falls back to the default HUD tab). */
     public SettingsGui() {
         selectedSection = LastSettingsTab.restore(SECTIONS.length);
+    }
+
+    /** Opens on the HUD tab with the card for Edit HUD module {@code hudId} expanded. */
+    public static SettingsGui forHudModule(String hudId) {
+        SettingsGui gui = new SettingsGui();
+        int kind = -1;
+        if (BedwarsHudRenderer.POTION_HUD.equals(hudId)) kind = K_POTION;
+        else if (BedwarsHudRenderer.ARMOR_HUD.equals(hudId)) kind = K_ARMOR;
+        else if (BedwarsHudRenderer.KEYSTROKES_HUD.equals(hudId)) kind = K_KEYSTROKES;
+        else if (BedwarsHudRenderer.INVENTORY_HUD.equals(hudId)) kind = K_INVENTORY;
+        else if (BedwarsHudRenderer.DIAMOND_TIMER_HUD.equals(hudId)
+                || BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(hudId)) kind = K_GENTIMERS;
+        else if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) kind = K_SESSION;
+        else if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) kind = K_HEIGHT;
+        if (kind < 0) return gui;
+        gui.selectedSection = 0;
+        gui.expandedModules.add(kind);
+        return gui;
     }
 
     @Override
@@ -1679,8 +1698,7 @@ public class SettingsGui extends GuiScreen {
         } else if (kind == K_GUISIZE) {
             cfg.guiSize = idx;
         } else if (kind == K_HUDSIZE) {
-            cfg.defaultTextSize = idx;
-            cfg.applyDefaultTextSize();
+            cfg.defaultTextSize = idx; // the size new and reset modules get; sizes set in Edit HUD stay
         } else if (kind == K_DISPLAY) {
             cfg.hudDisplayMode = idx;
         } else if (kind == K_OVERLAYSTYLE) {

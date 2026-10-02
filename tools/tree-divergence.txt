@@ -59,6 +59,8 @@ divergent main com/bedwarsqol/feature/OutgoingChat.java
 divergent main com/bedwarsqol/gui/EditHudGui.java
 divergent main com/bedwarsqol/gui/SettingsGui.java
 divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
+# Lunar has no Potion, Armor or Keystrokes module.
+divergent main com/bedwarsqol/hud/HudModules.java
 
 # Keybinds: Weave has no vanilla KeyBinding or options.txt persistence.
 divergent main com/bedwarsqol/feature/IncSender.java
@@ -110,6 +112,7 @@ one-sided main lunar com/bedwarsqol/gui/render/ClasspathTexture.java
 # Tests for Forge-only features, or whose subject imports net.minecraft.* and so
 # was not shared. Extending Lunar coverage is tracked separately.
 one-sided test forge com/bedwarsqol/config/ClientSettingsConfigTest.java
+one-sided test forge com/bedwarsqol/config/ForgeHudLayoutMigrationTest.java
 one-sided test forge com/bedwarsqol/feature/AlertCopyReasonTest.java
 one-sided test forge com/bedwarsqol/feature/ChatLengthLimitTest.java
 one-sided test forge com/bedwarsqol/feature/ChatSenderTest.java

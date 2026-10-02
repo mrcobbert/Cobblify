@@ -15,9 +15,10 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 2;
+    static final int CURRENT_SETTINGS_VERSION = 3;
     public int settingsVersion = 0;
 
+    /** Default HUD Size: the scale new and reset HUD modules get. 0 = small, 1 = medium, 2 = large. */
     public int defaultTextSize = 1;
     /** Global Text/Image style for every HUD element that supports it. 0 = text, 1 = icons + numbers. */
     public int hudDisplayMode = 1;
@@ -32,14 +33,14 @@ public class ClientSettings {
     /** Only render this HUD while in an active BedWars game (off = render everywhere). */
     public boolean potionInGameOnly = false;
     public int potionHudX = 5;
-    public int potionHudY = 5;
+    public int potionHudY = 25; // under Armor: the list grows downward with each effect
     public int potionHudAnchor = 0;
     public float potionHudScale = 1.0f;
 
     public boolean armorTypeEnabled = false;
     public boolean armorInGameOnly = false;
     public int armorHudX = 5;
-    public int armorHudY = 34;
+    public int armorHudY = 5;
     public int armorHudAnchor = 0;
     public float armorHudScale = 1.0f;
 
@@ -47,9 +48,9 @@ public class ClientSettings {
 
     public boolean inventoryHudEnabled = false;
     public boolean inventoryInGameOnly = false;
-    public int inventoryHudX = 5;
+    public int inventoryHudX = 0;
     public int inventoryHudY = 5;
-    public int inventoryHudAnchor = 6; // bottom-left by default
+    public int inventoryHudAnchor = 1; // top-centre: bottom-left ran into the hotbar and chat
     public float inventoryHudScale = 1.0f;
 
     // One toggle controls both gen timers; each stays independently draggable below.
@@ -64,15 +65,15 @@ public class ClientSettings {
     public int diamondTimerHudAnchor = 2; // top-right by default
     public float diamondTimerHudScale = 1.0f;
 
-    public int emeraldTimerHudX = -5;
-    public int emeraldTimerHudY = 27;
+    public int emeraldTimerHudX = -50; // beside the diamond timer, leaving the column for Session Stats
+    public int emeraldTimerHudY = 5;
     public int emeraldTimerHudAnchor = 2;
     public float emeraldTimerHudScale = 1.0f;
 
     public boolean keystrokesEnabled = false;
     public boolean keystrokesInGameOnly = false;
-    public int keystrokesHudX = -10;
-    public int keystrokesHudY = -20;
+    public int keystrokesHudX = -5;
+    public int keystrokesHudY = -5;
     public int keystrokesHudAnchor = 8; // bottom-right by default
     public float keystrokesHudScale = 1.0f;
 
@@ -83,7 +84,7 @@ public class ClientSettings {
     /** Session Stats key: an LWJGL key code, a mouse button as button - 100, or 0 for unbound. */
     public int sessionStatsKeyCode = 0;
     public int sessionStatsHudX = -5;
-    public int sessionStatsHudY = 60;
+    public int sessionStatsHudY = 32;
     public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
     public float sessionStatsHudScale = 1.0f;
 
@@ -293,6 +294,11 @@ public class ClientSettings {
      * <li>v2: Tag Utils replaced the Urchin Tags and Seraph Tags modules. It starts on if either source
      * was on, and the sources keep their own keys. Each shared sub-option starts on if it was on for a
      * source that was on (for either source when neither was).</li>
+     * <li>v3: a new default HUD layout, so no two modules overlap on a 1080p screen at GUI scale
+     * Auto. A module still at its exact old default moves; anything the user moved is kept. Armor
+     * takes the top-left corner with Potion under it (they overlapped), Inventory moves to the top
+     * centre (it sat 5 px below the screen, over the hotbar), the emerald timer sits beside the
+     * diamond one, Session Stats moves up under them and Keystrokes tucks into the corner.</li>
      * </ul>
      */
     void migrate() {
@@ -309,9 +315,30 @@ public class ClientSettings {
             tagChatAlert = carried(urchin, urchinChatAlert, seraph, seraphChatAlert);
             tagAlertSound = carried(urchin, urchinAlertSound, seraph, seraphAlertSound);
         }
+        if (settingsVersion < 3) {
+            if (atDefault(armorHudX, armorHudY, armorHudAnchor, 5, 34, 0)) armorHudY = 5;
+            if (atDefault(potionHudX, potionHudY, potionHudAnchor, 5, 5, 0)) potionHudY = 25;
+            if (atDefault(keystrokesHudX, keystrokesHudY, keystrokesHudAnchor, -10, -20, 8)) {
+                keystrokesHudX = -5;
+                keystrokesHudY = -5;
+            }
+            if (atDefault(inventoryHudX, inventoryHudY, inventoryHudAnchor, 5, 5, 6)) {
+                inventoryHudX = 0;
+                inventoryHudAnchor = 1;
+            }
+            if (atDefault(emeraldTimerHudX, emeraldTimerHudY, emeraldTimerHudAnchor, -5, 27, 2)) {
+                emeraldTimerHudX = -50;
+                emeraldTimerHudY = 5;
+            }
+            if (atDefault(sessionStatsHudX, sessionStatsHudY, sessionStatsHudAnchor, -5, 60, 2)) sessionStatsHudY = 32;
+        }
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;
+    }
+
+    private static boolean atDefault(int x, int y, int anchor, int oldX, int oldY, int oldAnchor) {
+        return x == oldX && y == oldY && anchor == oldAnchor;
     }
 
     /**
@@ -381,18 +408,6 @@ public class ClientSettings {
             case 2: return 1.5f;
             default: return 1.0f;
         }
-    }
-
-    public void applyDefaultTextSize() {
-        float scale = defaultTextSizeScale();
-        potionHudScale = scale;
-        armorHudScale = scale;
-        inventoryHudScale = scale;
-        diamondTimerHudScale = scale;
-        emeraldTimerHudScale = scale;
-        keystrokesHudScale = scale;
-        sessionStatsHudScale = scale;
-        heightLimitHudScale = scale;
     }
 
     public void save() {
