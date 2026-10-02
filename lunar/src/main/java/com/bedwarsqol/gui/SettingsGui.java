@@ -1844,7 +1844,11 @@ public class SettingsGui extends GuiScreen {
     }
 
     private static ClientSettings settings() {
-        if (BedwarsQol.config == null) BedwarsQol.config = new ClientSettings();
+        if (BedwarsQol.config == null) {
+            // Sanitized, so the one-time migrations stamp it now and cannot undo a later toggle on save.
+            BedwarsQol.config = new ClientSettings();
+            BedwarsQol.config.sanitize();
+        }
         BedwarsQol.config.sanitize();
         return BedwarsQol.config;
     }

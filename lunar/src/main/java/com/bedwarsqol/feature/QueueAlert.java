@@ -43,8 +43,8 @@ import java.util.concurrent.Executors;
  * disagreeing UUID (a stale name alias, a re-registered name) is dropped silently.
  *
  * <p><b>Settings.</b> There is no queue toggle of its own: tag lines follow Tag Utils' Chat Alert for
- * whichever sources are on, and nick lines follow Nick Utils' Nick Notify ({@link #wantsTags},
- * {@link #wantsNicks}) - the same switches that cover the lobby and the game.
+ * whichever sources are on, and nick lines follow Nick Utils' Nick Notify ({@link QueueAlertGate}) -
+ * the same switches that cover the lobby and the game.
  *
  * <p><b>Outbound volume.</b> One lookup per distinct name per queue, at most
  * {@link #MAX_LOOKUPS_PER_QUEUE} per queue; past the cap we stop silently, because the providers'
@@ -74,7 +74,7 @@ public final class QueueAlert {
         // the mod's own addChatMessage calls through this hook too, so the stamp is load-bearing here.
         if (ModChat.isMarked(event.getMessage())) return;
         ClientSettings cfg = BedwarsQol.config;
-        if (!wantsTags(cfg) && !wantsNicks(cfg)) return;
+        if (!QueueAlertGate.wantsTags(cfg) && !QueueAlertGate.wantsNicks(cfg)) return;
         // Queue only — NOT the Bedwars hub, which shares the "BED WARS" sidebar and has no active
         // game either. The hub's chat traffic would burn the lookup cap on players we're not queued
         // with; only a real pregame queue lists the match being assembled.
@@ -92,8 +92,8 @@ public final class QueueAlert {
         if (isSelf(sender)) return;
         if (!accept(looked, sender, MAX_LOOKUPS_PER_QUEUE)) return;
 
-        final boolean wantTag = wantsTags(cfg);
-        final boolean wantNick = wantsNicks(cfg);
+        final boolean wantTag = QueueAlertGate.wantsTags(cfg);
+        final boolean wantNick = QueueAlertGate.wantsNicks(cfg);
         final boolean urchin = cfg.urchinOn();
         final boolean seraph = cfg.seraphOn();
         final BackendTarget backend = cfg.backendTarget(); // one atomic capture per lookup
@@ -101,16 +101,6 @@ public final class QueueAlert {
         final String token = backend.token;
         final String name = sender;
         EXEC.submit(() -> lookup(name, wantTag, wantNick, urchin, seraph, url, token));
-    }
-
-    /** Queue tag lines follow Tag Utils' Chat Alert, for whichever sources are on. Pure. */
-    static boolean wantsTags(ClientSettings cfg) {
-        return cfg != null && cfg.tagChatAlert && (cfg.urchinOn() || cfg.seraphOn());
-    }
-
-    /** Queue nick lines follow Nick Utils' Nick Notify. Pure. */
-    static boolean wantsNicks(ClientSettings cfg) {
-        return cfg != null && cfg.nickUtils && cfg.nickNotify;
     }
 
     /**

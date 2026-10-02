@@ -113,6 +113,24 @@ public class TagUtilsSettingsTest {
     }
 
     @Test
+    public void anUnstampedFileRunsBothUpgrades() {
+        ClientSettings s = load("{\"sessionStatsHudX\":5,\"sessionStatsHudAnchor\":2,"
+                + "\"urchinTags\":false,\"seraphTags\":true,\"seraphChatAlert\":false}");
+        assertEquals("the v1 HUD fix still runs", -5, s.sessionStatsHudX);
+        assertTrue(s.tagUtils);
+        assertFalse(s.tagChatAlert);
+        assertEquals(2, s.settingsVersion);
+    }
+
+    @Test
+    public void aLiteralNullReadsAsTheOldDefault() {
+        ClientSettings s = load("{\"settingsVersion\":1,\"urchinTags\":true,\"seraphTags\":false,"
+                + "\"urchinChatAlert\":null,\"urchinBadgeTab\":false}");
+        assertTrue(s.tagChatAlert);
+        assertFalse(s.tagBadgeTab);
+    }
+
+    @Test
     public void savingDropsTheOldPerSourceAndQueueKeys() {
         ClientSettings s = load("{\"settingsVersion\":1,\"urchinTags\":true,\"seraphTags\":true,"
                 + "\"urchinBadgeTab\":false,\"seraphChatAlert\":false,\"urchinAlertSound\":true,"
