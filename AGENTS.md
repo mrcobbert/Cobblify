@@ -29,6 +29,15 @@
 - The `launcher/` Tauri app builds and tests on Windows as well as macOS - see `launcher/README.md`,
   "Build on Windows".
 
+## UI dev loop
+
+- For GUI and HUD work, use the live dev client instead of building jars: `tools/devloop/cobdev`
+  hot-swaps code into a running game, opens and clicks Cobblify screens, and saves screenshots you
+  can look at. The game runs in the user's account (agents cannot open windows); read
+  `tools/devloop/README.md` before using it. One worktree drives it at a time (`cobdev status`).
+- It runs the Forge tree only. A screenshot from it is real Minecraft rendering, but still not proof
+  of Lunar behavior.
+
 ## Windows build box
 
 - A Windows 11 machine is reachable from this Mac as `ssh win` (Tailscale +

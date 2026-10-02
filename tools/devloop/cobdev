@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""cobdev - drive the Cobblify UI dev client from an agent session.
+
+The dev client runs in the user's own macOS account (bin/start.sh in /Users/Shared/cobblify-dev)
+because the agent account cannot open windows. cobdev stages the game files where that account can
+read them and talks to the in-game control API on 127.0.0.1. See tools/devloop/README.md.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SHARED = "/Users/Shared/cobblify-dev"
+API = "http://127.0.0.1:47821"
+JDK_URL = "https://cdn.azul.com/zulu/bin/zulu8.96.0.205-ca-jdk8.0.504-macosx_x64.tar.gz"
+JDK_SHA256 = "e35bc8a4401193aa670146762bbad132bf0651fee5e3f16acbb3a5db0e0b0cff"
+BUILD_JDK = "/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home"
+HOME = os.path.expanduser("~")
+GRADLE_CACHES = os.path.join(HOME, ".gradle", "caches")
+HERE = os.path.dirname(os.path.realpath(__file__))
+SHOTS = os.path.join(HOME, ".cache", "cobdev", "shots")
+LOCK = os.path.join(SHARED, "LOCK")
+KEEP_RUNTIMES = 3
+SCREENS = {
+    "settings": "com.bedwarsqol.gui.SettingsGui",
+    "hud": "com.bedwarsqol.gui.EditHudGui",
+}
+KEYS = {"esc": 1, "backspace": 14, "tab": 15, "enter": 28, "space": 57, "up": 200, "down": 208,
+        "left": 203, "right": 205, "home": 199, "end": 207, "delete": 211}
+START = SHARED + "/bin/start.sh"
+NOT_RUNNING = ("the dev client is not running. Ask the user to run this in a terminal pane from their"
+               " own account (not agent):\n  " + START)
+
+# 127.0.0.1 must never go through an HTTP proxy from the environment.
+_http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def die(msg):
+    print("cobdev: " + str(msg), file=sys.stderr)
+    sys.exit(1)
+
+
+# ------------------------------------------------------------------------------------------ API
+
+def api(path, params=None, post=None, timeout=30, raw=False):
+    url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    data = urllib.parse.urlencode(post).encode() if post is not None else None
+    try:
+        with _http.open(url, data=data, timeout=timeout) as r:
+            body = r.read()
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try:
+            die(json.loads(body).get("error") or body)
+        except ValueError:
+            die("HTTP %d from %s" % (e.code, path))
+    except (urllib.error.URLError, OSError):
+        die(NOT_RUNNING)
+    return body if raw else json.loads(body)
+
+
+def api_quiet(path, timeout=3):
+    """Status-style call that returns None instead of exiting when the game is unreachable."""
+    try:
+        with _http.open(API + path, timeout=timeout) as r:
+            return json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+# ------------------------------------------------------------------------------------- helpers
+
+def git(wt, *args):
+    return subprocess.run(["git", "-C", wt] + list(args), capture_output=True, text=True).stdout.strip()
+
+
+def worktree(args):
+    wt = os.path.realpath(args.worktree) if args.worktree else git(os.getcwd(), "rev-parse", "--show-toplevel")
+    if not wt or not os.path.exists(os.path.join(wt, "versions", "mainProject")):
+        die("run cobdev from inside a Cobblify checkout (or pass --worktree)")
+    return wt
+
+
+def read_lock():
+    try:
+        with open(LOCK) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def take_lock(wt, steal=False):
+    cur = read_lock()
+    if cur and cur.get("worktree") != wt and not steal:
+        die("the dev client belongs to %s (since %s). If that session is finished, rerun with --steal."
+            % (cur.get("worktree"), cur.get("since")))
+    if not cur or cur.get("worktree") != wt:
+        write_text(LOCK, json.dumps({"worktree": wt, "since": time.strftime("%Y-%m-%d %H:%M:%S")}) + "\n")
+
+
+def write_text(path, text):
+    tmp = path + ".tmp-cobdev"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def copy_file(src, dst):
+    """Copies when size or mtime differ; files are world-readable so the user's account can load them."""
+    try:
+        s, d = os.stat(src), os.stat(dst)
+        if s.st_size == d.st_size and int(s.st_mtime) == int(d.st_mtime):
+            return False
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+    tmp = dst + ".tmp-cobdev"
+    shutil.copyfile(src, tmp)
+    shutil.copystat(src, tmp)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, dst)
+    return True
+
+
+def copy_tree(src, dst):
+    for root, _, files in os.walk(src):
+        for name in files:
+            s = os.path.join(root, name)
+            copy_file(s, os.path.join(dst, os.path.relpath(s, src)))
+
+
+def require_setup():
+    for p in (SHARED + "/jdk/bin/java", SHARED + "/devagent.jar", START):
+        if not os.path.exists(p):
+            die("not set up yet; run: tools/devloop/cobdev setup")
+
+
+def gradle(wt, *args):
+    p = subprocess.run([os.path.join(wt, "gradlew"), "-q"] + list(args), cwd=wt,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out = "\n".join(l for l in p.stdout.splitlines() if "duplicate input class" not in l)
+    if p.returncode != 0:
+        print(out)
+        die("gradle failed")
+
+
+def runtime_of(classes_dir):
+    rel = os.path.relpath(classes_dir, SHARED + "/runtimes")
+    if rel.startswith(".."):
+        die("the running game was not started from a cobdev runtime: " + classes_dir)
+    return os.path.join(SHARED, "runtimes", rel.split(os.sep)[0])
+
+
+def source_of(runtime):
+    with open(os.path.join(runtime, "launch", "source.json")) as f:
+        return json.load(f)
+
+
+def wait_ready(old_pid=None, timeout=240):
+    start = time.time()
+    while time.time() - start < timeout:
+        st = api_quiet("/status")
+        if st and st.get("ready") and st.get("responsive") and st.get("pid") != old_pid:
+            return time.time() - start
+        time.sleep(1)
+    die("the game did not come back within %ds. Is start.sh still running in the user's pane?" % timeout)
+
+
+# --------------------------------------------------------------------------------------- setup
+
+def cmd_setup(args):
+    if not os.path.isdir(os.path.join(HERE, "agent", "src")):
+        die("run setup from a repo checkout: tools/devloop/cobdev setup")
+    os.makedirs(SHARED, mode=0o755, exist_ok=True)
+    if os.stat(SHARED).st_uid != os.getuid():
+        die(SHARED + " is owned by another account; it must belong to this one")
+    os.chmod(SHARED, 0o755)
+    for sub in ("bin", "cache", "runtimes"):
+        os.makedirs(os.path.join(SHARED, sub), mode=0o755, exist_ok=True)
+    install_jdk()
+    build_agent()
+    for name, mode in (("start.sh", 0o755), ("cobdev", 0o755), ("devloop.init.gradle", 0o644)):
+        dst = os.path.join(SHARED, "bin", name)
+        shutil.copyfile(os.path.join(HERE, name), dst + ".tmp-cobdev")
+        os.chmod(dst + ".tmp-cobdev", mode)
+        os.replace(dst + ".tmp-cobdev", dst)
+    print("setup done. Next: cobdev stage, then the user runs " + START)
+
+
+def install_jdk():
+    java = SHARED + "/jdk/bin/java"
+    if os.path.exists(java):
+        print("Intel Java 8: already installed")
+        return
+    print("downloading Intel Java 8 (Azul Zulu, ~100 MB)...")
+    archive = SHARED + "/.jdk-download.tar.gz"
+    with _http.open(JDK_URL, timeout=600) as r, open(archive, "wb") as f:
+        shutil.copyfileobj(r, f)
+    digest = hashlib.sha256(open(archive, "rb").read()).hexdigest()
+    if digest != JDK_SHA256:
+        os.remove(archive)
+        die("JDK checksum mismatch: got " + digest)
+    dist = SHARED + "/jdk-dist"
+    shutil.rmtree(dist, ignore_errors=True)
+    with tarfile.open(archive) as t:
+        for m in t.getmembers():
+            if m.name.startswith("/") or ".." in m.name.split("/"):
+                die("unsafe path in JDK archive: " + m.name)
+        t.extractall(dist)
+    os.remove(archive)
+    homes = [r for r, _, _ in os.walk(dist)
+             if r.endswith("/Contents/Home") and os.path.exists(os.path.join(r, "bin", "java"))]
+    if not homes:
+        die("unexpected JDK archive layout")
+    tmp = SHARED + "/.jdk-link"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(homes[0], tmp)
+    os.replace(tmp, SHARED + "/jdk")
+    print(subprocess.run([java, "-version"], capture_output=True, text=True).stderr.strip().splitlines()[0])
+
+
+def build_agent():
+    jdk = BUILD_JDK if os.path.exists(BUILD_JDK) else SHARED + "/jdk"
+    lwjgl = None
+    for root, _, files in os.walk(os.path.join(GRADLE_CACHES, "modules-2", "files-2.1", "org.lwjgl.lwjgl", "lwjgl")):
+        for name in files:
+            if name == "lwjgl-2.9.2-nightly-20140822.jar":
+                lwjgl = os.path.join(root, name)
+    if not lwjgl:
+        die("LWJGL 2.9.2 not in the Gradle cache yet; run ./gradlew build once in a checkout")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(HERE, "agent", "src")
+        sources = [os.path.join(r, n) for r, _, fs in os.walk(src) for n in fs if n.endswith(".java")]
+        out = os.path.join(tmp, "classes")
+        os.makedirs(out)
+        p = subprocess.run([jdk + "/bin/javac", "-source", "8", "-target", "8", "-nowarn", "-cp", lwjgl,
+                            "-d", out] + sources, capture_output=True, text=True)
+        if p.returncode != 0:
+            print(p.stdout + p.stderr)
+            die("devagent compile failed")
+        manifest = os.path.join(tmp, "MANIFEST.MF")
+        write_text(manifest, "Premain-Class: cobdev.DevAgent\nCan-Redefine-Classes: true\n")
+        jar = SHARED + "/devagent.jar.tmp-cobdev"
+        subprocess.run([jdk + "/bin/jar", "cfm", jar, manifest, "-C", out, "."], check=True)
+        os.chmod(jar, 0o644)
+        os.replace(jar, SHARED + "/devagent.jar")
+    print("devagent.jar: built")
+
+
+# --------------------------------------------------------------------------------------- stage
+
+class Mapper:
+    """Maps agent-only paths (this worktree, the Gradle caches) to readable copies under SHARED."""
+
+    def __init__(self, wt, runtime):
+        self.wt = wt
+        self.runtime = runtime
+
+    def dest(self, src):
+        if src.startswith(GRADLE_CACHES + "/"):
+            return SHARED + "/cache/gradle/" + src[len(GRADLE_CACHES) + 1:]
+        if src.startswith(self.wt + "/"):
+            return self.runtime + "/wt/" + src[len(self.wt) + 1:]
+        die("the launch config references a path cobdev does not know how to share: " + src)
+
+    def stage(self, src):
+        dst = self.dest(src)
+        if os.path.isdir(src):
+            copy_tree(src, dst)
+        elif os.path.exists(src):
+            copy_file(src, dst)
+        return dst
+
+    def rewrite(self, text):
+        return text.replace(self.wt + "/", self.runtime + "/wt/").replace(GRADLE_CACHES + "/", SHARED + "/cache/gradle/")
+
+
+def cmd_stage(args, wt=None):
+    wt = wt or worktree(args)
+    require_setup()
+    take_lock(wt, args.steal)
+    started = time.time()
+    with tempfile.TemporaryDirectory() as tmp:
+        dump_file = os.path.join(tmp, "dump.json")
+        gradle(wt, "--init-script", os.path.join(HERE, "devloop.init.gradle"), ":1.8.9-forge:cobdevDump",
+               "-PcobdevOut=" + dump_file)
+        with open(dump_file) as f:
+            dump = json.load(f)
+    branch = git(wt, "rev-parse", "--abbrev-ref", "HEAD")
+    name = time.strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9._-]", "_", branch)
+    runtime = os.path.join(SHARED, "runtimes", name)
+    os.makedirs(os.path.join(runtime, "launch"), mode=0o755)
+    m = Mapper(wt, runtime)
+
+    classpath = [m.stage(p) for p in dump["classpath"]]
+
+    # launch.cfg (read by dev-launch-injector) and the remap classpath file it names carry absolute
+    # paths too: stage everything they reference, then rewrite them to the shared copies.
+    cfg_path = os.path.join(dump["projectDir"], ".gradle", "loom-cache", "launch.cfg")
+    with open(cfg_path) as f:
+        cfg = f.read()
+    for p in sorted(set(re.findall(r"/Users/[^\s:=]+", cfg))):
+        m.stage(p)
+        if p.endswith("remapClasspath.txt"):
+            with open(p) as f:
+                entries = [e for e in f.read().strip().split(":") if e]
+            write_text(m.dest(p), ":".join(m.stage(e) for e in entries))
+    # The release jar starts Mixin through its manifest's TweakClass; a classes directory has no
+    # manifest, so add the tweaker here (after FML's, which stays the primary tweaker).
+    fml = "\tnet.minecraftforge.fml.common.launcher.FMLTweaker\n"
+    if fml not in cfg:
+        die("launch.cfg no longer names FMLTweaker; update cobdev's Mixin bootstrap")
+    cfg = m.rewrite(cfg).replace(fml, fml + "\t--tweakClass\n\torg.spongepowered.asm.launch.MixinTweaker\n", 1)
+    cfg = cfg.replace("clientArgs\n", "clientArgs\n\t--username\n\tCobblifyDev\n"
+                                      "\t--width\n\t1280\n\t--height\n\t720\n", 1)
+    staged_cfg = m.dest(cfg_path)
+    write_text(staged_cfg, cfg)
+
+    jvm = ["-Dfabric.dli.config=" + staged_cfg, "-Dfabric.dli.env=client",
+           "-Dfabric.dli.main=net.minecraft.launchwrapper.Launch"] + dump["jvmArgs"]
+    launch = os.path.join(runtime, "launch")
+    write_text(os.path.join(launch, "classpath.txt"), "\n".join(classpath) + "\n")
+    write_text(os.path.join(launch, "jvm.args"), "\n".join(jvm) + "\n")
+    write_text(os.path.join(launch, "main.txt"), dump["mainClass"] + "\n")
+    write_text(os.path.join(launch, "classes.dir"), m.dest(dump["classesDir"]) + "\n")
+    write_text(os.path.join(launch, "source.json"), json.dumps({
+        "worktree": wt, "branch": branch, "commit": git(wt, "rev-parse", "--short", "HEAD"),
+        "buildClasses": dump["classesDir"], "staged": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2) + "\n")
+
+    tmp_link = os.path.join(SHARED, ".current-tmp")
+    if os.path.lexists(tmp_link):
+        os.remove(tmp_link)
+    os.symlink(runtime, tmp_link)
+    os.replace(tmp_link, os.path.join(SHARED, "current"))
+    prune_runtimes()
+    print("staged %s (%s) in %.0fs" % (branch, os.path.basename(wt), time.time() - started))
+
+
+def prune_runtimes():
+    keep = set()
+    st = api_quiet("/status")
+    if st and st.get("classesDir"):
+        keep.add(runtime_of(st["classesDir"]))
+    root = os.path.join(SHARED, "runtimes")
+    names = sorted(os.listdir(root))
+    keep.update(os.path.join(root, n) for n in names[-KEEP_RUNTIMES:])
+    for n in names:
+        if os.path.join(root, n) not in keep:
+            shutil.rmtree(os.path.join(root, n), ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- swap and restart
+
+def cmd_swap(args):
+    wt = worktree(args)
+    take_lock(wt, args.steal)
+    st = api_quiet("/status")
+    if not st:
+        die(NOT_RUNNING)
+    if not st.get("ready"):
+        die("the game is still starting")
+    running = st["classesDir"]
+    source = source_of(runtime_of(running))
+    if source["worktree"] != wt:
+        die("the game is running %s; `cobdev restart` loads this worktree instead" % source["worktree"])
+    started = time.time()
+    gradle(wt, ":1.8.9-forge:classes")
+    build = source["buildClasses"]
+    classes, resources = [], []
+    for root, _, files in os.walk(build):
+        for name in files:
+            src = os.path.join(root, name)
+            rel = os.path.relpath(src, build)
+            dst = os.path.join(running, rel)
+            if os.path.exists(dst) and open(src, "rb").read() == open(dst, "rb").read():
+                continue
+            os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+            shutil.copyfile(src, dst + ".tmp-cobdev")
+            os.chmod(dst + ".tmp-cobdev", 0o644)
+            os.replace(dst + ".tmp-cobdev", dst)
+            if rel.endswith(".class"):
+                classes.append(rel[:-len(".class")].replace(os.sep, "."))
+            else:
+                resources.append(rel)
+    if not classes and not resources:
+        print("nothing changed since the last swap (%.1fs)" % (time.time() - started))
+        return
+    if classes:
+        r = api("/swap", post={"classes": ",".join(classes), "reinit": "1"})
+        if r.get("needsRestart"):
+            print("live swap not possible (%s)" % r.get("reason"))
+            if args.no_restart:
+                die("rerun without --no-restart, or run cobdev restart")
+            print("restarting the game with the new code...")
+            restart(wt, args, stage=True)
+            return
+        print("swapped %d class(es) in %.1fs%s" % (len(r["swapped"]), time.time() - started,
+              "; not loaded yet (fine): " + ", ".join(r["notLoadedYet"]) if r["notLoadedYet"] else ""))
+    if resources:
+        api("/refresh", timeout=120)
+        print("reloaded resources: " + ", ".join(resources))
+
+
+def restart(wt, args, stage):
+    if stage:
+        cmd_stage(args, wt)
+    st = api_quiet("/status")
+    if not st:
+        print("the dev client is not running; it will use the staged files when the user starts it:\n  " + START)
+        return
+    api("/restart")
+    took = wait_ready(old_pid=st.get("pid"))
+    print("game is back up (%.0fs)" % took)
+
+
+def cmd_restart(args):
+    wt = worktree(args)
+    take_lock(wt, args.steal)
+    restart(wt, args, stage=not args.no_stage)
+
+
+# ----------------------------------------------------------------------------- simple commands
+
+def cmd_status(args):
+    lock = read_lock()
+    print("lock:    " + (lock["worktree"] + " (since " + lock["since"] + ")" if lock else "free"))
+    cur = os.path.join(SHARED, "current")
+    if os.path.exists(cur):
+        s = source_of(os.path.realpath(cur))
+        print("staged:  %s @ %s from %s (%s)" % (s["branch"], s["commit"], s["worktree"], s["staged"]))
+    else:
+        print("staged:  nothing")
+    st = api_quiet("/status")
+    if not st:
+        print("game:    not running (user starts it with " + START + ")")
+        return
+    if st.get("classesDir"):
+        s = source_of(runtime_of(st["classesDir"]))
+        print("running: %s @ %s from %s" % (s["branch"], s["commit"], s["worktree"]))
+    print("game:    " + json.dumps({k: v for k, v in st.items() if k not in ("ok", "classesDir")}))
+
+
+def locked(args):
+    take_lock(worktree(args), args.steal)
+
+
+def cmd_open(args):
+    locked(args)
+    params = {"class": SCREENS.get(args.screen, args.screen)}
+    if args.arg is not None:
+        params["arg"] = args.arg
+    api("/open", params)
+
+
+def cmd_simple(path, *names):
+    def run(args):
+        locked(args)
+        api(path, {n: getattr(args, n) for n in names})
+    return run
+
+
+def cmd_hover(args):
+    locked(args)
+    if args.x == "off":
+        api("/hover", {"off": 1})
+    else:
+        api("/hover", {"x": int(args.x), "y": args.y})
+
+
+def cmd_key(args):
+    locked(args)
+    code = KEYS.get(args.key.lower())
+    if code is None:
+        code = int(args.key)
+    params = {"code": code}
+    if args.char:
+        params["char"] = args.char
+    api("/key", params)
+
+
+def cmd_world(args):
+    locked(args)
+    api("/world", timeout=120)
+
+
+def cmd_shot(args):
+    if args.at:
+        locked(args)
+        api("/hover", {"x": args.at[0], "y": args.at[1]})
+    png = api("/shot", {"wait": args.wait}, timeout=30, raw=True)
+    out = args.out or os.path.join(SHOTS, "shot-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(png)
+    st = api_quiet("/status") or {}
+    print("%s  (%s px; GUI %s, so GUI coords = px / %s)" % (out, st.get("display"), st.get("gui"), st.get("scaleFactor")))
+
+
+def cmd_log(args):
+    for line in api("/log", {"lines": args.lines})["lines"]:
+        print(line)
+
+
+def cmd_lock(args):
+    locked(args)
+    print("lock held by " + worktree(args))
+
+
+def cmd_unlock(args):
+    wt = worktree(args)
+    cur = read_lock()
+    if cur and cur.get("worktree") != wt and not args.steal:
+        die("the lock belongs to %s; pass --steal to clear it anyway" % cur.get("worktree"))
+    if cur:
+        os.remove(LOCK)
+    print("lock released")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="cobdev", description=__doc__.split("\n\n")[0])
+    ap.add_argument("--worktree", help="checkout to use (default: the one containing the cwd)")
+    ap.add_argument("--steal", action="store_true", help="take the dev client from another worktree")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help_text):
+        p = sub.add_parser(name, help=help_text)
+        p.set_defaults(fn=fn)
+        return p
+
+    add("setup", cmd_setup, "one-time: Intel Java 8, devagent.jar, start.sh under " + SHARED)
+    add("stage", cmd_stage, "build this worktree and stage it for the next game start")
+    p = add("swap", cmd_swap, "compile and hot-swap changed classes into the running game")
+    p.add_argument("--no-restart", action="store_true", help="fail instead of restarting on structural changes")
+    p = add("restart", cmd_restart, "stage and restart the game (it relaunches itself)")
+    p.add_argument("--no-stage", action="store_true")
+    add("status", cmd_status, "lock, staged and running code, game state")
+    p = add("open", cmd_open, "open a screen: settings, hud, or a com.bedwarsqol class name")
+    p.add_argument("screen")
+    p.add_argument("--arg", type=int, help="int constructor argument (SettingsGui section)")
+    add("close", cmd_simple("/close"), "close the current screen")
+    add("reinit", cmd_simple("/reinit"), "rerun the current screen's initGui")
+    for name, path, help_text in (("click", "/click", "click at GUI coords"),
+                                  ("down", "/down", "press a mouse button at GUI coords"),
+                                  ("up", "/up", "release a mouse button at GUI coords")):
+        p = add(name, cmd_simple(path, "x", "y", "button"), help_text)
+        p.add_argument("x", type=int)
+        p.add_argument("y", type=int)
+        p.add_argument("--button", type=int, default=0)
+    p = add("drag", cmd_simple("/drag", "x", "y"), "move the held button to GUI coords")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    p = add("scroll", cmd_simple("/scroll", "x", "y", "amount"), "scroll at GUI coords; positive = down")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    p.add_argument("amount", type=int)
+    p = add("hover", cmd_hover, "hold the virtual cursor at GUI coords (20s), or: hover off")
+    p.add_argument("x")
+    p.add_argument("y", nargs="?", type=int)
+    p = add("type", cmd_simple("/type", "text"), "type text into the current Cobblify screen")
+    p.add_argument("text")
+    p = add("key", cmd_key, "press a key: " + ", ".join(KEYS) + ", or an LWJGL key code")
+    p.add_argument("key")
+    p.add_argument("--char", help="character to send with the key code")
+    p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
+    p.add_argument("n", type=int)
+    add("world", cmd_world, "load (or create) the flat creative world 'cobdev'")
+    add("refresh", cmd_simple("/refresh"), "reload resources (textures, font atlases)")
+    p = add("shot", cmd_shot, "save a PNG of the last frame")
+    p.add_argument("out", nargs="?")
+    p.add_argument("--wait", type=int, default=300, help="ms to let animations settle (default 300)")
+    p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="hover here first")
+    p = add("log", cmd_log, "tail the game log")
+    p.add_argument("lines", nargs="?", type=int, default=100)
+    add("lock", cmd_lock, "claim the dev client for this worktree")
+    add("unlock", cmd_unlock, "release the dev client")
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
