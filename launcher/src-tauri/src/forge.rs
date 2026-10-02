@@ -1,5 +1,5 @@
 //! Forge support: finding a Minecraft instance, judging whether Cobblify belongs in it,
-//! and installing the jar there without ever costing the user a file.
+//! and installing the jar there, deleting only the older releases it replaces.
 //!
 //! The design rests on one fact: the Forge build of Cobblify is a PURE DROP-IN. Mixin is
 //! shaded into the jar and its manifest carries `TweakClass` + `ForceLoadAsMod`, which FML
@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::install::{commit, is_semver, stage_verified};
+use crate::install::{commit, release_version, stage_verified};
 use crate::resources::ForgeJar;
 
 /// Launchers before 0.16.3 renamed a superseded jar to `<name>.cobblify-disabled` (then
@@ -369,10 +369,10 @@ pub fn classify_picked(dir: &Path) -> Result<Candidate, String> {
 /// What to do with one Cobblify-looking jar found in a load root.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    /// A superseded copy of one of our own packaged releases: deleted.
+    /// A copy of one of our own packaged releases no newer than ours: deleted.
     Stale,
-    /// Cobblify-ish but not a release we produced - a `-dev` build, a hand-renamed file,
-    /// or a path we could not resolve. Reported, never touched.
+    /// Cobblify-ish but not a release we may replace - a newer release, a `-dev` build, a
+    /// hand-renamed file, or a path we could not resolve. Reported, never touched.
     Block,
     Ignore,
 }
@@ -394,17 +394,13 @@ fn classify(name: &str, our_name: &str) -> Verdict {
     if !lower.ends_with(".jar") || !lower.starts_with("cobblify") {
         return Verdict::Ignore;
     }
-    let prefix = release_prefix(our_name).to_ascii_lowercase();
-    // `release_prefix` returns the WHOLE name when it carries no `-`, so the remainder can
-    // be empty or shorter than `".jar"` - cutting four bytes off it blindly panicked.
-    if let Some(rest) = lower.strip_prefix(&prefix) {
-        if let Some(version) = rest.strip_suffix(".jar") {
-            if is_semver(version) {
-                return Verdict::Stale;
-            }
-        }
+    // Same version and a different name is a second spelling of our own jar. A newer
+    // release is not ours to delete: an older launcher would be downgrading.
+    let prefix = release_prefix(our_name);
+    match (release_version(name, &prefix), release_version(our_name, &prefix)) {
+        (Some(theirs), Some(ours)) if theirs <= ours => Verdict::Stale,
+        _ => Verdict::Block,
     }
-    Verdict::Block
 }
 
 /// Every directory FML will scan for mods.
@@ -727,8 +723,14 @@ mod tests {
             classify("Cobblify-1.8.9-forge-0.8.0.jar", OURS),
             Verdict::Stale
         );
+        // A NEWER release is not ours to delete: an older launcher would be downgrading.
+        // Versions compare as numbers, so 0.10.2 is newer than 0.9.0.
         assert_eq!(
             classify("Cobblify-1.8.9-forge-0.10.2.jar", OURS),
+            Verdict::Block
+        );
+        assert_eq!(
+            classify("Cobblify-1.8.9-forge-0.9.0.jar", "Cobblify-1.8.9-forge-0.10.2.jar"),
             Verdict::Stale
         );
         // A dev build is ours in spirit but not a release we packaged - never touched.
@@ -774,16 +776,6 @@ mod tests {
         assert_eq!(classify("Cobblify.jar", "Cobblify.jar"), Verdict::Block);
         // The remainder is short but non-empty, and still not a version.
         assert_eq!(classify("cobblify.jar.jar", "Cobblify.jar"), Verdict::Block);
-    }
-
-    #[test]
-    fn semver_is_strict() {
-        assert!(is_semver("0.9.0"));
-        assert!(is_semver("10.20.30"));
-        assert!(!is_semver("0.9"));
-        assert!(!is_semver("0.9.0-dev"));
-        assert!(!is_semver("a.b.c"));
-        assert!(!is_semver("0..0"));
     }
 
     // ── the install transaction ────────────────────────────────────────────────
@@ -916,9 +908,75 @@ mod tests {
         );
     }
 
-    /// Round-3 B2, and the single most likely real upgrade: our jar is ALREADY current,
-    /// and a stale peer sits beside it. An early return here leaves two `bedwarsqol` jars
-    /// and a client that refuses to boot.
+    /// Round-3 B2, and the single most likely real upgrade: our jar is ALREADY current (on
+    /// Windows the `Ok(None)` skip path) and a stale peer sits beside it. An early return
+    /// there leaves two `bedwarsqol` jars and a client that refuses to boot.
+    #[test]
+    fn a_current_jar_still_clears_an_older_release() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join(OURS), b"forge").unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(entries_named(&mods, |_| true), vec![OURS.to_string()]);
+        assert_eq!(fs::read(mods.join(OURS)).unwrap(), b"forge");
+    }
+
+    /// An older copy of the launcher reports a newer release instead of deleting it, and
+    /// installs nothing beside it.
+    #[test]
+    fn a_newer_release_blocks_instead_of_being_deleted() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let newer = mods.join("Cobblify-1.8.9-forge-0.10.0.jar");
+        fs::write(&newer, b"newer").unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(out.blocked, "{out:?}");
+        assert_eq!(out.conflicts, vec![newer.display().to_string()]);
+        assert_eq!(entries_named(&mods, |_| true), vec![dir_name(&newer)]);
+    }
+
+    /// The real Windows case for a failed delete: the game holds the old jar open without
+    /// delete sharing. The new jar must not be committed beside it.
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_old_release_fails_before_the_commit() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let old = mods.join("Cobblify-1.8.9-forge-0.8.0.jar");
+        fs::write(&old, b"old").unwrap();
+        // FILE_SHARE_READ only: readers allowed, deletion refused.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old)
+            .unwrap();
+
+        let result = install(&jar, game.path());
+        drop(lock);
+
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot delete"), "{err}");
+        assert_eq!(entries_named(&mods, |_| true), vec![dir_name(&old)]);
+    }
+
+    /// Nothing installs past a blocker, and nothing is deleted either - not even stale peers.
     #[test]
     fn a_blocker_prevents_every_install_mutation_even_with_stale_peers() {
         let src = tempfile::tempdir().unwrap();

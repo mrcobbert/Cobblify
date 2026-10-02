@@ -85,11 +85,12 @@ Before writing it:
 It also installs the jars into `~/.weave/` using a same-directory temp file plus
 an atomic rename, so a running game never sees a half-written jar. Weave loads
 every jar in `~/.weave/mods/`, so the install deletes the older releases the new
-jar replaces: any other `Cobblify-Lunar-<x.y.z>.jar`, matched without regard to
-case. It deletes them only after the new jar is staged and hash-checked. Any
-other `Cobblify-Lunar-*` entry (a `-dev` or renamed build, a symlink) is left
-alone and reported as a conflict. So is an old release that could not be
-deleted.
+jar replaces: any other `Cobblify-Lunar-<x.y.z>.jar` up to our version, matched
+without regard to case. It deletes them only after the new jar is staged and
+hash-checked. Any other `Cobblify-Lunar-*` entry is left alone and reported as a
+conflict: a newer release, a `-dev` or renamed build, or a symlink. An old
+release that could not be deleted (Windows, game still open) is reported too,
+and the new jar is not installed beside it until the next try.
 
 **Uninstalling on Windows undoes that registration first.** The NSIS
 uninstaller's `NSIS_HOOK_PREUNINSTALL` (`src-tauri/nsis/hooks.nsh`) runs
@@ -141,8 +142,9 @@ untidy. Order is the whole safety argument:
    our jar is already current, which is the likeliest real upgrade and the case
    an early return would break;
 2. install nothing if any Cobblify jar we may not touch is present: anything
-   Cobblify-ish that is *not* an exact `Cobblify-1.8.9-forge-<x.y.z>.jar` (a
-   `-dev` build, a hand-renamed file, a symlink) is reported and blocks;
+   Cobblify-ish that is *not* a `Cobblify-1.8.9-forge-<x.y.z>.jar` up to our
+   version (a newer release, a `-dev` build, a hand-renamed file, a symlink) is
+   reported and blocks;
 3. stage and hash the new jar - a failure here deletes nothing;
 4. **delete** every superseded release. If one cannot be deleted (Windows
    refuses while the game holds it open), stop before the commit: our jar beside

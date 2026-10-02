@@ -59,8 +59,9 @@ fn tmp_for(dest: &Path) -> Result<PathBuf, String> {
 ///
 /// `Ok(None)` means no commit is needed because the destination is already byte-identical
 /// to what we would write. That case is Windows-only, by design - see the module header.
-/// It does NOT mean "there is nothing left to do": Forge still has to scan for stale peers
-/// in that situation, which is the single most likely real upgrade (PLAN 2.6, round-3 B2).
+/// It does NOT mean "there is nothing left to do": the caller still has to clear stale
+/// peers in that situation, which is the single most likely real upgrade (PLAN 2.6,
+/// round-3 B2).
 pub fn stage_verified(
     src: &Path,
     dest: &Path,
@@ -131,18 +132,19 @@ pub struct Installed {
     /// Where the Weave agent now lives - this is the path registered in Lunar's jvm-args.
     pub agent_path: PathBuf,
     /// `Cobblify-Lunar-*` entries left in `~/.weave/mods/` beside ours: a name that is not a
-    /// plain release (a `-dev` or hand-renamed build), a symlink, or an old release that could
-    /// not be deleted. Never touched. The UI blocks on them.
+    /// plain release (a `-dev` or hand-renamed build), a newer release, a symlink, or an old
+    /// release that could not be deleted. Never touched. The UI blocks on them.
     pub conflicts: Vec<PathBuf>,
 }
 
 /// Installs both jars and deletes the releases ours replaces.
 ///
 /// An update installs `Cobblify-Lunar-<new>.jar` beside `Cobblify-Lunar-<old>.jar`, and Weave
-/// loads every jar in `mods/`, so the old one has to go. Only plain release names are deleted.
-/// The order matches `forge::install`: the new jar is staged and hash-checked first, so a
-/// corrupt bundle deletes nothing, and old copies go before the commit, so on a case-folding
-/// volume a case variant of our own name is cleared rather than left as a second spelling.
+/// loads every jar in `mods/`, so the old one has to go. Only plain release names up to our
+/// version are deleted. The order matches `forge::install`: the new jar is staged and
+/// hash-checked first, so a corrupt bundle deletes nothing, and old copies go before the
+/// commit, so on a case-folding volume a case variant of our own name is cleared rather than
+/// left as a second spelling. If one cannot be deleted, ours is not committed beside it.
 pub fn install_lunar(jars: &LunarJars, weave_dir: &Path) -> Result<Installed, String> {
     let mods_dir = weave_dir.join("mods");
     fs::create_dir_all(&mods_dir)
@@ -154,17 +156,23 @@ pub fn install_lunar(jars: &LunarJars, weave_dir: &Path) -> Result<Installed, St
     let (stale, mut conflicts) = mod_peers(&mods_dir, &jars.mod_name)?;
     let mod_path = mods_dir.join(&jars.mod_name);
     let staged = stage_verified(&jars.mod_src, &mod_path, &jars.mod_sha256)?;
+    let mut undeletable = Vec::new();
     for path in stale {
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            // Still loadable beside ours, so the user has to see it.
-            Err(_) => conflicts.push(path),
+            // Windows refuses while the game has it open.
+            Err(_) => undeletable.push(path),
         }
     }
-    if let Some(staged) = staged {
-        commit(staged)?;
+    // Committing beside a jar that is still there would have Weave load both. Dropping the
+    // stage clears its temp file; the next setup run tries again.
+    if undeletable.is_empty() {
+        if let Some(staged) = staged {
+            commit(staged)?;
+        }
     }
+    conflicts.extend(undeletable);
     conflicts.sort();
     Ok(Installed {
         agent_path,
@@ -193,7 +201,7 @@ fn mod_peers(mods_dir: &Path, ours: &str) -> Result<(Vec<PathBuf>, Vec<PathBuf>)
             continue;
         }
         // A symlink may point anywhere, so it is reported, never deleted.
-        if kind.is_file() && is_release_name(&name) {
+        if kind.is_file() && is_stale_release(&name, ours) {
             stale.push(path);
         } else {
             conflicts.push(path);
@@ -252,21 +260,34 @@ fn is_our_jar_name(name: &str, prefix: &str) -> bool {
     lower.starts_with(&prefix.to_ascii_lowercase()) && lower.ends_with(".jar")
 }
 
-/// `Cobblify-Lunar-<major>.<minor>.<patch>.jar`, in any case - the only shape a release
-/// ships in, and so the only shape deleted as superseded.
-fn is_release_name(name: &str) -> bool {
-    name.to_ascii_lowercase()
-        .strip_prefix(&MOD_JAR_PREFIX.to_ascii_lowercase())
-        .and_then(|rest| rest.strip_suffix(".jar"))
-        .is_some_and(is_semver)
+/// A release no newer than ours: superseded, or (same version) a second spelling of our own
+/// name. A newer release is not ours to delete - an older launcher would be downgrading.
+fn is_stale_release(name: &str, ours: &str) -> bool {
+    match (
+        release_version(name, MOD_JAR_PREFIX),
+        release_version(ours, MOD_JAR_PREFIX),
+    ) {
+        (Some(theirs), Some(ours)) => theirs <= ours,
+        _ => false,
+    }
 }
 
-pub(crate) fn is_semver(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+/// The version in `<prefix><major>.<minor>.<patch>.jar`, matched in any case - the only
+/// shape a release ships in. Anything else is `None`.
+pub(crate) fn release_version(name: &str, prefix: &str) -> Option<(u64, u64, u64)> {
+    let lower = name.to_ascii_lowercase();
+    let version = lower
+        .strip_prefix(&prefix.to_ascii_lowercase())?
+        .strip_suffix(".jar")?;
+    let mut parts = version.split('.').map(|p| {
+        if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
+            p.parse::<u64>().ok()
+        } else {
+            None
+        }
+    });
+    let parsed = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(parsed)
 }
 
 /// Whether a directory entry is our destination. Identity is per-platform: NTFS ignores
@@ -526,14 +547,28 @@ mod tests {
 
     /// Weave loads a jar however its name is cased, so release names are matched caselessly.
     #[test]
-    fn release_names_are_caseless_and_strict() {
-        assert!(is_release_name("Cobblify-Lunar-0.7.0.jar"));
-        assert!(is_release_name("cobblify-lunar-10.20.30.JAR"));
-        assert!(!is_release_name("Cobblify-Lunar-0.7.0-dev.jar"));
-        assert!(!is_release_name("Cobblify-Lunar-0.7.jar"));
-        assert!(!is_release_name("Cobblify-Lunar-.jar"));
-        assert!(!is_release_name("Cobblify-Lunar-mine.jar"));
-        assert!(!is_release_name("Weave-Loader-Agent-1.3.3.jar"));
+    fn release_versions_are_caseless_and_strict() {
+        let v = |name| release_version(name, MOD_JAR_PREFIX);
+        assert_eq!(v("Cobblify-Lunar-0.7.0.jar"), Some((0, 7, 0)));
+        assert_eq!(v("cobblify-lunar-10.20.30.JAR"), Some((10, 20, 30)));
+        assert_eq!(v("Cobblify-Lunar-0.7.0-dev.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-0.7.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-0..7.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-0.7.0.1.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-+1.7.0.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-.jar"), None);
+        assert_eq!(v("Cobblify-Lunar-mine.jar"), None);
+        assert_eq!(v("Weave-Loader-Agent-1.3.3.jar"), None);
+    }
+
+    /// Versions compare as numbers: 0.10.0 is newer than 0.9.0.
+    #[test]
+    fn only_releases_up_to_ours_are_stale() {
+        const OURS: &str = "Cobblify-Lunar-0.10.0.jar";
+        assert!(is_stale_release("Cobblify-Lunar-0.9.0.jar", OURS));
+        assert!(is_stale_release("cobblify-lunar-0.10.0.jar", OURS), "a second spelling of ours");
+        assert!(!is_stale_release("Cobblify-Lunar-0.10.1.jar", OURS));
+        assert!(!is_stale_release("Cobblify-Lunar-0.10.0-dev.jar", OURS));
     }
 
     fn entries(dir: &Path) -> Vec<String> {
@@ -593,6 +628,110 @@ mod tests {
             "the old release still goes"
         );
         assert_eq!(fs::read(mods.join("Cobblify-Lunar-0.8.1.jar")).unwrap(), b"mod");
+    }
+
+    /// The second start after an update: our jar is already current (on Windows the
+    /// `Ok(None)` skip path) and the old release is still beside it. An early return on that
+    /// path would bring the bug back.
+    #[test]
+    fn a_current_jar_still_clears_an_older_release() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        install_lunar(&res, weave.path()).unwrap();
+        let mods = weave.path().join("mods");
+        fs::write(mods.join("Cobblify-Lunar-0.8.0.jar"), b"previous release").unwrap();
+
+        let installed = install_lunar(&res, weave.path()).unwrap();
+
+        assert!(installed.conflicts.is_empty(), "{:?}", installed.conflicts);
+        assert_eq!(entries(&mods), vec!["Cobblify-Lunar-0.8.1.jar"]);
+        assert_eq!(fs::read(mods.join("Cobblify-Lunar-0.8.1.jar")).unwrap(), b"mod");
+    }
+
+    /// An older copy of the launcher must not delete a newer release: that is a downgrade.
+    #[test]
+    fn a_newer_release_is_reported_not_deleted() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        let mods = weave.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let newer = mods.join("Cobblify-Lunar-0.10.0.jar");
+        fs::write(&newer, b"newer release").unwrap();
+
+        let installed = install_lunar(&res, weave.path()).unwrap();
+
+        assert_eq!(installed.conflicts, vec![newer.clone()]);
+        assert_eq!(fs::read(&newer).unwrap(), b"newer release");
+    }
+
+    /// An old release that cannot be deleted is reported, and ours is not committed beside
+    /// it: Weave would load both. `chflags uchg` makes the unlink fail the way a Windows lock
+    /// does, while the folder stays writable for the staged copy.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_undeletable_old_release_blocks_without_committing() {
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        let mods = weave.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let old = mods.join("Cobblify-Lunar-0.8.0.jar");
+        fs::write(&old, b"previous release").unwrap();
+        let chflags = |flag: &str| {
+            let ok = std::process::Command::new("chflags")
+                .arg(flag)
+                .arg(&old)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "chflags {flag}");
+        };
+        chflags("uchg");
+
+        let result = install_lunar(&res, weave.path());
+        chflags("nouchg");
+
+        let installed = result.unwrap();
+        assert_eq!(installed.conflicts, vec![old.clone()]);
+        assert_eq!(
+            entries(&mods),
+            vec!["Cobblify-Lunar-0.8.0.jar"],
+            "neither our jar nor its temp file may be left"
+        );
+    }
+
+    /// The real Windows case: the game holds the old jar open without delete sharing.
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_old_release_blocks_without_committing() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        let weave = tempfile::tempdir().unwrap();
+        let res = bundle(src.path(), b"mod", b"agent");
+        let mods = weave.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let old = mods.join("Cobblify-Lunar-0.8.0.jar");
+        fs::write(&old, b"previous release").unwrap();
+        // FILE_SHARE_READ only: readers allowed, deletion refused.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old)
+            .unwrap();
+
+        let result = install_lunar(&res, weave.path());
+        drop(lock);
+
+        let installed = result.unwrap();
+        assert_eq!(installed.conflicts, vec![old.clone()]);
+        assert_eq!(
+            entries(&mods),
+            vec!["Cobblify-Lunar-0.8.0.jar"],
+            "neither our jar nor its temp file may be left"
+        );
     }
 
     /// A symlink may point anywhere, so it is reported and never deleted - the same rule

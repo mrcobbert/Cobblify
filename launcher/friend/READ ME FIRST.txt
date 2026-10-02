@@ -97,10 +97,12 @@ missing. This is per-profile, so if you switch profiles, check again.
     Cobblify waits rather than fighting it.
 
 "Conflicting jars", or a message about another Cobblify jar
-    The launcher deletes older Cobblify versions by itself when it
-    updates. This message means there is a copy it won't touch, such as
-    a renamed or test build. Click the button to open the folder,
-    remove that extra jar, then reopen the launcher.
+    The launcher deletes older Cobblify versions by itself. If you see
+    this, close the game and reopen the launcher first: an old copy
+    can't be deleted while the game is using it. If it's still there,
+    the extra copy is one the launcher won't touch, such as a renamed
+    or test build, or a newer version. Click the button to open the
+    folder, remove that extra jar, then reopen the launcher.
 
     On Forge this matters more than it sounds: the game will not start
     at all with two copies of the same mod.
