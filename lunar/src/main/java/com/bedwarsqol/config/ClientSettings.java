@@ -2,6 +2,7 @@ package com.bedwarsqol.config;
 
 import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.hud.HudPlacement;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsBackendUrl;
@@ -15,9 +16,13 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 2;
+    static final int CURRENT_SETTINGS_VERSION = 3;
     public int settingsVersion = 0;
 
+    /**
+     * HUD Size: 0 = small, 1 = medium, 2 = large. Changing it rescales every module (see
+     * {@link #setHudSize}); a reset module gets this size.
+     */
     public int defaultTextSize = 1;
     /** Global Text/Image style for every HUD element that supports it. 0 = text, 1 = icons + numbers. */
     public int hudDisplayMode = 1;
@@ -32,9 +37,9 @@ public class ClientSettings {
 
     public boolean inventoryHudEnabled = false;
     public boolean inventoryInGameOnly = false;
-    public int inventoryHudX = 5;
-    public int inventoryHudY = 5;
-    public int inventoryHudAnchor = 6; // bottom-left by default
+    public int inventoryHudX = 0;
+    public int inventoryHudY = 0;
+    public int inventoryHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float inventoryHudScale = 1.0f;
 
     // One toggle controls both gen timers; each stays independently draggable below.
@@ -44,14 +49,14 @@ public class ClientSettings {
      * "--" until a game supplies spawn times, so a player can see the HUD is on).
      */
     public boolean genTimersInGameOnly = false;
-    public int diamondTimerHudX = -5; // right-anchored: negative keeps the box inside the screen
-    public int diamondTimerHudY = 5;
-    public int diamondTimerHudAnchor = 2; // top-right by default
+    public int diamondTimerHudX = 0;
+    public int diamondTimerHudY = 0;
+    public int diamondTimerHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float diamondTimerHudScale = 1.0f;
 
-    public int emeraldTimerHudX = -5;
-    public int emeraldTimerHudY = 27;
-    public int emeraldTimerHudAnchor = 2;
+    public int emeraldTimerHudX = 0;
+    public int emeraldTimerHudY = 0;
+    public int emeraldTimerHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float emeraldTimerHudScale = 1.0f;
 
     /** Session Stats: Lunar-layout game + session tally; always drawn on its panel (no Background toggle). */
@@ -60,17 +65,17 @@ public class ClientSettings {
     public boolean sessionStatsHoldKey = false;
     /** Session Stats key: an LWJGL key code, a mouse button as button - 100, or 0 for unbound. */
     public int sessionStatsKeyCode = 0;
-    public int sessionStatsHudX = -5;
-    public int sessionStatsHudY = 60;
-    public int sessionStatsHudAnchor = 2; // top-right, under the gen timers
+    public int sessionStatsHudX = 0;
+    public int sessionStatsHudY = 0;
+    public int sessionStatsHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float sessionStatsHudScale = 1.0f;
 
     /** Height Limit: Lunar-style map name, build limit (highest placeable Y) and blocks left below it. */
     public boolean heightLimitEnabled = false;
     public boolean heightLimitInGameOnly = false;
-    public int heightLimitHudX = 5;
-    public int heightLimitHudY = 5;
-    public int heightLimitHudAnchor = 3; // middle-left
+    public int heightLimitHudX = 0;
+    public int heightLimitHudY = 0;
+    public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
 
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
@@ -235,6 +240,9 @@ public class ClientSettings {
      * <li>v2: Tag Utils replaced the Urchin Tags and Seraph Tags modules. It starts on if either source
      * was on, and the sources keep their own keys. Each shared sub-option starts on if it was on for a
      * source that was on (for either source when neither was).</li>
+     * <li>v3: HUD modules get a default layout worked out from their sizes, so they never overlap at
+     * any HUD Size. A module still at its exact old default spot moves into it; anything the user
+     * moved is kept.</li>
      * </ul>
      */
     void migrate() {
@@ -251,9 +259,20 @@ public class ClientSettings {
             tagChatAlert = carried(urchin, urchinChatAlert, seraph, seraphChatAlert);
             tagAlertSound = carried(urchin, urchinAlertSound, seraph, seraphAlertSound);
         }
+        if (settingsVersion < 3) {
+            if (atDefault(inventoryHudX, inventoryHudY, inventoryHudAnchor, 5, 5, 6)) inventoryHudAnchor = HudPlacement.AUTO;
+            if (atDefault(diamondTimerHudX, diamondTimerHudY, diamondTimerHudAnchor, -5, 5, 2)) diamondTimerHudAnchor = HudPlacement.AUTO;
+            if (atDefault(emeraldTimerHudX, emeraldTimerHudY, emeraldTimerHudAnchor, -5, 27, 2)) emeraldTimerHudAnchor = HudPlacement.AUTO;
+            if (atDefault(sessionStatsHudX, sessionStatsHudY, sessionStatsHudAnchor, -5, 60, 2)) sessionStatsHudAnchor = HudPlacement.AUTO;
+            if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
+        }
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;
+    }
+
+    private static boolean atDefault(int x, int y, int anchor, int oldX, int oldY, int oldAnchor) {
+        return x == oldX && y == oldY && anchor == oldAnchor;
     }
 
     /**
@@ -275,16 +294,16 @@ public class ClientSettings {
         guiSize = clamp(guiSize, 0, 2);
         guiAccent = GuiTheme.normalizeToken(guiAccent);
 
-        inventoryHudAnchor = clamp(inventoryHudAnchor, 0, 8);
+        inventoryHudAnchor = clamp(inventoryHudAnchor, HudPlacement.AUTO, 8);
         if (inventoryHudScale < 0.3f || inventoryHudScale > 10.0f) inventoryHudScale = defaultTextSizeScale();
-        diamondTimerHudAnchor = clamp(diamondTimerHudAnchor, 0, 8);
+        diamondTimerHudAnchor = clamp(diamondTimerHudAnchor, HudPlacement.AUTO, 8);
         if (diamondTimerHudScale < 0.3f || diamondTimerHudScale > 10.0f) diamondTimerHudScale = defaultTextSizeScale();
-        emeraldTimerHudAnchor = clamp(emeraldTimerHudAnchor, 0, 8);
+        emeraldTimerHudAnchor = clamp(emeraldTimerHudAnchor, HudPlacement.AUTO, 8);
         if (emeraldTimerHudScale < 0.3f || emeraldTimerHudScale > 10.0f) emeraldTimerHudScale = defaultTextSizeScale();
-        sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, 0, 8);
+        sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, HudPlacement.AUTO, 8);
         if (!SessionHoldKey.isValidBinding(sessionStatsKeyCode)) sessionStatsKeyCode = 0;
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
-        heightLimitHudAnchor = clamp(heightLimitHudAnchor, 0, 8);
+        heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
@@ -317,13 +336,24 @@ public class ClientSettings {
         }
     }
 
-    public void applyDefaultTextSize() {
-        float scale = defaultTextSizeScale();
-        inventoryHudScale = scale;
-        diamondTimerHudScale = scale;
-        emeraldTimerHudScale = scale;
-        sessionStatsHudScale = scale;
-        heightLimitHudScale = scale;
+    /**
+     * Sets HUD Size and rescales every module by the same factor, so a module the player made bigger
+     * or smaller than the rest stays that way.
+     */
+    public void setHudSize(int size) {
+        float from = defaultTextSizeScale();
+        defaultTextSize = clamp(size, 0, 2);
+        float factor = defaultTextSizeScale() / from;
+        inventoryHudScale = rescaled(inventoryHudScale, factor);
+        diamondTimerHudScale = rescaled(diamondTimerHudScale, factor);
+        emeraldTimerHudScale = rescaled(emeraldTimerHudScale, factor);
+        sessionStatsHudScale = rescaled(sessionStatsHudScale, factor);
+        heightLimitHudScale = rescaled(heightLimitHudScale, factor);
+    }
+
+    private static float rescaled(float scale, float factor) {
+        float s = Math.round(scale * factor * 1000f) / 1000f;
+        return Math.max(0.3f, Math.min(10f, s));
     }
 
     public void save() {

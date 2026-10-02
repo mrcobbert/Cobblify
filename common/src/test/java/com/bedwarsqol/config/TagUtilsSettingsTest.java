@@ -119,7 +119,7 @@ public class TagUtilsSettingsTest {
         assertEquals("the v1 HUD fix still runs", -5, s.sessionStatsHudX);
         assertTrue(s.tagUtils);
         assertFalse(s.tagChatAlert);
-        assertEquals(2, s.settingsVersion);
+        assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
     }
 
     @Test
@@ -145,7 +145,7 @@ public class TagUtilsSettingsTest {
                 "tagBadgeNametag", "tagChatAlert", "tagAlertSound"}) {
             assertTrue(kept + " must be saved", out.contains("\"" + kept + "\""));
         }
-        assertEquals(2, s.settingsVersion);
+        assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
     }
 
     @Test
