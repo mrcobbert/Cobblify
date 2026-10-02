@@ -82,7 +82,7 @@ public class EditHudGui extends GuiScreen {
     private String hoverId;
     private Mode mode = Mode.NONE;
     private Map<String, HudModuleState> before;   // the layout when the current drag or resize began
-    private float grabX;
+    private float grabX;            // mouse offset from the dragged module's top-left, or from the grabbed corner
     private float grabY;
     private CornerResize resize;
     private boolean moved;
@@ -387,6 +387,10 @@ public class EditHudGui extends GuiScreen {
             selectedId = grabbed.id;
             resize = new CornerResize(corner, grabbed.x, grabbed.y, grabbed.width, grabbed.height,
                     HudModules.get(cfg, grabbed.id).scale);
+            // The handle sits on the drawn frame, outside the content; keep that offset so the size
+            // does not jump on the first move.
+            grabX = mouseX - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
+            grabY = mouseY - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
             badgeX = mouseX;
             badgeY = mouseY;
             beginChange(Mode.RESIZE);
@@ -420,7 +424,7 @@ public class EditHudGui extends GuiScreen {
             moved = true;
             badgeX = mouseX;
             badgeY = mouseY;
-            resizeTo(mouseX, mouseY);
+            resizeTo(mouseX - grabX, mouseY - grabY);
         }
     }
 
@@ -522,12 +526,12 @@ public class EditHudGui extends GuiScreen {
         place(cfg, box, vx + box.pad, vy + box.pad);
     }
 
-    private void resizeTo(int mouseX, int mouseY) {
+    private void resizeTo(float cornerX, float cornerY) {
         ClientSettings cfg = settings();
         HudModuleState s = HudModules.get(cfg, selectedId);
         HudBox box = selectedBox();
         if (s == null || box == null || resize == null) return;
-        float scale = resize.scaleFor(mouseX, mouseY, width, height, box.pad, snapping());
+        float scale = resize.scaleFor(cornerX, cornerY, width, height, box.pad, snapping());
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.
         HudBox scaled = selectedBox();

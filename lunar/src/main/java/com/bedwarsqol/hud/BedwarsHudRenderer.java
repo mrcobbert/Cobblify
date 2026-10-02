@@ -31,7 +31,6 @@ import net.weavemc.api.event.RenderGameOverlayEvent;
 import net.weavemc.api.event.SubscribeEvent;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -267,25 +266,21 @@ public class BedwarsHudRenderer {
     private static final float LAYOUT_GAP = 2f;
     private static final float HOTBAR_W = 182f;
     private static final float HOTBAR_ZONE_H = 50f;
-    private static final Map<String, List<Spot>> DEFAULT_SPOTS = new LinkedHashMap<String, List<Spot>>();
+    private static final Map<String, Spot[]> DEFAULT_SPOTS = new LinkedHashMap<String, Spot[]>();
     static {
-        DEFAULT_SPOTS.put(DIAMOND_TIMER_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)));
-        DEFAULT_SPOTS.put(EMERALD_TIMER_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)));
-        DEFAULT_SPOTS.put(SESSION_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.DOWN),
-                new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)));
-        DEFAULT_SPOTS.put(INVENTORY_HUD, spots(new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.DOWN),
+        DEFAULT_SPOTS.put(DIAMOND_TIMER_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)});
+        DEFAULT_SPOTS.put(EMERALD_TIMER_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)});
+        DEFAULT_SPOTS.put(SESSION_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.DOWN),
+                new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
+        DEFAULT_SPOTS.put(INVENTORY_HUD, new Spot[]{new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.DOWN),
                 new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.LEFT),
-                new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.RIGHT)));
-        DEFAULT_SPOTS.put(HEIGHT_LIMIT_HUD, spots(new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.DOWN),
+                new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.RIGHT)});
+        DEFAULT_SPOTS.put(HEIGHT_LIMIT_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.DOWN),
                 new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.UP),
-                new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)));
+                new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)});
     }
     private static String layoutKey;
     private static Map<String, float[]> layoutCache;
-
-    private static List<Spot> spots(Spot... spots) {
-        return Arrays.asList(spots);
-    }
 
     /** Drawn box {x, y, width, height} of every module still in its default spot, by id. */
     private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
@@ -296,7 +291,7 @@ public class BedwarsHudRenderer {
         obstacles.add(new HudLayout.Box((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H));
         List<HudLayout.Item> shown = new ArrayList<HudLayout.Item>();
         List<HudLayout.Item> hidden = new ArrayList<HudLayout.Item>();
-        for (Map.Entry<String, List<Spot>> e : DEFAULT_SPOTS.entrySet()) {
+        for (Map.Entry<String, Spot[]> e : DEFAULT_SPOTS.entrySet()) {
             String id = e.getKey();
             HudModuleState state = HudModules.get(cfg, id);
             if (state == null) continue;
@@ -310,8 +305,7 @@ public class BedwarsHudRenderer {
             }
             Size size = layoutSize(mc, cfg, id);
             float pad = layoutPad(cfg, id);
-            HudLayout.Item item = new HudLayout.Item(id, size.width + 2f * pad, size.height + 2f * pad,
-                    e.getValue().toArray(new Spot[0]));
+            HudLayout.Item item = new HudLayout.Item(id, size.width + 2f * pad, size.height + 2f * pad, e.getValue());
             (state.enabled ? shown : hidden).add(item);
         }
         shown.addAll(hidden); // hidden modules only take what room is left
