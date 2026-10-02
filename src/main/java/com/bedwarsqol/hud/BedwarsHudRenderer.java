@@ -76,23 +76,21 @@ public class BedwarsHudRenderer {
     private static final float ARMOR_ICON_SIZE = 16f;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
 
-    // Keystrokes: WASD, a mouse row (LMB/RMB with CPS) and a spacebar, as warm dark caps with a
-    // hairline keyline (the settings cards' look). A pressed cap takes the menu accent and fades back
+    // Keystrokes: WASD, a spacebar and a mouse row (LMB/RMB with CPS), as caps in the HUD panel's
+    // look (same fill, corners and white/gray text as Map Info and Session Stats). A pressed cap takes the menu accent and fades back
     // out after release. Geometry is in local units (multiplied by the HUD scale at draw time).
     private static final float KS_UNIT = 18f;     // square key cap side
     private static final float KS_GAP = 2f;       // gap between caps
-    private static final float KS_SPACE_H = 12f;  // spacebar height
-    private static final float KS_RADIUS = 3f;
-    private static final float KS_KEYLINE = 0.75f;
+    private static final float KS_SPACE_H = 14f;  // spacebar height
+    private static final float KS_RADIUS = Theme.CARD_R;
     private static final float KS_LETTER = 1.0f;  // letter scale within a cap
     private static final float KS_MOUSE_LABEL = 0.75f; // "LMB" / "RMB"
     private static final float KS_CPS_LABEL = 0.55f;   // the "N CPS" line under it
     private static final long KS_FADE_MS = 120L;
-    private static final int KS_FILL_OFF = 0xC01C1814;   // warm dark cap, translucent over the world
-    private static final int KS_KEYLINE_OFF = 0x24FFF2E4; // warm hairline; fades out as the accent comes in
-    private static final int KS_TEXT_OFF = 0xFFF2EEE7;   // GuiTheme.TEXT_HI
+    private static final int KS_FILL_OFF = 0xD0121212;   // HUD_BG_FILL
+    private static final int KS_TEXT_OFF = 0xFFFFFFFF;
     private static final int KS_TEXT_ON = 0xFFFFFFFF;
-    private static final int KS_CPS_ALPHA = 0xB0000000;
+    private static final int KS_CPS_OFF = 0xFFAAAAAA;    // STAT_LABEL_COLOR
 
     /** Cap order everywhere below: W, A, S, D, Space, LMB, RMB. */
     private static final int KS_W = 0, KS_A = 1, KS_S = 2, KS_D = 3, KS_SPACE = 4, KS_LMB = 5, KS_RMB = 6;
@@ -703,16 +701,17 @@ public class BedwarsHudRenderer {
         }
     }
 
-    /** Lunar's stat colours: the value after each {@code ": "} green, labels white, {@code " / "} gray. */
-    private static final int STAT_VALUE_COLOR = 0xFF55FF55;
-    private static final int STAT_SLASH_COLOR = 0xFFAAAAAA;
+    /** Neutral stat colours that sit with any accent: values white, labels light gray, {@code " / "} dark gray. */
+    private static final int STAT_VALUE_COLOR = 0xFFFFFFFF;
+    private static final int STAT_LABEL_COLOR = 0xFFAAAAAA;
+    private static final int STAT_SLASH_COLOR = 0xFF666666;
 
     /** One {@code Label: value [/ Label: value]} row, coloured run by run. */
     private static void drawStatRow(String row, float x, float y, float scale, BedwarsQolFont.Weight weight) {
         float cx = x;
         for (StatRowSegments.Segment seg : StatRowSegments.split(row)) {
             int color = seg.kind == StatRowSegments.Kind.VALUE ? STAT_VALUE_COLOR
-                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : TEXT_COLOR;
+                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : STAT_LABEL_COLOR;
             cx = drawSegment(seg.text, cx, y, scale, color, weight);
         }
     }
@@ -771,7 +770,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
         drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
-        // Lunar's colours: headers in the settings menu's accent, values green; each row keeps its weight.
+        // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);
@@ -823,7 +822,7 @@ public class BedwarsHudRenderer {
         return out;
     }
 
-    // ----- Keystrokes (WASD, mouse buttons with CPS, spacebar) -----
+    // ----- Keystrokes (WASD, spacebar, mouse buttons with CPS) -----
 
     private static HudBox keystrokesBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !cfg.keystrokesEnabled) return null;
@@ -865,21 +864,19 @@ public class BedwarsHudRenderer {
         drawKeyCap(0f, step, u, u, "A", null, level[KS_A], accent);
         drawKeyCap(step, step, u, u, "S", null, level[KS_S], accent);
         drawKeyCap(2f * step, step, u, u, "D", null, level[KS_D], accent);
-        drawKeyCap(0f, 2f * step, half, u, "LMB", leftCps, level[KS_LMB], accent);
-        drawKeyCap(half + KS_GAP, 2f * step, half, u, "RMB", rightCps, level[KS_RMB], accent);
-        drawKeyCap(0f, 3f * step, width, KS_SPACE_H, "", null, level[KS_SPACE], accent);
-        drawSpaceSymbol(0f, 3f * step, width, KS_SPACE_H, level[KS_SPACE]);
+        drawKeyCap(0f, 2f * step + KS_SPACE_H + KS_GAP, half, u, "LMB", leftCps, level[KS_LMB], accent);
+        drawKeyCap(half + KS_GAP, 2f * step + KS_SPACE_H + KS_GAP, half, u, "RMB", rightCps, level[KS_RMB], accent);
+        drawKeyCap(0f, 2f * step, width, KS_SPACE_H, "", null, level[KS_SPACE], accent);
+        drawSpaceSymbol(0f, 2f * step, width, KS_SPACE_H, level[KS_SPACE]);
 
         GlStateManager.popMatrix();
         resetGlState();
     }
 
-    /** One cap: {@code level} 0 is idle, 1 fully pressed (accent fill, white legend, no keyline). */
+    /** One cap: {@code level} 0 is idle, 1 fully pressed (accent fill). */
     private static void drawKeyCap(float x, float y, float w, float h, String label, String sub, float level, int accent) {
         float radius = Math.min(KS_RADIUS, Math.min(w, h) * 0.25f);
         GuiRender.roundedRect(x, y, x + w, y + h, radius, GuiRender.lerpColor(KS_FILL_OFF, accent, level));
-        GuiRender.roundedRectOutline(x, y, x + w, y + h, radius, KS_KEYLINE,
-                GuiRender.lerpColor(KS_KEYLINE_OFF, KS_KEYLINE_OFF & 0x00FFFFFF, level));
         if (label.isEmpty()) return;
         int text = GuiRender.lerpColor(KS_TEXT_OFF, KS_TEXT_ON, level);
         float cx = x + w / 2f;
@@ -888,7 +885,7 @@ public class BedwarsHudRenderer {
             drawCentered(label, cx, cy, KS_LETTER, text);
         } else {
             drawCentered(label, cx, cy - 3f, KS_MOUSE_LABEL, text);
-            drawCentered(sub, cx, cy + 3.5f, KS_CPS_LABEL, (text & 0x00FFFFFF) | KS_CPS_ALPHA);
+            drawCentered(sub, cx, cy + 3.5f, KS_CPS_LABEL, GuiRender.lerpColor(KS_CPS_OFF, KS_TEXT_ON, level));
         }
     }
 
