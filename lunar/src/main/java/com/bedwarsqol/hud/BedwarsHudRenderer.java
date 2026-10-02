@@ -481,7 +481,7 @@ public class BedwarsHudRenderer {
         ScaledResolution r = new ScaledResolution(mc);
         float x = absoluteX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, r.getScaledWidth());
         float y = absoluteY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, r.getScaledHeight());
-        return new HudBox(HEIGHT_LIMIT_HUD, "Height Limit", x, y, width, height);
+        return new HudBox(HEIGHT_LIMIT_HUD, "Map Info", x, y, width, height);
     }
 
     private static void drawHeightLimitHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -497,16 +497,17 @@ public class BedwarsHudRenderer {
         }
     }
 
-    /** Lunar's stat colours: the value after each {@code ": "} green, labels white, {@code " / "} gray. */
-    private static final int STAT_VALUE_COLOR = 0xFF55FF55;
-    private static final int STAT_SLASH_COLOR = 0xFFAAAAAA;
+    /** Neutral stat colours that sit with any accent: values white, labels light gray, {@code " / "} dark gray. */
+    private static final int STAT_VALUE_COLOR = 0xFFFFFFFF;
+    private static final int STAT_LABEL_COLOR = 0xFFAAAAAA;
+    private static final int STAT_SLASH_COLOR = 0xFF666666;
 
     /** One {@code Label: value [/ Label: value]} row, coloured run by run. */
     private static void drawStatRow(String row, float x, float y, float scale, BedwarsQolFont.Weight weight) {
         float cx = x;
         for (StatRowSegments.Segment seg : StatRowSegments.split(row)) {
             int color = seg.kind == StatRowSegments.Kind.VALUE ? STAT_VALUE_COLOR
-                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : TEXT_COLOR;
+                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : STAT_LABEL_COLOR;
             cx = drawSegment(seg.text, cx, y, scale, color, weight);
         }
     }
@@ -564,7 +565,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
         drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
-        // Lunar's colours: headers in the settings menu's accent, values green; each row keeps its weight.
+        // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);

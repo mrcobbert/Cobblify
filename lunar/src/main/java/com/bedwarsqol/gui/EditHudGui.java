@@ -7,6 +7,8 @@ import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
+import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.gui.render.Theme;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
@@ -24,8 +26,11 @@ public class EditHudGui extends GuiScreen {
     private static final int SELECTED = 0xFFFFFFFF;      // selected box: solid white
     private static final int SELECTED_FILL = 0x1AFFFFFF; // selected fill: ~10% white
     private static final int SNAP_LINE = 0xFFBFBFBF;     // snap guide: light gray
-    private static final float RESET_SCALE = 0.65f;      // "Reset HUD Sizes" button label scale (half size)
+    private static final float RESET_SCALE = 1.0f;       // "Reset HUD Sizes" label: the Keystrokes letter size
     private static final int SCRIM = 0x73000000;         // same dim-over-blur scrim as SettingsGui
+
+    // Reset button hover: the fill blends to the menu accent, a touch quicker in than out.
+    private final HoverFade resetHover = new HoverFade(120L, 180L);
 
     private String selectedId = BedwarsHudRenderer.INVENTORY_HUD;
     private boolean dragging;
@@ -73,9 +78,12 @@ public class EditHudGui extends GuiScreen {
 
         float[] rb = resetButtonRect();
         boolean rHover = GuiRender.inside(mouseX, mouseY, rb[0], rb[1], rb[2], rb[3]);
-        GuiRender.roundedRect(rb[0], rb[1], rb[2], rb[3], 2, rHover ? 0xFF2E2E2E : 0xFF242424);
+        // Styled like a Keystrokes cap: HUD panel fill and corners, white bold label, accent on hover.
+        float rLevel = resetHover.update(rHover, Minecraft.getSystemTime());
+        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        GuiRender.roundedRect(rb[0], rb[1], rb[2], rb[3], Theme.CARD_R, GuiRender.lerpColor(0xD0121212, accent, rLevel));
         GuiRender.textCentered("Reset HUD Sizes", (rb[0] + rb[2]) / 2f,
-                rb[1] + (rb[3] - rb[1] - BedwarsQolFont.height(RESET_SCALE)) / 2f, RESET_SCALE, 0xFFEDEDED, BedwarsQolFont.Weight.MEDIUM);
+                rb[1] + (rb[3] - rb[1] - BedwarsQolFont.height(RESET_SCALE)) / 2f, RESET_SCALE, 0xFFFFFFFF, BedwarsQolFont.Weight.BOLD);
 
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
@@ -292,8 +300,8 @@ public class EditHudGui extends GuiScreen {
 
     /** "Reset HUD Sizes" button, pinned to the bottom-center of the editor. */
     private float[] resetButtonRect() {
-        float bw = GuiRender.textWidth("Reset HUD Sizes", RESET_SCALE, BedwarsQolFont.Weight.MEDIUM) + 12f;
-        float bh = BedwarsQolFont.height(RESET_SCALE) + 6f;
+        float bw = GuiRender.textWidth("Reset HUD Sizes", RESET_SCALE, BedwarsQolFont.Weight.BOLD) + 16f;
+        float bh = 18f; // a Keystrokes cap's height
         float bx1 = (width - bw) / 2f;
         float by2 = height - 14f;
         return new float[]{bx1, by2 - bh, bx1 + bw, by2};

@@ -157,7 +157,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Hold Key to Show", K_SESSION_HOLD, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Key", K_SESSION_KEY, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Reset Session", K_SESSION_RESET, null, K_SESSION),
-                    new RowDef(RowType.TOGGLE, "Height Limit", "Map name, build limit and blocks left", K_HEIGHT),
+                    new RowDef(RowType.TOGGLE, "Map Info", "Map name, build limit and blocks left", K_HEIGHT),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_HEIGHT_INGAME, null, K_HEIGHT)),
             new Section("Combat",
                     new RowDef(RowType.TOGGLE, "Hand Position", "Move and resize held item", K_HANDPOS),
