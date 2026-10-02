@@ -62,7 +62,6 @@ mod issue {
     pub const NO_COMPATIBLE_PRISM: &str = "no_compatible_prism_instance";
     pub const MISSING_BUNDLED_FORGE: &str = "missing_bundled_forge_jar";
     pub const SETUP_ERROR: &str = "setup_error";
-    pub const RENAMED_JAR: &str = "renamed_jar";
 }
 
 /// One install target's own outcome. The two targets are reported independently and on
@@ -84,8 +83,6 @@ struct TargetStatus {
     /// "none" | "choose" - whether the UI should offer instance selection.
     action: &'static str,
     candidates: Vec<CandidateView>,
-    /// Filenames only, for optional renamed-jar diagnostics.
-    quarantined_names: Vec<String>,
     /// Whether `open_setup_location` can reveal a folder for this target.
     has_setup_folder: bool,
     /// Backend-owned paths; never sent to the frontend.
@@ -105,7 +102,6 @@ impl TargetStatus {
             detail: None,
             action: "none",
             candidates: Vec::new(),
-            quarantined_names: Vec::new(),
             has_setup_folder: false,
             conflict_dir: None,
             install_path: None,
@@ -144,24 +140,6 @@ impl Status {
             targets: Vec::new(),
         }
     }
-}
-
-fn quarantined_filenames(entries: &[String]) -> Vec<String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let trimmed = entry.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            let tail = trimmed.rsplit(" -> ").next().unwrap_or(trimmed).trim();
-            Path::new(tail)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .filter(|name| !name.is_empty())
-        })
-        .collect()
 }
 
 /// Everything the choice command needs after startup. `candidates` is backend-owned and
@@ -361,32 +339,13 @@ fn forge_ready(out: forge::Outcome, game_dir: &Path) -> TargetStatus {
     } else if let Some(path) = out.path {
         t.install_path = Some(PathBuf::from(path));
     }
-    let names = quarantined_filenames(&out.quarantined);
-    if !names.is_empty() {
-        t.quarantined_names = names.clone();
-        t.has_setup_folder = true;
-        t.conflict_dir = Some(game_dir.join("mods"));
-        if !out.blocked {
-            t.issue = Some(issue::RENAMED_JAR);
-            t.detail = Some(names.join(", "));
-        }
-    }
     t
 }
 
-fn forge_failed(e: forge::ForgeError, game_dir: Option<&Path>) -> TargetStatus {
-    let names = quarantined_filenames(&e.quarantined);
-    let mut t = TargetStatus::new("forge", "error", "Setup failed.")
+fn forge_failed(e: String) -> TargetStatus {
+    TargetStatus::new("forge", "error", "Setup failed.")
         .with_issue(issue::SETUP_ERROR)
-        .with_detail(e.message);
-    if !names.is_empty() {
-        t.quarantined_names = names;
-        if let Some(dir) = game_dir {
-            t.has_setup_folder = true;
-            t.conflict_dir = Some(dir.join("mods"));
-        }
-    }
-    t
+        .with_detail(e)
 }
 
 fn forge_choose_with_prism(candidates: &[Candidate], prism_installed: bool) -> TargetStatus {
@@ -419,7 +378,7 @@ fn forge_choose(candidates: &[Candidate]) -> TargetStatus {
 fn adopt(jar: &ForgeJar, c: &Candidate, home: &Path) -> TargetStatus {
     let out = match forge::install(jar, &c.game_dir) {
         Ok(o) => o,
-        Err(e) => return forge_failed(e, Some(&c.game_dir)),
+        Err(e) => return forge_failed(e),
     };
     if out.blocked {
         return forge_ready(out, &c.game_dir);
@@ -2125,26 +2084,6 @@ mod tests {
         assert!(parse_launcher_kind("forge").is_ok());
         assert!(parse_launcher_kind("curseforge").is_err());
         assert!(parse_launcher_kind("../etc").is_err());
-    }
-
-    #[test]
-    fn quarantined_filenames_extracts_only_names() {
-        let names = quarantined_filenames(&[
-            "/tmp/mods/Cobblify.jar -> Cobblify.jar.cobblify-disabled".to_string(),
-        ]);
-        assert_eq!(names, vec!["Cobblify.jar.cobblify-disabled".to_string()]);
-
-        let bare_path = quarantined_filenames(&[
-            "/Users/foo/Library/Application Support/PrismLauncher/instances/foo/mods/Other.jar"
-                .to_string(),
-        ]);
-        assert_eq!(bare_path, vec!["Other.jar".to_string()]);
-
-        let basename_only = quarantined_filenames(&["Cobblify.jar.cobblify-disabled".to_string()]);
-        assert_eq!(
-            basename_only,
-            vec!["Cobblify.jar.cobblify-disabled".to_string()]
-        );
     }
 
     #[test]

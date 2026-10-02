@@ -39,10 +39,6 @@ test("setup headings map issue codes, not message text", () => {
   );
   assert.equal(setupHeading(PREVIEW_STATUS.prismNoInstances.targets[1], PREVIEW_STATUS.prismNoInstances), "Get Prism");
   assert.equal(setupHeading(PREVIEW_STATUS.lunarAbsent.targets[0], PREVIEW_STATUS.lunarAbsent), "Get Lunar");
-  assert.equal(
-    setupHeading(PREVIEW_STATUS.forgeReadyRenamed.targets[1], PREVIEW_STATUS.forgeReadyRenamed),
-    "Old Jar Disabled",
-  );
 });
 
 test("running Lunar shows the platform guidance supplied by the backend", () => {
@@ -162,12 +158,8 @@ test("launch labels use Prism branding", () => {
   assert.equal(launchLabel("forge"), "Launch Prism");
 });
 
-test("renamed jar details expose filenames only", () => {
-  const block = setupBlocks(PREVIEW_STATUS.forgeReadyRenamed).find(
-    (b) => b.heading === "Old Jar Disabled",
-  );
-  assert.match(block.detailText, /cobblify-disabled/);
-  assert.doesNotMatch(block.detailText, /\//);
+test("a ready target never shows a setup block", () => {
+  assert.deepEqual(setupBlocks(PREVIEW_STATUS.bothReady), []);
 });
 
 test("no compatible Prism state explains the required version behind details", () => {

@@ -8,7 +8,6 @@ export const ISSUE = {
   NO_COMPATIBLE_PRISM: "no_compatible_prism_instance",
   MISSING_BUNDLED_FORGE: "missing_bundled_forge_jar",
   SETUP_ERROR: "setup_error",
-  RENAMED_JAR: "renamed_jar",
 };
 
 const KIND = { lunar: "lunar", forge: "forge" };
@@ -27,9 +26,6 @@ export function setupTargets(status) {
 
 export function needsSetupAttention(target) {
   if (!target) return false;
-  if (target.state === "ready") {
-    return target.issue === ISSUE.RENAMED_JAR || (target.quarantined_names ?? []).length > 0;
-  }
   return target.state !== "ready";
 }
 
@@ -64,8 +60,6 @@ export function setupHeading(target, status) {
       return "Forge Unavailable";
     case ISSUE.SETUP_ERROR:
       return "Setup Failed";
-    case ISSUE.RENAMED_JAR:
-      return "Old Jar Disabled";
     default:
       if (target.action === "choose") return "Choose Prism";
       return "Setup";
@@ -97,7 +91,6 @@ export function setupActions(target, status) {
       actions.push({ id: "open", label: "Open Prism", kind: "open_launcher", launcher: KIND.forge });
       break;
     case ISSUE.CONFLICTS:
-    case ISSUE.RENAMED_JAR:
       if (target.has_setup_folder) {
         actions.push({
           id: "folder",
@@ -178,15 +171,8 @@ export function setupBlocks(status) {
       candidates: candidateRows,
       actions,
       compact: target.state === "ready",
-      hasDetails:
-        Boolean(compatibilityDetail) ||
-        Boolean(target.detail) ||
-        (target.quarantined_names ?? []).length > 0,
-      detailText:
-        compatibilityDetail ??
-        (target.issue === ISSUE.RENAMED_JAR
-          ? (target.quarantined_names ?? []).join(", ")
-          : target.detail),
+      hasDetails: Boolean(compatibilityDetail) || Boolean(target.detail),
+      detailText: compatibilityDetail ?? target.detail,
     });
   }
   return blocks;
