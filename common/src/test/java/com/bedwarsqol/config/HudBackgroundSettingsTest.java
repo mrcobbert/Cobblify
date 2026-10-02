@@ -5,6 +5,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * The per-HUD Background toggles are gone (Potion, Inventory, Gen Timers): only Session Stats and
@@ -17,6 +18,15 @@ public class HudBackgroundSettingsTest {
     @Test
     public void genTimersShowEverywhereByDefault() {
         assertFalse(new ClientSettings().genTimersInGameOnly);
+    }
+
+    @Test
+    public void genTimersInGameOnlySurvivesASave() {
+        ClientSettings s = new ClientSettings();
+        s.genTimersInGameOnly = true;
+        ClientSettings back = GSON.fromJson(GSON.toJson(s), ClientSettings.class);
+        back.sanitize();
+        assertTrue(back.genTimersInGameOnly);
     }
 
     @Test

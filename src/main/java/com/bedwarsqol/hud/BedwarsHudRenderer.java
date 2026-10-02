@@ -83,9 +83,9 @@ public class BedwarsHudRenderer {
     private static final int KS_TEXT_OFF = 0xFFEDEDED;   // light letter on dark cap
     private static final int KS_TEXT_ON = 0xFFFFFFFF;    // letter brightens when pressed
 
-    // ----- Optional per-module "Background" panel -----
+    // ----- HUD panel (Height Limit and Session Stats, always on) -----
     // A flat, square-cornered translucent dark panel behind a HUD element (no border, no corner
-    // radius). One consistent grayscale treatment for every module, built on Theme.PANEL_HUD — the
+    // radius). One consistent grayscale treatment, built on Theme.PANEL_HUD — the
     // HUD-overlay fill the mod's palette reserves for over-the-world panels (scoreboard/tab list).
     // Padding scales with the element so it stays proportionate.
     private static final int HUD_BG_FILL = 0xD0121212;   // darker than Theme.PANEL_HUD (0xB01A1A1A): more opaque (alpha 0xB0->0xD0) + lower RGB
@@ -185,9 +185,10 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * The optional per-module "Background": a flat, square translucent panel (no corner radius, no
-     * border) behind a HUD element's content box expanded by a scale-aware padding. Drawn in GUI space
-     * BEFORE the element's content (and before any {@code pushMatrix}/scale used for item rendering).
+     * The always-on panel behind Height Limit and Session Stats: a flat, square translucent panel (no
+     * corner radius, no border) behind a HUD element's content box expanded by a scale-aware padding.
+     * Drawn in GUI space BEFORE the element's content (and before any {@code pushMatrix}/scale used for
+     * item rendering).
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
      * clean (texturing on, color white) state.
      */
@@ -539,7 +540,7 @@ public class BedwarsHudRenderer {
 
     // ----- BedWars HUDs (mini inventory, diamond/emerald spawn timers) -----
 
-    /** These overlays only make sense inside an active BedWars game; the edit preview bypasses it. */
+    /** Whether a HUD's "In Game Only" is satisfied: an active BedWars game, or the edit preview. */
     private static boolean bedwarsActive(boolean example) {
         return example || HypixelContext.isInActiveBedwarsGame();
     }
@@ -559,8 +560,6 @@ public class BedwarsHudRenderer {
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = inventoryBox(mc, cfg, example);
         if (box == null) return;
-        // The panel + recessed slot grid are drawn inside drawMiniInventory's scaled matrix, so every
-        // gap (the panel margin and the inter-slot gutter alike) lives in one local space and scales as one.
         drawMiniInventory(mc, cfg, box.x, box.y, example);
     }
 
