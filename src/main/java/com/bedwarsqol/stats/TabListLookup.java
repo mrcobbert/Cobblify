@@ -41,9 +41,9 @@ public final class TabListLookup {
         if (!statsEnabled && !UrchinTag.needsTabIdentity(cfg) && !SeraphTag.needsTabIdentity(cfg)) return null;
 
         String name = info.getGameProfile().getName();
-        boolean urchinEligible = cfg.urchinTags
+        boolean urchinEligible = cfg.urchinOn()
                 && UrchinTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
-        boolean seraphEligible = cfg.seraphTags
+        boolean seraphEligible = cfg.seraphOn()
                 && SeraphTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
 
         BedwarsStats stats = StatsCache.getCached(uuid);
@@ -71,7 +71,7 @@ public final class TabListLookup {
 
     /** The Urchin priority-tag badge for the tab overlay, or "" when off / no active tag. */
     private static String urchinBadge(ClientSettings cfg, BedwarsStats stats, boolean eligible) {
-        if (cfg == null || !cfg.urchinTags || !cfg.urchinBadgeTab || !eligible) return "";
+        if (cfg == null || !cfg.urchinOn() || !cfg.tagBadgeTab || !eligible) return "";
         UrchinTag tag = stats.priorityUrchinTag(System.currentTimeMillis());
         if (tag == null) return "";
         return tag.badgeToken();
@@ -79,7 +79,7 @@ public final class TabListLookup {
 
     /** The Seraph priority-tag badge for the tab overlay, or "" when off / no active tag. */
     private static String seraphBadge(ClientSettings cfg, BedwarsStats stats, boolean eligible) {
-        if (cfg == null || !cfg.seraphTags || !cfg.seraphBadgeTab || !eligible) return "";
+        if (cfg == null || !cfg.seraphOn() || !cfg.tagBadgeTab || !eligible) return "";
         SeraphTag tag = stats.prioritySeraphTag();
         if (tag == null) return "";
         return tag.badgeToken();

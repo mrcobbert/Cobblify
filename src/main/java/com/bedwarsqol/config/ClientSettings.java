@@ -15,7 +15,7 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 1;
+    static final int CURRENT_SETTINGS_VERSION = 2;
     public int settingsVersion = 0;
 
     public int defaultTextSize = 1;
@@ -107,7 +107,7 @@ public class ClientSettings {
     public boolean playerStatsChat = true;
     /**
      * The ONE stats display mode, for every surface that shows a player's Bedwars numbers (chat
-     * bracket, hover card, tab list, nametags, denick line, Players page, launcher overlay).
+     * bracket, hover card, tab list, nametags, denick line, launcher overlay).
      * {@code "auto"} follows the detected game mode (overall in the lobby); the fixed values
      * {@code overall}/{@code solo}/{@code doubles}/{@code threes}/{@code fours} always show that mode,
      * stamped on each number. Set with {@code /bw mode <...>}; vocabulary in
@@ -170,7 +170,8 @@ public class ClientSettings {
 
     /**
      * Nick Notify (sub-setting of {@link #nickUtils}): print "&lt;name&gt; is Nicked" once per nicked
-     * player in the lobby/queue or game. On by default once Nick Utils is enabled.
+     * player in the lobby/queue or game, and in the pregame queue for a player who types under a nick
+     * (see {@link com.bedwarsqol.feature.QueueAlert}). On by default once Nick Utils is enabled.
      */
     public boolean nickNotify = true;
 
@@ -182,53 +183,43 @@ public class ClientSettings {
     public boolean autoDenick = true;
 
     /**
-     * Urchin Tags: master toggle for community-reported blacklist tags from urchin.ws, resolved
-     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). On by
-     * default; inert off Hypixel. When off the mod causes zero Urchin traffic and shows no tags.
+     * Tag Utils: master toggle for community cheater tags from Urchin (urchin.ws) and Seraph
+     * (api.seraph.si), both resolved server-side by the stats Worker (see
+     * {@link com.bedwarsqol.feature.UrchinAlert} / {@link com.bedwarsqol.feature.SeraphAlert}). On by
+     * default; inert off Hypixel. Off, or with both sources off, the mod causes zero provider traffic
+     * and shows no tags. Read the sources through {@link #urchinOn()} / {@link #seraphOn()}.
      */
+    public boolean tagUtils = true;
+    /** Sub of Tag Utils: the Urchin source. The key predates Tag Utils, so a saved choice carries over. */
     public boolean urchinTags = true;
-    /** Sub of Urchin Tags: append the priority tag badge to the tab-list overlay. */
-    public boolean urchinBadgeTab = true;
-    /** Sub of Urchin Tags: one private chat line the first time a tagged player is seen each game. */
-    public boolean urchinChatAlert = true;
-    /** Sub of Urchin Tags: play a pling with the chat alert (cheater-type tags only). */
-    public boolean urchinAlertSound = true;
-    /** Sub of Urchin Tags: append the priority tag badge above the in-game nametag. */
-    public boolean urchinBadgeNametag = true;
-
-    /**
-     * Seraph Tags: master toggle for the Seraph community blacklist/safelist provider (api.seraph.si),
-     * resolved server-side by the stats Worker. On by default; inert off Hypixel. When off the mod
-     * causes zero Seraph traffic and shows no tags. Independent of Urchin — either, both, or neither
-     * may be enabled.
-     */
+    /** Sub of Tag Utils: the Seraph source. The key predates Tag Utils, so a saved choice carries over. */
     public boolean seraphTags = true;
-    /** Sub of Seraph Tags: append the priority tag badge to the tab-list overlay. */
-    public boolean seraphBadgeTab = true;
-    /** Sub of Seraph Tags: one private chat line the first time a tagged player is seen each game. */
-    public boolean seraphChatAlert = true;
-    /** Sub of Seraph Tags: play a pling with the chat alert (blacklist tags only). */
-    public boolean seraphAlertSound = true;
-    /** Sub of Seraph Tags: append the priority tag badge above the in-game nametag. */
-    public boolean seraphBadgeNametag = true;
-
+    /** Sub of Tag Utils: append the priority tag badge to the tab-list overlay. */
+    public boolean tagBadgeTab = true;
+    /** Sub of Tag Utils: append the priority tag badge above the in-game nametag. */
+    public boolean tagBadgeNametag = true;
     /**
-     * Queue Tag Alert: in the Bedwars <b>pregame queue only</b>, print one Urchin/Seraph cheater-tag
-     * line for a player who <b>types</b> in chat (the queue's tab list is anonymized, so nobody else
-     * can be checked). On by default; inert off Hypixel — each new name costs an outbound provider
-     * lookup, capped per queue (see {@link com.bedwarsqol.feature.QueueAlert}). Needs
-     * {@link #urchinTags} and/or {@link #seraphTags} plus a configured stats backend; disabled
-     * providers are never queried.
+     * Sub of Tag Utils: one private chat line the first time a tagged player is seen each game, and in
+     * the pregame queue for a player who types (see {@link com.bedwarsqol.feature.QueueAlert}).
      */
-    public boolean queueTagAlert = true;
+    public boolean tagChatAlert = true;
+    /** Sub of Tag Utils: play a pling with the chat alert (cheater-type tags only). */
+    public boolean tagAlertSound = true;
 
-    /**
-     * Queue Nick Alert: in the Bedwars <b>pregame queue only</b>, print one line when a player who
-     * <b>types</b> in chat has no Mojang account (i.e. is nicked). On by default; inert off Hypixel —
-     * each new name costs an outbound name resolution, capped per queue. Independent of Nick Utils,
-     * which cannot see the queue's anonymized tab list.
-     */
-    public boolean queueNickAlert = true;
+    // The per-source sub-options saved before settings v2. migrate() reads them once and nulls them;
+    // Gson never writes a null member, so they drop on the next save.
+    Boolean urchinBadgeTab, urchinChatAlert, urchinAlertSound, urchinBadgeNametag;
+    Boolean seraphBadgeTab, seraphChatAlert, seraphAlertSound, seraphBadgeNametag;
+
+    /** Urchin is looked up and shown only while Tag Utils and its Urchin sub-option are both on. */
+    public boolean urchinOn() {
+        return tagUtils && urchinTags;
+    }
+
+    /** Seraph is looked up and shown only while Tag Utils and its Seraph sub-option are both on. */
+    public boolean seraphOn() {
+        return tagUtils && seraphTags;
+    }
 
     // A backend may be baked into the jar at build time via the cobblify-backend.properties
     // resource (see BackendDefaults / the generateBackendProperties Gradle task) — never commit a
@@ -299,6 +290,9 @@ public class ClientSettings {
      * <li>v1: the right-anchored HUDs (session stats, diamond/emerald timers) shipped with
      * {@code X = +5}, which places the box 5 GUI px past the right screen edge. A box still at the
      * shipped value on the top-right anchor moves to {@code -5}; anything the user moved is kept.</li>
+     * <li>v2: Tag Utils replaced the Urchin Tags and Seraph Tags modules. It starts on if either source
+     * was on, and the sources keep their own keys. Each shared sub-option starts on if it was on for a
+     * source that was on (for either source when neither was).</li>
      * </ul>
      */
     void migrate() {
@@ -307,7 +301,28 @@ public class ClientSettings {
             if (diamondTimerHudAnchor == 2 && diamondTimerHudX == 5) diamondTimerHudX = -5;
             if (emeraldTimerHudAnchor == 2 && emeraldTimerHudX == 5) emeraldTimerHudX = -5;
         }
+        if (settingsVersion < 2) {
+            boolean urchin = urchinTags, seraph = seraphTags;
+            tagUtils = urchin || seraph;
+            tagBadgeTab = carried(urchin, urchinBadgeTab, seraph, seraphBadgeTab);
+            tagBadgeNametag = carried(urchin, urchinBadgeNametag, seraph, seraphBadgeNametag);
+            tagChatAlert = carried(urchin, urchinChatAlert, seraph, seraphChatAlert);
+            tagAlertSound = carried(urchin, urchinAlertSound, seraph, seraphAlertSound);
+        }
+        urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
+        seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;
+    }
+
+    /**
+     * One v1 per-source sub-option, carried into its shared v2 one. Only the sources that were on
+     * count, unless neither was; an absent value is the old default, on.
+     */
+    private static boolean carried(boolean urchinWasOn, Boolean urchin, boolean seraphWasOn, Boolean seraph) {
+        boolean u = urchin == null || urchin;
+        boolean s = seraph == null || seraph;
+        if (!urchinWasOn && !seraphWasOn) return u || s;
+        return (urchinWasOn && u) || (seraphWasOn && s);
     }
 
     public void sanitize() {

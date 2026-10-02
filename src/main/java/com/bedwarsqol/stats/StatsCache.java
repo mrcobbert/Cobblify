@@ -150,56 +150,6 @@ public final class StatsCache {
         return e == null ? null : e.stats;
     }
 
-    /** Coarse Urchin lookup state for a UUID, derived purely from the immutable cache entry.
-     *  Policy-free: callers apply the master toggle + {@link UrchinTag#badgeAllowed} themselves
-     *  before displaying anything. Used by the Players page to show checking / no-tags / tags. */
-    public enum UrchinResolution { ABSENT, PENDING, RESOLVED_EMPTY, RESOLVED_TAGS }
-
-    /** The Urchin resolution state for {@code uuid} from immutable cache reads only — no fetch, no
-     *  name lookup, no eligibility policy. {@code ABSENT} = no live cache entry (or not yet fetched). */
-    public static UrchinResolution urchinResolution(UUID uuid) {
-        if (uuid == null) return UrchinResolution.ABSENT;
-        Entry e = liveEntry(uuid.toString());
-        if (e == null) return UrchinResolution.ABSENT;
-        return classifyUrchin(e.urchinResolved, e.stats.urchinTags, System.currentTimeMillis());
-    }
-
-    /** Pure classification of a cache entry's Urchin state (no cache access) — the testable core of
-     *  {@link #urchinResolution}. {@code resolved} = the lookup concluded; otherwise it is still pending. */
-    public static UrchinResolution classifyUrchin(boolean resolved, List<UrchinTag> tags, long nowMs) {
-        if (!resolved) return UrchinResolution.PENDING;
-        return UrchinTag.activeTags(tags, nowMs).isEmpty()
-                ? UrchinResolution.RESOLVED_EMPTY : UrchinResolution.RESOLVED_TAGS;
-    }
-
-    /** The Seraph resolution state for {@code uuid} from immutable cache reads only (no fetch/policy). */
-    public static UrchinResolution seraphResolution(UUID uuid) {
-        if (uuid == null) return UrchinResolution.ABSENT;
-        Entry e = liveEntry(uuid.toString());
-        if (e == null) return UrchinResolution.ABSENT;
-        return classifySeraph(e.seraphResolved, e.stats.seraphTags);
-    }
-
-    /** Pure classification of a cache entry's Seraph state (no cache access, no expiry). */
-    public static UrchinResolution classifySeraph(boolean resolved, List<SeraphTag> tags) {
-        if (!resolved) return UrchinResolution.PENDING;
-        return SeraphTag.activeTags(tags).isEmpty()
-                ? UrchinResolution.RESOLVED_EMPTY : UrchinResolution.RESOLVED_TAGS;
-    }
-
-    /** Whether a fetch for {@code uuid} is currently queued or in flight. The {@link #QUEUED} key is the
-     *  dashed {@code uuid.toString()} used by {@link #ensureFetched(UUID, int, boolean, boolean)}. */
-    public static boolean isFetching(UUID uuid) {
-        return uuid != null && QUEUED.contains(uuid.toString());
-    }
-
-    /** Whether a name-only lookup for {@code name} is currently queued or in flight. Uses the same
-     *  namespaced key as {@link #ensureFetchedByName(String, int, boolean)} so a remote lookup can show
-     *  an honest fetching state. */
-    public static boolean isFetchingName(String name) {
-        return name != null && !name.isEmpty() && QUEUED.contains(nameKey(name));
-    }
-
     /** The non-expired cache entry for a key, evicting it if the TTL has passed. */
     private static Entry liveEntry(String k) {
         Entry e = CACHE.get(k);

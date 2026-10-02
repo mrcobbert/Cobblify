@@ -7,7 +7,7 @@ import java.util.List;
  * The parsed Seraph resolution for one player from a base or follow-up backend line. {@code checked}
  * or {@code unavailable} marks the entry resolved (no client retry); a bare transient failure leaves
  * both false so the bounded refresh predicate may retry later. Carries the optional
- * {@code threatLevel}/{@code encounters} statistics for the detail panel (-1 = absent).
+ * {@code threatLevel}/{@code encounters} statistics (-1 = absent).
  */
 public final class SeraphResult {
 

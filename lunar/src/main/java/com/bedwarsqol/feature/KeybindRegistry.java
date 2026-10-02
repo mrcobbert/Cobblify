@@ -21,7 +21,7 @@ import java.util.Arrays;
  * after vanilla has already read {@code options.txt}, our config — not options.txt — is the source of
  * truth across restarts: each tick we copy any Controls rebind back into the config (and save), and the
  * actual key actions are fired from the config value by {@link SettingsKeyHandler}/{@link PauseKeyHandler}/
- * {@link IncSender}/{@link PlayersKeyHandler}, from Weave's keyboard and mouse events.
+ * {@link IncSender}, from Weave's keyboard and mouse events.
  *
  * <p>A mouse bind is stored as {@code -100 + button}, like vanilla. {@link KeyCodes#reconcile} and the
  * config's sanitize agree on what can be stored, so a rebind costs one save; a code the config cannot
@@ -32,7 +32,6 @@ public final class KeybindRegistry {
     public static KeyBinding settingsKey;
     public static KeyBinding pauseKey;
     public static KeyBinding incKey;
-    public static KeyBinding playersKey;
     private static boolean registered;
 
     @SubscribeEvent
@@ -44,17 +43,14 @@ public final class KeybindRegistry {
             int sCode = BedwarsQol.config != null ? BedwarsQol.config.settingsKeyCode : Keyboard.KEY_RSHIFT;
             int pCode = BedwarsQol.config != null ? BedwarsQol.config.pauseKeyCode : Keyboard.KEY_NONE;
             int iCode = BedwarsQol.config != null ? BedwarsQol.config.pcIncKeyCode : Keyboard.KEY_NONE;
-            int plCode = BedwarsQol.config != null ? BedwarsQol.config.playersKeyCode : Keyboard.KEY_NONE;
             settingsKey = new KeyBinding("Open Cobblify Settings", sCode, "key.categories.misc");
             pauseKey = new KeyBinding("Cobblify: Open Game Menu", pCode, "key.categories.misc");
             incKey = new KeyBinding("Cobblify: Send /pc INC", iCode, "key.categories.misc");
-            playersKey = new KeyBinding("Cobblify: Open Players", plCode, "key.categories.misc");
             KeyBinding[] cur = mc.gameSettings.keyBindings;
-            KeyBinding[] next = Arrays.copyOf(cur, cur.length + 4);
+            KeyBinding[] next = Arrays.copyOf(cur, cur.length + 3);
             next[cur.length] = settingsKey;
             next[cur.length + 1] = pauseKey;
             next[cur.length + 2] = incKey;
-            next[cur.length + 3] = playersKey;
             mc.gameSettings.keyBindings = next;
             registered = true;
         }
@@ -64,21 +60,17 @@ public final class KeybindRegistry {
         int s = synced(settingsKey, cfg.settingsKeyCode);
         int p = synced(pauseKey, cfg.pauseKeyCode);
         int i = synced(incKey, cfg.pcIncKeyCode);
-        int pl = synced(playersKey, cfg.playersKeyCode);
-        if (s != cfg.settingsKeyCode || p != cfg.pauseKeyCode
-                || i != cfg.pcIncKeyCode || pl != cfg.playersKeyCode) {
+        if (s != cfg.settingsKeyCode || p != cfg.pauseKeyCode || i != cfg.pcIncKeyCode) {
             cfg.settingsKeyCode = s;
             cfg.pauseKeyCode = p;
             cfg.pcIncKeyCode = i;
-            cfg.playersKeyCode = pl;
             cfg.save();
         }
         // The KeyBinding shows what the config holds after the save's sanitize, so the next tick
         // compares equal instead of saving again.
         boolean rebound = pushBack(settingsKey, cfg.settingsKeyCode)
                 | pushBack(pauseKey, cfg.pauseKeyCode)
-                | pushBack(incKey, cfg.pcIncKeyCode)
-                | pushBack(playersKey, cfg.playersKeyCode);
+                | pushBack(incKey, cfg.pcIncKeyCode);
         if (rebound) KeyBinding.resetKeyBindingArrayAndHash();
     }
 

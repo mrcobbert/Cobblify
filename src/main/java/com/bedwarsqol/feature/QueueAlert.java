@@ -42,10 +42,14 @@ import java.util.concurrent.Executors;
  * reports is the same account {@link MojangNameResolver} resolved the typed name to. A missing or
  * disagreeing UUID (a stale name alias, a re-registered name) is dropped silently.
  *
+ * <p><b>Settings.</b> There is no queue toggle of its own: tag lines follow Tag Utils' Chat Alert for
+ * whichever sources are on, and nick lines follow Nick Utils' Nick Notify ({@link QueueAlertGate}) -
+ * the same switches that cover the lobby and the game.
+ *
  * <p><b>Outbound volume.</b> One lookup per distinct name per queue, at most
- * {@link #MAX_LOOKUPS_PER_QUEUE} per queue; past the cap we stop silently. Both toggles are off by
- * default because they cause outbound requests, and the providers' keys are personal and rate-limited.
- * The per-queue state resets whenever {@link GameSessionTracker#currentSessionId()} changes.
+ * {@link #MAX_LOOKUPS_PER_QUEUE} per queue; past the cap we stop silently, because the providers'
+ * keys are personal and rate-limited. The per-queue state resets whenever
+ * {@link GameSessionTracker#currentSessionId()} changes.
  */
 public final class QueueAlert {
 
@@ -69,7 +73,7 @@ public final class QueueAlert {
         // Never treat the mod's own output as a player line (its alerts name players).
         if (ModChat.isMarked(event.message)) return;
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg == null || (!cfg.queueTagAlert && !cfg.queueNickAlert)) return;
+        if (!QueueAlertGate.wantsTags(cfg) && !QueueAlertGate.wantsNicks(cfg)) return;
         // Queue only — NOT the Bedwars hub, which shares the "BED WARS" sidebar and has no active
         // game either. The hub's chat traffic would burn the lookup cap on players we're not queued
         // with; only a real pregame queue lists the match being assembled.
@@ -87,10 +91,10 @@ public final class QueueAlert {
         if (isSelf(sender)) return;
         if (!accept(looked, sender, MAX_LOOKUPS_PER_QUEUE)) return;
 
-        final boolean wantTag = cfg.queueTagAlert;
-        final boolean wantNick = cfg.queueNickAlert;
-        final boolean urchin = cfg.urchinTags;
-        final boolean seraph = cfg.seraphTags;
+        final boolean wantTag = QueueAlertGate.wantsTags(cfg);
+        final boolean wantNick = QueueAlertGate.wantsNicks(cfg);
+        final boolean urchin = cfg.urchinOn();
+        final boolean seraph = cfg.seraphOn();
         final BackendTarget backend = cfg.backendTarget(); // one atomic capture per lookup
         final String url = backend.url;
         final String token = backend.token;
@@ -174,7 +178,7 @@ public final class QueueAlert {
         if (line == null) return; // sniper/caution types stay silent
         print(line);
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg != null && cfg.urchinAlertSound) pling();
+        if (cfg != null && cfg.tagAlertSound) pling();
     }
 
     /** Client thread: the same negative-tag-only wording {@link SeraphAlert} uses. */
@@ -183,7 +187,7 @@ public final class QueueAlert {
         if (line == null) return; // safelist/unknown kinds stay silent
         print(line);
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg != null && cfg.seraphAlertSound && tag.isCheaterType()) pling();
+        if (cfg != null && cfg.tagAlertSound && tag.isCheaterType()) pling();
     }
 
     /** Client thread: the silent nick notice. */

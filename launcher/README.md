@@ -322,8 +322,9 @@ never activate the dashboard.
 **`lobby.json` is contract v2 and the launcher only draws it.** Every presentation decision
 about a player - FKDR tier, cheater flag, single priority badge, gated tag chips, which mode the
 numbers came from, nick reveal with the real account's stats - is made once in the mod by
-`PlayerCard` (the same policy the tab list and chat use, honouring the Urchin / Seraph / Nick
-Utils / Auto Denick toggles, tag expiry, the identity gate and the forced `/bw mode`) and exported
+`PlayerCard` (the same policy the tab list and chat use, honouring the Tag Utils (Urchin /
+Seraph) and Nick Utils / Auto Denick toggles, tag expiry, the identity gate and the forced
+`/bw mode`) and exported
 verbatim. `row-model.js` arranges those fields into classes, chips and cells; nothing in the
 launcher derives a tier, a cheater flag or a badge, and `main-no-policy.test.js` pins that. The
 shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `invalid/`,

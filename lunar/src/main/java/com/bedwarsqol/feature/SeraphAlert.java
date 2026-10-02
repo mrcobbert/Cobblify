@@ -45,7 +45,7 @@ public final class SeraphAlert {
     @SubscribeEvent
     public void onClientTick(TickEvent.Post event) {
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg == null || !cfg.seraphTags) return;
+        if (cfg == null || !cfg.seraphOn()) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null || mc.getNetHandler() == null) return;
         if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return;
@@ -83,7 +83,7 @@ public final class SeraphAlert {
             if (tag == null || tag.kind.equals("safelist")) continue;
 
             String key = name.toLowerCase(Locale.ROOT);
-            if (cfg.seraphChatAlert && alerted.add(key)) {
+            if (cfg.tagChatAlert && alerted.add(key)) {
                 announceAlert(mc, cfg, name, stats, tag);
             }
         }
@@ -98,7 +98,7 @@ public final class SeraphAlert {
         msg.getChatStyle().setChatHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                 hover));
         mc.thePlayer.addChatMessage(ModChat.mark(msg));
-        if (cfg.seraphAlertSound && tag.isCheaterType()) {
+        if (cfg.tagAlertSound && tag.isCheaterType()) {
             mc.thePlayer.playSound("note.pling", 1.0f, 1.0f);
         }
     }

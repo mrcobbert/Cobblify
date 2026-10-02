@@ -38,7 +38,8 @@ public class ClientSettingsStaleKeysTest {
         assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
         assertEquals("unrelated setting survives", 1, s.guiSize);
         String out = GSON.toJson(s);
-        assertTrue("the stamp is written", out.contains("\"settingsVersion\":1"));
+        assertTrue("the stamp is written",
+                out.contains("\"settingsVersion\":" + ClientSettings.CURRENT_SETTINGS_VERSION));
         assertFalse("the removed Background key is gone", out.contains("sessionStatsBackgroundEnabled"));
     }
 
@@ -158,5 +159,17 @@ public class ClientSettingsStaleKeysTest {
         ClientSettings bad = GSON.fromJson("{\"sessionStatsKeyCode\":9999}", ClientSettings.class);
         bad.sanitize();
         assertEquals("an unreadable key code resets to unbound", 0, bad.sessionStatsKeyCode);
+    }
+
+    /** The Players page and its hotkey were removed (0.16.3): a saved hotkey is ignored and drops on save. */
+    @Test
+    public void removedPlayersHotkeyDrops() {
+        ClientSettings old = GSON.fromJson("{\"playersKeyCode\":25,\"pcIncKeyCode\":34,\"guiSize\":1}",
+                ClientSettings.class);
+        old.sanitize();
+        assertEquals("unrelated key survives", 34, old.pcIncKeyCode);
+        assertEquals("unrelated setting survives", 1, old.guiSize);
+        String out = GSON.toJson(old);
+        assertFalse("the removed Players key is gone", out.contains("playersKeyCode"));
     }
 }

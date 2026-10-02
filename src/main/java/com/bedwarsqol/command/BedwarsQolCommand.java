@@ -208,8 +208,8 @@ public class BedwarsQolCommand extends CommandBase {
 
     /**
      * {@code /cobblify mode [show|<word>]} — the ONE stats display mode. Every surface that shows a
-     * player's Bedwars numbers (chat bracket, hover card, tab list, nametags, denick line, Players page,
-     * launcher overlay) resolves through {@code BedwarsModeDetector.displayMode}, so this switch moves
+     * player's Bedwars numbers (chat bracket, hover card, tab list, nametags, denick line, launcher
+     * overlay) resolves through {@code BedwarsModeDetector.displayMode}, so this switch moves
      * them all together; a forced mode is stamped on each number ({@code 4s …}, or {@code All …} when
      * the player has no games in it). The vocabulary lives in {@link StatsMode}.
      */
@@ -256,8 +256,8 @@ public class BedwarsQolCommand extends CommandBase {
     /** {@code /cobblify urchin <name>} — on-demand community-tag lookup via the Worker's manual route. */
     private void handleUrchin(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
-        if (!cfg.urchinTags) {
-            send(sender, "§cUrchin Tags is disabled. Enable it in /cobblify.");
+        if (!cfg.urchinOn()) {
+            send(sender, "§cUrchin is off. Turn on Tag Utils > Urchin in /cobblify.");
             return;
         }
         if (args.length < 2 || args[1].trim().isEmpty()) {
@@ -317,8 +317,8 @@ public class BedwarsQolCommand extends CommandBase {
     /** {@code /cobblify seraph <name>} — on-demand Seraph-tag lookup via the Worker's manual route. */
     private void handleSeraph(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
-        if (!cfg.seraphTags) {
-            send(sender, "§cSeraph Tags is disabled. Enable it in /cobblify.");
+        if (!cfg.seraphOn()) {
+            send(sender, "§cSeraph is off. Turn on Tag Utils > Seraph in /cobblify.");
             return;
         }
         if (args.length < 2 || args[1].trim().isEmpty()) {
@@ -639,7 +639,11 @@ public class BedwarsQolCommand extends CommandBase {
     }
 
     private static ClientSettings settings() {
-        if (BedwarsQol.config == null) BedwarsQol.config = new ClientSettings();
+        if (BedwarsQol.config == null) {
+            // Sanitized, so the one-time migrations stamp it now and cannot undo a later toggle on save.
+            BedwarsQol.config = new ClientSettings();
+            BedwarsQol.config.sanitize();
+        }
         BedwarsQol.config.sanitize();
         return BedwarsQol.config;
     }

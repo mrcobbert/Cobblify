@@ -225,23 +225,6 @@ public final class BedwarsStats {
         return 3;
     }
 
-    /** Skill ramp by WLR: White &lt; 1 &rarr; Green 1-2 &rarr; Yellow 2-3 &rarr; Gold 3-5 &rarr; Red 5+. */
-    public static String wlrColor(double wlr) {
-        if (wlr < 1.0) return "§f";
-        if (wlr < 2.0) return "§a";
-        if (wlr < 3.0) return "§e";
-        if (wlr < 5.0) return "§6";
-        return "§c";
-    }
-
-    /** Skill ramp by KD: White &lt; 1 &rarr; Green 1-2 &rarr; Yellow 2-3 &rarr; Gold 3+. */
-    public static String kdColor(double kd) {
-        if (kd < 1.0) return "§f";
-        if (kd < 2.0) return "§a";
-        if (kd < 3.0) return "§e";
-        return "§6";
-    }
-
     public String formatForNametag(BedwarsMode mode, boolean showRank) {
         return formatForNametag(mode, showRank, false);
     }
@@ -321,7 +304,7 @@ public final class BedwarsStats {
      * The tag a labelled surface stamps on numbers rendered for {@code mode}: {@code null} when not
      * labelling (auto mode — nothing is stamped), else the mode's short label when its block has games
      * or {@code All} when {@link #statsFor} fell back to the overall block. Public for the surfaces that
-     * compose their own line (the denick report, the Players page row) so they follow the same rule.
+     * compose their own line (the denick report) so they follow the same rule.
      */
     public String labelFor(BedwarsMode mode, boolean labelMode) {
         if (!labelMode) return null;

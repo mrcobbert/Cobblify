@@ -16,13 +16,11 @@ public class ClientSettingsMouseBindTest {
         ClientSettings s = new ClientSettings();
         s.settingsKeyCode = -97;
         s.pauseKeyCode = -98;
-        s.pcIncKeyCode = -96;
-        s.playersKeyCode = -100;
+        s.pcIncKeyCode = -100; // button 0: the bottom of the mouse range
         s.sanitize();
         assertEquals(-97, s.settingsKeyCode);
         assertEquals(-98, s.pauseKeyCode);
-        assertEquals(-96, s.pcIncKeyCode);
-        assertEquals(-100, s.playersKeyCode);
+        assertEquals(-100, s.pcIncKeyCode);
     }
 
     @Test
@@ -31,11 +29,9 @@ public class ClientSettingsMouseBindTest {
         s.settingsKeyCode = -101;
         s.pauseKeyCode = -500;
         s.pcIncKeyCode = Integer.MIN_VALUE;
-        s.playersKeyCode = -200;
         s.sanitize();
         assertEquals(54, s.settingsKeyCode); // Keyboard.KEY_RSHIFT
         assertEquals(0, s.pauseKeyCode);
         assertEquals(0, s.pcIncKeyCode);
-        assertEquals(0, s.playersKeyCode);
     }
 }
