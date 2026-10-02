@@ -160,17 +160,15 @@ public class ClientSettingsStaleKeysTest {
         assertEquals("an unreadable key code resets to unbound", 0, bad.sessionStatsKeyCode);
     }
 
-    /** The players tab and its hotkey were removed (2026-10-01): a saved hotkey is ignored and drops on save. */
+    /** The Players page and its hotkey were removed (0.16.3): a saved hotkey is ignored and drops on save. */
     @Test
-    public void removedTabHotkeyDrops() {
-        // The key name is split so a repo-wide grep for the removed setting finds only history.
-        String removedKey = "players" + "KeyCode";
-        ClientSettings old = GSON.fromJson("{\"" + removedKey + "\":25,\"pcIncKeyCode\":34,\"guiSize\":1}",
+    public void removedPlayersHotkeyDrops() {
+        ClientSettings old = GSON.fromJson("{\"playersKeyCode\":25,\"pcIncKeyCode\":34,\"guiSize\":1}",
                 ClientSettings.class);
         old.sanitize();
         assertEquals("unrelated key survives", 34, old.pcIncKeyCode);
         assertEquals("unrelated setting survives", 1, old.guiSize);
         String out = GSON.toJson(old);
-        assertFalse("the removed Players key is gone", out.contains(removedKey));
+        assertFalse("the removed Players key is gone", out.contains("playersKeyCode"));
     }
 }
