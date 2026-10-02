@@ -96,14 +96,14 @@ public final class HudLayout {
 
     /**
      * Places {@code items} in order around {@code obstacles}. Each placed item becomes an obstacle
-     * for the ones after it. Returns the top-left corner of each item's drawn box, by id.
+     * for the ones after it. Returns each item's drawn box as {x, y, width, height}, by id.
      */
     public Map<String, float[]> place(List<Item> items, List<Box> obstacles) {
         List<Box> taken = new ArrayList<Box>(obstacles);
         Map<String, float[]> out = new LinkedHashMap<String, float[]>();
         for (Item item : items) {
             float[] at = placeOne(item, taken);
-            out.put(item.id, at);
+            out.put(item.id, new float[]{at[0], at[1], item.width, item.height});
             taken.add(new Box(at[0], at[1], item.width, item.height));
         }
         return out;

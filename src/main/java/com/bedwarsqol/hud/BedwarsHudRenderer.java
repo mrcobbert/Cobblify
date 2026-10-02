@@ -451,8 +451,13 @@ public class BedwarsHudRenderer {
         float x, y;
         float[] auto = anchor == HudPlacement.AUTO ? defaultLayout(mc, cfg, sw, sh).get(id) : null;
         if (auto != null) {
-            x = auto[0] + pad;
-            y = auto[1] + pad;
+            // The layout used example data; hold the edge nearest the screen side, as a saved anchor
+            // would, so a timer counting down from "23s" to "9s" keeps its right edge on the right.
+            float exX = auto[0] + pad, exY = auto[1] + pad;
+            float exW = auto[2] - 2f * pad, exH = auto[3] - 2f * pad;
+            int a = HudPlacement.anchorFor(exX, exY, exW, exH, sw, sh);
+            x = HudPlacement.absoluteX(HudPlacement.storedX(exX, a, exW, sw), a, width, sw);
+            y = HudPlacement.absoluteY(HudPlacement.storedY(exY, a, exH, sh), a, height, sh);
         } else {
             x = HudPlacement.absoluteX(storedX, anchor, width, sw);
             y = HudPlacement.absoluteY(storedY, anchor, height, sh);
@@ -494,7 +499,7 @@ public class BedwarsHudRenderer {
         return Arrays.asList(spots);
     }
 
-    /** Drawn top-left corner of every module still in its default spot, by id. */
+    /** Drawn box {x, y, width, height} of every module still in its default spot, by id. */
     private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
         String key = layoutKey(cfg, sw, sh);
         if (key.equals(layoutKey)) return layoutCache;
