@@ -88,7 +88,7 @@ public class ClientSettingsConfigTest {
         s.sanitize();
         assertEquals(-5, s.sessionStatsHudX);
         assertEquals(-5, s.diamondTimerHudX);
-        assertEquals(-5, s.emeraldTimerHudX);
+        assertEquals("beside the diamond timer (settings v3)", -50, s.emeraldTimerHudX);
         assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
     }
 

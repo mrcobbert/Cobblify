@@ -1024,6 +1024,10 @@ public class BedwarsHudRenderer {
             return y + height;
         }
 
+        public float centerX() {
+            return x + width / 2f;
+        }
+
         /** The box as drawn, panel included: what clicks, snapping and frames use. */
         public float visualX() {
             return x - pad;

@@ -57,6 +57,15 @@ public class HudSnapperTest {
     }
 
     @Test
+    public void edgesNeverSnapToCentres() {
+        HudSnapper.Target other = new HudSnapper.Target("timer", 300, 50, 60, 20); // centre y = 60
+        HudSnapper.Snap s = HudSnapper.snap(59, 30, false, 270, Collections.singletonList(other), 3);
+        assertFalse(s.snapped); // top at 59 is 1 px from the centre line, but edges only match edges
+        HudSnapper.Snap screen = HudSnapper.snap(239, 40, true, 480, NONE, 3); // left edge 1 px from the screen centre
+        assertFalse(screen.snapped);
+    }
+
+    @Test
     public void theClosestMatchWins() {
         HudSnapper.Target a = new HudSnapper.Target("a", 102, 0, 10, 10);
         HudSnapper.Target b = new HudSnapper.Target("b", 101, 0, 10, 10);

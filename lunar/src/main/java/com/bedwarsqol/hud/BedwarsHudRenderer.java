@@ -9,6 +9,7 @@ import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
+import com.bedwarsqol.gui.EditHudGui;
 import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
@@ -48,8 +49,6 @@ public class BedwarsHudRenderer {
     private static final float INV_ITEM_PAD = 2f;      // breathing room between a tile's inner edge and the item, all sides
     private static final float INV_TILE = INV_ITEM + 2f * INV_ITEM_PAD;  // 20px slot tile
     private static final float INV_PITCH = INV_TILE + INV_GAP;           // 22px cell-to-cell step
-    private static final float[] ANCHOR_X = {0f, 0.5f, 1f, 0f, 0.5f, 1f, 0f, 0.5f, 1f};
-    private static final float[] ANCHOR_Y = {0f, 0f, 0f, 0.5f, 0.5f, 0.5f, 1f, 1f, 1f};
 
     private static final float TEXT_HEIGHT = 9f;
     private static final float LINE_GAP = 2f;
@@ -72,6 +71,7 @@ public class BedwarsHudRenderer {
         ClientSettings cfg = BedwarsQol.config;
         if (mc == null || mc.thePlayer == null || cfg == null) return;
         if (GuiBlur.isActive()) return; // settings GUI open: its blurred backdrop replaces the HUD
+        if (mc.currentScreen instanceof EditHudGui) return; // the editor draws its own preview
         if (mc.gameSettings != null && mc.gameSettings.showDebugInfo) return;
 
         cfg.sanitize();
@@ -82,49 +82,37 @@ public class BedwarsHudRenderer {
         render(mc, cfg, true);
     }
 
-    public static List<HudBox> getHudBoxes(Minecraft mc, ClientSettings cfg, boolean example) {
+    /**
+     * Every module's box for Edit HUD, with example data and hidden modules included. {@link HudBox#shown}
+     * says which ones the player has switched on.
+     */
+    public static List<HudBox> getEditorBoxes(Minecraft mc, ClientSettings cfg) {
         if (mc == null || cfg == null) return Collections.emptyList();
         cfg.sanitize();
         hudVanillaFont = cfg.hudFont == 1;
 
         List<HudBox> boxes = new ArrayList<>(8);
-        addBox(boxes, inventoryBox(mc, cfg, example));
-        addBox(boxes, timerBox(mc, cfg, example, true));
-        addBox(boxes, timerBox(mc, cfg, example, false));
-        addBox(boxes, sessionBox(mc, cfg, example));
-        addBox(boxes, heightLimitBox(mc, cfg, example));
+        addEditorBox(boxes, cfg, inventoryBox(mc, cfg, true, true));
+        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, true, true));
+        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, false, true));
+        addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
+        addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
         return boxes;
     }
 
-    private static void addBox(List<HudBox> boxes, HudBox box) {
-        if (box != null) boxes.add(box);
+    private static void addEditorBox(List<HudBox> boxes, ClientSettings cfg, HudBox box) {
+        if (box == null) return;
+        HudModuleState state = HudModules.get(cfg, box.id);
+        boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
+    /** Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
-        int anchor = anchorFor(x, y, width, height, screenWidth, screenHeight);
-        int storedX = Math.round(x - ANCHOR_X[anchor] * screenWidth + ANCHOR_X[anchor] * width);
-        int storedY = Math.round(y - ANCHOR_Y[anchor] * screenHeight + ANCHOR_Y[anchor] * height);
-        if (INVENTORY_HUD.equals(id)) {
-            cfg.inventoryHudAnchor = anchor;
-            cfg.inventoryHudX = storedX;
-            cfg.inventoryHudY = storedY;
-        } else if (DIAMOND_TIMER_HUD.equals(id)) {
-            cfg.diamondTimerHudAnchor = anchor;
-            cfg.diamondTimerHudX = storedX;
-            cfg.diamondTimerHudY = storedY;
-        } else if (EMERALD_TIMER_HUD.equals(id)) {
-            cfg.emeraldTimerHudAnchor = anchor;
-            cfg.emeraldTimerHudX = storedX;
-            cfg.emeraldTimerHudY = storedY;
-        } else if (SESSION_HUD.equals(id)) {
-            cfg.sessionStatsHudAnchor = anchor;
-            cfg.sessionStatsHudX = storedX;
-            cfg.sessionStatsHudY = storedY;
-        } else if (HEIGHT_LIMIT_HUD.equals(id)) {
-            cfg.heightLimitHudAnchor = anchor;
-            cfg.heightLimitHudX = storedX;
-            cfg.heightLimitHudY = storedY;
-        }
+        HudModuleState state = HudModules.get(cfg, id);
+        if (state == null) return;
+        int anchor = HudPlacement.anchorFor(x, y, width, height, screenWidth, screenHeight);
+        HudModules.set(cfg, id, state.withPosition(HudPlacement.storedX(x, anchor, width, screenWidth),
+                HudPlacement.storedY(y, anchor, height, screenHeight), anchor));
     }
 
     private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -144,8 +132,13 @@ public class BedwarsHudRenderer {
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
      * clean (texturing on, color white) state.
      */
+    /** Padding of the panel around a HUD element's content box: it grows with the element. */
+    private static float panelPad(float scale) {
+        return Math.max(2, Math.round(4f * scale));
+    }
+
     private static void drawHudBackground(HudBox box, float scale, int fill) {
-        int pad = Math.max(2, Math.round(4f * scale));
+        float pad = panelPad(scale);
         float x1 = box.x - pad, y1 = box.y - pad;
         float x2 = box.right() + pad, y2 = box.bottom() + pad;
         GuiRender.roundedRect(x1, y1, x2, y2, Theme.CARD_R, fill);
@@ -176,7 +169,7 @@ public class BedwarsHudRenderer {
     }
 
     // ----- HUD font: modern Inter atlas (default) or the vanilla Minecraft font, chosen in Settings -----
-    // Cached at each render/measure entry (render(), getHudBoxes) so the width + draw helpers agree within
+    // Cached at each render/measure entry (render(), getEditorBoxes) so the width + draw helpers agree within
     // a frame. Client rendering is single-threaded, so the shared static is safe.
     private static boolean hudVanillaFont = false;
 
@@ -228,28 +221,14 @@ public class BedwarsHudRenderer {
         fontDraw(text, x, y, scale, TEXT_COLOR, weight);
     }
 
-    private static float absoluteX(float storedX, int anchor, float width, float screenWidth) {
-        int safeAnchor = Math.max(0, Math.min(8, anchor));
-        return storedX + ANCHOR_X[safeAnchor] * screenWidth - ANCHOR_X[safeAnchor] * width;
+    /** Left edge from a stored placement, pulled fully on screen with {@code pad} around the box. */
+    private static float placeX(float storedX, int anchor, float width, float pad, float screenWidth) {
+        return HudPlacement.clamp(HudPlacement.absoluteX(storedX, anchor, width, screenWidth), width, pad, screenWidth);
     }
 
-    private static float absoluteY(float storedY, int anchor, float height, float screenHeight) {
-        int safeAnchor = Math.max(0, Math.min(8, anchor));
-        return storedY + ANCHOR_Y[safeAnchor] * screenHeight - ANCHOR_Y[safeAnchor] * height;
-    }
-
-    private static int anchorFor(float x, float y, float width, float height, float screenWidth, float screenHeight) {
-        float right = x + width;
-        float bottom = y + height;
-        if (x <= screenWidth / 3f && y <= screenHeight / 3f) return 0;
-        if (right >= screenWidth / 3f * 2f && y <= screenHeight / 3f) return 2;
-        if (x <= screenWidth / 3f && bottom >= screenHeight / 3f * 2f) return 6;
-        if (right >= screenWidth / 3f * 2f && bottom >= screenHeight / 3f * 2f) return 8;
-        if (y <= screenHeight / 3f) return 1;
-        if (x <= screenWidth / 3f) return 3;
-        if (right >= screenWidth / 3f * 2f) return 5;
-        if (bottom >= screenHeight / 3f * 2f) return 7;
-        return 4;
+    /** Top edge from a stored placement, pulled fully on screen with {@code pad} around the box. */
+    private static float placeY(float storedY, int anchor, float height, float pad, float screenHeight) {
+        return HudPlacement.clamp(HudPlacement.absoluteY(storedY, anchor, height, screenHeight), height, pad, screenHeight);
     }
 
     private static Size textSize(FontRenderer fr, List<Line> lines, float scale) {
@@ -279,20 +258,20 @@ public class BedwarsHudRenderer {
         return example || HypixelContext.isInActiveBedwarsGame();
     }
 
-    private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example) {
-        if (!cfg.inventoryHudEnabled) return null; // works anywhere unless "In Game Only" is set
-        if (cfg.inventoryInGameOnly && !bedwarsActive(example)) return null;
+    private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
+        if (!all && !cfg.inventoryHudEnabled) return null; // works anywhere unless "In Game Only" is set
+        if (!all && cfg.inventoryInGameOnly && !bedwarsActive(example)) return null;
         float scale = cfg.inventoryHudScale;
         float width = invPanelWidth() * scale;
         float height = invPanelHeight() * scale;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = absoluteX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, r.getScaledWidth());
-        float y = absoluteY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, r.getScaledHeight());
-        return new HudBox(INVENTORY_HUD, "Inventory", x, y, width, height);
+        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, 0f, r.getScaledWidth());
+        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, 0f, r.getScaledHeight());
+        return new HudBox(INVENTORY_HUD, x, y, width, height, 0f);
     }
 
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
-        HudBox box = inventoryBox(mc, cfg, example);
+        HudBox box = inventoryBox(mc, cfg, example, false);
         if (box == null) return;
         drawMiniInventory(mc, cfg, box.x, box.y, example);
     }
@@ -353,9 +332,9 @@ public class BedwarsHudRenderer {
         return out;
     }
 
-    private static HudBox timerBox(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
-        if (!cfg.genTimersEnabled) return null; // works anywhere unless "In Game Only" is set
-        if (cfg.genTimersInGameOnly && !bedwarsActive(example)) return null;
+    private static HudBox timerBox(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond, boolean all) {
+        if (!all && !cfg.genTimersEnabled) return null; // works anywhere unless "In Game Only" is set
+        if (!all && cfg.genTimersInGameOnly && !bedwarsActive(example)) return null;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
         Size size = timerSize(mc, cfg, example, diamond);
         if (size.width <= 0f || size.height <= 0f) return null;
@@ -363,10 +342,9 @@ public class BedwarsHudRenderer {
         int storedX = diamond ? cfg.diamondTimerHudX : cfg.emeraldTimerHudX;
         int storedY = diamond ? cfg.diamondTimerHudY : cfg.emeraldTimerHudY;
         int anchor = diamond ? cfg.diamondTimerHudAnchor : cfg.emeraldTimerHudAnchor;
-        float x = absoluteX(storedX, anchor, size.width, r.getScaledWidth());
-        float y = absoluteY(storedY, anchor, size.height, r.getScaledHeight());
-        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD,
-                diamond ? "Diamond Timer" : "Emerald Timer", x, y, size.width, size.height);
+        float x = placeX(storedX, anchor, size.width, 0f, r.getScaledWidth());
+        float y = placeY(storedY, anchor, size.height, 0f, r.getScaledHeight());
+        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, 0f);
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
@@ -378,7 +356,7 @@ public class BedwarsHudRenderer {
     }
 
     private static void drawTimerHud(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
-        HudBox box = timerBox(mc, cfg, example, diamond);
+        HudBox box = timerBox(mc, cfg, example, diamond, false);
         if (box == null) return;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
         if (cfg.hudDisplayMode == 1) {
@@ -470,8 +448,8 @@ public class BedwarsHudRenderer {
     /** Rows are Inter Regular like the Session Stats rows; the panel is always drawn. */
     private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
-    private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example) {
-        if (!HeightLimitWatch.visible(cfg, example)) return null;
+    private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
+        if (!all && !HeightLimitWatch.visible(cfg, example)) return null;
         float scale = cfg.heightLimitHudScale;
         List<String> rows = heightLimitRows(mc, example);
         float width = 0f;
@@ -479,13 +457,14 @@ public class BedwarsHudRenderer {
         float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
         if (width <= 0f || height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = absoluteX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, r.getScaledWidth());
-        float y = absoluteY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, r.getScaledHeight());
-        return new HudBox(HEIGHT_LIMIT_HUD, "Map Info", x, y, width, height);
+        float pad = panelPad(cfg.heightLimitHudScale);
+        float x = placeX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, pad, r.getScaledWidth());
+        float y = placeY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, pad, r.getScaledHeight());
+        return new HudBox(HEIGHT_LIMIT_HUD, x, y, width, height, pad);
     }
 
     private static void drawHeightLimitHud(Minecraft mc, ClientSettings cfg, boolean example) {
-        HudBox box = heightLimitBox(mc, cfg, example);
+        HudBox box = heightLimitBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.heightLimitHudScale;
         drawHudBackground(box, scale);
@@ -549,19 +528,20 @@ public class BedwarsHudRenderer {
 
     // ----- Session Stats (Lunar-style game + session tally) -----
 
-    private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example) {
-        if (!SessionStatsWatch.visible(cfg, example)) return null;
+    private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
+        if (!all && !SessionStatsWatch.visible(cfg, example)) return null;
         float scale = cfg.sessionStatsHudScale;
         Size size = textSize(mc.fontRendererObj, sessionLines(example), scale);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = absoluteX(cfg.sessionStatsHudX, cfg.sessionStatsHudAnchor, size.width, r.getScaledWidth());
-        float y = absoluteY(cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.height, r.getScaledHeight());
-        return new HudBox(SESSION_HUD, "Session Stats", x, y, size.width, size.height);
+        float pad = panelPad(cfg.sessionStatsHudScale);
+        float x = placeX(cfg.sessionStatsHudX, cfg.sessionStatsHudAnchor, size.width, pad, r.getScaledWidth());
+        float y = placeY(cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.height, pad, r.getScaledHeight());
+        return new HudBox(SESSION_HUD, x, y, size.width, size.height, pad);
     }
 
     private static void drawSessionHud(Minecraft mc, ClientSettings cfg, boolean example) {
-        HudBox box = sessionBox(mc, cfg, example);
+        HudBox box = sessionBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
         drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
@@ -619,19 +599,32 @@ public class BedwarsHudRenderer {
 
     public static final class HudBox {
         public final String id;
-        public final String title;
+        /** Content box: what the module draws, before any panel padding. */
         public final float x;
         public final float y;
         public final float width;
         public final float height;
+        /** Panel padding drawn around the content box; 0 for modules without a panel. */
+        public final float pad;
+        /** False for a module the player has switched off (Edit HUD shows it as a ghost). */
+        public final boolean shown;
 
-        public HudBox(String id, String title, float x, float y, float width, float height) {
+        public HudBox(String id, float x, float y, float width, float height, float pad) {
+            this(id, x, y, width, height, pad, true);
+        }
+
+        private HudBox(String id, float x, float y, float width, float height, float pad, boolean shown) {
             this.id = id;
-            this.title = title;
             this.x = x;
             this.y = y;
             this.width = width;
             this.height = height;
+            this.pad = pad;
+            this.shown = shown;
+        }
+
+        HudBox hidden() {
+            return new HudBox(id, x, y, width, height, pad, false);
         }
 
         public float right() {
@@ -646,12 +639,33 @@ public class BedwarsHudRenderer {
             return x + width / 2f;
         }
 
-        public float centerY() {
-            return y + height / 2f;
+        /** The box as drawn, panel included: what clicks, snapping and frames use. */
+        public float visualX() {
+            return x - pad;
         }
 
-        public boolean contains(float px, float py) {
-            return px >= x && px <= right() && py >= y && py <= bottom();
+        public float visualY() {
+            return y - pad;
+        }
+
+        public float visualRight() {
+            return x + width + pad;
+        }
+
+        public float visualBottom() {
+            return y + height + pad;
+        }
+
+        public float visualWidth() {
+            return width + 2f * pad;
+        }
+
+        public float visualHeight() {
+            return height + 2f * pad;
+        }
+
+        public boolean containsVisual(float px, float py) {
+            return px >= visualX() && px <= visualRight() && py >= visualY() && py <= visualBottom();
         }
     }
 

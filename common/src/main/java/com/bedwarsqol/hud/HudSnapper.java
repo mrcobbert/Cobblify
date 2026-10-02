@@ -3,9 +3,9 @@ package com.bedwarsqol.hud;
 import java.util.List;
 
 /**
- * Snaps a moving HUD box to the screen (edges and centre) and to other boxes (edges and centres),
- * one axis at a time. A box's left, centre and right (or top, centre, bottom) each try every target;
- * the closest within the threshold wins.
+ * Snaps a moving HUD box to the screen and to other boxes, one axis at a time. Edges snap to edges
+ * (either side, so boxes can line up or sit flush) and centres to centres; the closest match within
+ * the threshold wins.
  */
 public final class HudSnapper {
 
@@ -61,8 +61,10 @@ public final class HudSnapper {
         boolean found = false;
 
         float[] screen = {0f, screenSize / 2f, screenSize};
-        for (float line : screen) {
+        for (int j = 0; j < screen.length; j++) {
+            float line = screen[j];
             for (int i = 0; i < own.length; i++) {
+                if ((i == 1) != (j == 1)) continue; // edge to edge, centre to centre
                 float distance = Math.abs(line - own[i]);
                 if (distance <= bestDistance && (!found || distance < bestDistance)) {
                     bestDistance = distance;
@@ -77,8 +79,10 @@ public final class HudSnapper {
             float start = xAxis ? t.x : t.y;
             float length = xAxis ? t.width : t.height;
             float[] lines = {start, start + length / 2f, start + length};
-            for (float line : lines) {
+            for (int j = 0; j < lines.length; j++) {
+                float line = lines[j];
                 for (int i = 0; i < own.length; i++) {
+                    if ((i == 1) != (j == 1)) continue;
                     float distance = Math.abs(line - own[i]);
                     if (distance <= bestDistance && (!found || distance < bestDistance)) {
                         bestDistance = distance;
