@@ -1,5 +1,5 @@
 //! Forge support: finding a Minecraft instance, judging whether Cobblify belongs in it,
-//! and installing the jar there without ever costing the user a file.
+//! and installing the jar there, deleting only the older releases it replaces.
 //!
 //! The design rests on one fact: the Forge build of Cobblify is a PURE DROP-IN. Mixin is
 //! shaded into the jar and its manifest carries `TweakClass` + `ForceLoadAsMod`, which FML
@@ -22,7 +22,7 @@
 //!     by resolved target. Comparing canonical targets would exempt a symlink pointing at
 //!     the destination, and Forge builds a mod candidate per directory entry, so that
 //!     alias would still load as a second jar with the same mod id. Symlinks are reported
-//!     and never moved: ambiguity resolves toward telling the user, never toward leaving a
+//!     and never deleted: ambiguity resolves toward telling the user, never toward leaving a
 //!     jar that might crash their game, and never toward touching a file that may live
 //!     somewhere else entirely.
 //!
@@ -35,12 +35,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::install::{commit, stage_verified};
-use crate::resources::{sha256_file, ForgeJar};
+use crate::install::{commit, release_version, stage_verified};
+use crate::resources::ForgeJar;
 
-/// Renaming a jar to this suffix is enough to make Forge ignore it: FML only considers
-/// directory entries matching `(.+).(zip|jar)$`. Same directory, so no cross-volume move,
-/// and the user recovers the file by renaming it back.
+/// Launchers before 0.16.3 renamed a superseded jar to `<name>.cobblify-disabled` (then
+/// `... (2)`, `... (3)` when taken) instead of deleting it. FML ignores those, since it only
+/// considers `(.+).(zip|jar)$`; `install` clears the ones that were our releases.
 const DISABLED_SUFFIX: &str = ".cobblify-disabled";
 
 /// FML 1.8.9 discovers mods in `<gameDir>/mods` AND `<gameDir>/mods/<mcversion>`.
@@ -369,10 +369,10 @@ pub fn classify_picked(dir: &Path) -> Result<Candidate, String> {
 /// What to do with one Cobblify-looking jar found in a load root.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    /// A superseded copy of one of our own packaged releases: safe to set aside.
-    Quarantine,
-    /// Cobblify-ish but not a release we produced - a `-dev` build, a hand-renamed file,
-    /// or a path we could not resolve. Reported, never touched.
+    /// A copy of one of our own packaged releases no newer than ours: deleted.
+    Stale,
+    /// Cobblify-ish but not a release we may replace - a newer release, a `-dev` build, a
+    /// hand-renamed file, or a path we could not resolve. Reported, never touched.
     Block,
     Ignore,
 }
@@ -386,14 +386,6 @@ fn release_prefix(our_name: &str) -> String {
     }
 }
 
-fn is_semver(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-}
-
 /// Classification is CASELESS on every platform. Forge loads a jar however its name is
 /// cased, so an exact comparison would miss a lower-cased stale jar on a case-sensitive
 /// volume and hand the user a client that refuses to boot.
@@ -402,17 +394,13 @@ fn classify(name: &str, our_name: &str) -> Verdict {
     if !lower.ends_with(".jar") || !lower.starts_with("cobblify") {
         return Verdict::Ignore;
     }
-    let prefix = release_prefix(our_name).to_ascii_lowercase();
-    // `release_prefix` returns the WHOLE name when it carries no `-`, so the remainder can
-    // be empty or shorter than `".jar"` - cutting four bytes off it blindly panicked.
-    if let Some(rest) = lower.strip_prefix(&prefix) {
-        if let Some(version) = rest.strip_suffix(".jar") {
-            if is_semver(version) {
-                return Verdict::Quarantine;
-            }
-        }
+    // Same version and a different name is a second spelling of our own jar. A newer
+    // release is not ours to delete: an older launcher would be downgrading.
+    let prefix = release_prefix(our_name);
+    match (release_version(name, &prefix), release_version(our_name, &prefix)) {
+        (Some(theirs), Some(ours)) if theirs <= ours => Verdict::Stale,
+        _ => Verdict::Block,
     }
-    Verdict::Block
 }
 
 /// Every directory FML will scan for mods.
@@ -420,62 +408,19 @@ fn load_roots(mods_dir: &Path) -> Vec<PathBuf> {
     vec![mods_dir.to_path_buf(), mods_dir.join(VERSIONED_MODS_DIR)]
 }
 
-/// Moves a file, failing rather than replacing anything already at the destination.
-///
-/// This has to be ONE atomic operation. An earlier version reserved the name with
-/// `create_new` and then renamed over its own placeholder, which looks safe but is not:
-/// between the two steps another process can replace that path, and the rename would then
-/// destroy a file we never owned - the exact data loss the quarantine exists to prevent.
-///
-/// Windows: `MoveFileExW` with no `MOVEFILE_REPLACE_EXISTING` fails if the destination
-/// exists. Unix: `link()` is defined to fail with `EEXIST` rather than clobber, so
-/// hard-link-then-unlink is the atomic no-replace move (same directory, so always the same
-/// filesystem). Both surface `AlreadyExists`, which the caller uses to pick another name.
-#[cfg(windows)]
-fn move_no_replace(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-
-    fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-    let (s, d) = (wide(src), wide(dst));
-    // Flags 0: no MOVEFILE_REPLACE_EXISTING, so an existing destination is an error.
-    if unsafe { MoveFileExW(s.as_ptr(), d.as_ptr(), 0) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn move_no_replace(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::hard_link(src, dst)?;
-    fs::remove_file(src)
-}
-
-/// Sets a jar aside without ever destroying it, and without ever destroying anything else
-/// either. Nothing is deleted; the user recovers the file by renaming it back.
-fn quarantine(path: &Path) -> Result<PathBuf, String> {
-    let base = path.as_os_str().to_string_lossy().into_owned();
-    for n in 1..100 {
-        let candidate = PathBuf::from(if n == 1 {
-            format!("{base}{DISABLED_SUFFIX}")
-        } else {
-            format!("{base}{DISABLED_SUFFIX} ({n})")
-        });
-        match move_no_replace(path, &candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("Cannot move {} aside: {e}", path.display())),
-        }
-    }
-    Err(format!(
-        "Too many set-aside copies already exist next to {}.",
-        path.display()
-    ))
+/// A copy of one of our releases that an older launcher set aside: `<release>.cobblify-disabled`
+/// or `<release>.cobblify-disabled (<n>)`, in any case.
+fn is_set_aside_release(name: &str, our_name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let Some(i) = lower.rfind(DISABLED_SUFFIX) else {
+        return false;
+    };
+    let tail = &lower[i + DISABLED_SUFFIX.len()..];
+    let numbered = tail
+        .strip_prefix(" (")
+        .and_then(|t| t.strip_suffix(')'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    (tail.is_empty() || numbered) && classify(&lower[..i], our_name) == Verdict::Stale
 }
 
 /// Whether a directory entry IS our destination - the one file exempt from the hunt.
@@ -483,7 +428,7 @@ fn quarantine(path: &Path) -> Result<PathBuf, String> {
 /// This is a directory-entry question, not a canonical-target one. Comparing resolved
 /// targets would exempt a SYMLINK that points at the destination, and Forge builds a mod
 /// candidate per directory entry, so that alias would still load as a second jar with the
-/// same mod id. Symlinks are handled by the caller (always reported, never quarantined);
+/// same mod id. Symlinks are handled by the caller (always reported, never deleted);
 /// here only the entry's own location and name matter, cased the way the platform's own
 /// filesystem cases them.
 ///
@@ -493,7 +438,7 @@ fn quarantine(path: &Path) -> Result<PathBuf, String> {
 /// user's lower-cased file as a separate jar set the same file aside twice and failed the
 /// whole install. So a caseless name match ALSO exempts the entry, but only when the two
 /// paths are proven to be the same file: same device, same inode. Two distinct hard links
-/// share an inode but not a caseless name, so they stay on the quarantine path - a second
+/// share an inode but not a caseless name, so they stay on the stale path - a second
 /// directory entry is a second mod candidate however it is stored.
 fn is_destination_entry(path: &Path, dest: &Path, dest_entry_present: bool) -> bool {
     if path.parent() != dest.parent() {
@@ -516,7 +461,7 @@ fn is_destination_entry(path: &Path, dest: &Path, dest_entry_present: bool) -> b
                 // stored, and the listing therefore holds no entry spelled exactly like the
                 // destination. On a case-sensitive volume the destination has its own entry
                 // and a case variant beside it is a SECOND, independently loadable file -
-                // even when the two are hard links - so it must stay on the quarantine path.
+                // even when the two are hard links - so it must stay on the stale path.
                 !dest_entry_present
                     && a.to_string_lossy()
                         .eq_ignore_ascii_case(&b.to_string_lossy())
@@ -533,7 +478,7 @@ fn is_destination_entry(path: &Path, dest: &Path, dest_entry_present: bool) -> b
 
 /// Same device and same inode - the two names address one file. A destination that does
 /// not exist yet, or either path being unreadable, answers "no", which keeps the caller on
-/// the quarantine path it would have taken before.
+/// the stale path it would have taken before.
 #[cfg(unix)]
 fn is_same_file(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -549,50 +494,34 @@ pub struct Outcome {
     pub path: Option<String>,
     /// Jars we refused to touch. Their presence blocks, because Forge will not boot.
     pub conflicts: Vec<String>,
-    /// `"<old path> -> <new name>"`, rendered so a set-aside file is never silent.
-    pub quarantined: Vec<String>,
     /// True when we deliberately installed nothing.
     pub blocked: bool,
 }
 
-/// A failure that may have already moved files. The moves travel with the error so the UI
-/// can still tell the user exactly what was set aside and how to put it back - a bare
-/// string would strand them with files renamed and nothing naming them.
-#[derive(Debug)]
-pub struct ForgeError {
-    pub message: String,
-    pub quarantined: Vec<String>,
-}
-
-impl From<String> for ForgeError {
-    fn from(message: String) -> Self {
-        ForgeError {
-            message,
-            quarantined: Vec::new(),
-        }
-    }
-}
-
-/// Installs the Forge jar into `game_dir`, setting aside anything that would make Forge
-/// refuse to boot.
+/// Installs the Forge jar into `game_dir`, deleting the releases it supersedes so Forge
+/// does not refuse to boot on two `bedwarsqol` jars.
 ///
 /// Order is the whole safety argument (PLAN 2.6):
-///   1. stage and hash the new jar - a failure here moves nothing;
-///   2. set aside a FOREIGN jar occupying our own destination name, so it is preserved
-///      rather than overwritten;
-///   3. always scan both load roots - including when step 1 found our jar already current,
-///      which is the likeliest real upgrade and the case an early return would break;
-///   4. commit.
-pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
+///   1. scan both load roots, and finish the scan before touching anything - including when
+///      our jar is already current, which is the likeliest real upgrade and the case an early
+///      return would break;
+///   2. install nothing if any Cobblify jar we may not touch is present;
+///   3. stage and hash the new jar - a failure here deletes nothing;
+///   4. delete the superseded releases, and stop if one cannot be deleted - committing beside
+///      it would itself be the two-jar state;
+///   5. commit, replacing whatever build sits at our own name;
+///   6. clear the copies older launchers set aside.
+pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, String> {
     let mods_dir = game_dir.join("mods");
     fs::create_dir_all(&mods_dir)
-        .map_err(|e| ForgeError::from(format!("Cannot create {}: {e}", mods_dir.display())))?;
+        .map_err(|e| format!("Cannot create {}: {e}", mods_dir.display()))?;
     let dest = mods_dir.join(&jar.name);
 
-    // 1. DISCOVERY FIRST, and it must complete. Nothing is moved and nothing is staged
+    // 1. DISCOVERY FIRST, and it must complete. Nothing is deleted and nothing is staged
     //    until we know everything that is in both load roots, because the decision in
     //    step 2 depends on having seen all of it.
     let mut stale = Vec::new();
+    let mut set_aside = Vec::new();
     let mut conflicts = Vec::new();
     for root in load_roots(&mods_dir) {
         if !root.is_dir() {
@@ -604,15 +533,21 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
         let dest_entry_present = entries.iter().any(|entry| entry == &dest);
         for path in entries {
             let meta = fs::symlink_metadata(&path)
-                .map_err(|e| ForgeError::from(format!("Cannot read {}: {e}", path.display())))?;
+                .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
             if meta.is_dir() {
                 continue;
             }
             let name = dir_name(&path);
+            if is_set_aside_release(&name, &jar.name) {
+                if meta.is_file() {
+                    set_aside.push(path);
+                }
+                continue;
+            }
             if classify(&name, &jar.name) == Verdict::Ignore {
                 continue;
             }
-            // A symlink is reported, never moved: it may alias a file far outside this
+            // A symlink is reported, never deleted: it may alias a file far outside this
             // folder, and Forge counts it as its own jar entry regardless of where it
             // points. Reporting is the honest answer for something we cannot reason about.
             if meta.file_type().is_symlink() {
@@ -623,7 +558,7 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
                 continue;
             }
             match classify(&name, &jar.name) {
-                Verdict::Quarantine => stale.push(path),
+                Verdict::Stale => stale.push(path),
                 Verdict::Block => conflicts.push(path.display().to_string()),
                 Verdict::Ignore => unreachable!(),
             }
@@ -638,7 +573,6 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
         return Ok(Outcome {
             path: None,
             conflicts,
-            quarantined: Vec::new(),
             blocked: true,
         });
     }
@@ -647,40 +581,35 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, ForgeError> {
     //    needed, which is NOT the same as nothing left to do; the scan above ran anyway.
     let staged = stage_verified(&jar.src, &dest, &jar.sha256)?;
 
-    // Past this point files start moving, so every failure carries the moves with it.
-    let mut quarantined: Vec<String> = Vec::new();
-    let fail = |message: String, moved: &[String]| ForgeError {
-        message,
-        quarantined: moved.to_vec(),
-    };
-
-    // 4. A jar at our own name whose bytes are not ours belongs to the user - a renamed
-    //    local build, or a privately shared artifact. Preserve it.
-    if dest.is_file() {
-        let ours = sha256_file(&dest)
-            .map(|h| h.eq_ignore_ascii_case(&jar.sha256))
-            .unwrap_or(false);
-        if !ours {
-            let moved = quarantine(&dest).map_err(|m| fail(m, &quarantined))?;
-            quarantined.push(format!("{} -> {}", dest.display(), dir_name(&moved)));
+    // 4. Superseded releases, in both load roots. Windows refuses while the game has one
+    //    open; the staged jar is then dropped uncommitted.
+    for path in stale {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Cannot delete the old jar {}: {e}. If Minecraft is open, close it and try again.",
+                    path.display()
+                ))
+            }
         }
     }
 
-    // 5. Superseded releases, in both load roots.
-    for path in stale {
-        let moved = quarantine(&path).map_err(|m| fail(m, &quarantined))?;
-        quarantined.push(format!("{} -> {}", path.display(), dir_name(&moved)));
+    // 5. Commit. The rename replaces a different build at our own name - most often the
+    //    dev build of this same version.
+    if let Some(staged) = staged {
+        commit(staged)?;
     }
 
-    // 6. Commit.
-    if let Some(staged) = staged {
-        commit(staged).map_err(|m| fail(m, &quarantined))?;
+    // 6. FML never loads a set-aside copy, so clearing them is tidying only and a failure
+    //    here never fails the install.
+    for path in set_aside {
+        let _ = fs::remove_file(path);
     }
-    quarantined.sort();
     Ok(Outcome {
         path: Some(dest.display().to_string()),
         conflicts: Vec::new(),
-        quarantined,
         blocked: false,
     })
 }
@@ -789,14 +718,20 @@ mod tests {
     // ── classification ─────────────────────────────────────────────────────────
 
     #[test]
-    fn release_shaped_jars_quarantine_and_everything_else_blocks_or_is_ignored() {
+    fn release_shaped_jars_are_stale_and_everything_else_blocks_or_is_ignored() {
         assert_eq!(
             classify("Cobblify-1.8.9-forge-0.8.0.jar", OURS),
-            Verdict::Quarantine
+            Verdict::Stale
         );
+        // A NEWER release is not ours to delete: an older launcher would be downgrading.
+        // Versions compare as numbers, so 0.10.2 is newer than 0.9.0.
         assert_eq!(
             classify("Cobblify-1.8.9-forge-0.10.2.jar", OURS),
-            Verdict::Quarantine
+            Verdict::Block
+        );
+        assert_eq!(
+            classify("Cobblify-1.8.9-forge-0.9.0.jar", "Cobblify-1.8.9-forge-0.10.2.jar"),
+            Verdict::Stale
         );
         // A dev build is ours in spirit but not a release we packaged - never touched.
         assert_eq!(
@@ -818,17 +753,17 @@ mod tests {
     fn classification_is_caseless_on_every_platform() {
         assert_eq!(
             classify("cobblify-1.8.9-forge-0.8.0.jar", OURS),
-            Verdict::Quarantine
+            Verdict::Stale
         );
         assert_eq!(
             classify("COBBLIFY-1.8.9-FORGE-0.8.0.JAR", OURS),
-            Verdict::Quarantine
+            Verdict::Stale
         );
         // Even a case variant of our OWN name is a candidate - only real file identity
         // exempts the destination, and that is decided in `install`, not here.
         assert_eq!(
             classify("cobblify-1.8.9-forge-0.9.0.jar", OURS),
-            Verdict::Quarantine
+            Verdict::Stale
         );
     }
 
@@ -841,16 +776,6 @@ mod tests {
         assert_eq!(classify("Cobblify.jar", "Cobblify.jar"), Verdict::Block);
         // The remainder is short but non-empty, and still not a version.
         assert_eq!(classify("cobblify.jar.jar", "Cobblify.jar"), Verdict::Block);
-    }
-
-    #[test]
-    fn semver_is_strict() {
-        assert!(is_semver("0.9.0"));
-        assert!(is_semver("10.20.30"));
-        assert!(!is_semver("0.9"));
-        assert!(!is_semver("0.9.0-dev"));
-        assert!(!is_semver("a.b.c"));
-        assert!(!is_semver("0..0"));
     }
 
     // ── the install transaction ────────────────────────────────────────────────
@@ -867,12 +792,191 @@ mod tests {
             b"forge"
         );
         assert!(out.conflicts.is_empty());
-        assert!(out.quarantined.is_empty());
     }
 
-    /// Round-3 B2, and the single most likely real upgrade: our jar is ALREADY current,
-    /// and a stale peer sits beside it. An early return here leaves two `bedwarsqol` jars
-    /// and a client that refuses to boot.
+    /// The auto-update case: the new release lands under a new name, and every older
+    /// release in either load root is deleted rather than set aside.
+    #[test]
+    fn an_update_deletes_superseded_releases_in_both_load_roots() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        let versioned = mods.join(VERSIONED_MODS_DIR);
+        fs::create_dir_all(&versioned).unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+        fs::write(versioned.join("cobblify-1.8.9-forge-0.7.1.JAR"), b"older").unwrap();
+        fs::write(mods.join("SomeOtherMod.jar"), b"unrelated").unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(fs::read(mods.join(OURS)).unwrap(), b"forge");
+        assert_eq!(
+            entries_named(&mods, |_| true),
+            vec![VERSIONED_MODS_DIR.to_string(), OURS.to_string(), "SomeOtherMod.jar".to_string()]
+        );
+        assert!(entries_named(&versioned, |_| true).is_empty());
+    }
+
+    /// Older launchers renamed superseded jars to `<name>.cobblify-disabled` instead of
+    /// deleting them. Those copies of our releases are cleared too; anything else carrying
+    /// the suffix is not ours to judge and stays.
+    #[test]
+    fn copies_older_launchers_set_aside_are_deleted() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        let versioned = mods.join(VERSIONED_MODS_DIR);
+        fs::create_dir_all(&versioned).unwrap();
+        for name in [
+            format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}"),
+            format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX} (2)"),
+            format!("COBBLIFY-1.8.9-FORGE-0.7.0.JAR{DISABLED_SUFFIX}"),
+            format!("{OURS}{DISABLED_SUFFIX}"),
+        ] {
+            fs::write(mods.join(name), b"set aside").unwrap();
+        }
+        fs::write(
+            versioned.join(format!("Cobblify-1.8.9-forge-0.7.1.jar{DISABLED_SUFFIX}")),
+            b"set aside",
+        )
+        .unwrap();
+        let kept = [
+            format!("Cobblify-1.8.9-forge-0.9.0-dev.jar{DISABLED_SUFFIX}"),
+            format!("SomeOtherMod.jar{DISABLED_SUFFIX}"),
+            format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}.bak"),
+            format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX} (x)"),
+        ];
+        for name in &kept {
+            fs::write(mods.join(name), b"not ours").unwrap();
+        }
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        let mut expected: Vec<String> = kept.to_vec();
+        expected.push(OURS.to_string());
+        expected.push(VERSIONED_MODS_DIR.to_string());
+        expected.sort();
+        assert_eq!(entries_named(&mods, |_| true), expected);
+        assert!(entries_named(&versioned, |_| true).is_empty());
+    }
+
+    #[test]
+    fn set_aside_names_are_recognised_strictly() {
+        let disabled = |n: &str| format!("Cobblify-1.8.9-forge-0.8.0.jar{n}");
+        assert!(is_set_aside_release(&disabled(DISABLED_SUFFIX), OURS));
+        assert!(is_set_aside_release(&disabled(".COBBLIFY-DISABLED (12)"), OURS));
+        assert!(!is_set_aside_release(&disabled(""), OURS), "a live jar is not a set-aside copy");
+        assert!(!is_set_aside_release(&disabled(".cobblify-disabled ()"), OURS));
+        assert!(!is_set_aside_release(&disabled(".cobblify-disabled (2"), OURS));
+        assert!(!is_set_aside_release(
+            &format!("Cobblify-1.8.9-forge-0.9.0-dev.jar{DISABLED_SUFFIX}"),
+            OURS
+        ));
+    }
+
+    /// Deleting an old release can fail (Windows refuses while the game holds it open). The
+    /// new jar must then not be committed: two loadable copies would stop Forge booting.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_release_that_cannot_be_deleted_fails_before_the_commit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        let versioned = mods.join(VERSIONED_MODS_DIR);
+        fs::create_dir_all(&versioned).unwrap();
+        let old = versioned.join("Cobblify-1.8.9-forge-0.8.0.jar");
+        fs::write(&old, b"old").unwrap();
+        fs::set_permissions(&versioned, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = install(&jar, game.path());
+        fs::set_permissions(&versioned, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot delete"), "{err}");
+        assert!(old.exists());
+        assert_eq!(
+            entries_named(&mods, |_| true),
+            vec![VERSIONED_MODS_DIR.to_string()],
+            "neither our jar nor its temp file may be left"
+        );
+    }
+
+    /// Round-3 B2, and the single most likely real upgrade: our jar is ALREADY current (on
+    /// Windows the `Ok(None)` skip path) and a stale peer sits beside it. An early return
+    /// there leaves two `bedwarsqol` jars and a client that refuses to boot.
+    #[test]
+    fn a_current_jar_still_clears_an_older_release() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join(OURS), b"forge").unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(!out.blocked, "{out:?}");
+        assert_eq!(entries_named(&mods, |_| true), vec![OURS.to_string()]);
+        assert_eq!(fs::read(mods.join(OURS)).unwrap(), b"forge");
+    }
+
+    /// An older copy of the launcher reports a newer release instead of deleting it, and
+    /// installs nothing beside it.
+    #[test]
+    fn a_newer_release_blocks_instead_of_being_deleted() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let newer = mods.join("Cobblify-1.8.9-forge-0.10.0.jar");
+        fs::write(&newer, b"newer").unwrap();
+
+        let out = install(&jar, game.path()).unwrap();
+
+        assert!(out.blocked, "{out:?}");
+        assert_eq!(out.conflicts, vec![newer.display().to_string()]);
+        assert_eq!(entries_named(&mods, |_| true), vec![dir_name(&newer)]);
+    }
+
+    /// The real Windows case for a failed delete: the game holds the old jar open without
+    /// delete sharing. The new jar must not be committed beside it.
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_old_release_fails_before_the_commit() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        let mods = game.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        let old = mods.join("Cobblify-1.8.9-forge-0.8.0.jar");
+        fs::write(&old, b"old").unwrap();
+        // FILE_SHARE_READ only: readers allowed, deletion refused.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old)
+            .unwrap();
+
+        let result = install(&jar, game.path());
+        drop(lock);
+
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot delete"), "{err}");
+        assert_eq!(entries_named(&mods, |_| true), vec![dir_name(&old)]);
+    }
+
+    /// Nothing installs past a blocker, and nothing is deleted either - not even stale peers.
     #[test]
     fn a_blocker_prevents_every_install_mutation_even_with_stale_peers() {
         let src = tempfile::tempdir().unwrap();
@@ -888,6 +992,9 @@ mod tests {
         fs::write(versioned.join("Cobblify-1.8.9-forge-0.7.1.jar"), b"older").unwrap();
         // And one we must never touch.
         fs::write(mods.join("Cobblify-1.8.9-forge-0.9.0-dev.jar"), b"dev").unwrap();
+        // A copy an older launcher set aside is not cleared while blocked either.
+        let set_aside = mods.join(format!("Cobblify-1.8.9-forge-0.6.0.jar{DISABLED_SUFFIX}"));
+        fs::write(&set_aside, b"set aside").unwrap();
 
         let out = install(&jar, game.path()).unwrap();
 
@@ -897,36 +1004,29 @@ mod tests {
             "our own current jar must be left alone"
         );
         assert!(out.blocked);
-        assert!(out.quarantined.is_empty(), "{:?}", out.quarantined);
         assert!(mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists());
         assert!(versioned.join("Cobblify-1.8.9-forge-0.7.1.jar").exists());
-        assert!(!mods
-            .join(format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}"))
-            .exists());
+        assert!(set_aside.exists());
         assert_eq!(out.conflicts.len(), 1, "the dev jar must block");
         assert!(mods.join("Cobblify-1.8.9-forge-0.9.0-dev.jar").exists());
     }
 
-    /// Round-2 B4: a jar sitting at OUR filename that is not ours belongs to the user.
+    /// A different build under our own name - most often the dev build of the same version
+    /// the user tested before the release - is replaced in place, as Lunar's install does.
     #[test]
-    fn a_foreign_jar_at_our_own_name_is_set_aside_not_overwritten() {
+    fn a_different_build_at_our_own_name_is_replaced() {
         let src = tempfile::tempdir().unwrap();
         let game = tempfile::tempdir().unwrap();
         let jar = forge_jar(src.path(), b"forge");
         let mods = game.path().join("mods");
         fs::create_dir_all(&mods).unwrap();
-        fs::write(mods.join(OURS), b"the user's own build").unwrap();
+        fs::write(mods.join(OURS), b"the dev build").unwrap();
 
         let out = install(&jar, game.path()).unwrap();
 
+        assert!(!out.blocked, "{out:?}");
         assert_eq!(fs::read(mods.join(OURS)).unwrap(), b"forge");
-        assert_eq!(out.quarantined.len(), 1, "{:?}", out.quarantined);
-        let saved = mods.join(format!("{OURS}{DISABLED_SUFFIX}"));
-        assert_eq!(
-            fs::read(&saved).unwrap(),
-            b"the user's own build",
-            "the user's bytes must survive verbatim"
-        );
+        assert_eq!(entries_named(&mods, |_| true), vec![OURS.to_string()]);
     }
 
     /// Which branch of `is_destination_entry` a run exercises depends on the volume, and
@@ -951,12 +1051,13 @@ mod tests {
     }
 
     /// L11: on a case-folding volume `mods/cobblify-...0.9.0.jar` IS our destination, so
-    /// quarantining it and then quarantining the destination moved the same file twice and
-    /// failed the install outright. The user had to run setup again for it to succeed.
+    /// handling it as a stale peer and then again as the destination touched the same file
+    /// twice and failed the install outright. The user had to run setup again for it to
+    /// succeed.
     ///
     /// On a case-sensitive volume the lowercase file is an independent entry that the
-    /// caseless classifier sets aside - a different path to the same outcome, which is why
-    /// the assertions below hold on both.
+    /// caseless classifier deletes - a different path to the same outcome, which is why the
+    /// assertions below hold on both.
     #[test]
     fn case_variant_of_our_name_installs_in_one_attempt() {
         let src = tempfile::tempdir().unwrap();
@@ -964,7 +1065,7 @@ mod tests {
         let jar = forge_jar(src.path(), b"forge");
         let mods = game.path().join("mods");
         fs::create_dir_all(&mods).unwrap();
-        fs::write(mods.join(OURS.to_ascii_lowercase()), b"the user's own build").unwrap();
+        fs::write(mods.join(OURS.to_ascii_lowercase()), b"the dev build").unwrap();
         println!(
             "case_variant_of_our_name_installs_in_one_attempt: volume folds case = {}",
             volume_folds_case(&mods)
@@ -978,15 +1079,8 @@ mod tests {
             b"forge",
             "our jar must be installed on the first attempt"
         );
-        let set_aside = entries_named(&mods, |n| n.contains(DISABLED_SUFFIX));
-        assert_eq!(set_aside.len(), 1, "{set_aside:?}");
-        assert_eq!(
-            fs::read(mods.join(&set_aside[0])).unwrap(),
-            b"the user's own build",
-            "the user's bytes must survive verbatim, exactly once"
-        );
-        let loadable = entries_named(&mods, |n| n.to_ascii_lowercase().ends_with(".jar"));
-        assert_eq!(loadable.len(), 1, "{loadable:?}");
+        let all = entries_named(&mods, |_| true);
+        assert_eq!(all.len(), 1, "exactly one jar, and nothing set aside: {all:?}");
     }
 
     /// The inode exemption must not swallow a DISTINCT directory entry that happens to
@@ -1028,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_hard_link_of_an_older_release_is_still_quarantined() {
+    fn distinct_hard_link_of_an_older_release_is_still_deleted() {
         let src = tempfile::tempdir().unwrap();
         let game = tempfile::tempdir().unwrap();
         let jar = forge_jar(src.path(), b"forge");
@@ -1042,14 +1136,13 @@ mod tests {
         let out = install(&jar, game.path()).unwrap();
 
         assert!(!out.blocked, "{out:?}");
-        assert_eq!(out.quarantined.len(), 1, "{:?}", out.quarantined);
-        assert!(!older.exists(), "the older-named link must be set aside");
+        assert!(!older.exists(), "the older-named link must be deleted");
         assert_eq!(
-            fs::read(mods.join(format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}"))).unwrap(),
-            b"forge"
+            fs::read(&current).unwrap(),
+            b"forge",
+            "deleting the link must not touch our jar's bytes"
         );
-        let loadable = entries_named(&mods, |n| n.to_ascii_lowercase().ends_with(".jar"));
-        assert_eq!(loadable, vec![OURS.to_string()], "{loadable:?}");
+        assert_eq!(entries_named(&mods, |_| true), vec![OURS.to_string()]);
     }
 
     #[test]
@@ -1063,47 +1156,11 @@ mod tests {
         fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
 
         let err = install(&jar, game.path()).unwrap_err();
-        assert!(err.message.contains("is corrupt"), "{:?}", err);
+        assert!(err.contains("is corrupt"), "{err}");
         assert!(
             mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(),
-            "a failed stage must not have moved anything"
+            "a failed stage must not have deleted anything"
         );
-    }
-
-    /// The reservation must never truncate a set-aside file that is already there.
-    #[test]
-    fn quarantine_never_clobbers_an_existing_backup() {
-        let src = tempfile::tempdir().unwrap();
-        let game = tempfile::tempdir().unwrap();
-        let jar = forge_jar(src.path(), b"forge");
-        let mods = game.path().join("mods");
-        fs::create_dir_all(&mods).unwrap();
-        let stale = mods.join("Cobblify-1.8.9-forge-0.8.0.jar");
-        fs::write(&stale, b"second old copy").unwrap();
-        let existing = mods.join(format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}"));
-        fs::write(&existing, b"first old copy").unwrap();
-
-        install(&jar, game.path()).unwrap();
-
-        assert_eq!(
-            fs::read(&existing).unwrap(),
-            b"first old copy",
-            "the earlier backup must be untouched"
-        );
-        assert_eq!(
-            fs::read(mods.join(format!(
-                "Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX} (2)"
-            )))
-            .unwrap(),
-            b"second old copy"
-        );
-    }
-
-    #[test]
-    fn a_quarantined_jar_is_no_longer_loadable_by_forge() {
-        // FML only considers entries matching `(.+).(zip|jar)$`.
-        let name = format!("Cobblify-1.8.9-forge-0.8.0.jar{DISABLED_SUFFIX}");
-        assert!(!name.ends_with(".jar") && !name.ends_with(".zip"));
     }
 
     // ── compatibility judgements ───────────────────────────────────────────────

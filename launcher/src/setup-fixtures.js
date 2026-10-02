@@ -12,7 +12,6 @@ const tgt = (kind, state, message, extra = {}) =>
       detail: null,
       action: "none",
       candidates: [],
-      quarantined_names: [],
       has_setup_folder: false,
     },
     extra,
@@ -42,12 +41,6 @@ const LUNAR_ERROR = tgt("lunar", "error", "Setup failed.", {
 });
 
 const FORGE_READY = tgt("forge", "ready", "Prism Forge 1.8.9");
-const FORGE_READY_RENAMED = tgt("forge", "ready", "Prism Forge 1.8.9", {
-  issue: ISSUE.RENAMED_JAR,
-  detail: "Cobblify-1.8.9-forge-0.8.0.jar.cobblify-disabled",
-  quarantined_names: ["Cobblify-1.8.9-forge-0.8.0.jar.cobblify-disabled"],
-  has_setup_folder: true,
-});
 const FORGE_BLOCKED = tgt("forge", "blocked", "Conflicting jars.", {
   issue: ISSUE.CONFLICTS,
   has_setup_folder: true,
@@ -146,13 +139,6 @@ export const PREVIEW_STATUS = {
     mod_version: "0.9.0",
     targets: [LUNAR_ABSENT, FORGE_READY],
   },
-  forgeReadyRenamed: {
-    state: "ready",
-    message:
-      "Cobblify v0.9.0 ready for Lunar Client and Prism Forge 1.8.9 - Right Shift for settings in game",
-    mod_version: "0.9.0",
-    targets: [LUNAR_READY, FORGE_READY_RENAMED],
-  },
   forgeBlocked: {
     state: "blocked",
     message: "Conflicting jars.",
@@ -212,7 +198,6 @@ export const PREVIEW_SETUP_KEYS = [
   "prismNoInstances",
   "prismNoCompatible",
   "forgeReady",
-  "forgeReadyRenamed",
   "forgeBlocked",
   "forgeError",
   "dualConflict",
@@ -233,7 +218,6 @@ export const PREVIEW_SETUP_LABELS = {
   prismNoInstances: "No Prism",
   prismNoCompatible: "Bad Prism",
   forgeReady: "Prism ready",
-  forgeReadyRenamed: "Renamed jar",
   forgeBlocked: "Prism blocked",
   forgeError: "Prism error",
   dualConflict: "Both conflict",
@@ -283,9 +267,6 @@ export function assertBackendShapedStatus(status) {
     }
     if (!TARGET_ACTIONS.has(t.action)) throw new Error(`invalid target action: ${t.action}`);
     if (!Array.isArray(t.candidates)) throw new Error("target.candidates must be an array");
-    if (!Array.isArray(t.quarantined_names)) {
-      throw new Error("target.quarantined_names must be an array");
-    }
     if (typeof t.has_setup_folder !== "boolean") {
       throw new Error("target.has_setup_folder must be a boolean");
     }

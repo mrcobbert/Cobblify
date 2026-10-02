@@ -83,7 +83,14 @@ Before writing it:
 - refuses to touch the file at all if the JSON is unparseable
 
 It also installs the jars into `~/.weave/` using a same-directory temp file plus
-an atomic rename, so a running game never sees a half-written jar.
+an atomic rename, so a running game never sees a half-written jar. Weave loads
+every jar in `~/.weave/mods/`, so the install deletes the older releases the new
+jar replaces: any other `Cobblify-Lunar-<x.y.z>.jar` up to our version, matched
+without regard to case. It deletes them only after the new jar is staged and
+hash-checked. Any other `Cobblify-Lunar-*` entry is left alone and reported as a
+conflict: a newer release, a `-dev` or renamed build, or a symlink. An old
+release that could not be deleted (Windows, game still open) is reported too,
+and the new jar is not installed beside it until the next try.
 
 **Uninstalling on Windows undoes that registration first.** The NSIS
 uninstaller's `NSIS_HOOK_PREUNINSTALL` (`src-tauri/nsis/hooks.nsh`) runs
@@ -130,29 +137,30 @@ Forge raises `DuplicateModsFoundException` and refuses to boot with two jars
 declaring mod id `bedwarsqol`, so a stale Cobblify jar is fatal rather than
 untidy. Order is the whole safety argument:
 
-1. stage and hash the new jar - a failure here moves nothing;
-2. set aside a **foreign** jar sitting at our own destination name, so a renamed
-   local build or a privately shared artifact is preserved rather than
-   overwritten;
-3. **always** scan both `mods/` and `mods/1.8.9/` (FML loads the version-specific
-   directory too) - including when step 1 found our jar already current, which is
-   the likeliest real upgrade and the case an early return would break;
-4. commit.
+1. **always** scan both `mods/` and `mods/1.8.9/` (FML loads the version-specific
+   directory too), and finish the scan before changing anything - including when
+   our jar is already current, which is the likeliest real upgrade and the case
+   an early return would break;
+2. install nothing if any Cobblify jar we may not touch is present: anything
+   Cobblify-ish that is *not* a `Cobblify-1.8.9-forge-<x.y.z>.jar` up to our
+   version (a newer release, a `-dev` build, a hand-renamed file, a symlink) is
+   reported and blocks;
+3. stage and hash the new jar - a failure here deletes nothing;
+4. **delete** every superseded release. If one cannot be deleted (Windows
+   refuses while the game holds it open), stop before the commit: our jar beside
+   it would be the two-jar state;
+5. commit, replacing whatever build sits at our own name (usually the dev build
+   of the same version);
+6. delete the `<release>.cobblify-disabled` copies that launchers before 0.16.3
+   set aside instead of deleting. This step is best-effort, since FML never loads
+   those files.
 
-Nothing is ever deleted. A superseded release is **renamed** to
-`<name>.cobblify-disabled` - FML only considers `(.+).(zip|jar)$`, so the rename
-alone makes it inert, it stays in the same directory, and the user recovers it by
-renaming it back. The backup name is claimed with `create_new`, which fails
-atomically if taken; a stat-then-rename would race, and rename replaces its
-destination on both platforms. Anything Cobblify-ish that is *not* an exact
-`Cobblify-1.8.9-forge-<x.y.z>.jar` - a `-dev` build, a hand-renamed file - is
-reported and blocks, untouched.
-
-Classification is **caseless on both platforms**, unlike the Lunar path: Forge
-loads a jar however its name is cased, so an exact match would miss a lower-cased
-stale jar on a case-sensitive volume. The one exempt file is our own destination,
-identified by `canonicalize` rather than by folding a string; a candidate whose
-path cannot be resolved blocks rather than being skipped.
+Classification is **caseless on both platforms**: Forge loads a jar however its
+name is cased, so an exact match would miss a lower-cased stale jar on a
+case-sensitive volume. The one exempt file is our own destination, identified as
+a directory entry (same folder, same name under the platform's casing, plus an
+inode check for a case-folding volume's single entry), so a symlink or hard link
+under another name still counts as a second jar.
 
 ## Build
 
@@ -382,7 +390,7 @@ launcher/
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification: global fail-closed, per-target isolated
     src/install.rs      stage_verified + commit, the atomic jar primitive
-    src/forge.rs        instance detection, compatibility, quarantine, persistence
+    src/forge.rs        instance detection, compatibility, stale-jar cleanup, persistence
     src/lunar_config.rs the launcher.json edit
     resources/          empty in git; THREE jars + manifest injected at package time
   tools/          test-drive, check-state, test-injection, app-inject-lib

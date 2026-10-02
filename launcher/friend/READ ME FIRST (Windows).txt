@@ -114,18 +114,15 @@ missing. This is per-profile, so if you switch profiles, check again.
     that, turn off "Start with computer" in Lunar's settings.
 
 "Conflicting jars", or a message about another Cobblify jar
-    You have more than one copy installed. The launcher lists them and
-    will not delete anything it isn't certain it put there. Remove or
-    rename the extra one, then reopen the launcher.
+    The launcher deletes older Cobblify versions by itself. If you see
+    this, close the game and reopen the launcher first: an old copy
+    can't be deleted while the game is using it. If it's still there,
+    the extra copy is one the launcher won't touch, such as a renamed
+    or test build, or a newer version. Click the button to open the
+    folder, remove that extra jar, then reopen the launcher.
 
     On Forge this matters more than it sounds: the game will not start
     at all with two copies of the same mod.
-
-I want a moved-aside jar back
-    Anything the launcher set aside is still there, in the same folder,
-    with ".cobblify-disabled" added to the end of its name. Delete that
-    bit from the name and it's exactly as it was. (Nothing is ever
-    deleted, so you can always get it back.)
 
 "This copy is incomplete"
     The download didn't finish or got corrupted. Download it again.
