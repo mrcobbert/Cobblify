@@ -54,16 +54,16 @@ public class EditHudGui extends GuiScreen {
     private static final long GUIDE_FADE_MS = 200L;
     private static final long NUDGE_GROUP_MS = 800L;        // arrow presses this close together undo as one step
     private static final long SAVE_DELAY_MS = 400L;
-    private static final float LABEL_SCALE = 0.6f;
+    private static final float LABEL_SCALE = 0.8f;
     private static final float BUTTON_SCALE = 1.0f;
     private static final float BUTTON_H = 18f;              // a Keystrokes cap's height
     private static final float MENU_SCALE = 0.75f;
-    private static final float HELP_SCALE = 0.75f;
+    private static final float HELP_SCALE = 1.0f;
     private static final float HOTBAR_W = 182f;             // the vanilla hotbar, a snap target
     private static final float HOTBAR_H = 22f;
 
     private static final String RESET_ALL = "Reset All";
-    private static final String HELP = "?";
+    private static final String HELP = "Help";
     private static final String SHOW = "Show";
     private static final String HIDE = "Hide";
     private static final String RESET_POSITION = "Reset Position";
@@ -169,9 +169,12 @@ public class EditHudGui extends GuiScreen {
         }
 
         if (mode == Mode.RESIZE && selectedId != null) drawResizeBadge(cfg, open);
-        drawToolbar(mouseX, mouseY, now, accent, open);
-        if (menuId != null) drawMenu(mouseX, mouseY, accent);
-        if (helpOpen) drawHelp();
+        if (helpOpen) {
+            drawHelp();
+        } else {
+            drawToolbar(mouseX, mouseY, now, accent, open);
+            if (menuId != null) drawMenu(mouseX, mouseY, accent);
+        }
 
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
@@ -270,12 +273,12 @@ public class EditHudGui extends GuiScreen {
         GuiRender.text(text, x + 4f, y + 2.5f, MENU_SCALE, fade(TEXT, open), BedwarsQolFont.Weight.BOLD);
     }
 
-    /** "Reset All" and "?" just under the crosshair, a spot no HUD module or vanilla bar uses. */
+    /** "Reset All" and "Help" just under the crosshair, a spot no HUD module or vanilla bar uses. */
     private void drawToolbar(int mouseX, int mouseY, long now, int accent, float open) {
         float[][] r = toolbarRects();
-        boolean busy = mode != Mode.NONE || menuId != null || helpOpen;
+        boolean busy = mode != Mode.NONE || menuId != null;
         float alpha = (1f - 0.75f * toolbarFade.update(busy || toolbarCovered(), now)) * open;
-        boolean usable = !busy && !helpOpen;
+        boolean usable = !busy;
         drawButton(r[0], RESET_ALL, resetHover.update(usable && inside(r[0], mouseX, mouseY), now), accent, alpha);
         drawButton(r[1], HELP, helpHover.update(usable && inside(r[1], mouseX, mouseY), now), accent, alpha);
     }
@@ -321,15 +324,16 @@ public class EditHudGui extends GuiScreen {
             keyW = Math.max(keyW, GuiRender.textWidth(row[0], HELP_SCALE, BedwarsQolFont.Weight.BOLD));
             descW = Math.max(descW, GuiRender.textWidth(row[1], HELP_SCALE, BedwarsQolFont.Weight.REGULAR));
         }
-        float rowH = BedwarsQolFont.height(HELP_SCALE) + 4f;
-        float w = keyW + descW + 30f;
-        float h = rows.length * rowH + 16f;
+        float pad = 12f;
+        float rowH = BedwarsQolFont.height(HELP_SCALE) + 5f;
+        float w = keyW + descW + 3f * pad;
+        float h = rows.length * rowH + 2f * pad - 5f;
         float x = (width - w) / 2f, y = (height - h) / 2f;
         GuiRender.roundedRect(x, y, x + w, y + h, Theme.CARD_R, HELP_PANEL);
         for (int i = 0; i < rows.length; i++) {
-            float ry = y + 10f + i * rowH;
-            GuiRender.text(rows[i][0], x + 10f, ry, HELP_SCALE, TEXT, BedwarsQolFont.Weight.BOLD);
-            GuiRender.text(rows[i][1], x + 20f + keyW, ry, HELP_SCALE, TEXT_DIM, BedwarsQolFont.Weight.REGULAR);
+            float ry = y + pad + i * rowH;
+            GuiRender.text(rows[i][0], x + pad, ry, HELP_SCALE, TEXT, BedwarsQolFont.Weight.BOLD);
+            GuiRender.text(rows[i][1], x + 2f * pad + keyW, ry, HELP_SCALE, TEXT_DIM, BedwarsQolFont.Weight.REGULAR);
         }
     }
 
@@ -740,7 +744,8 @@ public class EditHudGui extends GuiScreen {
 
     private float[][] toolbarRects() {
         float resetW = GuiRender.textWidth(RESET_ALL, BUTTON_SCALE, BedwarsQolFont.Weight.BOLD) + 16f;
-        float total = resetW + 4f + BUTTON_H;
+        float helpW = GuiRender.textWidth(HELP, BUTTON_SCALE, BedwarsQolFont.Weight.BOLD) + 16f;
+        float total = resetW + 4f + helpW;
         float x = (width - total) / 2f;
         float y = height / 2f + 20f;
         return new float[][]{{x, y, x + resetW, y + BUTTON_H}, {x + resetW + 4f, y, x + total, y + BUTTON_H}};
