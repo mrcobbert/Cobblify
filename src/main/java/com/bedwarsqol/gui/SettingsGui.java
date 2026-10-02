@@ -173,7 +173,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "In Game Only", K_INVENTORY_INGAME, null, K_INVENTORY),
                     new RowDef(RowType.TOGGLE, "Gen Timers", "Diamond and emerald timers", K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_GENTIMERS_INGAME, null, K_GENTIMERS),
-                    new RowDef(RowType.TOGGLE, "Keystrokes", "WASD and spacebar keys", K_KEYSTROKES),
+                    new RowDef(RowType.TOGGLE, "Keystrokes", "WASD, clicks with CPS, spacebar", K_KEYSTROKES),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_KEYSTROKES_INGAME, null, K_KEYSTROKES),
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
                     new RowDef(RowType.TOGGLE, "Hold Key to Show", K_SESSION_HOLD, null, K_SESSION),

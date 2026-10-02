@@ -9,9 +9,11 @@ import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
+import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
+import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.render.Theme;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.ScaledResolution;
@@ -490,8 +492,35 @@ public class BedwarsHudRenderer {
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<String> rows = heightLimitRows(mc, example);
         for (int i = 0; i < rows.size(); i++) {
-            fontDraw(rows.get(i), box.x, box.y + i * step, scale, TEXT_COLOR, HEIGHT_ROW_WEIGHT);
+            String row = rows.get(i);
+            drawStatRow(row, alignedX(mc, box, row, scale, HEIGHT_ROW_WEIGHT), box.y + i * step, scale, HEIGHT_ROW_WEIGHT);
         }
+    }
+
+    /** Lunar's stat colours: the value after each {@code ": "} green, labels white, {@code " / "} gray. */
+    private static final int STAT_VALUE_COLOR = 0xFF55FF55;
+    private static final int STAT_SLASH_COLOR = 0xFFAAAAAA;
+
+    /** One {@code Label: value [/ Label: value]} row, coloured run by run. */
+    private static void drawStatRow(String row, float x, float y, float scale, BedwarsQolFont.Weight weight) {
+        float cx = x;
+        for (StatRowSegments.Segment seg : StatRowSegments.split(row)) {
+            int color = seg.kind == StatRowSegments.Kind.VALUE ? STAT_VALUE_COLOR
+                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : TEXT_COLOR;
+            cx = drawSegment(seg.text, cx, y, scale, color, weight);
+        }
+    }
+
+    private static float drawSegment(String text, float x, float y, float scale, int color, BedwarsQolFont.Weight weight) {
+        fontDraw(text, x, y, scale, color, weight);
+        return x + fontWidth(text, weight) * scale;
+    }
+
+    /** Rows hug the box's left edge on the left half of the screen and its right edge on the right half. */
+    private static float alignedX(Minecraft mc, HudBox box, String row, float scale, BedwarsQolFont.Weight weight) {
+        float screenW = new ScaledResolution(mc).getScaledWidth();
+        if (box.centerX() <= screenW / 2f) return box.x;
+        return box.right() - fontWidth(row, weight) * scale;
     }
 
     /**
@@ -535,17 +564,27 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
         drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
-        // Text rows whichever display mode the other modules use; each row carries its own weight.
-        drawLines(mc.fontRendererObj, sessionLines(example), box.x, box.y, scale);
+        // Lunar's colours: headers in the settings menu's accent, values green; each row keeps its weight.
+        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        float step = (TEXT_HEIGHT + LINE_GAP) * scale;
+        List<Line> lines = sessionLines(example);
+        for (int i = 0; i < lines.size(); i++) {
+            Line line = lines.get(i);
+            float lx = alignedX(mc, box, line.primary, scale, line.weight);
+            float ly = box.y + i * step;
+            if (line.weight == SESSION_HEADER_WEIGHT) fontDraw(line.primary, lx, ly, scale, header, line.weight);
+            else drawStatRow(line.primary, lx, ly, scale, line.weight);
+        }
     }
 
     /** Weight of every session row that is not a header; headers are SemiBold. */
     private static final BedwarsQolFont.Weight SESSION_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
+    private static final BedwarsQolFont.Weight SESSION_HEADER_WEIGHT = BedwarsQolFont.Weight.BOLD;
 
     /**
-     * Lunar's Hypixel Bedwars panel, row for row: a SemiBold "Game" header over finals/beds/kills,
+     * Lunar's Hypixel Bedwars panel, row for row: a SemiBold "Game" header over kills/finals/beds,
      * a SemiBold "Session" header over the four counter/ratio rows, a blank spacer, then winstreak,
-     * games and the clock. Every row is one string at one size; no colours.
+     * games and the clock. Every row is one string at one size; drawSessionHud colours it.
      */
     private static List<Line> sessionLines(boolean example) {
         SessionStats s = example ? null : SessionStatsWatch.core();
@@ -561,11 +600,11 @@ public class BedwarsHudRenderer {
         String time = example ? "12:34" : s.elapsed(System.currentTimeMillis());
 
         List<Line> out = new ArrayList<>(13);
-        out.add(new Line("Game", BedwarsQolFont.Weight.BOLD));
+        out.add(new Line("Game", SESSION_HEADER_WEIGHT));
+        out.add(new Line("Kills: " + gKills, SESSION_ROW_WEIGHT));
         out.add(new Line("Finals: " + gFinals, SESSION_ROW_WEIGHT));
         out.add(new Line("Beds: " + gBeds, SESSION_ROW_WEIGHT));
-        out.add(new Line("Kills: " + gKills, SESSION_ROW_WEIGHT));
-        out.add(new Line("Session", BedwarsQolFont.Weight.BOLD));
+        out.add(new Line("Session", SESSION_HEADER_WEIGHT));
         out.add(new Line("Finals: " + finals, SESSION_ROW_WEIGHT));
         out.add(new Line("Beds: " + beds, SESSION_ROW_WEIGHT));
         out.add(new Line("Kills: " + kills, SESSION_ROW_WEIGHT));
