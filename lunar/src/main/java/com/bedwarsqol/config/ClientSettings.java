@@ -83,7 +83,7 @@ public class ClientSettings {
     public boolean playerStatsChat = true;
     /**
      * The ONE stats display mode, for every surface that shows a player's Bedwars numbers (chat
-     * bracket, hover card, tab list, nametags, denick line, Players page, launcher overlay).
+     * bracket, hover card, tab list, nametags, denick line, launcher overlay).
      * {@code "auto"} follows the detected game mode (overall in the lobby); the fixed values
      * {@code overall}/{@code solo}/{@code doubles}/{@code threes}/{@code fours} always show that mode,
      * stamped on each number. Set with {@code /bw mode <...>}; vocabulary in
@@ -209,10 +209,6 @@ public class ClientSettings {
     /** Rebindable key that opens the vanilla pause menu (for when "Disable Esc Menu" is on). Default unbound. */
     public int pauseKeyCode = Keyboard.KEY_NONE;
 
-    /** Rebindable key (default unbound) that opens the Players tab; persisted here because Weave has no
-     *  vanilla options.txt keybind persistence. */
-    public int playersKeyCode = Keyboard.KEY_NONE;
-
     /**
      * Suppress the hardcoded Esc -> pause-menu open while in-world, so an accidental tap in combat no
      * longer opens the menu (or fumbles onward into Options/Language). Esc still closes open screens;
@@ -294,7 +290,6 @@ public class ClientSettings {
         settingsKeyCode = KeyCodes.sanitize(settingsKeyCode, Keyboard.KEY_RSHIFT);
         pauseKeyCode = KeyCodes.sanitize(pauseKeyCode, Keyboard.KEY_NONE);
         pcIncKeyCode = KeyCodes.sanitize(pcIncKeyCode, Keyboard.KEY_NONE);
-        playersKeyCode = KeyCodes.sanitize(playersKeyCode, Keyboard.KEY_NONE);
     }
 
     public float defaultTextSizeScale() {

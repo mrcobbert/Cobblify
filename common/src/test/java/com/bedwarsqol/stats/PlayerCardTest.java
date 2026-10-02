@@ -201,10 +201,6 @@ public class PlayerCardTest {
                 .withUrchinTags(Arrays.asList(urchin("possible_sniper")))
                 .withSeraph(Arrays.asList(seraph("annoy", false)), -1, -1));
         assertEquals("AL", tie.badge.code);
-
-        // The Players page chip is the same decision.
-        assertEquals("AL", com.bedwarsqol.gui.PlayersFormat.chipFor(
-                Arrays.asList(urchin("possible_sniper")), NOW, Arrays.asList(seraph("annoy", false))).code);
     }
 
     // ---- A6 -----------------------------------------------------------------

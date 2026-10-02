@@ -48,7 +48,7 @@ public final class BedwarsModeDetector {
      * The mode every stats DISPLAY uses: the user's forced {@code /bw mode} choice (all/solo/2s/3s/4s),
      * or — when that is {@code auto} — the live per-game {@link #current()} detection
      * ({@link BedwarsMode#UNKNOWN} in a lobby, which callers render as overall). Chat bracket, hover
-     * card, tab list, nametags, the denick line, the Players page and the launcher overlay all resolve
+     * card, tab list, nametags, the denick line and the launcher overlay all resolve
      * through here so one command moves every surface together. Game LOGIC (generator timing, the sweat
      * report, the lobby export's sidebar label) keeps reading {@link #current()}: forcing a display mode
      * must not change what game the mod thinks it is in.

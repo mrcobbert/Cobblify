@@ -107,7 +107,7 @@ public class ClientSettings {
     public boolean playerStatsChat = true;
     /**
      * The ONE stats display mode, for every surface that shows a player's Bedwars numbers (chat
-     * bracket, hover card, tab list, nametags, denick line, Players page, launcher overlay).
+     * bracket, hover card, tab list, nametags, denick line, launcher overlay).
      * {@code "auto"} follows the detected game mode (overall in the lobby); the fixed values
      * {@code overall}/{@code solo}/{@code doubles}/{@code threes}/{@code fours} always show that mode,
      * stamped on each number. Set with {@code /bw mode <...>}; vocabulary in

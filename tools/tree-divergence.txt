@@ -63,7 +63,6 @@ divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
 # Keybinds: Weave has no vanilla KeyBinding or options.txt persistence.
 divergent main com/bedwarsqol/feature/IncSender.java
 divergent main com/bedwarsqol/feature/PauseKeyHandler.java
-divergent main com/bedwarsqol/feature/PlayersKeyHandler.java
 divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
 
 # Resource loading: Weave never registers the mod's assets/ domain.

@@ -194,8 +194,8 @@ public final class PlayerCard {
     /**
      * The single most-severe signal across both providers, or null. Any danger signal (all
      * Urchin tags, and non-safelist Seraph tags) outranks a Seraph safelist; within a band the
-     * higher {@code severity()} wins, ties favour Seraph. The Players page chip and the overlay
-     * badge both come from here. Callers pass already gating-filtered lists.
+     * higher {@code severity()} wins, ties favour Seraph. The overlay badge
+     * comes from here. Callers pass already gating-filtered lists.
      */
     public static Chip priorityBadge(List<UrchinTag> urchin, long nowMs, List<SeraphTag> seraph) {
         UrchinTag u = UrchinTag.priority(urchin, nowMs);

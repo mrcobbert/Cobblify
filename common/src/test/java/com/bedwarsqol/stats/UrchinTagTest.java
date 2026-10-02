@@ -112,6 +112,13 @@ public class UrchinTagTest {
     }
 
     @Test
+    public void activeTagsDropsNullListAndNonDisplayableTypes() {
+        assertTrue(UrchinTag.activeTags(null, 0L).isEmpty());
+        // info/account carry no icon, so they never reach a surface even while unexpired.
+        assertTrue(UrchinTag.activeTags(Arrays.asList(tag("info"), tag("account")), 0L).isEmpty());
+    }
+
+    @Test
     public void allExpiredIsEmpty() {
         long now = 5000L;
         List<UrchinTag> tags = Arrays.asList(new UrchinTag("sniper", "r", 0L, 100L));

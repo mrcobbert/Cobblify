@@ -190,8 +190,8 @@ public class BedwarsQolCommand extends Command {
 
     /**
      * {@code /cobblify mode [show|<word>]} — the ONE stats display mode. Every surface that shows a
-     * player's Bedwars numbers (chat bracket, hover card, tab list, nametags, denick line, Players page,
-     * launcher overlay) resolves through {@code BedwarsModeDetector.displayMode}, so this switch moves
+     * player's Bedwars numbers (chat bracket, hover card, tab list, nametags, denick line, launcher
+     * overlay) resolves through {@code BedwarsModeDetector.displayMode}, so this switch moves
      * them all together; a forced mode is stamped on each number ({@code 4s …}, or {@code All …} when
      * the player has no games in it). The vocabulary lives in {@link StatsMode}.
      */
