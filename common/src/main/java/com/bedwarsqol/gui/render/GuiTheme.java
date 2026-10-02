@@ -3,12 +3,12 @@ package com.bedwarsqol.gui.render;
 import java.util.Locale;
 
 /**
- * GUI-only palette for the settings screen ({@code gui/SettingsGui}) redesign — a warm near-black
- * surface treatment plus a single, user-selectable <em>accent</em>. This class exists precisely so the
- * accent can never reach the HUD: {@link Theme} stays the neutral grayscale source of truth that the
- * custom scoreboard and styled tab list draw from, while everything here is consumed only by the
- * settings GUI. Keep it free of {@code net.minecraft} / LWJGL imports so it stays pure Java, importable
- * from {@code config}, and unit-testable.
+ * Palette for the settings screen ({@code gui/SettingsGui}) redesign — a warm near-black surface
+ * treatment plus a single, user-selectable <em>accent</em>. {@link Theme} stays the neutral grayscale
+ * source of truth that the custom scoreboard and styled tab list draw from. The HUD uses this class on
+ * purpose in two places only: Session Stats headers and a pressed Keystrokes cap take the accent, so
+ * they follow the colour picked in the menu. Keep it free of {@code net.minecraft} / LWJGL imports so
+ * it stays pure Java, importable from {@code config}, and unit-testable.
  *
  * <p>Two families of colour live here:
  * <ul>
