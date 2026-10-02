@@ -56,8 +56,6 @@ public class SettingsGui extends GuiScreen {
     private static final int K_SWEATREPORT = 28;
     private static final int K_TAB_HEADERFOOTER = 44;
     private static final int K_CHATHOVER = 53;
-    // Per-module "Background" sub-toggles (draw a panel behind the HUD element).
-    private static final int K_INVENTORY_BG = 63, K_GENTIMERS_BG = 64;
     // HUD text font: modern (Inter) vs vanilla Minecraft.
     private static final int K_HUDFONT = 66;
     // Party Join Alert: red "Party Joined" when a premade team queues a 2s/3s/4s game.
@@ -70,7 +68,7 @@ public class SettingsGui extends GuiScreen {
     private static final int K_SCOREBOARD_SIZE = 46, K_STYLEDTAB_SIZE = 47;
     private static final int K_SUPPRESSESC = 48;
     // "In Game Only" sub-toggles: render the HUD only during an active BedWars game.
-    private static final int K_INVENTORY_INGAME = 33;
+    private static final int K_INVENTORY_INGAME = 33, K_GENTIMERS_INGAME = 35;
     // GUI accent picker (a dropdown/stepper), plus the two Settings container GROUP cards (Appearance /
     // HUD). Container kinds are never toggled.
     private static final int K_ACCENT = 90;
@@ -170,9 +168,8 @@ public class SettingsGui extends GuiScreen {
             new Section("HUD",
                     new RowDef(RowType.TOGGLE, "Inventory", "Stored items at a glance", K_INVENTORY),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_INVENTORY_INGAME, null, K_INVENTORY),
-                    new RowDef(RowType.TOGGLE, "Background", K_INVENTORY_BG, null, K_INVENTORY),
                     new RowDef(RowType.TOGGLE, "Gen Timers", "Diamond and emerald timers", K_GENTIMERS),
-                    new RowDef(RowType.TOGGLE, "Background", K_GENTIMERS_BG, null, K_GENTIMERS),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_GENTIMERS_INGAME, null, K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
                     new RowDef(RowType.TOGGLE, "Hold Key to Show", K_SESSION_HOLD, null, K_SESSION),
                     new RowDef(RowType.ACTION, "Key", K_SESSION_KEY, null, K_SESSION),
@@ -1709,8 +1706,7 @@ public class SettingsGui extends GuiScreen {
             case K_AUTO_DENICK: return cfg.autoDenick;
             case K_TAB_HEADERFOOTER: return cfg.tabHideHeaderFooter;
             case K_INVENTORY_INGAME: return cfg.inventoryInGameOnly;
-            case K_INVENTORY_BG: return cfg.inventoryBackgroundEnabled;
-            case K_GENTIMERS_BG: return cfg.genTimersBackgroundEnabled;
+            case K_GENTIMERS_INGAME: return cfg.genTimersInGameOnly;
             case K_HANDPOS: return cfg.handPositionEnabled;
             case K_SUPPRESSESC: return cfg.suppressEscMenu;
             case K_NOTIFY_INC: return cfg.chatNotifyInc;
@@ -1752,8 +1748,7 @@ public class SettingsGui extends GuiScreen {
             case K_AUTO_DENICK: cfg.autoDenick = !cfg.autoDenick; break;
             case K_TAB_HEADERFOOTER: cfg.tabHideHeaderFooter = !cfg.tabHideHeaderFooter; break;
             case K_INVENTORY_INGAME: cfg.inventoryInGameOnly = !cfg.inventoryInGameOnly; break;
-            case K_INVENTORY_BG: cfg.inventoryBackgroundEnabled = !cfg.inventoryBackgroundEnabled; break;
-            case K_GENTIMERS_BG: cfg.genTimersBackgroundEnabled = !cfg.genTimersBackgroundEnabled; break;
+            case K_GENTIMERS_INGAME: cfg.genTimersInGameOnly = !cfg.genTimersInGameOnly; break;
             case K_HANDPOS: cfg.handPositionEnabled = !cfg.handPositionEnabled; break;
             case K_SUPPRESSESC: cfg.suppressEscMenu = !cfg.suppressEscMenu; break;
             case K_NOTIFY_INC: cfg.chatNotifyInc = !cfg.chatNotifyInc; break;

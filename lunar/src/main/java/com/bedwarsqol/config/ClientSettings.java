@@ -28,7 +28,7 @@ public class ClientSettings {
     /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
     public String guiAccent = "orange";
 
-    // --- BedWars HUDs (only render in an active BedWars game) ---
+    // --- BedWars HUDs (render everywhere unless their In Game Only is set) ---
 
     public boolean inventoryHudEnabled = false;
     public boolean inventoryInGameOnly = false;
@@ -36,12 +36,14 @@ public class ClientSettings {
     public int inventoryHudY = 5;
     public int inventoryHudAnchor = 6; // bottom-left by default
     public float inventoryHudScale = 1.0f;
-    public boolean inventoryBackgroundEnabled = false;
 
     // One toggle controls both gen timers; each stays independently draggable below.
     public boolean genTimersEnabled = false;
-    /** One shared toggle: draws a matching panel behind BOTH the diamond and emerald timer boxes. */
-    public boolean genTimersBackgroundEnabled = false;
+    /**
+     * Only render the gen timers while in an active BedWars game (off = render everywhere, reading
+     * "--" until a game supplies spawn times, so a player can see the HUD is on).
+     */
+    public boolean genTimersInGameOnly = false;
     public int diamondTimerHudX = -5; // right-anchored: negative keeps the box inside the screen
     public int diamondTimerHudY = 5;
     public int diamondTimerHudAnchor = 2; // top-right by default

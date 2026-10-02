@@ -59,9 +59,6 @@ public class SettingsGui extends GuiScreen {
     private static final int K_SWEATREPORT = 28;
     private static final int K_TAB_HEADERFOOTER = 44;
     private static final int K_CHATHOVER = 53;
-    // Per-module "Background" sub-toggles (draw a panel behind the HUD element).
-    private static final int K_POTION_BG = 60,
-            K_INVENTORY_BG = 63, K_GENTIMERS_BG = 64;
     // HUD text font: modern (Inter) vs vanilla Minecraft.
     private static final int K_HUDFONT = 66;
     // Auto GG: say "gg" once each time a BedWars game ends.
@@ -77,7 +74,7 @@ public class SettingsGui extends GuiScreen {
     private static final int K_SUPPRESSESC = 48;
     // "In Game Only" sub-toggles: render the HUD only during an active BedWars game.
     private static final int K_POTION_INGAME = 31, K_ARMOR_INGAME = 32,
-            K_INVENTORY_INGAME = 33, K_KEYSTROKES_INGAME = 34;
+            K_INVENTORY_INGAME = 33, K_KEYSTROKES_INGAME = 34, K_GENTIMERS_INGAME = 35;
     // GUI accent picker (a dropdown/stepper), plus the two Settings container GROUP cards (Appearance /
     // HUD). Container kinds are never toggled.
     private static final int K_ACCENT = 90;
@@ -187,14 +184,12 @@ public class SettingsGui extends GuiScreen {
             new Section("HUD",
                     new RowDef(RowType.TOGGLE, "Potion", "Active effects and timers", K_POTION),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_POTION_INGAME, null, K_POTION),
-                    new RowDef(RowType.TOGGLE, "Background", K_POTION_BG, null, K_POTION),
                     new RowDef(RowType.TOGGLE, "Armor", "Equipped armor type", K_ARMOR),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_ARMOR_INGAME, null, K_ARMOR),
                     new RowDef(RowType.TOGGLE, "Inventory", "Stored items at a glance", K_INVENTORY),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_INVENTORY_INGAME, null, K_INVENTORY),
-                    new RowDef(RowType.TOGGLE, "Background", K_INVENTORY_BG, null, K_INVENTORY),
                     new RowDef(RowType.TOGGLE, "Gen Timers", "Diamond and emerald timers", K_GENTIMERS),
-                    new RowDef(RowType.TOGGLE, "Background", K_GENTIMERS_BG, null, K_GENTIMERS),
+                    new RowDef(RowType.TOGGLE, "In Game Only", K_GENTIMERS_INGAME, null, K_GENTIMERS),
                     new RowDef(RowType.TOGGLE, "Keystrokes", "WASD and spacebar keys", K_KEYSTROKES),
                     new RowDef(RowType.TOGGLE, "In Game Only", K_KEYSTROKES_INGAME, null, K_KEYSTROKES),
                     new RowDef(RowType.TOGGLE, "Session Stats", "Game and session kills, finals, beds, W/L", K_SESSION),
@@ -1759,9 +1754,7 @@ public class SettingsGui extends GuiScreen {
             case K_ARMOR_INGAME: return cfg.armorInGameOnly;
             case K_INVENTORY_INGAME: return cfg.inventoryInGameOnly;
             case K_KEYSTROKES_INGAME: return cfg.keystrokesInGameOnly;
-            case K_POTION_BG: return cfg.potionBackgroundEnabled;
-            case K_INVENTORY_BG: return cfg.inventoryBackgroundEnabled;
-            case K_GENTIMERS_BG: return cfg.genTimersBackgroundEnabled;
+            case K_GENTIMERS_INGAME: return cfg.genTimersInGameOnly;
             case K_BLOCKOVERLAY: return cfg.blockOverlayEnabled;
             case K_SEETHROUGH: return cfg.blockOverlaySeeThrough;
             case K_HANDPOS: return cfg.handPositionEnabled;
@@ -1822,9 +1815,7 @@ public class SettingsGui extends GuiScreen {
             case K_ARMOR_INGAME: cfg.armorInGameOnly = !cfg.armorInGameOnly; break;
             case K_INVENTORY_INGAME: cfg.inventoryInGameOnly = !cfg.inventoryInGameOnly; break;
             case K_KEYSTROKES_INGAME: cfg.keystrokesInGameOnly = !cfg.keystrokesInGameOnly; break;
-            case K_POTION_BG: cfg.potionBackgroundEnabled = !cfg.potionBackgroundEnabled; break;
-            case K_INVENTORY_BG: cfg.inventoryBackgroundEnabled = !cfg.inventoryBackgroundEnabled; break;
-            case K_GENTIMERS_BG: cfg.genTimersBackgroundEnabled = !cfg.genTimersBackgroundEnabled; break;
+            case K_GENTIMERS_INGAME: cfg.genTimersInGameOnly = !cfg.genTimersInGameOnly; break;
             case K_BLOCKOVERLAY: cfg.blockOverlayEnabled = !cfg.blockOverlayEnabled; break;
             case K_SEETHROUGH: cfg.blockOverlaySeeThrough = !cfg.blockOverlaySeeThrough; break;
             case K_HANDPOS: cfg.handPositionEnabled = !cfg.handPositionEnabled; break;
