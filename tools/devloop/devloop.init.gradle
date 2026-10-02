@@ -1,0 +1,25 @@
+// Applied with --init-script by tools/devloop/cobdev; the build files stay untouched.
+// Adds :1.8.9-forge:cobdevDump, which compiles the mod and writes the dev client's launch
+// configuration (classpath, main class, JVM args, program args) as JSON to -PcobdevOut.
+allprojects { p ->
+    p.afterEvaluate {
+        def run = p.tasks.findByName('runClient')
+        if (run == null) return
+        p.tasks.register('cobdevDump') {
+            dependsOn p.tasks.named('classes')
+            dependsOn run.dependsOn
+            doLast {
+                def out = new File(p.property('cobdevOut') as String)
+                out.parentFile.mkdirs()
+                out.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                        mainClass : run.mainClass.get(),
+                        classpath : run.classpath.files.collect { it.absolutePath },
+                        jvmArgs   : run.allJvmArgs,
+                        args      : run.args,
+                        projectDir: p.projectDir.absolutePath,
+                        classesDir: p.sourceSets.main.java.classesDirectory.get().asFile.absolutePath,
+                ]))
+            }
+        }
+    }
+}
