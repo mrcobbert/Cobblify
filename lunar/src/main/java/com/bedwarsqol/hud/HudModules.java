@@ -77,12 +77,11 @@ public final class HudModules {
         }
     }
 
-    /** The module as a fresh install has it, at the current HUD Size; it keeps its on/off state. */
+    /** The module reset: back in the default layout at the current HUD Size; it keeps its on/off state. */
     public static HudModuleState defaults(ClientSettings c, String id) {
-        HudModuleState d = get(new ClientSettings(), id);
         HudModuleState now = get(c, id);
-        if (d == null || now == null) return now;
-        return new HudModuleState(d.x, d.y, d.anchor, c.defaultTextSizeScale(), now.enabled);
+        if (now == null) return null;
+        return new HudModuleState(0, 0, HudPlacement.AUTO, c.defaultTextSizeScale(), now.enabled);
     }
 
     /** Every module's state, for undo. */

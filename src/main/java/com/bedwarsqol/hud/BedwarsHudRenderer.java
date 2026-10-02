@@ -12,6 +12,10 @@ import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
 import com.bedwarsqol.gui.EditHudGui;
+import com.bedwarsqol.hud.HudLayout.Horizontal;
+import com.bedwarsqol.hud.HudLayout.Slide;
+import com.bedwarsqol.hud.HudLayout.Spot;
+import com.bedwarsqol.hud.HudLayout.Vertical;
 import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiBlur;
@@ -38,9 +42,12 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import org.lwjgl.input.Mouse;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class BedwarsHudRenderer {
 
@@ -420,9 +427,8 @@ public class BedwarsHudRenderer {
         Size size = potionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float x = placeX(cfg.potionHudX, cfg.potionHudAnchor, size.width, CONTENT_MARGIN, resolution.getScaledWidth());
-        float y = placeY(cfg.potionHudY, cfg.potionHudAnchor, size.height, CONTENT_MARGIN, resolution.getScaledHeight());
-        return new HudBox(POTION_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
+        float[] at = place(mc, cfg, POTION_HUD, cfg.potionHudX, cfg.potionHudY, cfg.potionHudAnchor, size.width, size.height, CONTENT_MARGIN, resolution);
+        return new HudBox(POTION_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
     }
 
     private static HudBox armorBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -431,19 +437,137 @@ public class BedwarsHudRenderer {
         Size size = armorSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float x = placeX(cfg.armorHudX, cfg.armorHudAnchor, size.width, CONTENT_MARGIN, resolution.getScaledWidth());
-        float y = placeY(cfg.armorHudY, cfg.armorHudAnchor, size.height, CONTENT_MARGIN, resolution.getScaledHeight());
-        return new HudBox(ARMOR_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
+        float[] at = place(mc, cfg, ARMOR_HUD, cfg.armorHudX, cfg.armorHudY, cfg.armorHudAnchor, size.width, size.height, CONTENT_MARGIN, resolution);
+        return new HudBox(ARMOR_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
     }
 
-    /** Left edge from a stored placement, pulled fully on screen with {@code pad} around the box. */
-    private static float placeX(float storedX, int anchor, float width, float pad, float screenWidth) {
-        return HudPlacement.clamp(HudPlacement.absoluteX(storedX, anchor, width, screenWidth), width, pad, screenWidth);
+    /**
+     * Top-left of a module's content box: its saved spot, or its place in the default layout while
+     * the player has never moved it. Either way it is pulled fully on screen with {@code pad} around it.
+     */
+    private static float[] place(Minecraft mc, ClientSettings cfg, String id, float storedX, float storedY, int anchor,
+                                 float width, float height, float pad, ScaledResolution r) {
+        float sw = r.getScaledWidth(), sh = r.getScaledHeight();
+        float x, y;
+        float[] auto = anchor == HudPlacement.AUTO ? defaultLayout(mc, cfg, sw, sh).get(id) : null;
+        if (auto != null) {
+            x = auto[0] + pad;
+            y = auto[1] + pad;
+        } else {
+            x = HudPlacement.absoluteX(storedX, anchor, width, sw);
+            y = HudPlacement.absoluteY(storedY, anchor, height, sh);
+        }
+        return new float[]{HudPlacement.clamp(x, width, pad, sw), HudPlacement.clamp(y, height, pad, sh)};
     }
 
-    /** Top edge from a stored placement, pulled fully on screen with {@code pad} around the box. */
-    private static float placeY(float storedY, int anchor, float height, float pad, float screenHeight) {
-        return HudPlacement.clamp(HudPlacement.absoluteY(storedY, anchor, height, screenHeight), height, pad, screenHeight);
+    // ----- Default layout: where a module sits until the player moves it -----
+    // HudLayout places the modules still in their default spots, in this order, each at the first of
+    // its spots that is free: clear of the others, of modules the player moved, and of the vanilla
+    // hotbar with the health, armour and food bars above it. Sizes come from example data, so the
+    // layout never shifts mid-game, and it follows HUD Size and the window on its own.
+    private static final float LAYOUT_EDGE = 2f;
+    private static final float LAYOUT_GAP = 2f;
+    private static final float HOTBAR_W = 182f;
+    private static final float HOTBAR_ZONE_H = 50f;
+    private static final Map<String, List<Spot>> DEFAULT_SPOTS = new LinkedHashMap<String, List<Spot>>();
+    static {
+        DEFAULT_SPOTS.put(DIAMOND_TIMER_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)));
+        DEFAULT_SPOTS.put(EMERALD_TIMER_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)));
+        DEFAULT_SPOTS.put(SESSION_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.DOWN),
+                new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)));
+        DEFAULT_SPOTS.put(ARMOR_HUD, spots(new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)));
+        DEFAULT_SPOTS.put(POTION_HUD, spots(new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)));
+        DEFAULT_SPOTS.put(KEYSTROKES_HUD, spots(new Spot(Horizontal.RIGHT, Vertical.BOTTOM, Slide.UP),
+                new Spot(Horizontal.RIGHT, Vertical.BOTTOM, Slide.LEFT),
+                new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)));
+        DEFAULT_SPOTS.put(INVENTORY_HUD, spots(new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.DOWN),
+                new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.LEFT),
+                new Spot(Horizontal.CENTRE, Vertical.TOP, Slide.RIGHT)));
+        DEFAULT_SPOTS.put(HEIGHT_LIMIT_HUD, spots(new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.DOWN),
+                new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.UP),
+                new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)));
+    }
+    private static String layoutKey;
+    private static Map<String, float[]> layoutCache;
+
+    private static List<Spot> spots(Spot... spots) {
+        return Arrays.asList(spots);
+    }
+
+    /** Drawn top-left corner of every module still in its default spot, by id. */
+    private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
+        String key = layoutKey(cfg, sw, sh);
+        if (key.equals(layoutKey)) return layoutCache;
+
+        List<HudLayout.Box> obstacles = new ArrayList<HudLayout.Box>();
+        obstacles.add(new HudLayout.Box((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H));
+        List<HudLayout.Item> shown = new ArrayList<HudLayout.Item>();
+        List<HudLayout.Item> hidden = new ArrayList<HudLayout.Item>();
+        for (Map.Entry<String, List<Spot>> e : DEFAULT_SPOTS.entrySet()) {
+            String id = e.getKey();
+            HudModuleState state = HudModules.get(cfg, id);
+            if (state == null) continue;
+            if (state.anchor != HudPlacement.AUTO) {
+                // A module the player placed is in the way of the default layout while it shows.
+                HudBox moved = state.enabled ? editorBox(mc, cfg, id) : null;
+                if (moved != null) {
+                    obstacles.add(new HudLayout.Box(moved.visualX(), moved.visualY(), moved.visualWidth(), moved.visualHeight()));
+                }
+                continue;
+            }
+            Size size = layoutSize(mc, cfg, id);
+            float pad = layoutPad(cfg, id);
+            HudLayout.Item item = new HudLayout.Item(id, size.width + 2f * pad, size.height + 2f * pad,
+                    e.getValue().toArray(new Spot[0]));
+            (state.enabled ? shown : hidden).add(item);
+        }
+        shown.addAll(hidden); // hidden modules only take what room is left
+        layoutCache = new HudLayout(sw, sh, LAYOUT_EDGE, LAYOUT_GAP).place(shown, obstacles);
+        layoutKey = key;
+        return layoutCache;
+    }
+
+    /** Everything the default layout depends on; it is worked out again only when this changes. */
+    private static String layoutKey(ClientSettings cfg, float sw, float sh) {
+        StringBuilder b = new StringBuilder().append(sw).append('x').append(sh)
+                .append('|').append(cfg.hudDisplayMode).append(cfg.hudFont);
+        for (String id : DEFAULT_SPOTS.keySet()) {
+            HudModuleState s = HudModules.get(cfg, id);
+            if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
+                    .append(',').append(s.scale).append(',').append(s.enabled);
+        }
+        return b.toString();
+    }
+
+    private static Size layoutSize(Minecraft mc, ClientSettings cfg, String id) {
+        if (POTION_HUD.equals(id)) return potionSize(mc, cfg, true);
+        if (ARMOR_HUD.equals(id)) return armorSize(mc, cfg, true);
+        if (KEYSTROKES_HUD.equals(id)) return keystrokesSize(cfg);
+        if (INVENTORY_HUD.equals(id)) return inventorySize(cfg);
+        if (DIAMOND_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, true);
+        if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
+        if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
+        if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
+        return Size.EMPTY;
+    }
+
+    private static float layoutPad(ClientSettings cfg, String id) {
+        if (SESSION_HUD.equals(id)) return panelPad(cfg.sessionStatsHudScale);
+        if (HEIGHT_LIMIT_HUD.equals(id)) return panelPad(cfg.heightLimitHudScale);
+        return CONTENT_MARGIN;
+    }
+
+    /** A module's box for layout purposes: example data, whether or not it is switched on. */
+    private static HudBox editorBox(Minecraft mc, ClientSettings cfg, String id) {
+        if (POTION_HUD.equals(id)) return potionBox(mc, cfg, true, true);
+        if (ARMOR_HUD.equals(id)) return armorBox(mc, cfg, true, true);
+        if (KEYSTROKES_HUD.equals(id)) return keystrokesBox(mc, cfg, true, true);
+        if (INVENTORY_HUD.equals(id)) return inventoryBox(mc, cfg, true, true);
+        if (DIAMOND_TIMER_HUD.equals(id)) return timerBox(mc, cfg, true, true, true);
+        if (EMERALD_TIMER_HUD.equals(id)) return timerBox(mc, cfg, true, false, true);
+        if (SESSION_HUD.equals(id)) return sessionBox(mc, cfg, true, true);
+        if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitBox(mc, cfg, true, true);
+        return null;
     }
 
     private static Size textSize(FontRenderer fr, List<Line> lines, float scale) {
@@ -554,13 +678,14 @@ public class BedwarsHudRenderer {
     private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !cfg.inventoryHudEnabled) return null; // works anywhere unless "In Game Only" is set
         if (!all && cfg.inventoryInGameOnly && !bedwarsActive(example)) return null;
-        float scale = cfg.inventoryHudScale;
-        float width = invPanelWidth() * scale;
-        float height = invPanelHeight() * scale;
+        Size size = inventorySize(cfg);
         ScaledResolution r = new ScaledResolution(mc);
-        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, CONTENT_MARGIN, r.getScaledWidth());
-        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, CONTENT_MARGIN, r.getScaledHeight());
-        return new HudBox(INVENTORY_HUD, x, y, width, height, CONTENT_MARGIN);
+        float[] at = place(mc, cfg, INVENTORY_HUD, cfg.inventoryHudX, cfg.inventoryHudY, cfg.inventoryHudAnchor, size.width, size.height, CONTENT_MARGIN, r);
+        return new HudBox(INVENTORY_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+    }
+
+    private static Size inventorySize(ClientSettings cfg) {
+        return new Size(invPanelWidth() * cfg.inventoryHudScale, invPanelHeight() * cfg.inventoryHudScale);
     }
 
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -628,16 +753,15 @@ public class BedwarsHudRenderer {
     private static HudBox timerBox(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond, boolean all) {
         if (!all && !cfg.genTimersEnabled) return null; // works anywhere unless "In Game Only" is set
         if (!all && cfg.genTimersInGameOnly && !bedwarsActive(example)) return null;
-        float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
         Size size = timerSize(mc, cfg, example, diamond);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
         int storedX = diamond ? cfg.diamondTimerHudX : cfg.emeraldTimerHudX;
         int storedY = diamond ? cfg.diamondTimerHudY : cfg.emeraldTimerHudY;
         int anchor = diamond ? cfg.diamondTimerHudAnchor : cfg.emeraldTimerHudAnchor;
-        float x = placeX(storedX, anchor, size.width, CONTENT_MARGIN, r.getScaledWidth());
-        float y = placeY(storedY, anchor, size.height, CONTENT_MARGIN, r.getScaledHeight());
-        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
+        String id = diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD;
+        float[] at = place(mc, cfg, id, storedX, storedY, anchor, size.width, size.height, CONTENT_MARGIN, r);
+        return new HudBox(id, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
@@ -681,17 +805,21 @@ public class BedwarsHudRenderer {
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !HeightLimitWatch.visible(cfg, example)) return null;
+        Size size = heightLimitSize(mc, cfg, example);
+        if (size.width <= 0f || size.height <= 0f) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float pad = panelPad(cfg.heightLimitHudScale);
+        float[] at = place(mc, cfg, HEIGHT_LIMIT_HUD, cfg.heightLimitHudX, cfg.heightLimitHudY, cfg.heightLimitHudAnchor, size.width, size.height, pad, r);
+        return new HudBox(HEIGHT_LIMIT_HUD, at[0], at[1], size.width, size.height, pad);
+    }
+
+    private static Size heightLimitSize(Minecraft mc, ClientSettings cfg, boolean example) {
         float scale = cfg.heightLimitHudScale;
         List<String> rows = heightLimitRows(mc, example);
         float width = 0f;
         for (String row : rows) width = Math.max(width, fontWidth(row, HEIGHT_ROW_WEIGHT) * scale);
         float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
-        if (width <= 0f || height <= 0f) return null;
-        ScaledResolution r = new ScaledResolution(mc);
-        float pad = panelPad(cfg.heightLimitHudScale);
-        float x = placeX(cfg.heightLimitHudX, cfg.heightLimitHudAnchor, width, pad, r.getScaledWidth());
-        float y = placeY(cfg.heightLimitHudY, cfg.heightLimitHudAnchor, height, pad, r.getScaledHeight());
-        return new HudBox(HEIGHT_LIMIT_HUD, x, y, width, height, pad);
+        return new Size(width, height);
     }
 
     private static void drawHeightLimitHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -761,14 +889,16 @@ public class BedwarsHudRenderer {
 
     private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !SessionStatsWatch.visible(cfg, example)) return null;
-        float scale = cfg.sessionStatsHudScale;
-        Size size = textSize(mc.fontRendererObj, sessionLines(example), scale);
+        Size size = sessionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
         float pad = panelPad(cfg.sessionStatsHudScale);
-        float x = placeX(cfg.sessionStatsHudX, cfg.sessionStatsHudAnchor, size.width, pad, r.getScaledWidth());
-        float y = placeY(cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.height, pad, r.getScaledHeight());
-        return new HudBox(SESSION_HUD, x, y, size.width, size.height, pad);
+        float[] at = place(mc, cfg, SESSION_HUD, cfg.sessionStatsHudX, cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.width, size.height, pad, r);
+        return new HudBox(SESSION_HUD, at[0], at[1], size.width, size.height, pad);
+    }
+
+    private static Size sessionSize(Minecraft mc, ClientSettings cfg, boolean example) {
+        return textSize(mc.fontRendererObj, sessionLines(example), cfg.sessionStatsHudScale);
     }
 
     private static void drawSessionHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -833,13 +963,15 @@ public class BedwarsHudRenderer {
     private static HudBox keystrokesBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !cfg.keystrokesEnabled) return null;
         if (!all && cfg.keystrokesInGameOnly && !bedwarsActive(example)) return null;
-        float scale = cfg.keystrokesHudScale;
-        float width = (3f * KS_UNIT + 2f * KS_GAP) * scale;
-        float height = (3f * KS_UNIT + 3f * KS_GAP + KS_SPACE_H) * scale;
+        Size size = keystrokesSize(cfg);
         ScaledResolution r = new ScaledResolution(mc);
-        float x = placeX(cfg.keystrokesHudX, cfg.keystrokesHudAnchor, width, CONTENT_MARGIN, r.getScaledWidth());
-        float y = placeY(cfg.keystrokesHudY, cfg.keystrokesHudAnchor, height, CONTENT_MARGIN, r.getScaledHeight());
-        return new HudBox(KEYSTROKES_HUD, x, y, width, height, CONTENT_MARGIN);
+        float[] at = place(mc, cfg, KEYSTROKES_HUD, cfg.keystrokesHudX, cfg.keystrokesHudY, cfg.keystrokesHudAnchor, size.width, size.height, CONTENT_MARGIN, r);
+        return new HudBox(KEYSTROKES_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+    }
+
+    private static Size keystrokesSize(ClientSettings cfg) {
+        float scale = cfg.keystrokesHudScale;
+        return new Size((3f * KS_UNIT + 2f * KS_GAP) * scale, (3f * KS_UNIT + 3f * KS_GAP + KS_SPACE_H) * scale);
     }
 
     private static void drawKeystrokesHud(Minecraft mc, ClientSettings cfg, boolean example) {

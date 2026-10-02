@@ -196,15 +196,14 @@ public class EditHudGui extends GuiScreen {
                 fade(GHOST_TEXT, open), BedwarsQolFont.Weight.BOLD);
     }
 
-    /** Small squares on the corners, showing where a resize can start. */
+    /** Small squares tucked inside the corners, showing where a resize can start. */
     private static void drawHandles(HudBox box, float level, int color, float open) {
         int c = fade(color, level * open);
-        float h = HANDLE / 2f;
-        float[] xs = {box.visualX(), box.visualRight()};
-        float[] ys = {box.visualY(), box.visualBottom()};
-        for (float x : xs) {
-            for (float y : ys) GuiRender.rect(x - h, y - h, x + h, y + h, c);
-        }
+        float x1 = box.visualX(), y1 = box.visualY(), x2 = box.visualRight(), y2 = box.visualBottom();
+        GuiRender.rect(x1, y1, x1 + HANDLE, y1 + HANDLE, c);
+        GuiRender.rect(x2 - HANDLE, y1, x2, y1 + HANDLE, c);
+        GuiRender.rect(x1, y2 - HANDLE, x1 + HANDLE, y2, c);
+        GuiRender.rect(x2 - HANDLE, y2 - HANDLE, x2, y2, c);
     }
 
     private void drawNameLabel(HudBox box, float level) {

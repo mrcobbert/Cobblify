@@ -199,7 +199,7 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.STEPPER, "Accent", K_ACCENT, ACCENT_LABELS, K_GRP_APPEARANCE),
                     new RowDef(RowType.STEPPER, "GUI Size", K_GUISIZE, GUI_SIZES, K_GRP_APPEARANCE),
                     new RowDef(RowType.GROUP, "HUD", K_GRP_HUD, (String[]) null),
-                    new RowDef(RowType.STEPPER, "Default HUD Size", K_HUDSIZE, TEXT_SIZES, K_GRP_HUD),
+                    new RowDef(RowType.STEPPER, "HUD Size", K_HUDSIZE, TEXT_SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Scoreboard Size", K_SCOREBOARD_SIZE, SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Tab List Size", K_STYLEDTAB_SIZE, SIZES, K_GRP_HUD),
                     new RowDef(RowType.STEPPER, "Display", K_DISPLAY, DISPLAY_MODES, K_GRP_HUD),
@@ -1578,7 +1578,7 @@ public class SettingsGui extends GuiScreen {
         } else if (kind == K_GUISIZE) {
             cfg.guiSize = idx;
         } else if (kind == K_HUDSIZE) {
-            cfg.defaultTextSize = idx; // the size new and reset modules get; sizes set in Edit HUD stay
+            cfg.setHudSize(idx);
         } else if (kind == K_DISPLAY) {
             cfg.hudDisplayMode = idx;
         } else if (kind == K_SCOREBOARD_SIZE) {

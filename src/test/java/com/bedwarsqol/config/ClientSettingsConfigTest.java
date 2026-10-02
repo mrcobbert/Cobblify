@@ -1,6 +1,7 @@
 package com.bedwarsqol.config;
 
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.hud.HudPlacement;
 import com.bedwarsqol.stats.BackendTarget;
 import com.google.gson.Gson;
 import org.junit.Test;
@@ -86,9 +87,10 @@ public class ClientSettingsConfigTest {
     public void freshDefaultsSitOnScreenAndAreStamped() {
         ClientSettings s = new ClientSettings();
         s.sanitize();
-        assertEquals(-5, s.sessionStatsHudX);
-        assertEquals(-5, s.diamondTimerHudX);
-        assertEquals("beside the diamond timer (settings v3)", -50, s.emeraldTimerHudX);
+        // Settings v3: a fresh install puts every module in the default layout, which keeps them on screen.
+        assertEquals(HudPlacement.AUTO, s.sessionStatsHudAnchor);
+        assertEquals(HudPlacement.AUTO, s.diamondTimerHudAnchor);
+        assertEquals(HudPlacement.AUTO, s.emeraldTimerHudAnchor);
         assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
     }
 

@@ -7,6 +7,12 @@ package com.bedwarsqol.hud;
  */
 public final class HudPlacement {
 
+    /**
+     * The anchor of a module the player has never moved (or has reset): it has no saved spot and
+     * the renderer places it in the default layout instead.
+     */
+    public static final int AUTO = -1;
+
     private static final float[] ANCHOR_X = {0f, 0.5f, 1f, 0f, 0.5f, 1f, 0f, 0.5f, 1f};
     private static final float[] ANCHOR_Y = {0f, 0f, 0f, 0.5f, 0.5f, 0.5f, 1f, 1f, 1f};
 
@@ -37,7 +43,7 @@ public final class HudPlacement {
         return Math.round(y - a * screenHeight + a * height);
     }
 
-    /** The anchor for a box: the screen third its edges reach on each axis, corners first. */
+    /** The anchor for a box: the screen third its edges reach on each axis, corners first. Never {@link #AUTO}. */
     public static int anchorFor(float x, float y, float width, float height, float screenWidth, float screenHeight) {
         float right = x + width;
         float bottom = y + height;
