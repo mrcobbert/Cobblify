@@ -256,8 +256,8 @@ public class BedwarsQolCommand extends CommandBase {
     /** {@code /cobblify urchin <name>} — on-demand community-tag lookup via the Worker's manual route. */
     private void handleUrchin(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
-        if (!cfg.urchinTags) {
-            send(sender, "§cUrchin Tags is disabled. Enable it in /cobblify.");
+        if (!cfg.urchinOn()) {
+            send(sender, "§cUrchin is off. Turn on Tag Utils > Urchin in /cobblify.");
             return;
         }
         if (args.length < 2 || args[1].trim().isEmpty()) {
@@ -317,8 +317,8 @@ public class BedwarsQolCommand extends CommandBase {
     /** {@code /cobblify seraph <name>} — on-demand Seraph-tag lookup via the Worker's manual route. */
     private void handleSeraph(ICommandSender sender, String[] args) {
         ClientSettings cfg = settings();
-        if (!cfg.seraphTags) {
-            send(sender, "§cSeraph Tags is disabled. Enable it in /cobblify.");
+        if (!cfg.seraphOn()) {
+            send(sender, "§cSeraph is off. Turn on Tag Utils > Seraph in /cobblify.");
             return;
         }
         if (args.length < 2 || args[1].trim().isEmpty()) {

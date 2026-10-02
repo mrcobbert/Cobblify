@@ -146,12 +146,12 @@ public final class SeraphTag {
     /** The tab overlay needs player identity when the Seraph tab badge/alert wants it. */
     public static boolean needsTabIdentity(ClientSettings cfg) {
         if (cfg == null) return false;
-        return cfg.seraphTags && (cfg.seraphBadgeTab || cfg.seraphChatAlert);
+        return cfg.seraphOn() && (cfg.tagBadgeTab || cfg.tagChatAlert);
     }
 
     /** The nametag overlay needs player identity when the Seraph nametag badge wants it. */
     public static boolean needsNametagIdentity(ClientSettings cfg) {
         if (cfg == null) return false;
-        return cfg.seraphTags && cfg.seraphBadgeNametag;
+        return cfg.seraphOn() && cfg.tagBadgeNametag;
     }
 }

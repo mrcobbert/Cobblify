@@ -1,5 +1,6 @@
 package com.bedwarsqol.feature;
 
+import com.bedwarsqol.config.ClientSettings;
 import org.junit.Test;
 
 import java.util.HashSet;
@@ -10,8 +11,40 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** Pins the queue alert's per-queue dedupe/cap bound and its never-accuse UUID cross-check. */
+/**
+ * Pins the queue alert's per-queue dedupe/cap bound, its never-accuse UUID cross-check, and the
+ * settings it follows since its own toggles were folded into Tag Utils and Nick Utils.
+ */
 public class QueueAlertTest {
+
+    @Test
+    public void tagLinesFollowTagUtilsChatAlertForTheSourcesThatAreOn() {
+        ClientSettings cfg = new ClientSettings();
+        assertTrue(QueueAlert.wantsTags(cfg));
+        cfg.tagChatAlert = false;
+        assertFalse("Chat Alert off silences the queue too", QueueAlert.wantsTags(cfg));
+        cfg.tagChatAlert = true;
+        cfg.urchinTags = false;
+        assertTrue("Seraph alone still counts", QueueAlert.wantsTags(cfg));
+        cfg.seraphTags = false;
+        assertFalse("no source on, nothing to ask", QueueAlert.wantsTags(cfg));
+        cfg.urchinTags = true;
+        cfg.tagUtils = false;
+        assertFalse("Tag Utils off silences it", QueueAlert.wantsTags(cfg));
+        assertFalse(QueueAlert.wantsTags(null));
+    }
+
+    @Test
+    public void nickLinesFollowNickUtilsNickNotify() {
+        ClientSettings cfg = new ClientSettings();
+        assertTrue(QueueAlert.wantsNicks(cfg));
+        cfg.nickNotify = false;
+        assertFalse(QueueAlert.wantsNicks(cfg));
+        cfg.nickNotify = true;
+        cfg.nickUtils = false;
+        assertFalse(QueueAlert.wantsNicks(cfg));
+        assertFalse(QueueAlert.wantsNicks(null));
+    }
 
     private static final UUID U = UUID.fromString("069a79f4-44e9-4726-a5be-fca90e38aaf5");
 

@@ -62,7 +62,8 @@ public class ClientSettingsConfigTest {
         assertEquals(ClientSettings.CURRENT_SETTINGS_VERSION, s.settingsVersion);
         assertEquals("unrelated setting survives", 1, s.guiSize);
         String out = GSON.toJson(s);
-        assertTrue("the stamp is written", out.contains("\"settingsVersion\":1"));
+        assertTrue("the stamp is written",
+                out.contains("\"settingsVersion\":" + ClientSettings.CURRENT_SETTINGS_VERSION));
         assertFalse("the removed Background key is gone", out.contains("sessionStatsBackgroundEnabled"));
     }
 

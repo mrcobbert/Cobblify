@@ -69,14 +69,10 @@ public class SettingsGui extends GuiScreen {
     // Chat module: Lunar keeps only the two inc pieces (Lunar Client ships the generic chat QOL
     // natively); kind numbers match the Forge tree's Chat section.
     private static final int K_NOTIFY_INC = 101, K_INC_KEY = 103;
-    // Urchin Tags module (master toggle) + its sub-settings (kind numbers shared with the Forge tree).
-    private static final int K_URCHIN = 104, K_URCHIN_BADGE_TAB = 105, K_URCHIN_CHAT_ALERT = 106,
-            K_URCHIN_SOUND = 107, K_URCHIN_BADGE_NAMETAG = 108;
-    // Seraph Tags module (master toggle) + its sub-settings (kind numbers shared with the Forge tree).
-    private static final int K_SERAPH = 110, K_SERAPH_BADGE_TAB = 111, K_SERAPH_CHAT_ALERT = 112,
-            K_SERAPH_SOUND = 113, K_SERAPH_BADGE_NAMETAG = 114;
-    // Pregame-queue chat alerts (kind numbers shared with the Forge tree).
-    private static final int K_QUEUE_TAG_ALERT = 115, K_QUEUE_NICK_ALERT = 116;
+    // Tag Utils module (Urchin + Seraph community tags) + its sub-settings (kind numbers shared with
+    // the Forge tree). The badge and alert sub-settings apply to both sources.
+    private static final int K_TAGUTILS = 104, K_TAG_URCHIN = 105, K_TAG_SERAPH = 106,
+            K_TAG_BADGE_TAB = 107, K_TAG_BADGE_NAMETAG = 108, K_TAG_CHAT_ALERT = 110, K_TAG_SOUND = 111;
 
     private static final String[] GUI_SIZES = {"Small", "Medium", "Large"};
     private static final String[] TEXT_SIZES = {"Small", "Medium", "Large"};
@@ -190,18 +186,13 @@ public class SettingsGui extends GuiScreen {
                     new RowDef(RowType.TOGGLE, "Nick Utils", "Detect and denick nicked players", K_NICKUTILS),
                     new RowDef(RowType.TOGGLE, "Nick Notify", K_NICK_NOTIFY, null, K_NICKUTILS),
                     new RowDef(RowType.TOGGLE, "Auto Denick", K_AUTO_DENICK, null, K_NICKUTILS),
-                    new RowDef(RowType.TOGGLE, "Urchin Tags", "Community-reported blacklist tags from urchin.ws", K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Tab Badge", K_URCHIN_BADGE_TAB, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Chat Alert", K_URCHIN_CHAT_ALERT, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Alert Sound", K_URCHIN_SOUND, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Nametag Badge", K_URCHIN_BADGE_NAMETAG, null, K_URCHIN),
-                    new RowDef(RowType.TOGGLE, "Seraph Tags", "Community blacklist/safelist from api.seraph.si", K_SERAPH),
-                    new RowDef(RowType.TOGGLE, "Tab Badge", K_SERAPH_BADGE_TAB, null, K_SERAPH),
-                    new RowDef(RowType.TOGGLE, "Chat Alert", K_SERAPH_CHAT_ALERT, null, K_SERAPH),
-                    new RowDef(RowType.TOGGLE, "Alert Sound", K_SERAPH_SOUND, null, K_SERAPH),
-                    new RowDef(RowType.TOGGLE, "Nametag Badge", K_SERAPH_BADGE_NAMETAG, null, K_SERAPH),
-                    new RowDef(RowType.TOGGLE, "Queue Tag Alert", "Queue only: tags for players who type", K_QUEUE_TAG_ALERT),
-                    new RowDef(RowType.TOGGLE, "Queue Nick Alert", "Queue only: nicks for players who type", K_QUEUE_NICK_ALERT)),
+                    new RowDef(RowType.TOGGLE, "Tag Utils", "Urchin and Seraph community cheater tags", K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Urchin", K_TAG_URCHIN, null, K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Seraph", K_TAG_SERAPH, null, K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Tab Badge", K_TAG_BADGE_TAB, null, K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Nametag Badge", K_TAG_BADGE_NAMETAG, null, K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Chat Alert", K_TAG_CHAT_ALERT, null, K_TAGUTILS),
+                    new RowDef(RowType.TOGGLE, "Alert Sound", K_TAG_SOUND, null, K_TAGUTILS)),
             // Settings: two always-open container GROUP cards (Appearance / HUD) stacked in the column.
             // Each stepper is a child of its group card; the Accent picker is a normal STEPPER (GuiTheme
             // resolves live).
@@ -1506,18 +1497,13 @@ public class SettingsGui extends GuiScreen {
             case K_SUPPRESSESC: return cfg.suppressEscMenu;
             case K_NOTIFY_INC: return cfg.chatNotifyInc;
             case K_INC_KEY: return cfg.pcIncKey;
-            case K_URCHIN: return cfg.urchinTags;
-            case K_URCHIN_BADGE_TAB: return cfg.urchinBadgeTab;
-            case K_URCHIN_CHAT_ALERT: return cfg.urchinChatAlert;
-            case K_URCHIN_SOUND: return cfg.urchinAlertSound;
-            case K_URCHIN_BADGE_NAMETAG: return cfg.urchinBadgeNametag;
-            case K_SERAPH: return cfg.seraphTags;
-            case K_SERAPH_BADGE_TAB: return cfg.seraphBadgeTab;
-            case K_SERAPH_CHAT_ALERT: return cfg.seraphChatAlert;
-            case K_SERAPH_SOUND: return cfg.seraphAlertSound;
-            case K_SERAPH_BADGE_NAMETAG: return cfg.seraphBadgeNametag;
-            case K_QUEUE_TAG_ALERT: return cfg.queueTagAlert;
-            case K_QUEUE_NICK_ALERT: return cfg.queueNickAlert;
+            case K_TAGUTILS: return cfg.tagUtils;
+            case K_TAG_URCHIN: return cfg.urchinTags;
+            case K_TAG_SERAPH: return cfg.seraphTags;
+            case K_TAG_BADGE_TAB: return cfg.tagBadgeTab;
+            case K_TAG_BADGE_NAMETAG: return cfg.tagBadgeNametag;
+            case K_TAG_CHAT_ALERT: return cfg.tagChatAlert;
+            case K_TAG_SOUND: return cfg.tagAlertSound;
             default: return false;
         }
     }
@@ -1549,18 +1535,17 @@ public class SettingsGui extends GuiScreen {
             case K_SUPPRESSESC: cfg.suppressEscMenu = !cfg.suppressEscMenu; break;
             case K_NOTIFY_INC: cfg.chatNotifyInc = !cfg.chatNotifyInc; break;
             case K_INC_KEY: cfg.pcIncKey = !cfg.pcIncKey; break;
-            case K_URCHIN: cfg.urchinTags = !cfg.urchinTags; StatsCache.invalidateUrchinResolution(); break;
-            case K_URCHIN_BADGE_TAB: cfg.urchinBadgeTab = !cfg.urchinBadgeTab; break;
-            case K_URCHIN_CHAT_ALERT: cfg.urchinChatAlert = !cfg.urchinChatAlert; break;
-            case K_URCHIN_SOUND: cfg.urchinAlertSound = !cfg.urchinAlertSound; break;
-            case K_URCHIN_BADGE_NAMETAG: cfg.urchinBadgeNametag = !cfg.urchinBadgeNametag; break;
-            case K_SERAPH: cfg.seraphTags = !cfg.seraphTags; StatsCache.invalidateSeraphResolution(); break;
-            case K_SERAPH_BADGE_TAB: cfg.seraphBadgeTab = !cfg.seraphBadgeTab; break;
-            case K_SERAPH_CHAT_ALERT: cfg.seraphChatAlert = !cfg.seraphChatAlert; break;
-            case K_SERAPH_SOUND: cfg.seraphAlertSound = !cfg.seraphAlertSound; break;
-            case K_SERAPH_BADGE_NAMETAG: cfg.seraphBadgeNametag = !cfg.seraphBadgeNametag; break;
-            case K_QUEUE_TAG_ALERT: cfg.queueTagAlert = !cfg.queueTagAlert; break;
-            case K_QUEUE_NICK_ALERT: cfg.queueNickAlert = !cfg.queueNickAlert; break;
+            case K_TAGUTILS:
+                cfg.tagUtils = !cfg.tagUtils;
+                StatsCache.invalidateUrchinResolution();
+                StatsCache.invalidateSeraphResolution();
+                break;
+            case K_TAG_URCHIN: cfg.urchinTags = !cfg.urchinTags; StatsCache.invalidateUrchinResolution(); break;
+            case K_TAG_SERAPH: cfg.seraphTags = !cfg.seraphTags; StatsCache.invalidateSeraphResolution(); break;
+            case K_TAG_BADGE_TAB: cfg.tagBadgeTab = !cfg.tagBadgeTab; break;
+            case K_TAG_BADGE_NAMETAG: cfg.tagBadgeNametag = !cfg.tagBadgeNametag; break;
+            case K_TAG_CHAT_ALERT: cfg.tagChatAlert = !cfg.tagChatAlert; break;
+            case K_TAG_SOUND: cfg.tagAlertSound = !cfg.tagAlertSound; break;
             default: break;
         }
     }

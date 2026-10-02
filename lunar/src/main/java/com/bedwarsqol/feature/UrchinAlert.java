@@ -43,7 +43,7 @@ public final class UrchinAlert {
     @SubscribeEvent
     public void onClientTick(TickEvent.Post event) {
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg == null || !cfg.urchinTags) return;
+        if (cfg == null || !cfg.urchinOn()) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null || mc.getNetHandler() == null) return;
         if (!HypixelContext.isSupportedBedwarsSurface() || !HypixelContext.isInActiveBedwarsGame()) return;
@@ -83,7 +83,7 @@ public final class UrchinAlert {
             String key = name.toLowerCase(Locale.ROOT);
             // Only cheater types get ordinary chat; do not mark alerted for sniper/caution so a later
             // priority upgrade can still announce once.
-            if (cfg.urchinChatAlert && tag.isCheaterType() && alerted.add(key)) {
+            if (cfg.tagChatAlert && tag.isCheaterType() && alerted.add(key)) {
                 announceAlert(mc, cfg, name, stats, tag, now);
             }
         }
@@ -100,7 +100,7 @@ public final class UrchinAlert {
                 .setChatHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, hover))
                 .setChatClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/bw urchin " + name));
         mc.thePlayer.addChatMessage(ModChat.mark(msg));
-        if (cfg.urchinAlertSound && tag.isCheaterType()) {
+        if (cfg.tagAlertSound && tag.isCheaterType()) {
             mc.thePlayer.playSound("note.pling", 1.0f, 1.0f);
         }
     }

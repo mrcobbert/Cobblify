@@ -57,9 +57,9 @@ public class NametagStats {
         java.util.UUID uuid = player.getGameProfile().getId();
         if (uuid == null) return;
         String name = player.getGameProfile().getName();
-        boolean urchinEligible = cfg.urchinTags
+        boolean urchinEligible = cfg.urchinOn()
                 && UrchinTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
-        boolean seraphEligible = cfg.seraphTags
+        boolean seraphEligible = cfg.seraphOn()
                 && SeraphTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
 
         BedwarsStats stats = StatsCache.getCached(uuid);
@@ -78,11 +78,11 @@ public class NametagStats {
                     BedwarsModeDetector.isForced(cfg));
             if (s != null) text = s;
         }
-        if (cfg.urchinTags && cfg.urchinBadgeNametag && urchinEligible) {
+        if (cfg.tagBadgeNametag && urchinEligible) {
             UrchinTag tag = stats.priorityUrchinTag(System.currentTimeMillis());
             if (tag != null) text += tag.badgeToken();
         }
-        if (cfg.seraphTags && cfg.seraphBadgeNametag && seraphEligible) {
+        if (cfg.tagBadgeNametag && seraphEligible) {
             SeraphTag tag = stats.prioritySeraphTag();
             if (tag != null) text += tag.badgeToken();
         }

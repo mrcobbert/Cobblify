@@ -189,17 +189,17 @@ public final class UrchinTag {
                 || Character.getType(c) == Character.FORMAT; // any Cf the runtime does know
     }
 
-    /** The tab overlay needs player identity when Player Stats OR the Urchin tab badge wants it. */
+    /** The tab overlay needs player identity when Player Stats OR the Urchin tab badge/alert wants it. */
     public static boolean needsTabIdentity(ClientSettings cfg) {
         if (cfg == null) return false;
         return (cfg.playerStats && cfg.playerStatsTab)
-                || (cfg.urchinTags && (cfg.urchinBadgeTab || cfg.urchinChatAlert));
+                || (cfg.urchinOn() && (cfg.tagBadgeTab || cfg.tagChatAlert));
     }
 
     /** The nametag overlay needs player identity when Player Stats OR the Urchin nametag badge wants it. */
     public static boolean needsNametagIdentity(ClientSettings cfg) {
         if (cfg == null) return false;
         return (cfg.playerStats && cfg.playerStatsNametag)
-                || (cfg.urchinTags && cfg.urchinBadgeNametag);
+                || (cfg.urchinOn() && cfg.tagBadgeNametag);
     }
 }

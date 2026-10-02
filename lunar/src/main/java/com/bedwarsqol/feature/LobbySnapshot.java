@@ -184,7 +184,7 @@ public final class LobbySnapshot {
     private static LobbyExport.Player player(String name, UUID uuid) {
         ClientSettings cfg = BedwarsQol.config;
         PlayerCard.Toggles toggles = cfg == null ? PlayerCard.Toggles.ALL_OFF
-                : new PlayerCard.Toggles(cfg.urchinTags, cfg.seraphTags, cfg.nickUtils, cfg.autoDenick);
+                : new PlayerCard.Toggles(cfg.urchinOn(), cfg.seraphOn(), cfg.nickUtils, cfg.autoDenick);
         EligibilitySnapshot snap = EligibilitySnapshot.current();
         boolean urchinEligible = uuid != null && UrchinTag.badgeAllowed(snap, name, uuid);
         boolean seraphEligible = uuid != null && SeraphTag.badgeAllowed(snap, name, uuid);
