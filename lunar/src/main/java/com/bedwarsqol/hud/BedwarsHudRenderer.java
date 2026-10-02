@@ -132,6 +132,12 @@ public class BedwarsHudRenderer {
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
      * clean (texturing on, color white) state.
      */
+    /**
+     * Space kept clear around a module without a panel: Edit HUD's frame, snapping and the screen
+     * edge stay this far from its text and icons.
+     */
+    private static final float CONTENT_MARGIN = 3f;
+
     /** Padding of the panel around a HUD element's content box: it grows with the element. */
     private static float panelPad(float scale) {
         return Math.max(2, Math.round(4f * scale));
@@ -265,9 +271,9 @@ public class BedwarsHudRenderer {
         float width = invPanelWidth() * scale;
         float height = invPanelHeight() * scale;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, 0f, r.getScaledWidth());
-        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, 0f, r.getScaledHeight());
-        return new HudBox(INVENTORY_HUD, x, y, width, height, 0f);
+        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, CONTENT_MARGIN, r.getScaledWidth());
+        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, CONTENT_MARGIN, r.getScaledHeight());
+        return new HudBox(INVENTORY_HUD, x, y, width, height, CONTENT_MARGIN);
     }
 
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -342,9 +348,9 @@ public class BedwarsHudRenderer {
         int storedX = diamond ? cfg.diamondTimerHudX : cfg.emeraldTimerHudX;
         int storedY = diamond ? cfg.diamondTimerHudY : cfg.emeraldTimerHudY;
         int anchor = diamond ? cfg.diamondTimerHudAnchor : cfg.emeraldTimerHudAnchor;
-        float x = placeX(storedX, anchor, size.width, 0f, r.getScaledWidth());
-        float y = placeY(storedY, anchor, size.height, 0f, r.getScaledHeight());
-        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, 0f);
+        float x = placeX(storedX, anchor, size.width, CONTENT_MARGIN, r.getScaledWidth());
+        float y = placeY(storedY, anchor, size.height, CONTENT_MARGIN, r.getScaledHeight());
+        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
@@ -604,7 +610,10 @@ public class BedwarsHudRenderer {
         public final float y;
         public final float width;
         public final float height;
-        /** Panel padding drawn around the content box; 0 for modules without a panel. */
+        /**
+         * Space around the content box: the panel's padding, or a small margin for modules without
+         * a panel. Frames, clicks, snapping and the screen edge all use the box grown by this.
+         */
         public final float pad;
         /** False for a module the player has switched off (Edit HUD shows it as a ghost). */
         public final boolean shown;

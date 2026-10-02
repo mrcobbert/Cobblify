@@ -201,6 +201,12 @@ public class BedwarsHudRenderer {
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
      * clean (texturing on, color white) state.
      */
+    /**
+     * Space kept clear around a module without a panel: Edit HUD's frame, snapping and the screen
+     * edge stay this far from its text and icons.
+     */
+    private static final float CONTENT_MARGIN = 3f;
+
     /** Padding of the panel around a HUD element's content box: it grows with the element. */
     private static float panelPad(float scale) {
         return Math.max(2, Math.round(4f * scale));
@@ -414,9 +420,9 @@ public class BedwarsHudRenderer {
         Size size = potionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float x = placeX(cfg.potionHudX, cfg.potionHudAnchor, size.width, 0f, resolution.getScaledWidth());
-        float y = placeY(cfg.potionHudY, cfg.potionHudAnchor, size.height, 0f, resolution.getScaledHeight());
-        return new HudBox(POTION_HUD, x, y, size.width, size.height, 0f);
+        float x = placeX(cfg.potionHudX, cfg.potionHudAnchor, size.width, CONTENT_MARGIN, resolution.getScaledWidth());
+        float y = placeY(cfg.potionHudY, cfg.potionHudAnchor, size.height, CONTENT_MARGIN, resolution.getScaledHeight());
+        return new HudBox(POTION_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
     }
 
     private static HudBox armorBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -425,9 +431,9 @@ public class BedwarsHudRenderer {
         Size size = armorSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float x = placeX(cfg.armorHudX, cfg.armorHudAnchor, size.width, 0f, resolution.getScaledWidth());
-        float y = placeY(cfg.armorHudY, cfg.armorHudAnchor, size.height, 0f, resolution.getScaledHeight());
-        return new HudBox(ARMOR_HUD, x, y, size.width, size.height, 0f);
+        float x = placeX(cfg.armorHudX, cfg.armorHudAnchor, size.width, CONTENT_MARGIN, resolution.getScaledWidth());
+        float y = placeY(cfg.armorHudY, cfg.armorHudAnchor, size.height, CONTENT_MARGIN, resolution.getScaledHeight());
+        return new HudBox(ARMOR_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
     }
 
     /** Left edge from a stored placement, pulled fully on screen with {@code pad} around the box. */
@@ -552,9 +558,9 @@ public class BedwarsHudRenderer {
         float width = invPanelWidth() * scale;
         float height = invPanelHeight() * scale;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, 0f, r.getScaledWidth());
-        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, 0f, r.getScaledHeight());
-        return new HudBox(INVENTORY_HUD, x, y, width, height, 0f);
+        float x = placeX(cfg.inventoryHudX, cfg.inventoryHudAnchor, width, CONTENT_MARGIN, r.getScaledWidth());
+        float y = placeY(cfg.inventoryHudY, cfg.inventoryHudAnchor, height, CONTENT_MARGIN, r.getScaledHeight());
+        return new HudBox(INVENTORY_HUD, x, y, width, height, CONTENT_MARGIN);
     }
 
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -629,9 +635,9 @@ public class BedwarsHudRenderer {
         int storedX = diamond ? cfg.diamondTimerHudX : cfg.emeraldTimerHudX;
         int storedY = diamond ? cfg.diamondTimerHudY : cfg.emeraldTimerHudY;
         int anchor = diamond ? cfg.diamondTimerHudAnchor : cfg.emeraldTimerHudAnchor;
-        float x = placeX(storedX, anchor, size.width, 0f, r.getScaledWidth());
-        float y = placeY(storedY, anchor, size.height, 0f, r.getScaledHeight());
-        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, 0f);
+        float x = placeX(storedX, anchor, size.width, CONTENT_MARGIN, r.getScaledWidth());
+        float y = placeY(storedY, anchor, size.height, CONTENT_MARGIN, r.getScaledHeight());
+        return new HudBox(diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD, x, y, size.width, size.height, CONTENT_MARGIN);
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
@@ -831,9 +837,9 @@ public class BedwarsHudRenderer {
         float width = (3f * KS_UNIT + 2f * KS_GAP) * scale;
         float height = (3f * KS_UNIT + 3f * KS_GAP + KS_SPACE_H) * scale;
         ScaledResolution r = new ScaledResolution(mc);
-        float x = placeX(cfg.keystrokesHudX, cfg.keystrokesHudAnchor, width, 0f, r.getScaledWidth());
-        float y = placeY(cfg.keystrokesHudY, cfg.keystrokesHudAnchor, height, 0f, r.getScaledHeight());
-        return new HudBox(KEYSTROKES_HUD, x, y, width, height, 0f);
+        float x = placeX(cfg.keystrokesHudX, cfg.keystrokesHudAnchor, width, CONTENT_MARGIN, r.getScaledWidth());
+        float y = placeY(cfg.keystrokesHudY, cfg.keystrokesHudAnchor, height, CONTENT_MARGIN, r.getScaledHeight());
+        return new HudBox(KEYSTROKES_HUD, x, y, width, height, CONTENT_MARGIN);
     }
 
     private static void drawKeystrokesHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -993,7 +999,10 @@ public class BedwarsHudRenderer {
         public final float y;
         public final float width;
         public final float height;
-        /** Panel padding drawn around the content box; 0 for modules without a panel. */
+        /**
+         * Space around the content box: the panel's padding, or a small margin for modules without
+         * a panel. Frames, clicks, snapping and the screen edge all use the box grown by this.
+         */
         public final float pad;
         /** False for a module the player has switched off (Edit HUD shows it as a ghost). */
         public final boolean shown;

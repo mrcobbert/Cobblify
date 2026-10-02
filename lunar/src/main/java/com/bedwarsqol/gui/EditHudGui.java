@@ -272,7 +272,7 @@ public class EditHudGui extends GuiScreen {
     /** "Reset All" and "?" just under the crosshair, a spot no HUD module or vanilla bar uses. */
     private void drawToolbar(int mouseX, int mouseY, long now, int accent, float open) {
         float[][] r = toolbarRects();
-        boolean busy = mode != Mode.NONE || menuId != null;
+        boolean busy = mode != Mode.NONE || menuId != null || helpOpen;
         float alpha = (1f - 0.75f * toolbarFade.update(busy || toolbarCovered(), now)) * open;
         boolean usable = !busy && !helpOpen;
         drawButton(r[0], RESET_ALL, resetHover.update(usable && inside(r[0], mouseX, mouseY), now), accent, alpha);
