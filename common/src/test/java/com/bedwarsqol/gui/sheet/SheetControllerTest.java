@@ -84,6 +84,38 @@ public class SheetControllerTest {
     }
 
     @Test
+    public void keysBeforeTheFirstFrameDoNothing() {
+        // On Lunar the press that opens the sheet reaches the new screen before anything is drawn.
+        assertFalse(c.key((char) 0, RSHIFT, false, true, false, RSHIFT));
+        assertFalse(c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT));
+        assertFalse(c.key('a', 30, false, false, false, RSHIFT));
+        assertEquals(0, host.closes);
+        assertEquals(0, host.clicks);
+        assertFalse(c.searchFocused());
+        frame();
+        c.key((char) 0, RSHIFT, false, true, false, RSHIFT);
+        assertEquals(1, host.closes);
+    }
+
+    @Test
+    public void aHeldKeyNeverClosesTheSheet() {
+        frame();
+        assertTrue(c.key((char) 0, RSHIFT, false, true, false, RSHIFT, true));
+        assertTrue(c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT, true));
+        assertEquals(0, host.closes);
+        assertEquals(0, host.clicks);
+        c.key('s', 31, false, false, false, RSHIFT);
+        c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT, true);
+        assertEquals("a held Esc does not step back either", "s", state.query);
+        c.key((char) 0, SheetController.KEY_BACK, false, false, false, RSHIFT, true);
+        assertEquals("typing still repeats", "", state.query);
+        c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT);
+        assertFalse(c.searchFocused());
+        c.key((char) 0, RSHIFT, false, true, false, RSHIFT, false);
+        assertEquals("a fresh press closes", 1, host.closes);
+    }
+
+    @Test
     public void keyCaptureBindsClearsOrCancels() {
         values.setOn("session", true);
         values.setOn("sessionHold", true);

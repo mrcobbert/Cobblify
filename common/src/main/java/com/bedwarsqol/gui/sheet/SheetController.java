@@ -241,11 +241,22 @@ public final class SheetController {
 
     // ------------------------------------------------------------------ keys
 
+    /** A fresh key press; see {@link #key(char, int, boolean, boolean, boolean, int, boolean)}. */
+    public boolean key(char ch, int code, boolean ctrl, boolean shift, boolean alt, int settingsKey) {
+        return key(ch, code, ctrl, shift, alt, settingsKey, false);
+    }
+
     /**
      * A key press. {@code ch} is the typed character (0 for none), {@code code} the LWJGL key code,
-     * {@code settingsKey} the bound open/close key. Returns whether the sheet used it.
+     * {@code settingsKey} the bound open/close key, {@code held} whether the key has stayed down since an earlier
+     * press ({@link KeyHold}). Returns whether the sheet used it.
+     *
+     * <p>Keys before the first frame do nothing: on Lunar the press that opens the sheet reaches it too, because
+     * Weave's KeyboardEvent fires inside Minecraft's key loop, before the loop hands that press to the new screen.
+     * A held key never closes the sheet or steps back; only a fresh press of the settings key or Esc does.
      */
-    public boolean key(char ch, int code, boolean ctrl, boolean shift, boolean alt, int settingsKey) {
+    public boolean key(char ch, int code, boolean ctrl, boolean shift, boolean alt, int settingsKey, boolean held) {
+        if (frame == null) return false;
         if (st.capture != null) {
             int binding = SessionHoldKey.bindingForKey(code);
             if (binding == SessionHoldKey.KEEP_WAITING) return true;
@@ -256,11 +267,13 @@ public final class SheetController {
         }
         if (editing != null && editKey(ch, code, shift)) return true;
         if (code == settingsKey && settingsKey > 0 && !typing()) {
+            if (held) return true;
             closeSheet();
             host.click();
             return true;
         }
         if (code == KEY_ESCAPE) {
+            if (held) return true;
             if (st.confirm != null) st.confirm = null;
             else if (searchFocused) {
                 if (!st.query.isEmpty()) setQuery("");
