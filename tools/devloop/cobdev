@@ -612,8 +612,8 @@ def cmd_matrix(args):
                 time.sleep(0.5)
         if not args.no_world:
             # the same noon sky and no mobs in every run, so two runs differ only where the code does
-            for c in ("/gamerule doDaylightCycle false", "/time set 6000", "/weather clear 1000000",
-                      "/difficulty peaceful", "/kill @e[type=!Player]"):
+            for c in ("/gamerule doDaylightCycle false", "/gamerule doMobSpawning false", "/time set 6000",
+                      "/weather clear 1000000", "/difficulty peaceful", "/kill @e[type=!Player]"):
                 api("/command", {"text": c})
             time.sleep(1)
         for w, h in displays:
