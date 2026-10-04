@@ -87,7 +87,8 @@ public class SheetLayoutTest {
         Frame f = layout();
         assertEquals(12f, find(f, T.MODULE_TOGGLE, "potion").y, 0f);
         assertEquals(12f + 39f, find(f, T.MODULE_TOGGLE, "armor").y, 0f);
-        assertEquals(12f + 6 * 39f, find(f, T.MODULE_TOGGLE, "mapInfo").y, 0f);
+        assertEquals(12f + 5 * 39f, find(f, T.MODULE_TOGGLE, "mapInfo").y, 0f);
+        assertEquals(12f + 6 * 39f, find(f, T.MODULE_TOGGLE, "session").y, 0f);
         Node tg = find(f, T.MODULE_TOGGLE, "potion");
         assertEquals(207f, tg.x, 0f); // a <button>: no margin
         assertEquals(28f, tg.w, 0f);

@@ -122,8 +122,9 @@ public class BedwarsHudRenderer {
         drawInventoryHud(mc, cfg, example);
         drawTimerHud(mc, cfg, example, true);
         drawTimerHud(mc, cfg, example, false);
-        drawSessionHud(mc, cfg, example);
         drawHeightLimitHud(mc, cfg, example);
+        // Last, so Session Stats is on top of everything: Weave posts this after the scoreboard, chat and tab list.
+        drawSessionHud(mc, cfg, example);
     }
 
     /**

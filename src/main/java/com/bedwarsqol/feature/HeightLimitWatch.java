@@ -90,11 +90,10 @@ public final class HeightLimitWatch {
         });
     }
 
-    /** Whether the box is currently allowed to draw (enabled, map known, In Game Only honoured). */
+    /** Whether the box is currently allowed to draw: enabled and In Game Only honoured, on any server. Unknown values read "?". */
     public static boolean visible(ClientSettings cfg, boolean example) {
         if (cfg == null || !cfg.heightLimitEnabled) return false;
         if (example) return true;
-        if (!HypixelContext.isOnHypixel() || CORE.map() == null) return false;
         return !cfg.heightLimitInGameOnly || HypixelContext.isInActiveBedwarsGame();
     }
 

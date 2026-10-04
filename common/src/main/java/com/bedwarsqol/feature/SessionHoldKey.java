@@ -29,14 +29,13 @@ public final class SessionHoldKey {
 
     /**
      * Whether the Session Stats HUD draws now. Off when Session Stats is off; always in the HUD editor
-     * ({@code example}) so the box can be placed; otherwise only on Hypixel. In hold mode it shows only
+     * ({@code example}) so the box can be placed; otherwise on any server. In hold mode it shows only
      * while the bound key is held and no screen is open; unbound means hidden.
      */
-    public static boolean hudVisible(boolean enabled, boolean example, boolean onHypixel, boolean holdMode,
-                                     int keyCode, boolean screenOpen, boolean keyDown) {
+    public static boolean hudVisible(boolean enabled, boolean example, boolean holdMode, int keyCode,
+                                     boolean screenOpen, boolean keyDown) {
         if (!enabled) return false;
         if (example) return true;
-        if (!onHypixel) return false;
         if (!holdMode) return true;
         return keyCode != 0 && !screenOpen && keyDown;
     }

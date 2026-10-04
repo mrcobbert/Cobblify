@@ -114,14 +114,30 @@ public class BedwarsHudRenderer {
 
     @SubscribeEvent
     public void onRenderText(RenderGameOverlayEvent.Text event) {
+        ClientSettings cfg = hudSettings();
+        if (cfg != null) render(Minecraft.getMinecraft(), cfg, false);
+    }
+
+    /**
+     * Session Stats goes on top of everything: Forge posts ALL once the scoreboard sidebar, chat and tab list,
+     * which all draw after the Text pass, are done.
+     */
+    @SubscribeEvent
+    public void onRenderPost(RenderGameOverlayEvent.Post event) {
+        if (event.type != RenderGameOverlayEvent.ElementType.ALL) return;
+        ClientSettings cfg = hudSettings();
+        if (cfg != null) drawSessionHud(Minecraft.getMinecraft(), cfg, false);
+    }
+
+    /** The settings when the in-game HUD draws this frame, sanitized; null when it does not. */
+    private static ClientSettings hudSettings() {
         Minecraft mc = Minecraft.getMinecraft();
         ClientSettings cfg = BedwarsQol.config;
-        if (mc == null || mc.thePlayer == null || cfg == null) return;
-        if (mc.gameSettings != null && mc.gameSettings.showDebugInfo) return;
-        if (mc.currentScreen instanceof EditHudGui) return; // the editor draws its own preview
-
+        if (mc == null || mc.thePlayer == null || cfg == null) return null;
+        if (mc.gameSettings != null && mc.gameSettings.showDebugInfo) return null;
+        if (mc.currentScreen instanceof EditHudGui) return null; // the editor draws its own preview
         cfg.sanitize();
-        render(mc, cfg, false);
+        return cfg;
     }
 
     /** Counts in-game presses for the Keystrokes CPS line; Forge posts this only with no screen open. */
@@ -184,8 +200,9 @@ public class BedwarsHudRenderer {
         drawTimerHud(mc, cfg, example, true);
         drawTimerHud(mc, cfg, example, false);
         if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
-        drawSessionHud(mc, cfg, example);
         drawHeightLimitHud(mc, cfg, example);
+        // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
+        if (example) drawSessionHud(mc, cfg, true);
     }
 
     /**
