@@ -17,7 +17,7 @@ public final class GuiTheme {
     /**
      * The selectable GUI accents, in the settings sheet's swatch order: twelve hue columns in a pale, a vivid and a
      * deep row, then three neutrals. Each carries a stable lowercase {@code token} used for persistence
-     * ({@code ClientSettings.guiAccent}), a sentence-case label and a base ARGB. Orange is the default; the original
+     * ({@code ClientSettings.guiAccent}), a sentence-case label and a base ARGB. Pale Blue is the default; the original
      * ten keep their tokens and colours.
      */
     public enum Accent {
@@ -116,24 +116,24 @@ public final class GuiTheme {
 
     /**
      * Coerce an arbitrary token to a known accent token. Trims + lowercases; null, empty, and unknown all
-     * collapse to {@code "orange"} (the default accent).
+     * collapse to {@code "pale-blue"} (the default accent).
      */
     public static String normalizeToken(String token) {
         return fromToken(token).token();
     }
 
-    /** Font tokens: the bundled Inter (the default) or Minecraft's own font, for the settings menu and the HUD. */
+    /** Font tokens: the bundled Inter or Minecraft's own font (the default), for the settings menu and the HUD. */
     public static final String FONT_MODERN = "modern";
     public static final String FONT_MINECRAFT = "minecraft";
 
-    /** Coerce a font token: anything but {@link #FONT_MINECRAFT} is {@link #FONT_MODERN}. */
+    /** Coerce a font token: anything but {@link #FONT_MODERN} is {@link #FONT_MINECRAFT}. */
     public static String normalizeFont(String token) {
-        return FONT_MINECRAFT.equals(token) ? FONT_MINECRAFT : FONT_MODERN;
+        return FONT_MODERN.equals(token) ? FONT_MODERN : FONT_MINECRAFT;
     }
 
     /**
      * Resolve a token to its {@link Accent}. Trims + lowercases; null, empty, and unknown all resolve to
-     * {@link Accent#ORANGE}.
+     * {@link Accent#PALE_BLUE}.
      */
     public static Accent fromToken(String token) {
         if (token != null) {
@@ -142,6 +142,6 @@ public final class GuiTheme {
                 if (a.token.equals(t)) return a;
             }
         }
-        return Accent.ORANGE;
+        return Accent.PALE_BLUE;
     }
 }

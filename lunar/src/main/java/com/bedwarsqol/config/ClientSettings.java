@@ -26,10 +26,10 @@ public class ClientSettings {
     public int defaultTextSize = 1;
     /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
     public int guiSize = 2;
-    /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
-    public String guiAccent = "orange";
-    /** Font of the settings menu and the HUD: {@code modern} (Inter) or {@code minecraft} (the game's own). */
-    public String guiFont = GuiTheme.FONT_MODERN;
+    /** GUI accent color token, pale-blue by default (see {@link GuiTheme.Accent}). Drives only the settings-GUI accent; HUD stays neutral. */
+    public String guiAccent = "pale-blue";
+    /** Font of the settings menu and the HUD: {@code minecraft} (the game's own, the default) or {@code modern} (Inter). */
+    public String guiFont = GuiTheme.FONT_MINECRAFT;
 
     // --- BedWars HUDs (render everywhere unless their In Game Only is set) ---
 

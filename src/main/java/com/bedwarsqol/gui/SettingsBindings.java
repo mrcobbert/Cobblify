@@ -210,7 +210,7 @@ final class SettingsBindings implements SheetValues {
             case "sbSize": c.scoreboardSize = i; break;
             case "tabSize": c.styledTabListSize = i; break;
             case "guiSize": c.guiSize = i; break;
-            case "font": c.guiFont = i == 1 ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
+            case "font": c.guiFont = "Minecraft".equals(option) ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
             case "accent": c.guiAccent = GuiTheme.Accent.values()[i].token(); break;
             default: return;
         }
