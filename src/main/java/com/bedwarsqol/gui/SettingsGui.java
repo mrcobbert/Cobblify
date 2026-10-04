@@ -2,6 +2,7 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.gui.sheet.KeyHold;
 import com.bedwarsqol.gui.sheet.McCanvas;
 import com.bedwarsqol.gui.sheet.SheetColors;
 import com.bedwarsqol.gui.sheet.SheetController;
@@ -33,6 +34,7 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     private final SheetMotion motion = new SheetMotion();
     private final SheetPainter.Paint paint = new SheetPainter.Paint();
     private final SheetLayout layout = new SheetLayout(canvas, values, state);
+    private final KeyHold keyHold = new KeyHold();
 
     private SheetLayout.Frame frame;
     private float unit = 2f, originX;
@@ -61,7 +63,16 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     @Override
     public void initGui() {
         Keyboard.enableRepeatEvents(true);
-        if (openedAt < 0) openedAt = System.currentTimeMillis();
+        if (openedAt < 0) {
+            openedAt = System.currentTimeMillis();
+            keyHold.open(Keyboard::isKeyDown, SettingsBindings.settingsKey(), Keyboard.KEY_ESCAPE);
+        }
+    }
+
+    /** Runs right after {@code handleInput} has taken every queued event, so the polled keys match the last of them. */
+    @Override
+    public void updateScreen() {
+        keyHold.tick(Keyboard::isKeyDown);
     }
 
     @Override
@@ -193,9 +204,10 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
 
     @Override
     protected void keyTyped(char typedChar, int keyCode) {
+        boolean held = !keyHold.press(keyCode);
         if (closingAt >= 0) return;
         boolean alt = Keyboard.isKeyDown(Keyboard.KEY_LMENU) || Keyboard.isKeyDown(Keyboard.KEY_RMENU);
-        controller.key(typedChar, keyCode, isCtrlKeyDown(), isShiftKeyDown(), alt, SettingsBindings.settingsKey());
+        controller.key(typedChar, keyCode, isCtrlKeyDown(), isShiftKeyDown(), alt, SettingsBindings.settingsKey(), held);
     }
 
     // ------------------------------------------------------------------ host
