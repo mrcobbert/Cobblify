@@ -35,6 +35,16 @@ SCREENS = {
     "settings": "com.bedwarsqol.gui.SettingsGui",
     "hud": "com.bedwarsqol.gui.EditHudGui",
 }
+MATRIX = SHARED + "/matrix"
+# Minecraft's default window, common laptop and desktop displays (1920x1080 and 2560x1440 are three quarters of Steam),
+# the Steam Deck, a 14" MacBook in points, ultrawides and 4K; override with --displays.
+DISPLAYS = ("854x480,1280x720,1280x800,1366x768,1440x900,1512x982,1536x864,1600x900,1920x1080,1920x1200,"
+            "2560x1080,2560x1440,2560x1600,3440x1440,3840x2160")
+# The settings fields a sweep changes; it puts them all back when it ends.
+SWEPT_FIELDS = ("guiSize", "guiFont", "defaultTextSize", "potionHudScale", "armorHudScale", "inventoryHudScale",
+                "diamondTimerHudScale", "emeraldTimerHudScale", "keystrokesHudScale", "sessionStatsHudScale",
+                "heightLimitHudScale")
+SIZE_NAMES = ("small", "medium", "large")
 KEYS = {"esc": 1, "backspace": 14, "tab": 15, "enter": 28, "space": 57, "up": 200, "down": 208,
         "left": 203, "right": 205, "home": 199, "end": 207, "delete": 211}
 START = SHARED + "/bin/start.sh"
@@ -473,8 +483,197 @@ def cmd_simple(path, *names):
 
 def cmd_size(args):
     locked(args)
-    r = api("/size", {"w": args.w, "h": args.h})
+    if args.w == "reset":
+        r = api("/size", {"reset": 1})
+        print("rendering at the window's size again: %s" % r.get("display"))
+        return
+    if args.h is None:
+        die("size takes W H, or: size reset")
+    if args.virtual:
+        r = api("/size", {"w": int(args.w), "h": args.h, "virtual": 1})
+        print("rendering %s offscreen (window stays %s); undo with: cobdev size reset" % (r.get("display"), r.get("window")))
+        return
+    r = api("/size", {"w": int(args.w), "h": args.h})
     print("window %s (desktop %s, pixel scale %s)" % (r.get("window"), r.get("desktop"), r.get("pixelScale")))
+
+
+def cmd_field(args):
+    params = {"target": args.target, "path": args.path}
+    if args.value is not None:
+        locked(args)
+        params["value"] = args.value
+    r = api("/field", params)
+    print(r["old"] if args.value is None else "%s -> %s" % (r["old"], r["value"]))
+
+
+def cmd_command(args):
+    locked(args)
+    api("/command", {"text": args.text})
+
+
+def cmd_invoke(args):
+    locked(args)
+    params = {"target": args.target, "path": args.path or "", "method": args.method}
+    if args.arg is not None:
+        params["arg"] = args.arg
+    print(api("/invoke", params)["result"])
+
+
+# -------------------------------------------------------------------------------------- matrix
+
+def field(target, path, value=None):
+    params = {"target": target, "path": path}
+    if value is not None:
+        params["value"] = value
+    return api("/field", params)["old"]
+
+
+def invoke(target, path, method, arg=None):
+    params = {"target": target, "path": path, "method": method}
+    if arg is not None:
+        params["arg"] = arg
+    return api("/invoke", params)["result"]
+
+
+def open_screen(screen):
+    """Opens a sweep screen: the settings sheet on a category, or the HUD editor."""
+    if screen == "hud":
+        api("/open", {"class": SCREENS["hud"]})
+        return
+    st = api("/status")
+    if st.get("screen") != SCREENS["settings"]:
+        api("/open", {"class": SCREENS["settings"]})
+    category = screen.split("-", 1)[1]
+    field("screen", "state.category", category)
+    field("screen", "state.query", "")
+    invoke("screen", "state.open", "clear")
+    if category == "hud":
+        invoke("screen", "state.open", "add", "session")  # one module open, so its rows show too
+    field("screen", "state.scroll", "0")
+    field("screen", "state.scrollShown", "0")
+
+
+def thumbnail(src, dst, size):
+    subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "80", "-Z", str(size), src, "--out", dst],
+                   capture_output=True, check=True)
+    os.chmod(dst, 0o644)
+
+
+def write_matrix_index():
+    """Rewrites the gallery page and its list of runs (newest first) from what is on disk."""
+    runs = []
+    for name in sorted(os.listdir(MATRIX), reverse=True):
+        meta = os.path.join(MATRIX, name, "meta.json")
+        if os.path.exists(meta):
+            with open(meta) as f:
+                runs.append(json.load(f))
+    write_text(os.path.join(MATRIX, "runs.js"), "window.COBDEV_RUNS = " + json.dumps(runs, indent=1) + ";\n")
+    with open(os.path.join(HERE, "matrix.html")) as f:
+        write_text(os.path.join(MATRIX, "index.html"), f.read())
+
+
+def cmd_matrix(args):
+    wt = worktree(args)
+    take_lock(wt, args.steal)
+    st = api("/status")
+    if not st.get("ready"):
+        die("the game is still starting")
+    if st.get("onServer"):
+        die("leave the multiplayer server first; the sweep changes settings and screens")
+    src = source_of(runtime_of(st["classesDir"])) if st.get("classesDir") else {}
+    displays = [tuple(int(v) for v in d.split("x")) for d in args.displays.split(",")]
+    scales = [int(v) for v in args.scales.split(",")]
+    fonts = args.fonts.split(",")
+    sizes = [int(v) for v in args.sizes.split(",")]
+    screens = args.screens.split(",")
+    for sc in screens:
+        if sc != "hud" and not sc.startswith("sheet-"):
+            die("screens are sheet-<category> (sheet-hud, sheet-settings, ...) or hud")
+
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9._-]+", "-", args.label or src.get("branch", "run"))
+    run_dir = os.path.join(MATRIX, run_id)
+    for sub in ("full", "thumb"):
+        os.makedirs(os.path.join(run_dir, sub), mode=0o755, exist_ok=True)
+    os.chmod(MATRIX, 0o755)
+
+    saved = {f: field("config", f) for f in SWEPT_FIELDS}
+    saved_scale = st.get("guiScaleSetting")
+    saved_screen = st.get("screen")
+    shots = []
+    started = time.time()
+    total = 0
+    try:
+        if not st.get("inWorld") and not args.no_world:
+            print("loading the flat test world...")
+            api("/world", timeout=120)
+            for _ in range(60):  # the terrain screen closes a moment after the world exists; opening earlier is undone
+                if api("/status").get("screen") is None:
+                    break
+                time.sleep(0.5)
+        if not args.no_world:
+            # the same noon sky and no mobs in every run, so two runs differ only where the code does
+            for c in ("/gamerule doDaylightCycle false", "/time set 6000", "/weather clear 1000000",
+                      "/difficulty peaceful", "/kill @e[type=!Player]"):
+                api("/command", {"text": c})
+            time.sleep(1)
+        for w, h in displays:
+            api("/size", {"w": w, "h": h, "virtual": 1})
+            seen = {}
+            for gs in scales:
+                api("/scale", {"n": gs})
+                sf = api("/status")["scaleFactor"]
+                if sf in seen:
+                    print("%dx%d: GUI scale %d draws as scale %d, already taken" % (w, h, gs, sf))
+                    continue
+                seen[sf] = gs
+                for screen in screens:
+                    open_screen(screen)
+                    gui_h = int(api("/status")["gui"].split("x")[1])
+                    api("/hover", {"x": 1, "y": gui_h - 2})  # park the cursor bottom left, clear of the sheet and HUD
+                    first = True
+                    for font in fonts:
+                        field("config", "guiFont", font)
+                        for size in sizes:
+                            if screen == "hud":
+                                invoke("config", "", "setHudSize", str(size))
+                            else:
+                                field("config", "guiSize", str(size))
+                            jpg = api("/shot", {"wait": 600 if first else 150, "format": "jpg", "quality": args.quality},
+                                      timeout=60, raw=True)
+                            first = False
+                            name = "%dx%d-gs%d-%s-%s-%s.jpg" % (w, h, gs, screen, font, SIZE_NAMES[size])
+                            full = os.path.join(run_dir, "full", name)
+                            with open(full, "wb") as f:
+                                f.write(jpg)
+                            os.chmod(full, 0o644)
+                            thumbnail(full, os.path.join(run_dir, "thumb", name), args.thumb)
+                            entry = {"w": w, "h": h, "gs": gs, "sf": sf, "screen": screen, "font": font,
+                                     "size": SIZE_NAMES[size], "file": name}
+                            if screen != "hud":
+                                entry["unit"] = float(field("screen", "unit"))
+                            shots.append(entry)
+                            total += 1
+                            if total % 20 == 0:
+                                print("%d shots, %ds" % (total, time.time() - started))
+    finally:
+        for f, v in saved.items():
+            field("config", f, v)
+        invoke("config", "", "save")
+        api("/scale", {"n": saved_scale})
+        api("/size", {"reset": 1})
+        if saved_screen == SCREENS["settings"]:
+            api("/open", {"class": SCREENS["settings"]})
+        else:
+            api("/close")
+        meta = {"id": run_id, "label": args.label or src.get("branch", ""), "branch": src.get("branch"),
+                "commit": src.get("commit"), "worktree": src.get("worktree"),
+                "date": time.strftime("%Y-%m-%d %H:%M"), "count": len(shots), "thumb": args.thumb}
+        write_text(os.path.join(run_dir, "meta.json"), json.dumps(meta) + "\n")
+        write_text(os.path.join(run_dir, "manifest.js"), "(window.COBDEV_SHOTS = window.COBDEV_SHOTS || {})[%s] = %s;\n"
+                   % (json.dumps(run_id), json.dumps(shots)))
+        write_matrix_index()
+    print("%d shots in %ds: %s" % (len(shots), time.time() - started, run_dir))
+    print("the user opens: file://%s/index.html" % MATRIX)
 
 
 def cmd_hover(args):
@@ -581,9 +780,33 @@ def main():
     p.add_argument("--char", help="character to send with the key code")
     p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
     p.add_argument("n", type=int)
-    p = add("size", cmd_size, "resize the game window to W x H display px")
-    p.add_argument("w", type=int)
-    p.add_argument("h", type=int)
+    p = add("size", cmd_size, "resize the game window to W x H display px; --virtual renders that size offscreen;"
+                              " size reset undoes --virtual")
+    p.add_argument("w")
+    p.add_argument("h", nargs="?", type=int)
+    p.add_argument("--virtual", action="store_true", help="keep the window, render W x H offscreen (shots see it all)")
+    p = add("field", cmd_field, "read or set a field: TARGET (config or screen) and a dotted PATH")
+    p.add_argument("target", choices=("config", "screen"))
+    p.add_argument("path")
+    p.add_argument("value", nargs="?")
+    p = add("invoke", cmd_invoke, "call a method with no argument or one on config or screen (or a dotted PATH from it)")
+    p.add_argument("target", choices=("config", "screen"))
+    p.add_argument("method")
+    p.add_argument("arg", nargs="?")
+    p.add_argument("--path", help="dotted path from the target to the object, e.g. state.open")
+    p = add("command", cmd_command, "send a slash command as the player (singleplayer only), e.g. \"/time set 6000\"")
+    p.add_argument("text")
+    p = add("matrix", cmd_matrix, "screenshot every display x GUI scale x font x size into a gallery under " + MATRIX)
+    p.add_argument("--displays", default=DISPLAYS, help="WxH list (default: %(default)s)")
+    p.add_argument("--scales", default="1,2,3,4,0", help="Minecraft GUI scales, 0 = Auto (default: %(default)s)")
+    p.add_argument("--fonts", default="minecraft,modern")
+    p.add_argument("--sizes", default="0,1,2", help="0-2: GUI Size for the sheet, HUD Size for the HUD editor")
+    p.add_argument("--screens", default="sheet-hud,sheet-settings,hud",
+                   help="sheet-<category> for the settings sheet, hud for the HUD editor (default: %(default)s)")
+    p.add_argument("--label", help="name of this run in the gallery (default: the running branch)")
+    p.add_argument("--quality", type=int, default=88, help="JPEG quality of the full-size shots")
+    p.add_argument("--thumb", type=int, default=720, help="longest side of the thumbnails, px")
+    p.add_argument("--no-world", action="store_true", help="shoot over whatever is behind (default loads the flat world)")
     add("world", cmd_world, "load (or create) the flat creative world 'cobdev'")
     add("refresh", cmd_simple("/refresh"), "reload resources (textures, font atlases)")
     p = add("shot", cmd_shot, "save a PNG of the last frame")

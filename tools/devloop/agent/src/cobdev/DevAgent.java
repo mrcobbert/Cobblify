@@ -60,8 +60,9 @@ public final class DevAgent {
         try {
             String path = ex.getRequestURI().getPath();
             if (path.equals("/shot")) {
-                body = Game.shot(intParam(q, "wait", 300));
-                type = "image/png";
+                boolean jpeg = "jpg".equals(q.get("format"));
+                body = Game.shot(intParam(q, "wait", 300), jpeg, intParam(q, "quality", 85));
+                type = jpeg ? "image/jpeg" : "image/png";
             } else {
                 body = Json.write(route(path, q)).getBytes(StandardCharsets.UTF_8);
             }
@@ -111,7 +112,15 @@ public final class DevAgent {
             case "/scale":
                 return Game.scale(intParam(q, "n", 0));
             case "/size":
+                if ("1".equals(q.get("reset"))) return Game.resetSize();
+                if ("1".equals(q.get("virtual"))) return Game.virtualSize(intParam(q, "w", 0), intParam(q, "h", 0));
                 return Game.size(intParam(q, "w", 0), intParam(q, "h", 0));
+            case "/field":
+                return Game.fieldAt(required(q, "target"), required(q, "path"), q.get("value"));
+            case "/command":
+                return Game.command(required(q, "text"));
+            case "/invoke":
+                return Game.invoke(required(q, "target"), q.get("path"), required(q, "method"), q.get("arg"));
             case "/world":
                 return Game.world();
             case "/refresh":

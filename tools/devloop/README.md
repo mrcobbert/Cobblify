@@ -43,12 +43,45 @@ cobdev shot --at 120 80       # hover first, then capture
 ```
 
 Also: `down`, `up`, `drag`, `scroll X Y N` (positive = down), `hover X Y` / `hover off`,
-`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `size W H` (window, display px),
+`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `size W H` (window, display px;
+`--virtual` and `size reset` below),
 `reinit`, `close`, `world` (flat creative world "cobdev"), `refresh` (resources), `restart`,
 `log [N]`.
 
 Run `tools/devloop/cobdev` from any checkout, or `/Users/Shared/cobblify-dev/bin/cobdev` from a
 branch that predates this tool.
+
+Settings and screen state, without clicking:
+
+```
+cobdev field config guiSize           # read a ClientSettings field
+cobdev field config guiFont modern    # set it (not saved; a screen that saves on close saves it)
+cobdev field screen state.category settings
+cobdev invoke config setHudSize 2     # call a method; --path state.open for an object inside
+cobdev command "/time set 6000"       # a slash command, singleplayer only
+```
+
+## Every screen size at once (`cobdev matrix`)
+
+`cobdev size W H --virtual` renders at any size offscreen while the window stays as it is, so a
+laptop shows what a 4K screen gets; `shot` captures the whole frame and `cobdev size reset` goes
+back. `cobdev matrix` uses it to screenshot every combination of display (15 by default, from
+Minecraft's 854x480 window to 4K, 1080p and 1440p being three quarters of Steam), Minecraft GUI
+scale (scales a display clamps to the same factor are taken once), font and size, for the settings
+sheet and the HUD editor:
+
+```
+cobdev matrix                         # about 1,000 shots in 8 minutes, labelled with the running branch
+cobdev matrix --label try-2 --screens sheet-settings --fonts minecraft --sizes 1
+```
+
+It loads the flat world, pins noon, clear weather and no mobs, puts back every setting it changed,
+and writes to `/Users/Shared/cobblify-dev/matrix`. The user opens
+`file:///Users/Shared/cobblify-dev/matrix/index.html`: a grid of displays by GUI scale, filters for
+screen, font and size, full size on click (`F` toggles fit and 1:1), and a second run beside the
+first ("vs") to compare two branches shot for shot. Each tile is tagged with the sheet's unit, its
+share of the screen width, and its capital height in pixels and in arcminutes on a typical screen
+for that resolution (ANSI/HFES 100: 16 minimum, 22-30 preferred).
 
 ## Rules
 

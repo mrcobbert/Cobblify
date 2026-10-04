@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cobdev matrix</title>
+<style>
+  :root {
+    --bg: #111214; --panel: #1a1c1f; --line: #2a2d31; --text: #e6e6e6; --dim: #9aa0a6; --faint: #5f656b;
+    --good: #5ec27a; --warn: #e0b84a; --bad: #e5605a; --accent: #8ec5ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line);
+           padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  h1 { font-size: 14px; margin: 0 6px 0 0; letter-spacing: .02em; }
+  label { color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+  select { background: #0d0e10; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: inherit; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .seg button { background: none; border: 0; color: var(--dim); padding: 4px 9px; font: inherit; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: #2b3440; color: var(--text); }
+  .hint { color: var(--faint); margin-left: auto; }
+  main { padding: 14px 16px 40px; overflow-x: auto; }
+  table { border-collapse: separate; border-spacing: 8px; }
+  th { color: var(--dim); font-weight: 500; text-align: left; white-space: nowrap; vertical-align: middle; }
+  th.col { text-align: center; }
+  td { vertical-align: top; }
+  .cell { width: var(--cell, 300px); cursor: zoom-in; }
+  .cell .pair { display: flex; gap: 4px; }
+  .cell img { width: 100%; display: block; border: 1px solid var(--line); border-radius: 3px; background: #000; }
+  .cell .pair img { width: calc(50% - 2px); }
+  .cap { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; color: var(--dim); font-size: 12px; }
+  .tag { padding: 0 5px; border-radius: 3px; background: #23262a; white-space: nowrap; }
+  .tag.good { color: var(--good); } .tag.warn { color: var(--warn); } .tag.bad { color: var(--bad); }
+  .empty { width: var(--cell, 300px); color: var(--faint); font-size: 12px; padding: 8px 0; }
+  #view { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; flex-direction: column; z-index: 10; }
+  #view.on { display: flex; }
+  #view .bar { padding: 8px 14px; display: flex; gap: 14px; align-items: center; color: var(--dim); border-bottom: 1px solid var(--line); background: var(--panel); }
+  #view .bar b { color: var(--text); font-weight: 600; }
+  #view .stage { flex: 1; overflow: auto; display: flex; gap: 8px; padding: 8px; }
+  #view .stage.fit { overflow: hidden; }
+  #view .stage figure { margin: 0; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #view .stage figcaption { color: var(--dim); font-size: 12px; padding: 2px 0 4px; }
+  #view .stage.fit img { max-width: 100%; max-height: calc(100vh - 90px); object-fit: contain; object-position: left top; }
+  #view .stage:not(.fit) img { image-rendering: pixelated; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>cobdev matrix</h1>
+  <label>Run <select id="runA"></select></label>
+  <label>vs <select id="runB"><option value="">nothing</option></select></label>
+  <span class="seg" id="screen"></span>
+  <span class="seg" id="font"></span>
+  <span class="seg" id="size"></span>
+  <label>Tiles <select id="cellW"><option>220</option><option selected>300</option><option>420</option><option>600</option></select></label>
+  <span class="hint" title="Caps: capital height on a typical screen for that resolution, in arcminutes at its viewing distance (ANSI/HFES: 16 minimum, 22-30 preferred).">Click a tile for full size. <kbd>F</kbd> fit/1:1 <kbd>←→</kbd> scale <kbd>↑↓</kbd> display <kbd>S M L</kbd> size <kbd>T</kbd> font <kbd>Esc</kbd></span>
+</header>
+<main><table id="grid"></table></main>
+<div id="view"><div class="bar" id="vbar"></div><div class="stage fit" id="vstage"></div></div>
+<script src="runs.js"></script>
+<script>
+"use strict";
+const RUNS = window.COBDEV_RUNS || [];
+window.COBDEV_SHOTS = window.COBDEV_SHOTS || {};
+const state = { a: "", b: "", screen: "", font: "minecraft", size: "medium", fit: true, open: null };
+try { Object.assign(state, JSON.parse(localStorage.getItem("cobdev-matrix") || "{}"), { open: null }); } catch (e) {}
+const $ = id => document.getElementById(id);
+
+// A typical screen for each resolution: [diagonal inches, viewing distance mm]. 854x480 is Minecraft's default window
+// on a 15.6" 1080p laptop (141 ppi), 1536x864 that laptop at 125% Windows scaling, 1512x982 a 14" MacBook Pro in
+// points (how LWJGL 2 sees it).
+const SETUPS = {
+  "854x480": [6.95, 500], "1280x720": [15.6, 500], "1280x800": [7, 400], "1366x768": [15.6, 500],
+  "1440x900": [13.3, 500], "1512x982": [14.2, 500], "1536x864": [15.6, 500], "1600x900": [17.3, 550],
+  "1920x1080": [24, 600], "1920x1200": [24, 600], "2560x1080": [29, 650], "2560x1440": [27, 650],
+  "2560x1600": [16, 500], "3440x1440": [34, 700], "3840x2160": [27, 650],
+};
+// Visual angle of `px` device pixels on that typical screen, in arcminutes. ANSI/HFES 100-2007: at least 16, 22-30
+// preferred.
+function arcmin(s, px) {
+  const setup = SETUPS[s.w + "x" + s.h];
+  if (!setup) return null;
+  const ppi = Math.hypot(s.w, s.h) / setup[0];
+  return px * 25.4 / ppi / setup[1] * 10800 / Math.PI;
+}
+// Sheet type: the Name role is 10 su; Inter's cap height is 0.727 em, Minecraft's capitals are 7 font px.
+function capPx(s) {
+  if (s.unit == null) return null;
+  return s.font === "minecraft" ? 7 * Math.max(1, Math.floor(s.unit + 1e-3)) : 7.27 * s.unit;
+}
+function tags(s) {
+  const out = [];
+  out.push(["GUI " + (s.gs === 0 ? "Auto" : s.gs) + (s.gs !== s.sf ? " → ×" + s.sf : ""), ""]);
+  if (s.unit != null) {
+    out.push(["unit " + s.unit.toFixed(2), ""]);
+    const cap = capPx(s), arc = arcmin(s, cap);
+    if (arc == null) out.push(["caps " + cap.toFixed(1) + " px", cap < 10 ? "bad" : cap < 13 ? "warn" : "good"]);
+    else out.push(["caps " + cap.toFixed(0) + " px = " + arc.toFixed(0) + "′", arc < 16 ? "bad" : arc < 22 ? "warn" : "good"]);
+    if (s.font === "minecraft") {
+      const k = Math.max(1, Math.floor(s.unit + 1e-3));
+      if (s.unit - k > 0.05) out.push(["text ×" + k + " of ×" + s.unit.toFixed(2), "bad"]);
+    }
+    const share = 244 * s.unit / s.w;
+    out.push([Math.round(share * 100) + "% wide", share > 0.5 ? "bad" : share > 0.4 ? "warn" : ""]);
+  }
+  return out;
+}
+
+function load(id) {
+  return new Promise(res => {
+    if (!id || window.COBDEV_SHOTS[id]) return res();
+    const s = document.createElement("script");
+    s.src = id + "/manifest.js";
+    s.onload = s.onerror = () => res();
+    document.head.appendChild(s);
+  });
+}
+const shotsOf = id => window.COBDEV_SHOTS[id] || [];
+function find(id, d, sf, o) {
+  return shotsOf(id).find(s => s.w + "x" + s.h === d && s.sf === sf && s.screen === o.screen && s.font === o.font && s.size === o.size);
+}
+function seg(el, key, values, label) {
+  el.innerHTML = "";
+  for (const v of values) {
+    const b = document.createElement("button");
+    b.textContent = label ? label(v) : v;
+    b.className = state[key] === v ? "on" : "";
+    b.onclick = () => { state[key] = v; render(); };
+    el.appendChild(b);
+  }
+}
+function uniq(a) { return [...new Set(a)]; }
+
+function axes() {
+  const all = shotsOf(state.a).concat(shotsOf(state.b));
+  const displays = uniq(all.map(s => s.w + "x" + s.h)).sort((x, y) => {
+    const [aw, ah] = x.split("x").map(Number), [bw, bh] = y.split("x").map(Number);
+    return ah - bh || aw - bw;
+  });
+  const sfs = uniq(all.map(s => s.sf)).sort((x, y) => x - y);
+  return { all, displays, sfs };
+}
+
+function render() {
+  try { localStorage.setItem("cobdev-matrix", JSON.stringify(state)); } catch (e) {}
+  document.documentElement.style.setProperty("--cell", $("cellW").value + "px");
+  const { all, displays, sfs } = axes();
+  const screens = uniq(all.map(s => s.screen));
+  if (!screens.includes(state.screen)) state.screen = screens[0] || "";
+  seg($("screen"), "screen", screens, v => v.replace("sheet-", "sheet: "));
+  seg($("font"), "font", uniq(all.map(s => s.font)));
+  seg($("size"), "size", ["small", "medium", "large"].filter(v => all.some(s => s.size === v)));
+  const g = $("grid");
+  g.innerHTML = "";
+  const head = g.insertRow();
+  head.appendChild(document.createElement("th"));
+  for (const sf of sfs) {
+    const th = document.createElement("th");
+    th.className = "col";
+    th.textContent = "scale ×" + sf;
+    head.appendChild(th);
+  }
+  for (const d of displays) {
+    const tr = g.insertRow();
+    const th = document.createElement("th");
+    th.textContent = d.replace("x", " × ");
+    tr.appendChild(th);
+    for (const sf of sfs) {
+      const td = tr.insertCell();
+      const a = find(state.a, d, sf, state), b = state.b ? find(state.b, d, sf, state) : null;
+      if (!a && !b) { td.innerHTML = '<div class="empty">—</div>'; continue; }
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      const pair = document.createElement("div");
+      pair.className = state.b ? "pair" : "";
+      for (const [run, s] of [[state.a, a]].concat(state.b ? [[state.b, b]] : [])) {
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        if (s) img.src = run + "/thumb/" + s.file;
+        img.title = s ? s.file : "missing in " + run;
+        pair.appendChild(img);
+      }
+      cell.appendChild(pair);
+      const cap = document.createElement("div");
+      cap.className = "cap";
+      for (const [t, c] of tags(a || b)) {
+        const span = document.createElement("span");
+        span.className = "tag " + c;
+        span.textContent = t;
+        cap.appendChild(span);
+      }
+      cell.appendChild(cap);
+      cell.onclick = () => { state.open = { d, sf }; view(); };
+      td.appendChild(cell);
+    }
+  }
+}
+
+function view() {
+  const v = $("view");
+  if (!state.open) { v.classList.remove("on"); return; }
+  const { d, sf } = state.open;
+  const a = find(state.a, d, sf, state), b = state.b ? find(state.b, d, sf, state) : null;
+  const s = a || b;
+  $("vbar").innerHTML = "<b>" + d.replace("x", " × ") + "</b><span>scale ×" + sf + "</span><span>" + state.screen +
+    "</span><span>" + state.font + "</span><span>" + state.size + "</span>" +
+    (s ? tags(s).map(([t, c]) => '<span class="tag ' + c + '">' + t + "</span>").join("") : "") +
+    '<span class="hint">' + (state.fit ? "fit to window" : "1 shot px = 1 CSS px, about real size on a 100-130 ppi monitor") + "</span>";
+  const stage = $("vstage");
+  stage.className = "stage" + (state.fit ? " fit" : "");
+  stage.innerHTML = "";
+  for (const [run, shot] of [[state.a, a]].concat(state.b ? [[state.b, b]] : [])) {
+    const fig = document.createElement("figure");
+    fig.innerHTML = "<figcaption>" + run + "</figcaption>";
+    if (shot) {
+      const img = document.createElement("img");
+      img.src = run + "/full/" + shot.file;
+      fig.appendChild(img);
+    } else {
+      fig.insertAdjacentHTML("beforeend", '<div class="empty">missing</div>');
+    }
+    stage.appendChild(fig);
+  }
+  v.classList.add("on");
+}
+
+function step(axis, dir) {
+  const { displays, sfs } = axes();
+  let { d, sf } = state.open;
+  if (axis === "sf") sf = sfs[Math.max(0, Math.min(sfs.length - 1, sfs.indexOf(sf) + dir))];
+  else d = displays[Math.max(0, Math.min(displays.length - 1, displays.indexOf(d) + dir))];
+  state.open = { d, sf };
+  view();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  const k = e.key.toLowerCase();
+  if (k === "s" || k === "m" || k === "l") { state.size = { s: "small", m: "medium", l: "large" }[k]; render(); view(); }
+  else if (k === "t") { state.font = state.font === "minecraft" ? "modern" : "minecraft"; render(); view(); }
+  if (!state.open) return;
+  if (k === "escape") { state.open = null; view(); }
+  else if (k === "f") { state.fit = !state.fit; view(); }
+  else if (e.key === "ArrowLeft") step("sf", -1);
+  else if (e.key === "ArrowRight") step("sf", 1);
+  else if (e.key === "ArrowUp") step("d", -1);
+  else if (e.key === "ArrowDown") step("d", 1);
+  else return;
+  e.preventDefault();
+});
+$("view").addEventListener("click", e => { if (e.target.id === "vstage" || e.target.id === "view") { state.open = null; view(); } });
+
+for (const sel of [$("runA"), $("runB")]) {
+  for (const r of RUNS) {
+    const o = document.createElement("option");
+    o.value = r.id;
+    o.textContent = r.label + " · " + r.date + " · " + (r.commit || "") + " (" + r.count + ")";
+    sel.appendChild(o);
+  }
+}
+if (!RUNS.some(r => r.id === state.a)) state.a = RUNS.length ? RUNS[0].id : "";
+if (state.b && !RUNS.some(r => r.id === state.b)) state.b = "";
+$("runA").value = state.a;
+$("runB").value = state.b;
+$("runA").onchange = e => { state.a = e.target.value; load(state.a).then(render); };
+$("runB").onchange = e => { state.b = e.target.value; load(state.b).then(render); };
+$("cellW").onchange = render;
+Promise.all([load(state.a), load(state.b)]).then(render);
+</script>
+</body>
+</html>

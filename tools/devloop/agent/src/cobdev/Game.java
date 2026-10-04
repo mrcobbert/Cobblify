@@ -4,7 +4,11 @@ import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -316,6 +320,129 @@ final class Game {
         });
     }
 
+    /**
+     * Render at {@code w} x {@code h} display px without touching the window: the game draws into a framebuffer that
+     * size and {@link #shot} reads it whole, so a small window can show what a 4K screen gets. The window itself only
+     * shows a corner of it until {@link #resetSize} (or a real window resize) puts the window's size back.
+     */
+    static Map<String, Object> virtualSize(int w, int h) throws Exception {
+        if (w < 320 || h < 240) throw new DevAgent.Refused("the display must be at least 320x240");
+        return onMain(() -> {
+            int max = GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE);
+            if (w > max || h > max) throw new DevAgent.Refused("this GPU's framebuffers stop at " + max + " px");
+            call(mc, "resize", new Class<?>[]{int.class, int.class}, w, h);
+            return sizes();
+        });
+    }
+
+    /** Back to rendering at the window's own size. */
+    static Map<String, Object> resetSize() throws Exception {
+        return onMain(() -> {
+            call(mc, "resize", new Class<?>[]{int.class, int.class},
+                    org.lwjgl.opengl.Display.getWidth(), org.lwjgl.opengl.Display.getHeight());
+            return sizes();
+        });
+    }
+
+    private static Map<String, Object> sizes() throws Exception {
+        Map<String, Object> out = ok();
+        out.put("display", get(mc, "displayWidth") + "x" + get(mc, "displayHeight"));
+        out.put("window", org.lwjgl.opengl.Display.getWidth() + "x" + org.lwjgl.opengl.Display.getHeight());
+        return out;
+    }
+
+    /**
+     * Reads a field, or sets it when {@code value} is given, at a dotted {@code path} from {@code target}: the mod's
+     * settings ({@code config}) or the open Cobblify screen ({@code screen}). Nothing is saved; a screen that saves on
+     * close saves whatever the field holds then.
+     */
+    static Map<String, Object> fieldAt(String target, String path, String value) throws Exception {
+        return onMain(() -> {
+            if (value != null) requireLocal();
+            Object owner = owner(target, path);
+            Field f = field(owner.getClass(), last(path));
+            Map<String, Object> out = ok();
+            out.put("old", String.valueOf(f.get(owner)));
+            if (value != null) {
+                f.set(owner, convert(value, f.getType()));
+                out.put("value", String.valueOf(f.get(owner)));
+            }
+            return out;
+        });
+    }
+
+    /** Calls method {@code name} with no argument or one ({@code arg}, converted to its type) on the object at {@code path}. */
+    static Map<String, Object> invoke(String target, String path, String name, String arg) throws Exception {
+        return onMain(() -> {
+            requireLocal();
+            Object o = path == null || path.isEmpty() ? root(target) : resolve(root(target), path);
+            int count = arg == null ? 0 : 1;
+            for (Class<?> k = o.getClass(); k != null; k = k.getSuperclass()) {
+                for (Method m : k.getDeclaredMethods()) {
+                    if (!m.getName().equals(name) || m.getParameterTypes().length != count) continue;
+                    m.setAccessible(true);
+                    Object r = count == 0 ? m.invoke(o) : m.invoke(o, convert(arg, m.getParameterTypes()[0]));
+                    Map<String, Object> out = ok();
+                    out.put("result", String.valueOf(r));
+                    return out;
+                }
+            }
+            throw new DevAgent.Refused("no " + name + " taking " + count + " argument(s) on " + o.getClass().getName());
+        });
+    }
+
+    private static Object root(String target) throws Exception {
+        if ("config".equals(target)) {
+            Object c = getStatic(gameClass("com.bedwarsqol.BedwarsQol"), "config");
+            if (c == null) throw new DevAgent.Refused("the mod's settings are not loaded yet");
+            return c;
+        }
+        if ("screen".equals(target)) return modScreen();
+        throw new DevAgent.Refused("target is config or screen, not " + target);
+    }
+
+    private static Object owner(String target, String path) throws Exception {
+        int dot = path.lastIndexOf('.');
+        return dot < 0 ? root(target) : resolve(root(target), path.substring(0, dot));
+    }
+
+    private static Object resolve(Object o, String path) throws Exception {
+        for (String part : path.split("\\.")) {
+            o = get(o, part);
+            if (o == null) throw new DevAgent.Refused(part + " is null");
+        }
+        return o;
+    }
+
+    private static String last(String path) {
+        return path.substring(path.lastIndexOf('.') + 1);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object convert(String v, Class<?> type) {
+        if (type == String.class || type == Object.class) return v;
+        if (type == int.class || type == Integer.class) return Integer.valueOf(v);
+        if (type == float.class || type == Float.class) return Float.valueOf(v);
+        if (type == double.class || type == Double.class) return Double.valueOf(v);
+        if (type == long.class || type == Long.class) return Long.valueOf(v);
+        if (type == boolean.class || type == Boolean.class) return Boolean.valueOf(v);
+        if (type.isEnum()) return Enum.valueOf((Class) type, v);
+        throw new DevAgent.Refused("cannot set a " + type.getName() + " from text");
+    }
+
+    /** Sends a slash command as the player, in a singleplayer world only (the sweep pins time, weather and mobs). */
+    static Map<String, Object> command(String text) throws Exception {
+        if (!text.startsWith("/")) throw new DevAgent.Refused("only slash commands");
+        return onMain(() -> {
+            Object player = get(mc, "thePlayer");
+            if (player == null || !(Boolean) call(mc, "isSingleplayer", NONE)) {
+                throw new DevAgent.Refused("commands only go to a singleplayer world");
+            }
+            call(player, "sendChatMessage", new Class<?>[]{String.class}, text);
+            return ok();
+        });
+    }
+
     static Map<String, Object> scale(int n) throws Exception {
         if (n < 0 || n > 4) throw new DevAgent.Refused("GUI scale is 0 (auto) to 4");
         return onMain(() -> {
@@ -378,7 +505,8 @@ final class Game {
     }
 
     /** The last fully rendered frame, as PNG, after waiting {@code waitMs} for animations to settle. */
-    static byte[] shot(int waitMs) throws Exception {
+    /** The last frame as a PNG, or as a JPEG at {@code quality} (1-100) when {@code jpeg}. */
+    static byte[] shot(int waitMs, boolean jpeg, int quality) throws Exception {
         onMain(() -> null);
         if (waitMs > 0) Thread.sleep(Math.min(waitMs, 10_000));
         Object[] frame = onMain(() -> {
@@ -405,7 +533,20 @@ final class Game {
         BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         for (int row = 0; row < h; row++) img.setRGB(0, h - 1 - row, w, 1, px, row * w, w);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ImageIO.write(img, "png", out);
+        if (!jpeg) {
+            ImageIO.write(img, "png", out);
+            return out.toByteArray();
+        }
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+        ImageWriteParam param = writer.getDefaultWriteParam();
+        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        param.setCompressionQuality(Math.max(1, Math.min(100, quality)) / 100f);
+        try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
+            writer.setOutput(ios);
+            writer.write(null, new IIOImage(img, null, null), param);
+        } finally {
+            writer.dispose();
+        }
         return out.toByteArray();
     }
 
