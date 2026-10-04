@@ -471,6 +471,12 @@ def cmd_simple(path, *names):
     return run
 
 
+def cmd_size(args):
+    locked(args)
+    r = api("/size", {"w": args.w, "h": args.h})
+    print("window %s (desktop %s, pixel scale %s)" % (r.get("window"), r.get("desktop"), r.get("pixelScale")))
+
+
 def cmd_hover(args):
     locked(args)
     if args.x == "off":
@@ -575,6 +581,9 @@ def main():
     p.add_argument("--char", help="character to send with the key code")
     p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
     p.add_argument("n", type=int)
+    p = add("size", cmd_size, "resize the game window to W x H display px")
+    p.add_argument("w", type=int)
+    p.add_argument("h", type=int)
     add("world", cmd_world, "load (or create) the flat creative world 'cobdev'")
     add("refresh", cmd_simple("/refresh"), "reload resources (textures, font atlases)")
     p = add("shot", cmd_shot, "save a PNG of the last frame")

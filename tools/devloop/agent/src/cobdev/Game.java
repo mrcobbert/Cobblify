@@ -299,6 +299,23 @@ final class Game {
         });
     }
 
+    /** Resize the game window to {@code w} x {@code h} display px, the way vanilla's fullscreen toggle does. */
+    static Map<String, Object> size(int w, int h) throws Exception {
+        if (w < 320 || h < 240) throw new DevAgent.Refused("the window must be at least 320x240");
+        return onMain(() -> {
+            // macOS clamps a window that would run off the screen, so start from the top-left corner
+            org.lwjgl.opengl.Display.setLocation(0, 0);
+            org.lwjgl.opengl.Display.setDisplayMode(new org.lwjgl.opengl.DisplayMode(w, h));
+            call(mc, "resize", new Class<?>[]{int.class, int.class}, w, h);
+            Map<String, Object> out = ok();
+            out.put("window", org.lwjgl.opengl.Display.getWidth() + "x" + org.lwjgl.opengl.Display.getHeight()
+                    + " at " + org.lwjgl.opengl.Display.getX() + "," + org.lwjgl.opengl.Display.getY());
+            out.put("desktop", String.valueOf(org.lwjgl.opengl.Display.getDesktopDisplayMode()));
+            out.put("pixelScale", org.lwjgl.opengl.Display.getPixelScaleFactor());
+            return out;
+        });
+    }
+
     static Map<String, Object> scale(int n) throws Exception {
         if (n < 0 || n > 4) throw new DevAgent.Refused("GUI scale is 0 (auto) to 4");
         return onMain(() -> {

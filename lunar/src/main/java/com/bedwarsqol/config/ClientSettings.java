@@ -24,14 +24,12 @@ public class ClientSettings {
      * {@link #setHudSize}); a reset module gets this size.
      */
     public int defaultTextSize = 1;
-    /** Global Text/Image style for every HUD element that supports it. 0 = text, 1 = icons + numbers. */
-    public int hudDisplayMode = 1;
-    /** Font for HUD text. 0 = modern (bundled Inter atlas), 1 = vanilla Minecraft font. */
-    public int hudFont = 0;
     /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
     public int guiSize = 2;
     /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
     public String guiAccent = "orange";
+    /** Font of the settings menu and the HUD: {@code modern} (Inter) or {@code minecraft} (the game's own). */
+    public String guiFont = GuiTheme.FONT_MODERN;
 
     // --- BedWars HUDs (render everywhere unless their In Game Only is set) ---
 
@@ -289,10 +287,9 @@ public class ClientSettings {
     public void sanitize() {
         migrate();
         defaultTextSize = clamp(defaultTextSize, 0, 2);
-        hudDisplayMode = clamp(hudDisplayMode, 0, 1);
-        hudFont = clamp(hudFont, 0, 1);
         guiSize = clamp(guiSize, 0, 2);
         guiAccent = GuiTheme.normalizeToken(guiAccent);
+        guiFont = GuiTheme.normalizeFont(guiFont);
 
         inventoryHudAnchor = clamp(inventoryHudAnchor, HudPlacement.AUTO, 8);
         if (inventoryHudScale < 0.3f || inventoryHudScale > 10.0f) inventoryHudScale = defaultTextSizeScale();
@@ -326,6 +323,11 @@ public class ClientSettings {
         settingsKeyCode = KeyCodes.sanitize(settingsKeyCode, Keyboard.KEY_RSHIFT);
         pauseKeyCode = KeyCodes.sanitize(pauseKeyCode, Keyboard.KEY_NONE);
         pcIncKeyCode = KeyCodes.sanitize(pcIncKeyCode, Keyboard.KEY_NONE);
+    }
+
+    /** Whether the menu and the HUD use Minecraft's font. */
+    public boolean minecraftFont() {
+        return GuiTheme.FONT_MINECRAFT.equals(guiFont);
     }
 
     public float defaultTextSizeScale() {

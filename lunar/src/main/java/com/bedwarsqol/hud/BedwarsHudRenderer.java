@@ -16,7 +16,6 @@ import com.bedwarsqol.hud.HudLayout.Spot;
 import com.bedwarsqol.hud.HudLayout.Vertical;
 import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
-import com.bedwarsqol.gui.render.GuiBlur;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.render.Theme;
@@ -76,7 +75,6 @@ public class BedwarsHudRenderer {
         Minecraft mc = Minecraft.getMinecraft();
         ClientSettings cfg = BedwarsQol.config;
         if (mc == null || mc.thePlayer == null || cfg == null) return;
-        if (GuiBlur.isActive()) return; // settings GUI open: its blurred backdrop replaces the HUD
         if (mc.currentScreen instanceof EditHudGui) return; // the editor draws its own preview
         if (mc.gameSettings != null && mc.gameSettings.showDebugInfo) return;
 
@@ -95,7 +93,6 @@ public class BedwarsHudRenderer {
     public static List<HudBox> getEditorBoxes(Minecraft mc, ClientSettings cfg) {
         if (mc == null || cfg == null) return Collections.emptyList();
         cfg.sanitize();
-        hudVanillaFont = cfg.hudFont == 1;
 
         List<HudBox> boxes = new ArrayList<>(8);
         addEditorBox(boxes, cfg, inventoryBox(mc, cfg, true, true));
@@ -122,7 +119,6 @@ public class BedwarsHudRenderer {
     }
 
     private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
-        hudVanillaFont = cfg.hudFont == 1;
         drawInventoryHud(mc, cfg, example);
         drawTimerHud(mc, cfg, example, true);
         drawTimerHud(mc, cfg, example, false);
@@ -149,44 +145,21 @@ public class BedwarsHudRenderer {
         return Math.max(2, Math.round(4f * scale));
     }
 
-    private static void drawHudBackground(HudBox box, float scale, int fill) {
-        float pad = panelPad(scale);
+    /**
+     * In the Edit HUD preview the panel stops 1 px short of its box, so the editor's 1 px frame on the box
+     * edge sits over the world like every other module's frame.
+     */
+    private static void drawHudBackground(HudBox box, float scale, boolean example) {
+        float pad = panelPad(scale) - (example ? 1f : 0f);
         float x1 = box.x - pad, y1 = box.y - pad;
         float x2 = box.right() + pad, y2 = box.bottom() + pad;
-        GuiRender.roundedRect(x1, y1, x2, y2, Theme.CARD_R, fill);
+        GuiRender.rect(x1, y1, x2, y2, HUD_BG_FILL); // square, so the Edit HUD frame matches its edge
     }
 
-    private static void drawHudBackground(HudBox box, float scale) {
-        drawHudBackground(box, scale, HUD_BG_FILL);
-    }
-
-    private static void drawLines(FontRenderer fr, List<Line> lines, float x, float y, float scale) {
-        if (fr == null || lines.isEmpty()) return;
-        float textHeight = TEXT_HEIGHT * scale;
-        float lineStep = (TEXT_HEIGHT + LINE_GAP) * scale;
-        float secondaryScale = scale * SECONDARY_SCALE;
-        float secondaryYOffset = (textHeight - TEXT_HEIGHT * secondaryScale) / 2f;
-        float gap = SECONDARY_GAP * scale;
-
-        for (int i = 0; i < lines.size(); i++) {
-            Line line = lines.get(i);
-            float ly = y + i * lineStep;
-            if (line.primary.isEmpty()) continue; // blank spacer row: advances one lineStep, draws nothing
-            drawScaledString(fr, line.primary, x, ly, scale, line.weight);
-            if (!line.secondary.isEmpty()) {
-                float secX = x + fontWidth(line.primary, line.weight) * scale + gap;
-                drawScaledString(fr, line.secondary, secX, ly + secondaryYOffset, secondaryScale, line.weight);
-            }
-        }
-    }
-
-    // ----- HUD font: modern Inter atlas (default) or the vanilla Minecraft font, chosen in Settings -----
-    // Cached at each render/measure entry (render(), getEditorBoxes) so the width + draw helpers agree within
-    // a frame. Client rendering is single-threaded, so the shared static is safe.
-    private static boolean hudVanillaFont = false;
+    // ----- HUD font: the modern Inter atlas -----
 
     /**
-     * Width of {@code text} at scale 1.0 in the active HUD font (multiply by your scale at the call
+     * Width of {@code text} at scale 1.0 in the HUD font (multiply by your scale at the call
      * site), measured in the weight it is drawn with — every HUD draw is SemiBold unless a
      * {@link Line} says otherwise, and SemiBold advances are wider than Regular.
      */
@@ -195,36 +168,38 @@ public class BedwarsHudRenderer {
     }
 
     private static float fontWidth(String text, BedwarsQolFont.Weight weight) {
-        if (hudVanillaFont) {
-            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-            return fr == null ? 0f : fr.getStringWidth(text);
-        }
         return BedwarsQolFont.width(text, 1f, weight);
     }
 
-    /** Line height at {@code scale}; both fonts are ~9px tall at scale 1.0. */
+    /** Line height at {@code scale}; ~9px at scale 1.0. */
     private static float fontHeight(float scale) {
-        return hudVanillaFont ? 9f * scale : BedwarsQolFont.height(scale);
+        return BedwarsQolFont.height(scale);
     }
 
-    /** Draw {@code text} with its top-left at (x,y), scaled about that origin, in the active HUD font. */
+    /**
+     * The scale a module's text is laid out and drawn at: its own, or in Minecraft's font snapped to whole device
+     * pixels per font pixel (see {@link BedwarsQolFont#textScale}). Measure with it wherever text is drawn with it.
+     */
+    private static float ts(float scale) {
+        return BedwarsQolFont.textScale(scale);
+    }
+
+    /**
+     * How much of the 9 px line Minecraft's font leaves empty under its capitals and their shadow: one font pixel,
+     * dropped from a text block's height and halved when centring it, so the text itself sits centred. 0 with the
+     * modern font.
+     */
+    private static float inkTrim(float textScale) {
+        return BedwarsQolFont.minecraft() ? textScale : 0f;
+    }
+
+    /** Draw {@code text} with its top-left at (x,y), scaled about that origin, in the HUD font. */
     private static void fontDraw(String text, float x, float y, float scale, int color, BedwarsQolFont.Weight weight) {
-        if (hudVanillaFont) {
-            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-            if (fr == null) return;
-            GlStateManager.pushMatrix();
-            GlStateManager.translate(x, y, 0f);
-            GlStateManager.scale(scale, scale, 1f);
-            fr.drawString(text, 0, 0, color);
-            GlStateManager.popMatrix();
-            resetGlState();
-        } else {
-            BedwarsQolFont.draw(text, x, y, scale, color, false, weight);
-        }
+        BedwarsQolFont.draw(text, x, y, scale, color, false, weight);
     }
 
     private static void drawScaledString(FontRenderer fr, String text, float x, float y, float scale) {
-        // Modern Inter SemiBold (default) or the vanilla Minecraft font, per the HUD "Font" setting.
+        // Inter SemiBold
         drawScaledString(fr, text, x, y, scale, BedwarsQolFont.Weight.BOLD);
     }
 
@@ -316,8 +291,8 @@ public class BedwarsHudRenderer {
 
     /** Everything the default layout depends on; it is worked out again only when this changes. */
     private static String layoutKey(ClientSettings cfg, float sw, float sh) {
-        StringBuilder b = new StringBuilder().append(sw).append('x').append(sh)
-                .append('|').append(cfg.hudDisplayMode).append(cfg.hudFont);
+        // the font sizes every text module (Minecraft's snaps to the GUI scale, which the screen size follows)
+        StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('|').append(cfg.guiFont);
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
             if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
@@ -354,11 +329,12 @@ public class BedwarsHudRenderer {
     private static Size textSize(FontRenderer fr, List<Line> lines, float scale) {
         if (fr == null || lines.isEmpty()) return Size.EMPTY;
 
+        float t = ts(scale);
         float width = 0f;
         for (Line line : lines) {
-            width = Math.max(width, lineWidth(fr, line) * scale);
+            width = Math.max(width, lineWidth(fr, line) * t);
         }
-        float height = lines.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
+        float height = lines.size() * ((TEXT_HEIGHT + LINE_GAP) * t) - LINE_GAP * t - inkTrim(t);
         return new Size(width, height);
     }
 
@@ -469,29 +445,18 @@ public class BedwarsHudRenderer {
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
-        if (cfg.hudDisplayMode == 1) {
-            return iconCountsSize(mc, Collections.singletonList(timerEntry(example, diamond)), scale);
-        }
-        return textSize(mc.fontRendererObj, Collections.singletonList(timerLine(example, diamond)), scale);
+        return iconCountsSize(mc, Collections.singletonList(timerEntry(example, diamond)), scale);
     }
 
     private static void drawTimerHud(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
         HudBox box = timerBox(mc, cfg, example, diamond, false);
         if (box == null) return;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
-        if (cfg.hudDisplayMode == 1) {
-            drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), box.x, box.y, scale);
-        } else {
-            drawLines(mc.fontRendererObj, Collections.singletonList(timerLine(example, diamond)), box.x, box.y, scale);
-        }
+        drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), box.x, box.y, scale);
     }
 
     private static IconCount timerEntry(boolean example, boolean diamond) {
         return new IconCount(new ItemStack(diamond ? Items.diamond : Items.emerald), timerValue(example, diamond));
-    }
-
-    private static Line timerLine(boolean example, boolean diamond) {
-        return new Line(diamond ? "Diamond" : "Emerald", timerValue(example, diamond));
     }
 
     /** Just the spawn countdown, e.g. "23s" — rendered to the right of the gem icon. */
@@ -534,8 +499,9 @@ public class BedwarsHudRenderer {
             for (int i = 0; i < entries.size(); i++) {
                 String count = entries.get(i).count;
                 if (count.isEmpty()) continue;
-                float ty = y + i * lineStep + (iconSize - TEXT_HEIGHT * scale) / 2f;
-                drawScaledString(fr, count, x + iconSize + gap, ty, scale);
+                float t = ts(scale);
+                float ty = y + i * lineStep + (iconSize - TEXT_HEIGHT * t) / 2f + inkTrim(t) / 2f;
+                drawScaledString(fr, count, x + iconSize + gap, ty, t);
             }
         }
     }
@@ -548,7 +514,7 @@ public class BedwarsHudRenderer {
         FontRenderer fr = mc.fontRendererObj;
         if (fr != null) {
             for (IconCount e : entries) {
-                if (!e.count.isEmpty()) maxText = Math.max(maxText, fontWidth(e.count) * scale);
+                if (!e.count.isEmpty()) maxText = Math.max(maxText, fontWidth(e.count) * ts(scale));
             }
         }
         float width = iconSize + (maxText > 0f ? gap + maxText : 0f);
@@ -579,11 +545,11 @@ public class BedwarsHudRenderer {
     }
 
     private static Size heightLimitSize(Minecraft mc, ClientSettings cfg, boolean example) {
-        float scale = cfg.heightLimitHudScale;
+        float scale = ts(cfg.heightLimitHudScale);
         List<String> rows = heightLimitRows(mc, example);
         float width = 0f;
         for (String row : rows) width = Math.max(width, fontWidth(row, HEIGHT_ROW_WEIGHT) * scale);
-        float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale;
+        float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale - inkTrim(scale);
         return new Size(width, height);
     }
 
@@ -591,7 +557,8 @@ public class BedwarsHudRenderer {
         HudBox box = heightLimitBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.heightLimitHudScale;
-        drawHudBackground(box, scale);
+        drawHudBackground(box, scale, example);
+        scale = ts(scale);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<String> rows = heightLimitRows(mc, example);
         for (int i = 0; i < rows.size(); i++) {
@@ -670,7 +637,8 @@ public class BedwarsHudRenderer {
         HudBox box = sessionBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
-        drawHudBackground(box, scale); // always on: the 13-row panel is unreadable over the world without it
+        drawHudBackground(box, scale, example); // always on: the 13-row panel is unreadable over the world without it
+        scale = ts(scale);
         // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
