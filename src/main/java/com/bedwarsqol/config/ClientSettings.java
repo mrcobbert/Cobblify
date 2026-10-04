@@ -16,7 +16,7 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 4;
+    static final int CURRENT_SETTINGS_VERSION = 5;
     public int settingsVersion = 0;
 
     /**
@@ -24,8 +24,11 @@ public class ClientSettings {
      * {@link #setHudSize}); a reset module gets this size.
      */
     public int defaultTextSize = 1;
-    /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
-    public int guiSize = 2;
+    /**
+     * GUI Size of the settings menu and Edit HUD's buttons: 0 = small, 1 = medium (sized from the screen), 2 = large,
+     * a step either side of it ({@code SheetLayout.unit}).
+     */
+    public int guiSize = 1;
     /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
     public String guiAccent = "orange";
     /** Font of the settings menu and the HUD: {@code modern} (Inter) or {@code minecraft} (the game's own). */
@@ -302,6 +305,8 @@ public class ClientSettings {
      * any HUD Size. A module still at its exact old default spot moves into it; anything the user
      * moved is kept.</li>
      * <li>v4: Block Overlay takes the accent instead of its own colour; an overlay that was white stays white.</li>
+     * <li>v5: GUI Size steps from a size worked out from the screen instead of scaling the GUI scale, so the old
+     * Large, the old default, is the new Medium.</li>
      * </ul>
      */
     void migrate() {
@@ -329,6 +334,7 @@ public class ClientSettings {
             if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
         }
         if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
+        if (settingsVersion < 5 && guiSize == 2) guiSize = 1;
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;

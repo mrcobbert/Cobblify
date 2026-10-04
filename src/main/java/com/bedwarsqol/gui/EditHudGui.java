@@ -282,7 +282,7 @@ public class EditHudGui extends GuiScreen {
     private void drawResetAll(long now, int accent, float open) {
         int sf = new ScaledResolution(mc).getScaleFactor();
         boolean minecraftFont = settings().minecraftFont();
-        float u = SheetLayout.unit(sf, settings().guiSize, minecraftFont);
+        float u = SheetLayout.unit(settings().guiSize, mc.displayWidth, mc.displayHeight);
         resetUnit = u;
         // the canvas measures the label, so it starts the frame first
         canvas.begin(u, 0f, 0f, mc.displayHeight, sf, minecraftFont);

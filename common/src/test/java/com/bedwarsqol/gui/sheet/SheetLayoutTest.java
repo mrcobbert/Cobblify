@@ -244,11 +244,39 @@ public class SheetLayoutTest {
     }
 
     @Test
-    public void minecraftsFontNeverDrawsASheetUnitUnderADevicePixel() {
-        assertEquals(1.4f, SheetLayout.unit(2, 0, false), 1e-6f);
-        assertEquals(1.4f, SheetLayout.unit(2, 0, true), 1e-6f);
-        assertEquals(0.7f, SheetLayout.unit(1, 0, false), 1e-6f);
-        assertEquals(1f, SheetLayout.unit(1, 0, true), 0f);
+    public void mediumComesFromTheScreenHeight() {
+        assertEquals(2, SheetLayout.unit(1, 1280, 720));
+        assertEquals(2, SheetLayout.unit(1, 1920, 1080));
+        assertEquals(3, SheetLayout.unit(1, 2560, 1440));
+        assertEquals(4, SheetLayout.unit(1, 3840, 2160));
+    }
+
+    @Test
+    public void smallAndLargeAreAStepEitherSideButNeverUnreadable() {
+        assertEquals(3, SheetLayout.unit(2, 1920, 1080));
+        assertEquals(3, SheetLayout.unit(0, 3840, 2160));
+        assertEquals("7 px capitals are too small, so Small stays at 2", 2, SheetLayout.unit(0, 1920, 1080));
+    }
+
+    @Test
+    public void theSheetStepsDownUntilItFitsTheScreen() {
+        assertEquals("Large on 720p would cover 57% of the width", 2, SheetLayout.unit(2, 1280, 720));
+        assertEquals("Minecraft's default 854x480 window", 1, SheetLayout.unit(1, 854, 480));
+        assertEquals("a tiny window still gets a sheet", 1, SheetLayout.unit(1, 400, 300));
+    }
+
+    @Test
+    public void everySizeFitsEveryCommonScreen() {
+        int[][] screens = {{854, 480}, {1280, 720}, {1280, 800}, {1366, 768}, {1512, 982}, {1920, 1080}, {1920, 1200},
+                {2560, 1080}, {2560, 1440}, {2560, 1600}, {3440, 1440}, {3840, 2160}};
+        for (int[] d : screens) {
+            for (int size = 0; size < 3; size++) {
+                int u = SheetLayout.unit(size, d[0], d[1]);
+                assertTrue(u >= 1);
+                if (u > 1) assertTrue(d[0] + "x" + d[1] + " size " + size, SheetLayout.fits(u, d[0], d[1]));
+                if (d[1] >= 720) assertTrue(d[0] + "x" + d[1] + " size " + size + " is readable", u >= 2);
+            }
+        }
     }
 
     @Test

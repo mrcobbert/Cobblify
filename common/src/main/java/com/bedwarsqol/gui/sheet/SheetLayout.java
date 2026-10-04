@@ -24,23 +24,43 @@ public final class SheetLayout {
     public static final float BODY_TOP = HEADER_H + NAV_H;
     /** A category's key under its label: an option-style key, its 2 su ledge hanging into the band's padding. */
     public static final float CATEGORY_KEY_H = 8f;
-    /** GUI Size: Small, Medium and Large, as a multiple of the GUI scale. */
-    private static final float[] GUI_SIZES = {0.70f, 0.85f, 1.00f};
+    /** GUI Size: Small, Medium and Large, as steps from the size the screen gets at Medium. */
+    private static final int[] GUI_SIZE_STEPS = {-1, 0, 1};
+    /**
+     * Screen height per step at Medium: 1080p gets 2 device px per unit, 1440p 3 and 2160p 4, so the 7 px-per-unit
+     * capitals look about the same size on a typical monitor of each (22 to 28 arcminutes at arm's length).
+     */
+    static final float HEIGHT_PER_STEP = 540f;
+    /** Below 2 the capitals are 7 device px, too small to read on any screen, so no GUI Size goes there. */
+    private static final int MIN_READABLE = 2;
+    /** The sheet never covers more than this share of the screen's width... */
+    static final float MAX_SCREEN_SHARE = 0.45f;
+    /** ...and always has room for this many closed modules between its bands. */
+    static final float MIN_MODULES = 4f;
+    /** A closed module's height, and roughly what the header, category and footer bands take together. */
+    private static final float MODULE_H = 39f, BANDS_H = BODY_TOP + 38f;
     /** Right edge of a module row's content: the sheet's edge less its 9 su padding. */
     private static final float ROW_RIGHT = WIDTH - 9f;
 
-    /** Device px per sheet unit: one GUI pixel times the GUI Size. */
-    public static float unit(int scaleFactor, int guiSize) {
-        return scaleFactor * GUI_SIZES[Math.max(0, Math.min(GUI_SIZES.length - 1, guiSize))];
+    /**
+     * Device px per sheet unit, from the screen alone: its height sets Medium ({@link #HEIGHT_PER_STEP}), Small and
+     * Large are a step either side but never under {@link #MIN_READABLE}, then the unit drops until the sheet fits
+     * ({@link #fits}). The game's GUI scale plays no part: players pick it for the HUD, and at Small or on a 4K screen it
+     * would make the sheet unreadable. Always whole: Minecraft's font only draws crisp at whole device pixels per font
+     * pixel, and a whole unit puts every edge on a pixel in both fonts.
+     */
+    public static int unit(int guiSize, int displayWidth, int displayHeight) {
+        int step = GUI_SIZE_STEPS[Math.max(0, Math.min(GUI_SIZE_STEPS.length - 1, guiSize))];
+        int medium = Math.max(MIN_READABLE, Math.round(displayHeight / HEIGHT_PER_STEP));
+        int u = Math.max(MIN_READABLE, medium + step);
+        while (u > 1 && !fits(u, displayWidth, displayHeight)) u--;
+        return u;
     }
 
-    /**
-     * The unit with the Font setting: Minecraft's font draws a font pixel no smaller than a device pixel, so the sheet
-     * is never smaller than one device pixel per su there, or its text would outgrow it.
-     */
-    public static float unit(int scaleFactor, int guiSize, boolean minecraftFont) {
-        float u = unit(scaleFactor, guiSize);
-        return minecraftFont ? Math.max(1f, u) : u;
+    /** Whether a sheet at {@code unit} keeps to its share of the screen's width and shows enough modules. */
+    static boolean fits(int unit, int displayWidth, int displayHeight) {
+        return WIDTH * unit <= MAX_SCREEN_SHARE * displayWidth
+                && displayHeight / (float) unit - BANDS_H >= MIN_MODULES * MODULE_H;
     }
 
     public enum T {

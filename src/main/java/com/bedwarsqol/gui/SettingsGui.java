@@ -95,7 +95,7 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
         long now = System.currentTimeMillis();
         int sf = new ScaledResolution(mc).getScaleFactor();
         boolean minecraftFont = SettingsBindings.settings().minecraftFont();
-        unit = SheetLayout.unit(sf, SettingsBindings.settings().guiSize, minecraftFont);
+        unit = SheetLayout.unit(SettingsBindings.settings().guiSize, mc.displayWidth, mc.displayHeight);
         float sheetW = SheetLayout.WIDTH * unit;
         float hidden = sheetW + 2f * unit;
         float slide;
