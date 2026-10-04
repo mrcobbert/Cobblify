@@ -116,6 +116,38 @@ public class SheetControllerTest {
     }
 
     @Test
+    public void aHeldEscKeepsAValueEdit() {
+        values.setOn("handPos", true);
+        state.category = "combat";
+        state.open.add("handPos");
+        Node field = find(frame(), T.VALUE, "handScale");
+        c.pointerDown(field, field.x, 0);
+        c.pointerUp(field);
+        assertEquals("handScale", c.editing());
+        c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT, true);
+        assertEquals("handScale", c.editing());
+        c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT);
+        assertNull(c.editing());
+        assertEquals(0, host.closes);
+    }
+
+    @Test
+    public void aHeldKeyIsNotTheNewBinding() {
+        values.setOn("session", true);
+        values.setOn("sessionHold", true);
+        state.open.add("session");
+        click(find(frame(), T.KEY, "sessionKey"));
+        assertEquals("sessionKey", state.capture);
+        c.key((char) 0, 42, false, true, false, RSHIFT, true); // Shift, held since before the click
+        c.key((char) 0, SheetController.KEY_ESCAPE, false, false, false, RSHIFT, true);
+        assertEquals("still waiting", "sessionKey", state.capture);
+        assertTrue(host.keys.isEmpty());
+        c.key('r', 19, false, false, false, RSHIFT);
+        assertNull(state.capture);
+        assertEquals(19, (int) host.keys.get(0));
+    }
+
+    @Test
     public void keyCaptureBindsClearsOrCancels() {
         values.setOn("session", true);
         values.setOn("sessionHold", true);

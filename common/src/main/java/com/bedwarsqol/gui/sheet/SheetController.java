@@ -253,11 +253,13 @@ public final class SheetController {
      *
      * <p>Keys before the first frame do nothing: on Lunar the press that opens the sheet reaches it too, because
      * Weave's KeyboardEvent fires inside Minecraft's key loop, before the loop hands that press to the new screen.
-     * A held key never closes the sheet or steps back; only a fresh press of the settings key or Esc does.
+     * A held key never closes the sheet or steps back, and is never taken as a new binding; only a fresh press of
+     * the settings key or Esc closes or steps back.
      */
     public boolean key(char ch, int code, boolean ctrl, boolean shift, boolean alt, int settingsKey, boolean held) {
         if (frame == null) return false;
         if (st.capture != null) {
+            if (held) return true;
             int binding = SessionHoldKey.bindingForKey(code);
             if (binding == SessionHoldKey.KEEP_WAITING) return true;
             if (binding != SessionHoldKey.CANCEL) host.setKey(st.capture, binding);
@@ -265,6 +267,7 @@ public final class SheetController {
             host.click();
             return true;
         }
+        if (held && code == KEY_ESCAPE) return true;
         if (editing != null && editKey(ch, code, shift)) return true;
         if (code == settingsKey && settingsKey > 0 && !typing()) {
             if (held) return true;
@@ -273,7 +276,6 @@ public final class SheetController {
             return true;
         }
         if (code == KEY_ESCAPE) {
-            if (held) return true;
             if (st.confirm != null) st.confirm = null;
             else if (searchFocused) {
                 if (!st.query.isEmpty()) setQuery("");

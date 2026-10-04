@@ -9,6 +9,7 @@ import java.util.HashSet;
 import java.util.Set;
 import org.junit.Test;
 
+/** {@code down} is what LWJGL's last poll saw, and each tick runs after the screen has taken every queued event. */
 public class KeyHoldTest {
 
     private static final int RSHIFT = 54, ESCAPE = 1, A = 30;
@@ -16,57 +17,52 @@ public class KeyHoldTest {
     private final KeyHold hold = new KeyHold();
     private final Set<Integer> down = new HashSet<Integer>();
 
-    /** A frame, as the screen runs it: the first one also opens. */
-    private void frame(boolean first) {
-        if (first) hold.open(down::contains, RSHIFT, ESCAPE);
-        hold.frame(down::contains);
+    private void open() {
+        hold.open(down::contains, RSHIFT, ESCAPE);
+    }
+
+    private void tick() {
+        hold.tick(down::contains);
     }
 
     @Test
-    public void aKeyHeldDownRepeatsUntilAFrameSeesItUp() {
-        frame(true);
+    public void aKeyHeldDownRepeatsUntilATickSeesItUp() {
+        open();
         down.add(RSHIFT);
         assertTrue(hold.press(RSHIFT));
         assertFalse("auto-repeat", hold.press(RSHIFT));
-        frame(false);
+        tick();
         assertFalse("still down", hold.press(RSHIFT));
         down.remove(RSHIFT);
-        frame(false);
+        tick();
         assertTrue("released, then pressed again", hold.press(RSHIFT));
     }
 
     @Test
-    public void theOpeningPressIsReleasedByTheFirstFrameOnceTheKeyIsUp() {
-        // Lunar: the press that opened the sheet reaches it before the first frame.
+    public void theOpeningPressIsHeldUntilTheKeyIsUp() {
+        // Lunar: the sheet opens inside the key loop, and the same press reaches it next.
         down.add(RSHIFT);
-        hold.press(RSHIFT);
-        down.remove(RSHIFT);
-        frame(true);
-        assertTrue(hold.press(RSHIFT));
-    }
-
-    @Test
-    public void theOpeningPressStaysHeldWhileTheKeyIsDown() {
-        down.add(RSHIFT);
-        hold.press(RSHIFT);
-        frame(true);
+        open();
+        assertFalse(hold.press(RSHIFT));
+        tick();
         assertFalse("auto-repeat of the opening press", hold.press(RSHIFT));
         down.remove(RSHIFT);
-        frame(false);
+        tick();
         assertTrue(hold.press(RSHIFT));
     }
 
     @Test
-    public void aTapShorterThanAFrameIsStillFresh() {
-        frame(true);
-        assertTrue(hold.press(RSHIFT)); // down and up both landed before this frame
-        frame(false);
+    public void aTapAlreadyUpWhenTheScreenOpensIsReleasedByTheNextTick() {
+        // Down and up both landed in one poll: the key reads up when the press opens the sheet.
+        open();
+        hold.press(RSHIFT);
+        tick();
         assertTrue(hold.press(RSHIFT));
     }
 
     @Test
     public void anotherKeyIsAFreshPress() {
-        frame(true);
+        open();
         down.add(A);
         assertTrue(hold.press(A));
         down.add(RSHIFT);
@@ -78,12 +74,12 @@ public class KeyHoldTest {
     public void aKeyAlreadyDownWhenTheScreenOpensIsHeld() {
         // Esc held in Edit HUD: Edit HUD took the press, and the sheet only ever sees its repeats.
         down.add(ESCAPE);
-        frame(true);
+        open();
         assertFalse(hold.press(ESCAPE));
-        frame(false);
+        tick();
         assertFalse(hold.press(ESCAPE));
         down.remove(ESCAPE);
-        frame(false);
+        tick();
         assertTrue(hold.press(ESCAPE));
     }
 
@@ -96,16 +92,16 @@ public class KeyHoldTest {
         };
         down.add(A); // down, but neither named nor pressed
         hold.open(spy, RSHIFT, ESCAPE, -98, 0, 300);
-        hold.frame(spy);
+        hold.tick(spy);
         hold.press(RSHIFT);
-        hold.frame(spy);
+        hold.tick(spy);
         assertEquals(new HashSet<Integer>(Arrays.asList(RSHIFT, ESCAPE)), polled);
         assertTrue("A was never seen, so its first press is fresh", hold.press(A));
     }
 
     @Test
     public void codesWithNoKeyAreAlwaysFresh() {
-        frame(true);
+        open();
         assertTrue(hold.press(0));
         assertTrue(hold.press(0));
         assertTrue(hold.press(-1));

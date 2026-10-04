@@ -63,7 +63,16 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     @Override
     public void initGui() {
         Keyboard.enableRepeatEvents(true);
-        if (openedAt < 0) openedAt = System.currentTimeMillis();
+        if (openedAt < 0) {
+            openedAt = System.currentTimeMillis();
+            keyHold.open(Keyboard::isKeyDown, SettingsBindings.settingsKey(), Keyboard.KEY_ESCAPE);
+        }
+    }
+
+    /** Runs right after {@code handleInput} has taken every queued event, so the polled keys match the last of them. */
+    @Override
+    public void updateScreen() {
+        keyHold.tick(Keyboard::isKeyDown);
     }
 
     @Override
@@ -84,8 +93,6 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         long now = System.currentTimeMillis();
-        if (frame == null) keyHold.open(Keyboard::isKeyDown, SettingsBindings.settingsKey(), Keyboard.KEY_ESCAPE);
-        keyHold.frame(Keyboard::isKeyDown);
         int sf = new ScaledResolution(mc).getScaleFactor();
         boolean minecraftFont = SettingsBindings.settings().minecraftFont();
         unit = SheetLayout.unit(sf, SettingsBindings.settings().guiSize, minecraftFont);
