@@ -16,7 +16,7 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 3;
+    static final int CURRENT_SETTINGS_VERSION = 4;
     public int settingsVersion = 0;
 
     /**
@@ -24,14 +24,12 @@ public class ClientSettings {
      * {@link #setHudSize}); a reset module gets this size.
      */
     public int defaultTextSize = 1;
-    /** Global Text/Image style for every HUD element that supports it. 0 = text, 1 = icons + numbers. */
-    public int hudDisplayMode = 1;
-    /** Font for HUD text. 0 = modern (bundled Inter atlas), 1 = vanilla Minecraft font. */
-    public int hudFont = 0;
     /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
     public int guiSize = 2;
     /** GUI accent color token: orange (default) / red / blue / green. Drives only the settings-GUI accent; HUD stays neutral. */
     public String guiAccent = "orange";
+    /** Font of the settings menu and the HUD: {@code modern} (Inter) or {@code minecraft} (the game's own). */
+    public String guiFont = GuiTheme.FONT_MODERN;
 
     public boolean potionStatusEnabled = false;
     /** Only render this HUD while in an active BedWars game (off = render everywhere). */
@@ -265,7 +263,9 @@ public class ClientSettings {
 
     /** Custom highlight on the block you're looking at. */
     public boolean blockOverlayEnabled = false;
-    public int blockOverlayColor = 0x804A90E2;  // ARGB
+    public int blockOverlayColor = 0x804A90E2;  // ARGB; only the alpha (Opacity) is used, the colour is the accent
+    /** Draw the overlay white instead of in the accent. */
+    public boolean blockOverlayWhite = false;
     public int blockOverlayStyle = 2;           // 0 = outline, 1 = fill, 2 = both
     public boolean blockOverlaySeeThrough = false;
     public float blockOverlayLineWidth = 2.0f;
@@ -301,6 +301,7 @@ public class ClientSettings {
      * <li>v3: HUD modules get a default layout worked out from their sizes, so they never overlap at
      * any HUD Size. A module still at its exact old default spot moves into it; anything the user
      * moved is kept.</li>
+     * <li>v4: Block Overlay takes the accent instead of its own colour; an overlay that was white stays white.</li>
      * </ul>
      */
     void migrate() {
@@ -327,6 +328,7 @@ public class ClientSettings {
             if (atDefault(sessionStatsHudX, sessionStatsHudY, sessionStatsHudAnchor, -5, 60, 2)) sessionStatsHudAnchor = HudPlacement.AUTO;
             if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
         }
+        if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;
@@ -350,10 +352,9 @@ public class ClientSettings {
     public void sanitize() {
         migrate();
         defaultTextSize = clamp(defaultTextSize, 0, 2);
-        hudDisplayMode = clamp(hudDisplayMode, 0, 1);
-        hudFont = clamp(hudFont, 0, 1);
         guiSize = clamp(guiSize, 0, 2);
         guiAccent = GuiTheme.normalizeToken(guiAccent);
+        guiFont = GuiTheme.normalizeFont(guiFont);
         potionHudAnchor = clamp(potionHudAnchor, HudPlacement.AUTO, 8);
         armorHudAnchor = clamp(armorHudAnchor, HudPlacement.AUTO, 8);
         if (potionHudScale < 0.3f || potionHudScale > 10.0f) potionHudScale = defaultTextSizeScale();
@@ -395,6 +396,11 @@ public class ClientSettings {
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
         if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;
+    }
+
+    /** Whether the menu and the HUD use Minecraft's font. */
+    public boolean minecraftFont() {
+        return GuiTheme.FONT_MINECRAFT.equals(guiFont);
     }
 
     public float defaultTextSizeScale() {

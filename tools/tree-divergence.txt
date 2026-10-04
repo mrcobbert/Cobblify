@@ -57,7 +57,7 @@ divergent main com/bedwarsqol/config/ClientSettings.java
 divergent main com/bedwarsqol/feature/ChatNotifications.java
 divergent main com/bedwarsqol/feature/OutgoingChat.java
 divergent main com/bedwarsqol/gui/EditHudGui.java
-divergent main com/bedwarsqol/gui/SettingsGui.java
+divergent main com/bedwarsqol/gui/SettingsBindings.java
 divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
 # Lunar has no Potion, Armor or Keystrokes module.
 divergent main com/bedwarsqol/hud/HudModules.java
@@ -71,11 +71,8 @@ divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
 divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
 divergent main com/bedwarsqol/gui/render/Icons.java
 
-# Forge takes scissor-clip parameters; Weave's overlay event is not cancellable.
-divergent main com/bedwarsqol/gui/render/GuiBlur.java
-
-# Mixins: the Lunar copies spell out require = 0 on their injectors, GuiChatMixin
-# lacks the Forge-only chat hooks and GuiIngameMixin adds the blur HUD cancel.
+# Mixins: the Lunar copies spell out require = 0 on their injectors, and GuiChatMixin
+# lacks the Forge-only chat hooks.
 # require = 0 is already Mixin's default (defaultRequire 0; neither mixins JSON
 # sets it), so a mapping miss silently no-ops in BOTH trees; the explicit value
 # documents that, it does not add safety.
@@ -120,9 +117,7 @@ one-sided test forge com/bedwarsqol/feature/ChatSpliceTest.java
 one-sided test forge com/bedwarsqol/feature/ChatStackTest.java
 one-sided test forge com/bedwarsqol/feature/ModChatTest.java
 one-sided test forge com/bedwarsqol/feature/QueueAlertTest.java
-one-sided test forge com/bedwarsqol/gui/ChildEnabledTest.java
 one-sided test forge com/bedwarsqol/gui/SettingsLayoutTest.java
-one-sided test forge com/bedwarsqol/gui/TabBarFitTest.java
 
 # Benchmark harness: LaneContrastHarness loads /lobby-arrivals.txt from
 # src/test/resources, which Lunar does not have; FakeStatsBackend exists to

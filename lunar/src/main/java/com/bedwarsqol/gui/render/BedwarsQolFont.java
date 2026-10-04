@@ -1,7 +1,10 @@
 package com.bedwarsqol.gui.render;
 
+import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.config.ClientSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.Tessellator;
 import net.minecraft.client.renderer.WorldRenderer;
@@ -24,6 +27,10 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Normalized so {@code scale = 1} ≈ 9px line height — a drop-in for Minecraft's font, which keeps
  * the HUD layout maths valid. Pass larger scales for GUI text.
+ *
+ * <p>With the Font setting on Minecraft, text is the game's own {@link FontRenderer} (resource packs included)
+ * instead, at whole device pixels per font pixel ({@link #textScale}) on whole device pixels, shadowed as vanilla
+ * shadows light text.
  */
 public final class BedwarsQolFont {
 
@@ -47,8 +54,86 @@ public final class BedwarsQolFont {
         return w == Weight.MEDIUM ? MEDIUM : REGULAR;
     }
 
+    /** The height text takes: its 9 px line, or in Minecraft's font its capitals and their shadow (8 font px). */
     public static float height(float scale) {
+        if (minecraft()) return 8f * textScale(scale);
         return PX_LINE * scale;
+    }
+
+    // ------------------------------------------------------------------ Minecraft's font (the Font setting)
+
+    /** Whether text is Minecraft's own font. */
+    public static boolean minecraft() {
+        ClientSettings c = BedwarsQol.config;
+        return c != null && c.minecraftFont();
+    }
+
+    /**
+     * The scale text is really drawn at: {@code scale} with the modern font; in Minecraft's font the nearest whole
+     * number of device pixels per font pixel, so the pixel font stays crisp. Lay text out at this scale.
+     */
+    public static float textScale(float scale) {
+        if (!minecraft()) return scale;
+        int sf = scaleFactor();
+        return Math.max(1, Math.round(scale * sf)) / (float) sf;
+    }
+
+    /** As {@link #textScale}, but rounding down in Minecraft's font: for text that must fit a fixed space. */
+    public static float textScaleAtMost(float scale) {
+        if (!minecraft()) return scale;
+        int sf = scaleFactor();
+        return Math.max(1, (int) Math.floor(scale * sf + 1e-3f)) / (float) sf;
+    }
+
+    private static int scaleFactor() {
+        return new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
+    }
+
+    /** Minecraft shadows light text; under dark text (on a pale accent) a shadow only smudges it. */
+    private static boolean shadowed(int argb) {
+        return ((argb >> 16) & 255) + ((argb >> 8) & 255) + (argb & 255) >= 3 * 0x40;
+    }
+
+    /**
+     * {@code s} in Minecraft's font over a shadow in {@code shadow}, one font pixel down and right, for text on a
+     * coloured surface: vanilla darkens the text's own colour, which under dark text only smudges it. Minecraft's
+     * font only; the modern font draws nothing here.
+     */
+    public static void drawMinecraftOver(String s, float x, float y, float scale, int color, int shadow) {
+        FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+        if (minecraft() && fr != null) drawMinecraft(fr, s, x, y, scale, color, true, shadow);
+    }
+
+    /** {@code s} in Minecraft's font with its top-left on the device pixel nearest (x, y), in the GUI's space. */
+    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color) {
+        drawMinecraft(fr, s, x, y, scale, color, false, 0);
+    }
+
+    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color,
+                                      boolean ownShadow, int shadow) {
+        int a = color >>> 24;
+        // FontRenderer draws under 4/255 alpha opaque and alpha-tests away 0.1 and under; no alpha means opaque here
+        if (a != 0 && a <= 25) return;
+        int sf = scaleFactor();
+        int k = Math.round(textScale(scale) * sf);
+        boolean alphaTest = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
+        GlStateManager.enableTexture2D(); // FontRenderer assumes texturing on
+        GlStateManager.enableBlend();
+        GlStateManager.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        GlStateManager.pushMatrix();
+        GlStateManager.scale(1f / sf, 1f / sf, 1f);
+        GlStateManager.translate(Math.round(x * sf), Math.round(y * sf), 0f);
+        GlStateManager.scale(k, k, 1f);
+        int argb = a == 0 ? color | 0xFF000000 : color;
+        if (ownShadow) {
+            fr.drawString(s, 1f, 1f, (argb & 0xFF000000) | (shadow & 0xFFFFFF), false);
+            fr.drawString(s, 0f, 0f, argb, false);
+        } else {
+            fr.drawString(s, 0f, 0f, argb, shadowed(color));
+        }
+        GlStateManager.popMatrix();
+        if (!alphaTest) GlStateManager.disableAlpha(); // it turns the test on, which would drop faint fills after it
+        GlStateManager.color(1f, 1f, 1f, 1f);
     }
 
     /** Top offset (px at {@code scale}) of a capital glyph within the line box — the empty gap above the
@@ -77,6 +162,10 @@ public final class BedwarsQolFont {
     }
 
     public static float width(String s, float scale, Weight weight) {
+        if (minecraft()) {
+            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+            return fr == null ? 0f : fr.getStringWidth(s) * textScale(scale);
+        }
         Face f = face(weight);
         f.ensure();
         FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
@@ -105,6 +194,11 @@ public final class BedwarsQolFont {
     }
 
     public static void draw(String s, float x, float y, float scale, int color, boolean shadow, Weight weight) {
+        if (minecraft()) {
+            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+            if (fr != null) drawMinecraft(fr, s, x, y, scale, color);
+            return;
+        }
         Face f = face(weight);
         f.ensure();
         if (!f.ready) {

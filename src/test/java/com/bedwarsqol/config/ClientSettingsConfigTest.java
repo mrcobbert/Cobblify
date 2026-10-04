@@ -165,7 +165,9 @@ public class ClientSettingsConfigTest {
         assertEquals("orange", GuiTheme.normalizeToken(""));
         assertEquals("orange", GuiTheme.normalizeToken("ORANGE"));
         assertEquals("blue", GuiTheme.normalizeToken("  Blue  "));
-        assertEquals("orange", GuiTheme.normalizeToken("purple"));
+        assertEquals("orange", GuiTheme.normalizeToken("chartreuse"));
+        assertEquals("teal", GuiTheme.normalizeToken("Teal"));
+        assertEquals("purple", GuiTheme.normalizeToken("Purple"));
         assertEquals("red", GuiTheme.normalizeToken("red"));
     }
 
@@ -173,7 +175,9 @@ public class ClientSettingsConfigTest {
     public void fromTokenResolvesAccents() {
         assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken(null));
         assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken(""));
-        assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken("purple"));
+        assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken("chartreuse"));
+        assertEquals(GuiTheme.Accent.TEAL, GuiTheme.fromToken("teal"));
+        assertEquals(GuiTheme.Accent.WHITE, GuiTheme.fromToken("white"));
         assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken("ORANGE"));
         assertEquals(GuiTheme.Accent.RED, GuiTheme.fromToken("RED"));
         assertEquals(GuiTheme.Accent.BLUE, GuiTheme.fromToken("blue"));
@@ -253,5 +257,37 @@ public class ClientSettingsConfigTest {
         ClientSettings bad = GSON.fromJson("{\"sessionStatsKeyCode\":9999}", ClientSettings.class);
         bad.sanitize();
         assertEquals("an unreadable key code resets to unbound", 0, bad.sessionStatsKeyCode);
+    }
+
+    @Test
+    public void fontDefaultsToModernAndOnlyMinecraftSwitchesIt() {
+        ClientSettings s = new ClientSettings();
+        s.sanitize();
+        assertEquals("modern", s.guiFont);
+        assertFalse(s.minecraftFont());
+        ClientSettings mc = GSON.fromJson("{\"guiFont\":\"minecraft\"}", ClientSettings.class);
+        mc.sanitize();
+        assertTrue(mc.minecraftFont());
+        ClientSettings odd = GSON.fromJson("{\"guiFont\":\"comic-sans\"}", ClientSettings.class);
+        odd.sanitize();
+        assertEquals("modern", odd.guiFont);
+    }
+
+    @Test
+    public void aWhiteBlockOverlayStaysWhiteWhenTheOverlayTakesTheAccent() {
+        ClientSettings white = GSON.fromJson("{\"settingsVersion\":3,\"blockOverlayColor\":" + 0x80FFFFFF + "}", ClientSettings.class);
+        white.sanitize();
+        assertTrue(white.blockOverlayWhite);
+        assertEquals("the opacity survives", 0x80, white.blockOverlayColor >>> 24);
+        ClientSettings red = GSON.fromJson("{\"settingsVersion\":3,\"blockOverlayColor\":" + 0xC0FF5555 + "}", ClientSettings.class);
+        red.sanitize();
+        assertFalse(red.blockOverlayWhite);
+        ClientSettings fresh = new ClientSettings();
+        fresh.sanitize();
+        assertFalse("a fresh install takes the accent", fresh.blockOverlayWhite);
+        // stamped files are never touched again: switching White off sticks
+        ClientSettings off = GSON.fromJson("{\"settingsVersion\":4,\"blockOverlayColor\":" + 0x80FFFFFF + "}", ClientSettings.class);
+        off.sanitize();
+        assertFalse(off.blockOverlayWhite);
     }
 }

@@ -43,8 +43,9 @@ cobdev shot --at 120 80       # hover first, then capture
 ```
 
 Also: `down`, `up`, `drag`, `scroll X Y N` (positive = down), `hover X Y` / `hover off`,
-`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `reinit`, `close`, `world` (flat
-creative world "cobdev"), `refresh` (resources), `restart`, `log [N]`.
+`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `size W H` (window, display px),
+`reinit`, `close`, `world` (flat creative world "cobdev"), `refresh` (resources), `restart`,
+`log [N]`.
 
 Run `tools/devloop/cobdev` from any checkout, or `/Users/Shared/cobblify-dev/bin/cobdev` from a
 branch that predates this tool.

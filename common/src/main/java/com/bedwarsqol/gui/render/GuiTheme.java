@@ -3,28 +3,11 @@ package com.bedwarsqol.gui.render;
 import java.util.Locale;
 
 /**
- * Palette for the settings screen ({@code gui/SettingsGui}) redesign — a warm near-black surface
- * treatment plus a single, user-selectable <em>accent</em>. {@link Theme} stays the neutral grayscale
- * source of truth that the custom scoreboard and styled tab list draw from. The HUD uses this class on
- * purpose in two places only: Session Stats headers and a pressed Keystrokes cap take the accent, so
- * they follow the colour picked in the menu. Keep it free of {@code net.minecraft} / LWJGL imports so
- * it stays pure Java, importable from {@code config}, and unit-testable.
- *
- * <p>Two families of colour live here:
- * <ul>
- *   <li>The {@link Accent} enum: the four selectable accents, each carrying a stable lowercase
- *       persistence token and a base ARGB. Every accent-sensitive GUI element (active-tab pill,
- *       toggle-on switch, card border, selected dropdown outline, selected-option indicator)
- *       resolves from the same {@link Accent} instance, so there is one source of truth per frame.</li>
- *   <li>The warm surface/text/divider constants below: the settings GUI's near-black panel, header,
- *       card fills/borders, dividers, text ramp, and neutral (off/disabled) switch colours. These are
- *       the current private {@code SettingsGui} greys nudged slightly warm (toward a brown/orange
- *       black) per the reference; Phase 2 will point {@code SettingsGui} at these names.</li>
- * </ul>
- *
- * <p><strong>All numeric values here are the tuning surface.</strong> The accent base hexes and warm
- * surface/text values were calibrated in Phase 3 against the reference screenshots; names are stable, so
- * only the hexes should move in any further in-game tuning.
+ * The user-selectable GUI <em>accent</em>. The settings sheet shades every accent surface from it in OKLab
+ * ({@code gui/sheet/SheetColors}); the HUD uses it on purpose in two places only: Session Stats headers and a
+ * pressed Keystrokes cap, so they follow the colour picked in the menu. {@link Theme} stays the neutral grayscale
+ * source the custom scoreboard and styled tab list draw from. Keep this free of {@code net.minecraft} / LWJGL
+ * imports so it stays pure Java, importable from {@code config}, and unit-testable.
  */
 public final class GuiTheme {
 
@@ -32,87 +15,120 @@ public final class GuiTheme {
     }
 
     /**
-     * The four selectable GUI accents. Each carries a stable lowercase {@code token} used for
-     * persistence ({@code ClientSettings.guiAccent}) and a base ARGB. Accent-derived colours are exposed
-     * as accessors so a Phase-3 tune touches only this enum.
-     *
-     * <p>Base hexes were tuned in Phase 3 against {@code reference-subsettings.jpeg}: ORANGE is sampled
-     * from the reference toggle's warm, slightly-red orange; RED/BLUE/GREEN are kept as sensible siblings.
+     * The selectable GUI accents, in the settings sheet's swatch order: twelve hue columns in a pale, a vivid and a
+     * deep row, then three neutrals. Each carries a stable lowercase {@code token} used for persistence
+     * ({@code ClientSettings.guiAccent}), a sentence-case label and a base ARGB. Orange is the default; the original
+     * ten keep their tokens and colours.
      */
     public enum Accent {
-        ORANGE("orange", 0xFFF0770F),
-        RED("red", 0xFFE5484D),
-        BLUE("blue", 0xFF4A90E2),
-        GREEN("green", 0xFF3FB950);
+        // pale: one lightness (OKLab 0.885), the vivid hue at 45% of its chroma
+        PALE_RED("pale-red", "Pale Red", 0xFFFFCAC7),
+        PALE_ORANGE("pale-orange", "Pale Orange", 0xFFFFCDB0),
+        PALE_YELLOW("pale-yellow", "Pale Yellow", 0xFFECD8A4),
+        PALE_LIME("pale-lime", "Pale Lime", 0xFFC5E6A9),
+        PALE_GREEN("pale-green", "Pale Green", 0xFFB7E8B9),
+        PALE_TEAL("pale-teal", "Pale Teal", 0xFFADE7D8),
+        PALE_AQUA("pale-aqua", "Pale Aqua", 0xFFB0E4EB),
+        PALE_SKY("pale-sky", "Pale Sky", 0xFFB3E1FA),
+        PALE_BLUE("pale-blue", "Pale Blue", 0xFFC0DCFF),
+        PALE_PURPLE("pale-purple", "Pale Purple", 0xFFDAD2FF),
+        PALE_MAGENTA("pale-magenta", "Pale Magenta", 0xFFF6C6FD),
+        PALE_PINK("pale-pink", "Pale Pink", 0xFFFDC6E5),
+        // vivid: the original ten, plus teal, sky and magenta in the widest hue gaps
+        RED("red", "Red", 0xFFE5484D),
+        ORANGE("orange", "Orange", 0xFFF0770F),
+        YELLOW("yellow", "Yellow", 0xFFF5C63A),
+        LIME("lime", "Lime", 0xFF9BE34A),
+        GREEN("green", "Green", 0xFF3FB950),
+        TEAL("teal", "Teal", 0xFF02CAAB),
+        AQUA("aqua", "Aqua", 0xFF3FD0E0),
+        SKY("sky", "Sky", 0xFF37B2E8),
+        BLUE("blue", "Blue", 0xFF4A90E2),
+        PURPLE("purple", "Purple", 0xFFA78BFA),
+        MAGENTA("magenta", "Magenta", 0xFFCF66E0),
+        PINK("pink", "Pink", 0xFFF27EC4),
+        // deep: one luminance (0.14), so light text reads on them at 4.5:1 and their fills show on the sheet at 3:1
+        DEEP_RED("deep-red", "Deep Red", 0xFFC33038),
+        DEEP_ORANGE("deep-orange", "Deep Orange", 0xFFA75001),
+        DEEP_YELLOW("deep-yellow", "Deep Yellow", 0xFF816503),
+        DEEP_LIME("deep-lime", "Deep Lime", 0xFF477401),
+        DEEP_GREEN("deep-green", "Deep Green", 0xFF017922),
+        DEEP_TEAL("deep-teal", "Deep Teal", 0xFF047664),
+        DEEP_AQUA("deep-aqua", "Deep Aqua", 0xFF03737E),
+        DEEP_SKY("deep-sky", "Deep Sky", 0xFF007099),
+        DEEP_BLUE("deep-blue", "Deep Blue", 0xFF2769B4),
+        DEEP_PURPLE("deep-purple", "Deep Purple", 0xFF7357BA),
+        DEEP_MAGENTA("deep-magenta", "Deep Magenta", 0xFFA03EAF),
+        DEEP_PINK("deep-pink", "Deep Pink", 0xFFA94283),
+        // neutrals
+        WHITE("white", "White", 0xFFE6E6E6),
+        SILVER("silver", "Silver", 0xFFB8B8B8),
+        GREY("grey", "Grey", 0xFF8A8A8A);
 
         private final String token;
+        private final String label;
         private final int base;
 
-        Accent(String token, int base) {
+        Accent(String token, String label, int base) {
             this.token = token;
+            this.label = label;
             this.base = base;
         }
 
-        /** Stable lowercase persistence token ({@code "orange"}/{@code "red"}/{@code "blue"}/{@code "green"}). */
+        /** Stable lowercase persistence token, e.g. {@code "orange"}. */
         public String token() {
             return token;
         }
 
-        /** Full-opacity base accent ARGB. All accessors below derive from this. */
+        /** Sentence-case name, e.g. {@code "Orange"}. */
+        public String label() {
+            return label;
+        }
+
+        /** Full-opacity base accent ARGB. */
         public int base() {
-            return base;
-        }
-
-        /** Solid fill for the active top-tab pill (the base accent at full opacity). */
-        public int pillFill() {
-            return base;
-        }
-
-        /** Track colour of a toggle switch when it is ON. */
-        public int toggleOnTrack() {
-            return base;
-        }
-
-        /** Knob colour of a toggle switch when it is ON — a bright neutral that reads over the accent track. */
-        public int toggleOnKnob() {
-            return 0xFFFFFFFF;
-        }
-
-        /** Border of a settings card (the accent at reduced alpha so it reads as a keyline). */
-        public int enabledCardBorder() {
-            return withAlpha(base, 0xB0);
-        }
-
-        /** Accent outline around a selected/open dropdown pill. */
-        public int dropdownOutline() {
-            return withAlpha(base, 0xCC);
-        }
-
-        /** Small filled swatch/indicator marking the currently selected option. */
-        public int selectedIndicator() {
             return base;
         }
     }
 
     /**
-     * Coerce an arbitrary token to a known accent token. Trims + lowercases; null, empty, and unknown
-     * all collapse to {@code "orange"} (the default accent). The only values this can return are
-     * {@code "orange"}, {@code "red"}, {@code "blue"}, {@code "green"}.
+     * Whether near-black text reads better than near-white on {@code rgb}: the higher WCAG contrast of the two.
+     * Pale and vivid accents take dark text, the deep ones light text.
+     */
+    public static boolean darkTextOn(int rgb) {
+        return contrast(rgb, 0x121212) >= contrast(rgb, 0xEDEDED);
+    }
+
+    /** WCAG contrast ratio between two RGB colours, 1 to 21. */
+    public static double contrast(int a, int b) {
+        double ya = luminance(a), yb = luminance(b);
+        return (Math.max(ya, yb) + 0.05) / (Math.min(ya, yb) + 0.05);
+    }
+
+    private static double luminance(int rgb) {
+        return 0.2126 * channel((rgb >> 16) & 255) + 0.7152 * channel((rgb >> 8) & 255) + 0.0722 * channel(rgb & 255);
+    }
+
+    private static double channel(int c) {
+        double v = c / 255.0;
+        return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    /**
+     * Coerce an arbitrary token to a known accent token. Trims + lowercases; null, empty, and unknown all
+     * collapse to {@code "orange"} (the default accent).
      */
     public static String normalizeToken(String token) {
-        if (token == null) {
-            return "orange";
-        }
-        String t = token.trim().toLowerCase(Locale.US);
-        switch (t) {
-            case "orange":
-            case "red":
-            case "blue":
-            case "green":
-                return t;
-            default:
-                return "orange";
-        }
+        return fromToken(token).token();
+    }
+
+    /** Font tokens: the bundled Inter (the default) or Minecraft's own font, for the settings menu and the HUD. */
+    public static final String FONT_MODERN = "modern";
+    public static final String FONT_MINECRAFT = "minecraft";
+
+    /** Coerce a font token: anything but {@link #FONT_MINECRAFT} is {@link #FONT_MODERN}. */
+    public static String normalizeFont(String token) {
+        return FONT_MINECRAFT.equals(token) ? FONT_MINECRAFT : FONT_MODERN;
     }
 
     /**
@@ -120,60 +136,12 @@ public final class GuiTheme {
      * {@link Accent#ORANGE}.
      */
     public static Accent fromToken(String token) {
-        switch (normalizeToken(token)) {
-            case "red":
-                return Accent.RED;
-            case "blue":
-                return Accent.BLUE;
-            case "green":
-                return Accent.GREEN;
-            default:
-                return Accent.ORANGE;
+        if (token != null) {
+            String t = token.trim().toLowerCase(Locale.US);
+            for (Accent a : Accent.values()) {
+                if (a.token.equals(t)) return a;
+            }
         }
+        return Accent.ORANGE;
     }
-
-    /** Return {@code argb} with its alpha byte replaced by {@code alpha} (0–255). */
-    public static int withAlpha(int argb, int alpha) {
-        return (argb & 0x00FFFFFF) | ((alpha & 0xFF) << 24);
-    }
-
-    // -------------------------------------------------------------------------------------------------
-    // Warm surface / text / neutral-control palette (GUI only). Tuned in Phase 3 against
-    // reference-subsettings.jpeg: a near-black surface with only a subtle warmth (R >= G >= B) rather than
-    // the browner first pass, card fills nearly opaque so they read solid like the reference, and the text
-    // ramp / neutral switch nudged toward the reference's white labels + medium-grey secondary text.
-    // -------------------------------------------------------------------------------------------------
-
-    /** Panel body fill: warm near-black, slightly translucent so the frosted blur still reads. */
-    public static final int PANEL = 0xC0171410;
-    /** Top header band fill: a touch darker/warmer than the panel. */
-    public static final int HEADER_BG = 0xCC120F0C;
-
-    /** Module card fill when the module is OFF/disabled (near-opaque so the card reads solid). */
-    public static final int CARD_OFF_BG = 0xDE1C1814;
-    /** Module card fill when the module is ON (a hair brighter/warmer than the off fill). */
-    public static final int CARD_ON_BG = 0xDE241C12;
-    /** Neutral keyline around an OFF card (barely-there, as in the reference). */
-    public static final int CARD_OFF_BORDER = 0x18FFF2E4;
-    /** Neutral fallback keyline around an ON card. The live enabled-card border comes from the accent
-     *  ({@link Accent#enabledCardBorder()}); this is the neutral reference. */
-    public static final int CARD_ON_BORDER = 0x3DFFF2E4;
-
-    /** Faint internal divider line. */
-    public static final int DIVIDER = 0x18FFF2E4;
-    /** Even fainter row separator / zebra stripe. */
-    public static final int SEPARATOR = 0x0DFFF2E4;
-
-    /** Text ramp: high (near-white labels) / medium (muted secondary) / low (descriptions, placeholders),
-     *  each nudged slightly warm to match the reference. */
-    public static final int TEXT_HI = 0xFFF2EEE7;
-    public static final int TEXT_MID = 0xFFA9A199;
-    public static final int TEXT_LO = 0xFF8A827A;
-
-    /** Toggle switch track/knob when OFF (neutral warm; the ON state comes from the accent). */
-    public static final int TRACK_OFF = 0xFF383029;
-    public static final int KNOB_OFF = 0xFFC4BCB2;
-    /** Toggle switch track/knob when DISABLED (its parent module is off). */
-    public static final int TRACK_DISABLED = 0xFF272320;
-    public static final int KNOB_DISABLED = 0xFF5C544A;
 }

@@ -110,6 +110,8 @@ public final class DevAgent {
                 return Game.key(intParam(q, "code", 0), q.containsKey("char") ? q.get("char").charAt(0) : '\0');
             case "/scale":
                 return Game.scale(intParam(q, "n", 0));
+            case "/size":
+                return Game.size(intParam(q, "w", 0), intParam(q, "h", 0));
             case "/world":
                 return Game.world();
             case "/refresh":

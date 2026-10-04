@@ -5,7 +5,10 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
-import com.bedwarsqol.gui.render.Theme;
+import com.bedwarsqol.gui.sheet.EditHudChrome;
+import com.bedwarsqol.gui.sheet.McCanvas;
+import com.bedwarsqol.gui.sheet.SheetColors;
+import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.hud.CornerResize;
@@ -16,8 +19,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Keyboard;
+import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.GL11;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -43,8 +49,8 @@ public class EditHudGui extends GuiScreen {
     private static final int GHOST = 0x59FFFFFF;            // hidden modules: dashed, about 35%
     private static final int GHOST_FILL = 0x0AFFFFFF;
     private static final int GHOST_TEXT = 0x99FFFFFF;
-    private static final int PANEL = 0xD0121212;           // the HUD panel fill, for labels, buttons and menus
-    private static final int HELP_PANEL = 0xE6121212;
+    private static final int PANEL = 0xD0121212;           // the HUD panel fill, for the menu and the resize badge
+    private static final int LABEL_FILL = 0xFF121212;      // name labels are solid: they often sit over another module
     private static final int TEXT = 0xFFFFFFFF;
     private static final int TEXT_DIM = 0xFFAAAAAA;
     private static final float HANDLE = 3f;                 // corner handle side, GUI px
@@ -55,15 +61,10 @@ public class EditHudGui extends GuiScreen {
     private static final long NUDGE_GROUP_MS = 800L;        // arrow presses this close together undo as one step
     private static final long SAVE_DELAY_MS = 400L;
     private static final float LABEL_SCALE = 0.8f;
-    private static final float BUTTON_SCALE = 1.0f;
-    private static final float BUTTON_H = 18f;              // a Keystrokes cap's height
     private static final float MENU_SCALE = 0.75f;
-    private static final float HELP_SCALE = 1.0f;
     private static final float HOTBAR_W = 182f;             // the vanilla hotbar, a snap target
     private static final float HOTBAR_H = 22f;
 
-    private static final String RESET_ALL = "Reset All";
-    private static final String HELP = "Help";
     private static final String SHOW = "Show";
     private static final String HIDE = "Hide";
     private static final String RESET_POSITION = "Reset Position";
@@ -74,9 +75,8 @@ public class EditHudGui extends GuiScreen {
 
     private final EditHistory<Map<String, HudModuleState>> history = new EditHistory<Map<String, HudModuleState>>(100);
     private final Map<String, HoverFade> hoverFades = new HashMap<String, HoverFade>();
-    private final HoverFade resetHover = new HoverFade(120L, 180L);
-    private final HoverFade helpHover = new HoverFade(120L, 180L);
-    private final HoverFade toolbarFade = new HoverFade(120L, 240L);
+    private final HoverFade resetFade = new HoverFade(120L, 240L);
+    private final McCanvas canvas = new McCanvas();
 
     private String selectedId;
     private String hoverId;
@@ -101,7 +101,13 @@ public class EditHudGui extends GuiScreen {
     private String menuId;          // the module the right-click menu is for; null when closed
     private float menuX;
     private float menuY;
-    private boolean helpOpen;
+    // Reset All as last drawn, in sheet units of resetUnit device px; whether the left button went down on it.
+    private float[] resetRect;
+    private float resetUnit = 2f;
+    private boolean resetCovered;
+    private boolean resetPressed;
+    private SheetColors.Shades shades;
+    private int shadesOf;
     private float badgeX;
     private float badgeY;
 
@@ -143,7 +149,8 @@ public class EditHudGui extends GuiScreen {
         GuiRender.rect(0, 0, width, height, fade(DIM, open));
 
         List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
-        hoverId = mode == Mode.NONE && menuId == null && !helpOpen ? topmostAt(boxes, mouseX, mouseY) : null;
+        // A press only becomes a drag once the mouse moves; until then nothing changes, so a click doesn't flash.
+        hoverId = (mode == Mode.NONE || !moved) && menuId == null ? topmostAt(boxes, mouseX, mouseY) : null;
         Map<String, Float> hover = new HashMap<String, Float>();
         for (HudBox box : boxes) hover.put(box.id, hoverFade(box.id).update(box.id.equals(hoverId), now));
 
@@ -153,6 +160,8 @@ public class EditHudGui extends GuiScreen {
         }
 
         BedwarsHudRenderer.renderEditPreview(mc, cfg);
+        // Item icons in the preview write depth; clear it so frames, labels and menus always draw on top.
+        GlStateManager.clear(GL11.GL_DEPTH_BUFFER_BIT);
         drawGuides(now, accent, open);
 
         for (HudBox box : boxes) {
@@ -169,20 +178,17 @@ public class EditHudGui extends GuiScreen {
         }
 
         if (mode == Mode.RESIZE && selectedId != null) drawResizeBadge(cfg, open);
-        if (helpOpen) {
-            drawHelp();
-        } else {
-            drawToolbar(mouseX, mouseY, now, accent, open);
-            if (menuId != null) drawMenu(mouseX, mouseY, accent);
-        }
+        drawResetAll(now, accent, open);
+        if (menuId != null) drawMenu(mouseX, mouseY, accent);
 
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
 
     private void drawFrame(HudBox box, float hover, boolean selected, int accent, float open) {
-        GuiRender.rect(box.visualX(), box.visualY(), box.visualRight(), box.visualBottom(), fade(FRAME_FILL, open));
         int color = selected || isSnapTarget(box.id) ? accent : GuiRender.lerpColor(FRAME, FRAME_HOVER, hover);
-        GuiRender.border(box.visualX(), box.visualY(), box.visualRight(), box.visualBottom(), fade(color, open), 1f);
+        float x1 = box.visualX(), y1 = box.visualY(), x2 = box.visualRight(), y2 = box.visualBottom();
+        GuiRender.rect(x1, y1, x2, y2, fade(FRAME_FILL, open));
+        GuiRender.border(x1, y1, x2, y2, fade(color, open), 1f);
     }
 
     private void drawGhost(HudBox box, int outline, float open) {
@@ -214,7 +220,7 @@ public class EditHudGui extends GuiScreen {
         float x = clamp(box.visualX(), 1f, width - w - 1f);
         float y = box.visualY() - h - 2f;
         if (y < 1f) y = box.visualBottom() + 2f;
-        GuiRender.roundedRect(x, y, x + w, y + h, Theme.CARD_R, fade(PANEL, level));
+        GuiRender.rect(x, y, x + w, y + h, fade(LABEL_FILL, level));
         GuiRender.text(name, x + 3f, y + 2f, LABEL_SCALE, fade(TEXT, level), BedwarsQolFont.Weight.BOLD);
     }
 
@@ -268,31 +274,40 @@ public class EditHudGui extends GuiScreen {
         float h = BedwarsQolFont.height(MENU_SCALE) + 5f;
         float x = clamp(badgeX + 8f, 1f, width - w - 1f);
         float y = clamp(badgeY + 8f, 1f, height - h - 1f);
-        GuiRender.roundedRect(x, y, x + w, y + h, Theme.CARD_R, fade(PANEL, open));
+        GuiRender.rect(x, y, x + w, y + h, fade(PANEL, open));
         GuiRender.text(text, x + 4f, y + 2.5f, MENU_SCALE, fade(TEXT, open), BedwarsQolFont.Weight.BOLD);
     }
 
-    /** "Reset All" and "Help" just under the crosshair, a spot no HUD module or vanilla bar uses. */
-    private void drawToolbar(int mouseX, int mouseY, long now, int accent, float open) {
-        float[][] r = toolbarRects();
-        boolean busy = mode != Mode.NONE || menuId != null;
-        float alpha = (1f - 0.75f * toolbarFade.update(busy || toolbarCovered(), now)) * open;
-        boolean usable = !busy;
-        drawButton(r[0], RESET_ALL, resetHover.update(usable && inside(r[0], mouseX, mouseY), now), accent, alpha);
-        drawButton(r[1], HELP, helpHover.update(usable && inside(r[1], mouseX, mouseY), now), accent, alpha);
-    }
-
-    private static void drawButton(float[] r, String label, float hover, int accent, float alpha) {
-        GuiRender.roundedRect(r[0], r[1], r[2], r[3], Theme.CARD_R, fade(GuiRender.lerpColor(PANEL, accent, hover), alpha));
-        GuiRender.textCentered(label, (r[0] + r[2]) / 2f, r[1] + (r[3] - r[1] - BedwarsQolFont.height(BUTTON_SCALE)) / 2f,
-                BUTTON_SCALE, fade(TEXT, alpha), BedwarsQolFont.Weight.BOLD);
+    /** Reset All just under the crosshair, a spot no HUD module or vanilla bar uses: the sheet's accent button. */
+    private void drawResetAll(long now, int accent, float open) {
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        boolean minecraftFont = settings().minecraftFont();
+        float u = SheetLayout.unit(sf, settings().guiSize, minecraftFont);
+        resetUnit = u;
+        // the canvas measures the label, so it starts the frame first
+        canvas.begin(u, 0f, 0f, mc.displayHeight, sf, minecraftFont);
+        resetRect = EditHudChrome.resetAll(canvas, mc.displayWidth / u, mc.displayHeight / u, u);
+        resetCovered = resetCovered(resetRect, sf / u);
+        if (shades == null || shadesOf != accent) {
+            shades = SheetColors.Shades.of(accent & 0xFFFFFF);
+            shadesOf = accent;
+        }
+        boolean busy = (mode != Mode.NONE && moved) || menuId != null;
+        float alpha = (1f - 0.75f * resetFade.update(busy || resetCovered, now)) * open;
+        float[] m = mouseUnits(Mouse.getX(), Mouse.getY(), u);
+        boolean over = !busy && !resetCovered && EditHudChrome.hit(resetRect, m[0], m[1]);
+        canvas.pushAlpha(alpha);
+        // a press shows only while the pointer stays on the button, as in the sheet
+        EditHudChrome.paintResetAll(canvas, resetRect, shades, over, resetPressed && over);
+        canvas.popAlpha();
+        canvas.end();
     }
 
     private void drawMenu(int mouseX, int mouseY, int accent) {
         List<String> items = menuItems();
         float[] r = menuRect(items);
         float rowH = menuRowHeight();
-        GuiRender.roundedRect(r[0], r[1], r[2], r[3], Theme.CARD_R, PANEL);
+        GuiRender.rect(r[0], r[1], r[2], r[3], PANEL);
         GuiRender.text(HudModules.title(menuId), r[0] + 5f, r[1] + (rowH - BedwarsQolFont.height(MENU_SCALE)) / 2f,
                 MENU_SCALE, TEXT_DIM, BedwarsQolFont.Weight.BOLD);
         for (int i = 0; i < items.size(); i++) {
@@ -303,48 +318,11 @@ public class EditHudGui extends GuiScreen {
         }
     }
 
-    private void drawHelp() {
-        String mod = Minecraft.isRunningOnMac ? "Cmd" : "Ctrl";
-        String alt = Minecraft.isRunningOnMac ? "Option" : "Alt";
-        String[][] rows = {
-                {"Drag", "Move a module"},
-                {"Drag a corner", "Resize"},
-                {"Right-click", "Reset, settings, show or hide"},
-                {mod + "+Z / " + mod + "+Y", "Undo / redo"},
-                {"Arrows", "Nudge (Shift: 10 px)"},
-                {"Hold " + alt, "Don't snap"},
-                {"Tab", "Next module"},
-                {"Click again", "Pick the module underneath"},
-                {"Delete", "Hide the selected module"},
-                {"Esc", "Back"},
-        };
-        float keyW = 0f, descW = 0f;
-        for (String[] row : rows) {
-            keyW = Math.max(keyW, GuiRender.textWidth(row[0], HELP_SCALE, BedwarsQolFont.Weight.BOLD));
-            descW = Math.max(descW, GuiRender.textWidth(row[1], HELP_SCALE, BedwarsQolFont.Weight.REGULAR));
-        }
-        float pad = 12f;
-        float rowH = BedwarsQolFont.height(HELP_SCALE) + 5f;
-        float w = keyW + descW + 3f * pad;
-        float h = rows.length * rowH + 2f * pad - 5f;
-        float x = (width - w) / 2f, y = (height - h) / 2f;
-        GuiRender.roundedRect(x, y, x + w, y + h, Theme.CARD_R, HELP_PANEL);
-        for (int i = 0; i < rows.length; i++) {
-            float ry = y + pad + i * rowH;
-            GuiRender.text(rows[i][0], x + pad, ry, HELP_SCALE, TEXT, BedwarsQolFont.Weight.BOLD);
-            GuiRender.text(rows[i][1], x + 2f * pad + keyW, ry, HELP_SCALE, TEXT_DIM, BedwarsQolFont.Weight.REGULAR);
-        }
-    }
-
     // ------------------------------------------------------------------ input
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
         super.mouseClicked(mouseX, mouseY, mouseButton);
-        if (helpOpen) {
-            helpOpen = false;
-            return;
-        }
         if (menuId != null) {
             if (mouseButton == 0) clickMenu(mouseX, mouseY);
             menuId = null;
@@ -365,16 +343,10 @@ public class EditHudGui extends GuiScreen {
         }
         if (mouseButton != 0) return;
 
-        float[][] toolbar = toolbarRects();
-        if (!toolbarCovered()) {
-            if (inside(toolbar[0], mouseX, mouseY)) {
-                playClick();
-                resetAll();
-                return;
-            }
-            if (inside(toolbar[1], mouseX, mouseY)) {
-                playClick();
-                helpOpen = true;
+        if (resetRect != null && !resetCovered) {
+            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
+            if (EditHudChrome.hit(resetRect, m[0], m[1])) {
+                resetPressed = true; // it acts on release, over the button
                 return;
             }
         }
@@ -431,6 +403,14 @@ public class EditHudGui extends GuiScreen {
     @Override
     protected void mouseReleased(int mouseX, int mouseY, int state) {
         super.mouseReleased(mouseX, mouseY, state);
+        if (resetPressed && state == 0) {
+            resetPressed = false;
+            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
+            if (resetCovered || !EditHudChrome.hit(resetRect, m[0], m[1])) return;
+            playClick();
+            resetAll();
+            return;
+        }
         if (mode != Mode.NONE) endChange();
     }
 
@@ -440,13 +420,8 @@ public class EditHudGui extends GuiScreen {
             escape();
             return;
         }
-        if (helpOpen || menuId != null) {
-            helpOpen = false;
+        if (menuId != null) {
             menuId = null;
-            return;
-        }
-        if (typedChar == '?') {
-            helpOpen = true;
             return;
         }
         if (isCtrlKeyDown() && (keyCode == Keyboard.KEY_Z || keyCode == Keyboard.KEY_Y)) {
@@ -468,10 +443,9 @@ public class EditHudGui extends GuiScreen {
         else if (keyCode == Keyboard.KEY_DELETE || keyCode == Keyboard.KEY_BACK) setShown(selectedId, false);
     }
 
-    /** Esc backs out one step: menu or help, then a drag in progress, then the selection, then the editor. */
+    /** Esc backs out one step: the menu, then a drag in progress, then the selection, then the editor. */
     private void escape() {
-        if (helpOpen || menuId != null) {
-            helpOpen = false;
+        if (menuId != null) {
             menuId = null;
         } else if (mode != Mode.NONE) {
             HudModules.restore(settings(), before);
@@ -745,27 +719,19 @@ public class EditHudGui extends GuiScreen {
         return stack.isEmpty() ? null : stack.get(0);
     }
 
-    private float[][] toolbarRects() {
-        float resetW = GuiRender.textWidth(RESET_ALL, BUTTON_SCALE, BedwarsQolFont.Weight.BOLD) + 16f;
-        float helpW = GuiRender.textWidth(HELP, BUTTON_SCALE, BedwarsQolFont.Weight.BOLD) + 16f;
-        float total = resetW + 4f + helpW;
-        float x = (width - total) / 2f;
-        float y = height / 2f + 20f;
-        return new float[][]{{x, y, x + resetW, y + BUTTON_H}, {x + resetW + 4f, y, x + total, y + BUTTON_H}};
-    }
-
-    /** Whether a module sits over the toolbar, which then fades and stops taking clicks. */
-    private boolean toolbarCovered() {
-        float[][] r = toolbarRects();
+    /** Whether a module sits over Reset All, which then fades and stops taking clicks. {@code k}: su per GUI px. */
+    private boolean resetCovered(float[] r, float k) {
+        float left = r[0], top = r[1], right = r[0] + r[2], bottom = r[1] + r[3];
         for (HudBox box : BedwarsHudRenderer.getEditorBoxes(mc, settings())) {
-            if (box.visualX() < r[1][2] && box.visualRight() > r[0][0]
-                    && box.visualY() < r[0][3] && box.visualBottom() > r[0][1]) return true;
+            if (box.visualX() * k < right && box.visualRight() * k > left
+                    && box.visualY() * k < bottom && box.visualBottom() * k > top) return true;
         }
         return false;
     }
 
-    private static boolean inside(float[] r, int x, int y) {
-        return GuiRender.inside(x, y, r[0], r[1], r[2], r[3]);
+    /** A mouse position as LWJGL gives it (from the bottom-left, device px) in sheet units of {@code u} px. */
+    private float[] mouseUnits(int x, int y, float u) {
+        return new float[]{(x + 0.5f) / u, (mc.displayHeight - y - 0.5f) / u};
     }
 
     private HudBox selectedBox() {
