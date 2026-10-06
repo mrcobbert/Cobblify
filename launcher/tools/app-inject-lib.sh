@@ -14,8 +14,12 @@ command -v die >/dev/null 2>&1 \
 
 # Where the launcher is expected to be built. Tauri writes this path; the owner
 # script only ever reads it, and copies it before touching anything.
-COBBLIFY_APP_NAME="Cobblify Launcher.app"
-COBBLIFY_APP_BUILD_DIR="launcher/src-tauri/target/release/bundle/macos"
+#
+# Both are defaults a sourcing script may set first: tools/next-build.sh builds
+# "Cobblify Launcher (Next).app" with --config. Every existing caller leaves
+# them unset and gets the stable names.
+: "${COBBLIFY_APP_NAME:=Cobblify Launcher.app}"
+: "${COBBLIFY_APP_BUILD_DIR:=launcher/src-tauri/target/release/bundle/macos}"
 
 # The resources path inside the .app, relative to the bundle root.
 #

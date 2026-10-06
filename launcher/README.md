@@ -222,6 +222,28 @@ Cobblify.
 manifest, signing, signature validation and the archive listing - using fake
 jars and no token.
 
+### A Next test build beside the stable launcher
+
+`launcher/tools/next-build.sh <N> --vendor <dir>` builds "Cobblify Launcher
+(Next)", version `0.18.0-next.<N>`, identifier `club.cobblify.launcher.next`.
+
+- **Updater:** built with the three updater values unset. `strings` confirms
+  the binary has no update host.
+- **Jars:** the vendor dir is a released launcher's
+  `Contents/Resources/resources` (three jars + `manifest.json`). The jars are
+  checked against that manifest, and the Weave agent against the hash pinned in
+  `launcher-update.yml`. Only the launcher carries the prerelease version; the
+  jars keep their release names.
+- **Output:** `/Users/Shared/CobblifyNext/<version>/`. That folder is sticky:
+  copy the app out, don't move it. `--quarantine` makes Gatekeeper ask as it
+  would for a download.
+
+The identity only separates the single-instance lock and the `~/Library`
+webview folders. Every other launcher file is in `$HOME`, shared with the
+stable launcher, and opening Next writes there at once (`~/.weave`,
+`launcher.json`, a saved Prism instance). Open it only with your setup set
+aside.
+
 ## Ship it
 
 ```sh
