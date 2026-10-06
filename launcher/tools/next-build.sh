@@ -27,7 +27,8 @@
 #   --replace     overwrite an earlier delivery of the same version
 #
 # Output: /Users/Shared/CobblifyNext/0.18.0-next.<N>/Cobblify Launcher (Next).app
-# (NEXT_DELIVER_ROOT overrides the root). /Users/Shared is sticky: copy the app
+# and /Users/Shared/CobblifyNext/fresh-mac.sh (NEXT_DELIVER_ROOT overrides the
+# root). /Users/Shared is sticky: copy the app
 # out (Finder copy or `cp -R`), don't move it.
 
 set -euo pipefail
@@ -158,6 +159,9 @@ if [ -e "$dest_dir" ]; then
 fi
 mkdir -p "$dest_dir"
 ditto "$app" "$dest_dir/$COBBLIFY_APP_NAME"
+# The reset tool goes beside it: the player's account cannot read this checkout.
+cp "$launcher/tools/fresh-mac.sh" "$deliver_root/fresh-mac.sh"
+chmod 755 "$deliver_root/fresh-mac.sh"
 chmod -R a+rX "$deliver_root"
 if [ "$quarantine" = 1 ]; then
   xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");next-build;" "$dest_dir/$COBBLIFY_APP_NAME"
@@ -170,4 +174,4 @@ echo
 echo "Delivered: $dest_dir/$COBBLIFY_APP_NAME"
 echo "  binary sha256 $(sha "$dest_dir/$COBBLIFY_APP_NAME/Contents/MacOS/cobblify-launcher")"
 echo "Copy it (don't move it) to ~/Applications, and only open it with your setup set aside:"
-echo "  launcher/tools/fresh-mac.sh aside all"
+echo "  $deliver_root/fresh-mac.sh aside all"

@@ -244,6 +244,35 @@ stable launcher, and opening Next writes there at once (`~/.weave`,
 `launcher.json`, a saved Prism instance). Open it only with your setup set
 aside.
 
+### Testing as a brand-new player: fresh-mac.sh
+
+`launcher/tools/fresh-mac.sh`, delivered next to the Next build, moves a Mac's
+Lunar / Prism / Cobblify state out of the way and puts it back exactly. Run it
+in your own account, with Lunar, Prism, their games and both launchers closed.
+
+1. **`status`** is read-only. It lists every known path, other matches in
+   `~/Library`, related processes, login items, and any active stash.
+2. **`aside <lunar|prism|all> [--data-only]`** moves the chosen clients' state,
+   plus Cobblify's own, into `~/CobblifyStash/<timestamp>/`. Before anything
+   moves, it records every file's path, mode, size and sha256. Apps become
+   `.app.stashed` so nothing can start them. `--data-only` leaves the apps
+   installed.
+3. **`restore`** first finishes any move a crash interrupted. It then moves
+   anything created while testing into `<stash>/new/`, moves the originals back,
+   and checks every file against the record. If something fails, run it again;
+   it picks up where it stopped.
+
+It never deletes. Delete the stash folder yourself once you are happy.
+Reinstall Lunar or Prism into `/Applications` while testing: the launcher only
+looks there. On macOS 15, moving apps may need Terminal to have App Management
+(System Settings › Privacy & Security); the tool says so when that is the
+cause.
+
+`launcher/tools/test-fresh-mac.sh` runs the tool against a fake home and a fake
+`/Applications`. It covers round trips, refusals, injected move failures,
+crashes between a move and its journal entry, and a file changed while
+stashed.
+
 ## Ship it
 
 ```sh
