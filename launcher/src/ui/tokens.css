@@ -1,0 +1,25 @@
+/* Ore UI tokens, from the in-game sheet (SheetColors.java, design-language.md 2.2 and 2.10).
+   --su and --fpx are set by kit.js units() so that 1 sheet unit and 1 Minecraft-font pixel always land on whole
+   device pixels: every geometry value is calc(N * var(--su)). The accent block is rewritten by setAccent();
+   the values here are Pale Blue, the launcher's default before a game config exists. */
+:root {
+  --su: 2px;
+  --fpx: 2px;
+  --black: #000000; --band: #121212; --ground: #1A1A1A; --well: #141414; --well-top: #0A0A0A;
+  --face: #3B3B3B; --face-hv: #454545; --edge: #646464; --lower: #4A4A4A; --depth: #060606;
+  --knob: #989898; --knob-hv: #A4A4A4; --knob-edge: #C4C4C4; --knob-lower: #A6A6A6; --knob-depth: #1C1C1C;
+  --pit: #0D0D0D; --rim: #2E2E2E; --groove: #2C2C2C; --sh: #1B1B1B; --sh2: #2B2B2B; --thumb: #4A4A4A;
+  --edge-lit: #3F3F3F; --edge-step: #282828; --recess-shade: #080808; --recess-lit: #222222;
+  --hi: #EDEDED; --mid: #B0B0B0; --lo: #7A7A7A; --on: #121212;
+  --hi-sh: #3B3B3B; --mid-sh: #2C2C2C;
+  --acc: #C0DCFF; --acc-hl: #E3FDFF; --acc-ln: #CDE9FF; --acc-dp: #647891; --acc-rim: #E4FDFF; --acc-sh: #869CB8; --acc-sh2: #9FB8D7; --acc-on: #121212;
+  /* Modern = Inter. Minecraft = the font at 9 font px per em, so font-size: calc(9 * var(--fpx)) is the game's 1x
+     text. Inter stays the face for multi-sentence text (release notes, error details) in both modes. */
+  --font-modern: "Inter", system-ui, sans-serif;
+  --font-mc: "Minecraft", "Inter", system-ui, sans-serif;
+  --font-ui: var(--font-mc);
+  --font-read: "Inter", system-ui, sans-serif;
+  color-scheme: dark;
+}
+:root[data-font="minecraft"] { --hi: #FFFFFF; --mid: #AAAAAA; --hi-sh: #3F3F3F; --mid-sh: #2A2A2A; --font-ui: var(--font-mc); }
+:root[data-font="modern"] { --font-ui: var(--font-modern); }

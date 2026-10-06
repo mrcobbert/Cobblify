@@ -1,0 +1,9 @@
+/* Inter 4.001 (OFL, fonts/LICENSE-inter.txt), the same files the in-game sheet bakes from tools/fonts/.
+   "Minecraft" is a stand-in: Minecraft-Font by Idrees Hassan (OFL, fonts/LICENSE-minecraft-standin.txt). The
+   0.18 plan loads the real font at runtime from the player's own game files and never bundles it (decision 9);
+   until that loader exists, test builds bundle this stand-in (user decision, 2026-10-06). */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: block; src: url("./fonts/Inter-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: block; src: url("./fonts/Inter-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: block; src: url("./fonts/Inter-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Minecraft"; font-style: normal; font-weight: 400; font-display: block; src: url("./fonts/Minecraft-Standin.otf") format("opentype"); }
+@font-face { font-family: "Minecraft"; font-style: normal; font-weight: 700; font-display: block; src: url("./fonts/Minecraft-Standin-Bold.otf") format("opentype"); }
