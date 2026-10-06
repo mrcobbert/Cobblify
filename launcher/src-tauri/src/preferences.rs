@@ -134,6 +134,15 @@ struct PreferenceDoc {
 }
 
 impl PreferenceDoc {
+    /// Updates download by default until the player has chosen (0.18 decision 14). The stored
+    /// field keeps its old meaning, so a 0.17 launcher reading the same file is unaffected; a
+    /// player who chose (prompted) gets exactly what they chose.
+    fn effective_auto_update(&self) -> bool {
+        self.auto_update_enabled || !self.auto_update_prompted
+    }
+}
+
+impl PreferenceDoc {
     fn channel(&self) -> UpdateChannel {
         UpdateChannel::parse(&self.update_channel)
     }
@@ -230,14 +239,15 @@ impl LockedPrefs {
     pub(crate) fn read_update_view(&self) -> UpdatePreferencesView {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => UpdatePreferencesView {
-                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_enabled: doc.effective_auto_update(),
                 auto_update_prompted: doc.auto_update_prompted,
                 update_channel: doc.channel(),
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
+            // Updates download by default until the player chooses (0.18 decision 14).
             Err(ReadOutcome::Missing) => UpdatePreferencesView {
-                auto_update_enabled: false,
+                auto_update_enabled: true,
                 auto_update_prompted: false,
                 update_channel: UpdateChannel::Stable,
                 health: PreferenceHealth::Missing,
@@ -304,14 +314,14 @@ impl LockedPrefs {
     fn update_reply(outcome: Result<(), SaveOutcome>, doc: &PreferenceDoc) -> UpdatePreferenceSaveReply {
         match outcome {
             Ok(()) => UpdatePreferenceSaveReply::Saved {
-                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_enabled: doc.effective_auto_update(),
                 auto_update_prompted: doc.auto_update_prompted,
                 update_channel: doc.channel(),
             },
             Err(SaveOutcome::NotSaved(msg)) => UpdatePreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => UpdatePreferenceSaveReply::Indeterminate,
             Err(SaveOutcome::Reconciled(current)) => UpdatePreferenceSaveReply::Reconciled {
-                auto_update_enabled: current.auto_update_enabled,
+                auto_update_enabled: current.effective_auto_update(),
                 auto_update_prompted: current.auto_update_prompted,
                 update_channel: current.channel(),
             },
@@ -544,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn old_launch_preferences_prompt_for_updates_without_enabling_them() {
+    fn old_launch_preferences_default_auto_update_on_until_chosen() {
         let home = temp_home();
         let dir = ensure_cobblify_dir(&home).unwrap();
         fs::write(
@@ -553,9 +563,37 @@ mod tests {
         )
         .unwrap();
         let view = update_preferences(&home).unwrap();
-        assert!(!view.auto_update_enabled);
+        assert!(view.auto_update_enabled);
         assert!(!view.auto_update_prompted);
         assert_eq!(view.health, PreferenceHealth::Valid);
+        // The file itself is not rewritten by reading it.
+        let raw = fs::read_to_string(dir.join(PREF_FILE)).unwrap();
+        assert!(!raw.contains("auto_update"));
+    }
+
+    #[test]
+    fn a_missing_file_defaults_auto_update_on() {
+        let home = temp_home();
+        let view = update_preferences(&home).unwrap();
+        assert!(view.auto_update_enabled);
+        assert!(!view.auto_update_prompted);
+    }
+
+    #[test]
+    fn choosing_off_is_respected_and_choosing_on_stays_on() {
+        let home = temp_home();
+        let off = set_auto_update(&home, false).unwrap();
+        assert!(matches!(off, UpdatePreferenceSaveReply::Saved { auto_update_enabled: false, .. }));
+        assert!(!update_preferences(&home).unwrap().auto_update_enabled);
+        set_auto_update(&home, true).unwrap();
+        assert!(update_preferences(&home).unwrap().auto_update_enabled);
+    }
+
+    #[test]
+    fn switching_channel_before_choosing_keeps_the_default_on() {
+        let home = temp_home();
+        let reply = set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        assert!(matches!(reply, UpdatePreferenceSaveReply::Saved { auto_update_enabled: true, .. }));
     }
 
     #[test]

@@ -133,3 +133,18 @@ test("reply tags use snake_case status values", async () => {
     assert.doesNotMatch(reply.status, /[A-Z]/);
   }
 });
+
+test("open_info and game_theme use exact wire names and keys", async () => {
+  const { openInfo, gameTheme } = await import("./tauri-contract.js");
+  const calls = [];
+  const invoke = (cmd, args) => {
+    calls.push({ cmd, args });
+    return Promise.resolve({});
+  };
+  await openInfo(invoke);
+  await gameTheme(invoke, "forge");
+  assert.deepEqual(calls, [
+    { cmd: "open_info", args: undefined },
+    { cmd: "game_theme", args: { kind: "forge" } },
+  ]);
+});

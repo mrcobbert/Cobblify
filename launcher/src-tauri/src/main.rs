@@ -31,9 +31,11 @@ mod hide_registry;
 mod install;
 mod nojoin;
 mod lunar_config;
+mod open_info;
 mod proc;
 mod progress;
 mod resources;
+mod theme;
 mod updater;
 
 use std::collections::HashMap;
@@ -575,6 +577,26 @@ fn start_up(app: &tauri::AppHandle) -> (Status, ForgeState, SetupContext) {
 }
 
 // ── commands ────────────────────────────────────────────────────────────────────
+
+/// Fresh install, first open after an update, or neither: captured once at startup.
+#[tauri::command]
+fn open_info(state: tauri::State<'_, open_info::OpenInfo>) -> open_info::OpenInfo {
+    state.inner().clone()
+}
+
+/// The accent and font of the client `kind` plays with ("lunar" | "forge"). Read-only.
+#[tauri::command]
+fn game_theme(kind: String) -> Result<theme::GameTheme, String> {
+    let home = home()?;
+    let forge_dir = if kind == "forge" {
+        forge::load_target(&home).map(|t| t.game_dir)
+    } else {
+        None
+    };
+    Ok(theme::config_path(&home, &kind, forge_dir.as_deref())
+        .map(|path| theme::read(&path))
+        .unwrap_or_default())
+}
 
 #[tauri::command]
 fn status(state: tauri::State<'_, Mutex<Status>>) -> Status {
@@ -2978,10 +3000,12 @@ fn main() {
             app.manage(ctx);
             app.manage(SessionParts::new());
             let updater_home = home().map_err(std::io::Error::other)?;
-            let updater_service = updater::UpdaterService::new(
-                updater_home,
-                app.package_info().version.to_string(),
-            );
+            // Before report_completed_install: it deletes the pending-version marker that
+            // tells a 0.17 -> 0.18 update from a fresh install.
+            let running = app.package_info().version.to_string();
+            let pending = open_info::pending_version(&updater_home);
+            app.manage(open_info::capture(&updater_home, &running, pending.as_deref()));
+            let updater_service = updater::UpdaterService::new(updater_home, running);
             updater_service.report_completed_install();
             app.manage(updater_service);
             Ok(())
@@ -3014,7 +3038,9 @@ fn main() {
             launch_lunar,
             launch_forge,
             launch_progress,
-            choose_forge_target
+            choose_forge_target,
+            open_info,
+            game_theme
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Cobblify launcher");

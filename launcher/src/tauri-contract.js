@@ -31,7 +31,19 @@ export const CMD = {
   resumeUpdate: "resume_update",
   installUpdate: "install_update",
   deferUpdate: "defer_update",
+  openInfo: "open_info",
+  gameTheme: "game_theme",
 };
+
+/** Fresh install, first open after an update, or neither (captured at startup). */
+export function openInfo(invoke) {
+  return invoke(CMD.openInfo);
+}
+
+/** The accent/font tokens of the client `kind` ("lunar" | "forge"). */
+export function gameTheme(invoke, kind) {
+  return invoke(CMD.gameTheme, { kind });
+}
 
 export function launchPreferences(invoke) {
   return invoke(CMD.launchPreferences);
@@ -123,3 +135,5 @@ export function launchProgress(invoke) {
 /** @typedef {{ kind: 'snapshot', snapshot: object, token: number } | { kind: 'unavailable', reason?: string } | { kind: 'session_ended', reason: string }} LobbyPoll */
 /** Reply of BOTH `reset_session_end` and `abort_launch_session`. */
 /** @typedef {{ status: 'ok', preferences: LaunchPreferencesView } | { status: 'already_reset', preferences: LaunchPreferencesView } | { status: 'not_terminal' } | { status: 'busy' }} ResetReply */
+/** @typedef {{ version: string, updated: boolean, fresh: boolean }} OpenInfo */
+/** @typedef {{ accent?: string, font?: 'minecraft'|'modern' }} GameTheme */
