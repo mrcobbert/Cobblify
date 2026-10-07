@@ -159,6 +159,10 @@ struct Status {
     message: String,
     mod_version: Option<String>,
     targets: Vec<TargetStatus>,
+    /// The cache's revision: every publish into the managed `Status` bumps it (`commit_status`,
+    /// `republish`). A refresh that read the clients before a newer publish (a setup finishing)
+    /// is dropped at commit, and the frontend ignores a reply older than the last it applied.
+    rev: u64,
 }
 
 impl Status {
@@ -168,6 +172,7 @@ impl Status {
             message,
             mod_version: None,
             targets: Vec::new(),
+            rev: 0,
         }
     }
 }
@@ -530,6 +535,7 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
             ),
             mod_version: version,
             targets,
+            rev: 0,
         };
     }
 
@@ -539,6 +545,7 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
             message: blocked.message.clone(),
             mod_version: version,
             targets,
+            rev: 0,
         };
     }
 
@@ -548,6 +555,7 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
             message: err.message.clone(),
             mod_version: version,
             targets,
+            rev: 0,
         };
     }
 
@@ -578,6 +586,7 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
         message,
         mod_version: version,
         targets,
+        rev: 0,
     }
 }
 
@@ -730,6 +739,36 @@ fn status(state: tauri::State<'_, Mutex<Status>>) -> Status {
     state.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// The revision of the cached status, read by a refresh before it reads anything else.
+fn status_rev(status: &Mutex<Status>) -> u64 {
+    status.lock().unwrap_or_else(|e| e.into_inner()).rev
+}
+
+/// Publishes a rebuilt status and its `ForgeState` into the cache, bumping the revision.
+///
+/// `since` is the revision a refresh recorded when it started. If the cache moved since
+/// (a setup finished and published its own rebuild while this refresh was reading), the
+/// refresh's read is older than what is cached: nothing is written and the current cached
+/// status is returned instead (code review round 1, I2). `None` publishes unconditionally
+/// (a finished setup). The status lock is held across the check and both writes, so no
+/// publish can land between them; nothing locks `ForgeState` and then `Status`.
+fn commit_status(
+    status: &Mutex<Status>,
+    forge: &Mutex<ForgeState>,
+    mut next: Status,
+    forge_state: ForgeState,
+    since: Option<u64>,
+) -> Status {
+    let mut cached = status.lock().unwrap_or_else(|e| e.into_inner());
+    if since.is_some_and(|rev| rev != cached.rev) {
+        return cached.clone();
+    }
+    next.rev = cached.rev + 1;
+    *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
+    *cached = next.clone();
+    next
+}
+
 /// Refresh admission. While a setup run owns the coordinator - stopped or not - a refresh
 /// is admitted READ-ONLY and claims nothing (it never runs the silent refresh, so it can
 /// never write under a setup). Otherwise it takes the usual refresh claim, which may write
@@ -753,6 +792,8 @@ async fn refresh_setup(
     session: tauri::State<'_, SessionParts>,
 ) -> Result<Status, String> {
     let mode = refresh_admission(&session.coordinator).map_err(lifecycle_err)?;
+    // Recorded before the rebuild reads any client: a publish after this point is newer.
+    let since = status_rev(&status);
     let coordinator = Arc::clone(&session.coordinator);
     let release = move || {
         if mode == Refresh::Write {
@@ -771,9 +812,7 @@ async fn refresh_setup(
         tauri::async_runtime::spawn_blocking(move || rebuild_setup(&home, &ctx, mode)).await;
     release();
     let (next, forge_state) = built.map_err(|e| e.to_string())?;
-    *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
-    *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
-    Ok(next)
+    Ok(commit_status(&status, &forge, next, forge_state, Some(since)))
 }
 
 // ── setup runs (setup.rs) ─────────────────────────────────────────────────────────
@@ -814,12 +853,13 @@ fn spawn_setup_run(
         if setup::run_guarded(&svc, &world, &paths, run) == setup::Outcome::Done {
             let ctx = app.state::<SetupContext>().inner().clone();
             let (next, forge_state) = rebuild_setup(&paths.home, &ctx, Refresh::ReadOnly);
-            *app.state::<Mutex<ForgeState>>()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = forge_state;
-            *app.state::<Mutex<Status>>()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = next;
+            commit_status(
+                &app.state::<Mutex<Status>>(),
+                &app.state::<Mutex<ForgeState>>(),
+                next,
+                forge_state,
+                None,
+            );
         }
     });
 }
@@ -1117,7 +1157,8 @@ fn republish(status: &tauri::State<'_, Mutex<Status>>, forge_target: TargetStatu
         .find(|t| t.kind == "lunar")
         .cloned()
         .unwrap_or_else(|| TargetStatus::new("lunar", "absent", "Lunar Client is not installed."));
-    let next = aggregate(guard.mod_version.clone(), vec![lunar, forge_target]);
+    let mut next = aggregate(guard.mod_version.clone(), vec![lunar, forge_target]);
+    next.rev = guard.rev + 1;
     *guard = next.clone();
     next
 }
@@ -2373,6 +2414,34 @@ mod tests {
         assert_eq!(wire["opened_once"], false);
     }
 
+    /// Code review round 1, I3. Weave's agent registered from this home's ~/.weave by ANOTHER
+    /// Weave mod, with no Cobblify jar in ~/.weave/mods, is not Cobblify set up: with Lunar
+    /// closed and a complete empty game scan, startup still reports it not set up and writes
+    /// nothing (no Cobblify jar, no new agent, the same launcher.json, no backup).
+    #[test]
+    fn another_weave_mods_registration_is_not_set_up_and_startup_writes_nothing() {
+        let (_bundle, res) = verified_bundle();
+        let home = tempfile::tempdir().unwrap();
+        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
+        let settings = home.path().join(".lunarclient/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(
+            settings.join("launcher.json"),
+            serde_json::json!({"settings": {"jvmArgs": format!("-Xmx4G -javaagent:{}", agent.display())}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join(".weave/mods")).unwrap();
+        std::fs::write(&agent, b"their weave agent").unwrap();
+        std::fs::write(home.path().join(".weave/mods/OtherMod-1.0.jar"), b"theirs").unwrap();
+        let before = tree(home.path());
+
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear());
+        assert_eq!((t.state, t.issue), ("absent", Some(issue::NOT_SET_UP)), "{}", t.message);
+        assert!(t.installed && !t.set_up);
+        assert_eq!(tree(home.path()), before, "startup wrote nothing");
+    }
+
     /// A set-up Lunar keeps 0.17's silent refresh: an update's jars go in, the old release
     /// goes, and the agent is re-registered - when Lunar and its game are both closed.
     #[test]
@@ -2453,10 +2522,13 @@ mod tests {
     #[test]
     fn a_refresh_during_a_setup_stop_writes_nothing() {
         let rig = setup::tests::rig();
-        // The rig's Lunar is set up by an older Cobblify, and not signed in.
+        // The rig's Lunar is set up by an older Cobblify (its agent registered, its jar in
+        // mods), and not signed in.
         let old_agent = rig.home.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
         std::fs::create_dir_all(rig.home.path().join(".weave/mods")).unwrap();
         std::fs::write(&old_agent, b"old agent").unwrap();
+        std::fs::write(rig.home.path().join(".weave/mods/Cobblify-Lunar-0.8.0.jar"), b"old mod")
+            .unwrap();
         std::fs::write(
             rig.launcher_json(),
             serde_json::json!({"settings": {"jvmArgs": format!("-javaagent:{}", old_agent.display())}})
@@ -2539,6 +2611,88 @@ mod tests {
 
     fn agg(lunar: TargetStatus, forge: TargetStatus) -> Status {
         aggregate(Some("0.9.0".into()), vec![lunar, forge])
+    }
+
+    fn lunar_view(set_up: bool) -> TargetStatus {
+        let mut t = TargetStatus::new(
+            "lunar",
+            if set_up { "ready" } else { "absent" },
+            "Lunar Client",
+        );
+        t.installed = true;
+        t.set_up = set_up;
+        t
+    }
+
+    fn forge_state_with(id: &str) -> ForgeState {
+        let mut f = ForgeState::default();
+        f.candidates.insert(
+            id.to_string(),
+            Candidate {
+                id: id.into(),
+                launcher: "Prism Launcher".into(),
+                name: id.into(),
+                game_dir: PathBuf::from("/tmp").join(id),
+                compat: Compat::Confirmed,
+                marker: Some("mmc-pack.json".into()),
+                detail: String::new(),
+                last_launch_ms: 0,
+            },
+        );
+        f
+    }
+
+    /// Code review round 1, I2. A refresh admitted (read-only) while a first Lunar setup is
+    /// running reads Lunar before check 6 registers it; the setup then finishes and publishes
+    /// its ready rebuild; the refresh commits last. The cache must keep the setup's status
+    /// (and its ForgeState), and the refresh must answer with that newer status.
+    #[test]
+    fn a_refresh_that_started_before_setup_finished_cannot_overwrite_it() {
+        let status = Mutex::new(Status::error("loading".into()));
+        let forge = Mutex::new(ForgeState::default());
+
+        // (1) refresh R starts and records the revision, then reads Lunar: not set up yet.
+        let since = status_rev(&status);
+        let stale = agg(lunar_view(false), t("forge", "absent"));
+        let stale_forge = forge_state_with("refresh");
+
+        // (3) setup finishes and publishes its rebuild.
+        let done = agg(lunar_view(true), t("forge", "absent"));
+        let published = commit_status(&status, &forge, done, forge_state_with("setup"), None);
+        assert!(published.rev > since);
+
+        // (4) R resumes and commits its older read.
+        let reply = commit_status(&status, &forge, stale, stale_forge, Some(since));
+
+        let cached = status.lock().unwrap().clone();
+        assert_eq!(cached.state, "ready", "the cache keeps the completed setup");
+        assert!(cached.targets.iter().any(|t| t.kind == "lunar" && t.set_up));
+        assert_eq!(cached.rev, published.rev, "the stale refresh wrote nothing");
+        assert!(
+            forge.lock().unwrap().candidates.contains_key("setup")
+                && !forge.lock().unwrap().candidates.contains_key("refresh"),
+            "the setup's ForgeState is kept"
+        );
+        assert_eq!(reply.state, "ready", "the refresh answers with the current status");
+        assert!(reply.targets.iter().any(|t| t.kind == "lunar" && t.set_up));
+        assert_eq!(reply.rev, published.rev);
+    }
+
+    /// A refresh with nothing published meanwhile commits as before, and every publish bumps
+    /// the revision the frontend orders replies by.
+    #[test]
+    fn an_uncontested_refresh_commits_and_bumps_the_revision() {
+        let status = Mutex::new(Status::error("loading".into()));
+        let forge = Mutex::new(ForgeState::default());
+        let since = status_rev(&status);
+        let next = agg(lunar_view(true), t("forge", "absent"));
+        let reply = commit_status(&status, &forge, next, forge_state_with("r"), Some(since));
+        assert_eq!(reply.rev, since + 1);
+        assert_eq!(status.lock().unwrap().rev, since + 1);
+        assert_eq!(status.lock().unwrap().state, "ready");
+        assert!(forge.lock().unwrap().candidates.contains_key("r"));
+        let json = serde_json::to_value(&reply).unwrap();
+        assert_eq!(json["rev"], serde_json::json!(since + 1), "the reply carries rev");
     }
 
     /// PLAN 2.7. The property that matters most: a ready target is never hidden behind a

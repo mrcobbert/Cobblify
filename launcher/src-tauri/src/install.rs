@@ -230,6 +230,19 @@ pub fn lunar_install_current(jars: &LunarJars, weave_dir: &Path) -> bool {
             .is_ok_and(|old| old.stale.is_empty() && old.conflicts.is_empty())
 }
 
+/// Whether `<weave>/mods` holds a Cobblify mod jar (`Cobblify-Lunar-*.jar`, any version, any
+/// case): half of what "set up" means for Lunar (PLAN B), the other half being our agent's
+/// registration. A folder with that name is not a jar. Read-only.
+pub fn has_lunar_mod_jar(weave_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(weave_dir.join("mods")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        is_our_jar_name(&entry.file_name().to_string_lossy(), MOD_JAR_PREFIX)
+            && fs::metadata(entry.path()).is_ok_and(|m| m.is_file())
+    })
+}
+
 /// Splits the `Cobblify-Lunar-*` entries beside our destination into old releases to delete
 /// and everything else to report. Our own entry and directories are skipped.
 fn mod_peers(mods_dir: &Path, ours: &str) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {

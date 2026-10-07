@@ -25,11 +25,18 @@ TAB=$(printf '\t')
 mkdir -p "$T/bin"
 cat > "$T/bin/pgrep" <<'EOF'
 #!/bin/bash
-# Prints the "running" lines matching the pattern (last arg), like pgrep -fl.
+# Matches the pattern (last arg) against the "running" lines ("<pid> <full command line>"), like pgrep -f.
+# Like the real pgrep, it prints only the PIDs - unless asked for -l / -a, when it prints each
+# process's full command line too, as macOS `pgrep -fl` does. fresh-mac.sh must never ask.
 pat=${!#}
+long=0
+for a in "$@"; do
+  [ "$a" = -- ] && break
+  case "$a" in -*l*|-*a*) long=1 ;; esac
+done
 [ -f "$FAKE_RUNNING" ] || exit 1
-grep -F -- "$pat" "$FAKE_RUNNING" && exit 0
-exit 1
+lines=$(grep -F -- "$pat" "$FAKE_RUNNING") || exit 1
+if [ "$long" = 1 ]; then printf '%s\n' "$lines"; else printf '%s\n' "$lines" | cut -d' ' -f1; fi
 EOF
 cat > "$T/bin/lsregister" <<'EOF'
 #!/bin/bash
@@ -192,6 +199,42 @@ run restore --yes && bad "restore ran while Next runs" || ok "restore refuses wh
 : > "$T/running"
 run restore --yes || bad "restore failed"
 expect_tree "$before" "round trip after refusals"
+
+echo "== no process command line is ever printed (code review B1) =="
+# A signed-in Lunar game's JVM carries the account's access token in its arguments. PIDs above
+# macOS's 99999 never exist, so ps describes nothing and the tool prints "process <pid>".
+populate; before=$(tree)
+canary_line="9900001 $HOME_/.lunarclient/jre/zulu/bin/java -Xmx4G --accessToken SYNTHETIC_CANARY --username Player"
+echo "$canary_line" > "$T/running"
+run status; rc=$?
+[ $rc = 0 ] && grep -q '^process 9900001$' "$T/out" && ok "status reports the running game JVM by PID" || { bad "status running report (exit $rc)"; cat "$T/out"; }
+! grep -q 'SYNTHETIC_CANARY\|accessToken' "$T/out" && ok "status never prints the game's arguments" || bad "status printed the command line"
+run aside all --yes && bad "aside ran while the game JVM runs" || ok "aside refuses while the game JVM runs (token in argv)"
+grep -q 'process 9900001' "$T/out" && ok "aside's refusal names the PID" || { bad "aside refusal output"; cat "$T/out"; }
+! grep -q 'SYNTHETIC_CANARY\|accessToken' "$T/out" && ok "aside's refusal never prints the game's arguments" || bad "aside printed the command line"
+expect_tree "$before" "refused aside moved nothing"
+: > "$T/running"
+run aside all --yes || bad "aside failed"
+echo "$canary_line" > "$T/running"
+run restore --yes && bad "restore ran while the game JVM runs" || ok "restore refuses while the game JVM runs (token in argv)"
+grep -q 'process 9900001' "$T/out" && ok "restore's refusal names the PID" || { bad "restore refusal output"; cat "$T/out"; }
+! grep -q 'SYNTHETIC_CANARY\|accessToken' "$T/out" && ok "restore's refusal never prints the game's arguments" || bad "restore printed the command line"
+: > "$T/running"
+run restore --yes || bad "restore failed"
+expect_tree "$before" "round trip after the canary refusals"
+# The source itself: pgrep only ever lists PIDs, ps only ever the executable (comm), never argv.
+calls=$(grep -vE '^[[:space:]]*#' "$tool")
+if printf '%s\n' "$calls" | grep -E '(PGREP"|pgrep)[[:space:]]+-' | grep -qE '[[:space:]]-[[:alnum:]]*[la]'; then
+  bad "fresh-mac.sh calls pgrep with -l/-a:"; printf '%s\n' "$calls" | grep -nE '(PGREP"|pgrep)[[:space:]]+-'
+else
+  ok "pgrep is never asked for command lines (-l/-a)"
+fi
+if printf '%s\n' "$calls" | grep -E '(^|[^[:alnum:]_.-])ps[[:space:]]' | grep -vqxE '.*ps -o pid=,comm= -p "\$pid".*' \
+   || printf '%s\n' "$calls" | grep -E '(^|[^[:alnum:]_.-])ps[[:space:]]' | grep -qE 'args|command|ucomm|-[[:alnum:]]*[efwj]'; then
+  bad "fresh-mac.sh calls ps with something other than -o pid=,comm=:"; printf '%s\n' "$calls" | grep -nE '(^|[^[:alnum:]_.-])ps[[:space:]]'
+else
+  ok "ps is only ever asked for pid and comm"
+fi
 
 echo "== a failed aside puts everything back =="
 populate; before=$(tree)

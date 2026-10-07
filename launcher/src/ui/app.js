@@ -642,12 +642,13 @@ export function createApp(app, actions) {
       if (isl3) isl3.setActive(active && !!H && !H.solo && view === "home");
       if (active && H) render();
     },
-    /** The open behaviour: the build replay then What's New after an update; a still island otherwise. */
-    async open(info) {
-      // only on a ready home: never on first run, setup, the pick or a stop (spec 1.10)
-      if (!info?.updated || H?.hero?.kind !== "play") return;
-      await playIntro();
-      openWhatsNew();
+    /** The open behaviour: the build replay then What's New after an update; a still island otherwise. Answers
+     * whether it played: only a ready home plays it, never first run, setup, the pick, a stop or a blocked client
+     * (spec 1.10), so the caller offers it again on the next home until one is ready. */
+    open(info) {
+      if (!info?.updated || H?.hero?.kind !== "play") return false;
+      playIntro().then(openWhatsNew, openWhatsNew);
+      return true;
     },
     get state() {
       return { menuOpen, sheetOpen, modal, view };

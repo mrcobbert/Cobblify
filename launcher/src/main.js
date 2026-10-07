@@ -971,14 +971,34 @@ function applyTheme(sel) {
     .catch(() => {});
 }
 
-/** The first open after an update: the island's build replay, then What's New. Once, on the first real home. */
+/**
+ * The first open after an update: the island's build replay, then What's New. Once, on the first READY home of the
+ * session: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is
+ * marked played only when ui.open actually played it.
+ */
 function maybeOpen(home) {
   if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
-  openPlayed = true;
-  if (openInfoReply.updated) ui.open(openInfoReply);
+  if (!openInfoReply.updated) {
+    openPlayed = true;
+    return;
+  }
+  openPlayed = ui.open(openInfoReply) === true;
 }
 
+/** The highest backend status revision applied (main.rs `Status.rev`); -1 before any. */
+let lastStatusRev = -1;
+
+/**
+ * Applies a status reply. A reply carrying an older `rev` than the last one applied is a refresh that read the
+ * clients before a newer publish (a setup finishing) and is ignored (code review round 1, I2). Replies without a
+ * `rev` (an error made here) always apply.
+ */
 function setStatus(status) {
+  const rev = typeof status?.rev === "number" ? status.rev : null;
+  if (rev !== null) {
+    if (rev < lastStatusRev) return;
+    lastStatusRev = rev;
+  }
   lastStatus = status;
   // A fresh setup read also re-reads the game's theme: the player may have changed it in game meanwhile.
   themeKind = null;

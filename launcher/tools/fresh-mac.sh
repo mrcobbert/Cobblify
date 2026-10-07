@@ -120,12 +120,21 @@ exists() { [ -e "$1" ] || [ -L "$1" ]; }
 
 # Related processes that must not run while files move. The patterns are the
 # apps' own paths, so this script (wherever it lives) never matches itself.
+#
+# Never prints or captures a command line: a signed-in Lunar game's arguments
+# carry the account's access token. pgrep -f matches against the arguments but
+# is asked for PIDs only (never -l / -a); each PID is then described by ps's
+# comm column, the executable path, never argv. A PID ps cannot describe (gone
+# meanwhile) is printed as just "process <pid>".
 running() {
-  local pat
+  local pat pid desc
   for pat in '/Lunar Client.app/' 'Lunar Client Helper' "$H/.lunarclient/" \
              '/Prism Launcher.app/' 'PrismLauncher/' '/Contents/MacOS/cobblify-launcher'; do
-    "$PGREP" -fl -- "$pat" 2>/dev/null
-  done | sort -u
+    "$PGREP" -f -- "$pat" 2>/dev/null
+  done | grep -E '^[0-9]+$' | sort -un | while IFS= read -r pid; do
+    desc=$(ps -o pid=,comm= -p "$pid" 2>/dev/null | sed 's/^ *//')
+    if [ -n "$desc" ]; then printf '%s\n' "$desc"; else printf 'process %s\n' "$pid"; fi
+  done
 }
 
 refuse_if_running() {

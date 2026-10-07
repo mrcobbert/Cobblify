@@ -53,20 +53,24 @@ pub fn registered_agent(launcher_json: &Path) -> Option<std::path::PathBuf> {
         })
 }
 
-/// "Set up" for Lunar (PLAN B): `launcher.json` carries a `-javaagent:` for a Weave agent
-/// jar in THIS home's `~/.weave` - which only Cobblify's setup puts there. Any agent
-/// version counts: an older launcher's registration is still a set-up client that the
-/// silent refresh brings current.
+/// "Set up" for Lunar (PLAN B, README): BOTH `launcher.json` carries a `-javaagent:` for a
+/// Weave agent jar in THIS home's `~/.weave`, AND a Cobblify mod jar (`Cobblify-Lunar-*.jar`)
+/// is in `~/.weave/mods`. The registration alone is not enough: Weave is a general loader,
+/// and another Weave mod registers the same agent from the same folder (code review round 1,
+/// I3). Any agent and jar version counts: an older launcher's setup is still a set-up client
+/// that the silent refresh brings current.
 pub fn is_set_up(home: &Path) -> bool {
     let weave = home.join(".weave");
-    registered_agent(&crate::lunar_detect::launcher_json(home)).is_some_and(|agent| {
+    let json = crate::lunar_detect::launcher_json(home);
+    let registered = registered_agent(&json).is_some_and(|agent| {
         agent.parent() == Some(weave.as_path())
             && agent.file_name().and_then(OsStr::to_str).is_some_and(|name| {
                 name.len() >= "Weave-Loader-Agent".len()
                     && name.as_bytes()[.."Weave-Loader-Agent".len()]
                         .eq_ignore_ascii_case(b"Weave-Loader-Agent")
             })
-    })
+    });
+    registered && crate::install::has_lunar_mod_jar(&weave)
 }
 
 /// Whether the registration already points at exactly `agent_path`.
@@ -830,7 +834,8 @@ mod tests {
         home
     }
 
-    /// "Set up" is our Weave agent in THIS home's ~/.weave, read without writing.
+    /// "Set up" (PLAN B, README) is BOTH our Weave agent registered from THIS home's ~/.weave
+    /// AND a Cobblify-Lunar-*.jar in that home's ~/.weave/mods, read without writing.
     #[test]
     fn set_up_is_our_agent_in_this_homes_weave() {
         let home = home_with_args(None);
@@ -838,7 +843,10 @@ mod tests {
 
         let ours = home.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
         let home2 = home_with_args(Some(&format!("-Xmx4G -javaagent:{}", ours.display())));
-        // `ours` is under the FIRST home, so the second one is not set up by it.
+        let mods2 = home2.path().join(".weave/mods");
+        fs::create_dir_all(&mods2).unwrap();
+        fs::write(mods2.join("Cobblify-Lunar-0.17.0.jar"), b"mod").unwrap();
+        // `ours` is under the FIRST home, so the second one is not set up by it, jar or not.
         assert!(!is_set_up(home2.path()));
 
         let mine = home2.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
@@ -850,11 +858,20 @@ mod tests {
         )
         .unwrap();
         let before = fs::read(&json).unwrap();
-        assert!(is_set_up(home2.path()), "any agent version of ours counts");
+        assert!(is_set_up(home2.path()), "any agent version of ours, with our jar, counts");
         assert!(registration_is(&json, &mine));
         assert!(!registration_is(&json, &home2.path().join(".weave/Weave-Loader-Agent-1.3.3.jar")));
         assert_eq!(fs::read(&json).unwrap(), before, "reading never writes");
         assert!(!json.with_file_name("launcher.json.bak-cobblify").exists());
+
+        // The registration alone is not set up: Weave's agent may be there for another mod.
+        fs::remove_file(mods2.join("Cobblify-Lunar-0.17.0.jar")).unwrap();
+        fs::write(mods2.join("OtherMod-1.0.jar"), b"theirs").unwrap();
+        assert!(!is_set_up(home2.path()), "registration without a Cobblify jar: not set up");
+        fs::create_dir_all(mods2.join("Cobblify-Lunar-0.17.0.jar")).unwrap();
+        assert!(!is_set_up(home2.path()), "a folder with our jar's name is not our jar");
+        fs::write(mods2.join("cobblify-lunar-0.18.0.JAR"), b"mod").unwrap();
+        assert!(is_set_up(home2.path()), "our jar under any case counts");
 
         let other = home_with_args(Some("-javaagent:/opt/other-agent.jar"));
         assert!(!is_set_up(other.path()), "someone else's agent is not ours");
