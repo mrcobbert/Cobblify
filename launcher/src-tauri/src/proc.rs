@@ -273,6 +273,19 @@ fn scan_snapshot() -> System {
     system
 }
 
+/// An own-user process whose executable path cannot be read only makes a scan
+/// uncertain if it could be a game JVM. macOS cannot read the path of a process
+/// whose binary was replaced after it started (an app that updated itself while
+/// running - a browser, Discord, Lunar's own launcher), and such a process would
+/// otherwise keep every scan "incomplete" for as long as it lives, leaving
+/// setup's game gate waiting forever. The kernel's short process name (p_comm,
+/// not argv) of a JVM is `java`; anything else cannot be the game. An empty or
+/// unreadable name still fails closed.
+fn could_be_java(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    name.is_empty() || name.contains("java")
+}
+
 fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
     use crate::process_liveness::{process_exists, IdentityCheck};
     let own_pid = sysinfo::Pid::from_u32(std::process::id());
@@ -305,6 +318,7 @@ fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
         }
         if process.exe().is_none_or(|e| e.as_os_str().is_empty())
             && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone
+            && could_be_java(process.name())
         {
             return false;
         }
@@ -453,6 +467,16 @@ fn caseless_ends_with(path: &Path, tail: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unreadable_non_java_process_does_not_make_a_scan_uncertain() {
+        use std::ffi::OsStr;
+        assert!(!super::could_be_java(OsStr::new("claude")));
+        assert!(!super::could_be_java(OsStr::new("Google Chrome Helper")));
+        assert!(super::could_be_java(OsStr::new("java")));
+        assert!(super::could_be_java(OsStr::new("JavaAppLauncher")));
+        assert!(super::could_be_java(OsStr::new("")), "an unreadable name fails closed");
+    }
+
     use super::*;
     use std::process::Command;
     use sysinfo::Pid;

@@ -53,6 +53,9 @@ pub const EVENT_NAME: &str = "setup://progress";
 pub const CHECK_MS: Duration = Duration::from_millis(900);
 /// Polling for the stops: sign-in, game open.
 pub const STOP_POLL: Duration = Duration::from_secs(1);
+/// Consecutive inconclusive game scans (one per STOP_POLL) before the check fails with Try again instead of
+/// waiting forever: an unreadable process that never goes away must not hang setup. Nothing is written.
+pub const UNCERTAIN_SCANS: u32 = 30;
 /// How long a politely-quit Lunar may take to exit before the check fails (default 3).
 pub const QUIT_DEADLINE: Duration = Duration::from_secs(15);
 pub const QUIT_POLL: Duration = Duration::from_millis(250);
@@ -474,6 +477,7 @@ impl Runner<'_> {
     fn game_gate(&mut self) -> Result<bool, Halt> {
         let mut waited = false;
         let mut shown = false;
+        let mut uncertain = 0u32;
         loop {
             self.alive()?;
             let scan = self.world.game_scan(self.kind);
@@ -482,6 +486,14 @@ impl Runner<'_> {
                     self.show(None, None)?;
                 }
                 return Ok(waited);
+            }
+            if scan.running {
+                uncertain = 0;
+            } else {
+                uncertain += 1;
+                if uncertain >= UNCERTAIN_SCANS {
+                    return Err(fail("Cobblify couldn't check whether a game is running."));
+                }
             }
             if scan.running && !shown {
                 self.show(Some(Stop::GameOpen), None)?;
@@ -1266,6 +1278,16 @@ pub(crate) mod tests {
         assert_eq!(seen.lock().unwrap().clone(), Some(before));
         assert!(stops(&rig.events()).is_empty(), "uncertainty is not shown as a game");
         assert_set_up(&rig);
+    }
+
+    /// A scan that stays inconclusive fails the check (Try again) instead of hanging, and writes nothing.
+    #[test]
+    fn a_scan_that_never_becomes_certain_fails_instead_of_hanging() {
+        let rig = rig();
+        let before = home_tree(&rig);
+        let world = Fake::new().with(|st| st.scan_complete = false);
+        assert_eq!(rig.run(&world, Kind::Lunar), Outcome::Failed);
+        assert_eq!(home_tree(&rig), before, "nothing written");
     }
 
     /// Closing-Lunar stop: a polite quit, then setup goes on once Lunar has exited.
