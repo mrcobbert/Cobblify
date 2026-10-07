@@ -1,9 +1,11 @@
 import "@fontsource/unbounded/latin-700.css";
 import "@fontsource/dm-mono/latin-400.css";
 import "@fontsource/dm-mono/latin-500.css";
-import "./style.css";
+import "./ui/fonts.css";
+import "./ui/tokens.css";
+import "./dash.css";
+import "./ui/app.css";
 
-import { createHeroScene } from "./scene.js";
 import {
   activeFirst,
   aliases,
@@ -14,100 +16,53 @@ import {
   sortRoster,
   withoutPlayers,
 } from "./roster-identity.js";
-import {
-  PREVIEW_SETUP_KEYS,
-  PREVIEW_SETUP_LABELS,
-  PREVIEW_STATUS,
-  resolvePreviewStatus,
-} from "./setup-fixtures.js";
-import {
-  PREVIEW_UPDATE,
-  PREVIEW_UPDATE_KEYS,
-  PREVIEW_UPDATE_LABELS,
-  resolvePreviewUpdate,
-} from "./update-fixtures.js";
+import { PREVIEW_STATUS, resolvePreviewStatus } from "./setup-fixtures.js";
+import { PREVIEW_UPDATE, resolvePreviewUpdate } from "./update-fixtures.js";
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
 import { createLaunchController } from "./launch-controller.js";
 import { createOverlayExit } from "./overlay-exit.js";
 import { createSessionReset } from "./session-reset.js";
 import { createUpdateController } from "./update-controller.js";
-import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
 import { colorClass, rowModel, sectionSpans } from "./row-model.js";
 import {
   abortLaunchSession,
+  gameTheme,
+  openInfo,
   quitApp,
   rehideAfterConfirmation,
   resetSessionEnd,
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
-import {
-  ISSUE,
-  launchLabel,
-  readyTargets,
-  setupBlocks,
-  topLevelError,
-} from "./setup-view.js";
+import { readyTargets } from "./setup-view.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
-import {
-  keepsStageNarration,
-  launchViewRoute,
-  showsCancelLaunch,
-} from "./launch-view-route.js";
+import { launchViewRoute, showsCancelLaunch } from "./launch-view-route.js";
+import { createApp } from "./ui/app.js";
+import { CL } from "./ui/art.js";
+import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
+import { setAccent, setFont, watchUnits, wordmark } from "./ui/kit.js";
+import { homeModel, sheetModel } from "./ui/model.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
 const joining = el("joining");
 const dash = el("dash");
 const connAnnounce = el("conn-announce");
-const autoJoinWrap = el("auto-join-wrap");
-const autoJoinInput = el("auto-join");
-const overlayWrap = el("overlay-wrap");
-const overlayInput = el("use-overlay");
-const devChannelWrap = el("dev-channel-wrap");
-const devChannelInput = el("dev-channel");
-const prefError = el("pref-error");
-const repairPref = el("repair-pref");
-const cancelLaunch = el("cancel-launch");
-const updateStrip = el("update-strip");
-const updateTitle = el("update-title");
-const updateDetail = el("update-detail");
-const updatePrimary = el("update-primary");
-const updateSecondary = el("update-secondary");
-const updateProgress = el("update-progress");
-const updateProgressFill = el("update-progress-fill");
-const scene = createHeroScene(el("hero-canvas"));
-// Scene boot (shader compile included) is behind us - let the entrance run.
-stage.classList.add("lit");
-
-function syncHomeLayout() {
-  // The homepage keeps its defining cabinet composition at every supported
-  // launcher size: copy on the left, voxel island on the right. The old stack
-  // breakpoint centered the wordmark and moved the art above it in narrower or
-  // taller windows, which made the launcher feel like a different screen.
-  const next = "split";
-  if (stage.dataset.layout === next) return;
-  stage.dataset.layout = next;
-  scene?.relayout?.();
-}
-new ResizeObserver(() => {
-  syncHomeLayout();
-  syncDashLayout();
-}).observe(stage);
-syncHomeLayout();
 
 /**
  * The Tauri bridge is injected by the app shell (withGlobalTauri). Outside it -
- * `npm run preview` in a browser - fall back to a stub so the whole flow can be
+ * `npm run dev` in a browser - fall back to a stub so the whole flow can be
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
- *   ?update=consent|checking|available|critical|downloading|…  updater row
+ *   ?update=consent|checking|available|critical|downloading|…  updater state
  *   ?ctx=lobby|unsupported|joining|waiting|disconnected  lobby dashboard / joining / waiting
  *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
+ *   ?open=updated|fresh&version=…  what open_info answers
+ *   ?accent=<token>&font=minecraft|modern  what game_theme answers
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
 
@@ -434,6 +389,25 @@ function previewInvoke(command, args) {
     });
   }
 
+  if (command === "open_info") {
+    // ?open=updated plays the first-open-after-update replay and What's New.
+    const q = new URLSearchParams(location.search);
+    return Promise.resolve({
+      version: q.get("version") || "0.18.0-next.1",
+      updated: q.get("open") === "updated",
+      fresh: q.get("open") === "fresh",
+    });
+  }
+
+  if (command === "game_theme") {
+    // ?accent=deep-teal&font=modern stand in for the game's cobblify.json.
+    const q = new URLSearchParams(location.search);
+    const reply = {};
+    if (q.get("accent")) reply.accent = q.get("accent");
+    if (q.get("font")) reply.font = q.get("font");
+    return Promise.resolve(reply);
+  }
+
   if (command === "acknowledge_lobby_snapshot") {
     return Promise.resolve();
   }
@@ -475,133 +449,194 @@ function previewInvoke(command, args) {
   return Promise.resolve();
 }
 
-// ── initial status render (loading / ready / blocked / error) ───────────────
-const setupBox = el("setup");
-let setupBusy = false;
+// ── the 0.18 home (ui/app.js), fed from the backend ─────────────────────────
+// The theme before anything answers: a brand-new player's (decision 8).
+watchUnits();
+setAccent(NEW_PLAYER_THEME.accent);
+setFont(NEW_PLAYER_THEME.font);
+
+const CLIENT_KEY = "cobblify.client";
+function readStoredClient() {
+  try {
+    return window.localStorage?.getItem(CLIENT_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+function storeClient(id) {
+  try {
+    window.localStorage?.setItem(CLIENT_KEY, id);
+  } catch {
+    // a remembered client is a convenience: without storage the first ready client is used
+  }
+}
+
 let lastStatus = { state: "loading", targets: [] };
+let setupBusy = false;
 let refreshTimer = null;
 let suppressRefresh = false;
+/** The remembered client (decision 5). */
+let selected = readStoredClient();
+/** Prism instance picked in the interim choose list, and the client being added from the menu. */
+let picked = null;
+let adding = null;
+/** The latest backend launch stage (progress.rs), shown as the Launch key's phase. */
+let progressStage = null;
+/** The dev switch's value while its save is in flight. */
+let devPending = null;
+/** open_info: the running version, and whether this is the first open after an update. */
+let openInfoReply = null;
+let openPlayed = false;
+let themeKind = null;
 
-function render(status) {
+const ui = createApp(el("app"), {
+  play: (id) => startLaunch(CL[id]?.kind ?? "lunar"),
+  cancel: () => sessionReset.resetToHome("launch_aborted"),
+  select: (id) => {
+    selected = id;
+    storeClient(id);
+    refreshUi();
+  },
+  add: (desc) => {
+    if (!desc) return;
+    if (desc.act === "get") runSetupAction({ kind: "download", launcher: CL[desc.id].kind });
+    else if (desc.act === "add") {
+      adding = desc.id;
+      picked = null;
+      refreshUi();
+    } else if (desc.act === "setup") runSetupAction(desc.action);
+  },
+  setup: (action) => runSetupAction(action),
+  pick: (id) => {
+    picked = id;
+    refreshUi();
+  },
+  cancelAdd: () => {
+    adding = null;
+    picked = null;
+    refreshUi();
+  },
+  repairPref: () => {
+    // Any save rewrites a valid two-key document (backend salvages the valid
+    // sibling); an uncertain save must be repaired through its own key.
+    const st = launchController.getState();
+    if (st.prefUncertainKey === "overlay") launchController.setOverlay(st.optimisticOverlay, { repair: true });
+    else launchController.setAutoJoin(st.optimisticAutoJoin, { repair: true });
+  },
+  update: (action) => updateController.action(action),
+  setOverlay: (on) => launchController.setOverlay(on),
+  setAutoUpdate: (on) => updateController.action(on ? "enable" : "disable"),
+  setDev: (on) => {
+    devPending = on;
+    refreshUi();
+    Promise.resolve(updateController.setUpdateChannel(on ? "dev" : "stable")).finally(() => {
+      devPending = null;
+      refreshUi();
+    });
+  },
+  // A refresh re-runs setup, which reinstalls the jars and re-registers launcher.json.
+  repairLunar: () => runSetupAction({ kind: "refresh" }),
+});
+
+// The home window and the post-launch dashboard take turns: stage.dataset.view
+// is the one switch every launch and reset path already sets.
+new window.MutationObserver(() => ui.setActive(stage.dataset.view !== "dash")).observe(stage, {
+  attributes: true,
+  attributeFilter: ["data-view"],
+});
+stage.dataset.platform = el("app").dataset.platform;
+function drawDashMark() {
+  const k = Math.max(1, Math.round((parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--su")) || 2) * (window.devicePixelRatio || 1)));
+  el("dash-wm").innerHTML = wordmark(k, { font: document.documentElement.dataset.font }, window.devicePixelRatio || 1);
+}
+document.addEventListener("cobblify:units", drawDashMark);
+document.addEventListener("cobblify:theme", drawDashMark);
+drawDashMark();
+
+function launchView() {
+  const st = launchController.getState();
+  return {
+    kind: st.launchKind,
+    phase: st.launchPhase,
+    busy: st.launchBusy,
+    stage: progressStage,
+    autoJoin: st.activeOutcome?.autoJoinHypixel ?? st.confirmedAutoJoin,
+    prefError: st.prefError,
+    prefHealth: st.prefHealth,
+    prefUncertain: st.prefUncertain,
+    active: st.activeOutcome != null,
+    showCancel: showsCancelLaunch({
+      activeOutcome: st.activeOutcome,
+      launchPhase: st.launchPhase,
+      homeUntilLive,
+      resetActive: sessionReset.isActive(),
+    }),
+  };
+}
+
+function refreshUi() {
+  const st = launchController.getState();
+  const launch = launchView();
+  const update = updateController.getState();
+  const version = openInfoReply?.version || update.currentVersion || "";
+  const home = homeModel({ status: lastStatus, selected, picked, adding, launch, update });
+  if (adding && home.adding !== adding) {
+    adding = null;
+    picked = null;
+  }
+  const sheet = sheetModel({
+    status: lastStatus,
+    launch,
+    update,
+    overlayOn: st.optimisticOverlay,
+    overlaySaving: st.prefSaving,
+    version,
+    devPending,
+  });
+  ui.update({ home, sheet, version, dev: update.updateChannel === "dev" });
+  applyTheme(home.sel);
+  maybeOpen(home);
+}
+
+/** The launcher wears the accent and font of the client you play (decision 8). */
+function applyTheme(sel) {
+  const kind = sel ? CL[sel].kind : "lunar";
+  if (kind === themeKind) return;
+  themeKind = kind;
+  gameTheme(invoke, kind)
+    .then((reply) => {
+      if (themeKind !== kind) return;
+      const t = themeFor(reply);
+      setAccent(t.accent);
+      setFont(t.font);
+    })
+    .catch(() => {});
+}
+
+/** The first open after an update: the island's build replay, then What's New. Once, on the first real home. */
+function maybeOpen(home) {
+  if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
+  openPlayed = true;
+  if (openInfoReply.updated) ui.open(openInfoReply);
+}
+
+function setStatus(status) {
   lastStatus = status;
-  const ready = readyTargets(status);
-  const hasReady = ready.length > 0;
-  const err = topLevelError(status);
-  const state = err
-    ? "error"
-    : hasReady
-      ? "ready"
-      : ["blocked", "error"].includes(status.state)
-        ? status.state
-        : "blocked";
-  const version = status.mod_version ? `v${status.mod_version}` : null;
-
-  el("chip-text").textContent =
-    state === "ready" ? (version ?? "installed") : state === "loading" ? "checking setup" : (version ?? "—");
-
-  const lunarReady = ready.some((t) => t.kind === "lunar");
-  const forgeReady = ready.some((t) => t.kind === "forge");
-  launchController.projectLaunchButtons({ lunarReady, forgeReady });
-  syncLaunchUi();
-
-  renderSetup(status, state);
-  stage.dataset.state = state;
-  scene?.setMood(state);
+  // A fresh setup read also re-reads the game's theme: the player may have changed it in game meanwhile.
+  themeKind = null;
+  refreshUi();
 }
 
-function renderSetup(status, state) {
-  const blocks = setupBlocks(status);
-  const err = topLevelError(status);
-  const showSetup = blocks.length > 0 || err;
-  setupBox.hidden = !showSetup;
-  setupBox.replaceChildren();
-
-  if (err) {
-    setupBox.append(setupErrorNode(err));
-  }
-
-  const compact = state === "ready";
-  for (const block of blocks) {
-    setupBox.append(setupBlockNode(block, compact || block.compact));
-  }
-}
-
-function setupErrorNode(err) {
-  const box = node("div", "setup-block");
-  box.append(node("p", "setup-head", err.heading));
-  const actions = node("div", "setup-actions");
-  for (const action of err.actions) actions.append(setupActionButton(action));
-  box.append(actions);
-  if (err.detail) box.append(setupDetails(err.detail));
-  return box;
-}
-
-function setupBlockNode(block, compact) {
-  const box = node("div", compact ? "setup-block setup-block-compact" : "setup-block");
-  box.append(node("p", "setup-head", block.heading));
-  if (block.hint) box.append(node("p", "setup-hint", block.hint));
-
-  if (block.candidates.length) {
-    const list = node("ul", "setup-cands");
-    for (const row of block.candidates) {
-      const li = node("li", "setup-cand");
-      li.append(node("span", "setup-cand-name", row.name));
-      li.append(setupActionButton(row.action));
-      list.append(li);
-    }
-    box.append(list);
-  }
-
-  if (block.actions.length) {
-    const actions = node("div", "setup-actions");
-    for (const action of block.actions) actions.append(setupActionButton(action));
-    box.append(actions);
-  }
-
-  if (block.hasDetails && block.detailText) {
-    box.append(setupDetails(block.detailText));
-  }
-
-  return box;
-}
-
-function setupDetails(text) {
-  const det = document.createElement("details");
-  det.className = "setup-details";
-  const sum = document.createElement("summary");
-  sum.textContent = "Details";
-  det.append(sum, node("p", "setup-detail-text selectable", text));
-  return det;
-}
-
-function setupActionButton(action) {
-  const btn = node("button", action.kind === "setup_prism" ? "btn setup-btn" : "btn setup-btn", action.label);
-  btn.type = "button";
-  btn.dataset.action = action.kind;
-  if (action.launcher) btn.dataset.launcher = action.launcher;
-  if (action.candidateId) btn.dataset.candidateId = action.candidateId;
-  btn.addEventListener("click", () => runSetupAction(action, btn));
-  return btn;
-}
-
-async function runSetupAction(action, btn) {
+async function runSetupAction(action) {
   const st = launchController.getState();
   if (setupBusy || st.activeOutcome != null || st.launchBusy || st.prefSaving || st.prefUncertain) {
     return;
   }
   setupBusy = true;
-  const prev = btn.textContent;
-  if (action.kind === "setup_prism") {
-    btn.disabled = true;
-    btn.textContent = "Setting Up…";
-    btn.setAttribute("aria-busy", "true");
-  } else {
-    for (const b of setupBox.querySelectorAll("button")) b.disabled = true;
-  }
   try {
     if (action.kind === "refresh") {
       const next = await invoke("refresh_setup");
-      if (next) render(next);
+      if (next) setStatus(next);
       return;
     }
     if (action.kind === "download") {
@@ -618,25 +653,16 @@ async function runSetupAction(action, btn) {
     }
     if (action.kind === "setup_prism") {
       const next = await invoke("choose_forge_target", { id: action.candidateId });
-      if (next) render(next);
+      adding = null;
+      picked = null;
+      if (next) setStatus(next);
     }
   } catch (e) {
-    setupBox.append(node("p", "alert", String(e)));
+    if (action.kind === "refresh") setStatus(setupErrorStatus(e));
+    else console.warn("setup action failed", action.kind, e);
   } finally {
     setupBusy = false;
-    for (const b of setupBox.querySelectorAll("button")) {
-      b.disabled = false;
-      b.removeAttribute("aria-busy");
-    }
-    if (action.kind === "setup_prism") btn.textContent = prev;
   }
-}
-
-function node(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = text;
-  return n;
 }
 
 // ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
@@ -659,12 +685,6 @@ let manualRouteSubtitle = null;
  * states; see launch-view-route.js for the decision table.
  */
 let homeUntilLive = false;
-/** Launch kind whose button currently shows backend stage text, if any. */
-let stageNarrationKind = null;
-
-const launch = el("launch");
-const launchForge = el("launch-forge");
-const launchError = el("launch-error");
 
 const connection = createConnectionModel();
 const connectionShell = createConnectionShell({
@@ -680,14 +700,13 @@ const connectionShell = createConnectionShell({
         connection.clearForcedMode();
         connectionShell.hide();
         // Hiding the shell is not leaving the screen: the dashboard view is
-        // still the one on top, with the launch panel behind it. A retry that
-        // is rejected or throws reports on the home view, so the return to
-        // home happens HERE, before the retry - a retry that succeeds routes
-        // itself away again through onLaunchReply.
+        // still the one on top. A retry that is rejected or throws reports on
+        // the home view, so the return to home happens HERE, before the retry -
+        // a retry that succeeds routes itself away again through onLaunchReply.
         dash.classList.remove("on");
         stage.dataset.view = "home";
-        syncLaunchUi();
-        launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
+        refreshUi();
+        startLaunch(lastLaunchKind, { retry: true });
       },
     },
     // The 60s escape hatch: the launch never reached Hypixel, so the same
@@ -708,13 +727,7 @@ const connectionShell = createConnectionShell({
     lastView = null;
   },
   stopProgress: () => {
-    if (progressTimer) {
-      clearInterval(progressTimer);
-      progressTimer = null;
-    }
-    stageNarrationKind = null;
-    launch.classList.remove("is-loading");
-    launchForge.classList.remove("is-loading");
+    stopProgressPolling();
     suppressRefresh = false;
   },
   showDash: () => {
@@ -726,131 +739,20 @@ const connectionShell = createConnectionShell({
 });
 
 const launchController = createLaunchController(invoke, {
-  onChange: syncLaunchUi,
+  onChange: () => refreshUi(),
 });
-let updateBlocksLaunch = false;
-const updateController = createUpdateController(invoke, { onChange: syncUpdateUi });
-
-function syncUpdateUi() {
-  const snapshot = updateController.getState();
-  const view = updateView(snapshot);
-  updateTitle.textContent = view.title;
-  updateDetail.textContent = view.detail;
-  updateDetail.hidden = !view.detail;
-  updatePrimary.hidden = !view.primaryAction;
-  updatePrimary.textContent = view.primaryLabel ?? "";
-  updatePrimary.dataset.action = view.primaryAction ?? "";
-  updateSecondary.hidden = !view.secondaryAction;
-  updateSecondary.textContent = view.secondaryLabel ?? "";
-  updateSecondary.dataset.action = view.secondaryAction ?? "";
-  const showProgress = ["downloading", "paused"].includes(snapshot.state) && snapshot.sizeBytes > 0;
-  updateProgress.hidden = !showProgress;
-  updateProgress.setAttribute("aria-hidden", showProgress ? "false" : "true");
-  const percent = showProgress
-    ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
-    : 0;
-  updateProgressFill.style.width = `${percent}%`;
-  // Belongs to the updater, not the launch targets: visible as soon as the preference is
-  // known, even on a machine with nothing installed yet.
-  devChannelWrap.hidden = !snapshot.channelLoaded;
-  // Not while the save is in flight: the snapshot still carries the OLD
-  // channel, so re-rendering from it would visibly undo the tick the user
-  // just made and is waiting on.
-  if (!snapshot.channelSaving) devChannelInput.checked = snapshot.updateChannel === "dev";
-  devChannelInput.disabled = snapshot.channelSaving || snapshot.state === "checking";
-  updateBlocksLaunch = view.blocksLaunch;
-  syncLaunchUi();
-}
-
-devChannelInput.addEventListener("change", () => {
-  updateController.setUpdateChannel(devChannelInput.checked ? "dev" : "stable");
-});
-
-for (const button of [updatePrimary, updateSecondary]) {
-  button.addEventListener("click", () => {
-    const action = button.dataset.action;
-    if (action) updateController.action(action);
-  });
-}
+const updateController = createUpdateController(invoke, { onChange: () => refreshUi() });
 
 function applyPreviewUpdate(key) {
-  previewUpdateKey = PREVIEW_UPDATE[key] ? key : "consent";
+  previewUpdateKey = PREVIEW_UPDATE[key] ? key : "current";
   updateController.acceptStatus({ ...resolvePreviewUpdate(previewUpdateKey), channelLoaded: true });
 }
-
-function syncLaunchUi() {
-  const st = launchController.getState();
-  const ready = readyTargets(lastStatus);
-  const lunarReady = ready.some((t) => t.kind === "lunar");
-  const forgeReady = ready.some((t) => t.kind === "forge");
-  const buttons = launchController.projectForCurrentPhase({ lunarReady, forgeReady });
-  const lunarButton = buttons.find((b) => b.kind === "lunar");
-  const forgeButton = buttons.find((b) => b.kind === "forge");
-  // The projection decides who is in the row: a target that is not installed,
-  // or the one that was NOT clicked while the other's session runs, is absent
-  // and therefore hidden. Only the launched button narrates.
-  launch.hidden = !lunarButton;
-  launchForge.hidden = !forgeButton;
-  // A re-render must never clobber live stage narration with the generic
-  // phase label: the launch button IS the progress surface now.
-  const narration = { launchPhase: st.launchPhase, narratingKind: stageNarrationKind };
-  if (lunarButton) {
-    if (!keepsStageNarration({ ...narration, kind: "lunar" })) {
-      el("launch-label").textContent = lunarButton.label;
-    }
-    launch.disabled = !lunarButton.enabled || updateBlocksLaunch;
-    launch.classList.toggle("is-loading", lunarButton.loading);
-  }
-  if (forgeButton) {
-    if (!keepsStageNarration({ ...narration, kind: "forge" })) {
-      el("launch-forge-label").textContent = forgeButton.label;
-    }
-    launchForge.disabled = !forgeButton.enabled || updateBlocksLaunch;
-    launchForge.classList.toggle("is-loading", forgeButton.loading);
-  }
-  autoJoinWrap.hidden = !st.showAutoJoinSwitch;
-  autoJoinInput.checked = st.optimisticAutoJoin;
-  autoJoinInput.disabled = st.launchBusy || st.prefSaving || st.prefUncertain || st.activeOutcome != null;
-  overlayWrap.hidden = !st.showAutoJoinSwitch;
-  overlayInput.checked = st.optimisticOverlay;
-  overlayInput.disabled = autoJoinInput.disabled;
-  repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
-  cancelLaunch.hidden = !showsCancelLaunch({
-    activeOutcome: st.activeOutcome,
-    launchPhase: st.launchPhase,
-    homeUntilLive,
-    resetActive: sessionReset.isActive(),
-  });
-  if (st.prefError) {
-    prefError.textContent = st.prefError;
-    prefError.hidden = false;
-  } else {
-    prefError.hidden = true;
-  }
-}
-
-autoJoinInput.addEventListener("change", () => {
-  launchController.setAutoJoin(autoJoinInput.checked);
-});
-overlayInput.addEventListener("change", () => {
-  launchController.setOverlay(overlayInput.checked);
-});
-repairPref.addEventListener("click", () => {
-  // Any save rewrites a valid two-key document (backend salvages the valid
-  // sibling); an uncertain save must be repaired through its own key.
-  if (launchController.getState().prefUncertainKey === "overlay") {
-    launchController.setOverlay(overlayInput.checked, { repair: true });
-  } else {
-    launchController.setAutoJoin(autoJoinInput.checked, { repair: true });
-  }
-});
 
 function stopProgressPolling() {
   if (progressTimer) {
     clearInterval(progressTimer);
     progressTimer = null;
   }
-  stageNarrationKind = null;
 }
 
 function stopLobbyPolling() {
@@ -898,7 +800,7 @@ const sessionReset = createSessionReset({
     launchController.invalidateSession();
     // The reset owns the surface from here: the Cancel control goes away
     // before its own command has even answered.
-    syncLaunchUi();
+    refreshUi();
   },
   commitHome: (prefs) => {
     overlayExit.resetSession();
@@ -916,28 +818,25 @@ const sessionReset = createSessionReset({
     manualRouteSubtitle = null;
     homeUntilLive = false;
     suppressRefresh = false;
-    launch.classList.remove("is-loading");
-    launchForge.classList.remove("is-loading");
-    launchError.hidden = true;
+    progressStage = null;
     launchController.resetLaunchSession(prefs);
     stage.dataset.view = "home";
-    syncLaunchUi();
+    refreshUi();
     updateController.setGameActive(false);
   },
   refreshHome: async () => {
     const next = await invoke("refresh_setup");
-    if (next) render(next);
+    if (next) setStatus(next);
   },
   onRefreshError: (e) => {
-    // Home stays visible with the existing setup-error rendering (the
-    // same projection the boot path uses) - recoverable, never silent.
-    render(setupErrorStatus(e));
+    // Home stays visible with the setup-error key - recoverable, never silent.
+    setStatus(setupErrorStatus(e));
   },
   showTransitional: (reason) => {
     connectionShell.enterTerminal(resetShellMode(reason, "transitional"));
     // Only a session that actually reached the dashboard shows this copy
     // there. A pre-live quit or a cancelled launch never left home
-    // (`homeUntilLive` is still set): it stays on home, buttons re-enabling
+    // (`homeUntilLive` is still set): it stays on home, the key re-enabling
     // as the reset completes, with no dashboard flash on the way out.
     if (!homeUntilLive) stage.dataset.view = "dash";
   },
@@ -952,10 +851,8 @@ const sessionReset = createSessionReset({
 let progressPollInFlight = false;
 let progressLaunchGen = 0;
 
-function startProgressPolling(kind, autoJoin = true) {
+function startProgressPolling() {
   stopProgressPolling();
-  const labelEl = kind === "forge" ? el("launch-forge-label") : el("launch-label");
-  const labels = launchController.getState().stageLabels(autoJoin);
   progressLaunchGen = launchController.getState().launchGen;
   progressTimer = setInterval(async () => {
     if (progressPollInFlight) return;
@@ -968,14 +865,13 @@ function startProgressPolling(kind, autoJoin = true) {
       const p = await launchController.pollProgress();
       if (launchController.getState().launchGen !== progressLaunchGen) return;
       if (p?.stage) {
-        if (labels[p.stage]) {
-          labelEl.textContent = labels[p.stage];
-          stageNarrationKind = kind;
+        if (p.stage !== progressStage) {
+          progressStage = p.stage;
+          refreshUi();
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
-          // Both auto-join states settle on the home button now.
+          // Both auto-join states settle on the home key now.
           launchController.settleLaunchPhase();
-          syncLaunchUi();
           // Overlay-off quit / unconfirmed late-success trigger; the module
           // fires each obligation exactly once across duplicate polls.
           overlayExit.onConfirmationSignal("settled");
@@ -991,7 +887,6 @@ function startProgressPolling(kind, autoJoin = true) {
 
 const launchHooks = {
   onLaunchReply(reply) {
-    launchError.hidden = true;
     if (reply.status === "preexisting_game") {
       connection.setForcedMode("preexisting_game");
       connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
@@ -1044,10 +939,10 @@ const launchHooks = {
       connectionShell.show(view.shellMode, { subtitle: manualRouteSubtitle });
       stage.dataset.view = "dash";
     }
-    syncLaunchUi();
+    refreshUi();
   },
-  onProgressStart(autoJoin = true) {
-    startProgressPolling(lastLaunchKind, autoJoin);
+  onProgressStart() {
+    startProgressPolling();
   },
 };
 
@@ -1061,22 +956,13 @@ function releaseRefreshUnlessLive() {
   if (launchController.getState().activeOutcome == null) suppressRefresh = false;
 }
 
-launch.addEventListener("click", () => {
-  lastLaunchKind = "lunar";
+function startLaunch(kind, { retry = false } = {}) {
+  lastLaunchKind = kind;
   suppressRefresh = true;
-  launchController.launch("lunar", launchHooks).finally(releaseRefreshUnlessLive);
-});
-launchForge.addEventListener("click", () => {
-  lastLaunchKind = "forge";
-  suppressRefresh = true;
-  launchController.launch("forge", launchHooks).finally(releaseRefreshUnlessLive);
-});
-// The pre-live escape hatch. The backend has nothing to latch on yet, so
-// this takes the forcing abort; the orchestrator handles the rest exactly
-// like any other return to home.
-cancelLaunch.addEventListener("click", () => {
-  sessionReset.resetToHome("launch_aborted");
-});
+  progressStage = null;
+  const run = retry ? launchController.tryAgainLaunch(kind, launchHooks) : launchController.launch(kind, launchHooks);
+  return run.finally(releaseRefreshUnlessLive);
+}
 
 function enterDashboard() {
   connectionShell.enterConnected({ firstLive: !firstLiveSeen });
@@ -1149,7 +1035,10 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
       // screen with an empty, never-shown roster - a black window with no
       // way back. Say so instead, and keep the next snapshot free to redraw.
       console.error(e);
-      dash.replaceChildren(node("div", "dash-error", `The roster could not be drawn. ${String(e)}`));
+      const note = document.createElement("div");
+      note.className = "dash-error";
+      note.textContent = `The roster could not be drawn. ${String(e)}`;
+      dash.replaceChildren(note);
       delete dash.dataset.ctx;
       delete dash.dataset.teams;
       lastView = null;
@@ -1157,10 +1046,6 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
     }
   }
   dash.classList.add("on");
-}
-
-function applyLobby(d) {
-  applyLobbySnapshot(d);
 }
 
 const currentCols = () =>
@@ -1176,6 +1061,7 @@ function syncDashLayout() {
   if (want !== have) dash.innerHTML = sheetHtml(lastView, want);
   fitDash();
 }
+new ResizeObserver(syncDashLayout).observe(stage);
 
 // Compact cozy → compact → dense so the roster tries to fit the window.
 // If it still overflows after dense, the dash scrolls.
@@ -1336,11 +1222,11 @@ function sheetHtml(view, n) {
   const body = cols
     .map((col) => {
       const labels = !view.bare && k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
-      return `<div class="col">${labels}${col.map((u) => u.html).join("")}</div>`;
+      return `<div class="dcol">${labels}${col.map((u) => u.html).join("")}</div>`;
     })
     .join("");
   if (view.bare) {
-    return `<div class="sheet bare" style="--n:${k}">${body}</div>`;
+    return `<div class="dsheet bare" style="--n:${k}">${body}</div>`;
   }
   const ctx = `<span class="ctx"><span class="live"></span>
       <span class="ctx-title">${view.title}</span>
@@ -1352,7 +1238,7 @@ function sheetHtml(view, n) {
     k > 1
       ? `<div class="dash-sticky ctx-bar">${ctx}</div>`
       : `<div class="dash-sticky col-head">${ctx}${STAT_LABELS}</div>`;
-  return `<div class="sheet" style="--n:${k}">${head}${body}</div>`;
+  return `<div class="dsheet" style="--n:${k}">${head}${body}</div>`;
 }
 
 function sectHead(title, note) {
@@ -1478,13 +1364,11 @@ const previewing = !window.__TAURI__;
 if (previewing) document.body.classList.add("previewing");
 
 const bootParams = new URLSearchParams(location.search);
-const bootKind = bootParams.get("ctx") || bootParams.get("state");
 
 function afterStatus(status) {
-  render(status);
+  setStatus(status);
   if (!previewing) launchController.refreshPreferences();
   if (!previewing) return;
-  mountPreviewBar(bootParams.get("update") || bootKind || "lunarReady");
   const ctx = bootParams.get("ctx");
   if (ctx === "joining") {
     stage.dataset.view = "dash";
@@ -1507,6 +1391,7 @@ function afterStatus(status) {
     stage.dataset.view = "dash";
     connectionShell.enterTerminal(ctx);
   } else if (PREVIEW_LOBBY[ctx]) {
+    stage.dataset.view = "dash";
     applyLobbySnapshot(PREVIEW_LOBBY[ctx]);
   }
 }
@@ -1521,16 +1406,22 @@ function setupErrorStatus(e) {
   };
 }
 
-if (previewing && bootParams.get("state") === "loading") {
-  mountPreviewBar("loading");
-} else {
+refreshUi();
+openInfo(invoke)
+  .then((info) => {
+    openInfoReply = info;
+    refreshUi();
+  })
+  .catch(() => {});
+
+if (!(previewing && bootParams.get("state") === "loading")) {
   invoke("refresh_setup")
     .then(afterStatus)
     .catch((e) => afterStatus(setupErrorStatus(e)));
 }
 
 if (previewing) {
-  applyPreviewUpdate(bootParams.get("update") || "consent");
+  applyPreviewUpdate(bootParams.get("update") || "current");
 } else {
   updateController.bootstrap().catch(() => {
     updateController.acceptStatus({ state: "error", manual: false });
@@ -1546,9 +1437,8 @@ if (!previewing && window.__TAURI__?.event?.listen) {
 function canAutoRefresh() {
   if (previewing || suppressRefresh || setupBusy) return false;
   if (stage.dataset.view === "dash") return false;
-  if (launch.classList.contains("is-loading") || launchForge.classList.contains("is-loading")) {
-    return false;
-  }
+  const st = launchController.getState();
+  if (st.launchBusy || st.launchPhase === "loading") return false;
   return true;
 }
 
@@ -1559,7 +1449,7 @@ function scheduleRefresh() {
     if (!canAutoRefresh()) return;
     try {
       const next = await invoke("refresh_setup");
-      if (next) render(next);
+      if (next) setStatus(next);
     } catch {
       // fail-soft on background refresh
     }
@@ -1576,417 +1466,4 @@ if (!previewing) {
     lostFocus = false;
     scheduleRefresh();
   });
-}
-
-// Browser-only chrome: a 900×620 frame plus a bar to flip every UI state.
-const PREVIEW_TOUR_MS = 1000;
-const PREVIEW_TOUR_KEYS = [
-  "loading",
-  ...PREVIEW_SETUP_KEYS,
-  "lunarReady",
-  "lunarReadyOff",
-  "overlayOff",
-  "forgeReadyOff",
-  "bothReady",
-  "invalidPref",
-  ...PREVIEW_UPDATE_KEYS,
-  "lobby",
-  "joining",
-  "disconnected",
-  "waiting",
-  "preexisting_game",
-  "session_ended",
-  "session_changed",
-  "launch_aborted",
-  "session_ended_resetting",
-  "queueSolo",
-  "queueDoubles",
-  "queueThrees",
-  "queueFours",
-  "gameSolo",
-  "gameDoubles",
-  "gameThrees",
-  "gameFours",
-  "game4v4",
-];
-
-let previewTourTimer = null;
-let previewTourIndex = -1;
-
-function syncPreviewPlayButton(playing) {
-  const btn = document.getElementById("preview-play");
-  if (!btn) return;
-  btn.classList.toggle("on", playing);
-  btn.textContent = playing ? "■" : "▶";
-  btn.setAttribute("aria-label", playing ? "Stop demo tour" : "Play through every state");
-  btn.title = playing ? "Stop demo tour" : "Play through every state (1s each)";
-}
-
-function stopPreviewTour() {
-  if (previewTourTimer != null) {
-    clearInterval(previewTourTimer);
-    previewTourTimer = null;
-  }
-  previewTourIndex = -1;
-  syncPreviewPlayButton(false);
-}
-
-function startPreviewTour() {
-  stopPreviewTour();
-  previewTourIndex = 0;
-  syncPreviewPlayButton(true);
-  showPreview(PREVIEW_TOUR_KEYS[0]);
-  previewTourTimer = setInterval(() => {
-    previewTourIndex += 1;
-    if (previewTourIndex >= PREVIEW_TOUR_KEYS.length) {
-      stopPreviewTour();
-      return;
-    }
-    showPreview(PREVIEW_TOUR_KEYS[previewTourIndex]);
-  }, PREVIEW_TOUR_MS);
-}
-
-function togglePreviewTour() {
-  if (previewTourTimer != null) stopPreviewTour();
-  else startPreviewTour();
-}
-
-function mountPreviewBar(active) {
-  if (document.getElementById("preview-bar")) {
-    markPreviewActive(active);
-    mountPreviewWindow();
-    return;
-  }
-  const bar = document.createElement("nav");
-  bar.id = "preview-bar";
-  bar.className = "preview-bar";
-  const setupButtons = PREVIEW_SETUP_KEYS.map(
-    (key) =>
-      `<button type="button" data-preview="${key}">${PREVIEW_SETUP_LABELS[key] ?? key}</button>`,
-  ).join("");
-  const updateButtons = PREVIEW_UPDATE_KEYS.map(
-    (key) =>
-      `<button type="button" data-preview="${key}">${PREVIEW_UPDATE_LABELS[key] ?? key}</button>`,
-  ).join("");
-  bar.innerHTML = `
-    <button type="button" id="preview-play" class="preview-play" title="Play through every state (1s each)" aria-label="Play through every state">▶</button>
-    <span class="preview-size">900×620</span>
-    <span class="preview-group">setup</span>
-    <button type="button" data-preview="loading">loading</button>
-    ${setupButtons}
-    <span class="preview-group">ready</span>
-    <button type="button" data-preview="lunarReady">lunar on</button>
-    <button type="button" data-preview="lunarReadyOff">lunar off</button>
-    <button type="button" data-preview="overlayOff">overlay off</button>
-    <button type="button" data-preview="forgeReadyOff">prism off</button>
-    <button type="button" data-preview="bothReady">both</button>
-    <button type="button" data-preview="invalidPref">bad pref</button>
-    <span class="preview-group">update</span>
-    ${updateButtons}
-    <span class="preview-group">lobby</span>
-    <button type="button" data-preview="lobby">lobby</button>
-    <button type="button" data-preview="joining">joining</button>
-    <button type="button" data-preview="disconnected">disconnected</button>
-    <span class="preview-group">session</span>
-    <button type="button" data-preview="waiting">waiting</button>
-    <button type="button" data-preview="preexisting_game">already running</button>
-    <button type="button" data-preview="session_ended">ended</button>
-    <button type="button" data-preview="session_changed">changed</button>
-    <button type="button" data-preview="launch_aborted">cancelled</button>
-    <button type="button" data-preview="session_ended_resetting">returning</button>
-    <span class="preview-group">queue</span>
-    <button type="button" data-preview="queueSolo">solos</button>
-    <button type="button" data-preview="queueDoubles">doubles</button>
-    <button type="button" data-preview="queueThrees">3s</button>
-    <button type="button" data-preview="queueFours">4s</button>
-    <span class="preview-group">game</span>
-    <button type="button" data-preview="gameSolo">solos</button>
-    <button type="button" data-preview="gameDoubles">doubles</button>
-    <button type="button" data-preview="gameThrees">3s</button>
-    <button type="button" data-preview="gameFours">4s</button>
-    <button type="button" data-preview="game4v4">4v4</button>`;
-  bar.addEventListener("click", (e) => {
-    if (e.target.closest("#preview-play")) {
-      togglePreviewTour();
-      return;
-    }
-    const btn = e.target.closest("[data-preview]");
-    if (btn) {
-      stopPreviewTour();
-      showPreview(btn.dataset.preview);
-    }
-  });
-  document.body.prepend(bar);
-  markPreviewActive(active);
-  mountPreviewWindow();
-}
-
-const PREVIEW_DEFAULT_W = 900;
-const PREVIEW_DEFAULT_H = 620;
-const PREVIEW_MIN_W = 640;
-const PREVIEW_MIN_H = 480;
-const PREVIEW_MOVE_H = 26;
-
-function mountPreviewWindow() {
-  if (document.getElementById("preview-window")) return;
-
-  const win = document.createElement("div");
-  win.id = "preview-window";
-  win.className = "preview-window";
-
-  const move = document.createElement("div");
-  move.className = "preview-move";
-  move.innerHTML = `<span>move</span><span class="preview-size">${PREVIEW_DEFAULT_W}×${PREVIEW_DEFAULT_H}</span>`;
-  move.title = "Drag to move · double-click to reset";
-
-  const resize = document.createElement("button");
-  resize.type = "button";
-  resize.className = "preview-resize";
-  resize.title = "Drag to resize";
-  resize.setAttribute("aria-label", "Resize window");
-
-  stage.replaceWith(win);
-  win.append(move, stage, resize);
-
-  let w = PREVIEW_DEFAULT_W;
-  let h = PREVIEW_DEFAULT_H;
-  let x = 0;
-  let y = 0;
-
-  function barHeight() {
-    return document.getElementById("preview-bar")?.offsetHeight ?? 0;
-  }
-
-  function clampSize(nw, nh) {
-    const maxW = Math.max(PREVIEW_MIN_W, window.innerWidth - 32);
-    const maxH = Math.max(PREVIEW_MIN_H, window.innerHeight - barHeight() - PREVIEW_MOVE_H - 24);
-    return {
-      w: Math.round(Math.min(maxW, Math.max(PREVIEW_MIN_W, nw))),
-      h: Math.round(Math.min(maxH, Math.max(PREVIEW_MIN_H, nh))),
-    };
-  }
-
-  function clampPos(nx, ny, nw, nh) {
-    const minY = barHeight() + PREVIEW_MOVE_H + 8;
-    const maxX = window.innerWidth - nw - 12;
-    const maxY = window.innerHeight - nh - 12;
-    return {
-      x: Math.round(Math.min(Math.max(12, nx), Math.max(12, maxX))),
-      y: Math.round(Math.min(Math.max(minY, ny), Math.max(minY, maxY))),
-    };
-  }
-
-  function apply() {
-    win.style.width = `${w}px`;
-    win.style.height = `${h}px`;
-    win.style.left = `${x}px`;
-    win.style.top = `${y}px`;
-    document.querySelectorAll(".preview-size").forEach((node) => {
-      node.textContent = `${w}×${h}`;
-    });
-    const ctx = dash.dataset.ctx;
-    if (ctx) fitDash();
-  }
-
-  function centerDefault() {
-    ({ w, h } = clampSize(PREVIEW_DEFAULT_W, PREVIEW_DEFAULT_H));
-    const pos = clampPos((window.innerWidth - w) / 2, (window.innerHeight - h) / 2, w, h);
-    x = pos.x;
-    y = pos.y;
-    apply();
-  }
-
-  function drag(onMove) {
-    return (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      const pointer = e.currentTarget;
-      pointer.setPointerCapture(e.pointerId);
-      document.body.classList.add("is-dragging");
-      const sx = e.clientX;
-      const sy = e.clientY;
-      const start = onMove.start();
-      const movePtr = (ev) => onMove.move(ev.clientX - sx, ev.clientY - sy, start);
-      const up = () => {
-        pointer.releasePointerCapture(e.pointerId);
-        pointer.removeEventListener("pointermove", movePtr);
-        pointer.removeEventListener("pointerup", up);
-        pointer.removeEventListener("pointercancel", up);
-        document.body.classList.remove("is-dragging");
-        win.classList.remove("is-resizing");
-      };
-      pointer.addEventListener("pointermove", movePtr);
-      pointer.addEventListener("pointerup", up);
-      pointer.addEventListener("pointercancel", up);
-    };
-  }
-
-  move.addEventListener(
-    "pointerdown",
-    drag({
-      start: () => ({ x, y }),
-      move: (dx, dy, start) => {
-        const pos = clampPos(start.x + dx, start.y + dy, w, h);
-        x = pos.x;
-        y = pos.y;
-        apply();
-      },
-    }),
-  );
-  move.addEventListener("dblclick", centerDefault);
-
-  resize.addEventListener(
-    "pointerdown",
-    (e) => {
-      win.classList.add("is-resizing");
-      drag({
-        start: () => ({ w, h }),
-        move: (dx, dy, start) => {
-          ({ w, h } = clampSize(start.w + dx, start.h + dy));
-          const pos = clampPos(x, y, w, h);
-          x = pos.x;
-          y = pos.y;
-          apply();
-        },
-      })(e);
-    },
-  );
-
-  window.addEventListener("resize", () => {
-    ({ w, h } = clampSize(w, h));
-    const pos = clampPos(x, y, w, h);
-    x = pos.x;
-    y = pos.y;
-    apply();
-  });
-
-  centerDefault();
-}
-
-function markPreviewActive(kind) {
-  document.querySelectorAll(".preview-bar [data-preview]").forEach((btn) => {
-    btn.classList.toggle("on", btn.dataset.preview === kind);
-  });
-}
-
-function resetPreviewSession() {
-  stopProgressPolling();
-  stopLobbyPolling();
-  sessionReset.cancelRetry();
-  overlayExit.resetSession();
-  lastKey = null;
-  lastView = null;
-  firstLiveSeen = false;
-  homeUntilLive = false;
-  previewLaunchAt = null;
-  setupBusy = false;
-  suppressRefresh = false;
-  connection.reset();
-  connectionShell.reset();
-  connAnnounce.textContent = "";
-  dash.classList.remove("on");
-  dash.replaceChildren();
-  delete dash.dataset.ctx;
-  delete dash.dataset.density;
-  delete dash.dataset.teams;
-  stage.dataset.view = "home";
-  launch.disabled = false;
-  launch.classList.remove("is-loading");
-  launchForge.disabled = false;
-  launchForge.classList.remove("is-loading");
-  launchError.hidden = true;
-  prefError.hidden = true;
-  prefError.textContent = "";
-  syncLaunchUi();
-}
-
-function showPreview(kind) {
-  resetPreviewSession();
-  const params = new URLSearchParams();
-  if (kind === "loading") {
-    stage.dataset.state = "loading";
-    el("chip-text").textContent = "checking setup";
-    params.set("state", "loading");
-  } else if (kind === "joining") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.show("joining");
-    params.set("ctx", "joining");
-  } else if (kind === "waiting") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.show("waiting");
-    params.set("ctx", "waiting");
-  } else if (kind === "disconnected") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterDisconnected();
-    params.set("ctx", "disconnected");
-  } else if (kind === "preexisting_game") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
-    params.set("ctx", "preexisting_game");
-  } else if (kind === "invalidPref") {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    repairPref.hidden = false;
-    prefError.textContent = "Preference file is invalid.";
-    prefError.hidden = false;
-    params.set("state", "lunarReady");
-  } else if (kind === "lunarReadyOff" || kind === "forgeReadyOff") {
-    render(
-      kind === "lunarReadyOff" ? PREVIEW_STATUS.lunarReady : PREVIEW_STATUS.forgeReady,
-    );
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = false;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
-  } else if (kind === "overlayOff") {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = false;
-    params.set("state", "lunarReady");
-  } else if (kind === "bothReady") {
-    render(PREVIEW_STATUS.bothReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    params.set("state", "bothReady");
-  } else if (
-    kind === "session_ended" ||
-    kind === "session_changed" ||
-    kind === "launch_aborted" ||
-    kind === "session_ended_resetting"
-  ) {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterTerminal(kind);
-    params.set("ctx", kind);
-  } else if (PREVIEW_UPDATE[kind]) {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    applyPreviewUpdate(kind);
-    params.set("state", "lunarReady");
-    params.set("update", kind);
-  } else if (PREVIEW_LOBBY[kind]) {
-    render(PREVIEW_STATUS.lunarReady);
-    applyLobbySnapshot(PREVIEW_LOBBY[kind]);
-    params.set("ctx", kind);
-  } else {
-    render(resolvePreviewStatus(kind));
-    params.set("state", kind);
-  }
-  history.replaceState(null, "", `${location.pathname}?${params}`);
-  markPreviewActive(kind);
 }

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createUpdateController } from "./update-controller.js";
-import { updateView } from "./update-view.js";
+import { sheetModel } from "./ui/model.js";
 
 function harness({ status, prefs, rejects = {} } = {}) {
   const calls = [];
@@ -273,6 +273,7 @@ test("a download refused through Enable surfaces in the row like any other actio
   assert.equal(state.state, "error");
   assert.equal(state.message, reason);
   assert.equal(state.diagnosticCode, "action_failed");
-  assert.equal(updateView(state).primaryAction, "check");
-  assert.equal(updateView(state).detail, reason);
+  const version = sheetModel({ status: { state: "ready", targets: [] }, update: state }).version;
+  assert.equal(version.word, "Check failed");
+  assert.equal(version.key.action, "check");
 });

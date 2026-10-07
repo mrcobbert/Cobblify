@@ -1,0 +1,439 @@
+/* The 0.18 launcher home in the in-game Ore sheet language, ported from the prototype (proto/servers.css):
+   home has no bar, a left column with Launch, the island free on the right (decision 38); the settings sheet,
+   What's New and the release-notes history. Every length is a whole number of --su (1 sheet unit, whole device px)
+   or --fpx (1 Minecraft-font pixel). Later blocks supersede earlier rules, as in the prototype; keep the order. */
+
+html, body { height: 100%; margin: 0; background: var(--ground); }
+.app { position: fixed; inset: 0; }
+.app[hidden] { display: none; }
+/* macOS: the overlay title bar puts the window buttons over our header (tauri.macos.conf.json) */
+.app[data-platform=mac] .hdr { padding-left: calc(40*var(--su)); }
+
+/* ---------- root ---------- */
+.app{position:relative;display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;background:var(--ground);color:var(--hi);
+  font-family:var(--font-ui);font-size:calc(9*var(--fpx));line-height:calc(9*var(--fpx));cursor:default;user-select:none;-webkit-user-select:none;
+  -webkit-font-smoothing:antialiased;will-change:transform; /* own layer: grayscale AA so pixel text has no ClearType fringes */
+  --row-line:calc(9*var(--fpx));--tsh:transparent;--lw:calc(124*var(--su))}
+:root[data-font=minecraft] .app{letter-spacing:calc(-.5*var(--fpx));word-spacing:calc(.5*var(--fpx))} /* stand-in font advances 6.5 px; vanilla advances are 6 */
+:root[data-font=modern] .app{font-size:calc(8.5*var(--su));line-height:calc(10*var(--su));--row-line:calc(10*var(--su))}
+:where(.app) *,:where(.app) *::before,:where(.app) *::after{box-sizing:border-box}
+:where(.app) :where(button){font:inherit;letter-spacing:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:inherit}
+.app .t{position:relative}
+:root[data-font=minecraft] .app .sh{text-shadow:var(--fpx) var(--fpx) 0 var(--hi-sh)}
+:root[data-font=minecraft] .app .shc{text-shadow:var(--fpx) var(--fpx) 0 var(--tsh)}
+:root[data-font=modern] .app .nm,:root[data-font=modern] .app .name{font-weight:600}
+.mid{color:var(--mid)} .lo{color:var(--lo)}
+.read{font-family:var(--font-read);letter-spacing:0;font-size:calc(7.5*var(--su));line-height:calc(11*var(--su));color:var(--mid)}
+:root[data-font=minecraft] .app :is(.read,.ver,.rel li,.wn li){letter-spacing:0;word-spacing:0}
+/* the game's 2x text (titles): 2 font px per art px, vanilla 2x advances, a 2 px shadow */
+.app .x2{font-size:calc(18*var(--fpx));line-height:calc(18*var(--fpx))}
+:root[data-font=minecraft] .app .x2{letter-spacing:calc(-1*var(--fpx));word-spacing:calc(1*var(--fpx))}
+:root[data-font=minecraft] .app .x2.sh{text-shadow:calc(2*var(--fpx)) calc(2*var(--fpx)) 0 var(--hi-sh)}
+:root[data-font=modern] .app .x2{font-size:calc(14*var(--su));line-height:calc(17*var(--su));font-weight:600;letter-spacing:0}
+.sel-text{user-select:text;-webkit-user-select:text;cursor:text}
+@media (prefers-reduced-motion:reduce){.app *{transition:none!important}}
+
+
+/* ---------- header band ---------- */
+.hdr{flex:none;display:flex;align-items:center;gap:calc(7*var(--su));height:calc(24*var(--su));padding:0 calc(5*var(--su)) 0 calc(11*var(--su));
+  background:var(--band);border-bottom:var(--su) solid #000;position:relative;z-index:2}
+.brand{display:flex;align-items:flex-start;gap:calc(3*var(--su));height:calc(12*var(--su))}
+.brand svg{display:block;margin-top:var(--su)}
+.ver{font-family:var(--font-modern);letter-spacing:0;font-weight:500;font-size:calc(6.5*var(--su));line-height:calc(7*var(--su));color:var(--mid);padding:0 var(--su);margin-top:0}
+.ver:hover{color:var(--hi)}
+.ver.dev{color:var(--mid)}
+.hdr .grow{flex:1}
+.hdr-ctx{color:var(--mid)}
+
+/* ---------- keys (the press model) ---------- */
+.key{position:relative;display:inline-flex;align-items:flex-start;justify-content:center;flex:none;height:calc(16*var(--su));
+  padding:var(--su) calc(6*var(--su)) calc(2*var(--su));border:var(--su) solid #000;background:var(--face);color:var(--hi);white-space:nowrap;line-height:var(--row-line);
+  box-shadow:inset 0 calc(-2*var(--su)) 0 var(--depth),inset 0 calc(-3*var(--su)) 0 var(--lower),inset 0 var(--su) 0 var(--edge),inset var(--su) 0 0 var(--edge),inset calc(-1*var(--su)) 0 0 var(--lower)}
+:root[data-font=modern] .key{font-weight:500}
+.key:hover{background:var(--face-hv)}
+.key.dn,.key:active:not(:disabled):not(.static){height:calc(14*var(--su));margin-top:calc(2*var(--su));padding-top:calc(2*var(--su));padding-bottom:0;
+  box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2)}
+.key.acc{background:var(--acc);color:var(--acc-on);
+  box-shadow:inset 0 calc(-2*var(--su)) 0 var(--acc-dp),inset 0 calc(-3*var(--su)) 0 var(--acc-ln),inset 0 var(--su) 0 var(--acc-hl),inset var(--su) 0 0 var(--acc-hl),inset calc(-1*var(--su)) 0 0 var(--acc-ln)}
+:root[data-font=modern] .key.acc{font-weight:600}
+.key.acc:hover{filter:brightness(1.06)}
+.key.acc.dn,.key.acc:active:not(:disabled):not(.static){box-shadow:inset 0 var(--su) 0 var(--acc-sh),inset 0 calc(2*var(--su)) 0 var(--acc-sh2),inset var(--su) 0 0 var(--acc-sh2)}
+:root[data-font=modern] .key.acc.dn{font-weight:500}
+.key.acc .t{text-shadow:var(--fpx) var(--fpx) 0 var(--acc-tsh,transparent)}
+:root[data-font=modern] .key.acc .t{text-shadow:none}
+.key:disabled,.off{opacity:.4;filter:saturate(.15);pointer-events:none}
+.key.wide{display:flex;width:100%}
+.key:focus-visible,.row:focus-visible,.choice:focus-visible,.ver:focus-visible,.tog:focus-visible,.trow:focus-visible{outline:var(--su) solid var(--hi);outline-offset:var(--su)}
+.key .glyph{display:block;margin-top:var(--su)}
+
+/* the hero (Play): Ore's hero proportions; the one accent action on screen */
+.hero{height:calc(24*var(--su));width:calc(128*var(--su));min-width:calc(84*var(--su));flex:0 1 auto;padding-top:calc(5*var(--su))}
+.hero.prog{min-width:calc(112*var(--su))}
+/* regular weight, as the in-game hero: loud through size and accent only (Minor 11) */
+:root[data-font=modern] .hero{font-size:calc(9*var(--su))}
+.hero.dn,.hero:active:not(:disabled):not(.static){height:calc(22*var(--su));padding-top:calc(6*var(--su))}
+/* Play as the progress surface: the key stays down and its face becomes a track that fills */
+.hero.prog{height:calc(22*var(--su));margin-top:calc(2*var(--su));padding:0;background:var(--pit);color:var(--hi);cursor:default;filter:none;
+  box-shadow:inset 0 var(--su) 0 #000;overflow:hidden}
+.hero.prog:hover{filter:none;background:var(--pit)}
+.hero.prog .fill{position:absolute;left:0;top:var(--su);bottom:0;width:var(--pw,0);background:var(--acc);box-shadow:inset 0 var(--su) 0 var(--acc-hl)} /* no transition: each phase re-renders the key */
+.hero.prog .lab{position:absolute;left:0;right:0;top:calc(6*var(--su));display:flex;justify-content:center;white-space:nowrap}
+.hero.prog .lab{clip-path:inset(0 0 0 var(--pw,0))}
+.hero.prog .lab.on{color:var(--acc-on);clip-path:inset(0 calc(100% - var(--pw,0)) 0 0)}
+:root[data-font=minecraft] .hero.prog .lab:not(.on) .t{text-shadow:var(--fpx) var(--fpx) 0 var(--hi-sh)}
+:root[data-font=minecraft] .hero.prog{font-weight:400}
+:root[data-font=modern] .hero.prog{font-weight:500}
+
+/* close key: 15x15 raised neutral with a pixel x */
+.xkey{width:calc(16*var(--su));height:calc(16*var(--su));padding:calc(2*var(--su)) 0 0;justify-content:center}
+.xkey.dn,.key.xkey:active:not(:disabled):not(.static){height:calc(14*var(--su));padding-top:calc(2*var(--su))} /* the cross drops 2 with the face (gear agent) */
+
+/* ---------- body: master | detail ---------- */
+.body{flex:1;min-height:0;display:flex;position:relative}
+.master{flex:none;width:var(--lw);display:flex;flex-direction:column;background:var(--band);padding-top:calc(8*var(--su));overflow:hidden}
+.mh{display:flex;align-items:flex-start;padding:0 calc(9*var(--su)) calc(6*var(--su)) calc(11*var(--su));color:var(--hi)}
+.mh .mid{margin-left:auto}
+.div{flex:none;height:calc(2*var(--su));border-top:var(--su) solid #000;border-bottom:var(--su) solid var(--groove)}
+.row{display:flex;align-items:flex-start;gap:calc(6*var(--su));width:100%;padding:calc(7*var(--su)) calc(9*var(--su)) calc(7*var(--su)) calc(11*var(--su));text-align:left}
+.row:hover{background:var(--ground)}
+.row.sel{background:var(--face);box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2);padding-top:calc(8*var(--su));padding-bottom:calc(6*var(--su))}
+.row .txt{display:flex;flex-direction:column;gap:calc(4*var(--su));min-width:0;white-space:nowrap}
+.row.busy{pointer-events:none}
+.tile{flex:none;width:calc(14*var(--su));height:calc(14*var(--su));border:var(--su) solid #000;background:var(--pit);padding:var(--su)}
+.tile svg{display:block}
+.mfoot{margin-top:auto;padding:calc(7*var(--su)) calc(9*var(--su)) calc(8*var(--su)) calc(11*var(--su))}
+
+/* tags: Ore's flat label chips, coloured only when they mean a problem */
+.tag{display:inline-flex;align-self:flex-start;align-items:flex-start;height:calc(11*var(--su));padding:var(--su) calc(3*var(--su)) 0;white-space:nowrap;background:var(--rim);color:var(--mid);line-height:var(--row-line)}
+:root[data-font=modern] .tag{font-size:calc(7.5*var(--su));line-height:calc(9*var(--su));font-weight:500}
+.tag.need{background:#F5C63A;color:#121212}
+.tag.fail{background:#E5484D;color:#121212}
+.tag.dev{background:var(--rim);color:var(--hi)}
+.tag.tgt{background:#121212;color:#FF5555;box-shadow:inset 0 0 0 var(--su) #FF5555}
+:root[data-font=minecraft] .tag.tgt .t{text-shadow:var(--fpx) var(--fpx) 0 #3F1515}
+
+.ln{color:var(--hi)}
+/* the island slot (home, and the board's empty states) */
+.art{flex:1 1 auto;min-height:calc(40*var(--su));position:relative;overflow:hidden;background:var(--band);border-bottom:var(--su) solid #000}
+.art img{position:absolute;image-rendering:pixelated;image-rendering:crisp-edges}
+.art img.grey{opacity:.4;filter:saturate(.15)}
+.art.collapsed{flex:0 0 0;min-height:0;border-bottom:0}
+.bar{flex:1;min-width:calc(40*var(--su));height:calc(6*var(--su));border:var(--su) solid #000;background:var(--pit);box-shadow:0 0 0 var(--su) var(--rim);position:relative;margin:0 var(--su)}
+.bar i{position:absolute;left:0;top:0;bottom:0;width:var(--pw);background:var(--acc);box-shadow:inset 0 var(--su) 0 var(--acc-hl)}
+.ml{line-height:calc(11*var(--fpx))}
+:root[data-font=modern] .ml{line-height:calc(11*var(--su))}
+.file{display:inline-flex;align-items:flex-start;height:calc(14*var(--su));padding:calc(2*var(--su)) calc(4*var(--su)) 0;background:var(--pit);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 #000,0 0 0 var(--su) var(--rim);color:var(--hi);margin-left:var(--su)}
+.details{background:var(--pit);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 #000,0 0 0 var(--su) var(--rim);padding:calc(5*var(--su)) calc(6*var(--su));margin:calc(7*var(--su)) var(--su) 0}
+.details .read{color:var(--hi);word-break:break-word}
+.chips{display:flex;flex-wrap:wrap;gap:calc(3*var(--su))}
+.choices{border:var(--su) solid #000}
+.choice{display:flex;align-items:flex-start;gap:calc(6*var(--su));width:100%;padding:calc(5*var(--su)) calc(6*var(--su)) calc(5*var(--su));background:var(--face);text-align:left;
+  box-shadow:inset 0 var(--su) 0 var(--edge),inset var(--su) 0 0 var(--edge),inset 0 calc(-1*var(--su)) 0 var(--lower)}
+.choice+.choice{border-top:var(--su) solid #000}
+.choice:hover{background:var(--face-hv)}
+.choice .cx{display:flex;flex-direction:column;gap:calc(3*var(--su));flex:1;min-width:0}
+.choice .ck{flex:none;width:calc(9*var(--su));height:calc(9*var(--su));margin-top:0}
+.choice.on{background:var(--face);box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2);padding-top:calc(6*var(--su));padding-bottom:calc(4*var(--su))}
+
+/* ---------- history (Ore Help guides: version list | one reading column) ---------- */
+.back{width:calc(15*var(--su));height:calc(15*var(--su));padding:calc(2*var(--su)) 0 0;justify-content:center} /* the close key's 15x15 (gear agent) */
+.back.dn,.key.back:active:not(:disabled):not(.static){height:calc(13*var(--su));padding-top:calc(2*var(--su))}
+.hist-list .row{padding-top:calc(6*var(--su));padding-bottom:calc(6*var(--su))}
+.hist-list .row.sel{padding-top:calc(7*var(--su));padding-bottom:calc(5*var(--su))}
+.reading{flex:1;min-width:0;overflow-y:auto;background:var(--ground);border-left:var(--su) solid #000;position:relative}
+.rcol{max-width:calc(260*var(--su));padding:calc(12*var(--su)) calc(16*var(--su)) calc(24*var(--su)) calc(16*var(--su))}
+.rel+.rel{margin-top:calc(16*var(--su));padding-top:calc(14*var(--su));border-top:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--groove)}
+.rel-h{display:flex;align-items:flex-start;gap:calc(5*var(--su));flex-wrap:wrap}
+.rel-h .mid{margin-left:auto}
+.rel h4{margin:calc(10*var(--su)) 0 calc(4*var(--su));font:inherit;color:var(--mid)}
+.rel ul{margin:0;padding:0;list-style:none}
+.rel li{position:relative;padding-left:calc(9*var(--su));font-family:var(--font-read);letter-spacing:0;font-size:calc(8*var(--su));line-height:calc(12*var(--su));color:var(--hi)}
+.rel li+li{margin-top:calc(3*var(--su))}
+.rel li::before,.wn li::before{content:"";position:absolute;left:var(--su);top:calc(5*var(--su));width:calc(2*var(--su));height:calc(2*var(--su));background:var(--mid)}
+
+/* ---------- settings sheet (the in-game RShift sheet, right-anchored) ---------- */
+.sheet{position:absolute;z-index:20;top:0;right:0;bottom:0;width:calc(244*var(--su));max-width:100%;display:flex;flex-direction:column;background:var(--ground);
+  border-left:var(--su) solid #000;transform:translateX(calc(100% + 2*var(--su)));visibility:hidden;transition:transform 100ms cubic-bezier(.4,0,1,1),visibility 0s linear 100ms}
+.sheet::before{content:"";position:absolute;z-index:3;left:0;top:0;bottom:0;width:calc(2*var(--su));background:var(--edge-step);box-shadow:inset var(--su) 0 0 var(--edge-lit);pointer-events:none}
+.sheet.open{transform:none;visibility:visible;transition:transform 140ms cubic-bezier(0,0,0,1),visibility 0s}
+.sh-hdr{flex:none;display:flex;align-items:center;gap:calc(7*var(--su));height:calc(24*var(--su));padding:0 calc(5*var(--su)) 0 calc(13*var(--su));background:var(--band);border-bottom:var(--su) solid #000}
+.sh-hdr .grow{flex:1}
+.sh-body{flex:1;min-height:0;overflow-y:auto;padding-bottom:calc(10*var(--su))}
+.sec{padding:calc(9*var(--su)) calc(9*var(--su)) calc(3*var(--su)) calc(13*var(--su))}
+.sec+.sec{border-top:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--groove)}
+.sec-h{color:var(--hi);padding:0 0 calc(3*var(--su)) 0}
+:root[data-font=modern] .sec-h{font-size:calc(10*var(--su));line-height:calc(12*var(--su));font-weight:600}
+.srow{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:calc(6*var(--su));align-items:start;padding:calc(5*var(--su)) 0 calc(5*var(--su)) calc(6*var(--su))}
+.srow .lbl{display:flex;flex-direction:column;gap:calc(3*var(--su))}
+:root[data-font=modern] .srow .lbl>.t:first-child{font-size:calc(9*var(--su));line-height:calc(11*var(--su));font-weight:500}
+.srow .d{color:var(--mid)}
+:root[data-font=modern] .srow .d{font-size:calc(8*var(--su));line-height:calc(10*var(--su))}
+.srow .ctl{display:flex;align-items:center;padding-top:var(--su)}
+.srow .blk{grid-column:1/-1;margin-top:calc(5*var(--su))}
+.disclaim{padding:calc(4*var(--su)) 0 0 calc(6*var(--su))}
+
+/* the I/O toggle */
+.tog{position:relative;flex:none;width:calc(28*var(--su));height:calc(14*var(--su));border:var(--su) solid #000;background:var(--pit);box-shadow:0 0 0 var(--su) var(--rim);margin:calc(2*var(--su)) var(--su)}
+.tog .tf{position:absolute;left:0;top:0;bottom:0;width:calc(13*var(--su));background:var(--acc);box-shadow:inset 0 var(--su) 0 var(--acc-hl),inset 0 calc(-1*var(--su)) 0 var(--acc-ln);opacity:0;transition:opacity 90ms ease}
+.tog .ti{position:absolute;left:calc(6*var(--su));top:calc(3*var(--su));width:var(--su);height:calc(6*var(--su));background:var(--acc-on);opacity:0;transition:opacity 90ms ease}
+.tog .to{position:absolute;right:calc(3*var(--su));top:calc(3*var(--su));width:calc(5*var(--su));height:calc(6*var(--su));border:var(--su) solid var(--lo);transition:opacity 90ms ease}
+.tog .tk{position:absolute;top:calc(-2*var(--su));left:calc(-1*var(--su));width:calc(14*var(--su));height:calc(18*var(--su));border:var(--su) solid #000;background:var(--knob);
+  box-shadow:inset 0 calc(-2*var(--su)) 0 var(--knob-depth),inset 0 calc(-3*var(--su)) 0 var(--knob-lower),inset 0 var(--su) 0 var(--knob-edge),inset var(--su) 0 0 var(--knob-edge),inset calc(-1*var(--su)) 0 0 var(--knob-lower);
+  transition:left 90ms cubic-bezier(.2,0,0,1)}
+.tog:hover .tk{background:var(--knob-hv)}
+.tog[aria-checked=true] .tf,.tog[aria-checked=true] .ti{opacity:1}
+.tog[aria-checked=true] .to{opacity:0}
+.tog[aria-checked=true] .tk{left:calc(12*var(--su))}
+
+/* option row (segmented control from joined keys) */
+.opts{display:flex;align-items:flex-end;height:calc(16*var(--su));margin-bottom:calc(-2*var(--su))}
+.opts .key{flex:1 1 0;min-width:0;margin-left:calc(-1*var(--su));padding-left:calc(2*var(--su));padding-right:calc(2*var(--su));color:var(--mid)}
+.opts .key:first-child{margin-left:0}
+.opts .key:hover{color:var(--hi)}
+.opts .key.on{height:calc(14*var(--su));margin-top:0;padding-top:calc(2*var(--su));padding-bottom:0;background:var(--acc);color:var(--acc-on);
+  box-shadow:inset 0 var(--su) 0 var(--acc-sh),inset 0 calc(2*var(--su)) 0 var(--acc-sh2),inset var(--su) 0 0 var(--acc-sh2)}
+:root[data-font=modern] .opts .key.on{font-weight:500}
+
+/* ---------- What's New: Ore's update pop-up ---------- */
+.scrim{position:absolute;z-index:30;inset:0;background:rgba(0,0,0,.55)}
+.modal{position:absolute;z-index:31;width:calc(224*var(--su));max-width:calc(100% - 16*var(--su));display:flex;flex-direction:column;background:var(--ground);border:var(--su) solid #000}
+.modal .sh-hdr{padding-left:calc(10*var(--su))}
+.wn{padding:calc(9*var(--su)) calc(12*var(--su)) calc(10*var(--su))}
+.wn ul{margin:calc(8*var(--su)) 0 0;padding:0;list-style:none}
+.wn li{position:relative;padding-left:calc(9*var(--su));font-family:var(--font-read);letter-spacing:0;font-size:calc(8*var(--su));line-height:calc(12*var(--su));color:var(--hi)}
+.wn li+li{margin-top:calc(4*var(--su))}
+.wn .lnk{display:inline-block;margin-top:calc(10*var(--su));color:var(--mid);text-decoration:underline;text-underline-offset:calc(2*var(--su));text-decoration-thickness:var(--su)}
+.wn .lnk:hover{color:var(--hi)}
+.mfoot-band{background:var(--band);border-top:var(--su) solid #000;padding:calc(7*var(--su)) calc(10*var(--su)) calc(8*var(--su))}
+.mfoot-band .key{width:100%;height:calc(20*var(--su));padding-top:calc(3*var(--su))}
+.mfoot-band .key:active{height:calc(18*var(--su));padding-top:calc(4*var(--su))}
+
+/* toast: the sheet's toast construction */
+.toast{position:absolute;z-index:40;top:calc(30*var(--su));background:var(--band);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--groove);padding:calc(5*var(--su)) calc(8*var(--su)) calc(6*var(--su));
+  color:var(--hi);white-space:nowrap;opacity:0;transition:opacity 120ms ease}
+.toast.on{opacity:1}
+
+/* the in-game scrollbar: 4 su, band track, #4A4A4A thumb with a black border, only when the page overflows */
+.sh-body::-webkit-scrollbar,.reading::-webkit-scrollbar,.rbody::-webkit-scrollbar{width:calc(4*var(--su))}
+.sh-body::-webkit-scrollbar-track,.reading::-webkit-scrollbar-track,.rbody::-webkit-scrollbar-track{background:var(--band)}
+.sh-body::-webkit-scrollbar-thumb,.reading::-webkit-scrollbar-thumb,.rbody::-webkit-scrollbar-thumb{background:var(--thumb);border:var(--su) solid #000;min-height:calc(10*var(--su))}
+
+/* ---------- revision 1 ---------- */
+/* indeterminate waits: the pressed pit, no accent, label in hi */
+.hero.wait{background:var(--pit);color:var(--hi)}
+.hero.wait .lab{clip-path:none}
+/* build hook: unbuilt rows as a faint ghost */
+/* legend: the term in the UI font, the sentence in Inter */
+.lg{display:flex;flex-direction:column;gap:calc(2*var(--su))}
+.legend .lg .read{font-size:calc(7*var(--su));line-height:calc(10*var(--su))}
+/* locked preferences during a launch or a game: the same controls at the one disabled rule */
+.tog:disabled,.opts .key:disabled{opacity:.4;filter:saturate(.15);pointer-events:none}
+.reason{padding:0 0 calc(2*var(--su)) calc(6*var(--su))}
+
+/* Small windows (640x480 at 125 %+): nothing important may be cut off (orchestrator QA, 2026-10-04).
+   The What's New pop-up keeps its header and Continue and scrolls its notes; the no-client step scrolls instead of
+   clipping its cards' "Get" lines; the pinned team also covers the board's bottom padding, where scrolled rows
+   used to peek out underneath it. */
+.modal{max-height:calc(100% - 16*var(--su))}
+.modal .wn{flex:1 1 auto;min-height:0;overflow-y:auto}
+.modal .sh-hdr,.modal .mfoot-band{flex:none}
+
+/* the 3D island host: sized by isl.fit() to whole art pixels, placed on whole device pixels by placeIsland() */
+.isl3d{position:absolute;line-height:0;box-sizing:border-box}
+.isl3d canvas{display:block}
+
+/* the intro stage: the window below the header (blocks fall in from the header's bottom edge); layout-free */
+#istage{position:absolute;left:0;right:0;bottom:0;top:0;pointer-events:none;z-index:0}
+
+/* ---------- home (decision 38): no bar, one left column, the island free on the right ---------- */
+/* the header row stays (wordmark, gear, drag region, the mac lights' room) but loses its band and rule */
+.hdr.bare{background:transparent;border-bottom-color:transparent}
+.body.home{background:var(--ground)}
+.col{flex:none;width:calc(180*var(--su));display:flex;flex-direction:column;justify-content:safe center;min-height:0;padding:calc(12*var(--su)) calc(12*var(--su)) calc(12*var(--su)) calc(11*var(--su));position:relative;z-index:1}
+/* what's going on, then Play: one block, centred in the column (the user, 2026-10-04); safe centring keeps an
+   overflowing lead scrollable from its top */
+.lead{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;gap:calc(5*var(--su));overflow-y:auto;overflow-x:hidden;padding-bottom:calc(10*var(--su))}
+.lead>*{flex:none}
+/* Play and what it does, under the lead */
+/* Play's row alone is centred (the user, 2026-10-04: Play, which turns into the loading bar, stays perfectly centred);
+   Cancel / Stop waiting / Get Prism hang below it out of flow, so they never move it */
+.go{flex:none;display:flex;flex-direction:column;gap:calc(5*var(--su));position:relative}
+.heros{display:flex;align-items:flex-start;gap:calc(4*var(--su));height:calc(24*var(--su))}
+.heros>.hero,.heros>.split{flex:1 1 auto;width:auto;min-width:0}
+.keys2{display:flex;gap:calc(4*var(--su));height:calc(16*var(--su));position:absolute;left:0;top:calc(100% + 5*var(--su))}
+.split{display:flex;align-items:flex-start;height:calc(24*var(--su))}
+.split .hero{flex:1 1 auto;width:auto;min-width:0}
+/* the arrow is the same accent key, joined on the black edge they share */
+.caret{width:calc(17*var(--su));height:calc(24*var(--su));margin-left:calc(-1*var(--su));padding:calc(10*var(--su)) 0 0;justify-content:center}
+.caret:active:not(:disabled),.caret[aria-expanded=true]{height:calc(22*var(--su));margin-top:calc(2*var(--su));padding-top:calc(11*var(--su))}
+.caret[aria-expanded=true]{box-shadow:inset 0 var(--su) 0 var(--acc-sh),inset 0 calc(2*var(--su)) 0 var(--acc-sh2),inset var(--su) 0 0 var(--acc-sh2)}
+.lnk{color:var(--hi);font:inherit;letter-spacing:0;text-decoration:underline;text-underline-offset:calc(2*var(--su));text-decoration-thickness:var(--su)}
+.lnk:hover{color:var(--acc)}
+/* the island: no box, the window's own ground. Its slot is the whole window (top set by placeHome to reach behind the bare
+   header row), under the column and the header; z-index 0 keeps even the intro's fixed canvas in that layer */
+.home .art{position:absolute;left:0;right:0;bottom:0;top:0;z-index:0;min-width:0;min-height:0;background:none;border:0}
+/* the column's group (status + Play), centred; when the island passes behind the column and there are words to read, the
+   group sits on a panel in the sheet's toast construction (band, black edge, groove), the way Ore lays panels over the
+   world. Ready Play alone has no panel: the key floats over the island. Margins cancel the panel's padding and border,
+   so nothing moves when it appears. */
+.grp{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;position:relative}
+.home.under .grp.lit{background:var(--band);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--groove);
+  margin:calc(-9*var(--su)) calc(-9*var(--su)) calc(-9*var(--su)) calc(-7*var(--su));padding:calc(8*var(--su)) calc(8*var(--su)) calc(8*var(--su)) calc(6*var(--su))}
+/* the client menu (Play's arrow): a raised sheet panel, rows like the settings rows */
+.menu{position:absolute;z-index:35;display:flex;flex-direction:column;background:var(--band);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--groove);padding:calc(2*var(--su)) 0}
+.mrow{display:flex;align-items:center;gap:calc(6*var(--su));padding:calc(5*var(--su)) calc(8*var(--su)) calc(5*var(--su)) calc(7*var(--su));white-space:nowrap;text-align:left}
+.mrow:hover,.mrow:focus-visible{background:var(--face);outline:0}
+.mrow .grow{flex:1}
+.mrow .tile{width:calc(12*var(--su));height:calc(12*var(--su));padding:0;border:0;background:none;display:flex;align-items:center;justify-content:center}
+.mrow .ck{flex:none;width:calc(9*var(--su));display:flex;justify-content:flex-end}
+.madd{color:var(--mid)}
+.madd:hover{color:var(--hi)}
+.mdiv{height:calc(2*var(--su));margin:calc(2*var(--su)) 0;border-top:var(--su) solid #000;border-bottom:var(--su) solid var(--groove)}
+.tile.add{background:none;border-color:transparent;display:flex;align-items:center;justify-content:center}
+.lead::-webkit-scrollbar{width:calc(4*var(--su))}
+.lead::-webkit-scrollbar-track{background:var(--band)}
+.lead::-webkit-scrollbar-thumb{background:var(--thumb);border:var(--su) solid #000;min-height:calc(10*var(--su))}
+/* Play carries its client: the client's icon in the accent's ink, then "Play <client>" (the user, 2026-10-04) */
+.hero.play{gap:calc(6*var(--su))}
+.hero.play .pi{flex:none;display:flex;margin-top:var(--su)}
+.hero.play .pi svg{display:block}
+.lead:not(:has(*)){display:none}
+
+/* ---------- Gear polish (gear agent) ---------- */
+/* The settings key (servers.js gearKey). 17x18 su: Ore UI's icon-key proportion (the 26.60 main menu's settings key is
+   23x24 Ore px, its face one unit wider than tall). The 11 su gear sits at (3, 3) from the key's corner: 1 su border,
+   2 su padding, so one face row under the lit edge, as the in-game close key's cross sits (SheetPainter CLOSE).
+   Placed, not centred: the header's content box is 23 su (24 less its 1 su rule) and the wordmark's caps run 6.5-16.5,
+   so the key's top at 3 puts the gear on rows 6-16, centre 11.5 = the wordmark's, the round glyph overshooting the
+   10 su caps by 0.5 at each end as round letters do. Every edge lands on a whole su; right inset is the header's 5. */
+/* 16x16, the settings sheet's close key's twin (the user, 2026-10-04: the same size as the X button): the 10 su gear
+   centred across (2 su each side), one face row under the lit edge; the key's top at 5 puts the gear on rows 7-16, centred
+   on the wordmark's line (11.5) exactly */
+.hdr .key.gear{width:calc(16*var(--su));height:calc(16*var(--su));padding:var(--su) 0 0;justify-content:center;align-self:flex-start;margin-top:calc(5*var(--su))}
+/* held, pressed or open (the sheet is up): the face sinks 2, its bottom stays on the line, the gear drops exactly 2 with
+   it and lands just under the rim's 2 su shadow. Specific enough to beat .key:active:not(:disabled):not(.static) */
+.hdr .key.gear.dn,.hdr .key.gear:active:not(:disabled),.hdr .key.gear[aria-expanded=true]{height:calc(14*var(--su));margin-top:calc(7*var(--su));padding-top:var(--su);padding-bottom:0;
+  box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2)}
+
+/* ---------- Play + client menu polish (play agent) ---------- */
+/* One block, appended so the merge stays clean; it supersedes these earlier rules (fold them in when merging):
+   .hero.dn/.hero:active padding-top, .hero.prog .lab top, :root[data-font=modern] .hero.prog weight, .hero.play gap and
+   .pi, .caret padding-top (raised, :active, [aria-expanded]), .mrow:hover/.mrow:focus-visible, .madd colours.
+   Sources: the in-game painter (SheetPainter.hero/raisedBox/pressedBox, McCanvas text and shadow rules, the Edit HUD
+   menu), Ore UI (white focus ring, dropdown rows), the Minecraft Launcher's split "PLAY ▾". */
+
+/* ink: heroHTML sets --ink, --ink2 and their shadows on every accent hero (and on the split, for both its keys) */
+.key.acc.hero:not(.prog){color:var(--ink,var(--acc-on))}
+.hero.prog .lab.on{color:var(--ink,var(--acc-on))}
+:root[data-font=minecraft] .key.acc.hero:not(.prog) .t,:root[data-font=minecraft] .hero.prog .lab.on .t{text-shadow:var(--fpx) var(--fpx) 0 var(--ink-sh,transparent)}
+/* the hero keeps SemiBold in every state (SheetPainter: "the hero keeps SemiBold"), so a press never changes its width */
+:root[data-font=modern] .hero.dn,:root[data-font=modern] .hero:active,:root[data-font=modern] .hero.prog{font-weight:600}
+/* pressed: face, label and art sink exactly 2 su, the bottom stays on the line (SheetPainter.hero: "the label sinks
+   with the face"; the prototype dropped it 1 su further) */
+.hero.dn,.hero:active:not(:disabled):not(.static){padding-top:calc(5*var(--su))}
+/* progress and waits are the key already down: the label sits where a pressed label sits */
+.hero.prog .lab{top:calc(5*var(--su))}
+
+/* Play: the client's art (cut to its pixels) and its name, centred as one group on the face; the art centres on the
+   face's centre line, which is where the capitals and their shadow centre (McCanvas) */
+.hero.play{gap:calc(6*var(--su));justify-content:flex-start}
+.hero.play .pi{margin-top:0}
+.hero.play .pls{position:relative;display:block;flex:none}
+.hero.play .pl:not(.cur){position:absolute;left:0;top:0;visibility:hidden}
+
+/* the ▾: Play's twin key, joined on the black edge they share (the option row's join). The glyph's mass (a third down a
+   triangle) sits on the face's centre line, and it sinks 2 su with its face when pressed or open */
+.caret{padding-top:calc(9*var(--su))}
+/* (.key.caret:active... beats the generic .key:active:not(:disabled):not(.static), which would fold a held ▾ to 14 su) */
+.caret.dn,.key.caret:active:not(:disabled):not(.static),.caret[aria-expanded=true]{height:calc(22*var(--su));margin-top:calc(2*var(--su));padding-top:calc(9*var(--su))}
+
+/* focus on a joined pair: the white ring (1 su, 1 su clear, Ore and the sheet) closes on the shared edge instead of
+   cutting into the other key, and it stays round the raised outline while the key is held, as the game draws it */
+.split>.key:focus-visible{outline:0;z-index:1}
+.split>.key:focus-visible::after{content:"";position:absolute;pointer-events:none;border:var(--su) solid var(--hi);
+  top:calc(-3*var(--su));bottom:calc(-3*var(--su));left:calc(-3*var(--su));right:calc(-1*var(--su))}
+.split>.caret:focus-visible::after{left:calc(-1*var(--su));right:calc(-3*var(--su))}
+.split>.key.dn:focus-visible::after,.split>.key:active:focus-visible::after,.split>.caret[aria-expanded=true]:focus-visible::after{top:calc(-5*var(--su))}
+
+/* the menu: the toast's panel (band, black border, groove top line); rows on the su grid: 5 + 12 + 5. If it ever has
+   to scroll (placeMenu), it scrolls with the sheet's 4 su scrollbar; if it is ever capped at the window's width, the
+   names clip rather than push it out of the window */
+.menu{outline:0;overflow-y:auto;overflow-x:hidden}
+.menu::-webkit-scrollbar{width:calc(4*var(--su))}
+.menu::-webkit-scrollbar-track{background:var(--band)}
+.menu::-webkit-scrollbar-thumb{background:var(--thumb);border:var(--su) solid #000;min-height:calc(10*var(--su))}
+.menu.capped .mrow .grow{min-width:0;overflow:hidden}
+.mrow{flex:none}
+.mrow svg,.split svg{overflow:visible}
+/* one current row: the pointer lights it in the face colour (as the sheet's rows light on hover); keyboard focus adds
+   the white ring inside the row, the sheet's ring for a full-width target (offset -1) */
+.mrow:hover,.mrow:focus-visible{background:var(--face)}
+.menu.kb .mrow:hover:not(:focus-visible){background:transparent}
+.mrow:focus-visible{outline:var(--su) solid var(--hi);outline-offset:calc(-1*var(--su))}
+.madd:hover,.madd:focus-visible{color:var(--hi)}
+.menu.kb .madd:hover:not(:focus-visible){color:var(--mid)}
+/* Minecraft's font: the art, the tick and "Add" take vanilla's quarter-colour shadow like the text beside them */
+:root[data-font=minecraft] .mrow .tile{--ish1:var(--hi-sh);--ish2:var(--mid-sh)}
+:root[data-font=minecraft] .mrow .ck{--ish-ck:var(--acc-q)}
+:root[data-font=minecraft] .madd .tile{--ish1:var(--mid-sh)}
+:root[data-font=minecraft] .madd .t{text-shadow:var(--fpx) var(--fpx) 0 var(--mid-sh)}
+:root[data-font=minecraft] :is(.madd:hover,.madd:focus-visible) .tile{--ish1:var(--hi-sh)}
+:root[data-font=minecraft] :is(.madd:hover,.madd:focus-visible) .t{text-shadow:var(--fpx) var(--fpx) 0 var(--hi-sh)}
+:root[data-font=minecraft] .menu.kb .madd:hover:not(:focus-visible) .tile{--ish1:var(--mid-sh)}
+:root[data-font=minecraft] .menu.kb .madd:hover:not(:focus-visible) .t{text-shadow:var(--fpx) var(--fpx) 0 var(--mid-sh)}
+
+/* ---------- home is the button only (the user, 2026-10-04) ---------- */
+/* what the status line used to say, for screen readers only */
+.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+/* an update waiting for a restart: a dot on the gear's corner, as Ore UI marks a header icon that has something new
+   (the inbox's unread dot), in the accent so it reads as news, not an error; the update row is in Settings */
+.hdr .key.gear .gdot{position:absolute;top:calc(-2*var(--su));right:calc(-2*var(--su));width:calc(5*var(--su));height:calc(5*var(--su));
+  background:var(--acc);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--acc-hl);pointer-events:none}
+/* the island (and the intro's falling blocks) draws above the bare header row: the header never covers a block (the user,
+   2026-10-04). The header makes no stacking layer of its own; the gear and Play's column still sit above the island so
+   they stay clickable. */
+.hdr.bare{z-index:auto}
+.home .art{z-index:3}
+.hdr.bare .key{z-index:4}
+.col{z-index:5}
+
+/* ---------- the client menu in the Prism instance list's style (the user, 2026-10-04) ---------- */
+/* raised face rows with the lit top-left edge and lower bottom edge, black rules between them, one black border round
+   the list; the ticked client is the pressed row (.choice.on), hover lightens the face; the divider before "+ Add" is
+   just the rule between rows */
+.menu{background:#000;border:var(--su) solid #000;box-shadow:none;padding:0}
+.mrow{background:var(--face);box-shadow:inset 0 var(--su) 0 var(--edge),inset var(--su) 0 0 var(--edge),inset 0 calc(-1*var(--su)) 0 var(--lower)}
+.mrow:not(:first-child){border-top:var(--su) solid #000}
+.mdiv{display:none}
+.mrow:hover,.mrow:focus-visible{background:var(--face-hv)}
+.menu.kb .mrow:hover:not(:focus-visible){background:var(--face)}
+.mrow[aria-checked=true]{box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2);padding-top:calc(6*var(--su));padding-bottom:calc(4*var(--su))}
+
+/* ---------- Settings, minimal and compact (the user, 2026-10-04) ---------- */
+/* one line per setting: the label (and at most a status word) left, its control right; groups split by the sheet's rule */
+.sh-body{padding-bottom:calc(6*var(--su))}
+.sec{padding:calc(4*var(--su)) calc(9*var(--su)) calc(4*var(--su)) calc(13*var(--su))}
+.srow{align-items:center;padding:calc(3*var(--su)) 0;min-height:calc(22*var(--su))}
+.srow .lbl{flex-direction:row;align-items:baseline;gap:calc(5*var(--su));min-width:0;white-space:nowrap}
+.srow .lbl .st{color:var(--mid)}
+.srow .ctl{padding-top:0}
+/* After launch: the two choices inline beside the label, each as wide as its word */
+.srow .ctl .opts{margin-bottom:0;align-items:flex-start}
+.srow .ctl .opts .key{flex:none;padding-left:calc(5*var(--su));padding-right:calc(5*var(--su))}
+.reason{padding:calc(2*var(--su)) 0 calc(2*var(--su))}
+.disclaim{padding:calc(8*var(--su)) calc(9*var(--su)) 0 calc(13*var(--su));font-size:calc(6.5*var(--su));line-height:calc(9*var(--su));color:var(--lo)}
+
+/* ---------- launch key and client menu: icon at the far left, the words centred across the whole key / row ---------- */
+/* (the user, 2026-10-04) the icon sits in a 10 su box at the key's left padding; an empty box the same width closes
+   the right side, so the label is centred on the key itself, not beside the icon */
+.hero.play{justify-content:flex-start}
+.hero.play .pi{flex:none;width:calc(10*var(--su));justify-content:flex-start}
+.hero.play .pls{flex:1 1 auto;min-width:0;text-align:center}
+.hero.play .pl.cur{display:inline-block}
+.hero.play .psp{flex:none;width:calc(10*var(--su))} /* the right-hand twin of the icon box (::after is the focus ring's) */
+/* menu rows line up with the key: the same left inset for the icon (1 su border + 6 su), its twin box on the right
+   holds the tick, and the name is centred across the row */
+.mrow{padding-left:calc(6*var(--su));padding-right:calc(6*var(--su));gap:calc(6*var(--su))}
+.mrow .tile{width:calc(10*var(--su));justify-content:flex-start;flex:none}
+.mrow .grow{flex:1 1 auto;min-width:0;text-align:center;overflow:hidden}
+.mrow .ck{width:calc(10*var(--su));flex:none;justify-content:flex-end}

@@ -19,6 +19,7 @@ const READY_SETUP = {
   targets: [{ kind: "lunar", state: "ready", label: "Lunar Client" }],
 };
 const UPDATE_CURRENT = { state: "current", currentVersion: "0.15.1" };
+const OPEN_INFO = { version: "0.18.0-next.1", updated: false, fresh: true };
 
 const PREEXISTING = { status: "preexisting_game", preferences: PREFS };
 const REJECTED = { status: "rejected", code: "launch_cooldown", message: "wait" };
@@ -72,6 +73,8 @@ function liveSnap(extra = {}) {
 
 const replies = {
   refresh_setup: () => READY_SETUP,
+  open_info: () => OPEN_INFO,
+  game_theme: () => ({}),
   launch_preferences: () => PREFS,
   update_preferences: () => ({
     autoUpdateEnabled: false,
@@ -96,22 +99,31 @@ const replies = {
 };
 
 const app = await bootWindow({ replies });
-const { window, el, waitFor, tick, countCalls } = app;
+const { window, document, el, waitFor, tick, countCalls } = app;
 const stage = el("stage");
-const launch = el("launch");
+const home = el("app");
 const connAction = el("conn-action");
-const prefError = el("pref-error");
 const dash = el("dash");
-const devChannel = el("dev-channel");
 
-await waitFor(() => stage.dataset.state === "ready", { label: "the ready home view" });
+// The 0.18 home re-renders its controls, so each lookup is fresh.
+const playKey = () => home.querySelector('#main [data-act="play"]');
+const heroKey = () => home.querySelector("#main .heros .hero");
+const cancelKey = () => home.querySelector('#main .keys2 [data-act="cancel"]');
+const said = () => home.querySelector("#main .sr")?.textContent ?? "";
+const launchable = () => {
+  const k = playKey();
+  return !!k && k.getAttribute("aria-disabled") !== "true" && !home.hidden;
+};
+
+await waitFor(() => launchable(), { label: "the ready home view" });
 
 /** Park the app on the preexisting-game terminal, where Try Again lives. */
 async function enterPreexistingGame() {
   replies.launch_lunar = () => PREEXISTING;
-  launch.click();
+  playKey().click();
   await waitFor(() => connAction.hidden === false, { label: "the Try Again button" });
   assert.equal(stage.dataset.view, "dash");
+  assert.equal(home.hidden, true, "the home window steps aside for the dashboard view");
 }
 
 test("Try Again into a rejected launch lands back on the home view with the reason (J1)", async () => {
@@ -119,13 +131,14 @@ test("Try Again into a rejected launch lands back on the home view with the reas
   replies.launch_lunar = () => REJECTED;
 
   connAction.click();
-  await waitFor(() => prefError.hidden === false, { label: "the rejection message" });
+  await waitFor(() => said() === "wait", { label: "the rejection message" });
 
   assert.equal(stage.dataset.view, "home");
+  assert.equal(home.hidden, false);
   assert.equal(dash.classList.contains("on"), false);
   assert.equal(el("joining").classList.contains("on"), false);
-  assert.equal(prefError.textContent, "wait");
-  assert.equal(launch.disabled, false);
+  assert.equal(heroKey().textContent.trim(), "Try again");
+  assert.ok(launchable(), "Try again launches again");
 });
 
 test("Try Again into a launch that throws lands back on the home view too (J1)", async () => {
@@ -135,13 +148,12 @@ test("Try Again into a launch that throws lands back on the home view too (J1)",
   };
 
   connAction.click();
-  await waitFor(() => prefError.textContent === "the launcher did not answer", {
+  await waitFor(() => said() === "the launcher did not answer", {
     label: "the transport error",
   });
 
   assert.equal(stage.dataset.view, "home");
-  assert.equal(prefError.hidden, false);
-  assert.equal(launch.disabled, false);
+  assert.ok(launchable());
 });
 
 test("Try Again into a successful launch starts on home with Cancel reachable (J1)", async () => {
@@ -149,24 +161,24 @@ test("Try Again into a successful launch starts on home with Cancel reachable (J
   replies.launch_lunar = () => LAUNCHED;
 
   connAction.click();
-  await waitFor(() => el("cancel-launch").hidden === false, { label: "the Cancel control" });
+  await waitFor(() => cancelKey() != null, { label: "the Cancel control" });
   assert.equal(stage.dataset.view, "home");
+  assert.ok(heroKey().classList.contains("prog"), "the Launch key is the progress");
 
   // Back to a launchable home for the tests that follow.
-  el("cancel-launch").click();
-  await waitFor(
-    () => stage.dataset.view === "home" && el("cancel-launch").hidden === true,
-    { label: "the cancelled launch to reset home" },
-  );
+  cancelKey().click();
+  await waitFor(() => stage.dataset.view === "home" && cancelKey() == null && launchable(), {
+    label: "the cancelled launch to reset home",
+  });
 });
 
 test("a rejected launch re-arms the background refresh (J5)", async () => {
   replies.launch_lunar = () => REJECTED;
   const before = countCalls("refresh_setup");
 
-  launch.click();
-  await waitFor(() => prefError.hidden === false, { label: "the rejection message" });
-  assert.equal(launch.classList.contains("is-loading"), false);
+  playKey().click();
+  await waitFor(() => said() === "wait", { label: "the rejection message" });
+  assert.equal(heroKey().classList.contains("prog"), false);
 
   window.dispatchEvent(new window.Event("blur"));
   window.dispatchEvent(new window.Event("focus"));
@@ -181,8 +193,8 @@ test("a launch that throws re-arms the background refresh (J5)", async () => {
   };
   const before = countCalls("refresh_setup");
 
-  launch.click();
-  await waitFor(() => prefError.textContent === "the launcher did not answer", {
+  playKey().click();
+  await waitFor(() => said() === "the launcher did not answer", {
     label: "the transport error",
   });
 
@@ -193,14 +205,17 @@ test("a launch that throws re-arms the background refresh (J5)", async () => {
   assert.ok(countCalls("refresh_setup") > before, "focus refreshed the setup again");
 });
 
-test("the dev-channel box keeps the user's tick while the save is in flight (J6)", async () => {
+test("the Dev builds switch keeps the user's click while the save is in flight (J6)", async () => {
+  home.querySelector('[data-act="settings"]').click();
+  const devSwitch = () => el("sheet").querySelector('.tog[data-key="dev"]');
+  await waitFor(() => devSwitch() != null, { label: "the settings sheet" });
+
   let landSave;
   replies.set_update_channel = () => new Promise((resolve) => (landSave = resolve));
 
-  devChannel.checked = true;
-  devChannel.dispatchEvent(new window.Event("change"));
-  await waitFor(() => devChannel.disabled === true, { label: "the disabled box" });
-  assert.equal(devChannel.checked, true, "the tick survives the save");
+  devSwitch().click();
+  await waitFor(() => devSwitch().disabled === true, { label: "the disabled switch" });
+  assert.equal(devSwitch().getAttribute("aria-checked"), "true", "the click survives the save");
 
   landSave({
     status: "saved",
@@ -208,21 +223,21 @@ test("the dev-channel box keeps the user's tick while the save is in flight (J6)
     autoUpdatePrompted: true,
     updateChannel: "dev",
   });
-  await waitFor(() => devChannel.disabled === false, { label: "the saved channel" });
-  assert.equal(devChannel.checked, true);
+  await waitFor(() => devSwitch().disabled === false, { label: "the saved channel" });
+  assert.equal(devSwitch().getAttribute("aria-checked"), "true");
 
-  // And the box still answers to the value the backend actually saved.
+  // And the switch still answers to the value the backend actually saved.
   replies.set_update_channel = () => ({
     status: "saved",
     autoUpdateEnabled: false,
     autoUpdatePrompted: true,
     updateChannel: "stable",
   });
-  devChannel.checked = false;
-  devChannel.dispatchEvent(new window.Event("change"));
-  await waitFor(() => devChannel.disabled === false && devChannel.checked === false, {
+  devSwitch().click();
+  await waitFor(() => devSwitch().disabled === false && devSwitch().getAttribute("aria-checked") === "false", {
     label: "the channel back on stable",
   });
+  el("sheet").querySelector('[data-act="close"]').click();
 });
 
 test("a roster render that throws still shows a visible dashboard with an error note (J7)", async (t) => {
@@ -243,7 +258,7 @@ test("a roster render that throws still shows a visible dashboard with an error 
 
   replies.launch_lunar = () => LAUNCHED;
   replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap(), token: 1 });
-  launch.click();
+  playKey().click();
 
   await waitFor(() => stage.dataset.view === "dash", { label: "the dashboard view" });
   await waitFor(() => dash.classList.contains("on"), {
@@ -260,7 +275,7 @@ test("a roster render that throws still shows a visible dashboard with an error 
   // The next snapshot recovers: the roster draws and the note is gone.
   delete dash.innerHTML;
   replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 2 }), token: 2 });
-  await waitFor(() => dash.querySelector(".sheet") != null, { label: "the recovered roster" });
+  await waitFor(() => dash.querySelector(".dsheet") != null, { label: "the recovered roster" });
   assert.equal(dash.querySelector(".dash-error"), null);
   assert.equal(dash.classList.contains("on"), true);
 });
@@ -272,7 +287,7 @@ test("an acknowledge that resolves after Cancel Launch committed home does not r
   // Leave the dashboard the J7 test ended on: the backend reports the session ended.
   replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
   replies.reset_session_end = () => ({ status: "ok", preferences: PREFS });
-  await waitFor(() => stage.dataset.view === "home" && launch.disabled === false, {
+  await waitFor(() => stage.dataset.view === "home" && launchable(), {
     label: "home after the previous session ended",
   });
 
@@ -287,14 +302,14 @@ test("an acknowledge that resolves after Cancel Launch committed home does not r
   replies.launch_lunar = () => LAUNCHED;
   replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 3 }), token: 3 });
   replies.abort_launch_session = () => ({ status: "ok", preferences: PREFS });
-  launch.click();
+  playKey().click();
   await ackSeen;
   assert.equal(stage.dataset.view, "home", "the home view is held until the ack lands");
 
   // Cancel while the ack is pending: the reset invalidates the session and commits home.
   replies.lobby_state = () => ({ kind: "unavailable", reason: "missing_file" });
-  el("cancel-launch").click();
-  await waitFor(() => launch.disabled === false && launch.hidden === false, {
+  cancelKey().click();
+  await waitFor(() => launchable(), {
     label: "a launchable home after Cancel",
   });
   assert.equal(stage.dataset.view, "home");
@@ -304,5 +319,5 @@ test("an acknowledge that resolves after Cancel Launch committed home does not r
   await tick(50);
   assert.equal(stage.dataset.view, "home", "a stale ack must not flip the view to the dashboard");
   assert.equal(dash.classList.contains("on"), false);
-  assert.equal(dash.querySelector(".sheet"), null);
+  assert.equal(dash.querySelector(".dsheet"), null);
 });

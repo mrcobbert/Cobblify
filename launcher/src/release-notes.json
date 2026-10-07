@@ -1,0 +1,44 @@
+[
+  {
+    "version": "0.18.0",
+    "channel": "stable",
+    "date": "2026-10-06",
+    "sections": [
+      ["New", [
+        "A new launcher, built like the in-game menu: one Launch button that remembers Lunar or Prism, and settings in a side sheet.",
+        "What's New shows the changes once after each update.",
+        "The launcher follows the accent colour and font you picked in game.",
+        "Updates download by themselves until you turn Auto-update off."
+      ]]
+    ]
+  },
+  {
+    "version": "0.17.0",
+    "channel": "stable",
+    "date": "2026-10-05",
+    "sections": [
+      ["New", [
+        "Right Shift opens a new settings sheet, with search and 39 accent colours.",
+        "Edit HUD edits in place: snapping, corner resize, undo and a right-click menu.",
+        "A Minecraft font option for the menu and every HUD module.",
+        "Keystrokes shows clicks per second for both mouse buttons."
+      ]],
+      ["Fixes", [
+        "On Lunar, Right Shift no longer opens and closes the menu at once.",
+        "Updates remove old Cobblify jars from Lunar and Prism."
+      ]]
+    ]
+  },
+  {
+    "version": "0.17.0-dev.32",
+    "channel": "dev",
+    "date": "2026-10-03",
+    "sections": [["Fixes", ["Lunar: the key that opens the settings sheet no longer closes it."]]]
+  },
+  {
+    "version": "0.16.2",
+    "channel": "stable",
+    "date": "2026-10-02",
+    "sections": [["Fixes", ["Session Stats keeps counting after a disconnect.", "Queue chat alerts trust only real queue messages."]]]
+  }
+]

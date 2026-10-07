@@ -434,7 +434,10 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 
 ```
 launcher/
-  src/            UI - main.js, scene.js (three.js voxel hero), style.css
+  src/            UI - main.js (backend wiring), dash.css (the post-launch dashboard),
+                  release-notes.json (What's New and the history)
+  src/ui/         the 0.18 home: app.js (DOM), model.js (backend -> what it shows),
+                  island3d.js (three.js island), kit.js, tokens.css, fonts/
   src-tauri/
     src/main.rs         startup sequence + the two commands
     src/hide.rs         post-launch launcher hiding, macOS - fail-soft, pid-targeted

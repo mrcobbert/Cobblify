@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-font="minecraft">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,77 +8,12 @@
     <title>Cobblify</title>
   </head>
   <body>
-    <main class="stage" id="stage" data-state="loading" data-view="home">
-      <!-- ── homepage (arcade): title + status/action on the left, voxel on the right ── -->
-      <section class="copy">
-        <header class="id">
-          <h1 class="wordmark reveal" style="--d: 90ms">Cobblify</h1>
-          <p class="chip reveal" style="--d: 150ms">
-            <span id="chip-text">checking setup</span>
-          </p>
-        </header>
+    <!-- ── the 0.18 home (src/ui/app.js renders into it) ── -->
+    <div class="app" id="app"></div>
 
-        <div class="panel reveal" style="--d: 210ms" aria-live="polite">
-          <div class="state state-loading">
-            <p class="lede">Checking setup.</p>
-          </div>
-
-          <div class="state state-ready">
-            <div class="launch-row">
-              <button class="btn" id="launch" type="button">
-                <span id="launch-label">Launch Lunar</span>
-              </button>
-              <button class="btn" id="launch-forge" type="button" hidden>
-                <span id="launch-forge-label">Launch Prism</span>
-              </button>
-            </div>
-            <p class="pref-error alert" id="pref-error" role="alert" hidden></p>
-            <button class="btn setup-btn" id="repair-pref" type="button" hidden>Repair Settings</button>
-            <p class="alert" id="launch-error" role="alert" hidden></p>
-            <!-- escape hatch for a dispatched launch that has not gone live -->
-            <button class="btn setup-btn" id="cancel-launch" type="button" hidden>
-              Cancel Launch
-            </button>
-          </div>
-
-          <div class="state state-blocked" hidden></div>
-          <div class="state state-error" hidden></div>
-
-          <div class="setup" id="setup" hidden></div>
-
-          <label class="auto-join" id="auto-join-wrap" hidden>
-            <input type="checkbox" id="auto-join" checked />
-            <span>Auto-join Hypixel</span>
-          </label>
-          <label class="auto-join" id="overlay-wrap" hidden>
-            <input type="checkbox" id="use-overlay" checked />
-            <span>Use external overlay</span>
-          </label>
-          <label class="auto-join" id="dev-channel-wrap" hidden>
-            <input type="checkbox" id="dev-channel" />
-            <span>Test dev builds (unstable)</span>
-          </label>
-          <section class="update-strip" id="update-strip" aria-live="polite">
-            <div class="update-copy">
-              <p class="update-title" id="update-title">Checking…</p>
-              <p class="update-detail" id="update-detail" hidden></p>
-            </div>
-            <div class="update-actions">
-              <button class="btn setup-btn" id="update-primary" type="button" hidden></button>
-              <button class="update-secondary" id="update-secondary" type="button" hidden></button>
-            </div>
-            <div class="update-progress" id="update-progress" hidden aria-hidden="true">
-              <span id="update-progress-fill"></span>
-            </div>
-          </section>
-        </div>
-      </section>
-
-      <div class="hero reveal" style="--d: 0ms">
-        <canvas id="hero-canvas" aria-hidden="true"></canvas>
-      </div>
-
-      <!-- ── in-game dashboard overlay: hidden until launch, then swapped in ── -->
+    <!-- ── the post-launch dashboard: hidden until launch, then swapped in (the 0.18 board replaces it in stage 5) ── -->
+    <main class="stage" id="stage" data-view="home">
+      <header class="dhdr" data-tauri-drag-region><span id="dash-wm"></span></header>
       <div
         class="joining"
         id="joining"
@@ -101,8 +36,6 @@
       <div class="dash" id="dash"></div>
       <div class="conn-announce" id="conn-announce" aria-live="polite" aria-atomic="true"></div>
     </main>
-
-    <div class="grain" aria-hidden="true"></div>
 
     <script type="module" src="/src/main.js"></script>
   </body>
