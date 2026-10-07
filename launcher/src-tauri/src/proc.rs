@@ -18,11 +18,17 @@ use std::path::{Path, PathBuf};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-/// Verified 2026-08-04: `pgrep -f` on this exact path returned one PID. Loose substring
-/// matching hits 4+ Electron helper processes (GPU, renderer, network, crashpad), so the
-/// comparison below is exact equality.
+/// Verified 2026-08-04: `pgrep -f` on the `/Applications` path returned one PID. Loose
+/// substring matching hits 4+ Electron helper processes (GPU, renderer, network,
+/// crashpad), so the comparison below is exact equality - against the main executable of
+/// every bundle location `lunar_detect` knows (`/Applications` and `~/Applications`), so a
+/// Lunar installed in the user's own Applications folder is not mistaken for "not
+/// running" (which would let the `launcher.json` write be clobbered on its exit).
 #[cfg(target_os = "macos")]
-pub const LUNAR_EXE: &str = "/Applications/Lunar Client.app/Contents/MacOS/Lunar Client";
+fn lunar_exes() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    crate::lunar_detect::launcher_exes(home.as_deref())
+}
 
 /// The default process snapshot shape: executable path only. The scan path
 /// additionally refreshes the owning user (`scan_snapshot`) - and nothing
@@ -93,11 +99,16 @@ pub fn is_lunar_running() -> bool {
 /// returned here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
 #[cfg(target_os = "macos")]
 pub fn lunar_launcher_pid() -> Option<u32> {
-    let wanted = Path::new(LUNAR_EXE);
+    lunar_launcher_pid_among(&lunar_exes())
+}
+
+/// The first running process whose executable is EXACTLY one of `exes`.
+#[cfg(target_os = "macos")]
+fn lunar_launcher_pid_among(exes: &[PathBuf]) -> Option<u32> {
     exe_snapshot()
         .processes()
         .iter()
-        .find(|(_, process)| process.exe() == Some(wanted))
+        .find(|(_, process)| process.exe().is_some_and(|exe| exes.iter().any(|w| w == exe)))
         .map(|(pid, _)| pid.as_u32())
 }
 
@@ -718,6 +729,49 @@ mod tests {
         assert!(
             raw * 2 > snapshot,
             "raw enumeration ({raw}) is a divided prefix of the snapshot ({snapshot})"
+        );
+    }
+
+    /// Every production snapshot shape, checked against EVERY process it saw, not only
+    /// the canary: `cmd()` must be empty across the whole snapshot. This is the
+    /// launcher-wide form of the rule (PLAN round 1 B1) - any new refresh kind that
+    /// starts populating argv fails here. The positive control in
+    /// `exe_only_snapshot_leaves_argv_empty` proves the OS would hand argv out.
+    #[test]
+    fn no_production_snapshot_holds_any_command_line() {
+        let guard = spawn_canary();
+        let pid = Pid::from_u32(guard.child.id());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        for (shape, system) in [("exe", exe_snapshot()), ("exe+user", scan_snapshot())] {
+            assert!(
+                system.process(pid).is_some(),
+                "{shape}: the canary child must be visible"
+            );
+            for (seen, process) in system.processes() {
+                assert!(
+                    process.cmd().is_empty(),
+                    "{shape} snapshot leaked argv for pid {seen}"
+                );
+            }
+        }
+    }
+
+    /// The running check follows the bundle-derived exe list: a process whose exe is not
+    /// one of them (this test binary) never matches, and an empty list matches nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_launcher_pid_matches_only_the_listed_bundle_exes() {
+        assert_eq!(lunar_launcher_pid_among(&[]), None);
+        let own = std::env::current_exe().unwrap();
+        let own = std::fs::canonicalize(&own).unwrap_or(own);
+        assert_eq!(
+            lunar_launcher_pid_among(&[own]),
+            Some(std::process::id()),
+            "an exact exe match is found"
+        );
+        assert_eq!(
+            lunar_launcher_pid_among(&[PathBuf::from("/nonexistent/Lunar Client.app/Contents/MacOS/Lunar Client")]),
+            None
         );
     }
 

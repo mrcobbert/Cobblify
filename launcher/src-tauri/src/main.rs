@@ -31,10 +31,12 @@ mod hide_registry;
 mod install;
 mod nojoin;
 mod lunar_config;
+mod lunar_detect;
 mod open_info;
 mod proc;
 mod progress;
 mod resources;
+mod setup;
 mod theme;
 mod updater;
 
@@ -44,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use forge::{Candidate, CandidateView, Compat, SavedTarget, ValidatedBy};
 use launch::{LaunchKind, LaunchReply};
@@ -58,12 +60,19 @@ use resources::ForgeJar;
 /// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
 mod issue {
     pub const MISSING_LAUNCHER: &str = "missing_launcher";
-    pub const UNINITIALIZED_LUNAR: &str = "uninitialized_lunar";
     pub const RUNNING_LUNAR: &str = "running_lunar";
     pub const CONFLICTS: &str = "conflicts";
     pub const NO_COMPATIBLE_PRISM: &str = "no_compatible_prism_instance";
     pub const MISSING_BUNDLED_FORGE: &str = "missing_bundled_forge_jar";
     pub const SETUP_ERROR: &str = "setup_error";
+    /// Installed, but the player has not set this client up (startup never does it).
+    pub const NOT_SET_UP: &str = "not_set_up";
+    /// Set up, but a refresh may not write now (a game runs) and the files are not current.
+    pub const GAME_OPEN: &str = "game_open";
+    /// Set up and not current, and Cobblify could not prove no game runs.
+    pub const GAME_UNKNOWN: &str = "game_unknown";
+    /// Set up and not current, during a setup run (refresh is read-only then).
+    pub const NOT_CURRENT: &str = "not_current";
 }
 
 /// One install target's own outcome. The two targets are reported independently and on
@@ -87,6 +96,14 @@ struct TargetStatus {
     candidates: Vec<CandidateView>,
     /// Whether `open_setup_location` can reveal a folder for this target.
     has_setup_folder: bool,
+    /// The client app is installed (Lunar: the app bundle, opened or not; Prism: the app).
+    installed: bool,
+    /// Cobblify is set up in this client (Lunar: our agent is registered; Prism: a valid
+    /// saved instance). Only a set-up client is ever written to outside a setup run.
+    set_up: bool,
+    /// Lunar only: Lunar has run at least once (its `launcher.json` exists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opened_once: Option<bool>,
     /// Backend-owned paths; never sent to the frontend.
     #[serde(skip)]
     conflict_dir: Option<PathBuf>,
@@ -105,6 +122,9 @@ impl TargetStatus {
             action: "none",
             candidates: Vec::new(),
             has_setup_folder: false,
+            installed: false,
+            set_up: false,
+            opened_once: None,
             conflict_dir: None,
             install_path: None,
         }
@@ -184,94 +204,179 @@ const LUNAR_RUNNING_HINT: &str =
 const LUNAR_RUNNING_HINT: &str =
     "Quit Lunar completely, then return to Cobblify.";
 
-const NEVER_RUN_LUNAR: &str =
-    "Lunar Client has never been run on this computer - open it and log in once, \
-     then reopen Cobblify.";
-
 // ── Lunar ───────────────────────────────────────────────────────────────────────
 
-/// Lunar setup, now three-state. The only change to the proven path is its ENTRY: when
-/// Lunar is not installed we report `absent` and write nothing at all - which also stops
-/// `~/.weave/` being created on a machine that has no Lunar. Once `launcher.json` exists,
-/// everything below is what it has always been.
-fn set_up_lunar(res: &resources::Resources, home: &Path) -> TargetStatus {
-    set_up_lunar_with(proc::lunar_running_checked, res, home)
+/// Whether a status rebuild may write. Startup and an ordinary refresh may (into a client
+/// that is already set up, and only when nothing is running); a refresh while a setup run
+/// owns the coordinator may not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refresh {
+    Write,
+    ReadOnly,
 }
 
-/// The running check is injected so its POSITION is testable. It has to come
-/// before `install_lunar` (L7): `register` holds a check of its own, but by
-/// the time it runs the two jars are already in `~/.weave` and the directory
-/// has been created on a machine whose setup then reports `blocked`. The
-/// check here is the gate on writing anything at all; `register` keeps its
-/// own (the state can change in between, and it is the one guarding the
-/// `launcher.json` write itself).
-fn set_up_lunar_with(
-    lunar_running: impl Fn() -> Result<bool, String>,
+/// The process facts Lunar's status needs, injected so tests never see the real machine.
+struct LunarProbe<'a> {
+    app: Option<PathBuf>,
+    running: &'a dyn Fn() -> Result<bool, String>,
+    game: &'a dyn Fn() -> setup::GameScan,
+}
+
+fn production_lunar_status(res: &resources::Resources, home: &Path, mode: Refresh) -> TargetStatus {
+    let game = || {
+        let scan = proc::game_jvm_scan(home);
+        setup::GameScan {
+            running: !scan.pids.is_empty(),
+            complete: scan.complete,
+        }
+    };
+    lunar_target(
+        res,
+        home,
+        mode,
+        &LunarProbe {
+            app: lunar_detect::find_app(home),
+            running: &proc::lunar_running_checked,
+            game: &game,
+        },
+    )
+}
+
+/// Lunar's status at startup and on refresh (PLAN B). Never sets a client up:
+///
+/// * Not set up (no agent of ours in `launcher.json`): detection facts only, nothing is
+///   written - not even `~/.weave`. The player sets Lunar up by picking it.
+/// * Set up: today's silent refresh (install the current jars, re-register), so a 0.17 ->
+///   0.18 update keeps working - but only when Lunar's launcher is not running AND a
+///   complete scan finds no Lunar game. Otherwise nothing is written, and a registration
+///   that is already current reports ready (Lunar being open no longer blocks).
+/// * `ReadOnly` (a setup run is in progress): never writes; current = ready.
+fn lunar_target(
     res: &resources::Resources,
     home: &Path,
+    mode: Refresh,
+    probe: &LunarProbe,
 ) -> TargetStatus {
-    if !home.join(".lunarclient").exists() {
-        return TargetStatus::new("lunar", "absent", "Lunar Client is not installed.")
-            .with_issue(issue::MISSING_LAUNCHER);
-    }
-    let launcher_json = home.join(".lunarclient/settings/launcher.json");
-    if !launcher_json.exists() {
-        return TargetStatus::new("lunar", "blocked", NEVER_RUN_LUNAR)
-            .with_issue(issue::UNINITIALIZED_LUNAR);
-    }
-    match lunar_running() {
-        Err(e) => {
-            return TargetStatus::new("lunar", "error", e.clone())
-                .with_issue(issue::SETUP_ERROR)
-                .with_detail(e);
-        }
-        Ok(true) => {
-            return TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
-                .with_issue(issue::RUNNING_LUNAR);
-        }
-        Ok(false) => {}
+    let installed = probe.app.is_some();
+    let opened_once = lunar_detect::opened_once(home);
+    let set_up = lunar_config::is_set_up(home);
+    let facts = |mut t: TargetStatus| {
+        t.installed = installed;
+        t.set_up = set_up;
+        t.opened_once = Some(opened_once);
+        t
+    };
+    if !set_up {
+        return facts(if installed {
+            TargetStatus::new("lunar", "absent", "Lunar Client is not set up.")
+                .with_issue(issue::NOT_SET_UP)
+        } else {
+            TargetStatus::new("lunar", "absent", "Lunar Client is not installed.")
+                .with_issue(issue::MISSING_LAUNCHER)
+        });
     }
     let jars = match &res.lunar {
         Ok(j) => j,
         Err(e) => {
-            return TargetStatus::new("lunar", "error", e.clone())
-                .with_issue(issue::SETUP_ERROR)
-                .with_detail(e.clone());
+            return facts(
+                TargetStatus::new("lunar", "error", e.clone())
+                    .with_issue(issue::SETUP_ERROR)
+                    .with_detail(e.clone()),
+            );
         }
     };
+    let weave = home.join(".weave");
+    let launcher_json = lunar_detect::launcher_json(home);
+    let agent = weave.join(&jars.agent_name);
+    let current = || {
+        lunar_config::registration_is(&launcher_json, &agent)
+            && install::lunar_install_current(jars, &weave)
+    };
+    let ready = || {
+        let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
+        t.install_path = Some(agent.clone());
+        t
+    };
+    if mode == Refresh::ReadOnly {
+        return facts(if current() {
+            ready()
+        } else {
+            TargetStatus::new("lunar", "blocked", "Cobblify's files in Lunar need updating.")
+                .with_issue(issue::NOT_CURRENT)
+        });
+    }
 
-    let installed = match install::install_lunar(jars, &home.join(".weave")) {
+    let running = match (probe.running)() {
+        Ok(r) => r,
+        Err(e) => {
+            return facts(
+                TargetStatus::new("lunar", "error", e.clone())
+                    .with_issue(issue::SETUP_ERROR)
+                    .with_detail(e),
+            );
+        }
+    };
+    let game = (probe.game)();
+    if running || game.running || !game.complete {
+        if current() {
+            return facts(ready());
+        }
+        return facts(if running {
+            TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
+                .with_issue(issue::RUNNING_LUNAR)
+        } else if game.running {
+            TargetStatus::new("lunar", "blocked", "Close Minecraft, then return to Cobblify.")
+                .with_issue(issue::GAME_OPEN)
+        } else {
+            TargetStatus::new(
+                "lunar",
+                "blocked",
+                "Cobblify couldn't check whether Minecraft is running.",
+            )
+            .with_issue(issue::GAME_UNKNOWN)
+        });
+    }
+
+    let installed_jars = match install::install_lunar(jars, &weave) {
         Ok(i) => i,
         Err(e) => {
-            return TargetStatus::new("lunar", "error", e.clone())
-                .with_issue(issue::SETUP_ERROR)
-                .with_detail(e);
+            return facts(
+                TargetStatus::new("lunar", "error", e.clone())
+                    .with_issue(issue::SETUP_ERROR)
+                    .with_detail(e),
+            );
         }
     };
-    if !installed.conflicts.is_empty() {
+    if !installed_jars.conflicts.is_empty() {
         let mut t =
             TargetStatus::new("lunar", "blocked", "Conflicting jars.").with_issue(issue::CONFLICTS);
         t.has_setup_folder = true;
-        t.conflict_dir = Some(home.join(".weave/mods"));
-        return t;
+        t.conflict_dir = Some(weave.join("mods"));
+        return facts(t);
     }
 
-    match lunar_config::register(&launcher_json, &installed.agent_path) {
-        Ok(()) => {
-            let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
-            t.install_path = Some(installed.agent_path);
-            t
-        }
-        Err(lunar_config::RegisterError::LunarRunning) => {
-            TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
-                .with_issue(issue::RUNNING_LUNAR)
-        }
-        Err(lunar_config::RegisterError::Failed(e)) => {
-            TargetStatus::new("lunar", "error", e.clone())
-                .with_issue(issue::SETUP_ERROR)
-                .with_detail(e)
-        }
-    }
+    facts(
+        match lunar_config::register_with(
+            || (probe.running)(),
+            &launcher_json,
+            &installed_jars.agent_path,
+        ) {
+            Ok(()) => {
+                let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
+                t.install_path = Some(installed_jars.agent_path);
+                t
+            }
+            Err(lunar_config::RegisterError::LunarRunning) => {
+                TargetStatus::new("lunar", "blocked", LUNAR_RUNNING_HINT)
+                    .with_issue(issue::RUNNING_LUNAR)
+            }
+            Err(lunar_config::RegisterError::Failed(e)) => {
+                TargetStatus::new("lunar", "error", e.clone())
+                    .with_issue(issue::SETUP_ERROR)
+                    .with_detail(e)
+            }
+        },
+    )
 }
 
 /// `--uninstall-lunar-integration`: undo what Lunar setup did, for the NSIS
@@ -473,22 +578,24 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
 }
 
 /// Cached verified resources so `refresh_setup` can rebuild without re-reading the manifest path.
+#[derive(Clone)]
 struct SetupContext {
     resource_dir: PathBuf,
     mod_version: Option<String>,
 }
 
-fn rebuild_setup(home: &Path, ctx: &SetupContext) -> (Status, ForgeState) {
+fn rebuild_setup(home: &Path, ctx: &SetupContext, mode: Refresh) -> (Status, ForgeState) {
     let none = ForgeState::default();
     let verified = match resources::verify(&ctx.resource_dir) {
         Ok(v) => v,
         Err(e) => return (Status::error(e), none),
     };
 
-    let lunar = set_up_lunar(&verified, home);
+    let lunar = production_lunar_status(&verified, home, mode);
 
     let mut state = ForgeState::default();
-    let forge_target = match &verified.forge {
+    let prism_installed = forge::prism_installed();
+    let mut forge_target = match &verified.forge {
         None => TargetStatus::new("forge", "absent", "This copy does not include Forge.")
             .with_issue(issue::MISSING_BUNDLED_FORGE),
         Some(Err(e)) => TargetStatus::new("forge", "error", "Setup failed.")
@@ -500,7 +607,21 @@ fn rebuild_setup(home: &Path, ctx: &SetupContext) -> (Status, ForgeState) {
                 .as_ref()
                 .and_then(forge::revalidate)
             {
-                Some(c) => adopt(jar, &c, home),
+                // A valid saved target = set up: keep its existing adopt/refresh, except
+                // while a setup run owns the coordinator.
+                Some(c) => {
+                    let mut t = match mode {
+                        Refresh::Write => adopt(jar, &c, home),
+                        Refresh::ReadOnly => {
+                            let mut t = TargetStatus::new("forge", "ready", "Prism Forge 1.8.9");
+                            t.install_path = Some(c.game_dir.join("mods").join(&jar.name));
+                            t
+                        }
+                    };
+                    t.set_up = true;
+                    t
+                }
+                // Not set up: detection only (the candidate list is read-only).
                 None => {
                     let candidates = forge::Env::from_process()
                         .map(|env| forge::detect(&env))
@@ -517,6 +638,7 @@ fn rebuild_setup(home: &Path, ctx: &SetupContext) -> (Status, ForgeState) {
             }
         }
     };
+    forge_target.installed = prism_installed;
 
     (
         aggregate(ctx.mod_version.clone(), vec![lunar, forge_target]),
@@ -572,7 +694,7 @@ fn start_up(app: &tauri::AppHandle) -> (Status, ForgeState, SetupContext) {
         resource_dir: resource_dir.clone(),
         mod_version: Some(version.clone()),
     };
-    let (status, forge_state) = rebuild_setup(&home, &ctx);
+    let (status, forge_state) = rebuild_setup(&home, &ctx, Refresh::Write);
     (status, forge_state, ctx)
 }
 
@@ -603,20 +725,166 @@ fn status(state: tauri::State<'_, Mutex<Status>>) -> Status {
     state.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Refresh admission. While a setup run owns the coordinator - stopped or not - a refresh
+/// is admitted READ-ONLY and claims nothing (it never runs the silent refresh, so it can
+/// never write under a setup). Otherwise it takes the usual refresh claim, which may write
+/// into a client that is already set up.
+fn refresh_admission(coordinator: &Mutex<Coordinator>) -> Result<Refresh, LifecycleError> {
+    let mut c = coordinator.lock().unwrap_or_else(|e| e.into_inner());
+    if c.in_setup() {
+        return Ok(Refresh::ReadOnly);
+    }
+    c.try_refresh()?;
+    Ok(Refresh::Write)
+}
+
+/// Async: Tauri runs sync commands on the main thread, and a rebuild scans processes and
+/// hashes jars.
 #[tauri::command]
-fn refresh_setup(
+async fn refresh_setup(
     status: tauri::State<'_, Mutex<Status>>,
     forge: tauri::State<'_, Mutex<ForgeState>>,
     ctx: tauri::State<'_, SetupContext>,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<Status, String> {
-    with_claim(&session.coordinator, Coordinator::try_refresh, || {
-        let home = home()?;
-        let (next, forge_state) = rebuild_setup(&home, &ctx);
-        *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
-        *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
-        Ok(next)
-    })
+    let mode = refresh_admission(&session.coordinator).map_err(lifecycle_err)?;
+    let coordinator = Arc::clone(&session.coordinator);
+    let release = move || {
+        if mode == Refresh::Write {
+            coordinator.lock().unwrap_or_else(|e| e.into_inner()).release();
+        }
+    };
+    let home = match home() {
+        Ok(h) => h,
+        Err(e) => {
+            release();
+            return Err(e);
+        }
+    };
+    let ctx = ctx.inner().clone();
+    let built =
+        tauri::async_runtime::spawn_blocking(move || rebuild_setup(&home, &ctx, mode)).await;
+    release();
+    let (next, forge_state) = built.map_err(|e| e.to_string())?;
+    *forge.lock().unwrap_or_else(|e| e.into_inner()) = forge_state;
+    *status.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
+    Ok(next)
+}
+
+// ── setup runs (setup.rs) ─────────────────────────────────────────────────────────
+
+fn parse_setup_kind(kind: &str) -> Result<setup::Kind, String> {
+    match kind {
+        "lunar" => Ok(setup::Kind::Lunar),
+        "forge" => Ok(setup::Kind::Forge),
+        _ => Err("Unknown launcher kind.".to_string()),
+    }
+}
+
+/// Unminimize, show, focus, and bounce the Dock icon once: the sign-in hand-off. Best
+/// effort - macOS may refuse activation while another app is frontmost.
+fn bring_forward(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
+/// Runs a claimed setup off the main thread. When it is done, the status is rebuilt
+/// read-only so `status` reflects the new client at once.
+fn spawn_setup_run(
+    app: tauri::AppHandle,
+    svc: Arc<setup::Service>,
+    paths: setup::Paths,
+    run: setup::Run,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let forward = app.clone();
+        let world = setup::ProdWorld::new(
+            paths.home.clone(),
+            Box::new(move || bring_forward(&forward)),
+        );
+        if setup::run_guarded(&svc, &world, &paths, run) == setup::Outcome::Done {
+            let ctx = app.state::<SetupContext>().inner().clone();
+            let (next, forge_state) = rebuild_setup(&paths.home, &ctx, Refresh::ReadOnly);
+            *app.state::<Mutex<ForgeState>>()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = forge_state;
+            *app.state::<Mutex<Status>>()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = next;
+        }
+    });
+}
+
+/// Starts setting up `kind` ("lunar" | "forge") from check 1. `instanceId` (Prism only)
+/// names a candidate from the current status. Replies with the first snapshot; progress
+/// follows on `setup://progress`. Refused with "busy" (etc.) while anything else holds the
+/// lifecycle - another setup included, even a stopped one.
+#[tauri::command(rename_all = "camelCase")]
+async fn begin_setup(
+    app: tauri::AppHandle,
+    kind: String,
+    instance_id: Option<String>,
+    forge: tauri::State<'_, Mutex<ForgeState>>,
+    ctx: tauri::State<'_, SetupContext>,
+    svc: tauri::State<'_, Arc<setup::Service>>,
+) -> Result<setup::Snapshot, String> {
+    let kind = parse_setup_kind(&kind)?;
+    let home = home()?;
+    let chosen = match (kind, instance_id) {
+        (setup::Kind::Forge, Some(id)) => Some(
+            forge
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .candidates
+                .get(&id)
+                .cloned()
+                .ok_or("That Prism instance is no longer available.")?,
+        ),
+        (setup::Kind::Lunar, Some(_)) => {
+            return Err("instanceId is only for Prism.".to_string());
+        }
+        (_, None) => None,
+    };
+    let run = svc.begin(kind, chosen)?;
+    let first = svc.latest().ok_or("Setup did not start.")?;
+    let paths = setup::Paths {
+        home,
+        resource_dir: ctx.resource_dir.clone(),
+    };
+    spawn_setup_run(app, Arc::clone(&svc), paths, run);
+    Ok(first)
+}
+
+/// Try again: runs a failed setup of `kind` again from the check it failed at. Refused
+/// with "nothing_to_resume" when the last run of that kind did not fail.
+#[tauri::command]
+async fn resume_setup(
+    app: tauri::AppHandle,
+    kind: String,
+    ctx: tauri::State<'_, SetupContext>,
+    svc: tauri::State<'_, Arc<setup::Service>>,
+) -> Result<setup::Snapshot, String> {
+    let kind = parse_setup_kind(&kind)?;
+    let home = home()?;
+    let run = svc.resume(kind)?;
+    let first = svc.latest().ok_or("Setup did not start.")?;
+    let paths = setup::Paths {
+        home,
+        resource_dir: ctx.resource_dir.clone(),
+    };
+    spawn_setup_run(app, Arc::clone(&svc), paths, run);
+    Ok(first)
+}
+
+/// The current setup snapshot, or null before any setup ran (a webview that missed events
+/// catches up here).
+#[tauri::command]
+fn setup_state(svc: tauri::State<'_, Arc<setup::Service>>) -> Option<setup::Snapshot> {
+    svc.latest()
 }
 
 #[derive(Serialize)]
@@ -671,7 +939,7 @@ fn get_launcher(
         let kind = parse_launcher_kind(&kind)?;
         let home = home()?;
         let installed = match kind {
-            "lunar" => home.join(".lunarclient").exists(),
+            "lunar" => lunar_detect::find_app(&home).is_some(),
             "forge" => forge::prism_installed(),
             _ => unreachable!(),
         };
@@ -704,17 +972,22 @@ fn open_path(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Opening a client is also the sign-in stop's "Open", so it is admitted while a setup
+/// run owns the coordinator (it only starts the client's app; the run is untouched).
 #[tauri::command]
 fn open_launcher(
     kind: String,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<(), String> {
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .try_setup()
-        .map_err(lifecycle_err)?;
+    let claimed = {
+        let mut c = session.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        if c.in_setup() {
+            false
+        } else {
+            c.try_setup().map_err(lifecycle_err)?;
+            true
+        }
+    };
     let result = (|| -> Result<(), String> {
         parse_launcher_kind(&kind)?;
         match kind.as_str() {
@@ -759,11 +1032,13 @@ fn open_launcher(
             _ => unreachable!(),
         }
     })();
-    session
-        .coordinator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .release();
+    if claimed {
+        session
+            .coordinator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .release();
+    }
     result
 }
 
@@ -858,7 +1133,9 @@ fn install_into(
     }
 
     let home = home()?;
-    let target = adopt(&jar, &fresh, &home);
+    let mut target = adopt(&jar, &fresh, &home);
+    target.installed = forge::prism_installed();
+    target.set_up = target.state == "ready";
 
     // The id is spent either way; a second click must re-detect rather than re-run.
     forge
@@ -1396,7 +1673,9 @@ async fn run_reset(session: &tauri::State<'_, SessionParts>, mode: ResetMode) ->
             // up to bound+grace, and a pass that missed the bound before
             // committing can never terminate anything afterwards.
             hide_registry::run_destructive_bounded(
-                |commit| hide::quit_lunar_launcher(commit),
+                |commit| {
+                    let _ = hide::quit_lunar_launcher(commit);
+                },
                 std::time::Duration::from_secs(3),
                 std::time::Duration::from_secs(3),
             );
@@ -1929,44 +2208,263 @@ mod tests {
         );
     }
 
-    /// L7. The running check must gate the jar INSTALL, not only the
-    /// `launcher.json` write. `install_lunar` creates `~/.weave` and drops
-    /// two jars into it before `register` ever asks whether Lunar is up, so
-    /// a user who ran setup with Lunar open ended with files on disk, no
-    /// agent registered, and a "quit Lunar" message - and `~/.weave` created
-    /// on a machine whose Lunar setup never completed.
-    #[test]
-    fn lunar_setup_reports_running_lunar_before_writing_any_jar() {
-        fn lunar_home() -> tempfile::TempDir {
-            let home = tempfile::tempdir().unwrap();
-            let settings = home.path().join(".lunarclient/settings");
-            std::fs::create_dir_all(&settings).unwrap();
-            std::fs::write(settings.join("launcher.json"), r#"{"settings":{}}"#).unwrap();
-            home
-        }
+    // ── PLAN B: startup / refresh never set a client up ─────────────────────
+
+    fn verified_bundle() -> (tempfile::TempDir, resources::Resources) {
         let bundle = tempfile::tempdir().unwrap();
         resources::tests::write_bundle(bundle.path(), b"mod", b"agent", b"forge");
         let res = resources::verify(bundle.path()).unwrap();
+        (bundle, res)
+    }
 
-        let home = lunar_home();
-        let status = set_up_lunar_with(|| Ok(true), &res, home.path());
-        assert_eq!(status.state, "blocked");
-        assert_eq!(status.issue, Some(issue::RUNNING_LUNAR));
-        assert!(
-            !home.path().join(".weave").exists(),
-            "no jar may be written while Lunar is running"
-        );
+    /// A home whose launcher.json holds `args` as Lunar's jvmArgs.
+    fn lunar_home_with_args(args: &str) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join(".lunarclient/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(
+            settings.join("launcher.json"),
+            serde_json::json!({"settings": {"jvmArgs": args}}).to_string(),
+        )
+        .unwrap();
+        home
+    }
 
-        // An undeterminable state is an error, and equally writes nothing.
-        let home = lunar_home();
-        let status = set_up_lunar_with(
-            || Err("Cannot tell whether Lunar is running.".to_string()),
-            &res,
-            home.path(),
+    /// Set up by an older Cobblify: its agent registered, its jar in mods, nothing current.
+    fn stale_set_up_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let old_agent = home.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
+        let settings = home.path().join(".lunarclient/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(
+            settings.join("launcher.json"),
+            serde_json::json!({"settings": {"jvmArgs": format!("-Xmx4G -javaagent:{}", old_agent.display())}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join(".weave/mods")).unwrap();
+        std::fs::write(&old_agent, b"old agent").unwrap();
+        std::fs::write(home.path().join(".weave/mods/Cobblify-Lunar-0.8.0.jar"), b"old mod").unwrap();
+        home
+    }
+
+    fn tree(home: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, root, out);
+                } else {
+                    let rel = p.strip_prefix(root).unwrap().display().to_string();
+                    out.push((rel, std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(home, home, &mut out);
+        out.sort();
+        out
+    }
+
+    fn clear() -> setup::GameScan {
+        setup::GameScan { running: false, complete: true }
+    }
+
+    fn status_with(
+        res: &resources::Resources,
+        home: &Path,
+        mode: Refresh,
+        app: bool,
+        running: Result<bool, String>,
+        game: setup::GameScan,
+    ) -> TargetStatus {
+        let running_fn = move || running.clone();
+        let game_fn = move || game;
+        lunar_target(
+            res,
+            home,
+            mode,
+            &LunarProbe {
+                app: app.then(|| PathBuf::from("/Applications/Lunar Client.app")),
+                running: &running_fn,
+                game: &game_fn,
+            },
+        )
+    }
+
+    /// A Lunar that was never set up is reported, never written to: no `~/.weave`, the
+    /// same `launcher.json` bytes, no backup - with everything else in its favour.
+    #[test]
+    fn startup_is_read_only_for_a_lunar_that_is_not_set_up() {
+        let (_bundle, res) = verified_bundle();
+        let home = lunar_home_with_args("-Xmx4G");
+        let before = tree(home.path());
+
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear());
+        assert_eq!((t.state, t.issue), ("absent", Some(issue::NOT_SET_UP)));
+        assert!(t.installed && !t.set_up);
+        assert_eq!(t.opened_once, Some(true));
+        assert!(!home.path().join(".weave").exists(), "no ~/.weave created");
+        assert_eq!(tree(home.path()), before, "launcher.json untouched, no backup");
+
+        // Not installed at all.
+        let t = status_with(&res, home.path(), Refresh::Write, false, Ok(false), clear());
+        assert_eq!((t.state, t.issue), ("absent", Some(issue::MISSING_LAUNCHER)));
+        assert!(!t.installed);
+
+        // Installed but never opened: installed, not opened, not set up.
+        let fresh = tempfile::tempdir().unwrap();
+        let t = status_with(&res, fresh.path(), Refresh::Write, true, Ok(false), clear());
+        assert_eq!((t.state, t.issue), ("absent", Some(issue::NOT_SET_UP)));
+        assert!(t.installed);
+        assert_eq!(t.opened_once, Some(false));
+        assert!(tree(fresh.path()).is_empty(), "nothing created in a fresh home");
+        let wire = serde_json::to_value(&t).unwrap();
+        assert_eq!(wire["installed"], true);
+        assert_eq!(wire["set_up"], false);
+        assert_eq!(wire["opened_once"], false);
+    }
+
+    /// A set-up Lunar keeps 0.17's silent refresh: an update's jars go in, the old release
+    /// goes, and the agent is re-registered - when Lunar and its game are both closed.
+    #[test]
+    fn startup_silently_refreshes_a_set_up_lunar() {
+        let (_bundle, res) = verified_bundle();
+        let home = stale_set_up_home();
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear());
+        assert_eq!(t.state, "ready", "{:?} {}", t.issue, t.message);
+        assert!(t.set_up && t.installed);
+        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
+        assert!(lunar_config::registration_is(
+            &lunar_detect::launcher_json(home.path()),
+            &agent
+        ));
+        assert_eq!(std::fs::read(&agent).unwrap(), b"agent");
+        assert_eq!(
+            std::fs::read(home.path().join(".weave/mods/Cobblify-Lunar-0.8.1.jar")).unwrap(),
+            b"mod"
         );
-        assert_eq!(status.state, "error");
-        assert_eq!(status.issue, Some(issue::SETUP_ERROR));
-        assert!(!home.path().join(".weave").exists());
+        assert!(!home.path().join(".weave/mods/Cobblify-Lunar-0.8.0.jar").exists());
+    }
+
+    /// Set up and current: Lunar being open no longer blocks - and nothing is written.
+    #[test]
+    fn a_current_registration_is_ready_while_lunar_runs() {
+        let (_bundle, res) = verified_bundle();
+        let home = stale_set_up_home();
+        assert_eq!(
+            status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear()).state,
+            "ready"
+        );
+        let before = tree(home.path());
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(true), clear());
+        assert_eq!(t.state, "ready");
+        let game = setup::GameScan { running: true, complete: true };
+        assert_eq!(status_with(&res, home.path(), Refresh::Write, true, Ok(false), game).state, "ready");
+        assert_eq!(tree(home.path()), before, "nothing written while Lunar or a game runs");
+    }
+
+    /// Set up but NOT current: with Lunar open, a game open, or no proof either way,
+    /// nothing is written and the reason is reported (L7: before any jar).
+    #[test]
+    fn a_stale_set_up_lunar_is_never_written_while_anything_runs() {
+        let (_bundle, res) = verified_bundle();
+        let cases: [(Result<bool, String>, setup::GameScan, &str, &str); 4] = [
+            (Ok(true), clear(), "blocked", issue::RUNNING_LUNAR),
+            (
+                Ok(false),
+                setup::GameScan { running: true, complete: true },
+                "blocked",
+                issue::GAME_OPEN,
+            ),
+            (
+                Ok(false),
+                setup::GameScan { running: false, complete: false },
+                "blocked",
+                issue::GAME_UNKNOWN,
+            ),
+            (
+                Err("Cannot tell whether Lunar is running.".to_string()),
+                clear(),
+                "error",
+                issue::SETUP_ERROR,
+            ),
+        ];
+        for (running, game, state, code) in cases {
+            let home = stale_set_up_home();
+            let before = tree(home.path());
+            let t = status_with(&res, home.path(), Refresh::Write, true, running, game);
+            assert_eq!((t.state, t.issue), (state, Some(code)));
+            assert!(t.set_up);
+            assert_eq!(tree(home.path()), before, "{code}: nothing written");
+        }
+    }
+
+    /// Round 1 I1: a refresh while a setup run is STOPPED is admitted read-only and
+    /// writes nothing - even into a set-up client whose files are stale.
+    #[test]
+    fn a_refresh_during_a_setup_stop_writes_nothing() {
+        let rig = setup::tests::rig();
+        // The rig's Lunar is set up by an older Cobblify, and not signed in.
+        let old_agent = rig.home.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
+        std::fs::create_dir_all(rig.home.path().join(".weave/mods")).unwrap();
+        std::fs::write(&old_agent, b"old agent").unwrap();
+        std::fs::write(
+            rig.launcher_json(),
+            serde_json::json!({"settings": {"jvmArgs": format!("-javaagent:{}", old_agent.display())}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::remove_file(rig.home.path().join(".lunarclient/settings/game/accounts.json"))
+            .unwrap();
+
+        let coordinator = Arc::clone(&rig.coordinator);
+        let home = rig.home.path().to_path_buf();
+        let bundle = rig.bundle.path().to_path_buf();
+        let seen = Arc::new(Mutex::new(None));
+        let log = Arc::clone(&seen);
+        let world = setup::tests::Fake::new().on_sleep(move |st| {
+            if st.sleeps == 1 {
+                let before = tree(&home);
+                let mode = refresh_admission(&coordinator);
+                let res = resources::verify(&bundle).unwrap();
+                let t = status_with(&res, &home, Refresh::ReadOnly, true, Ok(false), clear());
+                *log.lock().unwrap() = Some((mode, t.state, t.issue, before == tree(&home)));
+                lunar_detect::tests::write_accounts(&home, lunar_detect::tests::SIGNED_IN);
+            }
+        });
+        assert_eq!(rig.run(&world, setup::Kind::Lunar), setup::Outcome::Done);
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some((Ok(Refresh::ReadOnly), "blocked", Some(issue::NOT_CURRENT), true)),
+            "admitted read-only, reported, nothing written"
+        );
+        // Outside a setup, the refresh claims (and may write) as before.
+        assert_eq!(refresh_admission(&rig.coordinator), Ok(Refresh::Write));
+        assert_eq!(
+            rig.coordinator.lock().unwrap().try_launch(),
+            Err(LifecycleError::Busy),
+            "the write refresh holds its claim"
+        );
+    }
+
+    /// A launch is refused while a setup run is stopped (the launch command's admission).
+    #[test]
+    fn a_launch_is_refused_while_a_setup_is_stopped() {
+        let parts = SessionParts::new();
+        let gen = parts
+            .coordinator
+            .lock()
+            .unwrap()
+            .try_begin_setup(setup::Kind::Lunar)
+            .unwrap();
+        let refused = parts.coordinator.lock().unwrap().try_launch().unwrap_err();
+        assert!(matches!(
+            lifecycle_to_launch(refused),
+            LaunchReply::Rejected { code: "busy", .. }
+        ));
+        assert!(parts.coordinator.lock().unwrap().holds_setup(gen), "the setup keeps it");
     }
 
     /// Regression lock: the forbidden parameter shipped once (Aug 5) and
@@ -2998,7 +3496,16 @@ fn main() {
             app.manage(Mutex::new(status));
             app.manage(Mutex::new(forge_state));
             app.manage(ctx);
-            app.manage(SessionParts::new());
+            let parts = SessionParts::new();
+            let emitter = app.handle().clone();
+            let setup_service = Arc::new(setup::Service::new(
+                Arc::clone(&parts.coordinator),
+                Box::new(move |snapshot: &setup::Snapshot| {
+                    let _ = emitter.emit(setup::EVENT_NAME, snapshot);
+                }),
+            ));
+            app.manage(parts);
+            app.manage(setup_service);
             let updater_home = home().map_err(std::io::Error::other)?;
             // Before report_completed_install: it deletes the pending-version marker that
             // tells a 0.17 -> 0.18 update from a fresh install.
@@ -3040,7 +3547,10 @@ fn main() {
             launch_progress,
             choose_forge_target,
             open_info,
-            game_theme
+            game_theme,
+            begin_setup,
+            resume_setup,
+            setup_state
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Cobblify launcher");

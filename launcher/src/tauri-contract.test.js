@@ -21,6 +21,10 @@ import {
   resumeUpdate,
   installUpdate,
   deferUpdate,
+  beginSetup,
+  resumeSetup,
+  setupState,
+  SETUP_EVENT,
 } from "./tauri-contract.js";
 
 test("invoke uses exact wire keys", async () => {
@@ -147,4 +151,42 @@ test("open_info and game_theme use exact wire names and keys", async () => {
     { cmd: "open_info", args: undefined },
     { cmd: "game_theme", args: { kind: "forge" } },
   ]);
+});
+
+test("setup commands keep their native names, argument keys and event name", async () => {
+  const calls = [];
+  const invoke = async (cmd, args) => {
+    calls.push({ cmd, args });
+    return null;
+  };
+  await beginSetup(invoke, "lunar");
+  await beginSetup(invoke, "forge", "d0");
+  await resumeSetup(invoke, "lunar");
+  await setupState(invoke);
+  assert.deepEqual(calls, [
+    { cmd: "begin_setup", args: { kind: "lunar" } },
+    { cmd: "begin_setup", args: { kind: "forge", instanceId: "d0" } },
+    { cmd: "resume_setup", args: { kind: "lunar" } },
+    { cmd: "setup_state", args: undefined },
+  ]);
+  assert.equal(CMD.beginSetup, "begin_setup");
+  assert.equal(CMD.resumeSetup, "resume_setup");
+  assert.equal(CMD.setupState, "setup_state");
+  assert.equal(SETUP_EVENT, "setup://progress");
+});
+
+test("the setup snapshot wire shape matches the backend's camelCase fields", () => {
+  // Mirrors setup.rs `the_snapshot_wire_shape_is_camel_case_with_optional_fields_omitted`.
+  const failed = { gen: 1, kind: "forge", check: 4, phase: "failed", failedAt: 5, message: "x" };
+  const stopped = { gen: 3, kind: "lunar", check: 3, phase: "stop", stop: "closing_lunar", label: "closing_lunar" };
+  for (const snap of [failed, stopped]) {
+    for (const key of Object.keys(snap)) {
+      assert.match(key, /^[a-z][A-Za-z]*$/, "camelCase keys");
+    }
+    assert.ok(["running", "stop", "failed", "done"].includes(snap.phase));
+    assert.ok(snap.check >= 0 && snap.check <= 6);
+  }
+  for (const stop of ["signin", "game_open", "closing_lunar"]) {
+    assert.match(stop, /^[a-z_]+$/);
+  }
 });

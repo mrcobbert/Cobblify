@@ -32,15 +32,53 @@ pub enum RegisterError {
     Failed(String),
 }
 
-pub fn register(launcher_json: &Path, agent_path: &Path) -> Result<(), RegisterError> {
-    register_with(crate::proc::lunar_running_checked, launcher_json, agent_path)
+/// The Weave javaagent Lunar will start the game with, read without writing anything:
+/// the LAST Weave `-javaagent:` token in the authoritative jvm-args key (the same
+/// `jvmArgs`-first rule `apply` uses). `None` when the file is missing, unparseable, of an
+/// unexpected shape, or carries no Weave agent. Reading is safe while Lunar runs; only
+/// writing is not.
+pub fn registered_agent(launcher_json: &Path) -> Option<std::path::PathBuf> {
+    let raw = fs::read_to_string(launcher_json).ok()?;
+    let root: Value = serde_json::from_str(&raw).ok()?;
+    let settings = root.get("settings")?.as_object()?;
+    let args = read_jvm_args(settings, launcher_json).ok()?;
+    split_args(&args)
+        .into_iter()
+        .filter(|token| is_weave_javaagent(token))
+        .last()
+        .and_then(|token| {
+            token
+                .strip_prefix("-javaagent:")
+                .map(|p| std::path::PathBuf::from(p.trim_matches('"')))
+        })
+}
+
+/// "Set up" for Lunar (PLAN B): `launcher.json` carries a `-javaagent:` for a Weave agent
+/// jar in THIS home's `~/.weave` - which only Cobblify's setup puts there. Any agent
+/// version counts: an older launcher's registration is still a set-up client that the
+/// silent refresh brings current.
+pub fn is_set_up(home: &Path) -> bool {
+    let weave = home.join(".weave");
+    registered_agent(&crate::lunar_detect::launcher_json(home)).is_some_and(|agent| {
+        agent.parent() == Some(weave.as_path())
+            && agent.file_name().and_then(OsStr::to_str).is_some_and(|name| {
+                name.len() >= "Weave-Loader-Agent".len()
+                    && name.as_bytes()[.."Weave-Loader-Agent".len()]
+                        .eq_ignore_ascii_case(b"Weave-Loader-Agent")
+            })
+    })
+}
+
+/// Whether the registration already points at exactly `agent_path`.
+pub fn registration_is(launcher_json: &Path, agent_path: &Path) -> bool {
+    registered_agent(launcher_json).as_deref() == Some(agent_path)
 }
 
 /// The running-state checker is injected so tests can prove the refusal
 /// ORDER: an undeterminable state (`Err` - e.g. Windows without a usable
 /// `LOCALAPPDATA`) must block before any read or write, exactly like a
 /// running Lunar. `Ok(false)` alone reaches `apply`.
-fn register_with(
+pub(crate) fn register_with(
     lunar_running: impl Fn() -> Result<bool, String>,
     launcher_json: &Path,
     agent_path: &Path,
@@ -778,5 +816,51 @@ mod tests {
             f.jvm_args().0,
             format!("-Xmx4G -javaagent:{AGENT}")
         );
+    }
+
+    fn home_with_args(args: Option<&str>) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join(".lunarclient/settings");
+        fs::create_dir_all(&settings).unwrap();
+        let body = match args {
+            Some(a) => serde_json::json!({"settings": {"jvmArgs": a}}).to_string(),
+            None => r#"{"settings": {}}"#.to_string(),
+        };
+        fs::write(settings.join("launcher.json"), body).unwrap();
+        home
+    }
+
+    /// "Set up" is our Weave agent in THIS home's ~/.weave, read without writing.
+    #[test]
+    fn set_up_is_our_agent_in_this_homes_weave() {
+        let home = home_with_args(None);
+        assert!(!is_set_up(home.path()), "no args: not set up");
+
+        let ours = home.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
+        let home2 = home_with_args(Some(&format!("-Xmx4G -javaagent:{}", ours.display())));
+        // `ours` is under the FIRST home, so the second one is not set up by it.
+        assert!(!is_set_up(home2.path()));
+
+        let mine = home2.path().join(".weave/Weave-Loader-Agent-1.3.2.jar");
+        let json = home2.path().join(".lunarclient/settings/launcher.json");
+        fs::write(
+            &json,
+            serde_json::json!({"settings": {"jvmArgs": format!("-javaagent:{}", mine.display())}})
+                .to_string(),
+        )
+        .unwrap();
+        let before = fs::read(&json).unwrap();
+        assert!(is_set_up(home2.path()), "any agent version of ours counts");
+        assert!(registration_is(&json, &mine));
+        assert!(!registration_is(&json, &home2.path().join(".weave/Weave-Loader-Agent-1.3.3.jar")));
+        assert_eq!(fs::read(&json).unwrap(), before, "reading never writes");
+        assert!(!json.with_file_name("launcher.json.bak-cobblify").exists());
+
+        let other = home_with_args(Some("-javaagent:/opt/other-agent.jar"));
+        assert!(!is_set_up(other.path()), "someone else's agent is not ours");
+        let bad = home_with_args(None);
+        fs::write(bad.path().join(".lunarclient/settings/launcher.json"), "{nope").unwrap();
+        assert!(!is_set_up(bad.path()), "unparseable: not set up");
+        assert!(!is_set_up(tempfile::tempdir().unwrap().path()), "missing: not set up");
     }
 }

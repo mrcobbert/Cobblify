@@ -8,11 +8,24 @@ pub enum PrefKey {
     Overlay,
 }
 
+/// The client a setup run is for. Wire names "lunar" | "forge".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SetupKind {
+    Lunar,
+    Forge,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
     Idle,
     Refreshing,
+    /// A short synchronous setup action (open a client, choose a Prism instance).
     SettingUp,
+    /// One client's setup run (`setup.rs`), held from `begin_setup` until done or failed,
+    /// INCLUDING while it is stopped (sign-in, game open, closing Lunar). Every wake-up of
+    /// that run carries `gen`; one whose `gen` no longer matches is dropped.
+    Setup { kind: SetupKind, gen: u64 },
     Saving,
     PreferenceUncertain { key: PrefKey, desired: bool },
     Launching,
@@ -39,6 +52,7 @@ pub enum LifecycleError {
 pub struct Coordinator {
     state: Lifecycle,
     launch_generation: u64,
+    setup_generation: u64,
 }
 
 impl Default for Coordinator {
@@ -46,6 +60,7 @@ impl Default for Coordinator {
         Coordinator {
             state: Lifecycle::Idle,
             launch_generation: 0,
+            setup_generation: 0,
         }
     }
 }
@@ -65,6 +80,44 @@ impl Coordinator {
 
     pub fn try_setup(&mut self) -> Result<(), LifecycleError> {
         self.claim(Lifecycle::SettingUp)
+    }
+
+    /// Claims the coordinator for one setup run. Only from Idle: another setup, a launch,
+    /// a save or a refresh in flight all refuse with their usual error. Every claim gets a
+    /// fresh generation, so a wake-up from an earlier run can never pass `holds_setup`.
+    pub fn try_begin_setup(&mut self, kind: SetupKind) -> Result<u64, LifecycleError> {
+        match self.state {
+            Lifecycle::Idle => {
+                self.setup_generation = self.setup_generation.wrapping_add(1);
+                let gen = self.setup_generation;
+                self.state = Lifecycle::Setup { kind, gen };
+                Ok(gen)
+            }
+            Lifecycle::PreferenceUncertain { .. } => Err(LifecycleError::PreferenceUncertain),
+            Lifecycle::Active => Err(LifecycleError::Active),
+            _ => Err(LifecycleError::Busy),
+        }
+    }
+
+    /// Whether the setup run `gen` still owns the coordinator.
+    pub fn holds_setup(&self, gen: u64) -> bool {
+        matches!(self.state, Lifecycle::Setup { gen: g, .. } if g == gen)
+    }
+
+    /// Whether any setup run owns the coordinator (refresh is then read-only).
+    pub fn in_setup(&self) -> bool {
+        matches!(self.state, Lifecycle::Setup { .. })
+    }
+
+    /// Ends the run `gen` (done or failed) and publishes Idle. Inert for any other state,
+    /// so a stale run can never release a claim it does not own.
+    pub fn finish_setup(&mut self, gen: u64) -> bool {
+        if self.holds_setup(gen) {
+            self.state = Lifecycle::Idle;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn try_save(&mut self) -> Result<(), LifecycleError> {
@@ -280,6 +333,32 @@ mod tests {
         assert_eq!(c.state(), Lifecycle::Idle);
         let next = c.try_launch().unwrap();
         assert!(next > gen, "fresh generation after reset");
+    }
+
+    /// Round 1 I1: a setup run holds the coordinator through its stops. Nothing else is
+    /// admitted until it finishes; only its own generation can finish it.
+    #[test]
+    fn a_setup_run_is_exclusive_and_generation_guarded() {
+        let mut c = Coordinator::default();
+        let gen = c.try_begin_setup(SetupKind::Lunar).unwrap();
+        assert!(c.holds_setup(gen) && c.in_setup());
+        assert_eq!(c.try_begin_setup(SetupKind::Forge), Err(LifecycleError::Busy));
+        assert_eq!(c.try_launch(), Err(LifecycleError::Busy));
+        assert_eq!(c.try_save(), Err(LifecycleError::Busy));
+        assert_eq!(c.try_refresh(), Err(LifecycleError::Busy));
+        assert_eq!(c.try_setup(), Err(LifecycleError::Busy));
+        assert_eq!(c.try_begin_reset(), ResetBegin::Busy);
+        assert!(!c.finish_setup(gen + 1), "a stale generation cannot finish it");
+        assert!(c.holds_setup(gen));
+        assert!(c.finish_setup(gen));
+        assert_eq!(c.state(), Lifecycle::Idle);
+        let next = c.try_begin_setup(SetupKind::Lunar).unwrap();
+        assert!(next > gen, "fresh generation per run");
+        assert!(!c.holds_setup(gen), "the earlier run no longer holds it");
+        assert!(!c.finish_setup(gen));
+        c.finish_setup(next);
+        c.try_launch().unwrap();
+        assert_eq!(c.try_begin_setup(SetupKind::Lunar), Err(LifecycleError::Busy));
     }
 
     #[test]

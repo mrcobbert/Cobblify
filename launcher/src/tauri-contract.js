@@ -33,7 +33,38 @@ export const CMD = {
   deferUpdate: "defer_update",
   openInfo: "open_info",
   gameTheme: "game_theme",
+  beginSetup: "begin_setup",
+  resumeSetup: "resume_setup",
+  setupState: "setup_state",
 };
+
+/** Tauri event carrying every setup `SetupSnapshot` change (the whole snapshot). */
+export const SETUP_EVENT = "setup://progress";
+
+/**
+ * Starts setting up one client from check 1. `instanceId` (Prism only) is a candidate id
+ * from the current status. Replies with the first snapshot; progress follows on
+ * `SETUP_EVENT`. Rejects with "busy" while anything else (another setup included) runs.
+ * @param {"lunar"|"forge"} kind
+ * @param {string} [instanceId]
+ */
+export function beginSetup(invoke, kind, instanceId) {
+  return invoke(CMD.beginSetup, instanceId === undefined ? { kind } : { kind, instanceId });
+}
+
+/**
+ * Try again: resumes a failed setup of `kind` at the check it failed at. Rejects with
+ * "nothing_to_resume" when the last run of that kind did not fail.
+ * @param {"lunar"|"forge"} kind
+ */
+export function resumeSetup(invoke, kind) {
+  return invoke(CMD.resumeSetup, { kind });
+}
+
+/** The current `SetupSnapshot`, or null before any setup ran. */
+export function setupState(invoke) {
+  return invoke(CMD.setupState);
+}
 
 /** Fresh install, first open after an update, or neither (captured at startup). */
 export function openInfo(invoke) {
@@ -137,3 +168,4 @@ export function launchProgress(invoke) {
 /** @typedef {{ status: 'ok', preferences: LaunchPreferencesView } | { status: 'already_reset', preferences: LaunchPreferencesView } | { status: 'not_terminal' } | { status: 'busy' }} ResetReply */
 /** @typedef {{ version: string, updated: boolean, fresh: boolean }} OpenInfo */
 /** @typedef {{ accent?: string, font?: 'minecraft'|'modern' }} GameTheme */
+/** @typedef {{ gen: number, kind: 'lunar'|'forge', check: number, phase: 'running'|'stop'|'failed'|'done', stop?: 'signin'|'game_open'|'closing_lunar', label?: 'closing_lunar'|'making_instance'|'java', failedAt?: number, message?: string }} SetupSnapshot */
