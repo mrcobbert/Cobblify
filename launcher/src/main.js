@@ -57,7 +57,9 @@ const connAnnounce = el("conn-announce");
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
  *   ?update=consent|checking|available|critical|downloading|…  updater state
- *   ?ctx=lobby|unsupported|joining|waiting|disconnected  lobby dashboard / joining / waiting
+ *   ?ctx=lobby|unsupported|disconnected  lobby dashboard / disconnected
+ *   ?outcome=wrong_version|not_loaded  how a preview launch ends (launch_progress' outcome)
+ *   ?first=1  a Prism preview launch is a made instance's first (Downloading Minecraft)
  *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
@@ -260,6 +262,7 @@ PREVIEW_LOBBY.game = PREVIEW_LOBBY.gameThrees;
 PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
 
 let previewLaunchAt = null;
+let previewLaunchForge = false;
 let previewUpdateKey = "consent";
 
 function previewInvoke(command, args) {
@@ -291,24 +294,14 @@ function previewInvoke(command, args) {
 
   if (command === "launch_preferences") {
     return Promise.resolve({
-      autoJoinHypixel: true,
       useExternalOverlay: true,
       health: "missing",
-    });
-  }
-
-  if (command === "set_auto_join_hypixel") {
-    return Promise.resolve({
-      status: "saved",
-      autoJoinHypixel: args?.enabled ?? true,
-      useExternalOverlay: true,
     });
   }
 
   if (command === "set_use_external_overlay") {
     return Promise.resolve({
       status: "saved",
-      autoJoinHypixel: true,
       useExternalOverlay: args?.enabled ?? true,
     });
   }
@@ -356,7 +349,7 @@ function previewInvoke(command, args) {
   if (command === "reset_session_end" || command === "abort_launch_session") {
     return Promise.resolve({
       status: "ok",
-      preferences: { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, health: "valid" },
     });
   }
 
@@ -367,23 +360,11 @@ function previewInvoke(command, args) {
 
   if (command === "launch_lunar" || command === "launch_forge") {
     previewLaunchAt = Date.now();
-    const autoJoin = args?.expectedAutoJoinHypixel ?? true;
-    const overlay = args?.expectedUseExternalOverlay ?? true;
-    if (!autoJoin) {
-      return Promise.resolve({
-        status: "launched",
-        outcome: {
-          autoJoinHypixel: false,
-          useExternalOverlay: overlay,
-          action: "game_launch_requested",
-        },
-      });
-    }
+    previewLaunchForge = command === "launch_forge";
     return Promise.resolve({
       status: "launched",
       outcome: {
-        autoJoinHypixel: true,
-        useExternalOverlay: overlay,
+        useExternalOverlay: args?.expectedUseExternalOverlay ?? true,
         action: "game_launch_requested",
       },
     });
@@ -413,17 +394,26 @@ function previewInvoke(command, args) {
   }
 
   if (command === "launch_progress") {
+    const q = new URLSearchParams(location.search);
     const t = previewLaunchAt ? Date.now() - previewLaunchAt : 0;
+    const prefix = previewLaunchForge ? "forge_" : "";
+    const outcome = q.get("outcome");
+    if (outcome && t >= 2300) return Promise.resolve({ stage: `${prefix}discovered`, percent: 60, outcome });
+    // A made instance's first launch: Prism downloads Minecraft first (prototype pacing).
+    const download = previewLaunchForge && q.get("first") ? 3200 : 0;
+    if (download && t >= 900 && t < 900 + download) {
+      return Promise.resolve({ stage: "forge_downloading", percent: 22 });
+    }
     const steps = [
-      [3000, "settled", 100],
-      [2300, "mixing", 85],
-      [1600, "discovered", 60],
-      [900, "attached", 35],
+      [3000 + download, "settled", 100],
+      [2300 + download, "mixing", 85],
+      [1600 + download, "discovered", 60],
+      [900 + download, "attached", 35],
     ];
     for (const [ms, s, percent] of steps) {
-      if (t >= ms) return Promise.resolve({ stage: s, percent });
+      if (t >= ms) return Promise.resolve({ stage: `${prefix}${s}`, percent });
     }
-    return Promise.resolve({ stage: "fired", percent: 10 });
+    return Promise.resolve({ stage: `${prefix}fired`, percent: 10 });
   }
 
   if (command === "lobby_state") {
@@ -482,6 +472,13 @@ let picked = null;
 let adding = null;
 /** The latest backend launch stage (progress.rs), shown as the Launch key's phase. */
 let progressStage = null;
+/**
+ * How the last launch ended when Cobblify did not come up in it: the progress poll's
+ * `outcome` ("wrong_version" | "not_loaded") and the client it was for. Kept on the home the
+ * launch returns to, until the next launch or another client is picked.
+ * @type {{ outcome: string, kind: string } | null}
+ */
+let launchOutcome = null;
 /** The dev switch's value while its save is in flight. */
 let devPending = null;
 /** open_info: the running version, and whether this is the first open after an update. */
@@ -493,6 +490,7 @@ const ui = createApp(el("app"), {
   play: (id) => startLaunch(CL[id]?.kind ?? "lunar"),
   cancel: () => sessionReset.resetToHome("launch_aborted"),
   select: (id) => {
+    if (launchOutcome && launchOutcome.kind !== CL[id]?.kind) launchOutcome = null;
     selected = id;
     storeClient(id);
     refreshUi();
@@ -517,11 +515,10 @@ const ui = createApp(el("app"), {
     refreshUi();
   },
   repairPref: () => {
-    // Any save rewrites a valid two-key document (backend salvages the valid
-    // sibling); an uncertain save must be repaired through its own key.
+    // Any save rewrites a valid document (the backend salvages every valid key, and writes
+    // back the key the 0.17 launcher needs); an uncertain save repairs with its own value.
     const st = launchController.getState();
-    if (st.prefUncertainKey === "overlay") launchController.setOverlay(st.optimisticOverlay, { repair: true });
-    else launchController.setAutoJoin(st.optimisticAutoJoin, { repair: true });
+    launchController.setOverlay(st.optimisticOverlay, { repair: true });
   },
   update: (action) => updateController.action(action),
   setOverlay: (on) => launchController.setOverlay(on),
@@ -560,7 +557,8 @@ function launchView() {
     phase: st.launchPhase,
     busy: st.launchBusy,
     stage: progressStage,
-    autoJoin: st.activeOutcome?.autoJoinHypixel ?? st.confirmedAutoJoin,
+    outcome: launchOutcome?.outcome ?? null,
+    outcomeKind: launchOutcome?.kind ?? null,
     prefError: st.prefError,
     prefHealth: st.prefHealth,
     prefUncertain: st.prefUncertain,
@@ -666,9 +664,11 @@ async function runSetupAction(action) {
 }
 
 // ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
-// Auto-join on uses the backend-owned Hypixel routes; off uses open-only Lunar
-// or Prism without --server. The dashboard opens only after an acknowledged
-// live snapshot via handleLobbyPoll — not from cosmetic progress alone.
+// Launches never join a server: Lunar opens through the bare play link, Prism
+// without --server, and the player joins Hypixel themselves. The dashboard
+// opens only after an acknowledged live snapshot via handleLobbyPoll - not
+// from cosmetic progress alone. A progress `outcome` (wrong Lunar version,
+// Cobblify didn't load) ends the launch back on home with that outcome.
 const PROGRESS_POLL_MS = 600;
 let progressTimer = null;
 let lobbyTimer = null;
@@ -681,8 +681,8 @@ let lastLaunchKind = "lunar";
 let manualRouteSubtitle = null;
 /**
  * Hold the home view (button narration) until the first acknowledged live
- * lobby snapshot. Set for every confirmed game dispatch, both auto-join
- * states; see launch-view-route.js for the decision table.
+ * lobby snapshot. Set for every confirmed game dispatch; see
+ * launch-view-route.js for the decision table.
  */
 let homeUntilLive = false;
 
@@ -708,13 +708,6 @@ const connectionShell = createConnectionShell({
         refreshUi();
         startLaunch(lastLaunchKind, { retry: true });
       },
-    },
-    // The 60s escape hatch: the launch never reached Hypixel, so the same
-    // forcing abort the home-view Cancel control uses gets the app back to
-    // a launchable home instead of leaving it stranded here.
-    waiting: {
-      label: "Back to Home",
-      onAction: () => sessionReset.resetToHome("launch_aborted"),
     },
   },
   clearRoster: () => {
@@ -777,6 +770,8 @@ const overlayExit = createOverlayExit({
 const RESET_SHELL_MODES = {
   game_session_changed: ["session_changed_resetting", "session_changed"],
   launch_aborted: ["launch_aborted_resetting", "launch_aborted"],
+  // A launch that ended with an outcome; its view is home (only the final give-up uses this).
+  launch_outcome: ["launch_aborted_resetting", "launch_aborted"],
 };
 const resetShellMode = (reason, phase) => {
   const [transitional, final] =
@@ -791,7 +786,9 @@ const sessionReset = createSessionReset({
   // forcing abort command; every backend-latched reason takes the ordinary
   // reset. Both answer in the same reply shape.
   invokeReset: (reason) =>
-    reason === "launch_aborted" ? abortLaunchSession(invoke) : resetSessionEnd(invoke),
+    reason === "launch_aborted" || reason === "launch_outcome"
+      ? abortLaunchSession(invoke)
+      : resetSessionEnd(invoke),
   stopPolling: () => {
     stopProgressPolling();
     stopLobbyPolling();
@@ -833,6 +830,11 @@ const sessionReset = createSessionReset({
     setStatus(setupErrorStatus(e));
   },
   showTransitional: (reason) => {
+    if (reason === "launch_outcome") {
+      // The launch ended with an outcome: home is where it is shown, never a shell.
+      stage.dataset.view = "home";
+      return;
+    }
     connectionShell.enterTerminal(resetShellMode(reason, "transitional"));
     // Only a session that actually reached the dashboard shows this copy
     // there. A pre-live quit or a cancelled launch never left home
@@ -864,13 +866,16 @@ function startProgressPolling() {
     try {
       const p = await launchController.pollProgress();
       if (launchController.getState().launchGen !== progressLaunchGen) return;
+      if (p?.outcome) {
+        endLaunchWithOutcome(p.outcome);
+        return;
+      }
       if (p?.stage) {
         if (p.stage !== progressStage) {
           progressStage = p.stage;
           refreshUi();
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
-          // Both auto-join states settle on the home key now.
           launchController.settleLaunchPhase();
           // Overlay-off quit / unconfirmed late-success trigger; the module
           // fires each obligation exactly once across duplicate polls.
@@ -895,10 +900,7 @@ const launchHooks = {
     }
     if (reply.status !== "launched") return;
     updateController.setGameActive(true);
-    const autoJoin = reply.outcome.autoJoinHypixel;
-    const now = Date.now();
-    connection.setAutoJoin(autoJoin);
-    connection.beginLaunchSession({ autoJoin, now });
+    connection.beginLaunchSession({ now: Date.now() });
     firstLiveSeen = false;
     launchController.bumpPollGen();
     const exitRoute = overlayExit.routeFor(reply.outcome);
@@ -920,20 +922,6 @@ const launchHooks = {
     // session_ended poll can still reset the app to a launchable home; its
     // quit-at-settled obligation is untouched.
     startLobbyPolling();
-    if (autoJoin && reply.outcome.useExternalOverlay) {
-      // The 60s escape hatch, armed only where a dashboard may appear at
-      // all. The overlay-off route must stay headless: surfacing the
-      // waiting dash there would also stop progress polling and starve
-      // its quit-at-settled obligation on a slow cold start.
-      connectionShell.scheduleWaitingDeadline(60_000, () => {
-        stopProgressPolling();
-        const { mode } = connection.stateAt(Date.now());
-        if (mode === "waiting") {
-          connectionShell.show("waiting");
-          stage.dataset.view = "dash";
-        }
-      });
-    }
     if (!view.stayHome) {
       // Open-only / unconfirmed: the manual screen IS the guidance.
       connectionShell.show(view.shellMode, { subtitle: manualRouteSubtitle });
@@ -960,8 +948,45 @@ function startLaunch(kind, { retry = false } = {}) {
   lastLaunchKind = kind;
   suppressRefresh = true;
   progressStage = null;
+  launchOutcome = null;
   const run = retry ? launchController.tryAgainLaunch(kind, launchHooks) : launchController.launch(kind, launchHooks);
   return run.finally(releaseRefreshUnlessLive);
+}
+
+/**
+ * The launch ended without Cobblify: the backend's verdict (`wrong_version` / `not_loaded`).
+ * The session is released through the forcing abort - the same path Cancel takes, which
+ * guards a game still running so the next Launch cannot start a second one over it - and
+ * home shows the outcome. Never kills the game; never quits the app (overlay off quits only
+ * for a game that came up).
+ */
+function endLaunchWithOutcome(outcome) {
+  if (sessionReset.isActive()) return;
+  launchOutcome = { outcome, kind: lastLaunchKind };
+  stopProgressPolling();
+  sessionReset.resetToHome("launch_outcome");
+}
+
+/**
+ * The lobby poll latched the game's end before the first live snapshot. If Cobblify never
+ * came up, the game died early: the progress poll owns that verdict (Weave's log may say
+ * wrong version), so ask it once before the ordinary reset.
+ */
+async function resetFromLobby(reason) {
+  const gen = launchController.getState().launchGen;
+  if (reason === "game_session_ended" && !firstLiveSeen && gen !== 0) {
+    try {
+      const p = await launchController.pollProgress();
+      if (launchController.getState().launchGen !== gen) return;
+      if (p?.outcome) {
+        endLaunchWithOutcome(p.outcome);
+        return;
+      }
+    } catch {
+      // fall through to the ordinary reset
+    }
+  }
+  return sessionReset.resetToHome(reason);
 }
 
 function enterDashboard() {
@@ -993,10 +1018,9 @@ async function handleLobbyPoll(poll) {
     connectionShell,
     launchController,
     manualRouteSubtitle,
-    homeUntilLive,
     firstLiveSeen,
     applyLobbySnapshot,
-    resetToHome: (reason) => sessionReset.resetToHome(reason),
+    resetToHome: (reason) => resetFromLobby(reason),
     stopLobbyPolling,
     setStageDash: () => {
       stage.dataset.view = "dash";
@@ -1370,13 +1394,7 @@ function afterStatus(status) {
   if (!previewing) launchController.refreshPreferences();
   if (!previewing) return;
   const ctx = bootParams.get("ctx");
-  if (ctx === "joining") {
-    stage.dataset.view = "dash";
-    connectionShell.show("joining");
-  } else if (ctx === "waiting") {
-    stage.dataset.view = "dash";
-    connectionShell.show("waiting");
-  } else if (ctx === "disconnected") {
+  if (ctx === "disconnected") {
     stage.dataset.view = "dash";
     connectionShell.enterDisconnected();
   } else if (ctx === "preexisting_game") {

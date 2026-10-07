@@ -959,6 +959,13 @@ fn parse_writer_fields(value: &Value) -> Option<WriterFields> {
     })
 }
 
+/// The writer fields `jvmPid` / `jvmStartTimeMs` exactly as the binding path validates
+/// them, without touching the process. The launch watch matches them against the game JVM
+/// it identified.
+pub fn writer_pid_and_start(value: &Value) -> Option<(u32, i64)> {
+    parse_writer_fields(value).map(|f| (f.pid, f.jvm_start_ms))
+}
+
 pub fn parse_writer_identity(value: &Value) -> Option<WriterProof> {
     verified_writer_from_snapshot(value, SystemTime::now())
 }

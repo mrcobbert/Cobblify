@@ -8,6 +8,7 @@
 
 mod forge;
 mod launch;
+mod launch_watch;
 mod lifecycle;
 mod lobby;
 mod preferences;
@@ -1206,6 +1207,8 @@ struct ProgressState {
     steady_polls: u32,
     /// D1c fires at most once per launch generation.
     early_hide_fired: bool,
+    /// Whether Cobblify loaded in this launch's game, or the launch ended without it.
+    watch: launch_watch::Watch,
 }
 
 /// Split mutexes so stalled lobby polling cannot block lifecycle admission.
@@ -1389,7 +1392,6 @@ async fn set_preference(
         uncertain
     };
     let reply = match tauri::async_runtime::spawn_blocking(move || match key {
-        lifecycle::PrefKey::AutoJoin => preferences::set_auto_join_hypixel(&home, enabled),
         lifecycle::PrefKey::Overlay => preferences::set_use_external_overlay(&home, enabled),
     })
     .await
@@ -1432,14 +1434,6 @@ async fn set_preference(
         }
     }
     Ok(reply)
-}
-
-#[tauri::command]
-async fn set_auto_join_hypixel(
-    enabled: bool,
-    session: tauri::State<'_, SessionParts>,
-) -> Result<PreferenceSaveReply, String> {
-    set_preference(lifecycle::PrefKey::AutoJoin, enabled, session).await
 }
 
 #[tauri::command]
@@ -1555,7 +1549,6 @@ fn prefs_view_or_fallback(home: &Path) -> LaunchPreferencesView {
     match preferences::launch_preferences(home) {
         Ok(view) => view,
         Err(e) => LaunchPreferencesView {
-            auto_join_hypixel: true,
             use_external_overlay: true,
             health: preferences::PreferenceHealth::Invalid,
             diagnostic: Some(format!("{e:?}")),
@@ -1633,6 +1626,7 @@ fn reset_session_end_inner(
         progress.last_mtime = None;
         progress.steady_polls = 0;
         progress.early_hide_fired = false;
+        progress.watch = launch_watch::Watch::default();
         lunar
     };
     // The destructive Lunar quit runs INSIDE the exclusive `Resetting`
@@ -1896,7 +1890,6 @@ fn session_guards_block_launch(lobby: &Mutex<LobbySession>) -> bool {
 
 async fn launch_target(
     kind: LaunchKind,
-    expected_auto_join_hypixel: bool,
     expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
 ) -> Result<LaunchReply, String> {
@@ -1949,14 +1942,9 @@ async fn launch_target(
         };
     }
 
+    let watch_home = home.clone();
     let attempt = match tauri::async_runtime::spawn_blocking(move || {
-        launch::launch_with_preflight(
-            &home,
-            kind,
-            expected_auto_join_hypixel,
-            expected_use_external_overlay,
-            generation,
-        )
+        launch::launch_with_preflight(&home, kind, expected_use_external_overlay, generation)
     })
     .await
     {
@@ -1979,6 +1967,10 @@ async fn launch_target(
                 progress.last_mtime = None;
                 progress.steady_polls = 0;
                 progress.early_hide_fired = false;
+                progress.watch = match kind {
+                    LaunchKind::Lunar => launch_watch::Watch::lunar(&watch_home),
+                    LaunchKind::Forge => launch_watch::Watch::prism(&watch_home),
+                };
                 session
                     .lobby
                     .lock()
@@ -2014,7 +2006,6 @@ async fn launch_target(
 
 #[tauri::command(rename_all = "camelCase")]
 async fn launch_lunar(
-    expected_auto_join_hypixel: bool,
     expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
     updater_service: tauri::State<'_, updater::UpdaterService>,
@@ -2025,18 +2016,11 @@ async fn launch_lunar(
             "Install the required Cobblify update before starting another game.".into(),
         ));
     }
-    launch_target(
-        LaunchKind::Lunar,
-        expected_auto_join_hypixel,
-        expected_use_external_overlay,
-        session,
-    )
-    .await
+    launch_target(LaunchKind::Lunar, expected_use_external_overlay, session).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 async fn launch_forge(
-    expected_auto_join_hypixel: bool,
     expected_use_external_overlay: bool,
     session: tauri::State<'_, SessionParts>,
     updater_service: tauri::State<'_, updater::UpdaterService>,
@@ -2047,80 +2031,115 @@ async fn launch_forge(
             "Install the required Cobblify update before starting another game.".into(),
         ));
     }
-    launch_target(
-        LaunchKind::Forge,
-        expected_auto_join_hypixel,
-        expected_use_external_overlay,
-        session,
-    )
-    .await
+    launch_target(LaunchKind::Forge, expected_use_external_overlay, session).await
 }
 
-/// Cosmetic, fail-soft stepped progress for the launch button. Stats the weave
-/// log, ignores it unless its mtime is at or after this session's baseline
-/// (defeating the stale hard-linked latest.log), reads it, and maps the highest
-/// milestone line to a bar stage. Any missing/unreadable log or unset baseline
-/// reports the "fired" baseline - never an error. Only milestone substrings are
-/// inspected; full log contents are never returned or logged.
+/// Stepped progress for the launch key, and the launch's outcome. Stats the loader log
+/// (Weave's for Lunar, the game's FML log for Prism), ignores it unless its mtime is at or
+/// after this session's baseline (defeating the stale hard-linked latest.log), reads it, and
+/// maps the highest milestone line to a bar stage. Any missing/unreadable log or unset
+/// baseline reports the "fired" baseline - never an error. Only milestone and verdict
+/// substrings are inspected; full log contents are never returned or logged.
+///
+/// The outcome (`wrong_version` / `not_loaded`, see `progress::LoadWatch`) rides on the same
+/// reply; the stages keep their meaning for the success path (settled still drives the
+/// overlay-off quit).
 fn compute_launch_progress(progress: &mut ProgressState) -> progress::Progress {
-    let forge_session = progress.forge_session;
-    let waiting = || {
-        if forge_session {
-            progress::progress_for_forge(progress::Milestone::Fired, false)
-        } else {
-            progress::progress_for(progress::Milestone::Fired, false)
-        }
-    };
-
-    let Some(baseline) = progress.baseline else {
-        return waiting();
-    };
     let Ok(home) = home() else {
-        return waiting();
+        return fired_progress(progress.forge_session, false);
     };
+    compute_launch_progress_in(progress, &home, &mut launch_watch::SystemEnv)
+}
+
+fn fired_progress(forge_session: bool, downloading: bool) -> progress::Progress {
+    if forge_session && downloading {
+        progress::progress_forge_downloading()
+    } else if forge_session {
+        progress::progress_for_forge(progress::Milestone::Fired, false)
+    } else {
+        progress::progress_for(progress::Milestone::Fired, false)
+    }
+}
+
+fn compute_launch_progress_in(
+    progress: &mut ProgressState,
+    home: &Path,
+    env: &mut dyn launch_watch::Env,
+) -> progress::Progress {
+    let forge_session = progress.forge_session;
+    let Some(baseline) = progress.baseline else {
+        return fired_progress(forge_session, false);
+    };
+    let now = env.now();
+    // The game JVM first, then the log: lines the game wrote before an exit are on disk
+    // when they are read below.
+    let jvm = progress.watch.observe_game(env, baseline, now);
     let path = if forge_session {
         // The game folder by Prism's rule, which is where the game writes its logs.
-        let Some(game_dir) = forge::saved_game_dir(&home) else {
-            return waiting();
-        };
-        game_dir.join("logs/fml-client-latest.log")
+        forge::saved_game_dir(home).map(|game_dir| game_dir.join("logs/fml-client-latest.log"))
     } else {
-        home.join(".weave/logs/latest.log")
+        Some(home.join(".weave/logs/latest.log"))
     };
     // Re-stat by path every poll: recreation/truncation mid-session is fine.
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let fresh = matches!(mtime, Some(m) if m >= baseline);
-    if !fresh {
-        progress.last_mtime = None;
-        progress.steady_polls = 0;
-        return waiting();
-    }
-    let log = std::fs::read_to_string(&path).unwrap_or_default();
-    let milestone = if forge_session {
-        progress::milestone_from_forge_log(&log)
-    } else {
-        progress::milestone_from_log(&log)
+    let mtime = path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    let fresh_mtime = mtime.filter(|m| *m >= baseline);
+    let log = match (&path, fresh_mtime) {
+        (Some(p), Some(_)) => Some(std::fs::read_to_string(p).unwrap_or_default()),
+        _ => None,
     };
-
-    // "Settled" = mixins began AND the log mtime held steady two polls running,
-    // i.e. Cobblify's log activity stopped. Honest, not a timer.
-    let steady = match (progress.last_mtime, mtime) {
-        (Some(prev), Some(now)) if prev == now => progress.steady_polls + 1,
-        _ => 0,
-    };
-    progress.steady_polls = steady;
-    progress.last_mtime = mtime;
-    let settled = milestone == progress::Milestone::Mixing
-        && if forge_session {
-            progress::forge_loaded(&log)
-        } else {
-            steady >= 2
-        };
-    if forge_session {
-        progress::progress_for_forge(milestone, settled)
-    } else {
-        progress::progress_for(milestone, settled)
+    let loaded = progress.watch.loaded(env, home, baseline, now);
+    let outcome = progress.watch.verdict(
+        forge_session,
+        log.as_deref()
+            .zip(fresh_mtime)
+            .map(|(text, modified)| progress::LoaderLog { text, modified }),
+        jvm,
+        loaded,
+        now,
+    );
+    // The made instance's game has started loading: its first launch is under way, and
+    // "Downloading Minecraft" is over for good.
+    if forge_session && log.is_some() && progress.watch.first_launch_pending {
+        progress.watch.first_launch_pending = false;
+        let _ = forge::clear_first_launch_pending(home);
     }
+    let mut bar = match log {
+        None => {
+            progress.last_mtime = None;
+            progress.steady_polls = 0;
+            fired_progress(forge_session, progress.watch.first_launch_pending)
+        }
+        Some(log) => {
+            let milestone = if forge_session {
+                progress::milestone_from_forge_log(&log)
+            } else {
+                progress::milestone_from_log(&log)
+            };
+            // "Settled" = mixins began AND the log mtime held steady two polls running,
+            // i.e. Cobblify's log activity stopped. Honest, not a timer.
+            let steady = match (progress.last_mtime, mtime) {
+                (Some(prev), Some(now)) if prev == now => progress.steady_polls + 1,
+                _ => 0,
+            };
+            progress.steady_polls = steady;
+            progress.last_mtime = mtime;
+            let settled = milestone == progress::Milestone::Mixing
+                && if forge_session {
+                    progress::forge_loaded(&log)
+                } else {
+                    steady >= 2
+                };
+            if forge_session {
+                progress::progress_for_forge(milestone, settled)
+            } else {
+                progress::progress_for(milestone, settled)
+            }
+        }
+    };
+    bar.outcome = outcome;
+    bar
 }
 
 #[tauri::command]
@@ -2495,13 +2514,13 @@ mod tests {
         assert!(parts.coordinator.lock().unwrap().holds_setup(gen), "the setup keeps it");
     }
 
-    /// Regression lock: the forbidden parameter shipped once (Aug 5) and
-    /// could silently move a friend off 1.8.9.
+    /// Regression lock: `forceRecommendedVersion` shipped once (Aug 5) and could silently
+    /// move a friend off 1.8.9; and 0.18 never joins a server, so the only Lunar route is the
+    /// bare play link with no parameters at all.
     #[test]
-    fn play_deep_link_pins_hypixel_and_bans_force_recommended() {
-        assert!(launch::PLAY_HYPIXEL.starts_with("lunarclient://play?"));
-        assert!(launch::PLAY_HYPIXEL.contains("serverAddress=play.hypixel.net"));
-        assert!(!launch::PLAY_HYPIXEL.contains("forceRecommendedVersion"));
+    fn play_deep_link_is_bare_and_bans_force_recommended() {
+        assert_eq!(launch::PLAY_BARE, "lunarclient://play");
+        assert!(!launch::PLAY_BARE.contains("forceRecommendedVersion"));
     }
 
     fn t(kind: &'static str, state: &'static str) -> TargetStatus {
@@ -2692,6 +2711,164 @@ mod tests {
 
     fn temp_home() -> PathBuf {
         tempfile::tempdir().unwrap().into_path()
+    }
+
+    // ── launch progress: the outcome, the first download, Discovered 0 ─────────
+
+    mod progress_reply {
+        use super::*;
+        use crate::launch_watch::tests::{write_lobby, FakeEnv};
+        use std::time::Duration;
+
+        fn weave_log(home: &Path, text: &str) {
+            let dir = home.join(".weave/logs");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("latest.log"), text).unwrap();
+        }
+
+        fn lunar_state(home: &Path, baseline: SystemTime) -> ProgressState {
+            ProgressState {
+                baseline: Some(baseline),
+                watch: launch_watch::Watch::lunar(home),
+                ..ProgressState::default()
+            }
+        }
+
+        /// A saved, made Prism instance whose first launch is pending; returns its game dir.
+        fn made_prism(home: &Path) -> PathBuf {
+            let inst = home.join("prism/instances/Cobblify 1.8.9");
+            std::fs::create_dir_all(&inst).unwrap();
+            std::fs::write(inst.join(prism::INSTANCE_CFG), "[General]\nConfigVersion=1.3\n").unwrap();
+            std::fs::write(inst.join(prism::PACK_FILE), "{}").unwrap();
+            let game = inst.join("minecraft");
+            let target = forge::SavedTarget {
+                made: true,
+                first_launch_pending: true,
+                ..forge::SavedTarget::prism(&game)
+            };
+            forge::save_target(home, &target).unwrap();
+            game
+        }
+
+        #[test]
+        fn a_made_instances_first_launch_reports_downloading_until_its_fml_log_appears() {
+            let home = tempfile::tempdir().unwrap();
+            let game = made_prism(home.path());
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = ProgressState {
+                baseline: Some(baseline),
+                forge_session: true,
+                watch: launch_watch::Watch::prism(home.path()),
+                ..ProgressState::default()
+            };
+            let mut env = FakeEnv::new(SystemTime::now());
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!((p.stage, p.percent), ("forge_downloading", 22));
+            assert!(p.outcome.is_none());
+            env.advance(600);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.stage, "forge_downloading", "downloads take as long as they take");
+            assert!(p.outcome.is_none(), "no verdict while nothing has started");
+            assert!(forge::load_target(home.path()).unwrap().first_launch_pending);
+
+            std::fs::create_dir_all(game.join("logs")).unwrap();
+            std::fs::write(
+                game.join("logs/fml-client-latest.log"),
+                "Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n",
+            )
+            .unwrap();
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.stage, "forge_attached");
+            assert!(
+                !forge::load_target(home.path()).unwrap().first_launch_pending,
+                "cleared once the game started loading"
+            );
+            // A later launch of the same instance is an ordinary one.
+            let mut next = ProgressState {
+                baseline: Some(SystemTime::now() + Duration::from_secs(3600)),
+                forge_session: true,
+                watch: launch_watch::Watch::prism(home.path()),
+                ..ProgressState::default()
+            };
+            let p = compute_launch_progress_in(&mut next, home.path(), &mut env);
+            assert_eq!(p.stage, "forge_fired");
+        }
+
+        #[test]
+        fn a_lunar_game_on_another_version_ends_with_wrong_version() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            env.spawn(77, baseline + Duration::from_secs(1));
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert!(p.outcome.is_none());
+            weave_log(
+                home.path(),
+                "[12:00:00] [main/INFO]: Attached Weave\n\
+java.lang.IllegalStateException: Could not find game version\n",
+            );
+            env.kill(77);
+            env.advance(1);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::WrongVersion));
+            let wire = serde_json::to_value(&p).unwrap();
+            assert_eq!(wire["outcome"], "wrong_version");
+            // Sticky across polls.
+            env.advance(1);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::WrongVersion));
+        }
+
+        #[test]
+        fn a_game_that_wrote_lobby_json_is_loaded_and_never_reported_otherwise() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            weave_log(
+                home.path(),
+                "Attached Weave\nDiscovered 1 mod files\nMixing GuiIngameMixin from mixins.bedwarsqol.json\n",
+            );
+            compute_launch_progress_in(&mut st, home.path(), &mut env);
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert!(p.outcome.is_none());
+            // The quiet log, the ceiling and even the game's exit change nothing now.
+            env.advance(600);
+            env.kill(77);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert!(p.outcome.is_none());
+        }
+
+        #[test]
+        fn discovered_zero_is_not_shown_as_loading_mods_and_ends_as_not_loaded() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            env.spawn(77, baseline + Duration::from_secs(1));
+            weave_log(home.path(), "Attached Weave\nDiscovered 0 mod files\n");
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.stage, "attached");
+            assert!(p.outcome.is_none());
+            env.advance(61);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::NotLoaded));
+            assert_eq!(serde_json::to_value(&p).unwrap()["outcome"], "not_loaded");
+        }
+
+        #[test]
+        fn no_launch_reports_fired_and_no_outcome() {
+            let home = tempfile::tempdir().unwrap();
+            let mut st = ProgressState::default();
+            let mut env = FakeEnv::new(SystemTime::now());
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.stage, "fired");
+            assert!(p.outcome.is_none());
+        }
     }
 
     fn active_with_latch(parts: &SessionParts, generation: u64) {
@@ -3051,7 +3228,6 @@ mod tests {
         active_with_latch(&parts, 1);
         match reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}) {
             ResetReply::Ok { preferences } => {
-                assert_eq!(preferences.auto_join_hypixel, true);
                 assert_eq!(preferences.use_external_overlay, true);
                 assert_eq!(preferences.health, preferences::PreferenceHealth::Invalid);
             }
@@ -3559,7 +3735,6 @@ fn main() {
             open_setup_location,
             launch_preferences,
             update_preferences,
-            set_auto_join_hypixel,
             set_use_external_overlay,
             set_auto_update,
             set_update_channel,

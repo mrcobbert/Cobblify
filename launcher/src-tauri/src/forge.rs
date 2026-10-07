@@ -865,6 +865,19 @@ pub fn save_adopted(home: &Path, c: &Candidate) -> Result<(), String> {
     save_target(home, &target)
 }
 
+/// The saved target's first launch has started (Prism downloaded Minecraft and Forge and the
+/// game is loading): "Downloading Minecraft" is over for good. A no-op when nothing is pending.
+pub fn clear_first_launch_pending(home: &Path) -> Result<(), String> {
+    let mut saved = read_targets(home);
+    match saved.forge.as_mut() {
+        Some(target) if target.first_launch_pending => {
+            target.first_launch_pending = false;
+            write_targets(home, &saved)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Records (or clears) the made instance whose setup is still in progress.
 pub fn set_made_pending(home: &Path, instance: Option<&Path>) -> Result<(), String> {
     let mut saved = read_targets(home);
@@ -884,6 +897,11 @@ pub fn is_made(home: &Path, instance_root: &Path) -> bool {
         t.made && instance_root_of_saved(&t).as_deref() == Some(instance_root)
     });
     pending || target
+}
+
+/// The saved target's Prism instance folder: where its game's working directory lives.
+pub fn saved_instance_root(home: &Path) -> Option<PathBuf> {
+    load_target(home).as_ref().and_then(instance_root_of_saved)
 }
 
 fn instance_root_of_saved(t: &SavedTarget) -> Option<PathBuf> {

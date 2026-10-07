@@ -1,22 +1,12 @@
 /** Interstitial copy for all connection shell modes. */
 
-/** @typedef {'manual' | 'joining' | 'waiting' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed' | 'launch_aborted' | 'session_ended_resetting' | 'session_changed_resetting' | 'launch_aborted_resetting'} ConnectionMode */
+/** @typedef {'manual' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed' | 'launch_aborted' | 'session_ended_resetting' | 'session_changed_resetting' | 'launch_aborted_resetting'} ConnectionMode */
 
 /** @type {Record<ConnectionMode, { title: string, subtitle: string, loading: boolean }>} */
 export const CONNECTION_COPY = {
   manual: {
     title: "Ready",
     subtitle: "Launch to open Lunar or Prism.",
-    loading: false,
-  },
-  joining: {
-    title: "Joining Hypixel",
-    subtitle: "Connecting to network",
-    loading: true,
-  },
-  waiting: {
-    title: "Still Waiting for Hypixel",
-    subtitle: "Join Hypixel manually in Minecraft, or close and relaunch Cobblify.",
     loading: false,
   },
   connected: {
@@ -75,13 +65,13 @@ export const CONNECTION_COPY = {
  * @param {ConnectionMode} mode
  */
 export function connectionCopy(mode) {
-  return CONNECTION_COPY[mode] ?? CONNECTION_COPY.joining;
+  return CONNECTION_COPY[mode] ?? CONNECTION_COPY.manual;
 }
 
 const FORBIDDEN_PRE_LIVE = /Hypixel|joining|connected/i;
 
 /**
- * Route-specific manual subtitle after auto-join-off launch dispatch.
+ * Route-specific manual subtitle after a launch dispatch (launches never join a server).
  * `launch_unconfirmed` copy is deliberately CONDITIONAL: the launch may be
  * in flight, so the user is never unconditionally told to press Play.
  * @param {'launcher_opened' | 'game_launch_requested' | 'launch_unconfirmed'} action

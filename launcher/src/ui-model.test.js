@@ -21,14 +21,62 @@ const prismChoose = {
 };
 
 test("launch phases follow the backend's stages", () => {
-  assert.deepEqual(launchHero("lunar", "fired", true), { kind: "prog", label: "Opening Lunar", pct: 10 });
-  assert.deepEqual(launchHero("prism", "forge_fired", true), { kind: "prog", label: "Opening Prism", pct: 10 });
-  assert.deepEqual(launchHero("lunar", "attached", true).label, "Starting Minecraft");
-  assert.deepEqual(launchHero("lunar", "discovered", true).label, "Loading mods");
-  assert.deepEqual(launchHero("lunar", "mixing", true), { kind: "prog", label: "Adding Cobblify", pct: 85 });
-  assert.deepEqual(launchHero("lunar", "settled", false), { kind: "wait", label: "Join Hypixel" });
-  assert.deepEqual(launchHero("prism", "forge_settled", true), { kind: "wait", label: "Joining Hypixel" });
-  assert.deepEqual(launchHero("lunar", null, true).label, "Opening Lunar");
+  assert.deepEqual(launchHero("lunar", "fired"), { kind: "prog", label: "Opening Lunar", pct: 10 });
+  assert.deepEqual(launchHero("prism", "forge_fired"), { kind: "prog", label: "Opening Prism", pct: 10 });
+  assert.deepEqual(launchHero("lunar", "attached").label, "Starting Minecraft");
+  assert.deepEqual(launchHero("lunar", "discovered").label, "Loading mods");
+  assert.deepEqual(launchHero("lunar", "mixing"), { kind: "prog", label: "Adding Cobblify", pct: 85 });
+  assert.deepEqual(launchHero("lunar", "settled"), { kind: "wait", label: "Join Hypixel" });
+  assert.deepEqual(launchHero("lunar", null).label, "Opening Lunar");
+});
+
+test("the game being up always reads Join Hypixel, never Joining: there is no auto-join", () => {
+  assert.deepEqual(launchHero("prism", "forge_settled"), { kind: "wait", label: "Join Hypixel" });
+  for (const stage of ["settled", "forge_settled"]) {
+    assert.doesNotMatch(launchHero("lunar", stage).label, /Joining/);
+  }
+});
+
+test("a made instance's first launch shows Downloading Minecraft at 22%", () => {
+  assert.deepEqual(launchHero("prism", "forge_downloading"), { kind: "prog", label: "Downloading Minecraft", pct: 22 });
+  const m = homeModel({
+    status: bothReady,
+    selected: "prism",
+    launch: { kind: "forge", phase: "loading", stage: "forge_downloading", showCancel: true },
+  });
+  assert.deepEqual(m.hero, { kind: "prog", label: "Downloading Minecraft", pct: 22 });
+  assert.equal(m.said, "Downloading Minecraft");
+  assert.deepEqual(m.keys, [{ label: "Cancel", act: "cancel" }]);
+});
+
+test("wrong Lunar version: Launch stays, with the Set Lunar to 1.8.9 under-row", () => {
+  const m = homeModel({ status: bothReady, selected: "lunar", launch: { outcome: "wrong_version", outcomeKind: "lunar" } });
+  assert.equal(m.launching, false);
+  assert.deepEqual(m.hero, { kind: "play" });
+  assert.deepEqual(m.under, { kind: "setLunar" });
+  assert.equal(m.said, "Lunar isn't set to 1.8.9.");
+});
+
+test("Cobblify didn't load: Try again, with the not-loaded under-row", () => {
+  const m = homeModel({ status: bothReady, selected: "prism", launch: { outcome: "not_loaded", outcomeKind: "forge" } });
+  assert.deepEqual(m.hero, { kind: "act", label: "Try again", act: "play" });
+  assert.deepEqual(m.under, { kind: "notLoaded" });
+  assert.equal(m.said, "Cobblify didn't load. Minecraft started without Cobblify.");
+});
+
+test("an outcome stays with the client that launched, and gives way to a new launch", () => {
+  const other = homeModel({ status: bothReady, selected: "prism", launch: { outcome: "wrong_version", outcomeKind: "lunar" } });
+  assert.deepEqual(other.hero, { kind: "play" });
+  assert.equal(other.under, null);
+  const relaunch = homeModel({
+    status: bothReady,
+    selected: "lunar",
+    launch: { kind: "lunar", phase: "loading", busy: true, outcome: "not_loaded", outcomeKind: "lunar" },
+  });
+  assert.equal(relaunch.hero.label, "Opening Lunar");
+  assert.equal(relaunch.under, null);
+  assert.equal(homeModel({ status: lunarReady }).under, null);
+  assert.equal(homeModel({ status: nothing }).under, null);
 });
 
 test("the remembered client is kept while it is ready", () => {
@@ -87,7 +135,7 @@ test("launching: the key is the progress, Cancel while it may be cancelled", () 
   const m = homeModel({
     status: bothReady,
     selected: "lunar",
-    launch: { kind: "forge", phase: "loading", stage: "forge_mixing", autoJoin: true, showCancel: true },
+    launch: { kind: "forge", phase: "loading", stage: "forge_mixing", showCancel: true },
   });
   assert.equal(m.sel, "prism");
   assert.equal(m.launching, true);

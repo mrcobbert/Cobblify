@@ -1,10 +1,11 @@
 /**
  * Pure launch view routing: where the app goes right after a `launched`
- * reply, for every (action x auto-join x overlay) combination.
+ * reply, for every (action x overlay) combination.
  *
  * The rule is one line: a confirmed game dispatch NEVER leaves the home
- * view. Both auto-join states narrate progress in the launch button and the
- * dashboard opens only on the first acknowledged live lobby snapshot. The
+ * view. The launch key narrates progress and the dashboard opens only on the
+ * first acknowledged live lobby snapshot (launches never join a server; the
+ * player joins Hypixel themselves). The
  * two degraded outcomes keep their manual recovery screen, because that
  * screen IS the guidance ("press Play in Lunar").
  *
@@ -14,7 +15,7 @@
  * An unknown future action gets the safest route - stay home, no claim the
  * caller cannot back up; a live snapshot still opens the dashboard.
  *
- * @param {{ action: string, autoJoinHypixel?: boolean, useExternalOverlay?: boolean }} outcome
+ * @param {{ action: string, useExternalOverlay?: boolean }} outcome
  * @returns {{ stayHome: boolean, shellMode: 'manual' | null, subtitleKind: string | null }}
  */
 export function launchViewRoute(outcome) {

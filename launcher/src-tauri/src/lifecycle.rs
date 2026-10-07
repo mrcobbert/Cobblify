@@ -2,9 +2,10 @@
 
 use std::sync::Mutex;
 
+/// The preference a save is for. 0.18 saves only the External Overlay choice (0.17's
+/// auto-join key is preserved in the file, never set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefKey {
-    AutoJoin,
     Overlay,
 }
 
@@ -275,25 +276,16 @@ mod tests {
     #[test]
     fn uncertain_blocks_mismatched_save() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(PrefKey::AutoJoin, true);
+        c.mark_uncertain(PrefKey::Overlay, true);
         assert_eq!(c.try_save(), Err(LifecycleError::PreferenceUncertain));
-        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, false).is_err());
-        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, true).is_ok());
-    }
-
-    #[test]
-    fn uncertain_blocks_cross_key_repair() {
-        let mut c = Coordinator::default();
-        c.mark_uncertain(PrefKey::Overlay, false);
-        // Same desired value, wrong key: rejected exactly like a value mismatch.
-        assert!(c.try_save_while_uncertain(PrefKey::AutoJoin, false).is_err());
-        assert!(c.try_save_while_uncertain(PrefKey::Overlay, false).is_ok());
+        assert!(c.try_save_while_uncertain(PrefKey::Overlay, false).is_err());
+        assert!(c.try_save_while_uncertain(PrefKey::Overlay, true).is_ok());
     }
 
     #[test]
     fn uncertain_blocks_launch_until_cleared() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(PrefKey::AutoJoin, false);
+        c.mark_uncertain(PrefKey::Overlay, false);
         assert_eq!(c.try_launch(), Err(LifecycleError::PreferenceUncertain));
         c.clear_uncertain_on_success();
         assert!(c.try_launch().is_ok());
@@ -312,7 +304,7 @@ mod tests {
     #[test]
     fn uncertain_launch_maps_to_rejection_not_queue() {
         let mut c = Coordinator::default();
-        c.mark_uncertain(PrefKey::AutoJoin, true);
+        c.mark_uncertain(PrefKey::Overlay, true);
         assert_eq!(c.try_launch(), Err(LifecycleError::PreferenceUncertain));
     }
 

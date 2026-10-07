@@ -14,25 +14,16 @@ import { connectionCopy } from "./connection-view.js";
  *   stopProgress: () => void,
  *   showDash: () => void,
  *   hideDash: () => void,
- *   clock?: () => number,
- *   schedule?: (fn: () => void, ms: number) => number,
- *   cancel?: (id: number) => void,
  * }} deps
  */
 export function createConnectionShell(deps) {
-  const clock = deps.clock ?? (() => Date.now());
-  const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
-  const cancel = deps.cancel ?? clearTimeout;
-
   let visible = false;
-  let mode = "joining";
+  let mode = "manual";
   let announcedConnected = false;
-  /** @type {number | null} */
-  let timerId = null;
   let subtitleOverride = null;
 
   // One action slot, configured per mode: `preexisting_game` retries the
-  // launch, `waiting` escapes back home. A mode with no entry has no button.
+  // launch. A mode with no entry has no button.
   const actions = deps.actions ?? {};
   const actionFor = (m) => actions[m] ?? null;
 
@@ -99,10 +90,6 @@ export function createConnectionShell(deps) {
     deps.clearRoster();
     deps.hideDash();
     deps.stopProgress();
-    if (timerId != null) {
-      cancel(timerId);
-      timerId = null;
-    }
     show(modeNext);
     if (deps.actionEl) {
       // A terminal mode only offers its action when the caller asks for it;
@@ -112,24 +99,12 @@ export function createConnectionShell(deps) {
   }
 
   function reset() {
-    mode = "joining";
+    mode = "manual";
     visible = false;
     announcedConnected = false;
     subtitleOverride = null;
-    if (timerId != null) {
-      cancel(timerId);
-      timerId = null;
-    }
     setVisible(false);
     if (deps.actionEl) deps.actionEl.hidden = true;
-  }
-
-  function scheduleWaitingDeadline(ms, onWaiting) {
-    if (timerId != null) cancel(timerId);
-    timerId = schedule(() => {
-      timerId = null;
-      onWaiting();
-    }, ms);
   }
 
   return {
@@ -139,7 +114,6 @@ export function createConnectionShell(deps) {
     enterConnected,
     enterDisconnected,
     enterTerminal,
-    scheduleWaitingDeadline,
     getVisible: () => visible,
     getMode: () => mode,
   };

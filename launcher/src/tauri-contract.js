@@ -4,7 +4,6 @@
 
 export const CMD = {
   launchPreferences: "launch_preferences",
-  setAutoJoinHypixel: "set_auto_join_hypixel",
   setUseExternalOverlay: "set_use_external_overlay",
   launchLunar: "launch_lunar",
   launchForge: "launch_forge",
@@ -83,10 +82,6 @@ export function launchPreferences(invoke) {
   return invoke(CMD.launchPreferences);
 }
 
-export function setAutoJoinHypixel(invoke, enabled) {
-  return invoke(CMD.setAutoJoinHypixel, { enabled });
-}
-
 export function setUseExternalOverlay(invoke, enabled) {
   return invoke(CMD.setUseExternalOverlay, { enabled });
 }
@@ -118,12 +113,16 @@ export function resumeUpdate(invoke) { return invoke(CMD.resumeUpdate); }
 export function installUpdate(invoke) { return invoke(CMD.installUpdate); }
 export function deferUpdate(invoke) { return invoke(CMD.deferUpdate); }
 
-export function launchLunar(invoke, expectedAutoJoinHypixel, expectedUseExternalOverlay) {
-  return invoke(CMD.launchLunar, { expectedAutoJoinHypixel, expectedUseExternalOverlay });
+/**
+ * Launches never join a server: Lunar opens through the bare play link, Prism with
+ * `--launch <id>` only. The player joins Hypixel themselves.
+ */
+export function launchLunar(invoke, expectedUseExternalOverlay) {
+  return invoke(CMD.launchLunar, { expectedUseExternalOverlay });
 }
 
-export function launchForge(invoke, expectedAutoJoinHypixel, expectedUseExternalOverlay) {
-  return invoke(CMD.launchForge, { expectedAutoJoinHypixel, expectedUseExternalOverlay });
+export function launchForge(invoke, expectedUseExternalOverlay) {
+  return invoke(CMD.launchForge, { expectedUseExternalOverlay });
 }
 
 export function resetSessionEnd(invoke) {
@@ -156,16 +155,25 @@ export function acknowledgeLobbySnapshot(invoke, token, generation, snapshot) {
   return invoke(CMD.acknowledgeLobbySnapshot, { token, generation, snapshot });
 }
 
+/** @returns {Promise<LaunchProgress>} */
 export function launchProgress(invoke) {
   return invoke(CMD.launchProgress);
 }
 
-/** @typedef {{ autoJoinHypixel: boolean, useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
+/** @typedef {{ useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
 /** @typedef {{ autoUpdateEnabled: boolean, autoUpdatePrompted: boolean, health: string, diagnostic?: string }} UpdatePreferencesView */
 /** @typedef {'idle'|'checking'|'current'|'available'|'downloading'|'paused'|'ready'|'installing'|'error'|'critical_required'} UpdateState */
-/** @typedef {{ status: 'saved', autoJoinHypixel: boolean, useExternalOverlay: boolean } | { status: 'reconciled', autoJoinHypixel: boolean, useExternalOverlay: boolean } | { status: 'not_saved', diagnostic: string } | { status: 'indeterminate' }} PreferenceSaveReply */
+/** @typedef {{ status: 'saved', useExternalOverlay: boolean } | { status: 'reconciled', useExternalOverlay: boolean } | { status: 'not_saved', diagnostic: string } | { status: 'indeterminate' }} PreferenceSaveReply */
 /** @typedef {'stale_preference' | 'launch_cooldown' | string} LaunchRejectionCode */
-/** @typedef {{ status: 'launched', outcome: { autoJoinHypixel: boolean, useExternalOverlay: boolean, action: 'game_launch_requested' | 'launcher_opened' | 'launch_unconfirmed' }, generation: number } | { status: 'preexisting_game', preferences: LaunchPreferencesView } | { status: 'rejected', code: LaunchRejectionCode, preferences?: LaunchPreferencesView, message?: string }} LaunchReply */
+/** @typedef {{ status: 'launched', outcome: { useExternalOverlay: boolean, action: 'game_launch_requested' | 'launcher_opened' | 'launch_unconfirmed' }, generation: number } | { status: 'preexisting_game', preferences: LaunchPreferencesView } | { status: 'rejected', code: LaunchRejectionCode, preferences?: LaunchPreferencesView, message?: string }} LaunchReply */
+/**
+ * `launch_progress`. Stages: fired / attached / discovered / mixing / settled (Lunar),
+ * forge_fired / forge_downloading (a made instance's first launch) / forge_attached /
+ * forge_discovered / forge_mixing / forge_settled (Prism). `outcome`, once present, ends the
+ * launch: `wrong_version` (Lunar is not on 1.8.9, from Weave's log) or `not_loaded`
+ * (Minecraft started, or died, without Cobblify).
+ * @typedef {{ stage: string, percent: number, outcome?: 'wrong_version' | 'not_loaded' }} LaunchProgress
+ */
 /** @typedef {{ kind: 'snapshot', snapshot: object, token: number } | { kind: 'unavailable', reason?: string } | { kind: 'session_ended', reason: string }} LobbyPoll */
 /** Reply of BOTH `reset_session_end` and `abort_launch_session`. */
 /** @typedef {{ status: 'ok', preferences: LaunchPreferencesView } | { status: 'already_reset', preferences: LaunchPreferencesView } | { status: 'not_terminal' } | { status: 'busy' }} ResetReply */

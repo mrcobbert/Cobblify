@@ -9,7 +9,7 @@ import {
   quitApp,
   rehideAfterConfirmation,
   resetSessionEnd,
-  setAutoJoinHypixel,
+  launchProgress,
   setAutoUpdate,
   setUpdateChannel,
   setUseExternalOverlay,
@@ -31,38 +31,37 @@ test("invoke uses exact wire keys", async () => {
   const calls = [];
   const invoke = (cmd, args) => {
     calls.push({ cmd, args });
-    return Promise.resolve({ status: "saved", autoJoinHypixel: false });
+    return Promise.resolve({ status: "saved", useExternalOverlay: false });
   };
-  await setAutoJoinHypixel(invoke, false);
   await setUseExternalOverlay(invoke, false);
-  await launchLunar(invoke, true, false);
-  await launchForge(invoke, false, true);
+  await launchLunar(invoke, false);
+  await launchForge(invoke, true);
   await resetSessionEnd(invoke);
   await rehideAfterConfirmation(invoke, false);
   await quitApp(invoke);
   await abortLaunchSession(invoke);
-  assert.equal(calls[0].cmd, CMD.setAutoJoinHypixel);
+  await launchProgress(invoke);
+  assert.equal(calls[0].cmd, CMD.setUseExternalOverlay);
   assert.deepEqual(calls[0].args, { enabled: false });
-  assert.equal(calls[1].cmd, CMD.setUseExternalOverlay);
-  assert.deepEqual(calls[1].args, { enabled: false });
-  assert.equal(calls[2].cmd, CMD.launchLunar);
-  assert.deepEqual(calls[2].args, {
-    expectedAutoJoinHypixel: true,
-    expectedUseExternalOverlay: false,
-  });
-  assert.equal(calls[3].cmd, CMD.launchForge);
-  assert.deepEqual(calls[3].args, {
-    expectedAutoJoinHypixel: false,
-    expectedUseExternalOverlay: true,
-  });
-  assert.equal(calls[4].cmd, CMD.resetSessionEnd);
-  assert.equal(calls[4].args, undefined);
-  assert.equal(calls[5].cmd, CMD.rehideAfterConfirmation);
-  assert.deepEqual(calls[5].args, { useExternalOverlay: false });
-  assert.equal(calls[6].cmd, CMD.quitApp);
+  assert.equal(calls[1].cmd, CMD.launchLunar);
+  assert.deepEqual(calls[1].args, { expectedUseExternalOverlay: false });
+  assert.equal(calls[2].cmd, CMD.launchForge);
+  assert.deepEqual(calls[2].args, { expectedUseExternalOverlay: true });
+  assert.equal(calls[3].cmd, CMD.resetSessionEnd);
+  assert.equal(calls[3].args, undefined);
+  assert.equal(calls[4].cmd, CMD.rehideAfterConfirmation);
+  assert.deepEqual(calls[4].args, { useExternalOverlay: false });
+  assert.equal(calls[5].cmd, CMD.quitApp);
+  assert.equal(calls[5].args, undefined);
+  assert.equal(calls[6].cmd, CMD.abortLaunchSession);
   assert.equal(calls[6].args, undefined);
-  assert.equal(calls[7].cmd, CMD.abortLaunchSession);
+  assert.equal(calls[7].cmd, "launch_progress");
   assert.equal(calls[7].args, undefined);
+});
+
+test("no auto-join anywhere on the wire: no setter, no launch argument", () => {
+  assert.equal(Object.values(CMD).some((c) => /auto.join/.test(c)), false);
+  assert.equal(Object.keys(CMD).some((k) => /auto.?join/i.test(k)), false);
 });
 
 test("updater commands keep native names and arguments behind the adapter", async () => {
@@ -99,14 +98,14 @@ test("abort_launch_session is argument-free and answers in the reset shape", asy
     calls.push({ cmd, args });
     return Promise.resolve({
       status: "ok",
-      preferences: { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, health: "valid" },
     });
   };
   const reply = await abortLaunchSession(invoke);
   assert.deepEqual(calls, [{ cmd: "abort_launch_session", args: undefined }]);
   // Identical to ResetReply: the orchestrator treats both commands alike.
   assert.equal(reply.status, "ok");
-  assert.equal(typeof reply.preferences.autoJoinHypixel, "boolean");
+  assert.equal(typeof reply.preferences.useExternalOverlay, "boolean");
   for (const status of ["ok", "already_reset", "not_terminal", "busy"]) {
     assert.match(status, /^[a-z0-9_]+$/);
   }
@@ -127,10 +126,10 @@ test("launch_cooldown rides the existing rejected launch shape", () => {
 test("reply tags use snake_case status values", async () => {
   const tags = [
     { status: "not_saved", diagnostic: "disk full" },
-    { status: "preexisting_game", preferences: { autoJoinHypixel: true, health: "valid" } },
+    { status: "preexisting_game", preferences: { useExternalOverlay: true, health: "valid" } },
     { status: "session_ended", reason: "game_session_ended" },
     { status: "indeterminate" },
-    { status: "reconciled", autoJoinHypixel: true },
+    { status: "reconciled", useExternalOverlay: true },
   ];
   for (const reply of tags) {
     assert.match(reply.status, /^[a-z0-9_]+$/);

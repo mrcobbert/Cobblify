@@ -1,4 +1,4 @@
-//! Bare-link Lunar dispatch (auto-join off): fire `lunarclient://play` once
+//! Bare-link Lunar dispatch, the only Lunar route (0.18 never joins a server): fire `lunarclient://play` once
 //! against a warmed launcher and confirm it from Lunar's launcher log.
 //!
 //! Post-fire there are exactly TWO outcomes: a positively observed success

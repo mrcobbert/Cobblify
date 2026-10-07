@@ -10,18 +10,17 @@ use crate::forge;
 use crate::lobby::preexisting_writer;
 use crate::preferences::{LaunchPreferencesView, LockedPrefs};
 
-/// Official Lunar play deep link when auto-join is on.
-pub const PLAY_HYPIXEL: &str = "lunarclient://play?serverAddress=play.hypixel.net";
-
-/// Bare play link (auto-join off): launches to the title screen against a
-/// WARM launcher. Undocumented handler behavior, verified live 2026-08-20;
-/// must never carry parameters and never replaces the serverAddress route.
+/// The only Lunar route: the bare play link, which launches to the title
+/// screen against a WARM launcher and never joins a server (0.18 has no
+/// auto-join; the player joins Hypixel themselves). Undocumented handler
+/// behavior, verified live 2026-08-20; must never carry parameters - the
+/// documented server parameters would join a server, and
+/// `forceRecommendedVersion` only works together with them.
 pub const PLAY_BARE: &str = "lunarclient://play";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOutcome {
-    pub auto_join_hypixel: bool,
     pub use_external_overlay: bool,
     pub action: LaunchAction,
 }
@@ -76,7 +75,6 @@ pub struct DispatchResult {
 pub fn dispatch(
     home: &Path,
     kind: LaunchKind,
-    auto_join: bool,
     use_external_overlay: bool,
 ) -> Result<DispatchResult, String> {
     // Cross-generation isolation: a previous click's still-running hide
@@ -84,65 +82,8 @@ pub fn dispatch(
     // windows. Runs on every admission, including launches later rejected.
     crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(2));
     match kind {
-        LaunchKind::Lunar => {
-            let baseline = SystemTime::now();
-            dispatch_lunar(auto_join, use_external_overlay, baseline)
-        }
-        LaunchKind::Forge => dispatch_forge(home, auto_join, use_external_overlay),
-    }
-}
-
-/// Injected effects for one auto-join click, so the ordering and the error
-/// branch are pinned by tests without firing a real deep link.
-pub struct AutoJoinDeps<'a> {
-    /// Start the registered cancellable hide worker.
-    pub spawn_hide: &'a mut dyn FnMut(),
-    /// Fire the auto-join deep link once. Err = nothing was started.
-    pub open_link: &'a mut dyn FnMut() -> Result<(), String>,
-    /// Cancel the just-spawned worker; error path only.
-    pub cancel_hide: &'a mut dyn FnMut(),
-}
-
-/// Hide FIRST, then open. Opening the deep link brings Lunar's launcher
-/// window up, and a worker started afterwards only sights it a search
-/// interval later - the window is on screen in between. A failed open
-/// cancels the worker it just spawned, so a 60 s search can never hide a
-/// launcher the user starts by hand after the failure.
-fn run_auto_join(deps: &mut AutoJoinDeps) -> Result<(), String> {
-    (deps.spawn_hide)();
-    if let Err(e) = (deps.open_link)() {
-        (deps.cancel_hide)();
-        return Err(e);
-    }
-    Ok(())
-}
-
-fn dispatch_lunar(
-    auto_join: bool,
-    use_external_overlay: bool,
-    baseline: SystemTime,
-) -> Result<DispatchResult, String> {
-    if auto_join {
-        let mut spawn_hide = || crate::hide::spawn_worker();
-        let mut open_link = open_play_hypixel;
-        let mut cancel_hide = || {
-            crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(2));
-        };
-        run_auto_join(&mut AutoJoinDeps {
-            spawn_hide: &mut spawn_hide,
-            open_link: &mut open_link,
-            cancel_hide: &mut cancel_hide,
-        })?;
-        Ok(DispatchResult {
-            baseline,
-            outcome: LaunchOutcome {
-                auto_join_hypixel: true,
-                use_external_overlay,
-                action: LaunchAction::GameLaunchRequested,
-            },
-        })
-    } else {
-        launch_lunar_no_join(use_external_overlay)
+        LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay),
+        LaunchKind::Forge => dispatch_forge(home, use_external_overlay),
     }
 }
 
@@ -185,7 +126,6 @@ fn launch_lunar_no_join(use_external_overlay: bool) -> Result<DispatchResult, St
     Ok(DispatchResult {
         baseline,
         outcome: LaunchOutcome {
-            auto_join_hypixel: false,
             use_external_overlay,
             action,
         },
@@ -259,11 +199,7 @@ fn open_bare_play_link() -> Result<(), String> {
     }
 }
 
-fn dispatch_forge(
-    home: &Path,
-    auto_join: bool,
-    use_external_overlay: bool,
-) -> Result<DispatchResult, String> {
+fn dispatch_forge(home: &Path, use_external_overlay: bool) -> Result<DispatchResult, String> {
     let saved = forge::load_target(home).ok_or("Choose a Prism Forge instance before launching.")?;
     if saved.marker.as_deref() != Some("mmc-pack.json") {
         return Err(
@@ -287,7 +223,7 @@ fn dispatch_forge(
 
     let baseline = SystemTime::now();
     let mut cmd = Command::new(&exe);
-    for arg in forge_launch_args(instance_id, auto_join) {
+    for arg in forge_launch_args(instance_id) {
         cmd.arg(arg);
     }
     cmd.spawn()
@@ -296,27 +232,21 @@ fn dispatch_forge(
     Ok(DispatchResult {
         baseline,
         outcome: LaunchOutcome {
-            auto_join_hypixel: auto_join,
             use_external_overlay,
             action: LaunchAction::GameLaunchRequested,
         },
     })
 }
 
-/// Prism argv shape — one helper for production dispatch and tests.
-pub fn forge_launch_args(instance_id: &str, auto_join: bool) -> Vec<String> {
-    let mut args = vec!["--launch".to_string(), instance_id.to_string()];
-    if auto_join {
-        args.push("--server".to_string());
-        args.push("play.hypixel.net".to_string());
-    }
-    args
+/// Prism argv shape - one helper for production dispatch and tests. Never a
+/// `--server`: the player joins Hypixel themselves.
+pub fn forge_launch_args(instance_id: &str) -> Vec<String> {
+    vec!["--launch".to_string(), instance_id.to_string()]
 }
 
 pub fn launch_with_preflight(
     home: &Path,
     kind: LaunchKind,
-    expected_auto_join: bool,
     expected_use_external_overlay: bool,
     generation: u64,
 ) -> LaunchAttempt {
@@ -334,7 +264,7 @@ pub fn launch_with_preflight(
         }
     };
     let prefs = locked.read_view();
-    let (strict_auto_join, strict_overlay) = match locked.read_strict() {
+    let strict_overlay = match locked.read_strict() {
         Ok(v) => v,
         Err(msg) => {
             return LaunchAttempt {
@@ -347,7 +277,7 @@ pub fn launch_with_preflight(
             };
         }
     };
-    if strict_auto_join != expected_auto_join || strict_overlay != expected_use_external_overlay {
+    if strict_overlay != expected_use_external_overlay {
         return LaunchAttempt {
             reply: LaunchReply::Rejected {
                 code: "stale_preference",
@@ -363,7 +293,7 @@ pub fn launch_with_preflight(
             baseline: None,
         };
     }
-    match dispatch(home, kind, strict_auto_join, strict_overlay) {
+    match dispatch(home, kind, strict_overlay) {
         Ok(result) => LaunchAttempt {
             reply: LaunchReply::Launched {
                 outcome: result.outcome,
@@ -380,29 +310,6 @@ pub fn launch_with_preflight(
             baseline: None,
         },
     }
-}
-
-#[cfg(target_os = "macos")]
-fn open_play_hypixel() -> Result<(), String> {
-    let status = Command::new("/usr/bin/open")
-        .args(["-g", PLAY_HYPIXEL])
-        .status()
-        .map_err(|e| format!("Cannot start Lunar Client: {e}"))?;
-    if !status.success() {
-        return Err("Cannot start Lunar Client - is Lunar installed?".to_string());
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn open_play_hypixel() -> Result<(), String> {
-    tauri_plugin_opener::open_url(PLAY_HYPIXEL, None::<&str>)
-        .map_err(|_| "Cannot start Lunar Client - is Lunar installed?".to_string())
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn open_play_hypixel() -> Result<(), String> {
-    Err("Lunar launch is not supported on this platform.".to_string())
 }
 
 /// The Lunar Client executable under a `%LOCALAPPDATA%\Programs` directory,
@@ -453,8 +360,6 @@ pub fn open_lunar_app_only() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     /// L6. Both layouts have been seen under `%LOCALAPPDATA%\Programs`:
     /// the spaced `Lunar Client` directory and the squashed `lunarclient`
@@ -478,52 +383,11 @@ mod tests {
         assert_eq!(lunar_exe_in(squashed.path()), Some(squashed_exe));
     }
 
-    /// Drive one auto-join click, recording the effects in order.
-    fn drive_auto_join(open_ok: bool) -> (Result<(), String>, Vec<&'static str>) {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let e = Rc::clone(&events);
-        let mut spawn_hide = move || e.borrow_mut().push("spawn_hide");
-        let e = Rc::clone(&events);
-        let mut open_link = move || {
-            e.borrow_mut().push("open_link");
-            if open_ok { Ok(()) } else { Err("no lunar".to_string()) }
-        };
-        let e = Rc::clone(&events);
-        let mut cancel_hide = move || e.borrow_mut().push("cancel_hide");
-        let result = run_auto_join(&mut AutoJoinDeps {
-            spawn_hide: &mut spawn_hide,
-            open_link: &mut open_link,
-            cancel_hide: &mut cancel_hide,
-        });
-        let recorded = events.borrow().clone();
-        (result, recorded)
-    }
-
-    /// The quit-flash fix: the hide worker is running BEFORE the deep link
-    /// brings Lunar's window up, and a success never cancels it.
-    #[test]
-    fn auto_join_hides_before_it_opens_and_keeps_the_worker_on_success() {
-        let (result, events) = drive_auto_join(true);
-        assert!(result.is_ok());
-        assert_eq!(events, vec!["spawn_hide", "open_link"]);
-    }
-
-    /// A failed open must not leave a 60 s searching worker behind: it would
-    /// hide a launcher the user starts by hand afterwards.
-    #[test]
-    fn a_failed_open_cancels_the_worker_once_and_propagates_the_error() {
-        let (result, events) = drive_auto_join(false);
-        assert_eq!(result, Err("no lunar".to_string()));
-        assert_eq!(events, vec!["spawn_hide", "open_link", "cancel_hide"]);
-        assert_eq!(events.iter().filter(|e| **e == "cancel_hide").count(), 1);
-    }
-
     #[test]
     fn launch_reply_serializes_snake_case_tags() {
         use crate::preferences::{LaunchPreferencesView, PreferenceHealth};
         let pre = serde_json::to_value(LaunchReply::PreexistingGame {
             preferences: LaunchPreferencesView {
-                auto_join_hypixel: true,
                 use_external_overlay: true,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
@@ -532,6 +396,7 @@ mod tests {
         .unwrap();
         assert_eq!(pre["status"], "preexisting_game");
         assert_eq!(pre["preferences"]["useExternalOverlay"], true);
+        assert!(pre["preferences"].get("autoJoinHypixel").is_none(), "no auto-join on the wire");
         let rejected = serde_json::to_value(LaunchReply::Rejected {
             code: "busy",
             preferences: None,
@@ -541,32 +406,20 @@ mod tests {
         assert_eq!(rejected["status"], "rejected");
     }
 
+    /// No auto-join: a Prism launch never carries `--server`.
     #[test]
-    fn forge_on_includes_hypixel_server_once() {
-        let args = forge_launch_args("instance-1", true);
-        assert_eq!(args, vec!["--launch", "instance-1", "--server", "play.hypixel.net"]);
-    }
-
-    #[test]
-    fn forge_off_omits_server_argument() {
-        let args = forge_launch_args("instance-1", false);
+    fn forge_launch_args_never_carry_a_server() {
+        let args = forge_launch_args("instance-1");
         assert_eq!(args, vec!["--launch", "instance-1"]);
     }
 
-    #[test]
-    fn lunar_on_deep_link_is_fixed() {
-        assert!(PLAY_HYPIXEL.contains("play.hypixel.net"));
-        assert!(!PLAY_HYPIXEL.contains("forceRecommendedVersion"));
-    }
-
-    /// The bare route never grows parameters and never replaces the
-    /// documented serverAddress route.
+    /// The only Lunar route never grows parameters: any server parameter
+    /// would join a server by itself.
     #[test]
     fn bare_play_link_carries_no_parameters() {
         assert_eq!(PLAY_BARE, "lunarclient://play");
         assert!(!PLAY_BARE.contains('?'));
         assert!(!PLAY_BARE.contains("forceRecommendedVersion"));
-        assert!(PLAY_HYPIXEL.starts_with("lunarclient://play?"));
     }
 
     #[test]
@@ -575,31 +428,28 @@ mod tests {
         assert_eq!(v, "launch_unconfirmed");
     }
 
-    /// Preflight compares BOTH booleans against one strict locked read: a
-    /// mismatch on either rejects stale_preference and returns both
-    /// confirmed values for resynchronization.
+    /// Preflight compares the overlay preference against one strict locked
+    /// read: a mismatch rejects stale_preference and returns the confirmed
+    /// value for resynchronization. The stored 0.17 auto-join key, whatever
+    /// it holds, plays no part.
     #[test]
-    fn preflight_rejects_stale_on_either_boolean() {
+    fn preflight_rejects_a_stale_overlay_and_ignores_the_stored_auto_join_key() {
         let home = tempfile::tempdir().unwrap().into_path();
-        crate::preferences::set_auto_join_hypixel(&home, true).unwrap();
-        crate::preferences::set_use_external_overlay(&home, false).unwrap();
+        let dir = crate::preferences::ensure_cobblify_dir(&home).unwrap();
+        std::fs::write(
+            dir.join("launcher-preferences.json"),
+            r#"{"auto_join_hypixel":false,"use_external_overlay":false}"#,
+        )
+        .unwrap();
 
-        let overlay_stale =
-            launch_with_preflight(&home, LaunchKind::Lunar, true, true, 1);
+        let overlay_stale = launch_with_preflight(&home, LaunchKind::Lunar, true, 1);
         match overlay_stale.reply {
             LaunchReply::Rejected { code, preferences, .. } => {
                 assert_eq!(code, "stale_preference");
                 let prefs = preferences.expect("confirmed values returned");
-                assert_eq!(prefs.auto_join_hypixel, true);
                 assert_eq!(prefs.use_external_overlay, false);
+                assert_eq!(prefs.health, crate::preferences::PreferenceHealth::Valid);
             }
-            other => panic!("expected rejection, got {other:?}"),
-        }
-
-        let auto_join_stale =
-            launch_with_preflight(&home, LaunchKind::Lunar, false, false, 1);
-        match auto_join_stale.reply {
-            LaunchReply::Rejected { code, .. } => assert_eq!(code, "stale_preference"),
             other => panic!("expected rejection, got {other:?}"),
         }
     }

@@ -12,7 +12,7 @@ import { bootWindow } from "./test-support/window-harness.js";
  * launchable home for the next one.
  */
 
-const PREFS = { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" };
+const PREFS = { useExternalOverlay: true, health: "valid" };
 const READY_SETUP = {
   state: "ready",
   mod_version: "0.15.1",
@@ -26,7 +26,6 @@ const REJECTED = { status: "rejected", code: "launch_cooldown", message: "wait" 
 const LAUNCHED = {
   status: "launched",
   outcome: {
-    autoJoinHypixel: true,
     useExternalOverlay: true,
     action: "game_launch_requested",
   },

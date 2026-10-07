@@ -8,7 +8,7 @@ import { bootWindow } from "./test-support/window-harness.js";
  * the last run, and the first open after an update. One boot per file; the tests run in order.
  */
 
-const PREFS = { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" };
+const PREFS = { useExternalOverlay: true, health: "valid" };
 const BOTH_READY = {
   state: "ready",
   mod_version: "0.17.0",
@@ -19,11 +19,13 @@ const BOTH_READY = {
 };
 const LAUNCHED = {
   status: "launched",
-  outcome: { autoJoinHypixel: true, useExternalOverlay: true, action: "game_launch_requested" },
+  outcome: { useExternalOverlay: true, action: "game_launch_requested" },
   generation: 1,
 };
 
 let pendingLaunch = null;
+/** What launch_progress answers; a test swaps it to end a launch with an outcome. */
+let progressReply = () => ({ stage: "attached" });
 const replies = {
   refresh_setup: () => BOTH_READY,
   open_info: () => ({ version: "0.18.0-next.2", updated: true, fresh: false }),
@@ -32,10 +34,10 @@ const replies = {
   update_preferences: () => ({ autoUpdateEnabled: true, autoUpdatePrompted: false, updateChannel: "stable", health: "missing" }),
   update_status: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
   check_for_update: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
-  set_use_external_overlay: ({ enabled }) => ({ status: "saved", autoJoinHypixel: true, useExternalOverlay: enabled }),
+  set_use_external_overlay: ({ enabled }) => ({ status: "saved", useExternalOverlay: enabled }),
   launch_lunar: () => new Promise((resolve) => (pendingLaunch = resolve)),
   launch_forge: () => new Promise((resolve) => (pendingLaunch = resolve)),
-  launch_progress: () => ({ stage: "attached" }),
+  launch_progress: () => progressReply(),
   lobby_state: () => ({ kind: "unavailable" }),
   abort_launch_session: () => ({ status: "ok", preferences: PREFS }),
 };
@@ -143,4 +145,40 @@ test("the version opens the release notes; Back returns home", async () => {
   assert.ok($("#rel-0_18_0"));
   $('[data-act="back"]').click();
   assert.ok($('#main [data-act="play"]'));
+});
+
+// ── a launch that ends with an outcome (progress.rs `outcome`) ─────────────────────────────
+
+const hero = () => $("#main .hero");
+const launchNow = async (generation) => {
+  const before = calls.filter((c) => c.command === "launch_lunar").length;
+  document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await waitFor(() => calls.filter((c) => c.command === "launch_lunar").length > before, { label: "the launch call" });
+  pendingLaunch({ ...LAUNCHED, generation });
+};
+
+test("Cobblify didn't load: the launch ends on home with Try again, released through the abort", async () => {
+  progressReply = () => ({ stage: "mixing", percent: 85, outcome: "not_loaded" });
+  const aborts = calls.filter((c) => c.command === "abort_launch_session").length;
+  await launchNow(2);
+  await waitFor(() => hero()?.dataset.act === "play" && /Try again/.test(hero().textContent), {
+    label: "Try again",
+    timeout: 3000,
+  });
+  assert.equal(calls.filter((c) => c.command === "abort_launch_session").length, aborts + 1);
+  assert.equal($("#main .hero.prog"), null, "no progress, and never a Join Hypixel wait");
+  assert.equal(calls.some((c) => c.command === "launch_lunar" && "expectedAutoJoinHypixel" in (c.args ?? {})), false);
+  assert.deepEqual(calls.filter((c) => c.command === "launch_lunar").at(-1).args, { expectedUseExternalOverlay: true });
+});
+
+test("wrong Lunar version: Try again relaunches and the launch ends on the Launch key", async () => {
+  progressReply = () => ({ stage: "attached", percent: 35, outcome: "wrong_version" });
+  hero().click();
+  await waitFor(() => pendingLaunch != null && calls.filter((c) => c.command === "launch_lunar").length >= 3, { label: "the retry" });
+  pendingLaunch({ ...LAUNCHED, generation: 3 });
+  await waitFor(() => $('#main .hero.play')?.getAttribute("aria-label") === "Launch Cobblify in Lunar Client", {
+    label: "Launch again",
+    timeout: 3000,
+  });
+  progressReply = () => ({ stage: "attached" });
 });

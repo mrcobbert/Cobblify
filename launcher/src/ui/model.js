@@ -15,11 +15,38 @@ const STAGE_INDEX = {
 };
 const PHASE_PCT = [10, 35, 60, 85];
 
-export function launchHero(id, stage, autoJoin) {
+/**
+ * The launch key while launching. The game being up reads "Join Hypixel" (a wait): launches
+ * never join a server, the player does. A Cobblify-made Prism instance's first launch shows
+ * "Downloading Minecraft" (22%) between "Opening Prism" and "Starting Minecraft".
+ */
+export function launchHero(id, stage) {
+  if (stage === "forge_downloading") return { kind: "prog", label: "Downloading Minecraft", pct: 22 };
   const i = STAGE_INDEX[stage] ?? 0;
-  if (i >= 4) return { kind: "wait", label: autoJoin ? "Joining Hypixel" : "Join Hypixel" };
+  if (i >= 4) return { kind: "wait", label: "Join Hypixel" };
   const labels = [id === "prism" ? "Opening Prism" : "Opening Lunar", "Starting Minecraft", "Loading mods", "Adding Cobblify"];
   return { kind: "prog", label: labels[i], pct: PHASE_PCT[i] };
+}
+
+/**
+ * How the last launch ended, for the home it returned to (`launch.outcome` from the progress
+ * poll). `under` is the under-row's data; the view draws it.
+ * - wrong_version: Lunar isn't on 1.8.9. Launch stays (it retries); under: "Set Lunar to
+ *   1.8.9" + Open.
+ * - not_loaded: Minecraft started without Cobblify. "Try again"; under: "Cobblify didn't load".
+ */
+function outcomeView(outcome) {
+  if (outcome === "wrong_version") {
+    return { hero: { kind: "play" }, under: { kind: "setLunar" }, said: "Lunar isn't set to 1.8.9." };
+  }
+  if (outcome === "not_loaded") {
+    return {
+      hero: { kind: "act", label: "Try again", act: "play" },
+      under: { kind: "notLoaded" },
+      said: "Cobblify didn't load. Minecraft started without Cobblify.",
+    };
+  }
+  return null;
 }
 
 /** The remembered client if it is still ready, else the first ready one. */
@@ -92,7 +119,8 @@ function chooseView(block, picked) {
  *   selected?: string|null,
  *   picked?: string|null,
  *   adding?: string|null,
- *   launch?: { kind?: string|null, phase?: string, busy?: boolean, stage?: string|null, autoJoin?: boolean,
+ *   launch?: { kind?: string|null, phase?: string, busy?: boolean, stage?: string|null,
+ *              outcome?: "wrong_version"|"not_loaded"|null, outcomeKind?: "lunar"|"forge"|null,
  *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean, showCancel?: boolean },
  *   update?: object,
  * }} input
@@ -105,13 +133,13 @@ export function homeModel({ status, selected = null, picked = null, adding = nul
 
   if (!order.length) {
     const v = interim(status, picked);
-    return { solo: true, clients: [], sel: null, add: null, hero: v.hero, keys: v.keys, lead: v.lead ?? null, said: v.said, launching: false, updReady };
+    return { solo: true, clients: [], sel: null, add: null, hero: v.hero, keys: v.keys, lead: v.lead ?? null, under: null, said: v.said, launching: false, updReady };
   }
 
   const sel = launching ? uiId(launch.kind) : pickSelected(order, selected);
   const other = ["lunar", "prism"].find((id) => !order.includes(id));
   const add = other ? addFor(status, other) : null;
-  const base = { solo: false, clients: order, sel, add, lead: null, keys: [], launching, updReady };
+  const base = { solo: false, clients: order, sel, add, lead: null, under: null, keys: [], launching, updReady };
 
   if (adding && add && add.id === adding && add.act === "add") {
     const block = setupBlocks(status).find((b) => b.kind === CL[adding].kind && b.candidates.length);
@@ -121,7 +149,7 @@ export function homeModel({ status, selected = null, picked = null, adding = nul
     }
   }
   if (launching) {
-    const hero = launchHero(sel, launch.stage, launch.autoJoin !== false);
+    const hero = launchHero(sel, launch.stage);
     return { ...base, hero, keys: launch.showCancel ? [{ label: "Cancel", act: "cancel" }] : [], said: hero.label };
   }
   if (blocksLaunch(update)) {
@@ -134,6 +162,9 @@ export function homeModel({ status, selected = null, picked = null, adding = nul
   if (launch.prefError) {
     return { ...base, hero: { kind: "act", label: "Try again", act: "play" }, said: launch.prefError };
   }
+  // The outcome belongs to the client that launched; picking the other one leaves it behind.
+  const ended = !launch.outcomeKind || CL[sel].kind === launch.outcomeKind ? outcomeView(launch.outcome) : null;
+  if (ended) return { ...base, ...ended };
   return { ...base, hero: { kind: "play" }, said: `Launch Cobblify in ${CL[sel].name}` };
 }
 

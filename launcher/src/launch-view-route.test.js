@@ -13,21 +13,19 @@ const BOOLS = [true, false];
 function rows() {
   const out = [];
   for (const action of ACTIONS) {
-    for (const autoJoinHypixel of BOOLS) {
-      for (const useExternalOverlay of BOOLS) {
-        out.push({ action, autoJoinHypixel, useExternalOverlay });
-      }
+    for (const useExternalOverlay of BOOLS) {
+      out.push({ action, useExternalOverlay });
     }
   }
   return out;
 }
 
-test("the full action x auto-join x overlay table routes exactly one way", () => {
+test("the full action x overlay table routes exactly one way", () => {
   const seen = rows().map((outcome) => [
-    `${outcome.action}/${outcome.autoJoinHypixel}/${outcome.useExternalOverlay}`,
+    `${outcome.action}/${outcome.useExternalOverlay}`,
     launchViewRoute(outcome),
   ]);
-  assert.equal(seen.length, 12);
+  assert.equal(seen.length, 6);
   for (const [label, route] of seen) {
     const action = label.split("/")[0];
     if (action === "game_launch_requested") {
@@ -46,31 +44,20 @@ test("the full action x auto-join x overlay table routes exactly one way", () =>
   }
 });
 
-test("every confirmed dispatch stays home, auto-join on included", () => {
+test("every confirmed dispatch stays home, whatever the overlay", () => {
   for (const useExternalOverlay of BOOLS) {
-    const on = launchViewRoute({
-      action: "game_launch_requested",
-      autoJoinHypixel: true,
-      useExternalOverlay,
-    });
-    const off = launchViewRoute({
-      action: "game_launch_requested",
-      autoJoinHypixel: false,
-      useExternalOverlay,
-    });
-    assert.equal(on.stayHome, true);
-    // Auto-join ON is standardized onto the auto-join OFF pattern.
-    assert.deepEqual(on, off);
+    const route = launchViewRoute({ action: "game_launch_requested", useExternalOverlay });
+    assert.equal(route.stayHome, true);
   }
 });
 
 test("manual recovery routes carry their own subtitle kind", () => {
   assert.equal(
-    launchViewRoute({ action: "launcher_opened", autoJoinHypixel: false }).subtitleKind,
+    launchViewRoute({ action: "launcher_opened" }).subtitleKind,
     "launcher_opened",
   );
   assert.equal(
-    launchViewRoute({ action: "launch_unconfirmed", autoJoinHypixel: false }).subtitleKind,
+    launchViewRoute({ action: "launch_unconfirmed" }).subtitleKind,
     "launch_unconfirmed",
   );
 });
