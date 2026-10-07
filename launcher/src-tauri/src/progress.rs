@@ -138,12 +138,16 @@ pub fn cobblify_mixed(log: &str) -> bool {
 }
 
 /// The bar state the UI renders. `stage` is a stable key the frontend maps to
-/// its own copy; `percent` is the bar width. `outcome`, once present, ends the
-/// launch: the frontend leaves the progress view for that outcome's view.
+/// its own copy; `percent` is the bar width. `loaded` is the proof that Cobblify
+/// loaded in this launch's game (a fresh `lobby.json` from that JVM; it latches) -
+/// `settled` is only a quiet log and never implies it; the overlay-off quit waits
+/// for `loaded`. `outcome`, once present, ends the launch: the frontend leaves
+/// the progress view for that outcome's view.
 #[derive(Clone, Serialize)]
 pub struct Progress {
     pub stage: &'static str,
     pub percent: u8,
+    pub loaded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<Outcome>,
 }
@@ -164,6 +168,7 @@ fn stage(stage: &'static str, percent: u8) -> Progress {
     Progress {
         stage,
         percent,
+        loaded: false,
         outcome: None,
     }
 }
@@ -185,6 +190,7 @@ pub fn progress_for_forge(milestone: Milestone, settled: bool) -> Progress {
     Progress {
         stage,
         percent,
+        loaded: false,
         outcome: None,
     }
 }
@@ -258,6 +264,11 @@ fn since(earlier: SystemTime, now: SystemTime) -> Duration {
 }
 
 impl LoadWatch {
+    /// Cobblify is known to have loaded in this launch (latched).
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
     /// Cobblify loaded, or an outcome is decided: nothing more to watch.
     pub fn decided(&self) -> bool {
         self.loaded || self.outcome.is_some()

@@ -231,6 +231,11 @@ impl Watch {
         }
     }
 
+    /// Cobblify is known to have loaded in this launch's game (latched; see `loaded`).
+    pub fn is_loaded(&self) -> bool {
+        self.place.is_some() && self.verdict.is_loaded()
+    }
+
     /// The verdict over this poll's facts (see `progress::LoadWatch`). None while no launch
     /// is watched.
     pub fn verdict(

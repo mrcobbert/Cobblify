@@ -36,25 +36,37 @@ test("route table is exhaustive over action and overlay", () => {
   assert.equal(exit.routeFor(outcome("launch_unconfirmed", false)), "overlay");
 });
 
-test("confirmed overlay-off quits at settled exactly once across duplicates", async () => {
+test("confirmed overlay-off never quits on settled alone (a quiet log is not loaded)", async () => {
   const { exit, events } = harness();
   exit.routeFor(outcome("game_launch_requested", false));
   await exit.onConfirmationSignal("settled");
+  await exit.onConfirmationSignal("settled");
+  assert.deepEqual(events, []);
+});
+
+test("confirmed overlay-off quits at loaded exactly once across duplicates", async () => {
+  const { exit, events } = harness();
+  exit.routeFor(outcome("game_launch_requested", false));
+  await exit.onConfirmationSignal("settled");
+  await exit.onConfirmationSignal("loaded");
+  await exit.onConfirmationSignal("loaded");
   await exit.onConfirmationSignal("settled");
   assert.deepEqual(events, ["quit"]);
 });
 
-test("confirmed overlay-off ignores the live signal (settled is the trigger)", async () => {
+test("confirmed overlay-off also quits on an acknowledged live snapshot (it is loaded proof)", async () => {
   const { exit, events } = harness();
   exit.routeFor(outcome("game_launch_requested", false));
   await exit.onConfirmationSignal("live");
-  assert.deepEqual(events, []);
+  await exit.onConfirmationSignal("loaded");
+  assert.deepEqual(events, ["quit"]);
 });
 
 test("overlay-on confirmed never quits or rehides", async () => {
   const { exit, events } = harness();
   exit.routeFor(outcome("game_launch_requested", true));
   await exit.onConfirmationSignal("settled");
+  await exit.onConfirmationSignal("loaded");
   await exit.onConfirmationSignal("live");
   assert.deepEqual(events, []);
 });
@@ -69,17 +81,20 @@ test("unconfirmed: both signals share one rehide; overlay-on never quits", async
   assert.deepEqual(events, ["rehide(true)", "rehide_reply"]);
 });
 
-test("unconfirmed overlay-off exits only after the rehide reply", async () => {
+test("unconfirmed overlay-off rehides at settled but exits only after the reply and loaded", async () => {
   const { exit, events } = harness();
   exit.routeFor(outcome("launch_unconfirmed", false));
   await exit.onConfirmationSignal("settled");
+  assert.deepEqual(events, ["rehide(false)", "rehide_reply"], "settled alone never quits");
+  await exit.onConfirmationSignal("loaded");
+  await exit.onConfirmationSignal("loaded");
   assert.deepEqual(events, ["rehide(false)", "rehide_reply", "quit"]);
 });
 
 test("rehide transport rejection retries once then overlay-off still exits", async () => {
   const { exit, events } = harness({ rehideFails: 2 });
   exit.routeFor(outcome("launch_unconfirmed", false));
-  await exit.onConfirmationSignal("settled");
+  await exit.onConfirmationSignal("loaded");
   assert.deepEqual(events, ["rehide(false)", "rehide(false)", "quit"]);
 });
 
@@ -152,6 +167,8 @@ test("a pending rehide across reset and relaunch never quits the new session", a
   assert.deepEqual(events, ["rehide(false)"], "no quit against session B");
   // B's own trigger still works normally afterwards.
   await exit.onConfirmationSignal("settled");
+  assert.deepEqual(events, ["rehide(false)"], "settled alone never quits B");
+  await exit.onConfirmationSignal("loaded");
   assert.deepEqual(events, ["rehide(false)", "quit"]);
 });
 

@@ -490,7 +490,8 @@ function previewInvoke(command, args) {
       [900 + download, "attached", 35],
     ];
     for (const [ms, s, percent] of steps) {
-      if (t >= ms) return Promise.resolve({ stage: `${prefix}${s}`, percent });
+      // The preview's game "loads" Cobblify as it settles (the real backend's `loaded`).
+      if (t >= ms) return Promise.resolve({ stage: `${prefix}${s}`, percent, ...(s === "settled" ? { loaded: true } : {}) });
     }
     return Promise.resolve({ stage: `${prefix}fired`, percent: 10 });
   }
@@ -1221,10 +1222,16 @@ function startProgressPolling() {
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
           launchController.settleLaunchPhase();
-          // Overlay-off quit / unconfirmed late-success trigger; the module
-          // fires each obligation exactly once across duplicate polls.
+          // Unconfirmed late-success rehide trigger only: a quiet log is not
+          // proof Cobblify loaded, so it never quits the app by itself.
           overlayExit.onConfirmationSignal("settled");
         }
+      }
+      if (p?.loaded === true) {
+        // The backend's proof that Cobblify loaded in this launch's game: the
+        // overlay-off quit (and the unconfirmed route's quit after its rehide).
+        // The module fires each obligation exactly once across duplicate polls.
+        overlayExit.onConfirmationSignal("loaded");
       }
     } catch {
       // cosmetic fail-soft
@@ -1263,8 +1270,8 @@ const launchHooks = {
       : null;
     // Every surviving route polls the lobby. The overlay-off confirmed route
     // polls HEADLESSLY (the marker suppresses its shell) purely so a
-    // session_ended poll can still reset the app to a launchable home; its
-    // quit-at-settled obligation is untouched.
+    // session_ended poll can still reset the app to a launchable home; it
+    // quits once Cobblify is known to have loaded (overlay-exit.js).
     startLobbyPolling();
     if (!view.stayHome) {
       // Open-only / unconfirmed: the manual screen IS the guidance.
@@ -1303,7 +1310,7 @@ function startLaunch(kind, { retry = false } = {}) {
  * The session is released through the forcing abort - the same path Cancel takes, which
  * guards a game still running so the next Launch cannot start a second one over it - and
  * home shows the outcome. Never kills the game; never quits the app (overlay off quits only
- * for a game that came up).
+ * once Cobblify loaded, and an outcome means it did not).
  */
 function endLaunchWithOutcome(outcome) {
   if (sessionReset.isActive()) return;

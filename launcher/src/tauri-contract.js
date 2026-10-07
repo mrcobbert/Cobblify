@@ -172,7 +172,7 @@ export function launchProgress(invoke) {
  * forge_discovered / forge_mixing / forge_settled (Prism). `outcome`, once present, ends the
  * launch: `wrong_version` (Lunar is not on 1.8.9, from Weave's log) or `not_loaded`
  * (Minecraft started, or died, without Cobblify).
- * @typedef {{ stage: string, percent: number, outcome?: 'wrong_version' | 'not_loaded' }} LaunchProgress
+ * @typedef {{ stage: string, percent: number, loaded?: boolean, outcome?: 'wrong_version' | 'not_loaded' }} LaunchProgress
  */
 /** @typedef {{ kind: 'snapshot', snapshot: object, token: number } | { kind: 'unavailable', reason?: string } | { kind: 'session_ended', reason: string }} LobbyPoll */
 /** Reply of BOTH `reset_session_end` and `abort_launch_session`. */

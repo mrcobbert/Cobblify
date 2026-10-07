@@ -2082,9 +2082,9 @@ async fn launch_forge(
 /// baseline reports the "fired" baseline - never an error. Only milestone and verdict
 /// substrings are inspected; full log contents are never returned or logged.
 ///
-/// The outcome (`wrong_version` / `not_loaded`, see `progress::LoadWatch`) rides on the same
-/// reply; the stages keep their meaning for the success path (settled still drives the
-/// overlay-off quit).
+/// The outcome (`wrong_version` / `not_loaded`, see `progress::LoadWatch`) and `loaded` (a
+/// fresh lobby.json from this launch's game JVM) ride on the same reply. The stages are the
+/// bar only: `settled` is a quiet log, not proof, and the overlay-off quit waits for `loaded`.
 fn compute_launch_progress(progress: &mut ProgressState) -> progress::Progress {
     let Ok(home) = home() else {
         return fired_progress(progress.forge_session, false);
@@ -2180,6 +2180,7 @@ fn compute_launch_progress_in(
         }
     };
     bar.outcome = outcome;
+    bar.loaded = progress.watch.is_loaded();
     bar
 }
 
@@ -2995,6 +2996,63 @@ java.lang.IllegalStateException: Could not find game version\n",
             env.kill(77);
             let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
             assert!(p.outcome.is_none());
+        }
+
+        /// Code review round 2 I1: `settled` (mixins, then a quiet log) is cosmetic. It is not
+        /// Cobblify loading, and the reply says so: the overlay-off quit waits for `loaded`.
+        #[test]
+        fn settled_alone_is_not_loaded_and_the_reply_says_so() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            env.spawn(77, baseline + Duration::from_secs(1));
+            weave_log(
+                home.path(),
+                "Attached Weave\nDiscovered 1 mod files\nMixing Example from mixins.bedwarsqol.json\n",
+            );
+            let mut p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            for _ in 0..3 {
+                env.advance(1);
+                p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            }
+            assert_eq!(p.stage, "settled", "the log went quiet after Cobblify's mixins");
+            assert!(p.outcome.is_none());
+            let wire = serde_json::to_value(&p).unwrap();
+            assert_eq!(wire["loaded"], false, "settled alone is not loaded");
+            assert_eq!(wire["stage"], "settled");
+            // The ceiling still runs after settled: the mod never ticked.
+            env.advance(121);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::NotLoaded));
+            assert_eq!(serde_json::to_value(&p).unwrap()["loaded"], false);
+        }
+
+        /// The reply carries `loaded` once this launch's game wrote a fresh lobby.json, and keeps
+        /// it on every later poll (it latches), whatever the stage says.
+        #[test]
+        fn the_reply_carries_loaded_once_the_game_wrote_lobby_json() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            weave_log(
+                home.path(),
+                "Attached Weave\nDiscovered 1 mod files\nMixing Example from mixins.bedwarsqol.json\n",
+            );
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(serde_json::to_value(&p).unwrap()["loaded"], false);
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            let wire = serde_json::to_value(&p).unwrap();
+            assert_eq!(wire["loaded"], true, "a fresh lobby.json from this game: loaded");
+            assert!(wire.get("outcome").is_none());
+            env.advance(600);
+            env.kill(77);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(serde_json::to_value(&p).unwrap()["loaded"], true, "loaded latches");
         }
 
         #[test]

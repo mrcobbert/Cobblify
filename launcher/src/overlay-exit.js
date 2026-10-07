@@ -7,12 +7,17 @@
  * - overlay off + `launcher_opened` (never-fired open-only): quit
  *   immediately - the backend returns this outcome only when the launcher
  *   is proven presented and no hide work is in flight.
- * - overlay off + `game_launch_requested`: skip the dashboard (no lobby
- *   polling); progress polling keeps running; quit at settled, once.
+ * - overlay off + `game_launch_requested`: stay home (headless lobby
+ *   polling); progress polling keeps running; quit once Cobblify is known to
+ *   have loaded - the backend's `loaded` (a fresh lobby.json from this
+ *   launch's game JVM) or an acknowledged live snapshot (itself a lobby.json
+ *   from a proven game writer). `settled` is cosmetic (a quiet log after
+ *   mixins) and never quits: the didn't-load verdict may still follow it, and
+ *   an outcome resets the session instead (home shows it).
  * - overlay off + `launch_unconfirmed`: stay in the overlay flow as the
- *   recovery surface; on the FIRST of settled or an acknowledged live
- *   snapshot, invoke the rehide command (single-flight across both
- *   signals) and quit only after its reply.
+ *   recovery surface; on the FIRST of settled, loaded or an acknowledged live
+ *   snapshot, invoke the rehide command (single-flight across the signals);
+ *   quit only after its reply AND once Cobblify is known to have loaded.
  * - rejected / preexisting_game never reach this module: no session begins.
  *
  * @param {{
@@ -29,6 +34,8 @@ export function createOverlayExit(deps) {
   let outcome = null;
   let quitFired = false;
   let rehidePromise = null;
+  /** This session saw proof that Cobblify loaded (`loaded` or `live`). */
+  let loadedSeen = false;
 
   /**
    * Begin a session from a launched outcome; returns the wiring route.
@@ -43,6 +50,7 @@ export function createOverlayExit(deps) {
     outcome = o;
     quitFired = false;
     rehidePromise = null;
+    loadedSeen = false;
     if (o.useExternalOverlay) return "overlay";
     if (o.action === "launcher_opened") return "quit_now";
     if (o.action === "game_launch_requested") return "no_dashboard";
@@ -55,6 +63,7 @@ export function createOverlayExit(deps) {
     outcome = null;
     quitFired = false;
     rehidePromise = null;
+    loadedSeen = false;
   }
 
   /** Quit exactly once; one retry, then fall back to the overlay flow. */
@@ -100,25 +109,24 @@ export function createOverlayExit(deps) {
   }
 
   /**
-   * A confirmation signal: `'settled'` from progress, `'live'` from the
-   * first acknowledged live lobby snapshot.
-   * @param {'settled' | 'live'} source
+   * A confirmation signal: `'settled'` from progress (cosmetic: the log went
+   * quiet), `'loaded'` from progress (the backend's proof that Cobblify
+   * loaded), `'live'` from the first acknowledged live lobby snapshot (also
+   * proof: a lobby.json from a proven game writer).
+   * @param {'settled' | 'loaded' | 'live'} source
    */
   async function onConfirmationSignal(source) {
     if (!outcome) return;
     const mySession = session;
     const o = outcome;
+    if (source === "loaded" || source === "live") loadedSeen = true;
     if (o.action === "launch_unconfirmed") {
       await rehideOnce(o.useExternalOverlay, mySession);
       if (session !== mySession) return; // reset/relaunch superseded us
-      if (!o.useExternalOverlay) await quitNow(mySession);
+      if (!o.useExternalOverlay && loadedSeen) await quitNow(mySession);
       return;
     }
-    if (
-      !o.useExternalOverlay &&
-      o.action === "game_launch_requested" &&
-      source === "settled"
-    ) {
+    if (!o.useExternalOverlay && o.action === "game_launch_requested" && loadedSeen) {
       await quitNow(mySession);
     }
   }

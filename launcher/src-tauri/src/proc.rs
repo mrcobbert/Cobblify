@@ -874,6 +874,41 @@ mod tests {
         );
     }
 
+    /// Code review round 2 I2, end to end: a Lunar bundle found only through the bundle-id
+    /// lookup (no standard install) is watched by its own executable. A real process runs
+    /// from `<bundle>/Contents/MacOS/Lunar Client` (a copy of `/bin/sleep`) and the running
+    /// check finds exactly it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_running_lunar_found_only_by_bundle_id_is_detected() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let home = root.join("home");
+        let app = home.join("Games/Lunar Client.app");
+        let exe = app.join("Contents/MacOS/Lunar Client");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        let found = app.clone();
+        let lookup = move || vec![found.clone()];
+        let exes = crate::lunar_detect::launcher_exes_with(Some(&home), &lookup);
+
+        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        let pid = child.id();
+        let mut seen = None;
+        for _ in 0..50 {
+            seen = lunar_launcher_pid_among(&exes);
+            if seen.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(seen, Some(pid), "the bundle-id Lunar's own exe is matched: {exes:?}");
+        // Without the lookup's bundle the same process is invisible to the check.
+        assert!(!crate::lunar_detect::launcher_exes_with(Some(&home), &Vec::new).contains(&exe));
+    }
+
     /// The cwd scan reads working directories (the canary runs in a folder of ours and is
     /// found there, and nowhere else) while argv stays empty in that same snapshot.
     #[cfg(unix)]
