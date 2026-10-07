@@ -42,9 +42,12 @@ export const CMD = {
 export const SETUP_EVENT = "setup://progress";
 
 /**
- * Starts setting up one client from check 1. `instanceId` (Prism only) is a candidate id
- * from the current status. Replies with the first snapshot; progress follows on
- * `SETUP_EVENT`. Rejects with "busy" while anything else (another setup included) runs.
+ * Starts setting up one client from check 1. `instanceId` (Prism only) is an id from the
+ * forge target's `instances` (most recently played first). Without one, Prism uses its
+ * saved or only compatible instance, or makes "Cobblify 1.8.9" when none is compatible;
+ * several and no pick rejects with "choose_instance" (show the pick first). Replies with
+ * the first snapshot; progress follows on `SETUP_EVENT`. Rejects with "busy" while
+ * anything else (another setup included) runs.
  * @param {"lunar"|"forge"} kind
  * @param {string} [instanceId]
  */

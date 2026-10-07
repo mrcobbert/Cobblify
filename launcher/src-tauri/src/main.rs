@@ -33,6 +33,8 @@ mod nojoin;
 mod lunar_config;
 mod lunar_detect;
 mod open_info;
+mod prism;
+mod prism_java;
 mod proc;
 mod progress;
 mod resources;
@@ -48,7 +50,7 @@ use std::time::SystemTime;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
-use forge::{Candidate, CandidateView, Compat, SavedTarget, ValidatedBy};
+use forge::{Candidate, CandidateView, Compat, InstanceView};
 use launch::{LaunchKind, LaunchReply};
 use lifecycle::{Coordinator, LifecycleError};
 use lobby::{LobbyPoll, LobbySession};
@@ -104,6 +106,10 @@ struct TargetStatus {
     /// Lunar only: Lunar has run at least once (its `launcher.json` exists).
     #[serde(skip_serializing_if = "Option::is_none")]
     opened_once: Option<bool>,
+    /// Prism only: the compatible instances for the pick, most recently played first
+    /// (ties by name). `begin_setup {kind:"forge", instanceId}` takes one of these ids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instances: Option<Vec<InstanceView>>,
     /// Backend-owned paths; never sent to the frontend.
     #[serde(skip)]
     conflict_dir: Option<PathBuf>,
@@ -125,6 +131,7 @@ impl TargetStatus {
             installed: false,
             set_up: false,
             opened_once: None,
+            instances: None,
             conflict_dir: None,
             install_path: None,
         }
@@ -490,13 +497,9 @@ fn adopt(jar: &ForgeJar, c: &Candidate, home: &Path) -> TargetStatus {
     if out.blocked {
         return forge_ready(out, &c.game_dir);
     }
-    let saved = SavedTarget {
-        game_dir: c.game_dir.display().to_string(),
-        validated_by: ValidatedBy::Marker,
-        marker: c.marker.clone(),
-    };
     let mut t = forge_ready(out, &c.game_dir);
-    if let Err(e) = forge::save_target(home, &saved) {
+    // Keeps a made instance's flags (the silent refresh re-adopts it at every startup).
+    if let Err(e) = forge::save_adopted(home, c) {
         t.message = format!(
             "{} (could not remember this Prism instance: {e})",
             t.message
@@ -595,6 +598,12 @@ fn rebuild_setup(home: &Path, ctx: &SetupContext, mode: Refresh) -> (Status, For
 
     let mut state = ForgeState::default();
     let prism_installed = forge::prism_installed();
+    // Detection is read-only and always runs: the pick (first run, or Change in
+    // settings) needs the compatible instances whether or not Prism is set up.
+    let candidates = forge::Env::from_process()
+        .map(|env| forge::detect(&env))
+        .unwrap_or_default();
+    let instances = forge::instance_views(&candidates);
     let mut forge_target = match &verified.forge {
         None => TargetStatus::new("forge", "absent", "This copy does not include Forge.")
             .with_issue(issue::MISSING_BUNDLED_FORGE),
@@ -621,24 +630,19 @@ fn rebuild_setup(home: &Path, ctx: &SetupContext, mode: Refresh) -> (Status, For
                     t.set_up = true;
                     t
                 }
-                // Not set up: detection only (the candidate list is read-only).
-                None => {
-                    let candidates = forge::Env::from_process()
-                        .map(|env| forge::detect(&env))
-                        .unwrap_or_default();
-                    let t = forge_choose(&candidates);
-                    for c in candidates
-                        .into_iter()
-                        .filter(|c| c.compat == Compat::Confirmed)
-                    {
-                        state.candidates.insert(c.id.clone(), c);
-                    }
-                    t
-                }
+                // Not set up: detection only.
+                None => forge_choose(&candidates),
             }
         }
     };
+    for c in candidates
+        .into_iter()
+        .filter(|c| c.compat == Compat::Confirmed)
+    {
+        state.candidates.insert(c.id.clone(), c);
+    }
     forge_target.installed = prism_installed;
+    forge_target.instances = Some(instances);
 
     (
         aggregate(ctx.mod_version.clone(), vec![lunar, forge_target]),
@@ -711,7 +715,7 @@ fn open_info(state: tauri::State<'_, open_info::OpenInfo>) -> open_info::OpenInf
 fn game_theme(kind: String) -> Result<theme::GameTheme, String> {
     let home = home()?;
     let forge_dir = if kind == "forge" {
-        forge::load_target(&home).map(|t| t.game_dir)
+        forge::saved_game_dir(&home).map(|d| d.display().to_string())
     } else {
         None
     };
@@ -819,10 +823,20 @@ fn spawn_setup_run(
     });
 }
 
+/// Prism's data directory on this machine (empty when it cannot be located).
+fn prism_data() -> PathBuf {
+    forge::Env::from_process()
+        .and_then(|env| env.prism_data())
+        .unwrap_or_default()
+}
+
 /// Starts setting up `kind` ("lunar" | "forge") from check 1. `instanceId` (Prism only)
-/// names a candidate from the current status. Replies with the first snapshot; progress
-/// follows on `setup://progress`. Refused with "busy" (etc.) while anything else holds the
-/// lifecycle - another setup included, even a stopped one.
+/// names an instance from the status's `instances`. Without one, Prism's instance is
+/// decided now: the saved one, else the only compatible one, else none (Cobblify makes
+/// "Cobblify 1.8.9"); several compatible and no pick is refused with `choose_instance`
+/// (the UI shows the pick first). Replies with the first snapshot; progress follows on
+/// `setup://progress`. Refused with "busy" (etc.) while anything else holds the lifecycle -
+/// another setup included, even a stopped one.
 #[tauri::command(rename_all = "camelCase")]
 async fn begin_setup(
     app: tauri::AppHandle,
@@ -834,26 +848,39 @@ async fn begin_setup(
 ) -> Result<setup::Snapshot, String> {
     let kind = parse_setup_kind(&kind)?;
     let home = home()?;
-    let chosen = match (kind, instance_id) {
-        (setup::Kind::Forge, Some(id)) => Some(
-            forge
+    let prism = prism_data();
+    let instance = match (kind, instance_id) {
+        (setup::Kind::Forge, Some(id)) => {
+            let picked = forge
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .candidates
                 .get(&id)
                 .cloned()
-                .ok_or("That Prism instance is no longer available.")?,
-        ),
+                .ok_or("That Prism instance is no longer available.")?;
+            Some(setup::choose_instance(&home, &prism, Some(picked))?)
+        }
+        (setup::Kind::Forge, None) => {
+            let (home, prism) = (home.clone(), prism.clone());
+            Some(
+                tauri::async_runtime::spawn_blocking(move || {
+                    setup::choose_instance(&home, &prism, None)
+                })
+                .await
+                .map_err(|e| e.to_string())??,
+            )
+        }
         (setup::Kind::Lunar, Some(_)) => {
             return Err("instanceId is only for Prism.".to_string());
         }
-        (_, None) => None,
+        (setup::Kind::Lunar, None) => None,
     };
-    let run = svc.begin(kind, chosen)?;
+    let run = svc.begin(kind, instance)?;
     let first = svc.latest().ok_or("Setup did not start.")?;
     let paths = setup::Paths {
         home,
         resource_dir: ctx.resource_dir.clone(),
+        prism,
     };
     spawn_setup_run(app, Arc::clone(&svc), paths, run);
     Ok(first)
@@ -875,6 +902,7 @@ async fn resume_setup(
     let paths = setup::Paths {
         home,
         resource_dir: ctx.resource_dir.clone(),
+        prism: prism_data(),
     };
     spawn_setup_run(app, Arc::clone(&svc), paths, run);
     Ok(first)
@@ -1778,8 +1806,7 @@ fn fml_log_active(
 }
 
 fn fml_log_mtime(home: &Path) -> Option<SystemTime> {
-    let saved = forge::load_target(home)?;
-    let path = PathBuf::from(saved.game_dir).join("logs/fml-client-latest.log");
+    let path = forge::saved_game_dir(home)?.join("logs/fml-client-latest.log");
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
@@ -2052,10 +2079,11 @@ fn compute_launch_progress(progress: &mut ProgressState) -> progress::Progress {
         return waiting();
     };
     let path = if forge_session {
-        let Some(saved) = forge::load_target(&home) else {
+        // The game folder by Prism's rule, which is where the game writes its logs.
+        let Some(game_dir) = forge::saved_game_dir(&home) else {
             return waiting();
         };
-        PathBuf::from(saved.game_dir).join("logs/fml-client-latest.log")
+        game_dir.join("logs/fml-client-latest.log")
     } else {
         home.join(".weave/logs/latest.log")
     };
@@ -2623,6 +2651,8 @@ mod tests {
                 game_dir: PathBuf::from("/tmp/wrong"),
                 compat: Compat::Incompatible("nope".into()),
                 marker: Some("mmc-pack.json".into()),
+                detail: String::new(),
+                last_launch_ms: 0,
             }],
             true,
         );
@@ -2640,6 +2670,8 @@ mod tests {
                 game_dir: PathBuf::from("/tmp/right"),
                 compat: Compat::Confirmed,
                 marker: Some("mmc-pack.json".into()),
+                detail: String::new(),
+                last_launch_ms: 0,
             },
             Candidate {
                 id: "d1".into(),
@@ -2648,6 +2680,8 @@ mod tests {
                 game_dir: PathBuf::from("/tmp/unreadable"),
                 compat: Compat::Unknown,
                 marker: Some("mmc-pack.json".into()),
+                detail: String::new(),
+                last_launch_ms: 0,
             },
         ];
         let t = forge_choose_with_prism(&candidates, true);

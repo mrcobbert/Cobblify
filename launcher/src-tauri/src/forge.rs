@@ -83,17 +83,22 @@ impl Compat {
     }
 }
 
-/// One offerable (or refusable) Minecraft instance. `id` is opaque and backend-owned; the
-/// frontend never sends us a filesystem path.
+/// One offerable (or refusable) Minecraft instance. `id` is Prism's own instance id (the
+/// folder name), looked up in a backend-owned map; the frontend never sends us a path.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub id: String,
     pub launcher: String,
+    /// Prism's display name (`instance.cfg` `name`), else the folder name.
     pub name: String,
     pub game_dir: PathBuf,
     pub compat: Compat,
     /// The marker file that proved this is an instance, if detection found one.
     pub marker: Option<String>,
+    /// The pick's detail line, e.g. "Forge 11.15.1.2318".
+    pub detail: String,
+    /// `instance.cfg` `lastLaunchTime`: ms since the epoch, 0 = never (or not recorded).
+    pub last_launch_ms: i64,
 }
 
 /// The wire shape the UI renders. Only confirmed instances are published.
@@ -103,6 +108,15 @@ pub struct CandidateView {
     pub name: String,
 }
 
+/// One row of the Prism instance pick (status `instances`), most recently played first.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InstanceView {
+    pub id: String,
+    pub name: String,
+    pub detail: String,
+    pub last_launch_ms: i64,
+}
+
 impl Candidate {
     pub fn view(&self) -> CandidateView {
         CandidateView {
@@ -110,9 +124,42 @@ impl Candidate {
             name: self.name.clone(),
         }
     }
+
+    pub fn instance_view(&self) -> InstanceView {
+        InstanceView {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            detail: self.detail.clone(),
+            last_launch_ms: self.last_launch_ms,
+        }
+    }
+
+    /// The Prism instance folder this candidate's game folder belongs to.
+    pub fn instance_root(&self) -> Option<PathBuf> {
+        instance_root(&self.game_dir)
+    }
 }
 
-/// Standard Prism install locations used for launch and setup detection.
+/// The compatible instances for the pick, most recently played first, ties by name.
+pub fn instance_views(candidates: &[Candidate]) -> Vec<InstanceView> {
+    let mut confirmed: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| c.compat == Compat::Confirmed)
+        .collect();
+    confirmed.sort_by(|a, b| recency(a, b));
+    confirmed.iter().map(|c| c.instance_view()).collect()
+}
+
+/// Most recent `lastLaunchTime` first; ties (all 0 included) by name, caseless, then id.
+fn recency(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    b.last_launch_ms
+        .cmp(&a.last_launch_ms)
+        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// Standard Prism install locations used for launch and setup detection. macOS: the
+/// bundle in `/Applications`, else `~/Applications` (`/Applications` when neither exists).
 pub fn prism_exe() -> PathBuf {
     #[cfg(windows)]
     {
@@ -121,7 +168,11 @@ pub fn prism_exe() -> PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from("/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher")
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let candidates = crate::prism::app_candidates(&home);
+        crate::prism::find_app_in(&candidates)
+            .unwrap_or_else(|| candidates[0].clone())
+            .join(crate::prism::BUNDLE_EXE)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -163,6 +214,11 @@ impl Env {
                 appdata: None,
             })
         }
+    }
+
+    /// Prism's data directory (`<app data>/PrismLauncher`).
+    pub fn prism_data(&self) -> Option<PathBuf> {
+        self.app_support().map(|p| crate::prism::data_dir(&p))
     }
 
     /// macOS's per-application data root; on Windows this is `%APPDATA%`.
@@ -211,67 +267,63 @@ fn read_dir_strict(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-/// Detection reads Prism Launcher's default instances directory only. Portable or
-/// relocated Prism installs are out of scope: Cobblify supports the standard layout so
-/// every offered target can be installed and launched the same way as Lunar.
+/// Detection reads Prism's data directory: its instances folder (`InstanceDir`).
 pub fn detect(env: &Env) -> Vec<Candidate> {
-    let mut out = detect_prism(env);
+    env.prism_data()
+        .map(|data| detect_in(&data))
+        .unwrap_or_default()
+}
 
-    // Confirmed first, then unknown, then the refused ones - the UI shows this order.
-    out.sort_by_key(|c| match c.compat {
-        Compat::Confirmed => 0,
-        Compat::Unknown => 1,
-        Compat::Incompatible(_) => 2,
+/// Every instance Prism itself would list - an immediate subfolder of the instances folder
+/// holding `instance.cfg` (hidden ones included, as Prism does) - judged by its
+/// `mmc-pack.json`. Compatible first, most recently played first; then unknown, then the
+/// refused ones. `id` is the folder name: Prism's own instance id (`--launch <id>`).
+pub fn detect_in(prism_data: &Path) -> Vec<Candidate> {
+    let root = crate::prism::instances_dir(prism_data);
+    let mut out: Vec<Candidate> = dir_entries(&root)
+        .into_iter()
+        .filter(|dir| dir.join(crate::prism::INSTANCE_CFG).is_file())
+        .map(|dir| prism_candidate(&dir))
+        .collect();
+    out.sort_by(|a, b| {
+        let rank = |c: &Candidate| match c.compat {
+            Compat::Confirmed => 0,
+            Compat::Unknown => 1,
+            Compat::Incompatible(_) => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| recency(a, b))
     });
-    for (i, c) in out.iter_mut().enumerate() {
-        c.id = format!("d{i}");
-    }
     out
 }
 
-fn detect_prism(env: &Env) -> Vec<Candidate> {
-    let Some(root) = env.app_support().map(|p| p.join("PrismLauncher/instances")) else {
-        return Vec::new();
-    };
-    dir_entries(&root)
-        .into_iter()
-        .filter_map(|dir| {
-            let marker = dir.join("mmc-pack.json");
-            if !marker.is_file() {
-                return None;
-            }
-            let compat = match read_json(&marker) {
-                Some(v) => judge_mmc(&v),
-                None => Compat::Unknown,
-            };
-            Some(Candidate {
-                id: String::new(),
-                launcher: "Prism Launcher".to_string(),
-                name: dir_name(&dir),
-                game_dir: prism_game_dir(&dir),
-                compat,
-                marker: Some("mmc-pack.json".to_string()),
-            })
-        })
-        .collect()
+/// Prism's game folder rule (9.0 through 11.1.1, `MinecraftInstance::gameRoot`): the
+/// instance's `minecraft` folder, unless only `.minecraft` exists. A brand-new instance has
+/// neither yet; Prism will make `minecraft` on its first launch, and `install` creates
+/// `<gameDir>/mods` regardless, so that not-yet-created folder is a valid target too.
+pub fn prism_game_dir(instance: &Path) -> PathBuf {
+    let modern = instance.join("minecraft");
+    let legacy = instance.join(".minecraft");
+    if !modern.exists() && legacy.exists() {
+        legacy
+    } else {
+        modern
+    }
 }
 
-/// Prism keeps the game files in a subdirectory of the instance, not the instance root
-/// itself - `.minecraft` on most layouts, `minecraft` on others. Neither existing yet is
-/// normal for a freshly created instance, in which case `.minecraft` is the one Prism will
-/// make - on the instance's first launch, which may well come AFTER the user points
-/// Cobblify at it. Detection offers such an instance, so the adopt paths
-/// (`classify_picked`, `revalidate`) accept that not-yet-created directory too: the
-/// instance root's `mmc-pack.json` is what proves the target, and `install` creates
-/// `<gameDir>/mods` regardless.
-fn prism_game_dir(instance: &Path) -> PathBuf {
-    for name in [".minecraft", "minecraft"] {
-        let candidate = instance.join(name);
-        if candidate.is_dir() {
-            return candidate;
-        }
+/// The instance folder a game folder belongs to: the folder itself, or its parent, when
+/// it holds both `instance.cfg` (what Prism lists) and `mmc-pack.json` (what we judge).
+pub fn instance_root(game_dir: &Path) -> Option<PathBuf> {
+    if is_instance_root(game_dir) {
+        return Some(game_dir.to_path_buf());
     }
-    instance.join(".minecraft")
+    game_dir
+        .parent()
+        .filter(|p| is_instance_root(p))
+        .map(Path::to_path_buf)
+}
+
+fn is_instance_root(dir: &Path) -> bool {
+    dir.join(crate::prism::INSTANCE_CFG).is_file() && dir.join(crate::prism::PACK_FILE).is_file()
 }
 
 fn dir_name(p: &Path) -> String {
@@ -281,69 +333,104 @@ fn dir_name(p: &Path) -> String {
         .into_owned()
 }
 
-/// Prism records the version as a component list rather than two fields.
+/// Prism records the version as a component list rather than two fields. A component
+/// with `"disabled": true` is not part of the game, so it counts for nothing.
+#[cfg(test)]
 fn judge_mmc(v: &Value) -> Compat {
+    judge_pack(v).0
+}
+
+/// The verdict plus the pick's detail line ("Forge <version>").
+fn judge_pack(v: &Value) -> (Compat, String) {
     let Some(components) = v.get("components").and_then(Value::as_array) else {
-        return Compat::Unknown;
+        return (Compat::Unknown, String::new());
     };
     let mut mc_version = "";
-    let mut has_forge = false;
+    let mut forge_version = None;
     for c in components {
+        if c.get("disabled").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
         let uid = c.get("uid").and_then(Value::as_str).unwrap_or("");
         let version = c.get("version").and_then(Value::as_str).unwrap_or("");
         match uid {
             "net.minecraft" => mc_version = version,
-            "net.minecraftforge" => has_forge = true,
+            "net.minecraftforge" => forge_version = Some(version),
             _ => {}
         }
     }
+    let detail = match forge_version {
+        Some(v) if !v.is_empty() => format!("Forge {v}"),
+        Some(_) => "Forge".to_string(),
+        None => String::new(),
+    };
     if mc_version.is_empty() {
-        return Compat::Unknown;
+        return (Compat::Unknown, detail);
     }
     if mc_version != "1.8.9" {
-        return Compat::Incompatible(format!(
-            "This instance is Minecraft {mc_version}, not 1.8.9."
-        ));
+        return (
+            Compat::Incompatible(format!("This instance is Minecraft {mc_version}, not 1.8.9.")),
+            detail,
+        );
     }
-    if !has_forge {
-        return Compat::Incompatible("This instance does not have Forge installed.".to_string());
+    if forge_version.is_none() {
+        return (
+            Compat::Incompatible("This instance does not have Forge installed.".to_string()),
+            detail,
+        );
     }
-    Compat::Confirmed
+    (Compat::Confirmed, detail)
 }
 
 fn prism_instance_from_game_dir(game_dir: &Path) -> Result<PathBuf, String> {
-    if game_dir.join("mmc-pack.json").is_file() {
-        return Ok(game_dir.to_path_buf());
-    }
-    let Some(parent) = game_dir.parent() else {
-        return Err("That is not a Prism instance.".to_string());
-    };
-    if parent.join("mmc-pack.json").is_file() {
-        return Ok(parent.to_path_buf());
-    }
-    Err("That is not a Prism instance.".to_string())
+    instance_root(game_dir).ok_or_else(|| "That is not a Prism instance.".to_string())
 }
 
-fn prism_candidate(instance_root: &Path, compat: Compat) -> Candidate {
+/// Reads one instance folder: `instance.cfg` (name, type, last launch) and `mmc-pack.json`.
+fn prism_candidate(instance_root: &Path) -> Candidate {
+    let cfg = crate::prism::read_ini(&instance_root.join(crate::prism::INSTANCE_CFG))
+        .unwrap_or_default();
+    let (mut compat, detail) = match read_json(&instance_root.join(crate::prism::PACK_FILE)) {
+        Some(v) => judge_pack(&v),
+        None => (Compat::Unknown, String::new()),
+    };
+    // Prism makes anything but an empty or "OneSix" type a NullInstance it cannot launch.
+    let kind = cfg.get("InstanceType").map(|t| t.trim()).unwrap_or("");
+    if !(kind.is_empty() || kind == "OneSix") {
+        compat = Compat::Incompatible("This is not a Minecraft instance.".to_string());
+    }
+    let name = cfg
+        .get("name")
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| dir_name(instance_root));
+    let last_launch_ms = cfg
+        .get("lastLaunchTime")
+        .and_then(|t| t.trim().parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
     Candidate {
-        id: String::new(),
+        id: dir_name(instance_root),
         launcher: "Prism Launcher".to_string(),
-        name: dir_name(instance_root),
+        name,
         game_dir: prism_game_dir(instance_root),
         compat,
         marker: Some("mmc-pack.json".to_string()),
+        detail,
+        last_launch_ms,
     }
 }
 
 /// The one path that is allowed not to exist yet: the game directory Prism itself will
 /// create inside an instance whose marker we can already read. Narrow on purpose - the
-/// name alone proves nothing, so the parent must carry `mmc-pack.json`.
+/// name alone proves nothing, so the parent must be an instance (`instance.cfg` and
+/// `mmc-pack.json`).
 fn is_unborn_prism_game_dir(dir: &Path) -> bool {
     if !matches!(dir_name(dir).as_str(), ".minecraft" | "minecraft") {
         return false;
     }
-    dir.parent()
-        .is_some_and(|inst| inst.join("mmc-pack.json").is_file())
+    dir.parent().is_some_and(is_instance_root)
 }
 
 /// Re-reads a remembered Prism instance from its stored game directory.
@@ -357,11 +444,7 @@ pub fn classify_picked(dir: &Path) -> Result<Candidate, String> {
         dir.to_path_buf()
     };
     let instance_root = prism_instance_from_game_dir(&game_dir)?;
-    let compat = match read_json(&instance_root.join("mmc-pack.json")) {
-        Some(v) => judge_mmc(&v),
-        None => Compat::Unknown,
-    };
-    Ok(prism_candidate(&instance_root, compat))
+    Ok(prism_candidate(&instance_root))
 }
 
 // ── stale jars ──────────────────────────────────────────────────────────────────
@@ -520,6 +603,64 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, String> {
     // 1. DISCOVERY FIRST, and it must complete. Nothing is deleted and nothing is staged
     //    until we know everything that is in both load roots, because the decision in
     //    step 2 depends on having seen all of it.
+    let OldJars {
+        stale,
+        set_aside,
+        mut conflicts,
+    } = scan_old_jars(jar, game_dir)?;
+
+    // 2. If ANYTHING ambiguous is present, install nothing. Adding our jar beside a
+    //    Cobblify jar we are not allowed to touch would itself create the two-mod-id
+    //    state that stops Forge booting - reporting it while causing it is no good.
+    if !conflicts.is_empty() {
+        conflicts.sort();
+        return Ok(Outcome {
+            path: None,
+            conflicts,
+            blocked: true,
+        });
+    }
+
+    // 3. Stage. `None` means our jar is already byte-identical (Windows) - no commit
+    //    needed, which is NOT the same as nothing left to do; the scan above ran anyway.
+    let staged = stage_verified(&jar.src, &dest, &jar.sha256)?;
+
+    // 4. Superseded releases, in both load roots. Windows refuses while the game has one
+    //    open; the staged jar is then dropped uncommitted.
+    remove_stale(&stale)?;
+
+    // 5. Commit. The rename replaces a different build at our own name - most often the
+    //    dev build of this same version.
+    if let Some(staged) = staged {
+        commit(staged)?;
+    }
+
+    // 6. FML never loads a set-aside copy, so clearing them is tidying only and a failure
+    //    here never fails the install.
+    for path in set_aside {
+        let _ = fs::remove_file(path);
+    }
+    Ok(Outcome {
+        path: Some(dest.display().to_string()),
+        conflicts: Vec::new(),
+        blocked: false,
+    })
+}
+
+/// Every Cobblify jar in both FML load roots of `game_dir`, sorted into what `install`
+/// would delete, the copies older launchers set aside, and the ones nobody may touch.
+/// Reads only; a missing mods folder is simply empty. Setup's check 5 is this scan plus
+/// [`remove_old_jars`]; `install` runs it again before it commits.
+#[derive(Debug, Default)]
+pub struct OldJars {
+    pub stale: Vec<PathBuf>,
+    pub set_aside: Vec<PathBuf>,
+    pub conflicts: Vec<String>,
+}
+
+pub fn scan_old_jars(jar: &ForgeJar, game_dir: &Path) -> Result<OldJars, String> {
+    let mods_dir = game_dir.join("mods");
+    let dest = mods_dir.join(&jar.name);
     let mut stale = Vec::new();
     let mut set_aside = Vec::new();
     let mut conflicts = Vec::new();
@@ -565,26 +706,19 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, String> {
         }
     }
 
-    // 2. If ANYTHING ambiguous is present, install nothing. Adding our jar beside a
-    //    Cobblify jar we are not allowed to touch would itself create the two-mod-id
-    //    state that stops Forge booting - reporting it while causing it is no good.
-    if !conflicts.is_empty() {
-        conflicts.sort();
-        return Ok(Outcome {
-            path: None,
-            conflicts,
-            blocked: true,
-        });
-    }
+    conflicts.sort();
+    Ok(OldJars {
+        stale,
+        set_aside,
+        conflicts,
+    })
+}
 
-    // 3. Stage. `None` means our jar is already byte-identical (Windows) - no commit
-    //    needed, which is NOT the same as nothing left to do; the scan above ran anyway.
-    let staged = stage_verified(&jar.src, &dest, &jar.sha256)?;
-
-    // 4. Superseded releases, in both load roots. Windows refuses while the game has one
-    //    open; the staged jar is then dropped uncommitted.
+/// Deletes superseded releases; the first that cannot go stops (a second loadable copy
+/// beside ours would stop Forge booting).
+fn remove_stale(stale: &[PathBuf]) -> Result<(), String> {
     for path in stale {
-        match fs::remove_file(&path) {
+        match fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -595,23 +729,17 @@ pub fn install(jar: &ForgeJar, game_dir: &Path) -> Result<Outcome, String> {
             }
         }
     }
+    Ok(())
+}
 
-    // 5. Commit. The rename replaces a different build at our own name - most often the
-    //    dev build of this same version.
-    if let Some(staged) = staged {
-        commit(staged)?;
-    }
-
-    // 6. FML never loads a set-aside copy, so clearing them is tidying only and a failure
-    //    here never fails the install.
-    for path in set_aside {
+/// Check 5's removal: the superseded releases (strict) and the set-aside copies (best
+/// effort). Callers have already refused on `conflicts`.
+pub fn remove_old_jars(old: &OldJars) -> Result<(), String> {
+    remove_stale(&old.stale)?;
+    for path in &old.set_aside {
         let _ = fs::remove_file(path);
     }
-    Ok(Outcome {
-        path: Some(dest.display().to_string()),
-        conflicts: Vec::new(),
-        blocked: false,
-    })
+    Ok(())
 }
 
 // ── remembering the choice ──────────────────────────────────────────────────────
@@ -631,32 +759,69 @@ pub struct SavedTarget {
     pub validated_by: ValidatedBy,
     #[serde(default)]
     pub marker: Option<String>,
+    /// Cobblify made this instance ("Cobblify 1.8.9").
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub made: bool,
+    /// A made instance whose first launch (Prism downloads Minecraft and Forge) has not
+    /// happened yet - Phase 3's "Downloading Minecraft".
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub first_launch_pending: bool,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl SavedTarget {
+    /// A marker-validated Prism target for `game_dir`, with no flags.
+    pub fn prism(game_dir: &Path) -> Self {
+        SavedTarget {
+            game_dir: game_dir.display().to_string(),
+            validated_by: ValidatedBy::Marker,
+            marker: Some("mmc-pack.json".to_string()),
+            made: false,
+            first_launch_pending: false,
+        }
+    }
+
+    /// The instance's game folder by Prism's rule NOW (the saved path may predate it).
+    pub fn current_game_dir(&self) -> PathBuf {
+        let saved = PathBuf::from(&self.game_dir);
+        match instance_root(&saved) {
+            Some(root) => prism_game_dir(&root),
+            None => saved,
+        }
+    }
+}
+
+/// The file's whole shape. Unknown keys are tolerated both ways (0.17 reads `forge` only).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SavedTargets {
     #[serde(default)]
     forge: Option<SavedTarget>,
+    /// An instance Cobblify made whose setup has not finished yet (set at check 4, cleared
+    /// when check 6 saves the target), so a later run still treats it as made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    made_pending: Option<String>,
 }
 
 fn targets_path(home: &Path) -> PathBuf {
     home.join(".cobblify").join(TARGETS_FILE)
 }
 
-pub fn load_target(home: &Path) -> Option<SavedTarget> {
-    let raw = fs::read(targets_path(home)).ok()?;
-    serde_json::from_slice::<SavedTargets>(&raw).ok()?.forge
+fn read_targets(home: &Path) -> SavedTargets {
+    fs::read(targets_path(home))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<SavedTargets>(&raw).ok())
+        .unwrap_or_default()
 }
 
 /// Temp file then rename, so an interrupted write leaves the previous record intact.
-pub fn save_target(home: &Path, target: &SavedTarget) -> Result<(), String> {
+fn write_targets(home: &Path, saved: &SavedTargets) -> Result<(), String> {
     let path = targets_path(home);
     let dir = path.parent().unwrap_or(home);
     fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
-    let saved = SavedTargets {
-        forge: Some(target.clone()),
-    };
-    let json = serde_json::to_string_pretty(&saved)
+    let json = serde_json::to_string_pretty(saved)
         .map_err(|e| format!("Cannot record the chosen Prism instance: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, json).map_err(|e| format!("Cannot write {}: {e}", tmp.display()))?;
@@ -664,6 +829,66 @@ pub fn save_target(home: &Path, target: &SavedTarget) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         format!("Cannot record the chosen folder: {e}")
     })
+}
+
+pub fn load_target(home: &Path) -> Option<SavedTarget> {
+    read_targets(home).forge
+}
+
+/// The saved instance's game folder by Prism's rule, for the readers of its logs and config.
+pub fn saved_game_dir(home: &Path) -> Option<PathBuf> {
+    load_target(home).map(|t| t.current_game_dir())
+}
+
+/// Saves the target (keeping the rest of the file). A target for a made instance clears
+/// the pending record.
+pub fn save_target(home: &Path, target: &SavedTarget) -> Result<(), String> {
+    let mut saved = read_targets(home);
+    saved.forge = Some(target.clone());
+    if target.made {
+        saved.made_pending = None;
+    }
+    write_targets(home, &saved)
+}
+
+/// Saves `c` as the target, keeping the made/first-launch flags of a previous record for
+/// the same instance (the silent refresh re-adopts the instance on every startup).
+pub fn save_adopted(home: &Path, c: &Candidate) -> Result<(), String> {
+    let mut target = SavedTarget::prism(&c.game_dir);
+    if let Some(prev) = load_target(home) {
+        let root = c.instance_root();
+        if root.is_some() && instance_root_of_saved(&prev) == root {
+            target.made = prev.made;
+            target.first_launch_pending = prev.first_launch_pending;
+        }
+    }
+    save_target(home, &target)
+}
+
+/// Records (or clears) the made instance whose setup is still in progress.
+pub fn set_made_pending(home: &Path, instance: Option<&Path>) -> Result<(), String> {
+    let mut saved = read_targets(home);
+    saved.made_pending = instance.map(|p| p.display().to_string());
+    write_targets(home, &saved)
+}
+
+/// Whether `instance_root` is an instance Cobblify made: the saved made target, or the
+/// one whose setup is still pending.
+pub fn is_made(home: &Path, instance_root: &Path) -> bool {
+    let saved = read_targets(home);
+    let pending = saved
+        .made_pending
+        .as_deref()
+        .is_some_and(|p| Path::new(p) == instance_root);
+    let target = saved.forge.is_some_and(|t| {
+        t.made && instance_root_of_saved(&t).as_deref() == Some(instance_root)
+    });
+    pending || target
+}
+
+fn instance_root_of_saved(t: &SavedTarget) -> Option<PathBuf> {
+    let saved = PathBuf::from(&t.game_dir);
+    instance_root(&saved).or_else(|| saved.parent().map(Path::to_path_buf))
 }
 
 /// Re-checks a remembered Prism target. `None` means "ask again" - the instance is gone,
@@ -689,7 +914,7 @@ pub fn revalidate(saved: &SavedTarget) -> Option<Candidate> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
@@ -697,6 +922,20 @@ mod tests {
 
     /// A Prism `mmc-pack.json` that `judge_mmc` confirms.
     const CONFIRMED_PACK: &[u8] = br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#;
+
+    /// A Prism instance folder as Prism lists it: `instance.cfg` plus `mmc-pack.json`.
+    pub(crate) fn write_instance(dir: &Path, pack: &[u8], last_launch_ms: i64) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("instance.cfg"),
+            format!(
+                "[General]\nConfigVersion=1.3\nInstanceType=OneSix\nname={}\nlastLaunchTime={last_launch_ms}\n",
+                dir_name(dir)
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("mmc-pack.json"), pack).unwrap();
+    }
 
     fn sha(bytes: &[u8]) -> String {
         Sha256::digest(bytes)
@@ -1182,17 +1421,24 @@ mod tests {
         assert!(matches!(judge_mmc(&wrong_version), Compat::Incompatible(_)));
 
         assert_eq!(judge_mmc(&serde_json::json!({})), Compat::Unknown);
+
+        // A disabled component is not part of the game.
+        let forge_disabled = serde_json::json!({"components":[
+            {"uid":"net.minecraft","version":"1.8.9"},
+            {"uid":"net.minecraftforge","version":"11.15.1.2318","disabled":true}]});
+        assert!(matches!(judge_mmc(&forge_disabled), Compat::Incompatible(_)));
+        let other_disabled = serde_json::json!({"components":[
+            {"uid":"net.minecraft","version":"1.8.9"},
+            {"uid":"net.fabricmc.fabric-loader","version":"x","disabled":true},
+            {"uid":"net.minecraftforge","version":"11.15.1.2318","disabled":false}]});
+        assert_eq!(judge_pack(&other_disabled), (Compat::Confirmed, "Forge 11.15.1.2318".to_string()));
     }
 
     #[test]
     fn a_prism_game_directory_is_reparsed_from_its_saved_target() {
         let inst = tempfile::tempdir().unwrap();
         fs::create_dir_all(inst.path().join("minecraft")).unwrap();
-        fs::write(
-            inst.path().join("mmc-pack.json"),
-            br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
-        )
-        .unwrap();
+        write_instance(inst.path(), CONFIRMED_PACK, 0);
 
         let c = classify_picked(&inst.path().join("minecraft")).unwrap();
         assert_eq!(c.compat, Compat::Confirmed);
@@ -1204,7 +1450,7 @@ mod tests {
     fn unreadable_prism_metadata_is_unknown_and_not_installable() {
         let inst = tempfile::tempdir().unwrap();
         fs::create_dir_all(inst.path().join(".minecraft")).unwrap();
-        fs::write(inst.path().join("mmc-pack.json"), b"{").unwrap();
+        write_instance(inst.path(), b"{", 0);
 
         let c = classify_picked(&inst.path().join(".minecraft")).unwrap();
         assert_eq!(c.compat, Compat::Unknown);
@@ -1217,16 +1463,36 @@ mod tests {
         assert!(classify_picked(dir.path()).is_err());
     }
 
+    /// Prism 9+'s rule: `minecraft` unless only `.minecraft` exists - so `minecraft` wins
+    /// when both exist, and is the folder of a brand-new instance.
     #[test]
-    fn prism_game_dir_prefers_an_existing_layout_and_defaults_to_dot_minecraft() {
+    fn prism_game_dir_is_minecraft_unless_only_dot_minecraft_exists() {
         let inst = tempfile::tempdir().unwrap();
-        assert_eq!(prism_game_dir(inst.path()), inst.path().join(".minecraft"));
-
-        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
-        assert_eq!(prism_game_dir(inst.path()), inst.path().join("minecraft"));
+        assert_eq!(prism_game_dir(inst.path()), inst.path().join("minecraft"), "neither yet");
 
         fs::create_dir_all(inst.path().join(".minecraft")).unwrap();
-        assert_eq!(prism_game_dir(inst.path()), inst.path().join(".minecraft"));
+        assert_eq!(prism_game_dir(inst.path()), inst.path().join(".minecraft"), "only .minecraft");
+
+        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
+        assert_eq!(prism_game_dir(inst.path()), inst.path().join("minecraft"), "both");
+    }
+
+    /// A saved `.minecraft` target is re-resolved by the rule: once both folders exist,
+    /// installs, logs and the theme all use `minecraft`, where Prism runs the game.
+    #[test]
+    fn a_saved_dot_minecraft_target_follows_the_rule() {
+        let home = tempfile::tempdir().unwrap();
+        let inst = tempfile::tempdir().unwrap();
+        write_instance(inst.path(), CONFIRMED_PACK, 0);
+        fs::create_dir_all(inst.path().join(".minecraft/mods")).unwrap();
+        let saved = SavedTarget::prism(&inst.path().join(".minecraft"));
+        save_target(home.path(), &saved).unwrap();
+        assert_eq!(saved_game_dir(home.path()), Some(inst.path().join(".minecraft")));
+        assert_eq!(revalidate(&saved).unwrap().game_dir, inst.path().join(".minecraft"));
+
+        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
+        assert_eq!(saved_game_dir(home.path()), Some(inst.path().join("minecraft")));
+        assert_eq!(revalidate(&saved).unwrap().game_dir, inst.path().join("minecraft"));
     }
 
     /// L5: Prism creates `.minecraft` on the instance's FIRST launch, so a brand-new
@@ -1245,9 +1511,8 @@ mod tests {
             .app_support()
             .unwrap()
             .join("PrismLauncher/instances/Fresh");
-        fs::create_dir_all(&inst).unwrap();
-        fs::write(inst.join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
-        let game_dir = inst.join(".minecraft");
+        write_instance(&inst, CONFIRMED_PACK, 0);
+        let game_dir = inst.join("minecraft");
 
         let found = detect(&env);
         assert_eq!(found.len(), 1);
@@ -1259,11 +1524,7 @@ mod tests {
         assert_eq!(picked.compat, Compat::Confirmed);
         assert_eq!(picked.game_dir, game_dir);
 
-        let saved = SavedTarget {
-            game_dir: game_dir.display().to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: Some("mmc-pack.json".to_string()),
-        };
+        let saved = SavedTarget::prism(&game_dir);
         assert!(
             revalidate(&saved).is_some(),
             "a remembered fresh instance must survive a restart"
@@ -1287,17 +1548,13 @@ mod tests {
         );
 
         let inst = tempfile::tempdir().unwrap();
-        fs::write(inst.path().join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
+        write_instance(inst.path(), CONFIRMED_PACK, 0);
         let saves = inst.path().join("saves");
         assert!(
             classify_picked(&saves).is_err(),
             "a missing folder Prism would not create is still not a folder"
         );
-        let saved = SavedTarget {
-            game_dir: saves.display().to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: Some("mmc-pack.json".to_string()),
-        };
+        let saved = SavedTarget::prism(&saves);
         assert!(revalidate(&saved).is_none());
     }
 
@@ -1312,6 +1569,8 @@ mod tests {
             game_dir: PathBuf::from("/tmp/hypixel/minecraft"),
             compat: Compat::Confirmed,
             marker: Some("mmc-pack.json".to_string()),
+            detail: "Forge 11.15.1.2318".to_string(),
+            last_launch_ms: 5,
         };
         assert_eq!(
             c.view(),
@@ -1319,6 +1578,11 @@ mod tests {
                 id: "d0".to_string(),
                 name: "Hypixel".to_string(),
             }
+        );
+        assert_eq!(
+            serde_json::to_value(c.instance_view()).unwrap(),
+            serde_json::json!({"id": "d0", "name": "Hypixel", "detail": "Forge 11.15.1.2318",
+                               "last_launch_ms": 5})
         );
     }
 
@@ -1338,10 +1602,11 @@ mod tests {
                 br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#.as_slice(),
             ),
         ] {
-            let dir = root.join(name);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("mmc-pack.json"), json).unwrap();
+            write_instance(&root.join(name), json, 0);
         }
+        // Prism lists only folders with instance.cfg: an mmc-pack.json alone is invisible.
+        fs::create_dir_all(root.join("NoCfg")).unwrap();
+        fs::write(root.join("NoCfg/mmc-pack.json"), CONFIRMED_PACK).unwrap();
         let found = detect(&env);
         assert_eq!(found.len(), 2);
         assert!(found.iter().all(|c| c.launcher == "Prism Launcher"));
@@ -1371,14 +1636,12 @@ mod tests {
                 r#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
             ),
         ] {
-            let dir = root.join(name);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("mmc-pack.json"), json).unwrap();
+            write_instance(&root.join(name), json.as_bytes(), 0);
         }
         let found = detect(&env);
         assert_eq!(found[0].name, "ZZZ-right");
         assert_eq!(found[0].compat, Compat::Confirmed);
-        assert_eq!(found[0].id, "d0");
+        assert_eq!(found[0].id, "ZZZ-right", "the id is Prism's own: the folder name");
         assert!(found.iter().all(|c| !c.id.is_empty()));
     }
 
@@ -1398,11 +1661,7 @@ mod tests {
     #[test]
     fn a_saved_target_round_trips() {
         let home = tempfile::tempdir().unwrap();
-        let t = SavedTarget {
-            game_dir: "C:/games/hypixel".to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: Some("mmc-pack.json".to_string()),
-        };
+        let t = SavedTarget::prism(Path::new("C:/games/hypixel"));
         save_target(home.path(), &t).unwrap();
         let back = load_target(home.path()).unwrap();
         assert_eq!(back.game_dir, t.game_dir);
@@ -1424,9 +1683,9 @@ mod tests {
     #[test]
     fn a_vanished_folder_is_not_revalidated() {
         let t = SavedTarget {
-            game_dir: "/no/such/folder/anywhere".to_string(),
             validated_by: ValidatedBy::User,
             marker: None,
+            ..SavedTarget::prism(Path::new("/no/such/folder/anywhere"))
         };
         assert!(revalidate(&t).is_none());
     }
@@ -1435,9 +1694,9 @@ mod tests {
     fn legacy_user_confirmed_targets_are_not_revalidated() {
         let dir = tempfile::tempdir().unwrap();
         let t = SavedTarget {
-            game_dir: dir.path().display().to_string(),
             validated_by: ValidatedBy::User,
             marker: None,
+            ..SavedTarget::prism(dir.path())
         };
         assert!(revalidate(&t).is_none());
     }
@@ -1445,11 +1704,7 @@ mod tests {
     #[test]
     fn a_marker_that_no_longer_validates_is_not_revalidated() {
         let inst = tempfile::tempdir().unwrap();
-        let t = SavedTarget {
-            game_dir: inst.path().display().to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: Some("mmc-pack.json".to_string()),
-        };
+        let t = SavedTarget::prism(inst.path());
         // The folder exists but the marker is gone - the instance was deleted or moved.
         assert!(revalidate(&t).is_none());
     }
@@ -1459,16 +1714,129 @@ mod tests {
         let prism = tempfile::tempdir().unwrap();
         let prism_game = prism.path().join("minecraft");
         fs::create_dir_all(&prism_game).unwrap();
+        write_instance(prism.path(), CONFIRMED_PACK, 0);
+        let prism_saved = SavedTarget::prism(&prism_game);
+        assert_eq!(revalidate(&prism_saved).unwrap().compat, Compat::Confirmed);
+    }
+
+    // ── Phase 2: discovery, recency, flags, the split scan ─────────────────────
+
+    #[test]
+    fn discovery_reads_instance_dir_names_recency_and_types() {
+        let data = tempfile::tempdir().unwrap();
+        fs::write(data.path().join("prismlauncher.cfg"), "[General]\nInstanceDir=elsewhere\n").unwrap();
+        let root = data.path().join("elsewhere");
+        write_instance(&root.join("Old"), CONFIRMED_PACK, 100);
+        write_instance(&root.join("Recent"), CONFIRMED_PACK, 900);
+        write_instance(&root.join("b-never"), CONFIRMED_PACK, 0);
+        write_instance(&root.join("A-never"), CONFIRMED_PACK, 0);
+        write_instance(&root.join(".hidden"), CONFIRMED_PACK, 50);
+        write_instance(&root.join("Modern"), br#"{"components":[{"uid":"net.minecraft","version":"1.20.1"}]}"#, 999);
+        // A NullInstance type is never offered.
+        write_instance(&root.join("Legacy"), CONFIRMED_PACK, 999);
+        fs::write(root.join("Legacy/instance.cfg"), "[General]\nInstanceType=Legacy\n").unwrap();
+        // The default folder is not read when InstanceDir moves it.
+        write_instance(&data.path().join("instances/Ignored"), CONFIRMED_PACK, 0);
+
+        let found = detect_in(data.path());
+        let ids: Vec<&str> = found.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["Recent", "Old", ".hidden", "A-never", "b-never", "Modern", "Legacy"]);
+        let views = instance_views(&found);
+        let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, vec!["Recent", "Old", ".hidden", "A-never", "b-never"]);
+        assert_eq!(views[0].last_launch_ms, 900);
+        assert_eq!(views[0].detail, "Forge 11.15.1.2318");
+
+        // The display name is Prism's `name`, not the folder.
         fs::write(
-            prism.path().join("mmc-pack.json"),
-            br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
+            root.join("Recent/instance.cfg"),
+            "[General]\nConfigVersion=1.3\nname=My \"Bedwars\"\nlastLaunchTime=900\n",
         )
         .unwrap();
-        let prism_saved = SavedTarget {
-            game_dir: prism_game.display().to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: Some("mmc-pack.json".to_string()),
-        };
-        assert_eq!(revalidate(&prism_saved).unwrap().compat, Compat::Confirmed);
+        let found = detect_in(data.path());
+        assert_eq!(found[0].id, "Recent");
+        assert_eq!(found[0].name, "My \"Bedwars\"");
+    }
+
+    #[test]
+    fn an_instance_needs_instance_cfg_for_every_adopt_path() {
+        let inst = tempfile::tempdir().unwrap();
+        fs::create_dir_all(inst.path().join("minecraft")).unwrap();
+        fs::write(inst.path().join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
+        assert!(classify_picked(&inst.path().join("minecraft")).is_err());
+        assert!(revalidate(&SavedTarget::prism(&inst.path().join("minecraft"))).is_none());
+        fs::write(inst.path().join("instance.cfg"), "[General]\n").unwrap();
+        assert!(revalidate(&SavedTarget::prism(&inst.path().join("minecraft"))).is_some());
+    }
+
+    #[test]
+    fn made_flags_survive_a_silent_re_adopt_and_old_files_still_read() {
+        let home = tempfile::tempdir().unwrap();
+        let inst = tempfile::tempdir().unwrap();
+        write_instance(inst.path(), CONFIRMED_PACK, 0);
+        let game = inst.path().join("minecraft");
+        set_made_pending(home.path(), Some(inst.path())).unwrap();
+        assert!(is_made(home.path(), inst.path()));
+        assert!(load_target(home.path()).is_none(), "pending is not set up");
+
+        let made = SavedTarget { made: true, first_launch_pending: true, ..SavedTarget::prism(&game) };
+        save_target(home.path(), &made).unwrap();
+        let raw: Value = serde_json::from_slice(&fs::read(targets_path(home.path())).unwrap()).unwrap();
+        assert!(raw.get("made_pending").is_none(), "cleared once the target is saved");
+        assert_eq!(raw["forge"]["made"], true);
+        assert_eq!(raw["forge"]["first_launch_pending"], true);
+
+        let c = classify_picked(&game).unwrap();
+        save_adopted(home.path(), &c).unwrap();
+        let back = load_target(home.path()).unwrap();
+        assert!(back.made && back.first_launch_pending, "flags kept for the same instance");
+        assert!(is_made(home.path(), inst.path()));
+
+        // A different instance starts with no flags.
+        let other = tempfile::tempdir().unwrap();
+        write_instance(other.path(), CONFIRMED_PACK, 0);
+        save_adopted(home.path(), &classify_picked(&other.path().join("minecraft")).unwrap()).unwrap();
+        let back = load_target(home.path()).unwrap();
+        assert!(!back.made && !back.first_launch_pending);
+
+        // A 0.17 file (no flags) still reads; flags are omitted when false.
+        fs::write(
+            targets_path(home.path()),
+            r#"{"forge":{"game_dir":"/x/minecraft","validated_by":"marker","marker":"mmc-pack.json"}}"#,
+        )
+        .unwrap();
+        let old = load_target(home.path()).unwrap();
+        assert!(!old.made);
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("made").is_none() && json.get("first_launch_pending").is_none());
+    }
+
+    #[test]
+    fn the_old_jar_scan_reads_only_and_its_removal_clears_both_roots() {
+        let src = tempfile::tempdir().unwrap();
+        let game = tempfile::tempdir().unwrap();
+        let jar = forge_jar(src.path(), b"forge");
+        // No mods folder at all: empty, and nothing is created.
+        let none = scan_old_jars(&jar, game.path()).unwrap();
+        assert!(none.stale.is_empty() && none.conflicts.is_empty());
+        assert!(!game.path().join("mods").exists());
+
+        let mods = game.path().join("mods");
+        fs::create_dir_all(mods.join(VERSIONED_MODS_DIR)).unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+        fs::write(mods.join("1.8.9/cobblify-1.8.9-forge-0.7.0.jar"), b"older").unwrap();
+        fs::write(mods.join(format!("Cobblify-1.8.9-forge-0.6.0.jar{DISABLED_SUFFIX}")), b"x").unwrap();
+        fs::write(mods.join("Other.jar"), b"theirs").unwrap();
+        let old = scan_old_jars(&jar, game.path()).unwrap();
+        assert_eq!(old.stale.len(), 2);
+        assert_eq!(old.set_aside.len(), 1);
+        assert!(old.conflicts.is_empty());
+        assert!(mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(), "a scan deletes nothing");
+        remove_old_jars(&old).unwrap();
+        assert_eq!(entries_named(&mods, |_| true), vec!["1.8.9".to_string(), "Other.jar".to_string()]);
+        assert!(entries_named(&mods.join("1.8.9"), |_| true).is_empty());
+
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.9.0-dev.jar"), b"dev").unwrap();
+        assert_eq!(scan_old_jars(&jar, game.path()).unwrap().conflicts.len(), 1);
     }
 }

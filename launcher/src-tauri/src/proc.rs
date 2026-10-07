@@ -273,6 +273,77 @@ fn scan_snapshot() -> System {
     system
 }
 
+/// A Prism game for one instance: a Java process (exe `.../bin/java`) whose WORKING
+/// DIRECTORY is inside `game_dir`. Prism starts the game JVM in the instance's game folder.
+/// Read from an exe + cwd + user snapshot - never the command line, which carries the
+/// game's live access token (`no_production_snapshot_holds_any_command_line` covers this
+/// shape too).
+///
+/// `complete` is the game scan's proof (raw-list reconciliation, readable same-user exes),
+/// plus: a same-user Java process whose working directory cannot be read could be this
+/// game, so unless it is provably dead "none found" is not trusted.
+pub fn java_in_dir_scan(game_dir: &Path) -> GameJvmScan {
+    scan_cwd_in(game_dir, is_game_java_tail)
+}
+
+fn scan_cwd_in(dir: &Path, is_candidate: impl Fn(&Path) -> bool) -> GameJvmScan {
+    use crate::process_liveness::{process_exists, IdentityCheck};
+    let raw = raw_pid_list();
+    let system = cwd_snapshot();
+    let mut wanted = vec![dir.to_path_buf()];
+    if let Ok(real) = std::fs::canonicalize(dir) {
+        if real != dir {
+            wanted.push(real);
+        }
+    }
+    let inside = |cwd: &Path| wanted.iter().any(|w| path_has_prefix(cwd, w));
+    let own_uid = system
+        .process(sysinfo::Pid::from_u32(std::process::id()))
+        .and_then(|p| p.user_id().cloned());
+    let mut pids = Vec::new();
+    let mut unreadable_cwd = false;
+    for (pid, process) in system.processes() {
+        if !process.exe().is_some_and(&is_candidate) {
+            continue;
+        }
+        match process.cwd() {
+            Some(cwd) if !cwd.as_os_str().is_empty() => {
+                if inside(cwd) {
+                    pids.push(pid.as_u32());
+                }
+            }
+            _ => {
+                let other_user = match (process.user_id(), own_uid.as_ref()) {
+                    (Some(uid), Some(own)) => uid != own,
+                    _ => false,
+                };
+                if !other_user && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone {
+                    unreadable_cwd = true;
+                }
+            }
+        }
+    }
+    GameJvmScan {
+        complete: !unreadable_cwd && scan_is_complete(&system, raw),
+        pids,
+    }
+}
+
+/// Snapshot for `java_in_dir_scan`: executable path, working directory and owning user.
+/// Never argv.
+fn cwd_snapshot() -> System {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_user(UpdateKind::Always),
+    );
+    system
+}
+
 /// An own-user process whose executable path cannot be read only makes a scan
 /// uncertain if it could be a game JVM. macOS cannot read the path of a process
 /// whose binary was replaced after it started (an app that updated itself while
@@ -766,7 +837,11 @@ mod tests {
         let guard = spawn_canary();
         let pid = Pid::from_u32(guard.child.id());
         std::thread::sleep(std::time::Duration::from_millis(250));
-        for (shape, system) in [("exe", exe_snapshot()), ("exe+user", scan_snapshot())] {
+        for (shape, system) in [
+            ("exe", exe_snapshot()),
+            ("exe+user", scan_snapshot()),
+            ("exe+cwd+user", cwd_snapshot()),
+        ] {
             assert!(
                 system.process(pid).is_some(),
                 "{shape}: the canary child must be visible"
@@ -797,6 +872,41 @@ mod tests {
             lunar_launcher_pid_among(&[PathBuf::from("/nonexistent/Lunar Client.app/Contents/MacOS/Lunar Client")]),
             None
         );
+    }
+
+    /// The cwd scan reads working directories (the canary runs in a folder of ours and is
+    /// found there, and nowhere else) while argv stays empty in that same snapshot.
+    #[cfg(unix)]
+    #[test]
+    fn the_cwd_scan_finds_a_process_by_its_working_directory_without_argv() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("minecraft");
+        std::fs::create_dir_all(&game).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{CANARY}=1; read _l"))
+            .current_dir(&game)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn canary child");
+        let stdin = child.stdin.take();
+        let guard = KillOnDrop { child, _stdin: stdin };
+        let pid = guard.child.id();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        let system = cwd_snapshot();
+        let seen = system.process(Pid::from_u32(pid)).expect("canary visible");
+        assert!(seen.cmd().is_empty(), "exe+cwd refresh must never populate argv");
+        assert!(seen.cwd().is_some(), "the cwd is readable for our own child");
+
+        // macOS's /bin/sh may exec bash or dash: match any shell.
+        let shell = |exe: &Path| exe.file_name().is_some_and(|n| n.to_string_lossy().ends_with("sh"));
+        let found = scan_cwd_in(&game, shell);
+        assert!(found.pids.contains(&pid), "found by its working directory");
+        let elsewhere = scan_cwd_in(&dir.path().join("other"), shell);
+        assert!(!elsewhere.pids.contains(&pid));
+        // A game folder no Java runs in: nothing found (sh is not a java).
+        assert!(!java_in_dir_scan(&game).pids.contains(&pid));
     }
 
     /// The argv ban holds for the scan snapshot's exe+user refresh shape

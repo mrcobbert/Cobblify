@@ -29,21 +29,33 @@
 //!     are not re-run, but the game gate still runs before every write.
 //!   * Nothing here reads a process command line or keeps an account value.
 //!
-//! Prism (`kind: "forge"`) is Phase 2. For now checks 1-2 and 6 reuse the existing
-//! adopt/choose path (verify the Forge jar, find the instance, `forge::install` + save the
-//! target); checks 3-5 are TODOs that pass.
+//! Prism's six checks (`kind: "forge"`). Which instance is decided when the run begins
+//! ([`choose_instance`], default 25): the picked one, else the saved one, else the only
+//! compatible one, else none -> make one; several with no pick is `choose_instance`.
+//!   1. Cobblify's own files - the bundled Forge jar.
+//!   2. Find Prism - the app; the chosen instance is re-validated.
+//!   3. Signed in - Prism's `accounts.json` (an active, owning, non-Offline account).
+//!      Otherwise STOP `signin`, then the same hand-off as Lunar (default 23).
+//!   4. The instance is closed - a Java process working inside the instance is STOP
+//!      `game_open`. For a made instance: label `making_instance`, write "Cobblify 1.8.9".
+//!   5. Old Cobblify files - `forge::scan_old_jars` / `remove_old_jars`. For a made
+//!      instance first Java 8 (`prism_java`): label `java` only when it downloads.
+//!   6. Add Cobblify - `forge::install` into the instance, then save the target (a made
+//!      one is recorded `made` + `first_launch_pending`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::forge::{self, Candidate, Compat, SavedTarget, ValidatedBy};
+use crate::forge::{self, Candidate, Compat, SavedTarget};
 use crate::install;
 use crate::lifecycle::{Coordinator, LifecycleError};
 use crate::lunar_config;
 use crate::lunar_detect;
+use crate::prism;
+use crate::prism_java::{self, JavaEnv};
 use crate::resources::{self, ForgeJar, LunarJars};
 
 pub use crate::lifecycle::SetupKind as Kind;
@@ -83,10 +95,9 @@ pub enum Stop {
     ClosingLunar,
 }
 
-/// The long-check labels. `MakingInstance` and `Java` are Prism's (Phase 2).
+/// The long-check labels. `MakingInstance` and `Java` are Prism's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum Label {
     ClosingLunar,
     MakingInstance,
@@ -139,8 +150,10 @@ pub struct GameScan {
 pub trait World: Send + Sync {
     /// The installed Lunar app, if any.
     fn lunar_app(&self) -> Option<PathBuf>;
-    /// A fresh scan for a game of `kind` (Lunar: a game JVM under `~/.lunarclient/jre`).
-    fn game_scan(&self, kind: Kind) -> GameScan;
+    /// A fresh scan for a game of `kind`. Lunar: a game JVM under `~/.lunarclient/jre`
+    /// (`instance` is `None`). Prism: a Java process working inside `instance` (the
+    /// instance folder; `None` before a made instance exists, when nothing can run there).
+    fn game_scan(&self, kind: Kind, instance: Option<&Path>) -> GameScan;
     /// Whether Lunar's launcher runs; `Err` = cannot tell (treated as a failure, never as
     /// "not running").
     fn lunar_running(&self) -> Result<bool, String>;
@@ -149,8 +162,8 @@ pub trait World: Send + Sync {
     /// Unminimize, show and focus the Cobblify window, and bounce the Dock icon once.
     fn bring_forward(&self);
     fn prism_installed(&self) -> bool;
-    /// Detected Prism instances (only consulted when none was chosen or saved).
-    fn forge_candidates(&self) -> Vec<Candidate>;
+    /// Java facts and the network, for a made instance's Java 8.
+    fn java(&self) -> &dyn JavaEnv;
     /// A monotonic clock.
     fn now(&self) -> Duration;
     fn sleep(&self, d: Duration);
@@ -161,6 +174,59 @@ pub trait World: Send + Sync {
 pub struct Paths {
     pub home: PathBuf,
     pub resource_dir: PathBuf,
+    /// Prism's data directory (`~/Library/Application Support/PrismLauncher`).
+    pub prism: PathBuf,
+}
+
+/// The Prism instance a run sets up.
+#[derive(Debug, Clone)]
+pub enum Instance {
+    /// A compatible instance the player has: picked, saved, or the only one.
+    Existing(Candidate),
+    /// None was compatible: check 4 makes "Cobblify 1.8.9".
+    Make,
+    /// Made by Cobblify - in this run, or in one that stopped before saving it.
+    Made(Candidate),
+}
+
+impl Instance {
+    fn candidate(&self) -> Option<&Candidate> {
+        match self {
+            Instance::Existing(c) | Instance::Made(c) => Some(c),
+            Instance::Make => None,
+        }
+    }
+}
+
+/// `begin_setup`'s refusal when Prism has several compatible instances and none was picked:
+/// the UI shows the pick first.
+pub const CHOOSE_INSTANCE: &str = "choose_instance";
+
+/// Which instance a Prism setup works on (default 25: decided when it begins).
+pub fn choose_instance(
+    home: &Path,
+    prism_data: &Path,
+    picked: Option<Candidate>,
+) -> Result<Instance, String> {
+    let wrap = |c: Candidate| match c.instance_root() {
+        Some(root) if forge::is_made(home, &root) => Instance::Made(c),
+        _ => Instance::Existing(c),
+    };
+    if let Some(c) = picked {
+        return Ok(wrap(c));
+    }
+    if let Some(saved) = forge::load_target(home).as_ref().and_then(forge::revalidate) {
+        return Ok(wrap(saved));
+    }
+    let mut confirmed: Vec<Candidate> = forge::detect_in(prism_data)
+        .into_iter()
+        .filter(|c| c.compat == Compat::Confirmed)
+        .collect();
+    match confirmed.len() {
+        0 => Ok(Instance::Make),
+        1 => Ok(wrap(confirmed.remove(0))),
+        _ => Err(CHOOSE_INSTANCE.to_string()),
+    }
 }
 
 /// A claimed run, ready to go.
@@ -169,7 +235,7 @@ pub struct Run {
     pub(crate) kind: Kind,
     /// The first check to run, 1..=6.
     pub(crate) from: u8,
-    pub(crate) forge: Option<Candidate>,
+    pub(crate) forge: Option<Instance>,
 }
 
 /// How a run ended.
@@ -184,7 +250,7 @@ pub enum Outcome {
 struct Resume {
     kind: Kind,
     failed_at: u8,
-    forge: Option<Candidate>,
+    forge: Option<Instance>,
 }
 
 #[derive(Default)]
@@ -237,7 +303,7 @@ impl Service {
     /// Claims the coordinator for a fresh run of `kind` from check 1. Refused ("busy",
     /// "active", ...) while anything else - another setup included, stopped or not - holds
     /// it. A fresh begin forgets any earlier failure.
-    pub fn begin(&self, kind: Kind, forge: Option<Candidate>) -> Result<Run, String> {
+    pub fn begin(&self, kind: Kind, forge: Option<Instance>) -> Result<Run, String> {
         let mut coordinator = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let gen = coordinator.try_begin_setup(kind).map_err(lifecycle_code)?;
         let mut board = self.board.lock().unwrap_or_else(|e| e.into_inner());
@@ -384,7 +450,7 @@ struct Runner<'a> {
     passed: u8,
     lunar_jars: Option<LunarJars>,
     forge_jar: Option<ForgeJar>,
-    forge: Option<Candidate>,
+    forge: Option<Instance>,
 }
 
 impl Runner<'_> {
@@ -478,9 +544,10 @@ impl Runner<'_> {
         let mut waited = false;
         let mut shown = false;
         let mut uncertain = 0u32;
+        let instance = self.instance_root();
         loop {
             self.alive()?;
-            let scan = self.world.game_scan(self.kind);
+            let scan = self.world.game_scan(self.kind, instance.as_deref());
             if !scan.running && scan.complete {
                 if shown {
                     self.show(None, None)?;
@@ -538,15 +605,22 @@ impl Runner<'_> {
         Ok(jars)
     }
 
-    fn lunar_ready_to_set_up(&self) -> bool {
-        lunar_detect::signed_in(&self.paths.home) && lunar_detect::opened_once(&self.paths.home)
+    /// Check 3's fact. Lunar's first run creates `launcher.json` and sign-in writes
+    /// `accounts.json`; setup needs both (the first to register into, the second because
+    /// "setup finishes when Launch will work"). Prism: an active, owning account.
+    fn signed_in_now(&self) -> bool {
+        match self.kind {
+            Kind::Lunar => {
+                lunar_detect::signed_in(&self.paths.home)
+                    && lunar_detect::opened_once(&self.paths.home)
+            }
+            Kind::Forge => prism::signed_in(&self.paths.prism),
+        }
     }
 
-    /// Check 3. Lunar's first run creates `launcher.json` and sign-in writes
-    /// `accounts.json`; setup needs both (the first to register into, the second because
-    /// "setup finishes when Launch will work").
+    /// Check 3, both clients: the sign-in stop, then the hand-off (default 23).
     fn wait_signed_in(&mut self) -> Step {
-        if self.lunar_ready_to_set_up() {
+        if self.signed_in_now() {
             return Ok(());
         }
         self.show(Some(Stop::Signin), None)?;
@@ -555,9 +629,9 @@ impl Runner<'_> {
             self.alive()?;
             self.world.sleep(STOP_POLL);
             self.alive()?;
-            seen = if self.lunar_ready_to_set_up() { seen + 1 } else { 0 };
+            seen = if self.signed_in_now() { seen + 1 } else { 0 };
         }
-        // The hand-off: Lunar is probably frontmost, with its sign-in window.
+        // The hand-off: the client is probably frontmost, with its sign-in window.
         self.world.bring_forward();
         self.world.sleep(HANDOFF_BEAT);
         self.alive()?;
@@ -655,7 +729,7 @@ impl Runner<'_> {
         }
     }
 
-    // ── Prism (Phase 1: the existing adopt/choose path) ─────────────────────────
+    // ── Prism ───────────────────────────────────────────────────────────────────
 
     fn forge_check(&mut self, k: u8) -> Step {
         match k {
@@ -663,25 +737,10 @@ impl Runner<'_> {
                 self.forge_jar = None;
                 self.forge_jar().map(|_| ())
             }
-            2 => {
-                if !self.world.prism_installed() {
-                    return Err(fail("Prism Launcher is not installed."));
-                }
-                let target = self.resolve_forge_target()?;
-                self.forge = Some(target);
-                Ok(())
-            }
-            // TODO(Phase 2): Prism sign-in - accounts.json (formatVersion 3) with an owning,
-            // active, non-Offline account; otherwise the `signin` stop.
-            3 => Ok(()),
-            // TODO(Phase 2): the chosen instance must be closed (a Java process whose
-            // working directory is inside its game folder -> `game_open`), or "Making a
-            // 1.8.9 instance" for a made one.
-            4 => Ok(()),
-            // TODO(Phase 2): split forge::install's stale-release scan into this step (and
-            // "Downloading Java 8" for a made instance). Until then check 6's
-            // forge::install still clears superseded releases itself.
-            5 => Ok(()),
+            2 => self.find_instance(),
+            3 => self.wait_signed_in(),
+            4 => self.instance_closed_or_made(),
+            5 => self.java_and_old_files(),
             6 => self.add_to_instance(),
             _ => Ok(()),
         }
@@ -701,54 +760,151 @@ impl Runner<'_> {
         Ok(jar)
     }
 
-    /// The chosen instance (re-validated now), else the saved one, else the only
-    /// compatible one detected.
-    fn resolve_forge_target(&self) -> Result<Candidate, Halt> {
-        if let Some(chosen) = &self.forge {
-            let fresh = forge::classify_picked(&chosen.game_dir).map_err(fail)?;
-            if fresh.compat != Compat::Confirmed || fresh.marker != chosen.marker {
-                return Err(fail("That Prism instance changed since it was listed."));
-            }
-            return Ok(fresh);
-        }
-        if let Some(saved) = forge::load_target(&self.paths.home)
-            .as_ref()
-            .and_then(forge::revalidate)
-        {
-            return Ok(saved);
-        }
-        let mut confirmed: Vec<Candidate> = self
-            .world
-            .forge_candidates()
-            .into_iter()
-            .filter(|c| c.compat == Compat::Confirmed)
-            .collect();
-        match confirmed.len() {
-            0 => Err(fail("No compatible Prism instance was found.")),
-            1 => Ok(confirmed.remove(0)),
-            _ => Err(fail("Choose a Prism instance.")),
+    /// The instance folder a Prism game of the chosen instance would work in.
+    fn instance_root(&self) -> Option<PathBuf> {
+        match self.kind {
+            Kind::Lunar => None,
+            Kind::Forge => self
+                .forge
+                .as_ref()
+                .and_then(Instance::candidate)
+                .and_then(Candidate::instance_root),
         }
     }
 
-    fn add_to_instance(&mut self) -> Step {
-        // TODO(Phase 2): Prism's game gate is the instance's own game (by working
-        // directory); the production World reports none until then.
+    /// The chosen instance, re-read now: it must still be a compatible Prism instance.
+    fn recheck(c: &Candidate) -> Result<Candidate, Halt> {
+        let fresh = forge::classify_picked(&c.game_dir).map_err(fail)?;
+        if fresh.compat != Compat::Confirmed || fresh.marker != c.marker {
+            return Err(fail("That Prism instance changed since it was listed."));
+        }
+        Ok(fresh)
+    }
+
+    /// The instance checks 5 and 6 work on (made by now, or existing).
+    fn chosen(&self) -> Result<Candidate, Halt> {
+        self.forge
+            .as_ref()
+            .and_then(Instance::candidate)
+            .cloned()
+            .ok_or_else(|| fail("No Prism instance was chosen."))
+    }
+
+    /// Check 2: Prism is installed, and the instance is still what was chosen (or, when the
+    /// run began with nothing decided, it is decided now).
+    fn find_instance(&mut self) -> Step {
+        if !self.world.prism_installed() {
+            return Err(fail("Prism Launcher is not installed."));
+        }
+        let next = match self.forge.clone() {
+            None => choose_instance(&self.paths.home, &self.paths.prism, None).map_err(|code| {
+                if code == CHOOSE_INSTANCE {
+                    fail("Choose a Prism instance.")
+                } else {
+                    fail(code)
+                }
+            })?,
+            Some(Instance::Make) => Instance::Make,
+            Some(Instance::Existing(c)) => Instance::Existing(Self::recheck(&c)?),
+            Some(Instance::Made(c)) => Instance::Made(Self::recheck(&c)?),
+        };
+        self.forge = Some(next);
+        Ok(())
+    }
+
+    /// Check 4: the chosen instance's game is closed - or, with none to use, "Making a
+    /// 1.8.9 instance".
+    fn instance_closed_or_made(&mut self) -> Step {
+        match self.forge.clone() {
+            Some(Instance::Make) => {
+                // Nothing can run in an instance that does not exist yet; the gate still
+                // runs before the write, as everywhere.
+                self.game_gate()?;
+                self.show(None, Some(Label::MakingInstance))?;
+                let instances = prism::instances_dir(&self.paths.prism);
+                let root = prism::make_instance(&instances).map_err(fail)?;
+                let made = forge::classify_picked(&forge::prism_game_dir(&root)).map_err(fail)?;
+                // Remembered before anything else can fail: a Try again (or a later run)
+                // goes on with this instance instead of making another.
+                self.forge = Some(Instance::Made(made));
+                forge::set_made_pending(&self.paths.home, Some(&root)).map_err(fail)?;
+                Ok(())
+            }
+            Some(_) => self.game_gate().map(|_| ()),
+            None => Err(fail("No Prism instance was chosen.")),
+        }
+    }
+
+    /// Check 5: Java 8 for a made instance ("Downloading Java 8" only when it downloads),
+    /// then the old Cobblify files in the instance's mods folders.
+    fn java_and_old_files(&mut self) -> Step {
+        let c = self.chosen()?;
+        if matches!(self.forge, Some(Instance::Made(_))) {
+            self.java_for_made(&c)?;
+        }
         self.game_gate()?;
         let jar = self.forge_jar()?;
-        let target = self.resolve_forge_target()?;
+        let old = forge::scan_old_jars(&jar, &c.game_dir).map_err(fail)?;
+        if let Some(first) = old.conflicts.first() {
+            return Err(fail(format!(
+                "The instance's mods folder has a Cobblify file Cobblify may not replace: {}.",
+                Path::new(first).file_name().unwrap_or_default().to_string_lossy()
+            )));
+        }
+        forge::remove_old_jars(&old).map_err(fail)
+    }
+
+    fn java_for_made(&mut self, c: &Candidate) -> Step {
+        let root = c
+            .instance_root()
+            .ok_or_else(|| fail("The made instance is missing."))?;
+        let world = self.world;
+        let env = world.java();
+        match prism_java::plan(env, &self.paths.prism) {
+            prism_java::Plan::PrismDownloads => Ok(()),
+            prism_java::Plan::Pin(java) => {
+                self.game_gate()?;
+                prism_java::pin(&root, &java).map_err(fail)
+            }
+            prism_java::Plan::Download => {
+                self.show(None, Some(Label::Java))?;
+                let java = prism_java::install_jre_legacy(env, &self.paths.prism).map_err(fail)?;
+                self.alive()?;
+                self.game_gate()?;
+                prism_java::pin(&root, &java).map_err(fail)
+            }
+        }
+    }
+
+    /// Check 6: the jar into the instance, then the saved target.
+    fn add_to_instance(&mut self) -> Step {
+        self.game_gate()?;
+        let jar = self.forge_jar()?;
+        let target = Self::recheck(&self.chosen()?)?;
         let out = forge::install(&jar, &target.game_dir).map_err(fail)?;
         if out.blocked {
             return Err(fail(
                 "The instance's mods folder has a Cobblify file Cobblify may not replace.",
             ));
         }
-        let saved = SavedTarget {
-            game_dir: target.game_dir.display().to_string(),
-            validated_by: ValidatedBy::Marker,
-            marker: target.marker.clone(),
-        };
+        let mut saved = SavedTarget::prism(&target.game_dir);
+        if matches!(self.forge, Some(Instance::Made(_))) {
+            saved.made = true;
+            // A made instance set up again keeps its first-launch state; a new one has
+            // never been launched.
+            saved.first_launch_pending = forge::load_target(&self.paths.home)
+                .filter(|prev| {
+                    prev.made
+                        && forge::instance_root(Path::new(&prev.game_dir)) == target.instance_root()
+                })
+                .map(|prev| prev.first_launch_pending)
+                .unwrap_or(true);
+        }
         forge::save_target(&self.paths.home, &saved).map_err(fail)?;
-        self.forge = Some(target);
+        self.forge = Some(match self.forge.take() {
+            Some(Instance::Made(_)) => Instance::Made(target),
+            _ => Instance::Existing(target),
+        });
         Ok(())
     }
 }
@@ -777,20 +933,20 @@ impl World for ProdWorld {
         lunar_detect::find_app(&self.home)
     }
 
-    fn game_scan(&self, kind: Kind) -> GameScan {
-        match kind {
-            Kind::Lunar => {
-                let scan = crate::proc::game_jvm_scan(&self.home);
-                GameScan {
-                    running: !scan.pids.is_empty(),
-                    complete: scan.complete,
+    fn game_scan(&self, kind: Kind, instance: Option<&Path>) -> GameScan {
+        let scan = match (kind, instance) {
+            (Kind::Lunar, _) => crate::proc::game_jvm_scan(&self.home),
+            (Kind::Forge, Some(dir)) => crate::proc::java_in_dir_scan(dir),
+            (Kind::Forge, None) => {
+                return GameScan {
+                    running: false,
+                    complete: true,
                 }
             }
-            // TODO(Phase 2): the chosen instance's game, by working directory.
-            Kind::Forge => GameScan {
-                running: false,
-                complete: true,
-            },
+        };
+        GameScan {
+            running: !scan.pids.is_empty(),
+            complete: scan.complete,
         }
     }
 
@@ -824,10 +980,8 @@ impl World for ProdWorld {
         forge::prism_installed()
     }
 
-    fn forge_candidates(&self) -> Vec<Candidate> {
-        forge::Env::from_process()
-            .map(|env| forge::detect(&env))
-            .unwrap_or_default()
+    fn java(&self) -> &dyn JavaEnv {
+        self
     }
 
     fn now(&self) -> Duration {
@@ -836,6 +990,21 @@ impl World for ProdWorld {
 
     fn sleep(&self, d: Duration) {
         std::thread::sleep(d);
+    }
+}
+
+impl JavaEnv for ProdWorld {
+    fn arch(&self) -> prism_java::Arch {
+        prism_java::host_arch()
+    }
+    fn rosetta(&self) -> bool {
+        prism_java::host_rosetta()
+    }
+    fn java_home(&self, arch: prism_java::Arch) -> Option<PathBuf> {
+        prism_java::host_java_home(arch)
+    }
+    fn fetch(&self, url: &str) -> Result<Vec<u8>, String> {
+        prism_java::host_fetch(url)
     }
 }
 
@@ -857,7 +1026,12 @@ pub(crate) mod tests {
         pub exits_on_quit: bool,
         pub quit_error: bool,
         pub prism: bool,
-        pub candidates: Vec<Candidate>,
+        /// The instance folder the last game scan was asked about.
+        pub scanned: Option<PathBuf>,
+        /// Java: stubbed java_home (any arch) and a local "network".
+        pub java_home: Option<PathBuf>,
+        pub net: std::collections::HashMap<String, Vec<u8>>,
+        pub fetches: u32,
         pub now: Duration,
         pub sleeps: u32,
         pub scans: u32,
@@ -875,7 +1049,10 @@ pub(crate) mod tests {
                 exits_on_quit: true,
                 quit_error: false,
                 prism: true,
-                candidates: Vec::new(),
+                scanned: None,
+                java_home: None,
+                net: std::collections::HashMap::new(),
+                fetches: 0,
                 now: Duration::ZERO,
                 sleeps: 0,
                 scans: 0,
@@ -926,9 +1103,10 @@ pub(crate) mod tests {
                 .app
                 .then(|| PathBuf::from("/Applications/Lunar Client.app"))
         }
-        fn game_scan(&self, _kind: Kind) -> GameScan {
+        fn game_scan(&self, _kind: Kind, instance: Option<&Path>) -> GameScan {
             let mut st = self.state();
             st.scans += 1;
+            st.scanned = instance.map(Path::to_path_buf);
             GameScan {
                 running: st.game_running,
                 complete: st.scan_complete,
@@ -954,8 +1132,8 @@ pub(crate) mod tests {
         fn prism_installed(&self) -> bool {
             self.state().prism
         }
-        fn forge_candidates(&self) -> Vec<Candidate> {
-            self.state().candidates.clone()
+        fn java(&self) -> &dyn JavaEnv {
+            self
         }
         fn now(&self) -> Duration {
             self.state().now
@@ -966,6 +1144,23 @@ pub(crate) mod tests {
             st.sleeps += 1;
             let mut hook = self.on_sleep.lock().unwrap();
             (*hook)(&mut st);
+        }
+    }
+
+    impl JavaEnv for Fake {
+        fn arch(&self) -> prism_java::Arch {
+            prism_java::Arch::Arm64
+        }
+        fn rosetta(&self) -> bool {
+            false
+        }
+        fn java_home(&self, _arch: prism_java::Arch) -> Option<PathBuf> {
+            self.state().java_home.clone()
+        }
+        fn fetch(&self, url: &str) -> Result<Vec<u8>, String> {
+            let mut st = self.state();
+            st.fetches += 1;
+            st.net.get(url).cloned().ok_or_else(|| format!("offline: {url}"))
         }
     }
 
@@ -982,7 +1177,12 @@ pub(crate) mod tests {
             Paths {
                 home: self.home.path().to_path_buf(),
                 resource_dir: self.bundle.path().to_path_buf(),
+                prism: self.prism(),
             }
+        }
+
+        pub(crate) fn prism(&self) -> PathBuf {
+            prism::data_dir(&self.home.path().join("Library/Application Support"))
         }
 
         pub(crate) fn events(&self) -> Vec<Snapshot> {
@@ -1563,49 +1763,288 @@ pub(crate) mod tests {
         assert_eq!(rig.svc.resume(Kind::Lunar).err().as_deref(), Some("nothing_to_resume"));
     }
 
-    // ── Prism, Phase 1 ──────────────────────────────────────────────────────────
+    // ── Prism ───────────────────────────────────────────────────────────────────
 
-    const CONFIRMED_PACK: &str = r#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#;
+    const CONFIRMED_PACK: &[u8] = br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#;
+    const FORGE_JAR: &str = "Cobblify-1.8.9-forge-0.8.1.jar";
 
-    fn prism_instance(root: &Path) -> Candidate {
-        let instance = root.join("PrismLauncher/instances/Hypixel");
-        fs::create_dir_all(instance.join(".minecraft")).unwrap();
-        fs::write(instance.join("mmc-pack.json"), CONFIRMED_PACK).unwrap();
-        forge::classify_picked(&instance.join(".minecraft")).unwrap()
+    /// The rig, plus Prism signed in.
+    fn prism_rig() -> Rig {
+        let rig = rig();
+        prism::tests::write_accounts(&rig.prism(), prism::tests::SIGNED_IN);
+        rig
+    }
+
+    fn add_instance(rig: &Rig, name: &str, last_launch_ms: i64) -> Candidate {
+        let root = rig.prism().join("instances").join(name);
+        forge::tests::write_instance(&root, CONFIRMED_PACK, last_launch_ms);
+        forge::classify_picked(&root.join("minecraft")).unwrap()
+    }
+
+    fn run_forge(rig: &Rig, world: &dyn World, forge: Option<Instance>) -> Outcome {
+        let r = rig.svc.begin(Kind::Forge, forge).expect("admitted");
+        run(&rig.svc, world, &rig.paths(), r)
+    }
+
+    fn labels(events: &[Snapshot]) -> Vec<(u8, Label)> {
+        let mut out: Vec<(u8, Label)> = events
+            .iter()
+            .filter_map(|s| s.label.map(|l| (s.check, l)))
+            .collect();
+        out.dedup();
+        out
+    }
+
+    fn made_root(rig: &Rig) -> PathBuf {
+        rig.prism().join("instances").join(prism::MADE_NAME)
+    }
+
+    fn auto_java_off(rig: &Rig) {
+        fs::write(
+            rig.prism().join("prismlauncher.cfg"),
+            "[General]\nConfigVersion=1.3\nAutomaticJavaDownload=false\n",
+        )
+        .unwrap();
     }
 
     #[test]
-    fn a_forge_setup_adopts_the_only_compatible_instance() {
-        let rig = rig();
-        let candidate = prism_instance(rig.home.path());
-        let world = Fake::new().with(|st| st.candidates = vec![candidate.clone()]);
+    fn a_forge_setup_uses_the_only_compatible_instance() {
+        let rig = prism_rig();
+        let candidate = add_instance(&rig, "Hypixel", 0);
+        let world = Fake::new();
         assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
         assert_eq!(
-            fs::read(candidate.game_dir.join("mods/Cobblify-1.8.9-forge-0.8.1.jar")).unwrap(),
+            fs::read(candidate.game_dir.join("mods").join(FORGE_JAR)).unwrap(),
             b"forge"
         );
+        assert_eq!(candidate.game_dir, rig.prism().join("instances/Hypixel/minecraft"));
         let saved = forge::load_target(rig.home.path()).expect("target saved");
-        assert_eq!(PathBuf::from(saved.game_dir), candidate.game_dir);
+        assert_eq!(PathBuf::from(&saved.game_dir), candidate.game_dir);
+        assert!(!saved.made && !saved.first_launch_pending);
         assert!(!rig.home.path().join(".weave").exists(), "Lunar untouched");
+        assert_eq!(
+            world.state().scanned,
+            Some(rig.prism().join("instances/Hypixel")),
+            "the game gate looks inside the chosen instance"
+        );
+        assert!(labels(&rig.events()).is_empty(), "no long checks for an existing instance");
     }
 
     #[test]
-    fn a_forge_setup_without_prism_or_a_unique_instance_fails_at_check_2() {
-        let rig = rig();
+    fn the_instance_choice_is_picked_saved_lone_make_or_choose() {
+        let rig = prism_rig();
+        let home = rig.home.path();
+        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Make)));
+        let a = add_instance(&rig, "A", 10);
+        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Existing(c)) if c.id == "A"));
+        let b = add_instance(&rig, "B", 20);
+        assert_eq!(
+            choose_instance(home, &rig.prism(), None).err().as_deref(),
+            Some(CHOOSE_INSTANCE)
+        );
+        assert!(matches!(choose_instance(home, &rig.prism(), Some(a.clone())), Ok(Instance::Existing(c)) if c.id == "A"));
+        forge::save_target(home, &SavedTarget::prism(&b.game_dir)).unwrap();
+        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Existing(c)) if c.id == "B"));
+        // An instance Cobblify made (setup still pending) stays "made".
+        forge::set_made_pending(home, a.instance_root().as_deref()).unwrap();
+        assert!(matches!(choose_instance(home, &rig.prism(), Some(a)), Ok(Instance::Made(_))));
+    }
+
+    #[test]
+    fn a_forge_setup_without_prism_or_with_several_unpicked_fails_at_check_2() {
+        let rig = prism_rig();
         let world = Fake::new().with(|st| st.prism = false);
         assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
         assert_eq!(rig.svc.latest().unwrap().failed_at, Some(2));
 
-        let candidate = prism_instance(rig.home.path());
-        let mut second = candidate.clone();
-        second.id = "d1".into();
-        let world = Fake::new().with(|st| st.candidates = vec![candidate.clone(), second]);
+        let a = add_instance(&rig, "A", 0);
+        add_instance(&rig, "B", 0);
+        let world = Fake::new();
         assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
-        assert_eq!(rig.svc.latest().unwrap().failed_at, Some(2));
+        let last = rig.svc.latest().unwrap();
+        assert_eq!((last.failed_at, last.message.as_deref()), (Some(2), Some("Choose a Prism instance.")));
 
-        // Choosing one resolves it.
-        let r = rig.svc.begin(Kind::Forge, Some(candidate.clone())).unwrap();
-        assert_eq!(run(&rig.svc, &world, &rig.paths(), r), Outcome::Done);
+        assert_eq!(run_forge(&rig, &world, Some(Instance::Existing(a.clone()))), Outcome::Done);
+        assert_eq!(forge::saved_game_dir(rig.home.path()), Some(a.game_dir));
+    }
+
+    /// None compatible: check 4 makes "Cobblify 1.8.9" (golden files), Prism's own Java
+    /// download is on so check 5 leaves Java alone, and the target is saved as made with its
+    /// first launch pending.
+    #[test]
+    fn with_no_instance_setup_makes_cobblify_1_8_9() {
+        let rig = prism_rig();
+        // An incompatible instance is not used, and stays untouched.
+        let modern = rig.prism().join("instances/Modern");
+        forge::tests::write_instance(&modern, br#"{"components":[{"uid":"net.minecraft","version":"1.20.1"}]}"#, 0);
+        let world = Fake::new();
+        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Done);
+
+        let root = made_root(&rig);
+        assert_eq!(fs::read_to_string(root.join("instance.cfg")).unwrap(), include_str!("golden/prism-instance.cfg"));
+        assert_eq!(fs::read_to_string(root.join("mmc-pack.json")).unwrap(), include_str!("golden/prism-mmc-pack.json"));
+        assert_eq!(fs::read(root.join("minecraft/mods").join(FORGE_JAR)).unwrap(), b"forge");
+        assert!(!rig.prism().join("instances/.cobblify-staging").exists());
+        assert!(!modern.join("minecraft").exists());
+
+        let saved = forge::load_target(rig.home.path()).unwrap();
+        assert_eq!(PathBuf::from(&saved.game_dir), root.join("minecraft"));
+        assert!(saved.made && saved.first_launch_pending);
+        assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance)]);
+        assert_eq!(world.state().fetches, 0, "Prism downloads Java itself");
+        assert!(!rig.prism().join("java").exists());
+        // Detection now finds it as Prism would (instance.cfg + a compatible pack).
+        let found = forge::detect_in(&rig.prism());
+        assert!(found.iter().any(|c| c.id == prism::MADE_NAME && c.compat == Compat::Confirmed));
+    }
+
+    /// Prism's auto download off, a Java 8 installed: it is pinned silently (no label).
+    #[test]
+    fn a_made_instance_pins_an_installed_java_8() {
+        let rig = prism_rig();
+        auto_java_off(&rig);
+        let global = fs::read(rig.prism().join("prismlauncher.cfg")).unwrap();
+        let jdk = rig.home.path().join("zulu-8.jdk/Contents/Home");
+        fs::create_dir_all(jdk.join("bin")).unwrap();
+        fs::write(jdk.join("bin/java"), b"").unwrap();
+        let world = Fake::new().with(|st| st.java_home = Some(jdk.clone()));
+        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Done);
+        let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
+        assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
+        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(jdk.join("bin/java")));
+        assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance)]);
+        assert_eq!(world.state().fetches, 0);
+        assert_eq!(fs::read(rig.prism().join("prismlauncher.cfg")).unwrap(), global, "global settings untouched");
+    }
+
+    /// Prism's auto download off and no Java 8: "Downloading Java 8" from the (local)
+    /// fixture, checksummed, then pinned. A bad checksum fails check 5 leaving nothing; Try
+    /// again resumes there, with the same instance.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_made_instance_downloads_java_8_and_a_bad_checksum_fails_cleanly() {
+        let rig = prism_rig();
+        auto_java_off(&rig);
+        let global = fs::read(rig.prism().join("prismlauncher.cfg")).unwrap();
+        let zip = prism_java::tests::fixture_zip();
+        let world = Fake::new().with(|st| {
+            prism_java::tests::serve_archive(&mut st.net, zip.clone(), Some(&"0".repeat(64)))
+        });
+        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Failed);
+        let last = rig.svc.latest().unwrap();
+        assert_eq!(last.failed_at, Some(5));
+        assert!(last.message.as_deref().unwrap_or("").contains("checksum"));
+        let java_dir = rig.prism().join("java");
+        let left: Vec<_> = fs::read_dir(&java_dir).unwrap().flatten().collect();
+        assert!(left.is_empty(), "nothing left behind: {left:?}");
+        let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
+        assert!(cfg.get("JavaPath").is_none(), "nothing pinned");
+        assert!(forge::load_target(rig.home.path()).is_none(), "not set up");
+
+        // The right checksum; Try again resumes at check 5 with the instance already made.
+        {
+            let mut st = world.st.lock().unwrap();
+            st.net.clear();
+            prism_java::tests::serve_archive(&mut st.net, zip, None);
+        }
+        let seen = rig.events().len();
+        assert_eq!(rig.resume(&world, Kind::Forge), Outcome::Done);
+        let resumed = &rig.events()[seen..];
+        assert_eq!(resumed[0].check, 4);
+        assert_eq!(labels(resumed), vec![(4, Label::Java)]);
+        let java = java_dir.join("jre-legacy/bin/java");
+        assert!(java.is_file());
+        let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
+        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(java));
+        assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
+        let instances: Vec<_> = fs::read_dir(rig.prism().join("instances")).unwrap().flatten().collect();
+        assert_eq!(instances.len(), 1, "made once");
+        let saved = forge::load_target(rig.home.path()).unwrap();
+        assert!(saved.made && saved.first_launch_pending);
+        assert_eq!(fs::read(rig.prism().join("prismlauncher.cfg")).unwrap(), global);
+    }
+
+    /// Prism sign-in stop: no owning account -> `signin` at check 3 until one appears, then
+    /// Cobblify comes forward, a beat, and on.
+    #[test]
+    fn the_prism_signin_stop_waits_for_an_account_then_hands_off() {
+        let rig = rig();
+        add_instance(&rig, "Hypixel", 0);
+        let data = rig.prism();
+        prism::tests::write_accounts(&data, r#"{"formatVersion":3,"accounts":[{"type":"Offline","active":true}]}"#);
+        let world = Fake::new().on_sleep(move |st| {
+            if st.sleeps == 3 {
+                prism::tests::write_accounts(&data, prism::tests::SIGNED_IN);
+            }
+        });
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(stops(&rig.events()), vec![(2, Stop::Signin)]);
+        let st = world.state();
+        assert_eq!(st.forwards, 1, "Cobblify comes forward once");
+        assert_eq!(st.now, STOP_POLL * 4 + HANDOFF_BEAT);
         assert!(forge::load_target(rig.home.path()).is_some());
+    }
+
+    /// The instance's game open: `game_open` at check 4, nothing written while it runs.
+    #[test]
+    fn the_prism_game_open_stop_waits_for_the_instance_to_close() {
+        let rig = prism_rig();
+        let c = add_instance(&rig, "Hypixel", 0);
+        let before = home_tree(&rig);
+        let during = Arc::new(Mutex::new(None));
+        let probe = Arc::clone(&during);
+        let home = rig.home.path().to_path_buf();
+        let world = Fake::new()
+            .with(|st| st.game_running = true)
+            .on_sleep(move |st| {
+                if st.sleeps == 2 {
+                    *probe.lock().unwrap() = Some(sorted_tree(&home));
+                    st.game_running = false;
+                }
+            });
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(stops(&rig.events()), vec![(3, Stop::GameOpen)]);
+        assert_eq!(during.lock().unwrap().clone(), Some(before), "nothing written");
+        assert!(c.game_dir.join("mods").join(FORGE_JAR).is_file());
+    }
+
+    /// Round 2 I1 for Prism: check 5 fails (a Cobblify jar it may not touch), the instance
+    /// is started, Try again -> `game_open` at check 5 and nothing written; once it closes,
+    /// setup finishes.
+    #[test]
+    fn a_prism_resume_meets_the_fresh_game_gate_before_any_write() {
+        let rig = prism_rig();
+        let c = add_instance(&rig, "Hypixel", 0);
+        let mods = c.game_dir.join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.1-dev.jar"), b"dev").unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+
+        assert_eq!(rig.run(&Fake::new(), Kind::Forge), Outcome::Failed);
+        assert_eq!(rig.svc.latest().unwrap().failed_at, Some(5));
+        assert!(mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(), "nothing removed on a block");
+
+        fs::remove_file(mods.join("Cobblify-1.8.9-forge-0.8.1-dev.jar")).unwrap();
+        let before = home_tree(&rig);
+        let during = Arc::new(Mutex::new(None));
+        let probe = Arc::clone(&during);
+        let home = rig.home.path().to_path_buf();
+        let world = Fake::new()
+            .with(|st| st.game_running = true)
+            .on_sleep(move |st| {
+                if st.sleeps == 2 {
+                    *probe.lock().unwrap() = Some(sorted_tree(&home));
+                    st.game_running = false;
+                }
+            });
+        let seen = rig.events().len();
+        assert_eq!(rig.resume(&world, Kind::Forge), Outcome::Done);
+        let resumed = &rig.events()[seen..];
+        assert_eq!(resumed[0].check, 4, "resumes at check 5");
+        assert_eq!(stops(resumed), vec![(4, Stop::GameOpen)]);
+        assert_eq!(during.lock().unwrap().clone(), Some(before), "nothing written while open");
+        assert!(!mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(), "removed after the game");
+        assert!(mods.join(FORGE_JAR).is_file());
+        assert_eq!(world.state().scanned, c.instance_root());
     }
 }
