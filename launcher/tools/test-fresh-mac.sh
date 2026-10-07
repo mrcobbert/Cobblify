@@ -49,6 +49,10 @@ if [ -n "${FAKE_FAIL_DST:-}" ] && printf '%s' "$dst" | grep -Eq -- "$FAKE_FAIL_D
   echo "mv: injected failure" >&2; exit 1
 fi
 /bin/mv "$src" "$dst" || exit 1
+# FAKE_JOURNAL_RO_DST: after this move, the stash journal stops accepting writes (a full disk, a permission).
+if [ -n "${FAKE_JOURNAL_RO_DST:-}" ] && printf '%s' "$dst" | grep -Eq -- "$FAKE_JOURNAL_RO_DST"; then
+  chmod 400 "${dst%%/items/*}/journal.tsv"
+fi
 if [ -n "${FAKE_CRASH_DST:-}" ] && printf '%s' "$dst" | grep -Eq -- "$FAKE_CRASH_DST"; then
   kill -9 "$PPID"
 fi
@@ -105,7 +109,7 @@ run() {   # run <args...>  (env FAKE_* passes through)
   ( FRESH_HOME="$HOME_" FRESH_APPS="$APPS_" FRESH_PGREP="$T/bin/pgrep" \
     FRESH_LSREGISTER="$T/bin/lsregister" FRESH_OSASCRIPT="$T/bin/osascript" FRESH_MV="$T/bin/mv" \
     FAKE_RUNNING="$T/running" FAKE_LSLOG="$T/lslog" \
-      "$tool" "$@" > "$T/out" 2>&1 ) 2>/dev/null
+      "$tool" "$@" > "$T/out" 2>&1; exit $? ) 2>/dev/null
 }
 
 stash() { ls -d "$HOME_"/CobblifyStash/*/ 2>/dev/null | tail -1 | sed 's:/$::'; }
@@ -235,6 +239,43 @@ for c in "stash:items/home/\\.weave\$" "sweep:new/1/home/\\.cobblify\$" "return:
 done
 ! find "$(stash)/new" -path '*/.lunarclient/settings/launcher.json' -exec grep -q 'javaagent' {} \; -print | grep -q . \
   && ok "the crashed return was reconciled, not swept" || bad "crashed return was swept as test data"
+
+echo "== a journal that stops accepting writes stops the moves (code review B1) =="
+populate; before=$(tree)
+FAKE_JOURNAL_RO_DST='items/home/\.cobblify$' run aside all --yes && bad "aside should fail when its journal cannot be written"
+grep -q 'cannot write the stash journal' "$T/out" && ok "aside names the journal" || { bad "journal failure message"; cat "$T/out"; }
+[ -e "$HOME_/.weave" ] && [ -e "$HOME_/.lunarclient" ] && [ -e "$APPS_/Lunar Client.app" ] \
+  && ok "nothing moves once the journal cannot be written" || bad "items moved without a journal record"
+[ "$(cat "$(stash)/state")" = active ] && ok "the stash stays active for restore" || bad "stash state"
+chmod 600 "$(stash)/journal.tsv"
+run restore --yes || { bad "restore after a journal failure"; cat "$T/out"; }
+expect_tree "$before" "restore after a journal failure is exact"
+
+echo "== a folder that cannot be listed is refused at aside (code review I1) =="
+populate
+mkfile "$HOME_/.cobblify/private/original.txt" original
+before=$(tree)
+chmod 000 "$HOME_/.cobblify/private"
+run aside all --yes && bad "aside should refuse an unlistable folder"
+grep -q 'could not list every folder' "$T/out" && ok "aside names the folder problem" || { bad "unlistable message"; cat "$T/out"; }
+chmod 755 "$HOME_/.cobblify/private"
+expect_tree "$before" "nothing moved"
+[ "$(cat "$(stash)/state" 2>/dev/null)" != active ] && ok "no active stash left behind" || bad "stash left active"
+populate; run aside all --yes || bad "aside failed"
+mkfile "$(stash)/items/home/.cobblify/private/original.txt" original
+chmod 000 "$(stash)/items/home/.cobblify/private"
+run restore --yes && bad "restore accepted an item it could not read"
+grep -q 'CHANGED.*\.cobblify' "$T/out" && ok "restore reports an unreadable returned item" || { bad "unreadable at restore not reported"; cat "$T/out"; }
+chmod 700 "$HOME_/.cobblify/private" 2>/dev/null; chmod 700 "$(stash)/items/home/.cobblify/private" 2>/dev/null
+
+echo "== a resumed sweep still removes the folders testing created (code review I2) =="
+populate; before=$(tree)
+run aside all --yes || bad "aside failed"
+simulate_testing
+FAKE_CRASH_DST='new/1/home/Applications/Cobblify Launcher \(Next\)\.app\.stashed$' run restore --yes
+[ -d "$HOME_/Applications" ] && ok "the crash left the new ~/Applications behind" || bad "crash did not interrupt the sweep"
+run restore --yes || { bad "retried restore failed"; cat "$T/out"; }
+expect_tree "$before" "the retried restore removes the folder testing created"
 
 echo "== a file changed while stashed is reported =="
 populate

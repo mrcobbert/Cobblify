@@ -172,6 +172,9 @@ content_of() {
   local item=$1 parent name
   parent=$(dirname "$item"); name=$(basename "$item")
   ( cd "$parent" || exit 1
+    # A folder that cannot be listed hides its files from the record (and from the check at restore), so any
+    # traversal error makes the whole item unreadable rather than silently partial.
+    if [ -n "$(find "$name" -print 2>&1 >/dev/null)" ]; then echo "UNREADABLE"; exit 0; fi
     if find "$name" -name "*$TAB*" -print -quit | grep -q . \
        || [ "$(find "$name" -print | wc -l)" != "$(find "$name" -print0 | tr -cd '\0' | wc -c)" ]; then
       echo "UNSAFE-NAME"; exit 0
@@ -193,6 +196,7 @@ write_content() {
   command rm -f -- "$tmp_hashes"
   ! grep -q '^UNSAFE-NAME$' "$2" || die "$1 holds a file name with a tab or newline; move it by hand"
   ! grep -q 'UNHASHED$' "$2" || die "could not read every file in $1 (permissions?)"
+  ! grep -q '^UNREADABLE$' "$2" || die "could not list every folder in $1 (permissions?); fix them, then run aside again"
 }
 
 # ---------------------------------------------------------------------------
@@ -202,7 +206,12 @@ J() { printf '%s\n' "$STASH/journal.tsv"; }
 
 jnext() { local n; n=$(awk -F'\t' 'END { print NR + 1 }' "$(J)"); printf '%s' "$n"; }
 
-jwrite() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$(J)" && sync; }
+jwrite() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" 2>/dev/null >> "$(J)" && sync; }
+
+# The journal is the only record of what moved: when it cannot be written, nothing else moves.
+jfail() {
+  echo "fresh-mac: cannot write the stash journal $(J). Nothing more is moved. Free some disk space or fix its permissions, then run: fresh-mac.sh restore" >&2
+}
 
 # Moves src to dst through the journal. Returns non-zero on failure.
 #
@@ -219,17 +228,18 @@ jmove() {
   if [ "$(stat -f %d "$(dirname "$src")")" != "$(stat -f %d "$(dirname "$dst")")" ]; then
     echo "fresh-mac: $src and $dst are on different volumes; refusing a copying move" >&2; return 1
   fi
-  jwrite "$seq" "$op" intent "$src" "$dst"
+  jwrite "$seq" "$op" intent "$src" "$dst" || { jfail; return 1; }
+  # A move whose "done" cannot be written stays an open intent, which reconcile() settles from the disk.
   if "$MV" "$src" "$dst" 2>"$errf"; then
-    jwrite "$seq" "$op" done "$src" "$dst"
+    jwrite "$seq" "$op" done "$src" "$dst" || { jfail; return 1; }
     return 0
   fi
   if exists "$dst" && ! exists "$src"; then
-    jwrite "$seq" "$op" done "$src" "$dst"
+    jwrite "$seq" "$op" done "$src" "$dst" || { jfail; return 1; }
     return 0
   fi
   if exists "$src" && ! exists "$dst"; then
-    jwrite "$seq" "$op" void "$src" "$dst"
+    jwrite "$seq" "$op" void "$src" "$dst" || jfail
   else
     echo "fresh-mac: a failed move left both or neither of $src and $dst; the journal keeps it open for restore" >&2
   fi
@@ -262,8 +272,8 @@ reconcile() {
   local seq op src dst
   awk -F'\t' '$3 == "intent" { i[$1] = $0 } $3 != "intent" { delete i[$1] } END { for (s in i) print i[s] }' "$(J)" \
     | sort -n | while IFS="$TAB" read -r seq op _ src dst; do
-      if exists "$dst" && ! exists "$src"; then jwrite "$seq" "$op" done "$src" "$dst"
-      elif exists "$src" && ! exists "$dst"; then jwrite "$seq" "$op" void "$src" "$dst"
+      if exists "$dst" && ! exists "$src"; then jwrite "$seq" "$op" done "$src" "$dst" || { jfail; exit 3; }
+      elif exists "$src" && ! exists "$dst"; then jwrite "$seq" "$op" void "$src" "$dst" || { jfail; exit 3; }
       else
         echo "fresh-mac: an interrupted move left both or neither of:
   $src
@@ -411,7 +421,6 @@ cmd_aside() {
       while [ "$path" != / ]; do [ -d "$path" ] && printf '%s\n' "$path"; path=$(dirname "$path"); done
     done
   } | sort -u > "$STASH/dirs.txt"
-  set_state active
 
   say "Recording every file (large folders take a while)..."
   local n
@@ -421,6 +430,9 @@ cmd_aside() {
     write_content "$path" "$STASH/content/$n.tsv"
   done < "$STASH/inventory.tsv"
   cp "$STASH/inventory.tsv" "$STASH/confirmed.tsv"
+  # Active only once every item is recorded: an item that cannot be recorded stops aside with nothing moved
+  # and no stash to restore.
+  set_state active
 
   local failed=0
   while IFS="$TAB" read -r group state path n; do
@@ -435,7 +447,7 @@ cmd_aside() {
 
   if [ "$failed" = 1 ]; then
     say "Putting back what was moved..."
-    if return_pass && verify; then
+    if reconcile && return_pass && verify; then
       set_state aborted
       die "aside failed and everything was put back. Stash record kept in $STASH"
     fi
@@ -485,20 +497,21 @@ cmd_restore() {
   done >> "$sweep"
   command rm -f -- "$cover"
 
-  local failed=0 swept; swept=$(mktemp) || die "mktemp failed"
+  local failed=0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     is_app "$path" && "$LSREGISTER" -u "$path" >/dev/null 2>&1
     if jmove sweep "$path" "$newdir/$(enc "$path")"; then
       say "  moved to new/  ${path#"$H"/}"
-      dirname "$path" >> "$swept"
     else
       failed=1
     fi
   done < <(drop_covered "" < "$sweep")
   command rm -f -- "$sweep"
-  sort -ru "$swept" | prune_new_dirs
-  command rm -f -- "$swept"
+  # Every sweep the journal records, this attempt's and any an interrupted one finished: their parents may be
+  # folders testing created.
+  awk -F'\t' '$2 == "sweep" && $3 == "done" { print $4 }' "$(J)" \
+    | while IFS= read -r path; do dirname "$path"; done | sort -ru | prune_new_dirs
   [ "$failed" = 0 ] || die "could not move everything created while testing. Fix the cause above and run restore again."
 
   return_pass || die "some originals could not be returned. Fix the cause above and run restore again."

@@ -87,7 +87,11 @@ pub fn capture(home: &Path, running: &str, pending_version: Option<&str>) -> Ope
             (updated, false, if updated { current.clone() } else { seen })
         }
     };
-    let _ = write_last_seen(&path, &store);
+    // An update is only "the first open" if the record of it sticks: when it cannot be written, every later
+    // open would replay too, so this one stays quiet instead.
+    if write_last_seen(&path, &store).is_err() {
+        return quiet;
+    }
     OpenInfo {
         version: running.to_string(),
         updated,
@@ -209,6 +213,26 @@ mod tests {
         assert_eq!((info.updated, info.fresh), (false, false));
         fs::set_permissions(last_seen_path(&home), fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(seen(&home), "0.17.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_whose_record_cannot_be_written_is_quiet_every_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = temp_home();
+        set_seen(&home, "0.18.0-next.1");
+        let dir = home.join(".cobblify");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::write(dir.join("probe"), "x").is_ok() {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root: permissions do not apply
+        }
+        for _ in 0..2 {
+            let info = capture(&home, "0.18.0-next.2", None);
+            assert_eq!((info.updated, info.fresh), (false, false));
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(seen(&home), "0.18.0-next.1");
     }
 
     #[test]
