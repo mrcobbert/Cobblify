@@ -3673,6 +3673,22 @@ java.lang.IllegalStateException: Could not find game version\n",
     }
 }
 
+/// The main window is created hidden (`visible: false`) and the frontend shows it once the
+/// island's first frame is drawn, 1.5 s after boot at the latest. If the page never gets that
+/// far (a script failure), this shows it anyway, so the app can never run with no window.
+const SHOW_WINDOW_SAFETY_NET: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn show_window_safety_net(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(SHOW_WINDOW_SAFETY_NET);
+        if let Some(window) = app.get_webview_window("main") {
+            if !window.is_visible().unwrap_or(false) {
+                let _ = window.show();
+            }
+        }
+    });
+}
+
 fn main() {
     // R3: the NSIS pre-uninstall hook runs this exe with one argument and
     // acts on its exit code. It must never reach `tauri::Builder` - there is
@@ -3725,6 +3741,7 @@ fn main() {
             let updater_service = updater::UpdaterService::new(updater_home, running);
             updater_service.report_completed_install();
             app.manage(updater_service);
+            show_window_safety_net(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

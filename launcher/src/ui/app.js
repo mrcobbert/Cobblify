@@ -7,8 +7,9 @@
  * hands it a model (ui/model.js) plus the actions below. The prototype's demo, playground, QA hooks and mock window
  * frame are not part of it.
  *
- * actions: play(id), cancel(), select(id), add(addDescriptor), setup(action), pick(candidateId), cancelAdd(),
- *          repairPref(), update(action), setOverlay(on), setAutoUpdate(on), setDev(on), repairLunar()
+ * actions: play(id), cancel(), select(id), setupNow(id), get(id), add(addDescriptor), download(id), openClient(id),
+ *          retrySetup(), repairSetup(id), setupPrism(), pick(instanceId), change(), refresh(), repairPref(),
+ *          update(action), setOverlay(on), setAutoUpdate(on), setDev(on), repairLunar(), idle()
  */
 import { shade, wordmark } from "./kit.js";
 import { ART, CL, T, esc, pix, pixSh, quarter, trimArt } from "./art.js";
@@ -80,11 +81,24 @@ export function createApp(app, actions) {
   const PLAY_LABELS = ["Launch Cobblify", "Launch"];
   function heroHTML(hd) {
     const ink = heroInk();
+    /* setup: a slim bar, what it's doing under it on the left, and when setup needs you (Sign in to Lunar) the one
+     * key that does it under it on the right; the bar keeps its progress meanwhile */
+    if (hd.kind === "slim") {
+      const k = hd.open ? `<button class="key" data-act="open-client" data-id="${esc(hd.open.id)}">${T(hd.open.label, "sh")}</button>` : "";
+      return `<div class="hero prog slim" style="${ink}" data-pct="${hd.pct}" role="progressbar" aria-valuenow="${hd.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(hd.label)}"><span class="fill"></span></div>
+        <div class="under">${T(hd.label, "sh")}${k}</div>`;
+    }
     if (hd.kind === "prog") {
       return `<button class="key acc hero prog static" style="${ink}" data-pct="${hd.pct}" aria-disabled="true" aria-label="${esc(hd.label)}, ${hd.pct} percent">
         <span class="fill"></span><span class="lab">${T(hd.label)}</span><span class="lab on" aria-hidden="true">${T(hd.label)}</span></button>`;
     }
     if (hd.kind === "wait") return `<button class="key hero prog wait static" aria-disabled="true"><span class="lab">${T(hd.label, "sh")}</span></button>`;
+    /* no client yet: one key shaped like Launch, in Launch's place, with no arrow; the whole key opens the menu of
+     * clients to set up */
+    if (hd.kind === "setup") {
+      const labs = ["Choose Your Setup", "Choose"].map((s, i) => `<span class="t pl${i ? "" : " cur"}">${esc(s)}</span>`).join("");
+      return `<div class="split" style="${ink}"><button class="key acc hero play setup" data-act="menu" aria-haspopup="menu" aria-controls="client-menu" aria-expanded="${menuOpen}"><span class="pls">${labs}</span></button></div>`;
+    }
     if (hd.kind === "play") {
       const cl = CL[H.sel], labs = PLAY_LABELS.map((s, i) => `<span class="t pl${i ? "" : " cur"}">${esc(s)}</span>`).join("");
       return `<div class="split" style="${ink}"><button class="key acc hero play" data-act="play" aria-label="Launch Cobblify in ${esc(cl.name)}"><span class="pi">${pixSh(trimArt(cl.art), "var(--ink)", "var(--ink2)", "var(--ink-sh)", "var(--ink2-sh)")}</span><span class="pls">${labs}</span><span class="psp" aria-hidden="true"></span></button><button class="key acc caret" data-act="menu" aria-haspopup="menu" aria-controls="client-menu" aria-expanded="${menuOpen}" aria-label="Choose a client" title="Choose a client">${pixSh(ART.caret, "var(--ink)", null, "var(--ink-sh)")}</button></div>`;
@@ -95,8 +109,18 @@ export function createApp(app, actions) {
   function leadHTML(lead) {
     if (!lead || lead.kind !== "choose") return "";
     return `<div class="choices" role="radiogroup" aria-label="Prism instances">${lead.candidates
-      .map((c) => `<button class="choice${c.id === lead.picked ? " on" : ""}" role="radio" aria-checked="${c.id === lead.picked}" data-act="pick" data-id="${esc(c.id)}"><span class="cx">${T(c.name, "sh")}</span><span class="ck">${c.id === lead.picked ? pix(ART.check, "var(--acc)") : ""}</span></button>`)
+      .map((c) => `<button class="choice${c.id === lead.picked ? " on" : ""}" role="radio" aria-checked="${c.id === lead.picked}" data-act="pick" data-id="${esc(c.id)}"><span class="cx">${T(c.name, "sh")}${c.detail ? T(c.detail, "mid") : ""}</span><span class="ck">${c.id === lead.picked ? pix(ART.check, "var(--acc)") : ""}</span></button>`)
       .join("")}</div>`;
+  }
+
+  /* under the full-height key: what's pending on the left, the key that helps on the right (the install wait, a Lunar
+   * not on 1.8.9), or what went wrong (Cobblify didn't load) */
+  function underHTML(u) {
+    if (!u) return "";
+    if (u.kind === "install") return `<div class="under wait">${T("Install " + CL[u.id].short, "sh")}<button class="key" data-act="download" data-id="${esc(u.id)}">${T("Download", "sh")}</button></div>`;
+    if (u.kind === "setLunar") return `<div class="under wait">${T("Set Lunar to 1.8.9", "sh")}<button class="key" data-act="open-client" data-id="lunar">${T("Open", "sh")}</button></div>`;
+    if (u.kind === "notLoaded") return `<div class="under wait">${T("Cobblify didn't load", "sh")}</div>`;
+    return "";
   }
 
   /* Home's left side is the button and nothing else: the button says what to do; progress and waits are its face;
@@ -107,22 +131,30 @@ export function createApp(app, actions) {
     const side = (H.keys || []).map((x, i) => `<button class="key" data-act="${x.act}" data-k="${i}">${T(x.label, "sh")}</button>`).join("");
     return `<div class="body home${H.solo ? " solo" : ""}">
       <section class="col" aria-label="Play"><div class="grp${lead ? " lit" : ""}"><p class="sr" role="status" aria-live="polite">${esc(H.said || "")}</p>${lead ? `<div class="lead">${lead}</div>` : ""}
-        <div class="go"><div class="heros">${heroHTML(H.hero)}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
+        <div class="go"><div class="heros">${heroHTML(H.hero)}${underHTML(H.under)}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
       <div class="art" id="art"><img id="isl" alt="" src="${fallbackSrc}"></div>
     </div>`;
   }
 
   /* ---------- the client menu (Launch's ▾) ---------- */
   function menuHTML() {
-    if (!menuOpen || !H || view !== "home" || H.solo) return "";
+    if (!menuOpen || !H || view !== "home" || !hasMenu()) return "";
     const art = (id) => pixSh(CL[id].art, "var(--hi)", "var(--mid)", "var(--ish1,transparent)", "var(--ish2,transparent)");
     const dlMark = () => pixSh(ART.dl, "var(--mid)", null, "var(--ish1,transparent)");
+    /* nothing set up yet: the two clients, either one sets up (its download page first if it isn't installed) */
+    if (H.hero.kind === "setup") {
+      return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Set up" style="--acc-q:${quarter(accentHex())}">${(H.setupMenu || [])
+        .map((c) => `<button class="mrow" role="menuitem" tabindex="-1" data-act="${c.installed ? "setup-now" : "get"}" data-id="${c.id}"${c.installed ? "" : ` aria-label="${esc(CL[c.id].name)}, download"`}><span class="tile">${art(c.id)}</span>${T(CL[c.id].pick, "sh grow")}<span class="ck">${c.installed ? "" : dlMark()}</span></button>`)
+        .join("")}</div>`;
+    }
     const rows = H.clients.map((id) => `<button class="mrow" role="menuitemradio" tabindex="-1" aria-checked="${id === H.sel}" data-act="sel" data-id="${id}"><span class="tile">${art(id)}</span>${T(CL[id].name, "sh grow")}<span class="ck">${id === H.sel ? pixSh(ART.check, "var(--acc)", null, "var(--ish-ck,transparent)") : ""}</span></button>`).join("");
     const a = H.add;
     const add = a ? `<div class="mdiv" role="separator"></div><button class="mrow madd" role="menuitem" tabindex="-1" data-act="add-client"${a.installed ? "" : ` aria-label="Add ${esc(CL[a.id].short)}, download"`}><span class="tile add">${pixSh(ART.plus, "currentColor", null, "var(--ish1,transparent)")}</span>${T("Add " + CL[a.id].short, "grow")}<span class="ck">${a.installed ? "" : dlMark()}</span></button>` : "";
     return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Clients" style="--acc-q:${quarter(accentHex())}">${rows}${add}</div>`;
   }
-  const menuKey = () => $(".caret");
+  /* the menu exists only while a key opens it: Launch's arrow, or the whole Choose Your Setup key */
+  const hasMenu = () => !!H && !H.launching && (H.hero.kind === "play" || H.hero.kind === "setup");
+  const menuKey = () => $(".caret") || $(".hero.setup");
   /* The menu sits on the Launch half's left edge, exactly as wide, 2 su below the split; it opens upward only if it
    * can't fit below and there is more room above, never into the header row. Whole su, device-pixel snapped. */
   function placeMenu() {
@@ -160,7 +192,7 @@ export function createApp(app, actions) {
    * handler's first step. */
   function menuKeys(e) {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || !H || view !== "home") return;
-    const onCaret = !!e.target.closest?.(".caret");
+    const onCaret = !!e.target.closest?.(".caret,.hero.setup");
     if (!menuOpen) {
       if (onCaret && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); toggleMenu(true, e.key === "ArrowUp" ? "last" : "first"); }
       return;
@@ -198,7 +230,7 @@ export function createApp(app, actions) {
     if (!menuOpen || !e.target.closest?.("#layer .menu")) return;
     win.setTimeout(() => {
       const f = doc.activeElement;
-      if (menuOpen && !(f && f.closest && (f.closest("#layer .menu") || f.closest(".caret")))) toggleMenu(false);
+      if (menuOpen && !(f && f.closest && (f.closest("#layer .menu") || f.closest(".caret,.hero.setup")))) toggleMenu(false);
     }, 0);
   });
 
@@ -221,8 +253,8 @@ export function createApp(app, actions) {
     const why = s.reason ? `<p class="t ml lo reason">${esc(s.reason)}</p>` : "";
     const verRow = row("version", s.version.label, s.version.key ? keyBtn(s.version.key) : "", `<span class="t mid st">${esc(s.version.word)}</span>`);
     const clients = [
-      s.lunarRepair ? row("lunar", "Lunar Client", keyBtn({ label: "Repair", act: "repair-lunar", disabled: s.locked })) : "",
-      s.prismAdd ? row("prism", "Prism Launcher", keyBtn({ label: "Add", act: "sheet-add", disabled: s.locked })) : "",
+      s.lunar ? row("lunar", "Lunar Client", keyBtn(s.lunar)) : "",
+      s.prism ? row("prism", "Prism Launcher", keyBtn(s.prism)) : "",
     ].join("");
     return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}</section>
       <section class="sec">${row("auto", "Auto-update", tog("auto", "Auto-update", s.autoUpdate))}${row("dev", "Dev builds", tog("dev", "Dev builds", s.dev))}${verRow}</section>
@@ -273,11 +305,16 @@ export function createApp(app, actions) {
     nudge(sh);
     win.setTimeout(() => $("#sheet .xkey")?.focus({ preventScroll: true }), 150);
   }
-  function closeSheet() {
+  /* quiet: the sheet closes for one of its own actions (Repair, Add, Change), which then runs; nothing else may
+   * start first (the add-wait's follow-through runs only when the player just closed it) */
+  function closeSheet({ quiet = false } = {}) {
+    if (!sheetOpen) return;
     sheetOpen = false;
     $(".hdr .gear")?.setAttribute("aria-expanded", "false");
     $("#sheet").classList.remove("open");
+    if (quiet) return;
     $('.hdr [data-act="settings"]')?.focus({ preventScroll: true });
+    actions.idle?.();
   }
 
   /* ---------- What's New: Ore's update pop-up ---------- */
@@ -303,7 +340,8 @@ export function createApp(app, actions) {
   function closeModal() {
     modal = null;
     $("#layer").querySelectorAll(".scrim,.modal").forEach((x) => x.remove());
-    ($(".hero:not([aria-disabled])") || $('.hdr [data-act="settings"]'))?.focus({ preventScroll: true });
+    ($("button.hero:not([aria-disabled])") || $('.hdr [data-act="settings"]'))?.focus({ preventScroll: true });
+    actions.idle?.();
   }
 
   /* ---------- render ---------- */
@@ -324,7 +362,7 @@ export function createApp(app, actions) {
     const sig = focusSig();
     const was = $(".body.home.solo .col .heros"), from = was && was.getBoundingClientRect().left;
     $("#main").innerHTML = headerHTML() + (view === "history" ? historyHTML() : homeHTML());
-    const keepMenu = menuOpen && view === "home" && !H.solo && !H.launching;
+    const keepMenu = menuOpen && view === "home" && hasMenu();
     menuOpen = keepMenu;
     $("#layer").innerHTML = modalHTML() + menuHTML();
     if (sheetOpen && S) patchSheet();
@@ -404,10 +442,19 @@ export function createApp(app, actions) {
 
   /* ---------- the island ---------- */
   let isl3 = null, islHost = null, isl3failed = false, fitCache = null, openBuild = null, introTok = 0;
+  /* what the island says (contract: built, buildStyle, stuck, bed, wool, gen, ingots, grey): nothing on its own in the
+   * middle; setup builds it one part per check (a stuck check's part hangs grey, the bed off); the Prism pick from
+   * home greys it whole */
   function islandTarget() {
     const t = { built: 1, buildStyle: "partdrop", stuck: false, bed: true, wool: accentHex(), gen: false, ingots: 0, grey: false };
     if (H.solo) { t.built = 0; t.bed = false; return t; }
     if (openBuild) { t.built = openBuild.k / 6; t.bed = openBuild.k >= 6; }
+    const I = H.island;
+    if (I) {
+      if (I.built != null) t.built = I.built;
+      if (I.stuck) { t.stuck = true; t.bed = false; }
+      if (I.grey) t.grey = true;
+    }
     return t;
   }
   function island3d() {
@@ -507,7 +554,7 @@ export function createApp(app, actions) {
 
   /* ---------- interactions ---------- */
   app.addEventListener("click", (e) => {
-    if (menuOpen && !e.target.closest(".menu,.caret")) toggleMenu(false);
+    if (menuOpen && !e.target.closest('.menu,.caret,.hero[data-act="menu"]')) toggleMenu(false);
     const b = e.target.closest("[data-act]");
     if (!b || !app.contains(b) || b.disabled || b.getAttribute("aria-disabled") === "true") return;
     const a = b.dataset.act;
@@ -516,12 +563,14 @@ export function createApp(app, actions) {
     else if (a === "cancel") actions.cancel();
     else if (a === "sel") { menuOpen = false; toggleMenu(false); if (b.dataset.id !== H.sel) actions.select(b.dataset.id); }
     else if (a === "add-client") { toggleMenu(false); actions.add(H.add); }
-    else if (a === "setup") {
-      const k = b.dataset.k;
-      const action = k != null ? H.keys[Number(k)]?.action : H.hero.action;
-      if (action) actions.setup(action);
-    }
-    else if (a === "cancel-add") actions.cancelAdd();
+    else if (a === "setup-now") { toggleMenu(false); actions.setupNow(b.dataset.id); }
+    else if (a === "get") { toggleMenu(false); actions.get(b.dataset.id); }
+    else if (a === "download") actions.download(b.dataset.id);
+    else if (a === "open-client") actions.openClient(b.dataset.id);
+    else if (a === "retry-setup") actions.retrySetup();
+    else if (a === "repair-setup") actions.repairSetup(H.sel);
+    else if (a === "setup-prism") actions.setupPrism();
+    else if (a === "refresh") actions.refresh();
     else if (a === "pick") actions.pick(b.dataset.id);
     else if (a === "repair-pref") actions.repairPref();
     else if (a === "update") actions.update(b.dataset.action || H.hero.action);
@@ -542,8 +591,9 @@ export function createApp(app, actions) {
       b.setAttribute("aria-checked", String(on));
       ({ overlay: actions.setOverlay, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
     }
-    else if (a === "repair-lunar") actions.repairLunar();
-    else if (a === "sheet-add") { closeSheet(); if (S?.prismAdd) actions.add(S.prismAdd); }
+    else if (a === "repair-lunar") { closeSheet({ quiet: true }); actions.repairLunar(); }
+    else if (a === "sheet-add") { closeSheet({ quiet: true }); if (S?.prism?.add) actions.add(S.prism.add); }
+    else if (a === "sheet-change") { closeSheet({ quiet: true }); actions.change(); }
   });
   doc.addEventListener("keydown", (e) => {
     if (!active) return;
@@ -567,8 +617,23 @@ export function createApp(app, actions) {
       S = sheet;
       version = v ?? version;
       devTag = !!dev;
-      if (menuOpen && (H.solo || H.launching)) menuOpen = false;
+      if (menuOpen && !hasMenu()) menuOpen = false;
       render();
+    },
+    /** Closes the menu and the settings sheet (setting a client up starts with both closed). */
+    closeOverlays() {
+      if (menuOpen) toggleMenu(false);
+      closeSheet({ quiet: true });
+    },
+    /** ms until the island's build in flight (the bed included) has landed; 0 without the 3D island or motion. */
+    buildEnd() {
+      return isl3 && !reduced() && isl3.buildEnd ? isl3.buildEnd() : 0;
+    },
+    /** Resolves once the window has something worth showing: the island's first frame, or at once when there is no
+     * island to wait for (nothing set up, no WebGL). */
+    firstFrame() {
+      if (!H || H.solo || view !== "home" || !active) return Promise.resolve();
+      return isl3 && isl3.firstFrame ? isl3.firstFrame() : Promise.resolve();
     },
     /** The home window is hidden while the post-launch dashboard is up (stage 5 replaces that view). */
     setActive(on) {
@@ -579,7 +644,8 @@ export function createApp(app, actions) {
     },
     /** The open behaviour: the build replay then What's New after an update; a still island otherwise. */
     async open(info) {
-      if (!info?.updated) return;
+      // only on a ready home: never on first run, setup, the pick or a stop (spec 1.10)
+      if (!info?.updated || H?.hero?.kind !== "play") return;
       await playIntro();
       openWhatsNew();
     },

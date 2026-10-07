@@ -40,6 +40,7 @@ const replies = {
   launch_progress: () => progressReply(),
   lobby_state: () => ({ kind: "unavailable" }),
   abort_launch_session: () => ({ status: "ok", preferences: PREFS }),
+  open_launcher: () => null,
 };
 
 const app = await bootWindow({
@@ -105,7 +106,9 @@ test("the settings sheet: its rows, a switch that saves, Esc closes", async () =
   const sheet = el("sheet");
   await waitFor(() => sheet.classList.contains("open"), { label: "the sheet" });
   const labels = [...sheet.querySelectorAll(".srow .lbl > .t:first-child")].map((t) => t.textContent);
-  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Dev builds", "Cobblify 0.18.0-next.2", "Lunar Client"]);
+  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Dev builds", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
+  assert.equal(sheet.querySelector('[data-row="lunar"] .key').textContent.trim(), "Repair");
+  assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Change", "Prism is set up: Change re-picks its instance");
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");
   assert.match(sheet.textContent, /Not an official Minecraft product/);
 
@@ -167,6 +170,10 @@ test("Cobblify didn't load: the launch ends on home with Try again, released thr
   });
   assert.equal(calls.filter((c) => c.command === "abort_launch_session").length, aborts + 1);
   assert.equal($("#main .hero.prog"), null, "no progress, and never a Join Hypixel wait");
+  const row = $("#main .heros .under.wait");
+  assert.equal(row?.textContent.trim(), "Cobblify didn't load", "the reason under Try again");
+  assert.equal(row.querySelector(".key"), null, "with nothing to press");
+  assert.equal($("#main .sr").textContent, "Cobblify didn't load. Minecraft started without Cobblify.");
   assert.equal(calls.some((c) => c.command === "launch_lunar" && "expectedAutoJoinHypixel" in (c.args ?? {})), false);
   assert.deepEqual(calls.filter((c) => c.command === "launch_lunar").at(-1).args, { expectedUseExternalOverlay: true });
 });
@@ -180,5 +187,10 @@ test("wrong Lunar version: Try again relaunches and the launch ends on the Launc
     label: "Launch again",
     timeout: 3000,
   });
+  const row = $("#main .heros .under.wait");
+  assert.equal(row?.querySelector(".t").textContent, "Set Lunar to 1.8.9");
+  row.querySelector('[data-act="open-client"]').click();
+  await waitFor(() => calls.some((c) => c.command === "open_launcher"), { label: "Lunar opened" });
+  assert.deepEqual(calls.filter((c) => c.command === "open_launcher").at(-1).args, { kind: "lunar" });
   progressReply = () => ({ stage: "attached" });
 });

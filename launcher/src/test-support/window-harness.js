@@ -63,6 +63,9 @@ function unrefWrap(fn) {
 }
 
 /**
+ * The bridge also carries Tauri's event API (`emit(name, payload)` reaches every `listen` the app made, as the
+ * backend's events do) and the current window's `show` (`windowShows.count`).
+ *
  * @param {{ replies?: Record<string, unknown>, url?: string, setup?: (window: object) => void }} opts
  *   `replies` maps a Tauri command name to its reply: a value, or a function
  *   (sync or async) called with the command arguments. The object is kept by
@@ -94,9 +97,22 @@ export async function bootWindow({ replies = {}, url = "http://localhost/", setu
 
   // Installed before the import: `main.js` reads `window.__TAURI__.core.invoke`
   // and decides `previewing` at module evaluation time.
+  /** Tauri event listeners by event name; `emit` delivers a payload the way the backend's `emit` does. */
+  const listeners = new Map();
+  const listen = async (name, handler) => {
+    if (!listeners.has(name)) listeners.set(name, new Set());
+    listeners.get(name).add(handler);
+    return () => listeners.get(name)?.delete(handler);
+  };
+  const emit = (name, payload) => {
+    for (const handler of listeners.get(name) ?? []) handler({ event: name, payload });
+  };
+  /** How often the frontend asked to show its (hidden-at-start) window. */
+  const windowShows = { count: 0 };
   window.__TAURI__ = {
     core: { invoke },
-    event: { listen: async () => () => {} },
+    event: { listen },
+    window: { getCurrentWindow: () => ({ show: async () => void windowShows.count++ }) },
   };
 
   const realSetTimeout = globalThis.setTimeout;
@@ -141,6 +157,8 @@ export async function bootWindow({ replies = {}, url = "http://localhost/", setu
     replies,
     calls,
     countCalls: (command) => calls.filter((c) => c.command === command).length,
+    emit,
+    windowShows,
     tick,
     waitFor,
   };

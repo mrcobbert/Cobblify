@@ -11,6 +11,7 @@
         "resizable": true,
         "theme": "Dark",
         "backgroundColor": "#1A1A1A",
+        "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {

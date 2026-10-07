@@ -70,9 +70,12 @@ export const ART = {
   dl: ["..###..", "..###..", "..###..", "#######", ".#####.", "..###..", "...#...", ".......", "#######"],
 };
 
-/** The clients, by UI id. The backend calls Prism's target "forge". */
+/**
+ * The clients, by UI id. The backend calls Prism's target "forge". `pick` is the name in Choose Your Setup's menu,
+ * which says what Cobblify supports (Forge, through Prism).
+ */
 export const CL = {
-  lunar: { name: "Lunar Client", short: "Lunar", kind: "lunar", art: ART.moon },
-  prism: { name: "Prism Launcher", short: "Prism", kind: "forge", art: ART.prism },
+  lunar: { name: "Lunar Client", short: "Lunar", pick: "Lunar Client", kind: "lunar", art: ART.moon },
+  prism: { name: "Prism Launcher", short: "Prism", pick: "Forge (Prism)", kind: "forge", art: ART.prism },
 };
 export const uiId = (kind) => (kind === "forge" ? "prism" : kind);

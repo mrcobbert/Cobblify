@@ -437,3 +437,11 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .mrow .tile{width:calc(10*var(--su));justify-content:flex-start;flex:none}
 .mrow .grow{flex:1 1 auto;min-width:0;text-align:center;overflow:hidden}
 .mrow .ck{width:calc(10*var(--su));flex:none;justify-content:flex-end}
+/* setup's slim bar (the user, 2026-10-05): centred in Launch's slot, its words under it left, the key it needs right */
+.hero.prog.slim{position:relative;height:calc(10*var(--su));margin-top:calc(7*var(--su));border:var(--su) solid #000;box-shadow:none}
+.hero.prog.slim .fill{top:0}
+.heros>.under{position:absolute;left:0;right:0;top:calc(19*var(--su));display:flex;align-items:flex-start;justify-content:space-between;gap:calc(4*var(--su));height:calc(16*var(--su))}
+.heros>.under>.t{padding-top:calc(4*var(--su));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.heros{position:relative}
+/* under a full-height key (the install wait, Set Lunar to 1.8.9, Cobblify didn't load): the same row, lower */
+.heros>.under.wait{top:calc(29*var(--su))}

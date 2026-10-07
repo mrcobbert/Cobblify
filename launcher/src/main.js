@@ -28,22 +28,25 @@ import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
 import { colorClass, rowModel, sectionSpans } from "./row-model.js";
 import {
+  SETUP_EVENT,
   abortLaunchSession,
+  beginSetup,
   gameTheme,
   openInfo,
   quitApp,
   rehideAfterConfirmation,
   resetSessionEnd,
+  resumeSetup,
+  setupState,
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
-import { readyTargets } from "./setup-view.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
 import { launchViewRoute, showsCancelLaunch } from "./launch-view-route.js";
 import { createApp } from "./ui/app.js";
-import { CL } from "./ui/art.js";
+import { CL, uiId } from "./ui/art.js";
 import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
 import { setAccent, setFont, watchUnits, wordmark } from "./ui/kit.js";
-import { homeModel, sheetModel } from "./ui/model.js";
+import { homeModel, isInstalled, isSetUp, prismInstances, sheetModel, stuckAfter } from "./ui/model.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -65,6 +68,7 @@ const connAnnounce = el("conn-announce");
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
  *   ?open=updated|fresh&version=…  what open_info answers
  *   ?accent=<token>&font=minecraft|modern  what game_theme answers
+ *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
 
@@ -264,17 +268,92 @@ PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
 let previewLaunchAt = null;
 let previewLaunchForge = false;
 let previewUpdateKey = "consent";
+/** Preview: clients whose download page was opened (installed 2.4 s later), and clients set up meanwhile. */
+const previewInstalled = new Set();
+const previewDone = new Set();
+let previewSetupGen = 0;
+let previewFailed = null;
+
+/** Preview: a fixture with the 0.18 facts (installed, set_up, instances) and what happened since. */
+function previewStatus(which) {
+  const s = resolvePreviewStatus(which);
+  return {
+    ...s,
+    targets: s.targets.map((t) => {
+      const done = previewDone.has(t.kind);
+      const out = { ...t, installed: t.issue !== "missing_launcher" || previewInstalled.has(t.kind), set_up: t.state === "ready" || done };
+      if (done && t.state !== "ready") Object.assign(out, { state: "ready", issue: null, action: "none", candidates: [] });
+      if (t.kind === "forge") {
+        out.instances = (t.candidates ?? []).map((c, i) => ({ id: c.id, name: c.name, detail: "Forge 11.15.1.2318", last_launch_ms: 100 - i }));
+      }
+      return out;
+    }),
+  };
+}
+
+/** Preview: a setup run at the prototype's pacing, with the stop or failure `?setup=` asks for. */
+function previewSetupRun(kind, from) {
+  const gen = ++previewSetupGen;
+  const stopAt = new URLSearchParams(location.search).get("setup");
+  let k = from;
+  const snap = (check, extra = {}) => ({ gen, kind, check, phase: "running", ...extra });
+  const step = () => {
+    if (gen !== previewSetupGen) return;
+    if (k > 6) {
+      previewDone.add(kind);
+      onSetupSnapshot(snap(6, { phase: "done" }));
+      return;
+    }
+    if (k === 3 && stopAt === "signin" && !previewDone.has("signin:" + kind)) {
+      previewDone.add("signin:" + kind);
+      onSetupSnapshot(snap(2, { phase: "stop", stop: "signin" }));
+      setTimeout(step, 3000);
+      return;
+    }
+    if (k === 4 && stopAt === "game" && !previewDone.has("game:" + kind)) {
+      previewDone.add("game:" + kind);
+      onSetupSnapshot(snap(3, { phase: "stop", stop: "game_open" }));
+      setTimeout(step, 3000);
+      return;
+    }
+    if (k === 5 && stopAt === "fail" && !previewDone.has("fail:" + kind)) {
+      previewDone.add("fail:" + kind);
+      previewFailed = { kind, at: 5 };
+      onSetupSnapshot(snap(4, { phase: "failed", failedAt: 5 }));
+      return;
+    }
+    onSetupSnapshot(snap(k - 1));
+    k++;
+    setTimeout(step, 900);
+  };
+  setTimeout(step, 0);
+  return snap(from - 1);
+}
 
 function previewInvoke(command, args) {
   if (command === "status" || command === "refresh_setup") {
     const which = new URLSearchParams(location.search).get("state");
     return new Promise((resolve) =>
-      setTimeout(() => resolve(resolvePreviewStatus(which)), 250),
+      setTimeout(() => resolve(previewStatus(which)), 250),
     );
+  }
+
+  if (command === "begin_setup") {
+    return Promise.resolve(previewSetupRun(args?.kind ?? "lunar", 1));
+  }
+  if (command === "resume_setup") {
+    if (!previewFailed || previewFailed.kind !== args?.kind) return Promise.reject("nothing_to_resume");
+    const at = previewFailed.at;
+    previewFailed = null;
+    return Promise.resolve(previewSetupRun(args.kind, at));
+  }
+  if (command === "setup_state") {
+    return Promise.resolve(null);
   }
 
   if (command === "get_launcher") {
     const kind = args?.kind ?? "lunar";
+    setTimeout(() => previewInstalled.add(kind), 2400);
     return Promise.resolve({
       installed: kind === "forge" ? !PREVIEW_STATUS.prismNoInstances : false,
       download_url:
@@ -462,14 +541,10 @@ function storeClient(id) {
 }
 
 let lastStatus = { state: "loading", targets: [] };
-let setupBusy = false;
 let refreshTimer = null;
 let suppressRefresh = false;
 /** The remembered client (decision 5). */
 let selected = readStoredClient();
-/** Prism instance picked in the interim choose list, and the client being added from the menu. */
-let picked = null;
-let adding = null;
 /** The latest backend launch stage (progress.rs), shown as the Launch key's phase. */
 let progressStage = null;
 /**
@@ -485,6 +560,31 @@ let devPending = null;
 let openInfoReply = null;
 let openPlayed = false;
 let themeKind = null;
+/** The last home model drawn (the add-wait follows through only on an idle home). */
+let lastHome = null;
+
+// ── setting a client up (spec-flows.md §1.1-1.7) ────────────────────────────
+/** The setup run the window shows (a `setup://progress` snapshot), or null. Failed stays until Try again. */
+let setupSnap = null;
+/** The check whose island part hangs grey (model.stuckAfter). */
+let setupStuckAt = null;
+/** Setup is done: the bar holds full while the last part and the bed land. */
+let setupHolding = false;
+/** The last run that finished: its snapshots (a late begin reply included) are never shown again. */
+let doneGen = -1;
+/** A begin/resume request is in flight (one setup at a time). */
+let setupRequest = false;
+/** First run: the client whose download page was opened; setup starts by itself once it is installed. */
+let installWait = null;
+/** Home: "Add <client>" opened its download page; its setup starts once it is installed and home is idle. Session only. */
+let addWait = null;
+/** The Prism instance pick: { picked } while it is up. */
+let pick = null;
+/** Setup just finished: the ready line (one client) until the next launch or pick. */
+let freshSetup = false;
+
+const INSTALL_POLL_MS = 2000;
+let installTimer = null;
 
 const ui = createApp(el("app"), {
   play: (id) => startLaunch(CL[id]?.kind ?? "lunar"),
@@ -492,27 +592,51 @@ const ui = createApp(el("app"), {
   select: (id) => {
     if (launchOutcome && launchOutcome.kind !== CL[id]?.kind) launchOutcome = null;
     selected = id;
+    freshSetup = false;
     storeClient(id);
     refreshUi();
   },
+  // Choose Your Setup's installed row; settings Repair; the add row of an installed client.
+  setupNow: (id) => addClient(id),
+  // Choose Your Setup's row for a client that isn't installed: its download page, then wait for the install.
+  get: (id) => awaitInstall(id),
   add: (desc) => {
     if (!desc) return;
-    if (desc.act === "get") runSetupAction({ kind: "download", launcher: CL[desc.id].kind });
-    else if (desc.act === "add") {
-      adding = desc.id;
-      picked = null;
-      refreshUi();
-    } else if (desc.act === "setup") runSetupAction(desc.action);
+    if (desc.installed) {
+      addClient(desc.id);
+      return;
+    }
+    // Settings' Add before anything is set up: the first run's own wait.
+    if (lastHome?.hero?.kind === "setup") {
+      awaitInstall(desc.id);
+      return;
+    }
+    addWait = desc.id;
+    openDownload(desc.id);
+    refreshUi();
+    watchInstall();
   },
-  setup: (action) => runSetupAction(action),
+  download: (id) => openDownload(id),
+  openClient: (id) => {
+    invoke("open_launcher", { kind: CL[id].kind }).catch((e) => console.warn("open_launcher failed", e));
+  },
+  retrySetup: () => retrySetup(),
+  repairSetup: (id) => addClient(id),
+  setupPrism: () => {
+    const id = pick?.picked ?? prismInstances(lastStatus)[0]?.id;
+    addClient("prism", id ?? undefined);
+  },
   pick: (id) => {
-    picked = id;
+    if (!pick) return;
+    pick = { picked: id };
     refreshUi();
   },
-  cancelAdd: () => {
-    adding = null;
-    picked = null;
-    refreshUi();
+  // Settings' Change: the instance pick, then setup on the chosen instance.
+  change: () => openPick(),
+  refresh: () => {
+    invoke("refresh_setup")
+      .then((next) => next && setStatus(next))
+      .catch((e) => setStatus(setupErrorStatus(e)));
   },
   repairPref: () => {
     // Any save rewrites a valid document (the backend salvages every valid key, and writes
@@ -531,9 +655,212 @@ const ui = createApp(el("app"), {
       refreshUi();
     });
   },
-  // A refresh re-runs setup, which reinstalls the jars and re-registers launcher.json.
-  repairLunar: () => runSetupAction({ kind: "refresh" }),
+  // Repair re-runs Lunar's setup through the flow (default 12).
+  repairLunar: () => addClient("lunar"),
+  // The sheet or What's New closed: the add-wait may follow through now.
+  idle: () => addWaitGo(),
 });
+
+/** First run: the client's download page opens and Choose Your Setup waits for the install (spec 1.1). */
+function awaitInstall(id) {
+  installWait = id;
+  openDownload(id);
+  refreshUi();
+  watchInstall();
+}
+
+/** Opens a client's download page in the browser (get_launcher). */
+function openDownload(id) {
+  invoke("get_launcher", { kind: CL[id].kind }).catch((e) => console.warn("get_launcher failed", e));
+}
+
+const setupShown = () => setupSnap != null;
+/** A setup run is under way (begun and not failed): nothing else starts one. */
+const setupRunning = () => setupRequest || (setupSnap != null && setupSnap.phase !== "failed");
+
+/**
+ * Sets a client up (proto addClient): the menu and the sheet close, a pending wait is dropped. Prism with several
+ * compatible instances and none picked shows the pick first; a Prism that is already set up uses its own instance.
+ */
+async function addClient(id, instanceId) {
+  if (setupRunning()) return;
+  const st = launchController.getState();
+  if (st.activeOutcome != null || st.launchBusy) return;
+  ui.closeOverlays();
+  installWait = null;
+  if (addWait === id) addWait = null;
+  pick = null;
+  const kind = CL[id].kind;
+  if (kind === "forge" && instanceId === undefined && !isSetUp(lastStatus, "prism") && prismInstances(lastStatus).length >= 2) {
+    openPick();
+    return;
+  }
+  setupRequest = true;
+  try {
+    const snap = await beginSetup(invoke, kind, instanceId);
+    setupRequest = false;
+    onSetupSnapshot(snap, { fromReply: true, fresh: true });
+  } catch (e) {
+    setupRequest = false;
+    if (String(e) === "choose_instance") {
+      await refreshStatusQuietly();
+      openPick();
+      return;
+    }
+    console.warn("begin_setup failed", kind, e);
+    refreshUi();
+  }
+}
+
+/** Try again: the failed setup resumes at the check it failed at (default 22). */
+async function retrySetup() {
+  if (!setupSnap || setupSnap.phase !== "failed" || setupRequest) return;
+  const kind = setupSnap.kind;
+  setupRequest = true;
+  try {
+    const snap = await resumeSetup(invoke, kind);
+    setupRequest = false;
+    onSetupSnapshot(snap, { fromReply: true });
+  } catch (e) {
+    setupRequest = false;
+    if (String(e) === "nothing_to_resume") {
+      // The backend no longer holds the failure (it began elsewhere, or restarted): start over.
+      setupSnap = null;
+      setupStuckAt = null;
+      addClient(uiId(kind));
+      return;
+    }
+    console.warn("resume_setup failed", kind, e);
+  }
+}
+
+/** The Prism instance pick: the most recently played instance is preselected (the backend sorts them). */
+function openPick() {
+  if (setupRunning()) return;
+  ui.closeOverlays();
+  pick = { picked: prismInstances(lastStatus)[0]?.id ?? null };
+  refreshUi();
+}
+
+/**
+ * Every setup snapshot, from `setup://progress`, the begin/resume replies and `setup_state` at boot. Snapshots of an
+ * older run are dropped, as is a reply its own run's events already overtook.
+ */
+function onSetupSnapshot(s, { fromReply = false, fresh = false } = {}) {
+  if (!s || typeof s !== "object") return;
+  if (setupHolding || s.gen <= doneGen) return;
+  if (setupSnap && s.gen < setupSnap.gen) return;
+  if (fromReply && setupSnap && s.gen === setupSnap.gen) return;
+  // A finished run nobody watched (a reload after it ended) is not shown; one whose begin is still answering is.
+  if (!setupSnap && !setupRequest && s.phase === "done") return;
+  // A new run starting below the hanging part is a fresh begin, not the resume that keeps it.
+  if (fresh || (setupSnap && s.gen !== setupSnap.gen && setupStuckAt != null && s.check < setupStuckAt)) setupStuckAt = null;
+  setupStuckAt = stuckAfter(setupStuckAt, s);
+  setupSnap = s;
+  pick = null;
+  freshSetup = false;
+  if (s.phase === "done") {
+    finishSetup(s);
+    return;
+  }
+  refreshUi();
+}
+
+/**
+ * The last check passed: the bar holds full while the last part and then the bed land, and Launch comes with the
+ * bed (proto setupDone). Meanwhile the status is read again, so home has the new client.
+ */
+function finishSetup(s) {
+  setupHolding = true;
+  doneGen = s.gen;
+  refreshUi();
+  const land = new Promise((r) => setTimeout(r, ui.buildEnd()));
+  Promise.all([refreshStatusQuietly(), land]).then(() => {
+    const id = uiId(s.kind);
+    setupHolding = false;
+    setupSnap = null;
+    setupStuckAt = null;
+    selected = id;
+    storeClient(id);
+    freshSetup = true;
+    launchOutcome = null;
+    refreshUi();
+    addWaitGo();
+  });
+}
+
+/** refresh_setup, falling back to the cached `status` when a refresh is refused (busy). Never throws. */
+async function refreshStatusQuietly() {
+  try {
+    const next = await invoke("refresh_setup");
+    if (next) setStatus(next);
+    return;
+  } catch {
+    // refused (another claim holds the lifecycle): the cached status is still current enough
+  }
+  try {
+    const next = await invoke("status");
+    if (next) setStatus(next);
+  } catch {
+    // keep what we have
+  }
+}
+
+/** An idle home (proto idleHome): Launch showing, nothing running, no sheet, no What's New, no setup or pick. */
+function homeIdle() {
+  const s = ui.state;
+  return (
+    !!lastHome &&
+    lastHome.hero.kind === "play" &&
+    !lastHome.launching &&
+    !lastHome.under?.kind?.match(/setLunar|notLoaded/) &&
+    !setupShown() &&
+    !setupRequest &&
+    !pick &&
+    stage.dataset.view !== "dash" &&
+    !s.sheetOpen &&
+    !s.modal &&
+    s.view === "home"
+  );
+}
+
+/** Add's wait: once that client is installed and home is idle, its setup starts. */
+function addWaitGo() {
+  if (!addWait || !isInstalled(lastStatus, addWait) || !homeIdle()) return false;
+  const id = addWait;
+  addWait = null;
+  addClient(id);
+  return true;
+}
+
+/** Polls detection every 2 s while an install is awaited (default 2). */
+function watchInstall() {
+  if (installTimer) return;
+  installTimer = setInterval(pollInstall, INSTALL_POLL_MS);
+}
+
+let installPollInFlight = false;
+async function pollInstall() {
+  if (!installWait && !addWait) {
+    clearInterval(installTimer);
+    installTimer = null;
+    return;
+  }
+  if (installPollInFlight || suppressRefresh || setupRunning() || stage.dataset.view === "dash") return;
+  const st = launchController.getState();
+  if (st.launchBusy || st.activeOutcome != null) return;
+  installPollInFlight = true;
+  try {
+    const next = await invoke("refresh_setup");
+    if (next) setStatus(next);
+  } catch {
+    // fail-soft: the next poll tries again
+  } finally {
+    installPollInFlight = false;
+  }
+  if (installWait && isInstalled(lastStatus, installWait)) addClient(installWait);
+  else addWaitGo();
+}
 
 // The home window and the post-launch dashboard take turns: stage.dataset.view
 // is the one switch every launch and reset path already sets.
@@ -577,11 +904,18 @@ function refreshUi() {
   const launch = launchView();
   const update = updateController.getState();
   const version = openInfoReply?.version || update.currentVersion || "";
-  const home = homeModel({ status: lastStatus, selected, picked, adding, launch, update });
-  if (adding && home.adding !== adding) {
-    adding = null;
-    picked = null;
-  }
+  const home = homeModel({
+    status: lastStatus,
+    selected,
+    launch,
+    update,
+    setup: setupSnap ? { snap: setupSnap, stuckAt: setupStuckAt } : null,
+    wait: installWait,
+    addWait,
+    pick,
+    freshSetup,
+  });
+  lastHome = home;
   const sheet = sheetModel({
     status: lastStatus,
     launch,
@@ -590,11 +924,37 @@ function refreshUi() {
     overlaySaving: st.prefSaving,
     version,
     devPending,
+    setupActive: setupShown() || setupRequest || !!pick,
   });
   ui.update({ home, sheet, version, dev: update.updateChannel === "dev" });
   applyTheme(home.sel);
   maybeOpen(home);
+  maybeShowWindow();
 }
+
+// ── the window: created hidden, shown once its first frame is drawn ─────────
+// tauri.conf.json creates the window with `visible: false` so the island never flashes in half-drawn. It is shown
+// after the island's first frame (at once when there is no island to wait for), and 1.5 s after boot at the latest;
+// the backend also shows it 3 s after start if it is still hidden, so a script failure can never leave it invisible.
+const SHOW_WINDOW_MAX_MS = 1500;
+let windowShown = false;
+let windowAsked = false;
+function showWindow() {
+  if (windowShown) return;
+  windowShown = true;
+  try {
+    const w = window.__TAURI__?.window?.getCurrentWindow?.();
+    Promise.resolve(w?.show?.()).catch(() => {});
+  } catch {
+    // the backend's own timer shows it
+  }
+}
+function maybeShowWindow() {
+  if (windowShown || windowAsked || lastStatus.state === "loading") return;
+  windowAsked = true;
+  ui.firstFrame().then(showWindow, showWindow);
+}
+setTimeout(showWindow, SHOW_WINDOW_MAX_MS);
 
 /** The launcher wears the accent and font of the client you play (decision 8). */
 function applyTheme(sel) {
@@ -623,44 +983,6 @@ function setStatus(status) {
   // A fresh setup read also re-reads the game's theme: the player may have changed it in game meanwhile.
   themeKind = null;
   refreshUi();
-}
-
-async function runSetupAction(action) {
-  const st = launchController.getState();
-  if (setupBusy || st.activeOutcome != null || st.launchBusy || st.prefSaving || st.prefUncertain) {
-    return;
-  }
-  setupBusy = true;
-  try {
-    if (action.kind === "refresh") {
-      const next = await invoke("refresh_setup");
-      if (next) setStatus(next);
-      return;
-    }
-    if (action.kind === "download") {
-      await invoke("get_launcher", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "open_launcher") {
-      await invoke("open_launcher", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "open_folder") {
-      await invoke("open_setup_location", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "setup_prism") {
-      const next = await invoke("choose_forge_target", { id: action.candidateId });
-      adding = null;
-      picked = null;
-      if (next) setStatus(next);
-    }
-  } catch (e) {
-    if (action.kind === "refresh") setStatus(setupErrorStatus(e));
-    else console.warn("setup action failed", action.kind, e);
-  } finally {
-    setupBusy = false;
-  }
 }
 
 // ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
@@ -820,6 +1142,8 @@ const sessionReset = createSessionReset({
     stage.dataset.view = "home";
     refreshUi();
     updateController.setGameActive(false);
+    // Cancel, or the game ended: an add-wait follows through on the idle home.
+    addWaitGo();
   },
   refreshHome: async () => {
     const next = await invoke("refresh_setup");
@@ -949,6 +1273,7 @@ function startLaunch(kind, { retry = false } = {}) {
   suppressRefresh = true;
   progressStage = null;
   launchOutcome = null;
+  freshSetup = false;
   const run = retry ? launchController.tryAgainLaunch(kind, launchHooks) : launchController.launch(kind, launchHooks);
   return run.finally(releaseRefreshUnlessLive);
 }
@@ -1450,10 +1775,19 @@ if (!previewing && window.__TAURI__?.event?.listen) {
   window.__TAURI__.event.listen("updater://status", ({ payload }) => {
     updateController.acceptStatus(payload);
   });
+  // Every setup run's progress (setup.rs); the snapshot is whole each time.
+  window.__TAURI__.event.listen(SETUP_EVENT, ({ payload }) => onSetupSnapshot(payload));
 }
 
+// A setup that was under way (or failed) before this page loaded: catch up with it.
+setupState(invoke)
+  .then((snap) => {
+    if (snap && snap.phase !== "done") onSetupSnapshot(snap, { fromReply: true });
+  })
+  .catch(() => {});
+
 function canAutoRefresh() {
-  if (previewing || suppressRefresh || setupBusy) return false;
+  if (previewing || suppressRefresh) return false;
   if (stage.dataset.view === "dash") return false;
   const st = launchController.getState();
   if (st.launchBusy || st.launchPhase === "loading") return false;

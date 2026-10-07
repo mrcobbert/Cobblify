@@ -50,14 +50,15 @@ That is the whole trick, and it is why the launcher is not a "you must launch
 from here" tool: once Lunar's own config carries the agent, Cobblify loads from
 the Dock, from Spotlight, from anywhere.
 
-The **Launch Lunar** button goes further: it fires Lunar's official deep link,
+**Launch Cobblify** (Lunar) fires Lunar's official bare deep link,
 
-    open -g "lunarclient://play?serverAddress=play.hypixel.net"
+    open -g "lunarclient://play"
 
-which makes Lunar's OWN launcher boot the game on the ACTIVE version profile
-and auto-join Hypixel - no Press Play, no manual server join. Never add
-`forceRecommendedVersion` to that link: it can silently switch the profile
-off 1.8.9 (there is a test pinning this).
+which makes Lunar's OWN launcher boot the game on its ACTIVE version profile.
+Launches never join a server: the player joins Hypixel themselves. Lunar has no
+link parameter that picks a version without also joining a server, so the
+version is read at launch from the fresh Weave log instead: a Lunar that is not
+on 1.8.9 ends the launch with "Set Lunar to 1.8.9" + Open.
 
 `open -g` avoids stealing focus, and a background worker then hides the
 launcher window outright: it polls for the launcher by exact executable path
@@ -111,14 +112,44 @@ Lunar or Cobblify process started in the milliseconds between the check and
 the write is not covered. `launcher.json.bak-cobblify` is deliberately left in
 place - it is the user's pristine pre-Cobblify copy.
 
+## First run and setup (0.18)
+
+Startup only reads: it never writes into a client the player has not set up. A
+client is **set up** once Cobblify is registered in it (Lunar: our javaagent in
+`launcher.json` and the jar in `~/.weave/mods`; Prism: a valid saved instance in
+`~/.cobblify/launcher-targets.json`). A set-up client still gets current jars
+silently after an update.
+
+- **Nothing set up:** the window shows "Choose Your Setup" alone, with no island.
+  Its menu lists Lunar Client and Forge (Prism); a client that is not installed
+  carries a download mark. Picking it opens its download page and shows
+  "Install Lunar/Prism" + Download; detection is polled every 2 s and setup
+  starts by itself once it is installed.
+- **Setup** (`begin_setup` / `resume_setup`, progress on `setup://progress`)
+  runs six checks, each held to 0.9 s so the island visibly builds one part per
+  check: Cobblify's own files, the client, sign-in, the client closed (Lunar is
+  quit politely; Prism's instance must not be running), old Cobblify files, then
+  adding Cobblify. It stops at "Sign in to Lunar/Prism" + Open until an account
+  exists, at "Close Minecraft" while that client's game runs, and fails with
+  "Try again" (which resumes at the failed check). Launch arrives with the bed.
+- **Prism:** one compatible 1.8.9 Forge instance is used; several bring up a
+  pick with the most recently played preselected; none makes "Cobblify 1.8.9",
+  with Java 8 for that instance only when Prism will not fetch it itself.
+- **From home**, the client menu's "Add Prism/Lunar" sets the other client up the
+  same way (download + "Install …" wait first when it is missing; it follows
+  through only on an idle home). Settings: Lunar **Repair** re-runs Lunar's
+  setup; Prism **Add** is the same add flow, **Change** re-picks the instance.
+- **The window** is created hidden and shown once the island's first frame is
+  drawn (at once without one, 1.5 s at most); the backend shows it after 3 s if
+  it is somehow still hidden.
+
 ## Forge
 
 The Forge build is a **pure drop-in**: Mixin is shaded into the jar and its
 manifest carries `TweakClass` + `ForceLoadAsMod`, which FML auto-registers. No
 JVM argument, no coremod, no bootstrap, no config edit. The launcher deliberately
 supports Prism only: Prism provides a documented instance-id CLI, so Forge can match
-Lunar's one-click launch, automatic Hypixel join, hidden launcher, progress text and
-external lobby/queue/game dashboard.
+Lunar's one-click launch, progress text and external lobby/queue/game dashboard.
 
 `forge.rs` scans Prism's default instances directory and reads `mmc-pack.json`:
 
@@ -346,14 +377,12 @@ user to quit and reopen. It now lives behind a `Mutex` because an *explicit* use
 action - choosing a Forge instance - produces a new one; it is still never
 recomputed behind the user's back, which is the invariant that mattered.
 
-**Auto-join Hypixel (shared preference).** A compact checkbox under the launch row
-defaults on and is stored at `~/.cobblify/launcher-preferences.json` (backend-owned
-path and lock; the UI never supplies a filesystem location). When on, Lunar uses the
-official `lunarclient://play?serverAddress=play.hypixel.net` deep link and Prism gets
-`--server play.hypixel.net`. When off, Lunar opens only (`Open Lunar` / `Opening Lunar…`
-/ `Lunar Opened`) and Prism launches with `--launch <instance-id>` only (no server
-argument). The UI does not narrate Hypixel connectivity until a verified live lobby
-snapshot proves it.
+**No auto-join (0.18).** Lunar always opens through the bare `lunarclient://play` link
+and Prism always launches with `--launch <instance-id>` only. The 0.17 launcher's
+`auto_join_hypixel` key in `~/.cobblify/launcher-preferences.json` is still read
+leniently and written back unchanged (0.17 shares the file and requires it), but
+nothing acts on it. The UI does not narrate Hypixel connectivity until a verified
+live lobby snapshot proves it.
 
 **Test dev builds (update channel).** A third checkbox in the same row switches the
 updater to the opt-in dev channel (`update_channel` in the same preference file). Ticked,

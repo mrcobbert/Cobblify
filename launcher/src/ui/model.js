@@ -1,11 +1,15 @@
 /**
- * What the 0.18 home, its client menu and the settings sheet show, as a pure function of the existing backend's
- * replies (stage 1 of the redesign: the new look on the existing backend).
+ * What the 0.18 home, its client menu and the settings sheet show, as a pure function of the backend's replies and
+ * the few things the window remembers (spec-flows.md §1: first run, setup, the Prism pick, add from home, launch).
  *
- * First run is interim until stage 2 (Choose Your Setup): with no client ready, the key sits alone in the middle
- * and is the existing setup action for the first issue (setup-view.js), the next issue's action under it.
+ * - Nothing set up: Choose Your Setup, alone in the middle (no island). Its menu sets a client up, or opens the
+ *   download page of a missing one and waits for the install ("Install Lunar" + Download).
+ * - A setup run (`setup://progress` snapshots): the slim bar with its under-row, the stops, Try again; the island is
+ *   built one part per check.
+ * - The Prism pick: the instance list over "Set up Prism"; alone on a first run, the island greyed from home.
+ * - Home: Launch for the set-up clients, the launch phases and outcomes, the add-wait's under-row.
  */
-import { ISSUE, readyTargets, setupBlocks, targetOf, topLevelError } from "../setup-view.js";
+import { targetOf } from "../setup-view.js";
 import { CL, uiId } from "./art.js";
 
 /** Backend progress stages (progress.rs) -> the prototype's launch phases, in order. */
@@ -14,6 +18,14 @@ const STAGE_INDEX = {
   forge_fired: 0, forge_attached: 1, forge_discovered: 2, forge_mixing: 3, forge_settled: 4,
 };
 const PHASE_PCT = [10, 35, 60, 85];
+
+/** The six setup checks, read out to screen readers (proto CHECKS / PRISM_CHECKS). */
+export const CHECKS = ["Checking Cobblify's own files", "Looking for Lunar and Prism", "Checking Lunar has been signed in", "Checking Lunar is closed", "Looking for old Cobblify files", "Adding Cobblify to Lunar"];
+export const PRISM_CHECKS = ["Checking Cobblify's own files", "Looking for Lunar and Prism", "Checking Prism has been signed in", "Checking the instance is closed", "Looking for old Cobblify files", "Adding Cobblify to the instance"];
+const N = CHECKS.length;
+
+/** The setup labels a long check shows instead of "Setting up …" (snapshot `label`). */
+const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 8" };
 
 /**
  * The launch key while launching. The game being up reads "Join Hypixel" (a wait): launches
@@ -49,7 +61,7 @@ function outcomeView(outcome) {
   return null;
 }
 
-/** The remembered client if it is still ready, else the first ready one. */
+/** The remembered client if it is still set up, else the first set-up one. */
 export function pickSelected(readyIds, stored) {
   return readyIds.includes(stored) ? stored : (readyIds[0] ?? null);
 }
@@ -70,84 +82,175 @@ function updateHero(u) {
   return { kind: "act", label: `Update to ${v}`.trim(), act: "update", action: "download" };
 }
 
-/** How the menu's "Add" row (and Settings' Add) reaches a client that isn't set up, or null if it can't. */
+/* ---------- what the status says about a client ---------- */
+
+const targetFor = (status, id) => targetOf(status, CL[id].kind);
+/** Cobblify is set up in this client. A ready target always is (older replies carry no `set_up`). */
+export const isSetUp = (status, id) => {
+  const t = targetFor(status, id);
+  return !!t && (t.set_up === true || t.state === "ready");
+};
+/** The client's app is on this computer. */
+export const isInstalled = (status, id) => {
+  const t = targetFor(status, id);
+  if (!t) return false;
+  return typeof t.installed === "boolean" ? t.installed : t.issue !== "missing_launcher";
+};
+/** Prism's compatible instances for the pick, most recently played first (the backend sorts them). */
+export const prismInstances = (status) => targetFor(status, "prism")?.instances ?? [];
+/** The clients Cobblify is set up in, Lunar first. */
+export const setUpClients = (status) => ["lunar", "prism"].filter((id) => isSetUp(status, id));
+
+/** How the menu's "Add" row (and Settings' Add) reaches the client that isn't set up. */
 export function addFor(status, id) {
-  const t = targetOf(status, CL[id].kind);
-  if (!t || t.state === "ready") return null;
-  if (t.issue === ISSUE.MISSING_LAUNCHER) return { id, act: "get", installed: false };
-  if (t.action === "choose" && (t.candidates ?? []).length) return { id, act: "add", installed: true };
-  const block = setupBlocks(status).find((b) => b.kind === CL[id].kind);
-  const action = block?.actions?.[0];
-  return action ? { id, act: "setup", action, installed: true } : null;
+  return { id, installed: isInstalled(status, id) };
 }
 
-function interim(status, picked) {
-  if (status.state === "loading") return { hero: { kind: "wait", label: "Checking" }, keys: [], said: "Checking setup" };
-  const err = topLevelError(status);
-  if (err) {
+/* ---------- setup ---------- */
+
+/** The setup check names a client's screen reader hears. */
+export const checkName = (id, i) => (id === "prism" ? PRISM_CHECKS : CHECKS)[Math.max(0, Math.min(N - 1, i))];
+
+/**
+ * Where the grey ghost part hangs (the check whose part waits), carried across snapshots: a failure and the game-open
+ * stop hang the part of the check they stopped at; it keeps hanging through that check's re-run (Try again, or the
+ * game closing then "Closing Lunar") and drops once the check passes.
+ */
+export function stuckAfter(prev, snap) {
+  if (!snap) return null;
+  if (snap.phase === "failed" || snap.stop === "game_open") return snap.check;
+  if (prev != null && (snap.check > prev || snap.phase === "done")) return null;
+  return prev;
+}
+
+/** The slim bar's fill: 4, 17, 33, 50, 67, 83, then 100 once done. */
+export const setupPct = (check) => Math.max(4, Math.round((check / N) * 100));
+
+function setupView(snap, stuckAt) {
+  const id = uiId(snap.kind), name = CL[id].short;
+  const check = Math.max(0, Math.min(N, snap.check | 0));
+  const built = check / N;
+  if (snap.phase === "done") {
+    return { hero: { kind: "slim", label: `Setting up ${name}`, pct: 100 }, island: { built: 1 }, said: checkName(id, N - 1) + "." };
+  }
+  if (snap.phase === "failed") {
     return {
-      hero: { kind: "act", label: "Try again", act: "setup", action: err.actions[0] },
-      keys: [],
-      said: `${err.heading}. ${err.detail}`,
+      hero: { kind: "act", label: "Try again", act: "retry-setup" },
+      island: { built, stuck: true },
+      said: "Setup didn't finish. Play waits until setup finishes.",
     };
   }
-  const blocks = setupBlocks(status);
-  if (!blocks.length) return { hero: { kind: "wait", label: "Checking" }, keys: [], said: "" };
-  const [first, ...rest] = blocks;
-  const keys = rest.flatMap((b) => (b.actions[0] ? [{ label: b.actions[0].label, act: "setup", action: b.actions[0] }] : []));
-  const said = blocks.map((b) => b.heading).join(". ");
-  if (first.candidates.length) {
-    return { ...chooseView(first, picked), keys, said };
+  const stuck = stuckAt != null && stuckAt === check;
+  if (snap.stop === "signin") {
+    return {
+      hero: { kind: "slim", label: `Sign in to ${name}`, pct: setupPct(check), open: { label: "Open", id } },
+      island: { built },
+      said: id === "lunar" ? "Sign in to Lunar. Lunar hasn't been signed in on this computer yet." : "Sign in to Prism. Prism has no Microsoft account on this computer yet.",
+    };
   }
-  const [a, ...more] = first.actions;
-  const hero = a ? { kind: "act", label: a.label, act: "setup", action: a } : { kind: "wait", label: first.heading };
-  return { hero, keys: [...more.map((m) => ({ label: m.label, act: "setup", action: m })), ...keys], said };
-}
-
-function chooseView(block, picked) {
-  const candidates = block.candidates.map((c) => ({ id: c.id, name: c.name }));
-  const pick = candidates.some((c) => c.id === picked) ? picked : candidates[0].id;
+  if (snap.stop === "game_open") {
+    return {
+      hero: { kind: "wait", label: "Close Minecraft" },
+      island: { built, stuck: true },
+      said: id === "lunar" ? "Game open. Minecraft is running from Lunar. Setup finishes once it closes." : "Game open. Minecraft is running. Setup finishes once it closes.",
+    };
+  }
+  const closing = snap.stop === "closing_lunar" || snap.label === "closing_lunar";
+  const long = closing ? null : LONG[snap.label] ?? null;
   return {
-    hero: { kind: "act", label: "Set up Prism", act: "setup", action: { kind: "setup_prism", candidateId: pick } },
-    lead: { kind: "choose", candidates, picked: pick },
+    hero: { kind: "slim", label: closing ? `Closing ${name}` : long ?? `Setting up ${name}`, pct: setupPct(check) },
+    island: { built, stuck },
+    said: closing ? `Closing ${name}.` : (long ?? checkName(id, check)) + ".",
   };
 }
+
+/* ---------- first run ---------- */
+
+function chooseSaid(status, wait) {
+  if (wait) return `Waiting for ${CL[wait].name} to be installed. Setup starts by itself once it is.`;
+  const inst = ["lunar", "prism"].filter((id) => isInstalled(status, id));
+  if (inst.length === 1) return `Choose a client: ${CL[inst[0]].name} is on this computer, the other one downloads first.`;
+  if (inst.length) return "Choose a client: Lunar Client and Prism Launcher are both on this computer.";
+  return "Choose a client: Cobblify runs inside Lunar Client or Prism Launcher, and neither is on this computer yet.";
+}
+
+/* ---------- the model ---------- */
 
 /**
  * @param {{
  *   status: object,
  *   selected?: string|null,
- *   picked?: string|null,
- *   adding?: string|null,
  *   launch?: { kind?: string|null, phase?: string, busy?: boolean, stage?: string|null,
  *              outcome?: "wrong_version"|"not_loaded"|null, outcomeKind?: "lunar"|"forge"|null,
  *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean, showCancel?: boolean },
  *   update?: object,
+ *   setup?: { snap: object, stuckAt?: number|null } | null,   the setup run the window shows
+ *   wait?: string|null,      first run: the client whose install is awaited
+ *   addWait?: string|null,   home: the client "Add" is waiting to be installed
+ *   pick?: { picked: string|null } | null,   the Prism instance pick is up
+ *   freshSetup?: boolean,    setup has just finished (the ready line)
  * }} input
+ *
+ * hero kinds: play | setup (Choose Your Setup) | slim (setup's bar) | prog | wait | act.
+ * island: null = the whole island; else { built, stuck, grey }. solo = no island, the column centred.
  */
-export function homeModel({ status, selected = null, picked = null, adding = null, launch = {}, update = {} }) {
-  const ready = readyTargets(status).map((t) => uiId(t.kind));
-  const order = ["lunar", "prism"].filter((id) => ready.includes(id));
+export function homeModel({ status, selected = null, launch = {}, update = {}, setup = null, wait = null, addWait = null, pick = null, freshSetup = false }) {
+  const order = setUpClients(status);
   const launching = !!launch.kind && (launch.busy || launch.phase === "loading" || launch.phase === "done");
   const updReady = update.state === "ready";
+  const blank = { clients: order, add: null, lead: null, under: null, keys: [], launching: false, updReady, island: null, setupMenu: null, setup: false, pick: false };
+
+  if (status.state === "loading") {
+    return { ...blank, solo: true, clients: [], sel: null, hero: { kind: "wait", label: "Checking" }, said: "Checking setup" };
+  }
+  if (status.state === "error" && !(status.targets ?? []).length) {
+    return { ...blank, solo: true, clients: [], sel: null, hero: { kind: "act", label: "Try again", act: "refresh" }, said: `Setup didn't finish. ${status.message ?? ""}`.trim() };
+  }
+
+  if (setup?.snap) {
+    const id = uiId(setup.snap.kind);
+    const v = setupView(setup.snap, setup.stuckAt ?? null);
+    const clients = ["lunar", "prism"].filter((c) => c === id || order.includes(c));
+    return { ...blank, solo: false, clients, sel: id, setup: true, ...v };
+  }
+
+  if (pick) {
+    const list = prismInstances(status);
+    const picked = list.some((i) => i.id === pick.picked) ? pick.picked : (list[0]?.id ?? null);
+    const solo = !order.length;
+    const n = list.length;
+    return {
+      ...blank,
+      solo,
+      clients: ["lunar", "prism"].filter((c) => c === "prism" || order.includes(c)),
+      sel: "prism",
+      pick: true,
+      hero: { kind: "act", label: "Set up Prism", act: "setup-prism" },
+      lead: { kind: "choose", candidates: list.map((i) => ({ id: i.id, name: i.name, detail: i.detail ?? "" })), picked },
+      island: solo ? null : { built: 1, stuck: true, grey: true },
+      said: `Choose an instance. Prism has ${n} ${n === 1 ? "instance" : "instances"} that can run Cobblify.`,
+    };
+  }
 
   if (!order.length) {
-    const v = interim(status, picked);
-    return { solo: true, clients: [], sel: null, add: null, hero: v.hero, keys: v.keys, lead: v.lead ?? null, under: null, said: v.said, launching: false, updReady };
+    return {
+      ...blank,
+      solo: true,
+      clients: [],
+      sel: null,
+      hero: { kind: "setup" },
+      under: wait ? { kind: "install", id: wait } : null,
+      setupMenu: ["lunar", "prism"].map((id) => ({ id, installed: isInstalled(status, id) })),
+      said: chooseSaid(status, wait),
+    };
   }
 
   const sel = launching ? uiId(launch.kind) : pickSelected(order, selected);
   const other = ["lunar", "prism"].find((id) => !order.includes(id));
   const add = other ? addFor(status, other) : null;
-  const base = { solo: false, clients: order, sel, add, lead: null, under: null, keys: [], launching, updReady };
+  const base = { ...blank, solo: false, clients: order, sel, add, launching };
+  const installRow = (hero) => (addWait && hero.kind === "play" && !launching ? { kind: "install", id: addWait } : null);
 
-  if (adding && add && add.id === adding && add.act === "add") {
-    const block = setupBlocks(status).find((b) => b.kind === CL[adding].kind && b.candidates.length);
-    if (block) {
-      const v = chooseView(block, picked);
-      return { ...base, sel: adding, adding, hero: v.hero, lead: v.lead, keys: [{ label: "Cancel", act: "cancel-add" }], said: "Choose a Prism instance" };
-    }
-  }
   if (launching) {
     const hero = launchHero(sel, launch.stage);
     return { ...base, hero, keys: launch.showCancel ? [{ label: "Cancel", act: "cancel" }] : [], said: hero.label };
@@ -162,17 +265,26 @@ export function homeModel({ status, selected = null, picked = null, adding = nul
   if (launch.prefError) {
     return { ...base, hero: { kind: "act", label: "Try again", act: "play" }, said: launch.prefError };
   }
+  // A set-up client whose files could not be brought up to date (a game was open, a jar it may not touch, a
+  // write that failed): its setup runs again, through the flow and its stops.
+  if (targetFor(status, sel)?.state !== "ready") {
+    return { ...base, hero: { kind: "act", label: "Try again", act: "repair-setup" }, said: "Setup didn't finish. Play waits until setup finishes." };
+  }
   // The outcome belongs to the client that launched; picking the other one leaves it behind.
   const ended = !launch.outcomeKind || CL[sel].kind === launch.outcomeKind ? outcomeView(launch.outcome) : null;
   if (ended) return { ...base, ...ended };
-  return { ...base, hero: { kind: "play" }, said: `Launch Cobblify in ${CL[sel].name}` };
+  const hero = { kind: "play" };
+  const said = freshSetup ? (order.length === 1 ? "In game, Right Shift opens Cobblify's settings." : "") : `Launch Cobblify in ${CL[sel].name}`;
+  return { ...base, hero, under: installRow(hero), said };
 }
 
-/** The settings sheet's rows. */
-export function sheetModel({ status, launch = {}, update = {}, overlayOn = true, overlaySaving = false, version = "", devPending = null }) {
+/**
+ * The settings sheet's rows. The client rows (Lunar Repair, Prism Add / Change) are disabled while launching, in
+ * game, and while a setup is up (defaults 15: no interleaving).
+ */
+export function sheetModel({ status, launch = {}, update = {}, overlayOn = true, overlaySaving = false, version = "", devPending = null, setupActive = false }) {
   const locked = !!launch.active || !!launch.busy;
-  const lunarReady = readyTargets(status).some((t) => t.kind === "lunar");
-  const forgeReady = readyTargets(status).some((t) => t.kind === "forge");
+  const rowsOff = locked || !!setupActive;
   const u = update;
   let word = "Up to date", key = { label: "Check", act: "update", action: "check" }, label = `Cobblify ${version || u.currentVersion || ""}`.trim();
   switch (u.state) {
@@ -186,6 +298,8 @@ export function sheetModel({ status, launch = {}, update = {}, overlayOn = true,
     case "installing": word = "Installing"; key = null; break;
     default: break;
   }
+  const loaded = status.state !== "loading" && !(status.state === "error" && !(status.targets ?? []).length);
+  const prismSet = isSetUp(status, "prism");
   return {
     locked,
     reason: locked ? "Locked while launching" : null,
@@ -195,7 +309,9 @@ export function sheetModel({ status, launch = {}, update = {}, overlayOn = true,
     // player's click (devPending) instead of visibly undoing it.
     dev: { on: u.channelSaving && devPending != null ? devPending : u.updateChannel === "dev", disabled: locked || !!u.channelSaving || u.state === "checking" },
     version: { label, word, key },
-    lunarRepair: lunarReady,
-    prismAdd: forgeReady ? null : addFor(status, "prism"),
+    lunar: loaded && isSetUp(status, "lunar") ? { label: "Repair", act: "repair-lunar", disabled: rowsOff } : null,
+    prism: !loaded ? null
+      : prismSet ? { label: "Change", act: "sheet-change", disabled: rowsOff }
+      : { label: "Add", act: "sheet-add", disabled: rowsOff, add: addFor(status, "prism") },
   };
 }

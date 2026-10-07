@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Let the webview receive updater status events from native code, and drag the window by its header.",
+  "description": "Let the webview receive updater and setup events from native code, drag the window by its header, and show the window once its first frame is drawn (it is created hidden).",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:event:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-show"
   ]
 }
