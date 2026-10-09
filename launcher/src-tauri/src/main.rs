@@ -2132,12 +2132,21 @@ fn compute_launch_progress_in(
         (Some(p), Some(_)) => Some(std::fs::read_to_string(p).unwrap_or_default()),
         _ => None,
     };
+    // Lunar: the version guard's line, when this launch wrote it (fresh, like the log above).
+    let other_version = !forge_session && {
+        let guard_log = home.join(".weave").join(guard::LOG);
+        std::fs::metadata(&guard_log)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m >= baseline)
+            && std::fs::read_to_string(&guard_log).is_ok_and(|text| guard::says_other_version(&text))
+    };
     let loaded = progress.watch.loaded(env, home, baseline, now);
     let outcome = progress.watch.verdict(
         forge_session,
         log.as_deref()
             .zip(fresh_mtime)
             .map(|(text, modified)| progress::LoaderLog { text, modified }),
+        other_version,
         jvm,
         loaded,
         now,
@@ -2976,6 +2985,29 @@ java.lang.IllegalStateException: Could not find game version\n",
             let wire = serde_json::to_value(&p).unwrap();
             assert_eq!(wire["outcome"], "wrong_version");
             // Sticky across polls.
+            env.advance(1);
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::WrongVersion));
+        }
+
+        /// With the version guard the game on another version runs on and Weave writes nothing:
+        /// the guard's fresh line is the wrong version. A stale line from an earlier launch is not.
+        #[test]
+        fn the_guards_line_ends_a_lunar_launch_on_another_version_with_the_game_alive() {
+            let home = tempfile::tempdir().unwrap();
+            let guard_log = home.path().join(".weave").join(guard::LOG);
+            std::fs::create_dir_all(guard_log.parent().unwrap()).unwrap();
+            std::fs::write(&guard_log, "Cobblify guard: Minecraft 26.3, Weave not started\n").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            let baseline = SystemTime::now();
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            env.spawn(77, baseline + Duration::from_secs(1));
+            let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
+            assert!(p.outcome.is_none(), "a line older than the launch is not this launch's");
+
+            std::thread::sleep(Duration::from_millis(20));
+            std::fs::write(&guard_log, "Cobblify guard: Minecraft 26.3, Weave not started\n").unwrap();
             env.advance(1);
             let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
             assert_eq!(p.outcome, Some(progress::Outcome::WrongVersion));

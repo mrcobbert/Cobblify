@@ -240,6 +240,9 @@ pub struct Facts<'a> {
     /// A Prism (Forge) launch; otherwise Lunar (Weave).
     pub forge: bool,
     pub log: Option<LoaderLog<'a>>,
+    /// Lunar only: the version guard's fresh line says the game is another version, so it did
+    /// not start Weave (`guard::says_other_version`).
+    pub other_version: bool,
     pub jvm: GameJvm,
     /// A fresh `~/.cobblify/lobby.json` written by this launch's game JVM: Cobblify is in.
     pub loaded: bool,
@@ -293,6 +296,9 @@ impl LoadWatch {
     fn decide(&mut self, facts: &Facts, now: SystemTime) -> Option<Outcome> {
         let text = facts.log.map(|l| l.text);
         if !facts.forge {
+            if facts.other_version {
+                return Some(Outcome::WrongVersion);
+            }
             if let Some(text) = text {
                 // Wrong version first: Weave may also log its fatal error, and the JVM dies.
                 if weave_wrong_version(text) {
@@ -494,6 +500,7 @@ java.lang.IllegalStateException: Could not find game version
         Facts {
             forge: false,
             log: text.map(|text| LoaderLog { text, modified }),
+            other_version: false,
             jvm,
             loaded: false,
         }
@@ -508,6 +515,18 @@ java.lang.IllegalStateException: Could not find game version
 
     fn alive(birth_secs: u64) -> GameJvm {
         GameJvm::Alive { birth: at(birth_secs) }
+    }
+
+    /// With the version guard, Weave writes nothing on another version and the game runs on:
+    /// the guard's line alone is the wrong version, with no Weave log and a live game.
+    #[test]
+    fn the_guards_other_version_line_is_the_wrong_version() {
+        let mut w = LoadWatch::default();
+        let facts = Facts { other_version: true, ..lunar(None, at(1), alive(0)) };
+        assert_eq!(w.observe(&facts, at(1)), Some(Outcome::WrongVersion));
+        let mut f = LoadWatch::default();
+        let forge_facts = Facts { other_version: true, ..forge(None, at(1), alive(0)) };
+        assert_eq!(f.observe(&forge_facts, at(1)), None, "never a Prism verdict");
     }
 
     #[test]

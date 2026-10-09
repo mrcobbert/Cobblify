@@ -4,7 +4,9 @@
 //! Privacy (`proc.rs`'s rule): the game JVM is found by its executable path (Lunar: Java
 //! under `~/.lunarclient/jre`) or its working directory (Prism: inside the instance
 //! folder), and told apart by its OS birth time. Never a command line. Lunar's game
-//! version comes only from the fresh Weave log (`progress::weave_wrong_version`).
+//! version comes only from the version guard's fresh line (`guard::says_other_version`) or,
+//! for a registration from before the guard, the fresh Weave log
+//! (`progress::weave_wrong_version`).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -242,6 +244,7 @@ impl Watch {
         &mut self,
         forge: bool,
         log: Option<LoaderLog>,
+        other_version: bool,
         jvm: GameJvm,
         loaded: bool,
         now: SystemTime,
@@ -251,6 +254,7 @@ impl Watch {
             &Facts {
                 forge,
                 log,
+                other_version,
                 jvm,
                 loaded,
             },
@@ -462,6 +466,6 @@ pub(crate) mod tests {
     #[test]
     fn no_launch_watched_means_no_verdict() {
         let mut w = Watch::default();
-        assert_eq!(w.verdict(false, None, GameJvm::Exited, false, t0()), None);
+        assert_eq!(w.verdict(false, None, false, GameJvm::Exited, false, t0()), None);
     }
 }
