@@ -316,7 +316,7 @@ fn scan_cwd_in(dir: &Path, is_candidate: impl Fn(&Path) -> bool) -> GameJvmScan 
                 let other_user = match (process.user_id(), own_uid.as_ref()) {
                     (Some(uid), Some(own)) => uid != own,
                     _ => false,
-                };
+                } || other_account(pid.as_u32());
                 if !other_user && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone {
                     unreadable_cwd = true;
                 }
@@ -390,6 +390,7 @@ fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
         if process.exe().is_none_or(|e| e.as_os_str().is_empty())
             && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone
             && could_be_java(process.name())
+            && !other_account(pid.as_u32())
         {
             return false;
         }
@@ -400,7 +401,35 @@ fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
     raw.into_iter().all(|pid| {
         system.process(sysinfo::Pid::from_u32(pid)).is_some()
             || process_exists(pid) == IdentityCheck::DefinitelyGone
+            || other_account(pid)
     })
+}
+
+/// Whether the OS refuses to let this process even signal `pid` (`kill(pid, 0)` failing
+/// with EPERM): it belongs to another account, so it cannot be this player's game. macOS
+/// hides some of another logged-in account's processes from the snapshot entirely, and
+/// without this every scan on a Mac with two accounts in use stays incomplete and setup's
+/// game gate fails with Try again. Root may signal anything, so this never fires as root.
+#[cfg(unix)]
+fn other_account(pid: u32) -> bool {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const EPERM: i32 = 1;
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // Signal 0 only checks that the process exists and may be signalled; nothing is sent.
+    let refused = unsafe { kill(pid, 0) } == -1;
+    refused && std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
+}
+
+#[cfg(not(unix))]
+fn other_account(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -807,6 +836,19 @@ mod tests {
 
     /// The reconciliation source must be a real, independent enumeration:
     /// it has to contain this very process.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_process_this_account_may_not_signal_is_another_accounts() {
+        assert!(!other_account(std::process::id()), "this process is our own");
+        assert!(!other_account(0), "pid 0 is never a candidate");
+        // pid 1 runs as root: refused to an ordinary account, signallable as root.
+        extern "C" {
+            fn geteuid() -> u32;
+        }
+        let root = unsafe { geteuid() } == 0;
+        assert_eq!(other_account(1), !root);
+    }
+
     #[test]
     fn the_raw_pid_list_sees_this_process() {
         let raw = raw_pid_list().expect("raw enumeration available");

@@ -158,8 +158,8 @@ fn recency(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
         .then_with(|| a.id.cmp(&b.id))
 }
 
-/// Standard Prism install locations used for launch and setup detection. macOS: the
-/// bundle in `/Applications`, else `~/Applications` (`/Applications` when neither exists).
+/// The Prism executable used for launch and setup detection. macOS: the bundle `prism::find_app`
+/// finds (`/Applications`, `~/Applications`, then by bundle id), else `/Applications`'.
 pub fn prism_exe() -> PathBuf {
     #[cfg(windows)]
     {
@@ -169,9 +169,8 @@ pub fn prism_exe() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let candidates = crate::prism::app_candidates(&home);
-        crate::prism::find_app_in(&candidates)
-            .unwrap_or_else(|| candidates[0].clone())
+        crate::prism::find_app(&home)
+            .unwrap_or_else(|| crate::prism::app_candidates(&home)[0].clone())
             .join(crate::prism::BUNDLE_EXE)
     }
     #[cfg(not(any(windows, target_os = "macos")))]

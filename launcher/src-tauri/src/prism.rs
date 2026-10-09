@@ -1,6 +1,8 @@
 //! Prism Launcher facts, read-only except for the one instance Cobblify makes.
 //!
-//! * Installed: `Prism Launcher.app` in `/Applications` or `~/Applications`.
+//! * Installed: `Prism Launcher.app` in `/Applications` or `~/Applications`, else - only when
+//!   neither holds it - wherever Spotlight knows Prism's bundle id (an app left in Downloads,
+//!   say), with `lunar_detect`'s rules for which registrations count.
 //! * Data: `~/Library/Application Support/PrismLauncher`; instances under its `InstanceDir`
 //!   (`prismlauncher.cfg`, default `instances`), Java downloads under `JavaDir` (`java`).
 //! * Signed in: `accounts.json` (formatVersion 3) has an ACTIVE, non-Offline account whose
@@ -59,6 +61,35 @@ pub fn find_app_in(candidates: &[PathBuf]) -> Option<PathBuf> {
         .iter()
         .find(|app| app.join(BUNDLE_EXE).is_file())
         .cloned()
+}
+
+/// Prism's bundle identifier (`CFBundleIdentifier`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const BUNDLE_ID: &str = "org.prismlauncher.PrismLauncher";
+
+/// The installed Prism. macOS: the app bundle.
+#[cfg(target_os = "macos")]
+pub fn find_app(home: &Path) -> Option<PathBuf> {
+    use crate::lunar_detect::{spotlight_lookup_id, LOOKUP_TIMEOUT, MDFIND};
+    find_app_with(home, &|| spotlight_lookup_id(Path::new(MDFIND), BUNDLE_ID, LOOKUP_TIMEOUT))
+}
+
+/// The installed bundle: a standard folder's first, else the first usable registration the
+/// bundle-id `lookup` names (run only when neither standard folder has one) whose executable
+/// exists.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn find_app_with(home: &Path, lookup: &dyn Fn() -> Vec<PathBuf>) -> Option<PathBuf> {
+    find_app_among(&app_candidates(home), lookup)
+}
+
+/// `find_app_with` over given standard `candidates` (tests keep the real `/Applications` out).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn find_app_among(candidates: &[PathBuf], lookup: &dyn Fn() -> Vec<PathBuf>) -> Option<PathBuf> {
+    find_app_in(candidates).or_else(|| {
+        lookup()
+            .into_iter()
+            .find(|app| crate::lunar_detect::usable_registration(app) && app.join(BUNDLE_EXE).is_file())
+    })
 }
 
 /// Prism's data directory under the per-application data root.
@@ -676,5 +707,30 @@ pub(crate) mod tests {
         fs::create_dir_all(system.join("Contents/MacOS")).unwrap();
         fs::write(system.join(BUNDLE_EXE), b"").unwrap();
         assert_eq!(find_app_in(&candidates), Some(system));
+    }
+
+    fn make_bundle(app: &Path) {
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join(BUNDLE_EXE), b"").unwrap();
+    }
+
+    #[test]
+    fn a_bundle_outside_the_applications_folders_is_found_by_its_bundle_id() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let standard = vec![root.path().join("sys").join(BUNDLE_NAME), home.join("Applications").join(BUNDLE_NAME)];
+        let downloads = home.join("Downloads").join(BUNDLE_NAME);
+        let trashed = home.join(".Trash").join(BUNDLE_NAME);
+        let empty = home.join("Games").join(BUNDLE_NAME);
+        make_bundle(&downloads);
+        make_bundle(&trashed);
+        fs::create_dir_all(&empty).unwrap();
+        let lookup = || vec![trashed.clone(), empty.clone(), downloads.clone()];
+        assert_eq!(find_app_among(&standard, &lookup), Some(downloads.clone()));
+        assert_eq!(find_app_among(&standard, &Vec::new), None);
+
+        make_bundle(&standard[1]);
+        let found = find_app_among(&standard, &|| panic!("no lookup when a standard folder has Prism"));
+        assert_eq!(found, Some(standard[1].clone()));
     }
 }

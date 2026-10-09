@@ -57,9 +57,9 @@ pub fn find_app_in(candidates: &[PathBuf]) -> Option<PathBuf> {
 pub const BUNDLE_ID: &str = "com.moonsworth.client";
 /// The longest the bundle-id lookup may take; past it, nothing was found.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const MDFIND: &str = "/usr/bin/mdfind";
+pub(crate) const MDFIND: &str = "/usr/bin/mdfind";
 
 /// The installed Lunar, if any. macOS: the app bundle.
 #[cfg(target_os = "macos")]
@@ -131,9 +131,15 @@ fn spotlight_lookup() -> Vec<PathBuf> {
 /// killed) all answer nothing found. Never blocks past the timeout.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn spotlight_lookup_with(program: &Path, timeout: Duration) -> Vec<PathBuf> {
+    spotlight_lookup_id(program, BUNDLE_ID, timeout)
+}
+
+/// `spotlight_lookup_with` for any bundle id (Prism's too).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn spotlight_lookup_id(program: &Path, bundle_id: &str, timeout: Duration) -> Vec<PathBuf> {
     let mut cmd = Command::new(program);
     cmd.arg("-0")
-        .arg(format!("kMDItemCFBundleIdentifier == '{BUNDLE_ID}'"));
+        .arg(format!("kMDItemCFBundleIdentifier == '{bundle_id}'"));
     run_bounded(cmd, timeout)
         .map(|out| {
             out.split(|b| *b == 0)
