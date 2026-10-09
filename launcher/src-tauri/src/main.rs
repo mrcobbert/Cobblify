@@ -34,6 +34,7 @@ mod install;
 mod nojoin;
 mod lunar_config;
 mod lunar_detect;
+mod lunar_profile;
 mod open_info;
 mod prism;
 mod prism_java;

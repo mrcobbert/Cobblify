@@ -154,7 +154,7 @@ pub fn spotlight_lookup_id(program: &Path, bundle_id: &str, timeout: Duration) -
 /// output is read on its own thread so a full pipe cannot stall the child, and that thread
 /// is waited for only up to the deadline.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn run_bounded(mut cmd: Command, timeout: Duration) -> Option<Vec<u8>> {
+pub(crate) fn run_bounded(mut cmd: Command, timeout: Duration) -> Option<Vec<u8>> {
     let deadline = Instant::now() + timeout;
     let mut child = cmd
         .stdin(Stdio::null())

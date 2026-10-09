@@ -142,6 +142,71 @@ fn register_value_with(
     apply_value(launcher_json, agent_value).map_err(RegisterError::Failed)
 }
 
+/// The profile Lunar will start when it next starts: `settings.gameProfile` (a profile id).
+pub fn selected_profile(launcher_json: &Path) -> Option<String> {
+    let raw = fs::read_to_string(launcher_json).ok()?;
+    let root: Value = serde_json::from_str(&raw).ok()?;
+    root.get("settings")?.get("gameProfile")?.as_str().map(str::to_string)
+}
+
+/// Makes `id` the profile Lunar starts next (`lunar_profile.rs`). Only while Lunar is fully
+/// quit - it reads the key at startup only - and checked again just before the write. `Ok(false)`
+/// when it already is, or when there is no launcher.json yet (never created here). Every rule of
+/// the agent write applies: unparseable JSON is refused, every other key is kept, the write is
+/// flushed and atomic, and it is read back.
+pub(crate) fn select_profile_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    launcher_json: &Path,
+    id: &str,
+) -> Result<bool, RegisterError> {
+    let quit = || match lunar_running() {
+        Err(e) => Err(RegisterError::Failed(e)),
+        Ok(true) => Err(RegisterError::LunarRunning),
+        Ok(false) => Ok(()),
+    };
+    quit()?;
+    if !crate::lunar_profile::is_id(id) {
+        return Err(RegisterError::Failed(format!("{id:?} is not a profile id.")));
+    }
+    let raw = match fs::read_to_string(launcher_json) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(RegisterError::Failed(format!("Cannot read {}: {e}", launcher_json.display())))
+        }
+    };
+    let mut root: Value = serde_json::from_str(&raw).map_err(|e| {
+        RegisterError::Failed(format!(
+            "{} is not valid JSON ({e}). Cobblify will not overwrite it.",
+            launcher_json.display()
+        ))
+    })?;
+    let settings = root
+        .as_object_mut()
+        .ok_or_else(|| RegisterError::Failed(not_an_object(launcher_json)))?
+        .entry("settings")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| RegisterError::Failed(not_an_object(launcher_json)))?;
+    if settings.get("gameProfile").and_then(Value::as_str) == Some(id) {
+        return Ok(false);
+    }
+    settings.insert("gameProfile".to_string(), Value::String(id.to_string()));
+    let updated = serde_json::to_string_pretty(&root).map_err(|e| {
+        RegisterError::Failed(format!("Cannot serialise {}: {e}", launcher_json.display()))
+    })?;
+    quit()?;
+    back_up_once(launcher_json).map_err(RegisterError::Failed)?;
+    write_atomic(launcher_json, &updated).map_err(RegisterError::Failed)?;
+    if selected_profile(launcher_json).as_deref() != Some(id) {
+        return Err(RegisterError::Failed(format!(
+            "{} did not read back after writing.",
+            launcher_json.display()
+        )));
+    }
+    Ok(true)
+}
+
 /// The write itself, with no process check, so it can be unit tested against temp files.
 #[cfg(test)]
 fn apply(launcher_json: &Path, agent_path: &Path) -> Result<(), String> {
@@ -1015,5 +1080,48 @@ mod tests {
         )
         .unwrap();
         assert!(is_set_up(home.path()));
+    }
+
+    const PROFILE: &str = "3f2c1a4e-9b7d-4c1e-8f00-123456789abc";
+
+    #[test]
+    fn selecting_a_profile_changes_only_that_key_and_only_when_lunar_is_quit() {
+        let original = format!(
+            r#"{{"settings":{{"gameProfile":"other","jvmArgs":"-javaagent:{GUARD}={WEAVE}","allocatedMemory":3072}},"__internal__":{{"migrations":{{"version":"3.7.23"}}}}}}"#
+        );
+        let f = Fixture::new(&original);
+        assert!(matches!(select_profile_with(|| Ok(true), &f.json, PROFILE), Err(RegisterError::LunarRunning)));
+        assert!(matches!(select_profile_with(|| Err("?".into()), &f.json, PROFILE), Err(RegisterError::Failed(_))));
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), original, "nothing written while Lunar may run");
+
+        assert!(matches!(select_profile_with(|| Ok(false), &f.json, PROFILE), Ok(true)));
+        assert_eq!(selected_profile(&f.json).as_deref(), Some(PROFILE));
+        let mut want: Value = serde_json::from_str(&original).unwrap();
+        want["settings"]["gameProfile"] = Value::String(PROFILE.into());
+        let have: Value = serde_json::from_str(&fs::read_to_string(&f.json).unwrap()).unwrap();
+        assert_eq!(have, want, "every other key kept");
+        assert!(matches!(select_profile_with(|| Ok(false), &f.json, PROFILE), Ok(false)), "already selected");
+    }
+
+    #[test]
+    fn selecting_refuses_bad_json_a_bad_id_and_a_lunar_that_starts_meanwhile() {
+        let f = Fixture::new("{nope");
+        assert!(matches!(select_profile_with(|| Ok(false), &f.json, PROFILE), Err(RegisterError::Failed(_))));
+        assert_eq!(fs::read_to_string(&f.json).unwrap(), "{nope");
+
+        let g = Fixture::new(r#"{"settings":{}}"#);
+        assert!(matches!(select_profile_with(|| Ok(false), &g.json, "a\"b"), Err(RegisterError::Failed(_))));
+        let calls = std::cell::Cell::new(0);
+        let started = || {
+            calls.set(calls.get() + 1);
+            Ok(calls.get() > 1)
+        };
+        assert!(matches!(select_profile_with(started, &g.json, PROFILE), Err(RegisterError::LunarRunning)));
+        assert_eq!(fs::read_to_string(&g.json).unwrap(), r#"{"settings":{}}"#, "checked again before the write");
+
+        let none = tempfile::tempdir().unwrap();
+        let missing = none.path().join("launcher.json");
+        assert!(matches!(select_profile_with(|| Ok(false), &missing, PROFILE), Ok(false)));
+        assert!(!missing.exists(), "never created");
     }
 }

@@ -167,6 +167,10 @@ pub trait World: Send + Sync {
     /// A monotonic clock.
     fn now(&self) -> Duration;
     fn sleep(&self, d: Duration);
+    /// The one plain Lunar 1.8.9 profile's id (`lunar_profile::plain_1_8_9`), read-only.
+    fn lunar_1_8_9_profile(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The files a run works on.
@@ -716,13 +720,25 @@ impl Runner<'_> {
             ));
         }
         let world = self.world;
+        let launcher_json = lunar_detect::launcher_json(&self.paths.home);
         match lunar_config::register_guard_with(
             || world.lunar_running(),
-            &lunar_detect::launcher_json(&self.paths.home),
+            &launcher_json,
             &installed.guard_path,
             &jars.agent_name,
         ) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // Lunar is quit here, the one sure moment to make 1.8.9 the version it starts
+                // next. Best effort: without it, Launch still works and asks for 1.8.9 if needed.
+                if let Some(id) = world.lunar_1_8_9_profile() {
+                    let _ = lunar_config::select_profile_with(
+                        || world.lunar_running(),
+                        &launcher_json,
+                        &id,
+                    );
+                }
+                Ok(())
+            }
             Err(lunar_config::RegisterError::LunarRunning) => {
                 Err(fail("Lunar opened again before Cobblify finished."))
             }
@@ -934,6 +950,10 @@ impl World for ProdWorld {
         lunar_detect::find_app(&self.home)
     }
 
+    fn lunar_1_8_9_profile(&self) -> Option<String> {
+        crate::lunar_profile::plain_1_8_9(&self.home)
+    }
+
     fn game_scan(&self, kind: Kind, instance: Option<&Path>) -> GameScan {
         let scan = match (kind, instance) {
             (Kind::Lunar, _) => crate::proc::game_jvm_scan(&self.home),
@@ -1038,6 +1058,8 @@ pub(crate) mod tests {
         pub scans: u32,
         pub quits: u32,
         pub forwards: u32,
+        /// The plain Lunar 1.8.9 profile's id, if Lunar has one.
+        pub profile: Option<String>,
     }
 
     impl Default for FakeState {
@@ -1058,6 +1080,7 @@ pub(crate) mod tests {
                 sleeps: 0,
                 scans: 0,
                 quits: 0,
+                profile: None,
                 forwards: 0,
             }
         }
@@ -1099,6 +1122,9 @@ pub(crate) mod tests {
     }
 
     impl World for Fake {
+        fn lunar_1_8_9_profile(&self) -> Option<String> {
+            self.state().profile.clone()
+        }
         fn lunar_app(&self) -> Option<PathBuf> {
             self.state()
                 .app
@@ -1312,6 +1338,21 @@ pub(crate) mod tests {
         assert_eq!(rig.coordinator.lock().unwrap().state(), Lifecycle::Idle);
         let st = world.state();
         assert_eq!((st.quits, st.forwards), (0, 0), "no stop, no quit, no hand-off");
+    }
+
+    /// Lunar is quit at check 6, so setup also makes its plain 1.8.9 profile the one it starts
+    /// next; with no such profile it leaves the selection alone.
+    #[test]
+    fn lunar_setup_selects_the_1_8_9_profile_when_there_is_one() {
+        let with = rig();
+        let world = Fake::new().with(|s| s.profile = Some("p-189".into()));
+        assert_eq!(with.run(&world, Kind::Lunar), Outcome::Done);
+        assert_set_up(&with);
+        assert_eq!(lunar_config::selected_profile(&with.launcher_json()).as_deref(), Some("p-189"));
+
+        let plain = rig();
+        assert_eq!(plain.run(&Fake::new(), Kind::Lunar), Outcome::Done);
+        assert_eq!(lunar_config::selected_profile(&plain.launcher_json()), None);
     }
 
     #[test]

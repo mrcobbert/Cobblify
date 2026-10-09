@@ -82,9 +82,33 @@ pub fn dispatch(
     // windows. Runs on every admission, including launches later rejected.
     crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(2));
     match kind {
-        LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay),
+        LaunchKind::Lunar => {
+            select_1_8_9_if_lunar_is_quit(home);
+            launch_lunar_no_join(use_external_overlay)
+        }
         LaunchKind::Forge => dispatch_forge(home, use_external_overlay),
     }
+}
+
+/// Lunar starts the profile `settings.gameProfile` names, read when it starts: while it is fully
+/// quit (rarely - it stays in the Dock), make that its plain 1.8.9 profile before opening it
+/// (`lunar_profile.rs`). Best effort and silent; a running Lunar is never touched.
+fn select_1_8_9_if_lunar_is_quit(home: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::proc::lunar_running_checked() != Ok(false) {
+            return;
+        }
+        if let Some(id) = crate::lunar_profile::plain_1_8_9(home) {
+            let _ = crate::lunar_config::select_profile_with(
+                crate::proc::lunar_running_checked,
+                &crate::lunar_detect::launcher_json(home),
+                &id,
+            );
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = home;
 }
 
 /// One warmed bare-link fire; see `nojoin` for the confirmation contract.
