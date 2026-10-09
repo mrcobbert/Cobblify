@@ -41,6 +41,16 @@ pub fn plain_1_8_9(home: &Path) -> Option<String> {
     one_id(&query(&profiles_db(home), PLAIN_1_8_9)?)
 }
 
+/// The profile to select before Lunar starts: the plain 1.8.9 one, unless the selection already
+/// is a 1.8.9 profile (one the player chose, with a loader say), which is left alone.
+pub fn to_select(home: &Path) -> Option<String> {
+    let selected = crate::lunar_config::selected_profile(&crate::lunar_detect::launcher_json(home));
+    if selected.as_deref().and_then(|id| is_1_8_9(home, id)) == Some(true) {
+        return None;
+    }
+    plain_1_8_9(home)
+}
+
 /// Whether profile `id` is a 1.8.9 one, of any kind (Some(false): another version). None when
 /// it is not a saved profile or the database cannot be read.
 pub fn is_1_8_9(home: &Path, id: &str) -> Option<bool> {
@@ -82,7 +92,7 @@ fn query(db: &Path, sql: &str) -> Option<String> {
         format!("file:{}?immutable=1", uri_path(db))
     };
     let mut cmd = Command::new(SQLITE);
-    cmd.args(["-readonly", "-bail", "-batch", "-noheader", "-list"])
+    cmd.args(["-init", "/dev/null", "-readonly", "-bail", "-batch", "-noheader", "-list"])
         .arg(target)
         .arg(sql);
     let out = crate::lunar_detect::run_bounded(cmd, LOOKUP_TIMEOUT)?;

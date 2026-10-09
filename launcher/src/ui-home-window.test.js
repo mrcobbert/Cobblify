@@ -25,7 +25,7 @@ const LAUNCHED = {
 
 let pendingLaunch = null;
 /** What lunar_version_ready answers while "Set Lunar to 1.8.9" shows. */
-let versionReady = false;
+let versionReady = "other";
 /** What launch_progress answers; a test swaps it to end a launch with an outcome. */
 let progressReply = () => ({ stage: "attached" });
 const replies = {
@@ -198,13 +198,16 @@ test("wrong Lunar version: Try again relaunches and the launch ends on the Launc
   progressReply = () => ({ stage: "attached" });
 });
 
-test("Set Lunar to 1.8.9: once Lunar is on 1.8.9 with no game running, the launch goes on by itself", async () => {
+test("Set Lunar to 1.8.9: once Lunar is switched to 1.8.9 with no game running, the launch goes on by itself", async () => {
   await waitFor(() => calls.some((c) => c.command === "lunar_version_ready"), { label: "watching Lunar", timeout: 3000 });
   const before = calls.filter((c) => c.command === "launch_lunar").length;
-  versionReady = true;
+  versionReady = "ready";
+  const looks = calls.filter((c) => c.command === "lunar_version_ready").length;
+  await waitFor(() => calls.filter((c) => c.command === "lunar_version_ready").length >= looks + 2, { label: "two looks", timeout: 4000 });
+  assert.equal(calls.filter((c) => c.command === "launch_lunar").length, before, "not on the first ready looks");
   await waitFor(() => calls.filter((c) => c.command === "launch_lunar").length > before, {
     label: "the launch going on",
-    timeout: 3000,
+    timeout: 4000,
   });
   pendingLaunch({ ...LAUNCHED, generation: 4 });
   progressReply = () => ({ stage: "mixing", percent: 85, outcome: "not_loaded" });
@@ -227,4 +230,24 @@ test("Lunar surely on another version: Launch asks for 1.8.9 first, opening noth
   const looks = calls.filter((c) => c.command === "lunar_version_ready").length;
   await waitFor(() => calls.filter((c) => c.command === "lunar_version_ready").length >= looks + 2, { label: "two looks", timeout: 4000 });
   assert.equal(calls.filter((c) => c.command === "launch_lunar").length, launches);
+});
+
+test("Set Lunar to 1.8.9: a Lunar game seen while waiting ends the wait for good", async () => {
+  const launches = calls.filter((c) => c.command === "launch_lunar").length;
+  hero().click();
+  await waitFor(() => calls.filter((c) => c.command === "launch_lunar").length > launches, { label: "the launch call" });
+  pendingLaunch({ status: "rejected", code: "wrong_version" });
+  versionReady = "other";
+  await waitFor(() => $("#main .heros .under.wait .t")?.textContent === "Set Lunar to 1.8.9", { label: "the row", timeout: 3000 });
+  const looks = () => calls.filter((c) => c.command === "lunar_version_ready").length;
+  const first = looks();
+  await waitFor(() => looks() > first, { label: "a look", timeout: 3000 });
+  versionReady = "game";
+  const atGame = looks();
+  await waitFor(() => looks() > atGame, { label: "the game seen", timeout: 3000 });
+  versionReady = "ready";
+  const after = looks();
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(looks(), after, "no more looks");
+  assert.equal(calls.filter((c) => c.command === "launch_lunar").length, launches + 1, "nothing relaunched");
 });

@@ -19,8 +19,9 @@ import java.util.regex.Pattern;
  * were not installed (Weave itself stops the game on versions it does not support).
  *
  * Rules:
- * - Weave starts only on an exact "1.8.9". A missing or unreadable version, a missing Weave jar, or
- *   any error before Weave is called leaves the game alone. Nothing here ever exits the JVM.
+ * - Weave starts only on 1.8.9, by Weave's own rule for it (a version naming 1.8.9, or "1.8"). A
+ *   missing or unreadable version, a missing Weave jar, or any error before Weave is called leaves
+ *   the game alone. Nothing here ever exits the JVM.
  * - The version is read the way Weave reads it: the weave.game.info property, else the
  *   "--version <v>" game argument in sun.java.command. That property also holds the game's access
  *   token, so it is matched in memory only: only a version-shaped value is ever written anywhere.
@@ -32,7 +33,6 @@ import java.util.regex.Pattern;
  * Option: the Weave jar's file name, in this jar's folder ("-javaagent:<guard>=<weave jar>").
  */
 public final class Guard {
-    private static final String WANTED = "1.8.9";
     private static final String WEAVE_AGENT = "net.weavemc.loader.impl.bootstrap.AgentKt";
     private static final Pattern VERSION_ARG = Pattern.compile("--version\\s+(\\S+)");
     private static final Pattern VERSION_INFO = Pattern.compile("(?:^|,)\\s*version\\s*=\\s*([^,\\s]+)");
@@ -47,19 +47,19 @@ public final class Guard {
         try {
             dir = ownFolder();
             version = gameVersion();
-            if (!WANTED.equals(version)) {
+            if (!isOneEightNine(version)) {
                 note(dir, "Minecraft " + shown(version) + ", Weave not started");
                 return;
             }
             File weave = weaveJar(dir, options);
             if (weave == null) {
-                note(dir, "Minecraft 1.8.9, Weave jar missing");
+                note(dir, "Minecraft " + shown(version) + ", Weave jar missing");
                 return;
             }
             inst.appendToSystemClassLoaderSearch(new JarFile(weave));
             Class<?> agent = Class.forName(WEAVE_AGENT, true, ClassLoader.getSystemClassLoader());
             weavePremain = agent.getMethod("premain", String.class, Instrumentation.class);
-            note(dir, "Minecraft 1.8.9, starting Weave");
+            note(dir, "Minecraft " + shown(version) + ", starting Weave");
         } catch (Throwable t) {
             note(dir, "Minecraft " + shown(version) + ", Weave not started (guard error)");
             return;
@@ -80,6 +80,11 @@ public final class Guard {
     private static File ownFolder() throws Exception {
         return new File(Guard.class.getProtectionDomain().getCodeSource().getLocation().toURI())
             .getAbsoluteFile().getParentFile();
+    }
+
+    /** Weave's own test for 1.8.9 (MinecraftVersion.fromVersionName): names 1.8.9, or is "1.8". */
+    static boolean isOneEightNine(String version) {
+        return version != null && (version.contains("1.8.9") || version.equals("1.8"));
     }
 
     /** The game version, or null when it cannot be read. */

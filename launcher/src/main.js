@@ -369,7 +369,7 @@ function previewInvoke(command, args) {
   }
 
   if (command === "lunar_version_ready") {
-    return Promise.resolve(false);
+    return Promise.resolve("unknown");
   }
 
   if (command === "choose_forge_target") {
@@ -1331,43 +1331,52 @@ function endLaunchWithOutcome(outcome) {
 }
 
 const VERSION_POLL_MS = 1000;
+/** Ready this many looks in a row before the launch goes on (a moment for Lunar to settle). */
+const VERSION_READY_LOOKS = 3;
+/** The wait gives up after this long; Launch still works by hand. */
+const VERSION_WAIT_MS = 10 * 60 * 1000;
 let versionTimer = null;
 /**
- * While "Set Lunar to 1.8.9" shows, the launch goes on by itself once Lunar is on 1.8.9 with no
- * game running (lunar_version_ready). Only a change counts - ready at the first look is not - so a
- * selection the file can't show (picked in Lunar, never launched) never relaunches in a loop.
+ * While "Set Lunar to 1.8.9" shows, the launch goes on by itself once the player has switched Lunar
+ * to 1.8.9 (lunar_version_ready): only after the selection was seen on another version and then
+ * reads ready for VERSION_READY_LOOKS looks in a row. A Lunar game seen at any point ends the wait
+ * for good - the player is playing from Lunar, and no second game is started - and so does
+ * VERSION_WAIT_MS. Each call starts a fresh wait.
  */
 function watchLunarVersion() {
-  if (versionTimer) return;
-  let sawNotReady = false;
+  clearInterval(versionTimer);
+  const started = Date.now();
+  let sawOther = false;
+  let readyLooks = 0;
   let inFlight = false;
-  const stop = () => {
-    clearInterval(versionTimer);
-    versionTimer = null;
-  };
-  versionTimer = setInterval(async () => {
-    if (launchOutcome?.outcome !== "wrong_version" || launchOutcome.kind !== "lunar") return stop();
+  const timer = setInterval(async () => {
+    const waiting = () => versionTimer === timer && launchOutcome?.outcome === "wrong_version" && launchOutcome.kind === "lunar";
+    const stop = () => {
+      clearInterval(timer);
+      if (versionTimer === timer) versionTimer = null;
+    };
+    if (!waiting() || Date.now() - started > VERSION_WAIT_MS) return stop();
     if (inFlight || setupRunning() || stage.dataset.view === "dash") return;
     const st = launchController.getState();
     if (st.launchBusy || st.activeOutcome != null) return;
     inFlight = true;
-    let ready = false;
+    let seen = "unknown";
     try {
-      ready = (await lunarVersionReady(invoke)) === true;
+      seen = await lunarVersionReady(invoke);
     } catch {
-      // fail-soft: the next tick asks again
+      // fail-soft: the next look asks again
     } finally {
       inFlight = false;
     }
-    if (launchOutcome?.outcome !== "wrong_version" || launchOutcome.kind !== "lunar") return stop();
-    if (!ready) {
-      sawNotReady = true;
-      return;
-    }
-    if (!sawNotReady) return;
+    if (!waiting()) return stop();
+    if (seen === "game") return stop();
+    if (seen === "other") sawOther = true;
+    readyLooks = seen === "ready" && sawOther ? readyLooks + 1 : 0;
+    if (readyLooks < VERSION_READY_LOOKS) return;
     stop();
     startLaunch("lunar");
   }, VERSION_POLL_MS);
+  versionTimer = timer;
 }
 
 /**

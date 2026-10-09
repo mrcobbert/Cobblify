@@ -303,9 +303,13 @@ fn lunar_target(
     let weave = home.join(".weave");
     let launcher_json = lunar_detect::launcher_json(home);
     let guard = weave.join(guard::FILE_NAME);
+    // Current, or - until Lunar is next closed and the refresh moves it onto the guard - the
+    // plain Weave registration of a launcher from before the guard, which works on 1.8.9.
     let current = || {
-        lunar_config::guard_registration_is(&launcher_json, &guard, &jars.agent_name)
-            && install::lunar_install_current(jars, &weave)
+        (lunar_config::guard_registration_is(&launcher_json, &guard, &jars.agent_name)
+            && install::lunar_install_current(jars, &weave))
+            || (lunar_config::registration_is(&launcher_json, &weave.join(&jars.agent_name))
+                && install::lunar_jars_current(jars, &weave))
     };
     let ready = || {
         let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
@@ -2081,13 +2085,13 @@ async fn launch_forge(
 /// "Set Lunar to 1.8.9" is showing: whether Lunar is now on 1.8.9 with no game running, so the
 /// launch can go on by itself (`launch::lunar_version_ready`). Read-only; false when unknown.
 #[tauri::command]
-async fn lunar_version_ready() -> bool {
+async fn lunar_version_ready() -> launch::VersionWait {
     let Ok(home) = home() else {
-        return false;
+        return launch::VersionWait::Unknown;
     };
     tauri::async_runtime::spawn_blocking(move || launch::lunar_version_ready(&home))
         .await
-        .unwrap_or(false)
+        .unwrap_or(launch::VersionWait::Unknown)
 }
 
 /// Stepped progress for the launch key, and the launch's outcome. Stats the loader log
@@ -2491,6 +2495,36 @@ mod tests {
             b"mod"
         );
         assert!(!home.path().join(".weave/mods/Cobblify-Lunar-0.8.0.jar").exists());
+    }
+
+    /// A launcher from before the guard left plain Weave with current jars: still ready while
+    /// Lunar is open (it works on 1.8.9), nothing written; the next closed refresh migrates it.
+    #[test]
+    fn a_current_plain_weave_registration_is_ready_while_lunar_runs() {
+        let (_bundle, res) = verified_bundle();
+        let home = tempfile::tempdir().unwrap();
+        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
+        let settings = home.path().join(".lunarclient/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(
+            settings.join("launcher.json"),
+            serde_json::json!({"settings": {"jvmArgs": format!("-javaagent:{}", agent.display())}}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join(".weave/mods")).unwrap();
+        std::fs::write(&agent, b"agent").unwrap();
+        std::fs::write(home.path().join(".weave/mods/Cobblify-Lunar-0.8.1.jar"), b"mod").unwrap();
+        let before = tree(home.path());
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(true), clear());
+        assert_eq!(t.state, "ready", "{:?} {}", t.issue, t.message);
+        assert_eq!(tree(home.path()), before, "nothing written while Lunar runs");
+        let t = status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear());
+        assert_eq!(t.state, "ready");
+        assert!(lunar_config::guard_registration_is(
+            &lunar_detect::launcher_json(home.path()),
+            &home.path().join(".weave").join(guard::FILE_NAME),
+            "Weave-Loader-Agent-1.3.3.jar"
+        ), "migrated once Lunar is closed");
     }
 
     /// Set up and current: Lunar being open no longer blocks - and nothing is written.

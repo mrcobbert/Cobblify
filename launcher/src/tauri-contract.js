@@ -162,8 +162,9 @@ export function launchProgress(invoke) {
 }
 
 /**
- * While "Set Lunar to 1.8.9" shows: Lunar is now on 1.8.9 with no game running.
- * @returns {Promise<boolean>}
+ * While "Set Lunar to 1.8.9" shows, what Lunar is on: `game` (a Lunar game runs), `other` (a saved
+ * profile on another version), `ready` (a 1.8.9 profile, no game) or `unknown`.
+ * @returns {Promise<'game' | 'other' | 'ready' | 'unknown'>}
  */
 export function lunarVersionReady(invoke) {
   return invoke(CMD.lunarVersionReady);

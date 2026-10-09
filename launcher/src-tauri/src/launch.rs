@@ -96,7 +96,7 @@ fn select_1_8_9_if_lunar_is_quit(home: &Path) {
         if crate::proc::lunar_running_checked() != Ok(false) {
             return;
         }
-        if let Some(id) = crate::lunar_profile::plain_1_8_9(home) {
+        if let Some(id) = crate::lunar_profile::to_select(home) {
             let _ = crate::lunar_config::select_profile_with(
                 crate::proc::lunar_running_checked,
                 &crate::lunar_detect::launcher_json(home),
@@ -144,19 +144,34 @@ fn stop_for_version(selected: Option<String>, on_1_8_9: Option<bool>, asked: &mu
     }
 }
 
-/// The "Set Lunar to 1.8.9" row's wait: Lunar's selected profile is now a 1.8.9 one and no
-/// Lunar game is running (a complete scan), so the launch can go on by itself. False whenever
-/// anything is unknown.
-pub fn lunar_version_ready(home: &Path) -> bool {
-    let Some(id) = crate::lunar_config::selected_profile(&crate::lunar_detect::launcher_json(home))
-    else {
-        return false;
-    };
-    if crate::lunar_profile::is_1_8_9(home, &id) != Some(true) {
-        return false;
-    }
+/// What the "Set Lunar to 1.8.9" row's wait sees (`lunar_version_ready`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionWait {
+    /// A Lunar game is running: the player is playing, the wait ends.
+    Game,
+    /// The selected profile is a saved one on another version.
+    Other,
+    /// The selected profile is a 1.8.9 one and no Lunar game runs.
+    Ready,
+    /// Anything that cannot be read.
+    Unknown,
+}
+
+/// The row's wait, read-only. A running game wins over everything (the frontend then stops
+/// waiting for good), so a game the player starts from Lunar is never followed by another.
+pub fn lunar_version_ready(home: &Path) -> VersionWait {
     let scan = crate::proc::game_jvm_scan(home);
-    scan.complete && scan.pids.is_empty()
+    if !scan.pids.is_empty() {
+        return VersionWait::Game;
+    }
+    let selected =
+        crate::lunar_config::selected_profile(&crate::lunar_detect::launcher_json(home));
+    match selected.as_deref().and_then(|id| crate::lunar_profile::is_1_8_9(home, id)) {
+        Some(false) => VersionWait::Other,
+        Some(true) if scan.complete => VersionWait::Ready,
+        _ => VersionWait::Unknown,
+    }
 }
 
 /// One warmed bare-link fire; see `nojoin` for the confirmation contract.

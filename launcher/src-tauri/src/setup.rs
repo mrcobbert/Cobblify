@@ -167,7 +167,7 @@ pub trait World: Send + Sync {
     /// A monotonic clock.
     fn now(&self) -> Duration;
     fn sleep(&self, d: Duration);
-    /// The one plain Lunar 1.8.9 profile's id (`lunar_profile::plain_1_8_9`), read-only.
+    /// The Lunar profile to select now (`lunar_profile::to_select`), read-only.
     fn lunar_1_8_9_profile(&self) -> Option<String> {
         None
     }
@@ -951,7 +951,7 @@ impl World for ProdWorld {
     }
 
     fn lunar_1_8_9_profile(&self) -> Option<String> {
-        crate::lunar_profile::plain_1_8_9(&self.home)
+        crate::lunar_profile::to_select(&self.home)
     }
 
     fn game_scan(&self, kind: Kind, instance: Option<&Path>) -> GameScan {

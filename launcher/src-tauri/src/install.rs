@@ -227,11 +227,16 @@ pub fn remove_old_lunar_jars(stale: &[PathBuf]) -> Vec<PathBuf> {
 /// the mod jar at our names with the manifest's hashes, and no other Cobblify jar beside
 /// ours. Read-only; used to report a set-up Lunar ready while writing is not allowed.
 pub fn lunar_install_current(jars: &LunarJars, weave_dir: &Path) -> bool {
+    lunar_jars_current(jars, weave_dir) && crate::guard::is_current(weave_dir)
+}
+
+/// `lunar_install_current` without the version guard: what a launcher from before the guard
+/// installed, which still works on 1.8.9.
+pub fn lunar_jars_current(jars: &LunarJars, weave_dir: &Path) -> bool {
     let hash_ok = |path: &Path, want: &str| {
         sha256_file(path).is_ok_and(|have| have.eq_ignore_ascii_case(want))
     };
     hash_ok(&weave_dir.join(&jars.agent_name), &jars.agent_sha256)
-        && crate::guard::is_current(weave_dir)
         && hash_ok(&weave_dir.join("mods").join(&jars.mod_name), &jars.mod_sha256)
         && scan_old_lunar_jars(jars, weave_dir)
             .is_ok_and(|old| old.stale.is_empty() && old.conflicts.is_empty())

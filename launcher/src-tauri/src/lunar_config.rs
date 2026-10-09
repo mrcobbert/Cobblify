@@ -117,6 +117,7 @@ pub(crate) fn register_guard_with(
     register_value_with(lunar_running, launcher_json, &agent_value(guard, Some(weave_name)))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// The running-state checker is injected so tests can prove the refusal
 /// ORDER: an undeterminable state (`Err` - e.g. Windows without a usable
 /// `LOCALAPPDATA`) must block before any read or write, exactly like a
@@ -188,8 +189,11 @@ pub(crate) fn select_profile_with(
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| RegisterError::Failed(not_an_object(launcher_json)))?;
-    if settings.get("gameProfile").and_then(Value::as_str) == Some(id) {
-        return Ok(false);
+    match settings.get("gameProfile") {
+        Some(Value::String(current)) if current == id => return Ok(false),
+        None | Some(Value::String(_)) => {}
+        // Never change the key's type: a shape Lunar does not expect is left alone.
+        Some(_) => return Err(RegisterError::Failed(not_an_object(launcher_json))),
     }
     settings.insert("gameProfile".to_string(), Value::String(id.to_string()));
     let updated = serde_json::to_string_pretty(&root).map_err(|e| {
@@ -1118,6 +1122,10 @@ mod tests {
         };
         assert!(matches!(select_profile_with(started, &g.json, PROFILE), Err(RegisterError::LunarRunning)));
         assert_eq!(fs::read_to_string(&g.json).unwrap(), r#"{"settings":{}}"#, "checked again before the write");
+
+        let typed = Fixture::new(r#"{"settings":{"gameProfile":7}}"#);
+        assert!(matches!(select_profile_with(|| Ok(false), &typed.json, PROFILE), Err(RegisterError::Failed(_))));
+        assert_eq!(fs::read_to_string(&typed.json).unwrap(), r#"{"settings":{"gameProfile":7}}"#, "its type is kept");
 
         let none = tempfile::tempdir().unwrap();
         let missing = none.path().join("launcher.json");
