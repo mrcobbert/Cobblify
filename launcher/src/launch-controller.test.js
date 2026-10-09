@@ -127,6 +127,26 @@ test("preexisting_game invokes hook without active outcome", async () => {
   assert.equal(ctrl.getState().activeOutcome, null);
 });
 
+test("a wrong_version refusal asks for 1.8.9 instead of reporting an error", async () => {
+  const invoke = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchLunar]: () => ({ status: "rejected", code: "wrong_version" }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  let asked = 0;
+  await ctrl.launch("lunar", {
+    onWrongVersion: () => asked++,
+    onLaunchReply: () => assert.fail("nothing launched"),
+    onProgressStart: () => assert.fail("no progress"),
+  });
+  const st = ctrl.getState();
+  assert.equal(asked, 1);
+  assert.equal(st.prefError, null);
+  assert.equal(st.activeOutcome, null);
+  assert.equal(st.launchBusy, false);
+});
+
 test("launched records generation and active outcome", async () => {
   const invoke = fakeInvoke({
     ...baseHandlers,

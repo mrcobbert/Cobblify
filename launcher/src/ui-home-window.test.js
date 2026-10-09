@@ -24,6 +24,8 @@ const LAUNCHED = {
 };
 
 let pendingLaunch = null;
+/** What lunar_version_ready answers while "Set Lunar to 1.8.9" shows. */
+let versionReady = false;
 /** What launch_progress answers; a test swaps it to end a launch with an outcome. */
 let progressReply = () => ({ stage: "attached" });
 const replies = {
@@ -41,6 +43,7 @@ const replies = {
   lobby_state: () => ({ kind: "unavailable" }),
   abort_launch_session: () => ({ status: "ok", preferences: PREFS }),
   open_launcher: () => null,
+  lunar_version_ready: () => versionReady,
 };
 
 const app = await bootWindow({
@@ -193,4 +196,35 @@ test("wrong Lunar version: Try again relaunches and the launch ends on the Launc
   await waitFor(() => calls.some((c) => c.command === "open_launcher"), { label: "Lunar opened" });
   assert.deepEqual(calls.filter((c) => c.command === "open_launcher").at(-1).args, { kind: "lunar" });
   progressReply = () => ({ stage: "attached" });
+});
+
+test("Set Lunar to 1.8.9: once Lunar is on 1.8.9 with no game running, the launch goes on by itself", async () => {
+  await waitFor(() => calls.some((c) => c.command === "lunar_version_ready"), { label: "watching Lunar", timeout: 3000 });
+  const before = calls.filter((c) => c.command === "launch_lunar").length;
+  versionReady = true;
+  await waitFor(() => calls.filter((c) => c.command === "launch_lunar").length > before, {
+    label: "the launch going on",
+    timeout: 3000,
+  });
+  pendingLaunch({ ...LAUNCHED, generation: 4 });
+  progressReply = () => ({ stage: "mixing", percent: 85, outcome: "not_loaded" });
+  await waitFor(() => /Try again/.test(hero()?.textContent ?? ""), { label: "the launch ended", timeout: 3000 });
+  progressReply = () => ({ stage: "attached" });
+});
+
+test("Lunar surely on another version: Launch asks for 1.8.9 first, opening nothing, and never relaunches on its own at first sight", async () => {
+  const aborts = calls.filter((c) => c.command === "abort_launch_session").length;
+  const progress = calls.filter((c) => c.command === "launch_progress").length;
+  hero().click();
+  await waitFor(() => pendingLaunch != null && calls.filter((c) => c.command === "launch_lunar").length >= 5, { label: "the launch call" });
+  pendingLaunch({ status: "rejected", code: "wrong_version" });
+  await waitFor(() => $("#main .heros .under.wait .t")?.textContent === "Set Lunar to 1.8.9", { label: "the row", timeout: 3000 });
+  assert.equal($('#main .hero.play')?.getAttribute("aria-label"), "Launch Cobblify in Lunar Client", "Launch stays");
+  assert.equal(calls.filter((c) => c.command === "abort_launch_session").length, aborts, "no session to end");
+  assert.equal(calls.filter((c) => c.command === "launch_progress").length, progress, "nothing launched");
+  // Ready at the first look (versionReady is still true) is not a change: no relaunch.
+  const launches = calls.filter((c) => c.command === "launch_lunar").length;
+  const looks = calls.filter((c) => c.command === "lunar_version_ready").length;
+  await waitFor(() => calls.filter((c) => c.command === "lunar_version_ready").length >= looks + 2, { label: "two looks", timeout: 4000 });
+  assert.equal(calls.filter((c) => c.command === "launch_lunar").length, launches);
 });

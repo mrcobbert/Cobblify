@@ -2078,6 +2078,18 @@ async fn launch_forge(
     launch_target(LaunchKind::Forge, expected_use_external_overlay, session).await
 }
 
+/// "Set Lunar to 1.8.9" is showing: whether Lunar is now on 1.8.9 with no game running, so the
+/// launch can go on by itself (`launch::lunar_version_ready`). Read-only; false when unknown.
+#[tauri::command]
+async fn lunar_version_ready() -> bool {
+    let Ok(home) = home() else {
+        return false;
+    };
+    tauri::async_runtime::spawn_blocking(move || launch::lunar_version_ready(&home))
+        .await
+        .unwrap_or(false)
+}
+
 /// Stepped progress for the launch key, and the launch's outcome. Stats the loader log
 /// (Weave's for Lunar, the game's FML log for Prism), ignores it unless its mtime is at or
 /// after this session's baseline (defeating the stale hard-linked latest.log), reads it, and
@@ -4022,6 +4034,7 @@ fn main() {
             launch_lunar,
             launch_forge,
             launch_progress,
+            lunar_version_ready,
             choose_forge_target,
             open_info,
             game_theme,

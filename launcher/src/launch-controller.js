@@ -255,6 +255,11 @@ export function createLaunchController(invoke, { onChange } = {}) {
         launchPhase = "idle";
         launchKind = null;
         hooks.onLaunchReply(reply);
+      } else if (reply.status === "rejected" && reply.code === "wrong_version") {
+        // Lunar is surely on another version: nothing was opened, the home asks for 1.8.9.
+        launchPhase = "idle";
+        launchKind = null;
+        hooks.onWrongVersion?.();
       } else if (reply.status === "rejected") {
         launchPhase = "idle";
         launchKind = null;

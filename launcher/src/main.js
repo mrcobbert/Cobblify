@@ -32,6 +32,7 @@ import {
   abortLaunchSession,
   beginSetup,
   gameTheme,
+  lunarVersionReady,
   openInfo,
   quitApp,
   rehideAfterConfirmation,
@@ -365,6 +366,10 @@ function previewInvoke(command, args) {
 
   if (command === "open_launcher" || command === "open_setup_location") {
     return Promise.resolve();
+  }
+
+  if (command === "lunar_version_ready") {
+    return Promise.resolve(false);
   }
 
   if (command === "choose_forge_target") {
@@ -1242,6 +1247,11 @@ function startProgressPolling() {
 }
 
 const launchHooks = {
+  onWrongVersion() {
+    launchOutcome = { outcome: "wrong_version", kind: lastLaunchKind };
+    watchLunarVersion();
+    refreshUi();
+  },
   onLaunchReply(reply) {
     if (reply.status === "preexisting_game") {
       connection.setForcedMode("preexisting_game");
@@ -1317,6 +1327,47 @@ function endLaunchWithOutcome(outcome) {
   launchOutcome = { outcome, kind: lastLaunchKind };
   stopProgressPolling();
   sessionReset.resetToHome("launch_outcome");
+  if (outcome === "wrong_version") watchLunarVersion();
+}
+
+const VERSION_POLL_MS = 1000;
+let versionTimer = null;
+/**
+ * While "Set Lunar to 1.8.9" shows, the launch goes on by itself once Lunar is on 1.8.9 with no
+ * game running (lunar_version_ready). Only a change counts - ready at the first look is not - so a
+ * selection the file can't show (picked in Lunar, never launched) never relaunches in a loop.
+ */
+function watchLunarVersion() {
+  if (versionTimer) return;
+  let sawNotReady = false;
+  let inFlight = false;
+  const stop = () => {
+    clearInterval(versionTimer);
+    versionTimer = null;
+  };
+  versionTimer = setInterval(async () => {
+    if (launchOutcome?.outcome !== "wrong_version" || launchOutcome.kind !== "lunar") return stop();
+    if (inFlight || setupRunning() || stage.dataset.view === "dash") return;
+    const st = launchController.getState();
+    if (st.launchBusy || st.activeOutcome != null) return;
+    inFlight = true;
+    let ready = false;
+    try {
+      ready = (await lunarVersionReady(invoke)) === true;
+    } catch {
+      // fail-soft: the next tick asks again
+    } finally {
+      inFlight = false;
+    }
+    if (launchOutcome?.outcome !== "wrong_version" || launchOutcome.kind !== "lunar") return stop();
+    if (!ready) {
+      sawNotReady = true;
+      return;
+    }
+    if (!sawNotReady) return;
+    stop();
+    startLaunch("lunar");
+  }, VERSION_POLL_MS);
 }
 
 /**

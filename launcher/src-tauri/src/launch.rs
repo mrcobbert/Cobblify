@@ -82,10 +82,7 @@ pub fn dispatch(
     // windows. Runs on every admission, including launches later rejected.
     crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(2));
     match kind {
-        LaunchKind::Lunar => {
-            select_1_8_9_if_lunar_is_quit(home);
-            launch_lunar_no_join(use_external_overlay)
-        }
+        LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay),
         LaunchKind::Forge => dispatch_forge(home, use_external_overlay),
     }
 }
@@ -109,6 +106,57 @@ fn select_1_8_9_if_lunar_is_quit(home: &Path) {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = home;
+}
+
+/// The selected profile a Launch already stopped at ("Set Lunar to 1.8.9"): pressing Launch
+/// again with the same selection launches anyway.
+static ASKED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Whether this Lunar launch should stop at "Set Lunar to 1.8.9" before opening anything: only
+/// when SURE - the selected profile is a saved one on another version. Lunar keeps its selection
+/// in memory while it runs, so a version picked there but never launched is not in the file; the
+/// second press of Launch therefore always launches, and the launch watch has the last word.
+fn lunar_needs_1_8_9_first(home: &Path) -> bool {
+    let selected = crate::lunar_config::selected_profile(&crate::lunar_detect::launcher_json(home));
+    let on_1_8_9 = selected
+        .as_deref()
+        .and_then(|id| crate::lunar_profile::is_1_8_9(home, id));
+    let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+    stop_for_version(selected, on_1_8_9, &mut asked)
+}
+
+/// `lunar_needs_1_8_9_first`'s decision: stop once per selection that is surely not 1.8.9.
+fn stop_for_version(selected: Option<String>, on_1_8_9: Option<bool>, asked: &mut Option<String>) -> bool {
+    match (selected, on_1_8_9) {
+        (Some(id), Some(false)) => {
+            if asked.as_deref() == Some(id.as_str()) {
+                *asked = None;
+                false
+            } else {
+                *asked = Some(id);
+                true
+            }
+        }
+        _ => {
+            *asked = None;
+            false
+        }
+    }
+}
+
+/// The "Set Lunar to 1.8.9" row's wait: Lunar's selected profile is now a 1.8.9 one and no
+/// Lunar game is running (a complete scan), so the launch can go on by itself. False whenever
+/// anything is unknown.
+pub fn lunar_version_ready(home: &Path) -> bool {
+    let Some(id) = crate::lunar_config::selected_profile(&crate::lunar_detect::launcher_json(home))
+    else {
+        return false;
+    };
+    if crate::lunar_profile::is_1_8_9(home, &id) != Some(true) {
+        return false;
+    }
+    let scan = crate::proc::game_jvm_scan(home);
+    scan.complete && scan.pids.is_empty()
 }
 
 /// One warmed bare-link fire; see `nojoin` for the confirmation contract.
@@ -317,6 +365,19 @@ pub fn launch_with_preflight(
             baseline: None,
         };
     }
+    if kind == LaunchKind::Lunar {
+        select_1_8_9_if_lunar_is_quit(home);
+        if lunar_needs_1_8_9_first(home) {
+            return LaunchAttempt {
+                reply: LaunchReply::Rejected {
+                    code: "wrong_version",
+                    preferences: None,
+                    message: None,
+                },
+                baseline: None,
+            };
+        }
+    }
     match dispatch(home, kind, strict_overlay) {
         Ok(result) => LaunchAttempt {
             reply: LaunchReply::Launched {
@@ -439,6 +500,23 @@ mod tests {
 
     /// The only Lunar route never grows parameters: any server parameter
     /// would join a server by itself.
+    #[test]
+    fn a_surely_wrong_selection_stops_once_then_launches() {
+        let mut asked = None;
+        let other = || Some("p-26".to_string());
+        assert!(stop_for_version(other(), Some(false), &mut asked), "first press stops");
+        assert!(!stop_for_version(other(), Some(false), &mut asked), "second press launches");
+        assert!(stop_for_version(other(), Some(false), &mut asked), "a later launch asks again");
+        assert!(!stop_for_version(Some("p-189".into()), Some(true), &mut asked));
+        assert_eq!(asked, None, "1.8.9 clears it");
+        assert!(stop_for_version(other(), Some(false), &mut asked));
+        assert!(stop_for_version(Some("p-21".into()), Some(false), &mut asked), "another wrong one asks");
+        for unknown in [(None, None), (Some("v".into()), None)] {
+            let mut asked = None;
+            assert!(!stop_for_version(unknown.0, unknown.1, &mut asked), "unknown never stops");
+        }
+    }
+
     #[test]
     fn bare_play_link_carries_no_parameters() {
         assert_eq!(PLAY_BARE, "lunarclient://play");

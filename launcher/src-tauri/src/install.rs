@@ -129,7 +129,8 @@ pub fn install_jar(src: &Path, dest: &Path, expected_sha256: &str) -> Result<(),
 
 #[derive(Debug)]
 pub struct Installed {
-    /// Where the Weave agent now lives.
+    /// Where the Weave agent now lives (the guard's option names it).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub agent_path: PathBuf,
     /// Where the version guard now lives - this is what is registered in Lunar's jvm-args, with
     /// the Weave agent's file name as its option (`guard.rs`).

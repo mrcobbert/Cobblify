@@ -10,6 +10,7 @@ export const CMD = {
   lobbyState: "lobby_state",
   acknowledgeLobbySnapshot: "acknowledge_lobby_snapshot",
   launchProgress: "launch_progress",
+  lunarVersionReady: "lunar_version_ready",
   resetSessionEnd: "reset_session_end",
   abortLaunchSession: "abort_launch_session",
   rehideAfterConfirmation: "rehide_after_confirmation",
@@ -158,6 +159,14 @@ export function acknowledgeLobbySnapshot(invoke, token, generation, snapshot) {
 /** @returns {Promise<LaunchProgress>} */
 export function launchProgress(invoke) {
   return invoke(CMD.launchProgress);
+}
+
+/**
+ * While "Set Lunar to 1.8.9" shows: Lunar is now on 1.8.9 with no game running.
+ * @returns {Promise<boolean>}
+ */
+export function lunarVersionReady(invoke) {
+  return invoke(CMD.lunarVersionReady);
 }
 
 /** @typedef {{ useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
