@@ -129,8 +129,11 @@ pub fn install_jar(src: &Path, dest: &Path, expected_sha256: &str) -> Result<(),
 
 #[derive(Debug)]
 pub struct Installed {
-    /// Where the Weave agent now lives - this is the path registered in Lunar's jvm-args.
+    /// Where the Weave agent now lives.
     pub agent_path: PathBuf,
+    /// Where the version guard now lives - this is what is registered in Lunar's jvm-args, with
+    /// the Weave agent's file name as its option (`guard.rs`).
+    pub guard_path: PathBuf,
     /// `Cobblify-Lunar-*` entries left in `~/.weave/mods/` beside ours: a name that is not a
     /// plain release (a `-dev` or hand-renamed build), a newer release, a symlink, or an old
     /// release that could not be deleted. Never touched. The UI blocks on them.
@@ -152,6 +155,7 @@ pub fn install_lunar(jars: &LunarJars, weave_dir: &Path) -> Result<Installed, St
 
     let agent_path = weave_dir.join(&jars.agent_name);
     install_jar(&jars.agent_src, &agent_path, &jars.agent_sha256)?;
+    let guard_path = crate::guard::install(weave_dir)?;
 
     let (stale, mut conflicts) = mod_peers(&mods_dir, &jars.mod_name)?;
     let mod_path = mods_dir.join(&jars.mod_name);
@@ -176,6 +180,7 @@ pub fn install_lunar(jars: &LunarJars, weave_dir: &Path) -> Result<Installed, St
     conflicts.sort();
     Ok(Installed {
         agent_path,
+        guard_path,
         conflicts,
     })
 }
@@ -225,6 +230,7 @@ pub fn lunar_install_current(jars: &LunarJars, weave_dir: &Path) -> bool {
         sha256_file(path).is_ok_and(|have| have.eq_ignore_ascii_case(want))
     };
     hash_ok(&weave_dir.join(&jars.agent_name), &jars.agent_sha256)
+        && crate::guard::is_current(weave_dir)
         && hash_ok(&weave_dir.join("mods").join(&jars.mod_name), &jars.mod_sha256)
         && scan_old_lunar_jars(jars, weave_dir)
             .is_ok_and(|old| old.stale.is_empty() && old.conflicts.is_empty())
@@ -289,6 +295,10 @@ pub fn uninstall_lunar(weave_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     remove_our_jars(weave_dir, AGENT_JAR_PREFIX)?;
+    remove_if_present(&weave_dir.join(crate::guard::FILE_NAME))?;
+    // The guard's log, and Weave's logs folder only if that leaves it empty.
+    remove_if_present(&weave_dir.join(crate::guard::LOG))?;
+    let _ = fs::remove_dir(weave_dir.join("logs"));
 
     let mods_dir = weave_dir.join("mods");
     if mods_dir.exists() {
@@ -299,6 +309,14 @@ pub fn uninstall_lunar(weave_dir: &Path) -> Result<(), String> {
     }
     let _ = fs::remove_dir(weave_dir);
     Ok(())
+}
+
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Cannot remove {}: {e}", path.display())),
+    }
 }
 
 fn remove_our_jars(dir: &Path, prefix: &str) -> Result<(), String> {
@@ -407,8 +425,16 @@ mod tests {
         fs::write(mods.join("Cobblify-Lunar-0.8.1.jar"), b"mod").unwrap();
         fs::write(mods.join("Other.jar"), b"someone else's mod").unwrap();
         fs::write(weave.path().join("weave.log"), b"log").unwrap();
+        fs::write(weave.path().join(crate::guard::FILE_NAME), b"guard").unwrap();
+        fs::create_dir_all(weave.path().join("logs")).unwrap();
+        fs::write(weave.path().join(crate::guard::LOG), b"line").unwrap();
+        fs::write(weave.path().join("logs/latest.log"), b"weave's").unwrap();
 
         uninstall_lunar(weave.path()).unwrap();
+
+        assert!(!weave.path().join(crate::guard::FILE_NAME).exists(), "the guard goes");
+        assert!(!weave.path().join(crate::guard::LOG).exists(), "and its log");
+        assert!(weave.path().join("logs/latest.log").exists(), "Weave's own log stays");
 
         assert!(!weave.path().join("Weave-Loader-Agent-1.3.3.jar").exists());
         assert!(!mods.join("Cobblify-Lunar-0.8.1.jar").exists());

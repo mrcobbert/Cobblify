@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod forge;
+mod guard;
 mod launch;
 mod launch_watch;
 mod lifecycle;
@@ -300,14 +301,14 @@ fn lunar_target(
     };
     let weave = home.join(".weave");
     let launcher_json = lunar_detect::launcher_json(home);
-    let agent = weave.join(&jars.agent_name);
+    let guard = weave.join(guard::FILE_NAME);
     let current = || {
-        lunar_config::registration_is(&launcher_json, &agent)
+        lunar_config::guard_registration_is(&launcher_json, &guard, &jars.agent_name)
             && install::lunar_install_current(jars, &weave)
     };
     let ready = || {
         let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
-        t.install_path = Some(agent.clone());
+        t.install_path = Some(guard.clone());
         t
     };
     if mode == Refresh::ReadOnly {
@@ -369,14 +370,15 @@ fn lunar_target(
     }
 
     facts(
-        match lunar_config::register_with(
+        match lunar_config::register_guard_with(
             || (probe.running)(),
             &launcher_json,
-            &installed_jars.agent_path,
+            &installed_jars.guard_path,
+            &jars.agent_name,
         ) {
             Ok(()) => {
                 let mut t = TargetStatus::new("lunar", "ready", "Lunar Client");
-                t.install_path = Some(installed_jars.agent_path);
+                t.install_path = Some(installed_jars.guard_path);
                 t
             }
             Err(lunar_config::RegisterError::LunarRunning) => {
@@ -2444,19 +2446,23 @@ mod tests {
     }
 
     /// A set-up Lunar keeps 0.17's silent refresh: an update's jars go in, the old release
-    /// goes, and the agent is re-registered - when Lunar and its game are both closed.
+    /// goes, and the plain Weave registration becomes the version guard starting that Weave -
+    /// when Lunar and its game are both closed.
     #[test]
-    fn startup_silently_refreshes_a_set_up_lunar() {
+    fn startup_silently_refreshes_a_set_up_lunar_onto_the_guard() {
         let (_bundle, res) = verified_bundle();
         let home = stale_set_up_home();
+        let json = lunar_detect::launcher_json(home.path());
+        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
+        assert!(lunar_config::is_set_up(home.path()), "a plain Weave registration is set up");
         let t = status_with(&res, home.path(), Refresh::Write, true, Ok(false), clear());
         assert_eq!(t.state, "ready", "{:?} {}", t.issue, t.message);
         assert!(t.set_up && t.installed);
-        let agent = home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar");
-        assert!(lunar_config::registration_is(
-            &lunar_detect::launcher_json(home.path()),
-            &agent
-        ));
+        let guard = home.path().join(".weave").join(guard::FILE_NAME);
+        assert!(lunar_config::guard_registration_is(&json, &guard, "Weave-Loader-Agent-1.3.3.jar"));
+        assert!(!lunar_config::registration_is(&json, &agent), "plain Weave is no longer registered");
+        assert!(guard::is_current(&home.path().join(".weave")));
+        assert!(lunar_config::is_set_up(home.path()));
         assert_eq!(std::fs::read(&agent).unwrap(), b"agent");
         assert_eq!(
             std::fs::read(home.path().join(".weave/mods/Cobblify-Lunar-0.8.1.jar")).unwrap(),

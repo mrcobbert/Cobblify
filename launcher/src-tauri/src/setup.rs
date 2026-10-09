@@ -716,10 +716,11 @@ impl Runner<'_> {
             ));
         }
         let world = self.world;
-        match lunar_config::register_with(
+        match lunar_config::register_guard_with(
             || world.lunar_running(),
             &lunar_detect::launcher_json(&self.paths.home),
-            &installed.agent_path,
+            &installed.guard_path,
+            &jars.agent_name,
         ) {
             Ok(()) => Ok(()),
             Err(lunar_config::RegisterError::LunarRunning) => {
@@ -1264,9 +1265,10 @@ pub(crate) mod tests {
     }
 
     fn agent_registered(rig: &Rig) -> bool {
-        lunar_config::registration_is(
+        lunar_config::guard_registration_is(
             &rig.launcher_json(),
-            &rig.home.path().join(".weave/Weave-Loader-Agent-1.3.3.jar"),
+            &rig.home.path().join(".weave").join(crate::guard::FILE_NAME),
+            "Weave-Loader-Agent-1.3.3.jar",
         )
     }
 

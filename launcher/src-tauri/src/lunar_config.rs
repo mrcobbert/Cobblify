@@ -19,7 +19,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -38,6 +38,11 @@ pub enum RegisterError {
 /// unexpected shape, or carries no Weave agent. Reading is safe while Lunar runs; only
 /// writing is not.
 pub fn registered_agent(launcher_json: &Path) -> Option<std::path::PathBuf> {
+    registered_javaagent(launcher_json).map(|(jar, _)| jar)
+}
+
+/// `registered_agent` with the agent's option (`-javaagent:<jar>=<option>`), if it has one.
+fn registered_javaagent(launcher_json: &Path) -> Option<(PathBuf, Option<String>)> {
     let raw = fs::read_to_string(launcher_json).ok()?;
     let root: Value = serde_json::from_str(&raw).ok()?;
     let settings = root.get("settings")?.as_object()?;
@@ -46,11 +51,27 @@ pub fn registered_agent(launcher_json: &Path) -> Option<std::path::PathBuf> {
         .into_iter()
         .filter(|token| is_weave_javaagent(token))
         .last()
-        .and_then(|token| {
-            token
-                .strip_prefix("-javaagent:")
-                .map(|p| std::path::PathBuf::from(p.trim_matches('"')))
-        })
+        .and_then(|token| parse_javaagent(&token))
+}
+
+/// A `-javaagent:` token's jar and option. The option follows the first `.jar=` (any case), so a
+/// jar path holding `=` elsewhere still parses; quotes around the value are dropped.
+fn parse_javaagent(token: &str) -> Option<(PathBuf, Option<String>)> {
+    let value = token.strip_prefix("-javaagent:")?.trim_matches('"');
+    let split = value.to_ascii_lowercase().find(".jar=").map(|i| i + ".jar".len());
+    Some(match split {
+        Some(i) => (PathBuf::from(&value[..i]), Some(value[i + 1..].to_string())),
+        None => (PathBuf::from(value), None),
+    })
+}
+
+/// The `-javaagent:` value for a jar and its option, quoted when it holds whitespace.
+fn agent_value(jar: &Path, option: Option<&str>) -> String {
+    let value = match option {
+        Some(option) => format!("{}={option}", jar.to_string_lossy()),
+        None => jar.to_string_lossy().into_owned(),
+    };
+    quote_if_needed(&value)
 }
 
 /// "Set up" for Lunar (PLAN B, README): BOTH `launcher.json` carries a `-javaagent:` for a
@@ -62,20 +83,38 @@ pub fn registered_agent(launcher_json: &Path) -> Option<std::path::PathBuf> {
 pub fn is_set_up(home: &Path) -> bool {
     let weave = home.join(".weave");
     let json = crate::lunar_detect::launcher_json(home);
+    // Our guard, or a plain Weave agent from a launcher before the guard (the silent refresh
+    // moves it to the guard).
     let registered = registered_agent(&json).is_some_and(|agent| {
         agent.parent() == Some(weave.as_path())
             && agent.file_name().and_then(OsStr::to_str).is_some_and(|name| {
-                name.len() >= "Weave-Loader-Agent".len()
-                    && name.as_bytes()[.."Weave-Loader-Agent".len()]
-                        .eq_ignore_ascii_case(b"Weave-Loader-Agent")
+                crate::guard::is_guard_name(name)
+                    || (name.len() >= "Weave-Loader-Agent".len()
+                        && name.as_bytes()[.."Weave-Loader-Agent".len()]
+                            .eq_ignore_ascii_case(b"Weave-Loader-Agent"))
             })
     });
     registered && crate::install::has_lunar_mod_jar(&weave)
 }
 
-/// Whether the registration already points at exactly `agent_path`.
+/// Whether the registration already points at exactly `agent_path`, with no option.
 pub fn registration_is(launcher_json: &Path, agent_path: &Path) -> bool {
-    registered_agent(launcher_json).as_deref() == Some(agent_path)
+    registered_javaagent(launcher_json) == Some((agent_path.to_path_buf(), None))
+}
+
+/// Whether the registration is exactly the guard at `guard` starting `weave_name`.
+pub fn guard_registration_is(launcher_json: &Path, guard: &Path, weave_name: &str) -> bool {
+    registered_javaagent(launcher_json) == Some((guard.to_path_buf(), Some(weave_name.to_string())))
+}
+
+/// `register_with` for the guard (`guard.rs`): `-javaagent:<guard>=<weave_name>`.
+pub(crate) fn register_guard_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    launcher_json: &Path,
+    guard: &Path,
+    weave_name: &str,
+) -> Result<(), RegisterError> {
+    register_value_with(lunar_running, launcher_json, &agent_value(guard, Some(weave_name)))
 }
 
 /// The running-state checker is injected so tests can prove the refusal
@@ -87,16 +126,30 @@ pub(crate) fn register_with(
     launcher_json: &Path,
     agent_path: &Path,
 ) -> Result<(), RegisterError> {
+    register_value_with(lunar_running, launcher_json, &agent_value(agent_path, None))
+}
+
+fn register_value_with(
+    lunar_running: impl Fn() -> Result<bool, String>,
+    launcher_json: &Path,
+    agent_value: &str,
+) -> Result<(), RegisterError> {
     match lunar_running() {
         Err(e) => return Err(RegisterError::Failed(e)),
         Ok(true) => return Err(RegisterError::LunarRunning),
         Ok(false) => {}
     }
-    apply(launcher_json, agent_path).map_err(RegisterError::Failed)
+    apply_value(launcher_json, agent_value).map_err(RegisterError::Failed)
 }
 
 /// The write itself, with no process check, so it can be unit tested against temp files.
+#[cfg(test)]
 fn apply(launcher_json: &Path, agent_path: &Path) -> Result<(), String> {
+    apply_value(launcher_json, &agent_value(agent_path, None))
+}
+
+/// `apply` for any `-javaagent:` value (a jar, or the guard with its option).
+fn apply_value(launcher_json: &Path, agent_value: &str) -> Result<(), String> {
     let raw = match fs::read_to_string(launcher_json) {
         Ok(raw) => raw,
         #[cfg(windows)]
@@ -137,10 +190,7 @@ fn apply(launcher_json: &Path, agent_path: &Path) -> Result<(), String> {
             .into_iter()
             .filter(|token| !is_weave_javaagent(token))
             .collect();
-        args.push(format!(
-            "-javaagent:{}",
-            quote_if_needed(&agent_path.to_string_lossy())
-        ));
+        args.push(format!("-javaagent:{agent_value}"));
         let value = args.join(" ");
 
         for key in JVM_ARGS_KEYS {
@@ -333,16 +383,17 @@ fn split_args(value: &str) -> Vec<String> {
     tokens
 }
 
-/// True for a `-javaagent:` pointing at a Weave loader jar - either living in `~/.weave` or
-/// named like the loader. Only those are dropped; any other agent the user runs is kept.
+/// True for a `-javaagent:` pointing at a Weave loader jar or our guard - either living in
+/// `~/.weave` or named like one of them. Only those are dropped; any other agent the user runs
+/// is kept.
 fn is_weave_javaagent(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix("-javaagent:") else {
+    let Some((jar, _)) = parse_javaagent(token) else {
         return false;
     };
     // Caseless on every platform, like the jar matching in `install.rs`: on NTFS and on a
     // case-folding Mac volume `.WEAVE\WEAVE-LOADER-AGENT-1.3.3.JAR` names the jar the
     // launcher installed, and uninstall must strip the argument for the same jar it deletes.
-    let path = Path::new(rest.trim_matches('"'));
+    let path = jar.as_path();
     let in_weave_dir = path
         .parent()
         .and_then(|parent| parent.file_name())
@@ -356,7 +407,11 @@ fn is_weave_javaagent(token: &str) -> bool {
         let bytes = name.as_bytes();
         bytes.len() >= PREFIX.len() && bytes[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
     });
-    in_weave_dir || weave_name
+    let guard_name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(crate::guard::is_guard_name);
+    in_weave_dir || weave_name || guard_name
 }
 
 /// The JVM tokenises its argument string on whitespace, so a home directory containing a
@@ -394,7 +449,13 @@ fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
         .to_string_lossy()
         .into_owned();
     let tmp = path.with_file_name(format!(".{name}.cobblify-tmp"));
-    let result = fs::write(&tmp, contents)
+    // Flushed before the rename: Lunar resets EVERY setting when this file does not parse, so a
+    // crash must leave the old file or the whole new one, never a torn one.
+    let result = fs::File::create(&tmp)
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, contents.as_bytes())?;
+            file.sync_all()
+        })
         .map_err(|e| format!("Cannot write {}: {e}", tmp.display()))
         .and_then(|()| {
             fs::rename(&tmp, path).map_err(|e| format!("Cannot write {}: {e}", path.display()))
@@ -879,5 +940,80 @@ mod tests {
         fs::write(bad.path().join(".lunarclient/settings/launcher.json"), "{nope").unwrap();
         assert!(!is_set_up(bad.path()), "unparseable: not set up");
         assert!(!is_set_up(tempfile::tempdir().unwrap().path()), "missing: not set up");
+    }
+
+    const GUARD: &str = "/Users/tester/.weave/Cobblify-Guard.jar";
+    const WEAVE: &str = "Weave-Loader-Agent-1.3.3.jar";
+
+    #[test]
+    fn the_guard_replaces_a_plain_weave_registration_and_keeps_other_args() {
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvmArgs":"-Xmx4G -javaagent:{AGENT} -javaagent:/opt/other.jar"}}}}"#
+        ));
+        assert!(register_guard_with(|| Ok(false), &f.json, Path::new(GUARD), WEAVE).is_ok());
+        let (dashed, camel) = f.jvm_args();
+        assert_eq!(camel, format!("-Xmx4G -javaagent:/opt/other.jar -javaagent:{GUARD}={WEAVE}"));
+        assert_eq!(dashed, camel);
+        assert!(guard_registration_is(&f.json, Path::new(GUARD), WEAVE));
+        assert!(!guard_registration_is(&f.json, Path::new(GUARD), "Weave-Loader-Agent-1.4.0.jar"));
+        assert!(!registration_is(&f.json, Path::new(GUARD)), "the option is part of the registration");
+        assert_eq!(registered_agent(&f.json), Some(PathBuf::from(GUARD)));
+
+        // Registering again replaces it rather than adding a second agent.
+        assert!(register_guard_with(|| Ok(false), &f.json, Path::new(GUARD), WEAVE).is_ok());
+        assert_eq!(f.jvm_args().1.matches("-javaagent:").count(), 2);
+        // And plain Weave replaces the guard, so going back never leaves both.
+        apply(&f.json, Path::new(AGENT)).unwrap();
+        assert_eq!(f.jvm_args().1, format!("-Xmx4G -javaagent:/opt/other.jar -javaagent:{AGENT}"));
+    }
+
+    #[test]
+    fn a_guard_path_with_a_space_is_quoted_whole_and_parses_back() {
+        let guard = "/Users/te ster/.weave/Cobblify-Guard.jar";
+        let f = Fixture::new(r#"{"settings":{}}"#);
+        assert!(register_guard_with(|| Ok(false), &f.json, Path::new(guard), WEAVE).is_ok());
+        assert_eq!(f.jvm_args().1, format!("-javaagent:\"{guard}={WEAVE}\""));
+        assert!(guard_registration_is(&f.json, Path::new(guard), WEAVE));
+    }
+
+    #[test]
+    fn parse_splits_at_the_first_jar_option_only() {
+        assert_eq!(
+            parse_javaagent("-javaagent:/a/b.jar=c.jar"),
+            Some((PathBuf::from("/a/b.jar"), Some("c.jar".into())))
+        );
+        assert_eq!(
+            parse_javaagent("-javaagent:/a=b/x.JAR=y"),
+            Some((PathBuf::from("/a=b/x.JAR"), Some("y".into())))
+        );
+        assert_eq!(parse_javaagent("-javaagent:/a/b.jar"), Some((PathBuf::from("/a/b.jar"), None)));
+        assert_eq!(parse_javaagent("-Xmx4G"), None);
+    }
+
+    #[test]
+    fn unregister_strips_the_guard() {
+        let f = Fixture::new(&format!(
+            r#"{{"settings":{{"jvmArgs":"-Xmx4G -javaagent:{GUARD}={WEAVE}","jvm-args":"-javaagent:{GUARD}={WEAVE}"}}}}"#
+        ));
+        unregister(&f.json).unwrap();
+        assert_eq!(f.jvm_args(), (String::new(), "-Xmx4G".to_string()));
+    }
+
+    #[test]
+    fn a_guard_registration_with_our_mod_is_set_up() {
+        let home = tempfile::tempdir().unwrap();
+        let weave = home.path().join(".weave");
+        fs::create_dir_all(weave.join("mods")).unwrap();
+        fs::write(weave.join("mods/Cobblify-Lunar-0.17.0.jar"), b"mod").unwrap();
+        let settings = home.path().join(".lunarclient/settings");
+        fs::create_dir_all(&settings).unwrap();
+        let guard = weave.join(crate::guard::FILE_NAME);
+        fs::write(
+            settings.join("launcher.json"),
+            serde_json::json!({"settings": {"jvmArgs": format!("-javaagent:{}={WEAVE}", guard.display())}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(is_set_up(home.path()));
     }
 }
