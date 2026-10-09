@@ -505,16 +505,20 @@ export function createApp(app, actions) {
     islHost.style.visibility = H.solo ? "hidden" : "";
     i3.set(islandTarget());
   }
-  /* no WebGL: the still island at a whole pixel scale, centred in the space right of the column */
+  /* no WebGL: the still island at a whole pixel scale, centred in the slot and capped at 55% of the window height
+   * (prototype fitIsland); when it can't fit whole at 1x the slot collapses rather than show it cut off */
   function fitIsland(art) {
     const img = $("#isl");
     if (!img) return;
+    art.classList.remove("collapsed");
     if (H.solo) { img.style.display = "none"; return; }
-    const nw = 204, nh = 207, d = dpr(), W = app.clientWidth, Hh = app.clientHeight, pad = 8 * suPx();
-    const col = $(".col"), colR = col ? col.getBoundingClientRect().right - app.getBoundingClientRect().left : 0;
-    const k = Math.max(1, Math.min(Math.floor(((Hh - 2 * pad) * d) / nh), Math.floor(((W - colR - 2 * pad) * d) / nw)));
+    const nw = 204, nh = 207, d = dpr(), W = art.clientWidth, Hh = art.clientHeight, pad = 3 * suPx();
+    const fit = Math.min(Math.floor(((Hh - 2 * pad) * d) / nh), Math.floor(((W - 2 * pad) * d) / nw));
+    const k = Math.min(fit, Math.max(1, Math.round((0.55 * app.clientHeight * d) / nh)));
+    if (k < 1) { art.classList.add("collapsed"); return; }
     const w = (nw * k) / d, h = (nh * k) / d;
-    Object.assign(img.style, { display: "", width: w + "px", height: h + "px", left: Math.round((colR + (W - colR - w) / 2) * d) / d + "px", top: Math.round(((Hh - h) / 2) * d) / d + "px" });
+    Object.assign(img.style, { display: "", width: w + "px", height: h + "px", left: Math.round(((W - w) / 2) * d) / d + "px", top: Math.round(((Hh - h) / 2) * d) / d + "px" });
+    img.classList.toggle("grey", islandTarget().grey);
   }
 
   /* What opening Cobblify shows: a normal open shows the whole island, no motion; the first open after an update
@@ -607,6 +611,13 @@ export function createApp(app, actions) {
     }
   });
   if (typeof win.ResizeObserver === "function") new win.ResizeObserver(() => { if (active && H) after(); }).observe(app);
+  /* a layout measured on the fallback font is off once the real one lands: lay out again then (prototype) */
+  win.addEventListener("load", () => { if (active && H) after(); });
+  if (doc.fonts?.load) {
+    Promise.all(["9px Minecraft", "18px Minecraft", "400 16px Inter", "500 16px Inter", "600 16px Inter"].map((f) => doc.fonts.load(f).catch(() => null)))
+      .then(() => { if (active && H) render(); });
+    doc.fonts.addEventListener?.("loadingdone", () => { if (active && H) after(); });
+  }
   doc.addEventListener("cobblify:units", () => { fitCache = null; if (H) render(); });
   doc.addEventListener("cobblify:theme", () => { if (H) render(); });
 

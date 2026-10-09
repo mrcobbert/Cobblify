@@ -6,6 +6,8 @@
 html, body { height: 100%; margin: 0; background: var(--ground); }
 .app { position: fixed; inset: 0; }
 .app[hidden] { display: none; }
+/* the view under the header fills the window, so home's column centres on the window's middle (prototype #main) */
+#main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* macOS: the overlay title bar puts the window buttons over our header (tauri.macos.conf.json) */
 .app[data-platform=mac] .hdr { padding-left: calc(40*var(--su)); }
 
