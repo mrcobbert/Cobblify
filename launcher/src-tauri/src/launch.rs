@@ -381,6 +381,17 @@ pub fn launch_with_preflight(
         };
     }
     if kind == LaunchKind::Lunar {
+        // Weave needs Mojang's 1.8.9 jar on every launch; put back one that went missing.
+        if let Err(message) = crate::vanilla::ensure(home, &crate::prism_java::host_fetch) {
+            return LaunchAttempt {
+                reply: LaunchReply::Rejected {
+                    code: "native_launch_error",
+                    preferences: Some(prefs),
+                    message: Some(message),
+                },
+                baseline: None,
+            };
+        }
         select_1_8_9_if_lunar_is_quit(home);
         if lunar_needs_1_8_9_first(home) {
             return LaunchAttempt {

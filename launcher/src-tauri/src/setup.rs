@@ -102,6 +102,8 @@ pub enum Label {
     ClosingLunar,
     MakingInstance,
     Java,
+    /// Mojang's 1.8.9 client jar, which Weave needs (`vanilla.rs`).
+    Vanilla,
 }
 
 /// The whole setup state, sent whole every time it changes.
@@ -167,6 +169,14 @@ pub trait World: Send + Sync {
     /// A monotonic clock.
     fn now(&self) -> Duration;
     fn sleep(&self, d: Duration);
+    /// Whether Mojang's 1.8.9 jar is where Weave looks (`vanilla::present`).
+    fn vanilla_present(&self) -> bool {
+        true
+    }
+    /// Downloads it there from Mojang (`vanilla::ensure`).
+    fn download_vanilla(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// The Lunar profile to select now (`lunar_profile::to_select`), read-only.
     fn lunar_1_8_9_profile(&self) -> Option<String> {
         None
@@ -687,6 +697,14 @@ impl Runner<'_> {
     /// Check 5: old Cobblify releases in `~/.weave/mods` go; a Cobblify jar we may not
     /// touch fails the check (decision 45). Nothing is removed unless nothing blocks.
     fn clear_old_lunar_files(&mut self) -> Step {
+        // Weave stops a game with mods unless Mojang's 1.8.9 jar is there; most machines have it
+        // from the Minecraft Launcher, a Lunar-only one gets it now.
+        if !self.world.vanilla_present() {
+            self.show(None, Some(Label::Vanilla))?;
+            self.world.download_vanilla().map_err(fail)?;
+            self.alive()?;
+            self.show(None, None)?;
+        }
         self.game_gate()?;
         let jars = self.lunar_jars()?;
         let weave = self.paths.home.join(".weave");
@@ -954,6 +972,14 @@ impl World for ProdWorld {
         crate::lunar_profile::to_select(&self.home)
     }
 
+    fn vanilla_present(&self) -> bool {
+        crate::vanilla::present(&self.home)
+    }
+
+    fn download_vanilla(&self) -> Result<(), String> {
+        crate::vanilla::ensure(&self.home, &prism_java::host_fetch).map(|_| ())
+    }
+
     fn game_scan(&self, kind: Kind, instance: Option<&Path>) -> GameScan {
         let scan = match (kind, instance) {
             (Kind::Lunar, _) => crate::proc::game_jvm_scan(&self.home),
@@ -1060,6 +1086,10 @@ pub(crate) mod tests {
         pub forwards: u32,
         /// The plain Lunar 1.8.9 profile's id, if Lunar has one.
         pub profile: Option<String>,
+        /// Mojang's 1.8.9 jar is missing / its download fails.
+        pub vanilla_missing: bool,
+        pub vanilla_offline: bool,
+        pub vanilla_downloads: u32,
     }
 
     impl Default for FakeState {
@@ -1081,6 +1111,9 @@ pub(crate) mod tests {
                 scans: 0,
                 quits: 0,
                 profile: None,
+                vanilla_missing: false,
+                vanilla_offline: false,
+                vanilla_downloads: 0,
                 forwards: 0,
             }
         }
@@ -1124,6 +1157,18 @@ pub(crate) mod tests {
     impl World for Fake {
         fn lunar_1_8_9_profile(&self) -> Option<String> {
             self.state().profile.clone()
+        }
+        fn vanilla_present(&self) -> bool {
+            !self.state().vanilla_missing
+        }
+        fn download_vanilla(&self) -> Result<(), String> {
+            let mut st = self.state();
+            st.vanilla_downloads += 1;
+            if st.vanilla_offline {
+                return Err("Cobblify couldn't download Minecraft 1.8.9 from Mojang.".into());
+            }
+            st.vanilla_missing = false;
+            Ok(())
         }
         fn lunar_app(&self) -> Option<PathBuf> {
             self.state()
@@ -1338,6 +1383,32 @@ pub(crate) mod tests {
         assert_eq!(rig.coordinator.lock().unwrap().state(), Lifecycle::Idle);
         let st = world.state();
         assert_eq!((st.quits, st.forwards), (0, 0), "no stop, no quit, no hand-off");
+    }
+
+    /// A Lunar-only machine has no Mojang 1.8.9 jar: check 5 downloads it, labelled; offline,
+    /// setup stops there with Try again and has added nothing to Lunar.
+    #[test]
+    fn lunar_setup_downloads_mojangs_jar_when_missing() {
+        let rig = rig();
+        let world = Fake::new().with(|s| s.vanilla_missing = true);
+        assert_eq!(rig.run(&world, Kind::Lunar), Outcome::Done);
+        assert_set_up(&rig);
+        assert_eq!(world.state().vanilla_downloads, 1);
+        assert!(rig.events().iter().any(|s| s.check == 4 && s.label == Some(Label::Vanilla)));
+
+        let offline = super::tests::rig();
+        let world = Fake::new().with(|s| {
+            s.vanilla_missing = true;
+            s.vanilla_offline = true;
+        });
+        assert!(matches!(offline.run(&world, Kind::Lunar), Outcome::Failed { .. }));
+        assert!(!agent_registered(&offline), "nothing added to Lunar");
+        assert_eq!(offline.events().last().unwrap().check, 4, "failed at check 5");
+
+        let present = super::tests::rig();
+        let world = Fake::new();
+        assert_eq!(present.run(&world, Kind::Lunar), Outcome::Done);
+        assert_eq!(world.state().vanilla_downloads, 0, "never fetched when present");
     }
 
     /// Lunar is quit at check 6, so setup also makes its plain 1.8.9 profile the one it starts

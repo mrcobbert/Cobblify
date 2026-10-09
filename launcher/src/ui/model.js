@@ -25,7 +25,7 @@ export const PRISM_CHECKS = ["Checking Cobblify's own files", "Looking for Lunar
 const N = CHECKS.length;
 
 /** The setup labels a long check shows instead of "Setting up …" (snapshot `label`). */
-const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 8" };
+const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 8", vanilla: "Downloading Minecraft 1.8.9" };
 
 /**
  * The launch key while launching. The game being up reads "Join Hypixel" (a wait): launches

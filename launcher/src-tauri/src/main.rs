@@ -44,6 +44,7 @@ mod resources;
 mod setup;
 mod theme;
 mod updater;
+mod vanilla;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

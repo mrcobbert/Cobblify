@@ -23,7 +23,7 @@ use crate::resources::sha256_file;
 pub const FILE_NAME: &str = "Cobblify-Guard.jar";
 /// Built by `launcher/guard/build.sh` (reproducible).
 const JAR: &[u8] = include_bytes!("../../guard/Cobblify-Guard.jar");
-const SHA256: &str = "0fa0d9e0da16b359bcbb210f115798e2a84b7f48fc39252b8d1500fc737450b8";
+const SHA256: &str = "663b8ebf35c72f6415b8c4b171dc119208bda3aba511a6ca7bff770cf04d903f";
 /// The guard's log, relative to the weave dir.
 pub const LOG: &str = "logs/cobblify-guard.log";
 

@@ -102,6 +102,8 @@ const WEAVE_MAPPINGS: &str = "Loading merged mappings for ";
 /// for any version outside its enum, before discovery and mappings. 1.8.9 is in the enum,
 /// so this version-free message means "not 1.8.9".
 const WEAVE_UNKNOWN_VERSION: &str = "Could not find game version";
+/// Weave's line once mods are mapped and it hands over to their tweakers (`AgentKt.premain`).
+const WEAVE_TWEAKERS: &str = "Calling tweakers";
 /// Weave's `fatalError`: `"An error occurred: " + message`, then a dialog and `exit(-1)`.
 const WEAVE_FATAL: &str = "An error occurred:";
 
@@ -326,9 +328,15 @@ impl LoadWatch {
                 }
             } else if weave_discovered(text) {
                 // (b) Weave finished discovering mods (any N) and no Cobblify mixin followed.
-                let at = *self.discovered_at.get_or_insert(now);
-                if !cobblify_mixed(text) && since(at, now) >= WEAVE_DISCOVERED_GRACE {
-                    return Some(Outcome::NotLoaded);
+                // With mods, Weave maps them between its mappings line and "Calling tweakers" -
+                // on a first launch that remaps Mojang's whole jar, a minute or more of a quiet
+                // log - so the grace starts once it has called the tweakers; (f) covers a hang.
+                let mapping = text.contains(WEAVE_MAPPINGS) && !text.contains(WEAVE_TWEAKERS);
+                if !mapping {
+                    let at = *self.discovered_at.get_or_insert(now);
+                    if !cobblify_mixed(text) && since(at, now) >= WEAVE_DISCOVERED_GRACE {
+                        return Some(Outcome::NotLoaded);
+                    }
                 }
             }
         }
@@ -599,6 +607,24 @@ Forge Mod Loader has successfully loaded 5 mods
         assert_eq!(
             w.observe(&lunar(Some(log), at(3), alive(0)), at(63)),
             Some(Outcome::NotLoaded)
+        );
+    }
+
+    /// (b) waits out a first launch's remap: from the mappings line to "Calling tweakers" no
+    /// grace runs, and it starts at the tweakers line.
+    #[test]
+    fn the_discovery_grace_starts_after_weave_has_mapped_the_mods() {
+        let mapping = "Attached Weave\nDiscovered 1 mod files\nLoading merged mappings for 1.8.9\n";
+        let mut w = LoadWatch::default();
+        assert_eq!(w.observe(&lunar(Some(mapping), at(3), alive(0)), at(3)), None);
+        assert_eq!(w.observe(&lunar(Some(mapping), at(3), alive(0)), at(100)), None, "remapping");
+        let called = "Attached Weave\nDiscovered 1 mod files\nLoading merged mappings for 1.8.9\nCalling tweakers\n";
+        assert_eq!(w.observe(&lunar(Some(called), at(101), alive(0)), at(101)), None);
+        assert_eq!(w.observe(&lunar(Some(called), at(101), alive(0)), at(160)), None);
+        assert_eq!(
+            w.observe(&lunar(Some(called), at(101), alive(0)), at(161)),
+            Some(Outcome::NotLoaded),
+            "60 s after the tweakers with no Cobblify mixin"
         );
     }
 

@@ -236,6 +236,9 @@ test("setup: the long checks name themselves", () => {
   const java = homeModel({ status: nothing, setup: setupOf(snap("forge", 4, { label: "java" })) });
   assert.deepEqual(java.hero, { kind: "slim", label: "Downloading Java 8", pct: 67 });
   assert.equal(java.said, "Downloading Java 8.");
+  const vanilla = homeModel({ status: nothing, setup: setupOf(snap("lunar", 4, { label: "vanilla" })) });
+  assert.deepEqual(vanilla.hero, { kind: "slim", label: "Downloading Minecraft 1.8.9", pct: 67 });
+  assert.equal(vanilla.said, "Downloading Minecraft 1.8.9.");
 });
 
 test("setup: the sign-in stops keep setup's progress, with Open, and hang no ghost", () => {

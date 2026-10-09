@@ -27,6 +27,9 @@ import java.util.regex.Pattern;
  *   token, so it is matched in memory only: only a version-shaped value is ever written anywhere.
  * - Weave goes on the system class loader and gets this agent's Instrumentation, as if it had been
  *   registered directly (this jar's manifest grants the same Can-Retransform-Classes).
+ * - Weave also needs Mojang's vanilla jar for the version, found the way Weave 1.3.3 finds it
+ *   (vanillaJarFound); without it Weave stops the game with an error dialog, so the game is left
+ *   to start without Cobblify instead (the launcher puts the jar back before its next launch).
  * - One line goes to logs/cobblify-guard.log next to this jar, so the launcher can tell a game on
  *   another version from one where Cobblify failed to load.
  *
@@ -49,6 +52,11 @@ public final class Guard {
             version = gameVersion();
             if (!isOneEightNine(version)) {
                 note(dir, "Minecraft " + shown(version) + ", Weave not started");
+                return;
+            }
+            // Weave's name for the version it matched, whatever the argument said ("1.8" too).
+            if (!vanillaJarFound("1.8.9")) {
+                note(dir, "Minecraft " + shown(version) + ", vanilla jar missing");
                 return;
             }
             File weave = weaveJar(dir, options);
@@ -85,6 +93,36 @@ public final class Guard {
     /** Weave's own test for 1.8.9 (MinecraftVersion.fromVersionName): names 1.8.9, or is "1.8". */
     static boolean isOneEightNine(String version) {
         return version != null && (version.contains("1.8.9") || version.equals("1.8"));
+    }
+
+    /**
+     * Weave 1.3.3's FileManager.getVanillaMinecraftJar: versions/<v>/<v>.jar in the OS's Minecraft
+     * folder, else a classpath entry ending in versions/<v>/<v>.jar or
+     * libraries/com/mojang/minecraft/<v>/minecraft-<v>-client.jar.
+     */
+    static boolean vanillaJarFound(String version) {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String home = System.getenv("HOME");
+        if (home == null) home = System.getenv("USERPROFILE");
+        home = System.getProperty("user.home", home);
+        File mc;
+        if (os.contains("win")) {
+            mc = new File(new File(new File(home, "AppData"), "Roaming"), ".minecraft");
+        } else if (os.contains("mac")) {
+            mc = new File(new File(new File(home, "Library"), "Application Support"), "minecraft");
+        } else {
+            mc = new File(home, ".minecraft");
+        }
+        if (new File(new File(new File(mc, "versions"), version), version + ".jar").exists()) return true;
+        String cp = System.getProperty("java.class.path");
+        if (cp == null) return false;
+        String a = "versions" + File.separator + version + File.separator + version + ".jar";
+        String b = "libraries" + File.separator + "com" + File.separator + "mojang" + File.separator + "minecraft"
+            + File.separator + version + File.separator + "minecraft-" + version + "-client.jar";
+        for (String entry : cp.split(File.pathSeparator)) {
+            if (entry.endsWith(a) || entry.endsWith(b)) return true;
+        }
+        return false;
     }
 
     /** The game version, or null when it cannot be read. */
