@@ -1892,7 +1892,7 @@ async fn launch_target(
                 progress.forge_session = matches!(kind, LaunchKind::Forge);
                 progress.last_mtime = None;
                 progress.steady_polls = 0;
-                        progress.watch = match kind {
+                progress.watch = match kind {
                     LaunchKind::Lunar => launch_watch::Watch::lunar(&watch_home),
                     LaunchKind::Forge => launch_watch::Watch::prism(&watch_home),
                 };

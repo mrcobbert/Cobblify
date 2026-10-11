@@ -65,7 +65,7 @@ Lunar or Prism window, on macOS or Windows. Lunar hides its own launcher when
 the game starts (unless its "Launcher visibility on Game Launch" setting is Keep
 Open) and shows it again when the game exits. Lunar stays open after a game;
 Cobblify quits it only where it must write `launcher.json` - setup's "Closing
-Lunar", a polite quit (`lunar_quit.rs`).
+Lunar", a polite quit (`lunar_quit.rs`, macOS).
 
 Before writing it:
 
