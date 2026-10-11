@@ -609,13 +609,15 @@ pub(crate) mod tests {
         let data = tempfile::tempdir().unwrap();
         assert_eq!(instances_dir(data.path()), data.path().join("instances"));
         assert_eq!(java_dir(data.path()), data.path().join("java"));
+        // An absolute path as Prism writes one on this platform (forward slashes on Windows too).
+        let abs = if cfg!(windows) { "C:/opt/prism-java" } else { "/opt/prism-java" };
         fs::write(
             data.path().join(GLOBAL_CFG),
-            "[General]\nConfigVersion=1.3\nInstanceDir=My Instances\nJavaDir=/opt/prism-java\n",
+            format!("[General]\nConfigVersion=1.3\nInstanceDir=My Instances\nJavaDir={abs}\n"),
         )
         .unwrap();
         assert_eq!(instances_dir(data.path()), data.path().join("My Instances"));
-        assert_eq!(java_dir(data.path()), PathBuf::from("/opt/prism-java"));
+        assert_eq!(java_dir(data.path()), PathBuf::from(abs));
         // The old MultiMC format has no sections.
         fs::write(data.path().join(GLOBAL_CFG), "InstanceDir=\"inst, old\"\n").unwrap();
         assert_eq!(instances_dir(data.path()), data.path().join("inst, old"));

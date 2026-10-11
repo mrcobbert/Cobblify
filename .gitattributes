@@ -1,0 +1,2 @@
+# Byte-for-byte fixtures (include_str! compares them exactly): LF on every checkout, Windows included.
+launcher/src-tauri/src/golden/* text eol=lf
