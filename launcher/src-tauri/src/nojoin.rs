@@ -81,7 +81,7 @@ pub enum NoJoinOutcome {
     /// Success marker observed: the game launch started.
     Confirmed,
     /// Link fired but not confirmable (silence, unreadable, cap, or only an
-    /// error marker). The caller cancels hiding and re-presents.
+    /// error marker). The launcher is re-presented so the player can press Play.
     Unconfirmed,
     /// No link was ever fired (log unopenable before firing); the launcher
     /// is open from the ensure step - today's open-only flow, truthfully.
@@ -100,16 +100,7 @@ pub struct NoJoinDeps<'a> {
     pub open_log: &'a mut dyn FnMut() -> Option<Box<dyn FnMut() -> Option<Vec<u8>>>>,
     /// Fire the bare link once. Err = link never fired.
     pub fire_link: &'a mut dyn FnMut() -> Result<(), String>,
-    /// Start the registered cancellable hide worker (insta-hide).
-    pub start_hide: &'a mut dyn FnMut(),
-    /// Cancel all hide workers with a bounded join; returns whether every
-    /// worker drained inside the bound (a timeout still proceeds - the
-    /// outcome is already unconfirmed and nothing further is scheduled).
-    pub cancel_hide: &'a mut dyn FnMut() -> bool,
-    /// Post window restores (Windows FIFO supersession; no-op on macOS).
-    /// Strictly between cancel and re-present.
-    pub restore_windows: &'a mut dyn FnMut(),
-    /// Re-present the launcher. A failure never changes the outcome.
+    /// Bring the launcher forward. A failure never changes a fired outcome.
     pub represent: &'a mut dyn FnMut() -> Result<(), String>,
     /// Wait one poll interval.
     pub poll_wait: &'a mut dyn FnMut(),
@@ -118,22 +109,12 @@ pub struct NoJoinDeps<'a> {
 /// Run one no-join click. Returns Err only when nothing was opened at all.
 pub fn run(deps: &mut NoJoinDeps) -> Result<NoJoinOutcome, String> {
     (deps.ensure_open)()?;
-    // Insta-hide from the CLICK, not the fire: on a warm relaunch the
-    // ensure step un-hides Lunar's launcher, and without this the window
-    // sits on screen for the whole warm-up. Every degrade path below now
-    // cancels and re-presents, because something IS hidden from here on.
-    (deps.start_hide)();
     // Never-fired degrade: `OpenOnlyNeverFired` (whose overlay-off route
-    // quits immediately) is only truthful when cleanup PROVED a presented,
-    // quiescent launcher - the hide worker drained AND the re-present
-    // succeeded. Anything less falls back to `Unconfirmed`, whose route
-    // keeps the app open as the recovery surface instead of exiting with
-    // Lunar possibly still hidden.
+    // quits immediately) is only truthful when the launcher was brought
+    // forward. Otherwise it falls back to `Unconfirmed`, whose route keeps
+    // the app open as the recovery surface.
     let degrade_never_fired = |deps: &mut NoJoinDeps| {
-        let drained = (deps.cancel_hide)();
-        (deps.restore_windows)();
-        let presented = (deps.represent)().is_ok();
-        if drained && presented {
+        if (deps.represent)().is_ok() {
             NoJoinOutcome::OpenOnlyNeverFired
         } else {
             NoJoinOutcome::Unconfirmed
@@ -166,11 +147,9 @@ pub fn run(deps: &mut NoJoinDeps) -> Result<NoJoinOutcome, String> {
     if scanner.success() {
         return Ok(NoJoinOutcome::Confirmed);
     }
-    // Unconfirmed: cancel -> restore-post -> re-present, in that order.
-    // A cancel timeout or a failed re-present never changes the outcome,
-    // and nothing is deferred past this return.
-    let _ = (deps.cancel_hide)();
-    (deps.restore_windows)();
+    // Unconfirmed: bring the launcher forward so the player can press Play.
+    // A failed re-present never changes the outcome, and nothing is
+    // deferred past this return.
     let _ = (deps.represent)();
     Ok(NoJoinOutcome::Unconfirmed)
 }
@@ -200,7 +179,6 @@ mod tests {
         ensure_ok: bool,
         log_opens: bool,
         fire_ok: bool,
-        cancel_drains: bool,
         represent_ok: bool,
         reads: Vec<Option<Vec<u8>>>,
     ) -> (Result<NoJoinOutcome, String>, Trace) {
@@ -231,15 +209,6 @@ mod tests {
             if fire_ok { Ok(()) } else { Err("fire failed".into()) }
         };
         let t = trace.clone();
-        let mut start_hide = move || t.push("start_hide");
-        let t = trace.clone();
-        let mut cancel_hide = move || {
-            t.push("cancel_hide");
-            cancel_drains
-        };
-        let t = trace.clone();
-        let mut restore_windows = move || t.push("restore_windows");
-        let t = trace.clone();
         let mut represent = move || {
             t.push("represent");
             if represent_ok { Ok(()) } else { Err("open failed".into()) }
@@ -250,9 +219,6 @@ mod tests {
             warm_up: &mut warm_up,
             open_log: &mut open_log,
             fire_link: &mut fire_link,
-            start_hide: &mut start_hide,
-            cancel_hide: &mut cancel_hide,
-            restore_windows: &mut restore_windows,
             represent: &mut represent,
             poll_wait: &mut poll_wait,
         });
@@ -265,11 +231,11 @@ mod tests {
         fire_ok: bool,
         reads: Vec<Option<Vec<u8>>>,
     ) -> (Result<NoJoinOutcome, String>, Trace) {
-        drive_with(ensure_ok, log_opens, fire_ok, true, true, reads)
+        drive_with(ensure_ok, log_opens, fire_ok, true, reads)
     }
 
     #[test]
-    fn confirmed_success_keeps_hide_running() {
+    fn confirmed_success_leaves_the_launcher_alone() {
         let (result, trace) = drive(
             true,
             true,
@@ -278,17 +244,11 @@ mod tests {
         );
         assert_eq!(result.unwrap(), NoJoinOutcome::Confirmed);
         let events = trace.events();
-        assert!(!events.contains(&"cancel_hide"));
         assert!(!events.contains(&"represent"));
-        // Insta-hide from the CLICK: the worker starts right after the
-        // ensure step, BEFORE the warm-up and the fire, so a warm
-        // relaunch's un-hidden launcher never sits on screen.
         let ensure = events.iter().position(|e| *e == "ensure_open").unwrap();
-        let hide = events.iter().position(|e| *e == "start_hide").unwrap();
         let warm = events.iter().position(|e| *e == "warm_up").unwrap();
         let fire = events.iter().position(|e| *e == "fire_link").unwrap();
-        assert_eq!(hide, ensure + 1);
-        assert!(hide < warm && warm < fire);
+        assert!(ensure < warm && warm < fire);
     }
 
     /// The round-3/4 case: an error marker followed by a late success within
@@ -324,38 +284,26 @@ mod tests {
             vec![Some(b"NO_PROFILE_SELECTED".to_vec())],
         );
         assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
-        assert!(trace.events().contains(&"cancel_hide"));
+        assert!(trace.events().contains(&"represent"));
     }
 
-    /// The unconfirmed path is strictly cancel -> restore-post ->
-    /// re-present, all after the fire and nothing after the return.
+    /// The unconfirmed path re-presents after the fire, and nothing after
+    /// the return.
     #[test]
-    fn silent_window_is_unconfirmed_with_ordered_cancel_restore_represent() {
+    fn silent_window_is_unconfirmed_and_represents_after_the_fire() {
         let (result, trace) = drive(true, true, true, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
         let events = trace.events();
         let fire = events.iter().position(|e| *e == "fire_link").unwrap();
-        let cancel = events.iter().position(|e| *e == "cancel_hide").unwrap();
-        let restore = events.iter().position(|e| *e == "restore_windows").unwrap();
         let represent = events.iter().position(|e| *e == "represent").unwrap();
-        assert!(fire < cancel && cancel < restore && restore < represent);
+        assert!(fire < represent);
         assert_eq!(events.len(), represent + 1, "nothing deferred past the return");
-    }
-
-    /// A cancel-join timeout still proceeds and schedules nothing further.
-    #[test]
-    fn cancel_timeout_still_represents_and_defers_nothing() {
-        let (result, trace) = drive_with(true, true, true, false, true, vec![]);
-        assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
-        let events = trace.events();
-        assert!(events.contains(&"restore_windows"));
-        assert_eq!(*events.last().unwrap(), "represent");
     }
 
     /// A failed re-present never changes the outcome.
     #[test]
     fn represent_failure_preserves_unconfirmed() {
-        let (result, _) = drive_with(true, true, true, true, false, vec![]);
+        let (result, _) = drive_with(true, true, true, false, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
     }
 
@@ -399,57 +347,40 @@ mod tests {
         assert_eq!(result.unwrap(), NoJoinOutcome::Confirmed);
     }
 
-    /// Unreadable BEFORE firing: degrade without firing; the click-start
-    /// hide is cancelled and the launcher re-presented (it was hidden).
+    /// Unreadable BEFORE firing: degrade without firing; the launcher is
+    /// brought forward and nothing is deferred past the return.
     #[test]
-    fn unopenable_log_never_fires_and_cancels_the_click_hide() {
+    fn unopenable_log_never_fires_and_represents() {
         let (result, trace) = drive(true, false, true, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::OpenOnlyNeverFired);
         let events = trace.events();
         assert!(!events.contains(&"fire_link"));
-        let hide = events.iter().position(|e| *e == "start_hide").unwrap();
-        let cancel = events.iter().position(|e| *e == "cancel_hide").unwrap();
-        let restore = events.iter().position(|e| *e == "restore_windows").unwrap();
-        let represent = events.iter().position(|e| *e == "represent").unwrap();
-        assert!(hide < cancel && cancel < restore && restore < represent);
-        assert_eq!(events.len(), represent + 1, "nothing deferred past the return");
+        assert_eq!(*events.last().unwrap(), "represent", "nothing deferred past the return");
     }
 
     #[test]
-    fn ensure_open_failure_is_a_rejection_with_no_hide() {
+    fn ensure_open_failure_is_a_rejection_that_touches_nothing_else() {
         let (result, trace) = drive(false, true, true, vec![]);
         assert!(result.is_err());
-        assert!(!trace.events().contains(&"fire_link"));
-        assert!(!trace.events().contains(&"start_hide"));
+        assert_eq!(trace.events(), vec!["ensure_open"]);
     }
 
     #[test]
-    fn failed_fire_is_open_only_and_cancels_the_click_hide() {
+    fn failed_fire_is_open_only_and_represents() {
         let (result, trace) = drive(true, true, false, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::OpenOnlyNeverFired);
-        let events = trace.events();
-        assert!(events.contains(&"cancel_hide"));
-        assert_eq!(*events.last().unwrap(), "represent");
+        assert_eq!(*trace.events().last().unwrap(), "represent");
     }
 
-    /// A never-fired degrade whose cleanup could NOT prove a presented,
-    /// quiescent launcher must not claim open-only (whose overlay-off
-    /// route exits immediately): it degrades to Unconfirmed so the app
-    /// stays open as the recovery surface.
+    /// A never-fired degrade whose launcher could NOT be brought forward
+    /// must not claim open-only (whose overlay-off route exits
+    /// immediately): it degrades to Unconfirmed so the app stays open as
+    /// the recovery surface.
     #[test]
-    fn never_fired_with_incomplete_cleanup_is_unconfirmed_not_open_only() {
-        // Cancel timed out: a hide pass may still re-hide after the
-        // best-effort re-present.
-        let (result, _) = drive_with(true, false, true, false, true, vec![]);
+    fn never_fired_with_a_failed_represent_is_unconfirmed_not_open_only() {
+        let (result, _) = drive_with(true, false, true, false, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
-        // Re-present failed: on macOS restore is a no-op, so the launcher
-        // may still be hidden.
-        let (result, _) = drive_with(true, false, true, true, false, vec![]);
-        assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
-        // Failed-fire variants of the same two cases.
-        let (result, _) = drive_with(true, true, false, false, true, vec![]);
-        assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
-        let (result, _) = drive_with(true, true, false, true, false, vec![]);
+        let (result, _) = drive_with(true, true, false, false, vec![]);
         assert_eq!(result.unwrap(), NoJoinOutcome::Unconfirmed);
     }
 

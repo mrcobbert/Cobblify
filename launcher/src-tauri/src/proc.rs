@@ -94,9 +94,9 @@ pub fn is_lunar_running() -> bool {
 }
 
 /// The launcher's PID when it is running, by the same exact executable-path
-/// match. Consumed by the post-launch hide worker, which re-verifies the
-/// pid's bundle identity before acting on it. The game JVM can never be
-/// returned here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
+/// match. Consumed by setup's polite quit, which re-verifies the pid's
+/// bundle identity before acting on it. The game JVM can never be returned
+/// here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
 #[cfg(target_os = "macos")]
 pub fn lunar_launcher_pid() -> Option<u32> {
     lunar_launcher_pid_among(&lunar_exes())
@@ -130,8 +130,7 @@ pub fn lunar_running_checked() -> Result<bool, String> {
 
 /// Every Lunar launcher pid: the Electron main process AND its helpers, which
 /// on Windows all run from the SAME executable path (unlike macOS, where the
-/// helpers have their own binaries). The hide worker wants all of them - any
-/// one of them can own a top-level window.
+/// helpers have their own binaries).
 ///
 /// `Err` means "cannot determine", never "not running": `lunar_config::register`
 /// refuses to touch `launcher.json` on `Err`, because an undeterminable state
@@ -142,15 +141,6 @@ pub fn lunar_launcher_pids() -> Result<Vec<u32>, String> {
     let root = lunar_programs_root(std::env::var_os("LOCALAPPDATA").as_deref())
         .map_err(|e| format!("Cannot tell whether Lunar is running: {e}"))?;
     Ok(pids_where(|exe| is_lunar_launcher_exe(exe, &root)))
-}
-
-#[cfg(windows)]
-pub fn prism_launcher_pids() -> Vec<u32> {
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-        return Vec::new();
-    };
-    let wanted = PathBuf::from(local).join("Programs/PrismLauncher/prismlauncher.exe");
-    pids_where(|exe| caseless_ends_with(exe, &wanted))
 }
 
 /// `%LOCALAPPDATA%\Programs`, rejecting every UNUSABLE value rather than only
@@ -205,10 +195,7 @@ pub fn game_jvm_running(home: &Path) -> bool {
     !game_jvm_pids(home).is_empty()
 }
 
-/// The game JVM's pids, by the identity `game_jvm_running` describes. The
-/// Windows hide worker uses them to recognise a CONSOLE window that belongs to
-/// the game - and, just as importantly, to leave every OTHER window of that
-/// same process (the Minecraft window itself) alone.
+/// The game JVM's pids, by the identity `game_jvm_running` describes.
 pub fn game_jvm_pids(home: &Path) -> Vec<u32> {
     game_jvm_scan(home).pids
 }

@@ -38,7 +38,6 @@ const replies = {
   lobby_state: () => ({ kind: "unavailable" }),
   abort_launch_session: () => ({ status: "ok", preferences: PREFS }),
   reset_session_end: () => ({ status: "ok", preferences: PREFS }),
-  rehide_after_confirmation: () => null,
   quit_app: () => null,
   open_launcher: () => null,
 };

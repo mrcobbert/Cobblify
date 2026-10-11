@@ -77,10 +77,6 @@ pub fn dispatch(
     kind: LaunchKind,
     use_external_overlay: bool,
 ) -> Result<DispatchResult, String> {
-    // Cross-generation isolation: a previous click's still-running hide
-    // worker (Windows sweeps up to 150s) must never act on this click's
-    // windows. Runs on every admission, including launches later rejected.
-    crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(2));
     match kind {
         LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay),
         LaunchKind::Forge => dispatch_forge(home, use_external_overlay),
@@ -180,15 +176,6 @@ fn launch_lunar_no_join(use_external_overlay: bool) -> Result<DispatchResult, St
     let mut warm_up = || std::thread::sleep(crate::nojoin::WARM_UP);
     let mut open_log = open_launcher_log_tail;
     let mut fire_link = open_bare_play_link;
-    let mut start_hide = || crate::hide::spawn_worker();
-    // Quiescence is claimed only for workers joined within the bound; a
-    // pass hung past it can at worst re-hide once (cosmetic; the app stays
-    // open as the recovery surface on this path).
-    let mut cancel_hide =
-        || crate::hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(8));
-    // Windows: posted to the same queues as any still-queued minimize, so
-    // it is processed after and supersedes it. No-op on macOS.
-    let mut restore_windows = || crate::hide::restore_lunar_windows();
     let mut represent = open_lunar_app_only;
     let mut poll_wait = || std::thread::sleep(crate::nojoin::POLL_INTERVAL);
     // Baseline at fire time: the progress pipeline watches for the game on
@@ -199,9 +186,6 @@ fn launch_lunar_no_join(use_external_overlay: bool) -> Result<DispatchResult, St
         warm_up: &mut warm_up,
         open_log: &mut open_log,
         fire_link: &mut fire_link,
-        start_hide: &mut start_hide,
-        cancel_hide: &mut cancel_hide,
-        restore_windows: &mut restore_windows,
         represent: &mut represent,
         poll_wait: &mut poll_wait,
     })?;
@@ -315,7 +299,6 @@ fn dispatch_forge(home: &Path, use_external_overlay: bool) -> Result<DispatchRes
     }
     cmd.spawn()
         .map_err(|e| format!("Cannot start Prism Launcher: {e}"))?;
-    crate::hide::spawn_prism_worker();
     Ok(DispatchResult {
         baseline,
         outcome: LaunchOutcome {

@@ -7,7 +7,6 @@ import {
   launchForge,
   launchLunar,
   quitApp,
-  rehideAfterConfirmation,
   resetSessionEnd,
   launchProgress,
   setAutoUpdate,
@@ -37,7 +36,6 @@ test("invoke uses exact wire keys", async () => {
   await launchLunar(invoke, false);
   await launchForge(invoke, true);
   await resetSessionEnd(invoke);
-  await rehideAfterConfirmation(invoke, false);
   await quitApp(invoke);
   await abortLaunchSession(invoke);
   await launchProgress(invoke);
@@ -49,14 +47,12 @@ test("invoke uses exact wire keys", async () => {
   assert.deepEqual(calls[2].args, { expectedUseExternalOverlay: true });
   assert.equal(calls[3].cmd, CMD.resetSessionEnd);
   assert.equal(calls[3].args, undefined);
-  assert.equal(calls[4].cmd, CMD.rehideAfterConfirmation);
-  assert.deepEqual(calls[4].args, { useExternalOverlay: false });
-  assert.equal(calls[5].cmd, CMD.quitApp);
+  assert.equal(calls[4].cmd, CMD.quitApp);
+  assert.equal(calls[4].args, undefined);
+  assert.equal(calls[5].cmd, CMD.abortLaunchSession);
   assert.equal(calls[5].args, undefined);
-  assert.equal(calls[6].cmd, CMD.abortLaunchSession);
+  assert.equal(calls[6].cmd, "launch_progress");
   assert.equal(calls[6].args, undefined);
-  assert.equal(calls[7].cmd, "launch_progress");
-  assert.equal(calls[7].args, undefined);
 });
 
 test("no auto-join anywhere on the wire: no setter, no launch argument", () => {
@@ -188,4 +184,8 @@ test("the setup snapshot wire shape matches the backend's camelCase fields", () 
   for (const stop of ["signin", "game_open", "closing_lunar"]) {
     assert.match(stop, /^[a-z_]+$/);
   }
+});
+
+test("no window hiding on the wire: Cobblify never hides Lunar or Prism", () => {
+  assert.equal(Object.values(CMD).some((c) => /hide/.test(c)), false);
 });

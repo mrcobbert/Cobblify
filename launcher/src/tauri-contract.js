@@ -13,7 +13,6 @@ export const CMD = {
   lunarVersionReady: "lunar_version_ready",
   resetSessionEnd: "reset_session_end",
   abortLaunchSession: "abort_launch_session",
-  rehideAfterConfirmation: "rehide_after_confirmation",
   quitApp: "quit_app",
   refreshSetup: "refresh_setup",
   status: "status",
@@ -138,10 +137,6 @@ export function resetSessionEnd(invoke) {
  */
 export function abortLaunchSession(invoke) {
   return invoke(CMD.abortLaunchSession);
-}
-
-export function rehideAfterConfirmation(invoke, useExternalOverlay) {
-  return invoke(CMD.rehideAfterConfirmation, { useExternalOverlay });
 }
 
 export function quitApp(invoke) {

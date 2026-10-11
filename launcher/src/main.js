@@ -35,7 +35,6 @@ import {
   lunarVersionReady,
   openInfo,
   quitApp,
-  rehideAfterConfirmation,
   resetSessionEnd,
   resumeSetup,
   setupState,
@@ -437,7 +436,7 @@ function previewInvoke(command, args) {
     });
   }
 
-  if (command === "rehide_after_confirmation" || command === "quit_app") {
+  if (command === "quit_app") {
     // Preview never exits the page; quit is a no-op here.
     return Promise.resolve();
   }
@@ -1103,10 +1102,9 @@ function stopLobbyPolling() {
   }
 }
 
-// Overlay-off quit / late-success rehide coordination (dependency-injected
-// module; see overlay-exit.js for the exhaustive route table).
+// Overlay-off quit coordination (dependency-injected module; see
+// overlay-exit.js for the exhaustive route table).
 const overlayExit = createOverlayExit({
-  rehide: (useExternalOverlay) => rehideAfterConfirmation(invoke, useExternalOverlay),
   quit: () => quitApp(invoke),
   // Double quit rejection: enter the overlay flow instead of stranding an
   // Active app - lobby polling gives it a live loop that can reach the
@@ -1227,15 +1225,11 @@ function startProgressPolling() {
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
           launchController.settleLaunchPhase();
-          // Unconfirmed late-success rehide trigger only: a quiet log is not
-          // proof Cobblify loaded, so it never quits the app by itself.
-          overlayExit.onConfirmationSignal("settled");
         }
       }
       if (p?.loaded === true) {
         // The backend's proof that Cobblify loaded in this launch's game: the
-        // overlay-off quit (and the unconfirmed route's quit after its rehide).
-        // The module fires each obligation exactly once across duplicate polls.
+        // overlay-off quit. The module quits exactly once across duplicate polls.
         overlayExit.onConfirmationSignal("loaded");
       }
     } catch {
@@ -1266,9 +1260,9 @@ const launchHooks = {
     launchController.bumpPollGen();
     const exitRoute = overlayExit.routeFor(reply.outcome);
     if (exitRoute === "quit_now") {
-      // Never-fired open-only with overlay off: the backend proved the
-      // launcher presented and quiescent - exit immediately after the
-      // reply. (Unproven cleanup arrives as launch_unconfirmed instead.)
+      // Never-fired open-only with overlay off: the backend brought the
+      // launcher forward - exit immediately after the reply. (A failed
+      // re-present arrives as launch_unconfirmed instead.)
       overlayExit.quitNow();
       return;
     }
@@ -1406,8 +1400,8 @@ function enterDashboard() {
   firstLiveSeen = true;
   // The live snapshot the home view was held for: the marker's job is done.
   homeUntilLive = false;
-  // First acknowledged live snapshot: the second late-success trigger
-  // (covers dashboard entry stopping progress polling before settled).
+  // First acknowledged live snapshot: proof Cobblify loaded, for the
+  // overlay-off quit (covers dashboard entry stopping progress polling).
   overlayExit.onConfirmationSignal("live");
 }
 

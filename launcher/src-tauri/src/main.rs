@@ -16,19 +16,6 @@ mod preferences;
 mod process_liveness;
 #[cfg(target_os = "macos")]
 mod hide;
-#[cfg(windows)]
-#[path = "hide_windows.rs"]
-mod hide;
-/// Everything else (Linux dev builds) has no hiding; the no-op keeps the
-/// launch path's call site clean.
-#[cfg(not(any(target_os = "macos", windows)))]
-mod hide {
-    pub fn spawn_worker() {}
-    pub fn spawn_prism_worker() {}
-    pub fn rehide_once() {}
-    pub fn restore_lunar_windows() {}
-}
-mod hide_registry;
 mod install;
 mod nojoin;
 mod lunar_config;
@@ -1253,8 +1240,6 @@ struct ProgressState {
     forge_session: bool,
     last_mtime: Option<SystemTime>,
     steady_polls: u32,
-    /// D1c fires at most once per launch generation.
-    early_hide_fired: bool,
     /// Whether Cobblify loaded in this launch's game, or the launch ended without it.
     watch: launch_watch::Watch,
 }
@@ -1492,69 +1477,20 @@ async fn set_use_external_overlay(
     set_preference(lifecycle::PrefKey::Overlay, enabled, session).await
 }
 
-/// D1c trigger, as a pure decision. The FIRST poll of a Lunar session that
-/// shows an armed absence (the session's own `grace` reason) or a proven
-/// session end starts the early hide - Lunar re-shows its launcher window
-/// the moment the game exits, and the reset-time terminate is ~1 s later.
-/// `game_session_changed` is excluded on purpose: a verified-live
-/// replacement writer exists, so no launcher window is coming.
-fn early_hide_trigger(poll: &LobbyPoll, lunar_session: bool, already_fired: bool) -> bool {
-    if !lunar_session || already_fired {
-        return false;
-    }
-    match poll {
-        LobbyPoll::Unavailable { reason: Some(reason) } => reason == "grace",
-        LobbyPoll::SessionEnded { reason } => *reason == "game_session_ended",
-        _ => false,
-    }
-}
-
-/// Captures the CURRENT launcher identity and starts the registered,
-/// identity-bound early-hide worker. Skips silently when the identity is
-/// unavailable - an Indeterminate never acts.
-#[cfg(target_os = "macos")]
-fn start_early_hide() {
-    let Some(pid) = proc::lunar_launcher_pid() else {
-        return;
-    };
-    let Some(birth) = process_liveness::process_birth_ns(pid) else {
-        return;
-    };
-    hide::spawn_bound_rehide(pid, birth);
-}
-
-#[cfg(not(target_os = "macos"))]
-fn start_early_hide() {}
-
 #[tauri::command]
 async fn lobby_state(session: tauri::State<'_, SessionParts>) -> Result<LobbyPoll, String> {
     let home = home()?;
     let lobby = Arc::clone(&session.lobby);
     let progress = Arc::clone(&session.progress);
     tauri::async_runtime::spawn_blocking(move || {
-        let lunar_session = {
-            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-            if progress.baseline.is_none() {
-                return Ok(LobbyPoll::Unavailable { reason: None });
-            }
-            !progress.forge_session
-        };
+        if progress.lock().unwrap_or_else(|e| e.into_inner()).baseline.is_none() {
+            return Ok(LobbyPoll::Unavailable { reason: None });
+        }
         let now = SystemTime::now();
         let poll = lobby
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .poll(&home, now);
-        let fire = {
-            let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-            let fire = early_hide_trigger(&poll, lunar_session, progress.early_hide_fired);
-            if fire {
-                progress.early_hide_fired = true;
-            }
-            fire
-        };
-        if fire {
-            start_early_hide();
-        }
         Ok(poll)
     })
     .await
@@ -1664,7 +1600,6 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
         progress.forge_session = false;
         progress.last_mtime = None;
         progress.steady_polls = 0;
-        progress.early_hide_fired = false;
         progress.watch = launch_watch::Watch::default();
     }
     parts
@@ -1677,38 +1612,11 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
     }
 }
 
-/// Late-success rehide: invoked exactly once by the frontend when a
-/// fired-but-unconfirmed launch is proven real (settled or a live lobby
-/// snapshot). Always replies promptly; hide is fail-soft by contract, so
-/// native failure never surfaces as an error.
-fn rehide_inner(use_external_overlay: bool) {
-    if use_external_overlay {
-        // Fresh registered finite worker: full repeated coverage restored.
-        hide::spawn_worker();
-    } else {
-        // One pass, ordered strictly before the reply so an overlay-off
-        // exit cannot kill the corrective actor - but BOUNDED: the command
-        // must always reply so the exit can proceed even if the native
-        // call hangs (hung-pass residual, cosmetic).
-        hide_registry::run_pass_bounded(
-            || hide::rehide_once(),
-            std::time::Duration::from_secs(3),
-        );
-    }
-}
-
 /// Overlay-off exit. The game, Lunar, and Prism are separate processes and
-/// survive; in-process hide threads die with the app (accepted narrowing).
+/// survive.
 #[tauri::command]
 fn quit_app(app_handle: tauri::AppHandle) {
     app_handle.exit(0);
-}
-
-#[tauri::command(rename_all = "camelCase")]
-async fn rehide_after_confirmation(use_external_overlay: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || rehide_inner(use_external_overlay))
-        .await
-        .map_err(|e| e.to_string())
 }
 
 async fn run_reset(session: &tauri::State<'_, SessionParts>, mode: ResetMode) -> Result<ResetReply, String> {
@@ -1984,8 +1892,7 @@ async fn launch_target(
                 progress.forge_session = matches!(kind, LaunchKind::Forge);
                 progress.last_mtime = None;
                 progress.steady_polls = 0;
-                progress.early_hide_fired = false;
-                progress.watch = match kind {
+                        progress.watch = match kind {
                     LaunchKind::Lunar => launch_watch::Watch::lunar(&watch_home),
                     LaunchKind::Forge => launch_watch::Watch::prism(&watch_home),
                 };
@@ -3264,27 +3171,6 @@ java.lang.IllegalStateException: Could not find game version\n",
         assert!(parts.progress.lock().unwrap().baseline.is_some());
     }
 
-    /// Round-10 I2: the backend halves of the rehide command. Overlay-on
-    /// registers exactly one fresh finite worker; overlay-off completes its
-    /// single pass before returning (nothing is scheduled).
-    #[test]
-    fn rehide_overlay_on_registers_and_off_completes_inline() {
-        let _guard = hide_registry::REGISTRY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let before = hide_registry::registered_count();
-        rehide_inner(true);
-        assert_eq!(hide_registry::registered_count(), before + 1);
-        assert!(hide_registry::cancel_all_and_wait(std::time::Duration::from_secs(5)));
-        // The synchronous branch: only exercised when no real Lunar launcher
-        // is running (it would cosmetically hide the user's window).
-        #[cfg(target_os = "macos")]
-        if proc::lunar_launcher_pid().is_none() {
-            rehide_inner(false);
-            assert_eq!(hide_registry::registered_count(), 0, "nothing scheduled");
-        }
-    }
-
     /// TWO genuinely concurrent resets on the same SessionParts: exactly
     /// one may perform the transaction; the other must observe `busy` or
     /// `already_reset`, and the end state is a clean Idle.
@@ -3743,89 +3629,6 @@ java.lang.IllegalStateException: Could not find game version\n",
         assert_eq!(parts.lobby.lock().unwrap().session_guards(), vec![identity]);
         assert!(parts.lobby.lock().unwrap().unproven_abort().is_none());
     }
-
-    // ── D1c: the identity-bound early hide trigger ──────────────────────
-
-    fn grace_poll() -> LobbyPoll {
-        LobbyPoll::Unavailable {
-            reason: Some("grace".into()),
-        }
-    }
-
-    #[test]
-    fn the_early_hide_trigger_reuses_the_sessions_own_signals() {
-        assert!(early_hide_trigger(&grace_poll(), true, false));
-        assert!(early_hide_trigger(
-            &LobbyPoll::SessionEnded {
-                reason: "game_session_ended"
-            },
-            true,
-            false
-        ));
-        // A live replacement writer exists: no launcher window is coming.
-        assert!(!early_hide_trigger(
-            &LobbyPoll::SessionEnded {
-                reason: "game_session_changed"
-            },
-            true,
-            false
-        ));
-        // Other unavailable reasons are not an armed absence.
-        for reason in ["missing_file", "stale_mtime", "process_unavailable", "malformed"] {
-            assert!(!early_hide_trigger(
-                &LobbyPoll::Unavailable {
-                    reason: Some(reason.into())
-                },
-                true,
-                false
-            ));
-        }
-        assert!(!early_hide_trigger(
-            &LobbyPoll::Unavailable { reason: None },
-            true,
-            false
-        ));
-        // Forge sessions never trigger it: there is no Lunar launcher.
-        assert!(!early_hide_trigger(&grace_poll(), false, false));
-    }
-
-    /// Mirrors `lobby_state`'s flag handling: at most one worker per launch
-    /// generation, re-armed by the next launch or reset.
-    #[test]
-    fn the_early_hide_fires_once_per_launch_generation() {
-        let mut progress = ProgressState::default();
-        let polls = [
-            grace_poll(),
-            grace_poll(),
-            LobbyPoll::SessionEnded {
-                reason: "game_session_ended",
-            },
-        ];
-        let mut fired = 0;
-        for poll in &polls {
-            if early_hide_trigger(poll, true, progress.early_hide_fired) {
-                progress.early_hide_fired = true;
-                fired += 1;
-            }
-        }
-        assert_eq!(fired, 1, "one worker per generation, not one per poll");
-        // A fresh launch (or a reset) re-arms it.
-        progress.early_hide_fired = false;
-        assert!(early_hide_trigger(&grace_poll(), true, progress.early_hide_fired));
-    }
-
-    /// Both lifecycle edges that install a new generation re-arm the flag.
-    #[test]
-    fn a_reset_rearms_the_early_hide_flag() {
-        let parts = SessionParts::new();
-        active_with_latch(&parts, 1);
-        parts.progress.lock().unwrap().early_hide_fired = true;
-        assert!(matches!(
-            reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal),
-            ResetReply::Ok { .. }
-        ));
-        assert!(!parts.progress.lock().unwrap().early_hide_fired);
-    }
 }
 
 /// The main window is created hidden (`visible: false`) and the frontend shows it once the
@@ -3921,7 +3724,6 @@ fn main() {
             acknowledge_lobby_snapshot,
             reset_session_end,
             abort_launch_session,
-            rehide_after_confirmation,
             quit_app,
             launch_lunar,
             launch_forge,
