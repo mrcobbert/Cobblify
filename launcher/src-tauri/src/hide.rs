@@ -33,12 +33,6 @@ const REHIDE_INTERVAL: Duration = Duration::from_millis(250);
 /// (~1.5 s in) the window stayed hidden, but the window covers late
 /// re-shows too.
 const REHIDE_WINDOW: Duration = Duration::from_secs(20);
-/// Post-terminate wait for the launcher process to actually go away, and its
-/// poll cadence. The deadline is load-bearing, not cosmetic:
-/// `lunar_config::register` refuses to write while Lunar is running, so the
-/// setup refresh that follows a quit needs the process really gone.
-const QUIT_EXIT_DEADLINE: Duration = Duration::from_millis(1500);
-const QUIT_EXIT_POLL: Duration = Duration::from_millis(100);
 /// D1c lifetime: long enough to cover the gap between the game's death and
 /// the reset-time hide+terminate, short enough that it is gone well before
 /// anything else could start a launcher.
@@ -131,72 +125,9 @@ pub fn rehide_once() {
 /// joined worker needs no restore pass first.
 pub fn restore_lunar_windows() {}
 
-/// Gracefully quit Lunar's launcher (session-ended reset): same dual
-/// identity as hiding - exe-verified pid, bundle-id re-check in the
-/// snippet at execution time - but `hide` then `terminate` instead of a
-/// bare `hide`. The hide comes first because Lunar SHOWS its launcher
-/// window when the game exits: terminating alone leaves that window on
-/// screen for the whole AppleEvent quit, which is the visible flash. The
-/// terminate itself is a normal AppleEvent quit, the same thing Lunar's own
-/// "close launcher after launch" setting does. Then wait briefly for the
-/// process to actually exit so the setup refresh that follows sees a clean
-/// state.
-///
-/// Identity is bound to the OS birth for the destructive step, exactly like
-/// the Windows close: the pid's birth is captured up front and revalidated
-/// immediately before the send, so a pid reused between the lookup and the
-/// send can never be terminated. An unavailable birth fails CLOSED - the
-/// pass returns without committing, because there is nothing to revalidate
-/// against.
-///
-/// `commit` is the destructive gate (see
-/// `hide_registry::run_destructive_bounded`): it is called immediately
-/// before the terminate and the pass aborts on false, so a timed-out
-/// caller can guarantee no late termination. Fail-soft: never panics; the
-/// outcome says what happened, and the reset path is free to ignore it.
-pub fn quit_lunar_launcher(commit: &dyn Fn() -> bool) -> QuitOutcome {
-    let Some(pid) = proc::lunar_launcher_pid() else {
-        return QuitOutcome::NotRunning;
-    };
-    let Some(birth) = crate::process_liveness::process_birth_ns(pid) else {
-        return QuitOutcome::NotSent;
-    };
-    if !commit() {
-        return QuitOutcome::NotSent;
-    }
-    if !confirmed_quit_target(crate::process_liveness::check_identity(pid, birth)) {
-        return QuitOutcome::NotSent;
-    }
-    let _ = terminate_pass(pid);
-    let started = Instant::now();
-    if wait_for_exit(
-        proc::lunar_launcher_pid,
-        std::thread::sleep,
-        move || started.elapsed(),
-    ) {
-        QuitOutcome::Exited
-    } else {
-        QuitOutcome::StillRunning
-    }
-}
-
-/// What a bounded quit-and-wait achieved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuitOutcome {
-    /// No Lunar launcher was running.
-    NotRunning,
-    /// The quit was sent and the launcher process is gone.
-    Exited,
-    /// The quit was sent but the launcher was still running at the deadline.
-    StillRunning,
-    /// Nothing was sent: the identity could not be confirmed, or the gate refused.
-    NotSent,
-}
-
-/// The polite quit request on its own, for setup's "Closing Lunar": the same dual
-/// identity (exe-verified pid, OS birth revalidated just before the send, bundle id
-/// re-checked in the snippet) and the same hide-then-terminate snippet as
-/// `quit_lunar_launcher`, but it does NOT wait - setup waits on its own clock (15 s,
+/// The polite quit request on its own, for setup's "Closing Lunar": exe-verified pid,
+/// OS birth revalidated just before the send, bundle id re-checked in the snippet. It
+/// does NOT wait - setup waits on its own clock (15 s,
 /// re-checking before every write), which keeps the wait testable.
 ///
 /// `Ok(())` = no launcher was running, or the request was delivered to it. `Err` = it
@@ -227,31 +158,6 @@ fn quit_request_result(count: Option<u32>) -> Result<(), String> {
         Some(_) => Err("Lunar could not be asked to quit.".to_string()),
         None => Err("Cobblify could not ask Lunar to quit.".to_string()),
     }
-}
-
-/// Send-time gate for the destructive terminate: the pid must still be the
-/// same exe-verified process (same OS birth identity). Anything else -
-/// reuse, exit, indeterminate - is refused.
-fn confirmed_quit_target(identity: crate::process_liveness::IdentityCheck) -> bool {
-    identity == crate::process_liveness::IdentityCheck::AliveSameIdentity
-}
-
-/// Wait for the launcher process to disappear, parameterized so tests can
-/// drive the schedule with a fake clock. Bounded by `QUIT_EXIT_DEADLINE`:
-/// a launcher that refuses to exit must never hold the reset open.
-/// Returns whether the launcher was seen gone.
-fn wait_for_exit(
-    mut current_pid: impl FnMut() -> Option<u32>,
-    mut sleep: impl FnMut(Duration),
-    mut elapsed: impl FnMut() -> Duration,
-) -> bool {
-    while elapsed() < QUIT_EXIT_DEADLINE {
-        if current_pid().is_none() {
-            return true;
-        }
-        sleep(QUIT_EXIT_POLL);
-    }
-    false
 }
 
 fn terminate_pass(pid: u32) -> Option<u32> {
@@ -505,61 +411,6 @@ mod tests {
     #[test]
     fn quit_snippet_reports_zero_for_a_dead_pid() {
         assert_eq!(terminate_pass(99_999_999), Some(0));
-    }
-
-    /// The destructive gate: only a pid that is still alive under the SAME
-    /// OS birth may be terminated. Reuse, exit, and a refused query are all
-    /// refused.
-    #[test]
-    fn quit_is_refused_unless_the_identity_still_matches() {
-        use crate::process_liveness::IdentityCheck;
-        assert!(confirmed_quit_target(IdentityCheck::AliveSameIdentity));
-        assert!(!confirmed_quit_target(IdentityCheck::DefinitelyGone));
-        assert!(!confirmed_quit_target(IdentityCheck::Indeterminate));
-    }
-
-    /// Drives the real `wait_for_exit` with scripted pid lookups, recording
-    /// the lookup count and the end time. The fake clock advances when the
-    /// loop SLEEPS, exactly like real time.
-    fn drive_wait(pids: &[Option<u32>]) -> (usize, Duration, bool) {
-        let looked_up = std::cell::Cell::new(0usize);
-        let mut pid_script = pids.iter().copied();
-        let clock = std::cell::Cell::new(Duration::ZERO);
-        let exited = wait_for_exit(
-            || {
-                looked_up.set(looked_up.get() + 1);
-                pid_script.next().unwrap_or(Some(7))
-            },
-            |d| clock.set(clock.get() + d),
-            || clock.get(),
-        );
-        (looked_up.get(), clock.get(), exited)
-    }
-
-    #[test]
-    fn the_wait_ends_as_soon_as_the_launcher_is_gone() {
-        let (looked_up, end, exited) = drive_wait(&[Some(7), Some(7), None]);
-        assert_eq!(looked_up, 3, "stop on the first lookup that finds nothing");
-        assert_eq!(end, QUIT_EXIT_POLL * 2, "two polls, then done");
-        assert!(exited, "the result reports the exit");
-    }
-
-    #[test]
-    fn a_launcher_that_never_exits_is_bounded_by_the_deadline() {
-        let (looked_up, end, exited) = drive_wait(&[]);
-        let expected = (QUIT_EXIT_DEADLINE.as_millis() / QUIT_EXIT_POLL.as_millis()) as usize;
-        assert_eq!(looked_up, expected, "one lookup per poll for the whole wait");
-        assert!(end <= QUIT_EXIT_DEADLINE, "never sleeps past the deadline (ended {end:?})");
-        assert!(!exited, "still running at the deadline is reported, not hidden");
-    }
-
-    /// A launcher already gone when the wait starts costs no sleep at all.
-    #[test]
-    fn an_already_dead_launcher_never_sleeps() {
-        let (looked_up, end, exited) = drive_wait(&[None]);
-        assert_eq!(looked_up, 1);
-        assert_eq!(end, Duration::ZERO);
-        assert!(exited);
     }
 
     /// Setup's request-only quit reports delivery exactly: 1 = asked, 0 = no such Lunar

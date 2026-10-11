@@ -27,7 +27,6 @@ mod hide {
     pub fn spawn_prism_worker() {}
     pub fn rehide_once() {}
     pub fn restore_lunar_windows() {}
-    pub fn quit_lunar_launcher(_commit: &dyn Fn() -> bool) {}
 }
 mod hide_registry;
 mod install;
@@ -1608,8 +1607,8 @@ fn prefs_view_or_fallback(home: &Path) -> LaunchPreferencesView {
 /// Whether the reset must prove a terminal first. `Abort` is the forcing
 /// admission (D2b): it skips ONLY the not-terminal refusal, and clears the
 /// lobby through the abort evidence rule instead of the terminal one.
-/// Everything else - serialization, Busy-from-Launching, the Lunar quit,
-/// Idle published last - is identical.
+/// Everything else - serialization, Busy-from-Launching, Idle published
+/// last - is identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResetMode {
     Terminal,
@@ -1618,17 +1617,9 @@ enum ResetMode {
 
 /// The reset transaction. Locks are taken one at a time; the exclusive
 /// `Resetting` lifecycle state is the mutual exclusion for the whole
-/// sequence, and Idle is published last.
-/// `quit_lunar` runs (bounded, fail-soft) for a LUNAR session only, after
-/// the transaction commits: Lunar's launcher re-shows itself when the game
-/// exits and, while it runs, the setup refresh cannot re-register the
-/// agent - quitting it is what makes home immediately launchable again.
-fn reset_session_end_inner(
-    parts: &SessionParts,
-    home: &Path,
-    mode: ResetMode,
-    quit_lunar: impl FnOnce(),
-) -> ResetReply {
+/// sequence, and Idle is published last. Lunar is never quit here: it
+/// stays open after a game, as it normally does.
+fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -> ResetReply {
     let prefs_view = || prefs_view_or_fallback(home);
     match parts
         .coordinator
@@ -1667,25 +1658,14 @@ fn reset_session_end_inner(
             ResetMode::Abort => lobby.clear_for_abort(forge_session, home),
         }
     }
-    let was_lunar_session = {
+    {
         let mut progress = parts.progress.lock().unwrap_or_else(|e| e.into_inner());
-        let lunar = progress.baseline.is_some() && !progress.forge_session;
         progress.baseline = None;
         progress.forge_session = false;
         progress.last_mtime = None;
         progress.steady_polls = 0;
         progress.early_hide_fired = false;
         progress.watch = launch_watch::Watch::default();
-        lunar
-    };
-    // The destructive Lunar quit runs INSIDE the exclusive `Resetting`
-    // state, before Idle is published: no fresh launch can be admitted
-    // while termination can still act. (Production wraps this in
-    // run_destructive_bounded, whose commit gate guarantees a timed-out
-    // pass never acts late; only a committed pass that also blows its own
-    // internal bounds can linger, and that is reported, not silent.)
-    if was_lunar_session {
-        quit_lunar();
     }
     parts
         .coordinator
@@ -1739,18 +1719,7 @@ async fn run_reset(session: &tauri::State<'_, SessionParts>, mode: ResetMode) ->
         progress: Arc::clone(&session.progress),
     };
     tauri::async_runtime::spawn_blocking(move || {
-        reset_session_end_inner(&parts, &home, mode, || {
-            // Destructive gate: a hung osascript can only delay the reply
-            // up to bound+grace, and a pass that missed the bound before
-            // committing can never terminate anything afterwards.
-            hide_registry::run_destructive_bounded(
-                |commit| {
-                    let _ = hide::quit_lunar_launcher(commit);
-                },
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_secs(3),
-            );
-        })
+        reset_session_end_inner(&parts, &home, mode)
     })
     .await
     .map_err(|e| e.to_string())
@@ -3215,7 +3184,7 @@ java.lang.IllegalStateException: Could not find game version\n",
     #[test]
     fn reset_when_idle_is_already_reset() {
         let parts = SessionParts::new();
-        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {});
+        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal);
         assert!(matches!(reply, ResetReply::AlreadyReset { .. }));
     }
 
@@ -3224,7 +3193,7 @@ java.lang.IllegalStateException: Could not find game version\n",
         let parts = SessionParts::new();
         let home = temp_home();
         active_with_latch(&parts, 1);
-        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {});
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal);
         assert!(matches!(reply, ResetReply::Ok { .. }));
         assert_eq!(parts.lobby.lock().unwrap().terminal_reason(), None);
         assert!(parts.progress.lock().unwrap().baseline.is_none());
@@ -3242,7 +3211,7 @@ java.lang.IllegalStateException: Could not find game version\n",
             c.try_launch().unwrap();
             c.launch_active();
         }
-        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {});
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Terminal);
         assert!(matches!(reply, ResetReply::NotTerminal));
         assert_eq!(
             parts.coordinator.lock().unwrap().state(),
@@ -3254,7 +3223,7 @@ java.lang.IllegalStateException: Could not find game version\n",
     fn reset_busy_while_launching() {
         let parts = SessionParts::new();
         parts.coordinator.lock().unwrap().try_launch().unwrap();
-        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {});
+        let reply = reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal);
         assert!(matches!(reply, ResetReply::Busy));
     }
 
@@ -3266,7 +3235,7 @@ java.lang.IllegalStateException: Could not find game version\n",
         let home = temp_home();
         active_with_latch(&parts, 1);
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::Ok { .. }
         ));
         // Fresh launch installs its state and is admitted mid-way.
@@ -3278,13 +3247,13 @@ java.lang.IllegalStateException: Could not find game version\n",
         }
         // A reset arriving while Launching is refused outright.
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::Busy
         ));
         parts.coordinator.lock().unwrap().launch_active();
         // Active with NO latch: refused, still Active, state intact.
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::NotTerminal
         ));
         assert_eq!(
@@ -3328,10 +3297,10 @@ java.lang.IllegalStateException: Could not find game version\n",
             let (a, b) = std::thread::scope(|s| {
                 let pa = parts.clone();
                 let ha = home.clone();
-                let ta = s.spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal, || {}));
+                let ta = s.spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal));
                 let pb = parts.clone();
                 let hb = home.clone();
-                let tb = s.spawn(move || reset_session_end_inner(&pb, &hb, ResetMode::Terminal, || {}));
+                let tb = s.spawn(move || reset_session_end_inner(&pb, &hb, ResetMode::Terminal));
                 (ta.join().unwrap(), tb.join().unwrap())
             });
             let oks = [&a, &b]
@@ -3368,14 +3337,14 @@ java.lang.IllegalStateException: Could not find game version\n",
         let lobby_gate = parts.lobby.lock().unwrap();
         let pa = parts.clone();
         let ha = home.clone();
-        let a = std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal, || {}));
+        let a = std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Terminal));
         // Wait until A has claimed the exclusive Resetting state.
         while parts.coordinator.lock().unwrap().state() != lifecycle::Lifecycle::Resetting {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         // B arrives while A provably holds the transaction: busy.
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::Busy
         ));
         drop(lobby_gate);
@@ -3394,102 +3363,17 @@ java.lang.IllegalStateException: Could not find game version\n",
         }
         // A late reset while Launching is refused and touches nothing.
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::Busy
         ));
         parts.coordinator.lock().unwrap().launch_active();
         // Active with no latch: refused; the fresh session stays intact.
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::NotTerminal
         ));
         assert!(parts.lobby.lock().unwrap().has_baseline());
         assert!(parts.progress.lock().unwrap().baseline.is_some());
-    }
-
-    /// The Lunar-launcher quit runs exactly for a committed LUNAR session
-    /// reset - never for Forge sessions, never on refused resets.
-    #[test]
-    fn reset_quits_lunar_launcher_only_for_lunar_sessions() {
-        use std::cell::Cell;
-        let quits = Cell::new(0u32);
-        let quit = || quits.set(quits.get() + 1);
-
-        // Lunar session (baseline set, forge_session false): quit invoked.
-        let parts = SessionParts::new();
-        let home = temp_home();
-        active_with_latch(&parts, 1);
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
-            ResetReply::Ok { .. }
-        ));
-        assert_eq!(quits.get(), 1);
-
-        // Forge session: no quit.
-        let parts = SessionParts::new();
-        active_with_latch(&parts, 1);
-        parts.progress.lock().unwrap().forge_session = true;
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
-            ResetReply::Ok { .. }
-        ));
-        assert_eq!(quits.get(), 1);
-
-        // Refused resets never quit: not_terminal and busy.
-        let parts = SessionParts::new();
-        {
-            let mut c = parts.coordinator.lock().unwrap();
-            c.try_launch().unwrap();
-            c.launch_active();
-        }
-        parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
-            ResetReply::NotTerminal
-        ));
-        assert_eq!(quits.get(), 1);
-        let parts = SessionParts::new();
-        parts.coordinator.lock().unwrap().try_launch().unwrap();
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, quit),
-            ResetReply::Busy
-        ));
-        assert_eq!(quits.get(), 1);
-    }
-
-    /// DETERMINISTIC quit-overlap exclusion: the quit seam is held open
-    /// and, while it runs, the coordinator is provably still `Resetting`,
-    /// so a fresh launch cannot be admitted until termination can no
-    /// longer act.
-    #[test]
-    fn no_launch_can_be_admitted_while_the_lunar_quit_runs() {
-        use std::sync::mpsc;
-        let parts = SessionParts::new();
-        let home = temp_home();
-        active_with_latch(&parts, 1);
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let pa = parts.clone();
-        let ha = home.clone();
-        let worker = std::thread::spawn(move || {
-            reset_session_end_inner(&pa, &ha, ResetMode::Terminal, move || {
-                entered_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            })
-        });
-        entered_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("quit seam entered");
-        // The quit is mid-flight: still Resetting, launch refused.
-        assert_eq!(
-            parts.coordinator.lock().unwrap().state(),
-            lifecycle::Lifecycle::Resetting
-        );
-        assert!(parts.coordinator.lock().unwrap().try_launch().is_err());
-        release_tx.send(()).unwrap();
-        assert!(matches!(worker.join().unwrap(), ResetReply::Ok { .. }));
-        // Only after the quit finished is a fresh launch admitted.
-        assert!(parts.coordinator.lock().unwrap().try_launch().is_ok());
     }
 
     #[test]
@@ -3524,14 +3408,14 @@ java.lang.IllegalStateException: Could not find game version\n",
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join(".cobblify"), "not a dir").unwrap();
         active_with_latch(&parts, 1);
-        match reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}) {
+        match reset_session_end_inner(&parts, &home, ResetMode::Terminal) {
             ResetReply::Ok { preferences } => {
                 assert_eq!(preferences.use_external_overlay, true);
                 assert_eq!(preferences.health, preferences::PreferenceHealth::Invalid);
             }
             other => panic!("expected ok, got {other:?}"),
         }
-        match reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}) {
+        match reset_session_end_inner(&parts, &home, ResetMode::Terminal) {
             ResetReply::AlreadyReset { .. } => {}
             other => panic!("expected already_reset, got {other:?}"),
         }
@@ -3577,7 +3461,7 @@ java.lang.IllegalStateException: Could not find game version\n",
             c.launch_active();
         }
         parts.progress.lock().unwrap().baseline = Some(SystemTime::now());
-        let reply = reset_session_end_inner(&parts, &home, ResetMode::Abort, || {});
+        let reply = reset_session_end_inner(&parts, &home, ResetMode::Abort);
         assert!(matches!(reply, ResetReply::Ok { .. }));
         assert_eq!(
             parts.coordinator.lock().unwrap().state(),
@@ -3594,12 +3478,12 @@ java.lang.IllegalStateException: Could not find game version\n",
         let home = temp_home();
         parts.coordinator.lock().unwrap().try_launch().unwrap();
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Abort, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Abort),
             ResetReply::Busy
         ));
         let idle = SessionParts::new();
         assert!(matches!(
-            reset_session_end_inner(&idle, &home, ResetMode::Abort, || {}),
+            reset_session_end_inner(&idle, &home, ResetMode::Abort),
             ResetReply::AlreadyReset { .. }
         ));
     }
@@ -3615,12 +3499,12 @@ java.lang.IllegalStateException: Could not find game version\n",
         let pa = parts.clone();
         let ha = home.clone();
         let abort =
-            std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Abort, || {}));
+            std::thread::spawn(move || reset_session_end_inner(&pa, &ha, ResetMode::Abort));
         while parts.coordinator.lock().unwrap().state() != lifecycle::Lifecycle::Resetting {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &home, ResetMode::Terminal),
             ResetReply::Busy
         ));
         drop(lobby_gate);
@@ -3629,33 +3513,6 @@ java.lang.IllegalStateException: Could not find game version\n",
             parts.coordinator.lock().unwrap().state(),
             lifecycle::Lifecycle::Idle
         );
-    }
-
-    /// The abort quits Lunar for a Lunar session exactly like the terminal
-    /// reset does, and never for a Forge one.
-    #[test]
-    fn abort_quits_lunar_only_for_lunar_sessions() {
-        use std::cell::Cell;
-        let quits = Cell::new(0u32);
-        let quit = || quits.set(quits.get() + 1);
-        let home = temp_home();
-
-        let parts = SessionParts::new();
-        active_with_latch(&parts, 1);
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Abort, quit),
-            ResetReply::Ok { .. }
-        ));
-        assert_eq!(quits.get(), 1);
-
-        let parts = SessionParts::new();
-        active_with_latch(&parts, 1);
-        parts.progress.lock().unwrap().forge_session = true;
-        assert!(matches!(
-            reset_session_end_inner(&parts, &home, ResetMode::Abort, quit),
-            ResetReply::Ok { .. }
-        ));
-        assert_eq!(quits.get(), 1);
     }
 
     // ── D2b: layered launch admission ───────────────────────────────────
@@ -3964,7 +3821,7 @@ java.lang.IllegalStateException: Could not find game version\n",
         active_with_latch(&parts, 1);
         parts.progress.lock().unwrap().early_hide_fired = true;
         assert!(matches!(
-            reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal, || {}),
+            reset_session_end_inner(&parts, &temp_home(), ResetMode::Terminal),
             ResetReply::Ok { .. }
         ));
         assert!(!parts.progress.lock().unwrap().early_hide_fired);

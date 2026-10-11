@@ -59,58 +59,6 @@ pub fn run_pass_bounded(pass: impl FnOnce() + Send + 'static, bound: Duration) -
     rx.recv_timeout(bound).is_ok()
 }
 
-const DP_INIT: u8 = 0;
-const DP_CANCELLED: u8 = 1;
-const DP_COMMITTED: u8 = 2;
-
-/// Run a DESTRUCTIVE pass with a strict no-late-execution contract. The
-/// pass must call `commit` immediately before its destructive step and
-/// proceed only when it returns true. On timeout the caller cancels: a
-/// pass that has not yet committed can then NEVER act - its commit gate
-/// returns false forever. If the pass had already committed, the caller
-/// waits `grace` more for completion (destructive passes are internally
-/// bounded); only a doubly-pathological hang (committed AND blowing its
-/// own internal bounds) can leave work running past the return, and the
-/// false return reports exactly that.
-pub fn run_destructive_bounded(
-    pass: impl FnOnce(&dyn Fn() -> bool) + Send + 'static,
-    bound: Duration,
-    grace: Duration,
-) -> bool {
-    use std::sync::atomic::AtomicU8;
-    let state = Arc::new(AtomicU8::new(DP_INIT));
-    let (tx, rx) = std::sync::mpsc::channel();
-    let thread_state = Arc::clone(&state);
-    let spawned = std::thread::Builder::new()
-        .name("destructive-pass".into())
-        .spawn(move || {
-            let gate = || {
-                thread_state
-                    .compare_exchange(DP_INIT, DP_COMMITTED, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                    || thread_state.load(Ordering::SeqCst) == DP_COMMITTED
-            };
-            pass(&gate);
-            let _ = tx.send(());
-        })
-        .is_ok();
-    if !spawned {
-        return false;
-    }
-    if rx.recv_timeout(bound).is_ok() {
-        return true;
-    }
-    if state
-        .compare_exchange(DP_INIT, DP_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        // Never committed, never can: no destructive work runs after this.
-        return false;
-    }
-    // Already committed: wait out the pass's own internal bounds.
-    rx.recv_timeout(grace).is_ok()
-}
-
 /// Set every registered worker's cancel flag and wait up to `bound` for the
 /// threads to exit, reaping finished ones. Returns true when the registry
 /// drained within the bound; false leaves the cancelled stragglers
@@ -180,74 +128,6 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the caller is released at the bound, not the pass duration"
         );
-    }
-
-    #[test]
-    fn destructive_pass_commits_and_completes_on_the_fast_path() {
-        let acted = Arc::new(AtomicBool::new(false));
-        let a = Arc::clone(&acted);
-        let finished = run_destructive_bounded(
-            move |commit| {
-                if commit() {
-                    a.store(true, Ordering::SeqCst);
-                }
-            },
-            Duration::from_secs(2),
-            Duration::from_secs(2),
-        );
-        assert!(finished);
-        assert!(acted.load(Ordering::SeqCst));
-    }
-
-    /// The no-late-execution contract: a pass that has not committed when
-    /// the bound expires is refused at its gate and NEVER acts.
-    #[test]
-    fn timed_out_uncommitted_pass_can_never_act() {
-        let acted = Arc::new(AtomicBool::new(false));
-        let release = Arc::new(AtomicBool::new(false));
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let a = Arc::clone(&acted);
-        let r = Arc::clone(&release);
-        let finished = run_destructive_bounded(
-            move |commit| {
-                // Hung BEFORE the commit point (e.g. a stuck pid lookup).
-                while !r.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                if commit() {
-                    a.store(true, Ordering::SeqCst);
-                }
-                let _ = done_tx.send(());
-            },
-            Duration::from_millis(80),
-            Duration::from_millis(80),
-        );
-        assert!(!finished, "bound expired before commit");
-        release.store(true, Ordering::SeqCst);
-        done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("pass finishes after release");
-        assert!(!acted.load(Ordering::SeqCst), "gate refused: no late destruction");
-    }
-
-    /// A committed pass that runs past the bound is waited out by the
-    /// grace window rather than abandoned mid-destruction.
-    #[test]
-    fn committed_pass_is_waited_out_by_the_grace_window() {
-        let acted = Arc::new(AtomicBool::new(false));
-        let a = Arc::clone(&acted);
-        let finished = run_destructive_bounded(
-            move |commit| {
-                if commit() {
-                    std::thread::sleep(Duration::from_millis(150));
-                    a.store(true, Ordering::SeqCst);
-                }
-            },
-            Duration::from_millis(30),
-            Duration::from_secs(5),
-        );
-        assert!(finished, "completed within the grace window");
-        assert!(acted.load(Ordering::SeqCst));
     }
 
     #[test]
