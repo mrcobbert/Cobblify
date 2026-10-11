@@ -7,7 +7,8 @@
  * - A setup run (`setup://progress` snapshots): the slim bar with its under-row, the stops, Try again; the island is
  *   built one part per check.
  * - The Prism pick: the instance list over "Set up Prism"; alone on a first run, the island greyed from home.
- * - Home: Launch for the set-up clients, the launch phases and outcomes, the add-wait's under-row.
+ * - Home: Launch for the set-up clients, the launch phases and outcomes; while an added client is being installed,
+ *   Choose Your Setup over its install row, Launch paused.
  */
 import { targetOf } from "../setup-view.js";
 import { CL, uiId } from "./art.js";
@@ -186,7 +187,7 @@ function chooseSaid(status, wait) {
  *   update?: object,
  *   setup?: { snap: object, stuckAt?: number|null } | null,   the setup run the window shows
  *   wait?: string|null,      first run: the client whose install is awaited
- *   addWait?: string|null,   home: the client "Add" is waiting to be installed
+ *   addWait?: string|null,   home: the client "Add" is waiting to be installed (Launch is paused meanwhile)
  *   pick?: { picked: string|null } | null,   the Prism instance pick is up
  *   freshSetup?: boolean,    setup has just finished (the ready line)
  * }} input
@@ -249,7 +250,6 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   const other = ["lunar", "prism"].find((id) => !order.includes(id));
   const add = other ? addFor(status, other) : null;
   const base = { ...blank, solo: false, clients: order, sel, add, launching };
-  const installRow = (hero) => (addWait && hero.kind === "play" && !launching ? { kind: "install", id: addWait } : null);
 
   if (launching) {
     const hero = launchHero(sel, launch.stage);
@@ -258,6 +258,18 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   if (blocksLaunch(update)) {
     const hero = updateHero(update);
     return { ...base, hero, said: `${update.availableVersion ?? "An update"} is required to play` };
+  }
+  // Add's wait (TEST-NOTES 1, the user 2026-10-11): Launch pauses while Cobblify waits for the added client to be
+  // installed. The key is Choose Your Setup over "Install <client>" + Download, as on a first run; its menu lists the
+  // set-up clients (picking one returns to Launch for it) and the missing one (its download page again).
+  if (addWait && !order.includes(addWait)) {
+    return {
+      ...base,
+      hero: { kind: "setup" },
+      under: { kind: "install", id: addWait },
+      setupMenu: [...order, addWait].map((id) => ({ id, installed: isInstalled(status, id), ready: order.includes(id) })),
+      said: chooseSaid(status, addWait),
+    };
   }
   if (launch.prefHealth === "invalid" || launch.prefUncertain) {
     return { ...base, hero: { kind: "act", label: "Repair", act: "repair-pref" }, said: launch.prefError || "Cobblify's settings file needs repair" };
@@ -281,7 +293,7 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   if (ended) return { ...base, ...ended };
   const hero = { kind: "play" };
   const said = freshSetup ? (order.length === 1 ? "In game, Right Shift opens Cobblify's settings." : "") : `Launch Cobblify in ${CL[sel].name}`;
-  return { ...base, hero, under: installRow(hero), said };
+  return { ...base, hero, said };
 }
 
 /**

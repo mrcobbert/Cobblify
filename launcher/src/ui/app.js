@@ -141,10 +141,12 @@ export function createApp(app, actions) {
     if (!menuOpen || !H || view !== "home" || !hasMenu()) return "";
     const art = (id) => pixSh(CL[id].art, "var(--hi)", "var(--mid)", "var(--ish1,transparent)", "var(--ish2,transparent)");
     const dlMark = () => pixSh(ART.dl, "var(--mid)", null, "var(--ish1,transparent)");
-    /* nothing set up yet: the two clients, either one sets up (its download page first if it isn't installed) */
+    /* nothing set up yet: the two clients, either one sets up (its download page first if it isn't installed). Waiting
+     * for an added client's install: the set-up clients (one returns to Launch for it), then the missing one. */
     if (H.hero.kind === "setup") {
+      const label = (id) => (H.clients.length ? CL[id].name : CL[id].pick);
       return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Set up" style="--acc-q:${quarter(accentHex())}">${(H.setupMenu || [])
-        .map((c) => `<button class="mrow" role="menuitem" tabindex="-1" data-act="${c.installed ? "setup-now" : "get"}" data-id="${c.id}"${c.installed ? "" : ` aria-label="${esc(CL[c.id].name)}, download"`}><span class="tile">${art(c.id)}</span>${T(CL[c.id].pick, "sh grow")}<span class="ck">${c.installed ? "" : dlMark()}</span></button>`)
+        .map((c) => `<button class="mrow" role="menuitem" tabindex="-1" data-act="${c.ready ? "sel" : c.installed ? "setup-now" : "get"}" data-id="${c.id}"${c.installed ? "" : ` aria-label="${esc(CL[c.id].name)}, download"`}><span class="tile">${art(c.id)}</span>${T(label(c.id), "sh grow")}<span class="ck">${c.installed ? "" : dlMark()}</span></button>`)
         .join("")}</div>`;
     }
     const rows = H.clients.map((id) => `<button class="mrow" role="menuitemradio" tabindex="-1" aria-checked="${id === H.sel}" data-act="sel" data-id="${id}"><span class="tile">${art(id)}</span>${T(CL[id].name, "sh grow")}<span class="ck">${id === H.sel ? pixSh(ART.check, "var(--acc)", null, "var(--ish-ck,transparent)") : ""}</span></button>`).join("");
@@ -565,7 +567,7 @@ export function createApp(app, actions) {
     if (a === "menu") toggleMenu();
     else if (a === "play") actions.play(H.sel);
     else if (a === "cancel") actions.cancel();
-    else if (a === "sel") { menuOpen = false; toggleMenu(false); if (b.dataset.id !== H.sel) actions.select(b.dataset.id); }
+    else if (a === "sel") { menuOpen = false; toggleMenu(false); if (b.dataset.id !== H.sel || H.hero.kind === "setup") actions.select(b.dataset.id); }
     else if (a === "add-client") { toggleMenu(false); actions.add(H.add); }
     else if (a === "setup-now") { toggleMenu(false); actions.setupNow(b.dataset.id); }
     else if (a === "get") { toggleMenu(false); actions.get(b.dataset.id); }

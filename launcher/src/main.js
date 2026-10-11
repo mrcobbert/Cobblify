@@ -46,7 +46,7 @@ import { createApp } from "./ui/app.js";
 import { CL, uiId } from "./ui/art.js";
 import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
 import { setAccent, setFont, watchUnits, wordmark } from "./ui/kit.js";
-import { homeModel, isInstalled, isSetUp, prismInstances, sheetModel, stuckAfter } from "./ui/model.js";
+import { homeModel, isInstalled, isSetUp, prismInstances, setUpClients, sheetModel, stuckAfter } from "./ui/model.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -598,13 +598,16 @@ const ui = createApp(el("app"), {
     if (launchOutcome && launchOutcome.kind !== CL[id]?.kind) launchOutcome = null;
     selected = id;
     freshSetup = false;
+    // picking a set-up client drops Add's wait: Launch is back for it
+    addWait = null;
     storeClient(id);
     refreshUi();
   },
   // Choose Your Setup's installed row; settings Repair; the add row of an installed client.
   setupNow: (id) => addClient(id),
   // Choose Your Setup's row for a client that isn't installed: its download page, then wait for the install.
-  get: (id) => awaitInstall(id),
+  // Add's wait: the missing client's row opens its download page again and keeps waiting.
+  get: (id) => (addWait === id ? openDownload(id) : awaitInstall(id)),
   add: (desc) => {
     if (!desc) return;
     if (desc.installed) {
@@ -612,7 +615,7 @@ const ui = createApp(el("app"), {
       return;
     }
     // Settings' Add before anything is set up: the first run's own wait.
-    if (lastHome?.hero?.kind === "setup") {
+    if (!setUpClients(lastStatus).length) {
       awaitInstall(desc.id);
       return;
     }
@@ -811,12 +814,15 @@ async function refreshStatusQuietly() {
   }
 }
 
-/** An idle home (proto idleHome): Launch showing, nothing running, no sheet, no What's New, no setup or pick. */
+/**
+ * An idle home (proto idleHome): Launch (or Add's wait) showing, nothing running, no sheet, no What's New, no setup
+ * or pick.
+ */
 function homeIdle() {
   const s = ui.state;
   return (
     !!lastHome &&
-    lastHome.hero.kind === "play" &&
+    (lastHome.hero.kind === "play" || (addWait != null && lastHome.hero.kind === "setup")) &&
     !lastHome.launching &&
     !lastHome.under?.kind?.match(/setLunar|notLoaded/) &&
     !setupShown() &&

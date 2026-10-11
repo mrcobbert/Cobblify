@@ -359,15 +359,23 @@ test("the Prism pick from home: the normal column, the island greyed", () => {
 
 // ── add from home ──────────────────────────────────────────────────────────────────────────
 
-test("the add-wait: Install Prism + Download under Launch, only while Launch shows", () => {
+test("the add-wait: Launch pauses for Choose Your Setup over Install Prism + Download", () => {
   const m = homeModel({ status: lunarReady, selected: "lunar", addWait: "prism" });
-  assert.deepEqual(m.hero, { kind: "play" });
+  assert.deepEqual(m.hero, { kind: "setup" });
   assert.deepEqual(m.under, { kind: "install", id: "prism" });
-  assert.equal(m.said, "Launch Cobblify in Lunar Client", "home's line is unchanged");
+  assert.equal(m.solo, false, "the island stays");
+  assert.deepEqual(m.clients, ["lunar"]);
+  assert.deepEqual(m.setupMenu, [
+    { id: "lunar", installed: true, ready: true },
+    { id: "prism", installed: false, ready: false },
+  ], "the set-up client plain, the missing one with the download mark, no tick");
+  assert.equal(m.said, "Waiting for Prism Launcher to be installed. Setup starts by itself once it is.");
   const launching = homeModel({ status: lunarReady, addWait: "prism", launch: { kind: "lunar", phase: "loading", busy: true } });
   assert.equal(launching.under, null);
-  const failed = homeModel({ status: lunarReady, addWait: "prism", launch: { outcome: "not_loaded", outcomeKind: "lunar" } });
-  assert.deepEqual(failed.under, { kind: "notLoaded" }, "an outcome's row wins");
+  assert.equal(launching.hero.kind, "prog");
+  const blocked = homeModel({ status: lunarReady, addWait: "prism", update: { critical: true, state: "critical_required", availableVersion: "0.19.0" } });
+  assert.equal(blocked.hero.label, "Update to 0.19.0", "a required update still comes first");
+  assert.deepEqual(homeModel({ status: lunarReady, selected: "lunar" }).hero, { kind: "play" }, "no wait: Launch");
 });
 
 // ── settings ───────────────────────────────────────────────────────────────────────────────

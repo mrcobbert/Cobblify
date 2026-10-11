@@ -5,7 +5,7 @@ import { bootWindow } from "./test-support/window-harness.js";
 
 /**
  * Adding the other client from home, in the real window: Lunar is set up, Prism isn't installed. "Add Prism" opens
- * Prism's download page and waits (Install Prism + Download under Launch); it follows through only on an idle home
+ * Prism's download page and waits (Choose Your Setup over Install Prism + Download, Launch paused); it follows through only on an idle home
  * (not while the sheet is open). Prism then has several instances: the backend's `choose_instance` brings up the
  * pick with the most recently played preselected. Then settings: Repair re-runs Lunar's setup, Change re-picks
  * Prism's instance. One boot per file; the tests run in order.
@@ -71,15 +71,45 @@ test("the menu offers Add Prism with the download mark while Prism isn't install
   assert.ok(add.querySelector(".ck svg"), "the download mark");
 });
 
-test("Add Prism opens its download page; Launch stays, with Install Prism + Download under it", async () => {
+test("Add Prism opens its download page; Launch pauses for Choose Your Setup over Install Prism + Download", async () => {
   home.querySelector("#layer .madd").click();
   await waitFor(() => callsOf("get_launcher").length === 1, { label: "Prism's download page" });
   assert.deepEqual(callsOf("get_launcher")[0].args, { kind: "forge" });
   await waitFor(() => under()?.classList.contains("wait"), { label: "the add-wait row" });
-  assert.ok(playKey(), "Launch stays usable");
+  assert.equal(playKey(), null, "Launch is paused");
+  assert.ok(hero().classList.contains("setup"), "Choose Your Setup");
+  assert.equal($(".caret"), null, "no arrow: the whole key opens the menu");
   assert.equal(under().querySelector(".t").textContent, "Install Prism");
   under().querySelector('[data-act="download"]').click();
   await waitFor(() => callsOf("get_launcher").length === 2, { label: "the page again" });
+});
+
+test("the wait's menu: Lunar plain, Prism with the download mark and no tick; Prism opens its page again", async () => {
+  hero().click();
+  await waitFor(() => home.querySelector("#layer .menu") != null, { label: "the menu" });
+  const rows = () => [...home.querySelectorAll("#layer .mrow")];
+  assert.deepEqual(rows().map((r) => r.textContent.trim()), ["Lunar Client", "Prism Launcher"]);
+  assert.equal(rows()[0].querySelector(".ck svg"), null, "Lunar: no mark, no tick");
+  assert.ok(rows()[1].querySelector(".ck svg"), "Prism: the download mark");
+  assert.equal(rows()[1].getAttribute("aria-label"), "Prism Launcher, download");
+  rows()[1].click();
+  await waitFor(() => callsOf("get_launcher").length === 3, { label: "Prism's page again" });
+  await tick(20);
+  assert.ok(hero().classList.contains("setup"), "still waiting");
+  assert.equal(under().querySelector(".t").textContent, "Install Prism");
+});
+
+test("picking Lunar in the wait's menu returns to Launch Cobblify and drops the wait", async () => {
+  hero().click();
+  await waitFor(() => home.querySelector("#layer .menu") != null, { label: "the menu" });
+  home.querySelector('#layer .mrow[data-id="lunar"]').click();
+  await waitFor(() => playKey() != null, { label: "Launch for Lunar" });
+  assert.equal(under(), null, "the install row is gone");
+  // add again, for the follow-through below
+  $(".caret").click();
+  await waitFor(() => home.querySelector("#layer .madd") != null, { label: "the menu" });
+  home.querySelector("#layer .madd").click();
+  await waitFor(() => under()?.classList.contains("wait"), { label: "the add-wait row again" });
 });
 
 test("installed while the sheet is open: it waits, and follows through once the sheet closes", async () => {
