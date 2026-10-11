@@ -200,9 +200,14 @@ pub fn remember_exe(home: &Path, exe: &Path) -> Result<(), String> {
     write_atomic(&file, body.as_bytes())
 }
 
-/// The installed Prism. Windows: its `prismlauncher.exe` (see `find_exe_among`).
+/// The installed Prism. Windows: its `prismlauncher.exe` - the one holding the saved Cobblify
+/// instance when there is one (so its data folder, sign-in and launch all agree, review code-1
+/// I3), else see `find_exe_among`.
 #[cfg(windows)]
 pub fn find_app(home: &Path) -> Option<PathBuf> {
+    if let Some(exe) = crate::forge::saved_instance_root(home).and_then(|root| exe_owning(home, &root)) {
+        return Some(exe);
+    }
     let install = crate::win_reg::string(
         crate::win_reg::HKEY_CURRENT_USER,
         r"Software\PrismLauncher",
@@ -216,6 +221,58 @@ pub fn find_app(home: &Path) -> Option<PathBuf> {
         let _ = remember_exe(home, &exe);
     }
     Some(exe)
+}
+
+/// The Prism whose data folder holds the saved instance (review code-1 I3): a launch must go
+/// to that Prism, whichever one discovery would find first - `--launch <id>` names the
+/// instance only inside its own Prism's instances folder. The first `candidates` exe whose
+/// data folder's instances folder is `instance_root`'s parent; None when none is.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn exe_owning_with(
+    instance_root: &Path,
+    candidates: &[PathBuf],
+    appdata: Option<&Path>,
+    data_env: Option<OsString>,
+) -> Option<PathBuf> {
+    let instances = instance_root.parent()?;
+    candidates
+        .iter()
+        .filter(|exe| exe.is_file())
+        .find(|exe| {
+            windows_data_dir(Some(exe), appdata, data_env.clone())
+                .map(|data| instances_dir(&data))
+                .is_some_and(|dir| same_dir(&dir, instances))
+        })
+        .cloned()
+}
+
+/// Two folder paths name the same folder: both resolved when they exist, else compared as
+/// written (caseless on Windows, as NTFS is).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (a, b) = (norm(a), norm(b));
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// `exe_owning_with` on this machine: the saved instance's portable owner, the remembered
+/// Prism, then the standard places.
+#[cfg(windows)]
+pub fn exe_owning(home: &Path, instance_root: &Path) -> Option<PathBuf> {
+    let install = crate::win_reg::string(
+        crate::win_reg::HKEY_CURRENT_USER,
+        r"Software\PrismLauncher",
+        "InstallDir",
+    )
+    .map(PathBuf::from);
+    let mut candidates: Vec<PathBuf> = owner_of_instance(instance_root).into_iter().collect();
+    candidates.extend(remembered_exe(home));
+    candidates.extend(windows_candidates(&|k| std::env::var_os(k), install));
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    exe_owning_with(instance_root, &candidates, appdata.as_deref(), std::env::var_os("PRISMLAUNCHER_DATA_DIR"))
 }
 
 /// Prism's data folder on Windows, by Prism's own rule (`Application.cpp`): the
@@ -967,6 +1024,36 @@ pub(crate) mod tests {
         // Found through the owner, with the standard places empty, and remembered.
         let found = find_exe_among(&[], None, owner_of_instance(&inst), &|| None);
         assert_eq!(found, Some((nested.join(WIN_EXE), true)));
+    }
+
+    /// Review code-1 I3: with a portable Prism (owning the saved instance) and an installed one
+    /// (its data in %APPDATA%), a launch goes to the portable one, whatever comes first.
+    #[test]
+    fn a_saved_instance_is_launched_by_the_prism_that_holds_it() {
+        let r = tempfile::tempdir().unwrap();
+        let appdata = r.path().join("Roaming");
+        let installed = r.path().join("Local/Programs/PrismLauncher").join(WIN_EXE);
+        touch(&installed);
+        let portable_dir = r.path().join("Games/Prism");
+        let portable = portable_dir.join(WIN_EXE);
+        touch(&portable);
+        touch(&portable_dir.join("portable.txt"));
+        let saved = portable_dir.join("instances/Cobblify 1.8.9");
+        fs::create_dir_all(&saved).unwrap();
+        let both = vec![installed.clone(), portable.clone()];
+        assert_eq!(exe_owning_with(&saved, &both, Some(&appdata), None), Some(portable.clone()));
+
+        // An instance in %APPDATA%'s Prism goes to the installed one.
+        let theirs = appdata.join("PrismLauncher/instances/Mine");
+        fs::create_dir_all(&theirs).unwrap();
+        assert_eq!(exe_owning_with(&theirs, &both, Some(&appdata), None), Some(installed.clone()));
+        // A custom InstanceDir in the installed Prism's settings is followed.
+        fs::write(appdata.join("PrismLauncher").join(GLOBAL_CFG), "[General]\nInstanceDir=Elsewhere\n").unwrap();
+        let custom = appdata.join("PrismLauncher/Elsewhere/Mine");
+        fs::create_dir_all(&custom).unwrap();
+        assert_eq!(exe_owning_with(&custom, &both, Some(&appdata), None), Some(installed));
+        // Nobody holds it: None (the caller falls back to discovery).
+        assert_eq!(exe_owning_with(&r.path().join("x/instances/y"), &both, Some(&appdata), None), None);
     }
 
     /// Prism's `Application.cpp` rule, in its order.

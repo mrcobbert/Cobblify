@@ -142,23 +142,38 @@ pub fn prism_running_checked() -> Result<bool, String> {
     Ok(lunar_launcher_pid_among(&exes).is_some())
 }
 
-/// Windows: any process of this account whose executable is named `prismlauncher.exe`
+/// Windows: any process of THIS account whose executable is named `prismlauncher.exe`
 /// (caseless), wherever it was installed: an installed, Scoop or portable Prism alike.
+/// `Err` when this process's own account can't be read (the launch watch then keeps waiting).
 #[cfg(windows)]
 pub fn prism_running_checked() -> Result<bool, String> {
-    Ok(running_prism_exe().is_some())
+    own_prism_exe().map(|exe| exe.is_some())
 }
 
-/// The executable of a running Prism (see `prism_running_checked`), for finding a portable
-/// Prism that is open. Other accounts' processes have no readable path and never match.
+/// The executable of a running Prism of this account (see `prism_running_checked`), for
+/// finding a portable Prism that is open. None when there is none or it can't be told.
 #[cfg(windows)]
 pub fn running_prism_exe() -> Option<PathBuf> {
-    exe_snapshot()
+    own_prism_exe().ok().flatten()
+}
+
+/// One exe + owner snapshot; only processes whose owner is provably this process's own
+/// account count (another signed-in player's Prism is not this player's, even when an
+/// elevated Cobblify could read its path).
+#[cfg(windows)]
+fn own_prism_exe() -> Result<Option<PathBuf>, String> {
+    let system = scan_snapshot();
+    let own = system
+        .process(sysinfo::Pid::from_u32(std::process::id()))
+        .and_then(|p| p.user_id().cloned())
+        .ok_or("Cannot tell whether Prism is running.")?;
+    Ok(system
         .processes()
         .values()
-        .filter_map(|process| process.exe())
+        .filter(|p| p.user_id() == Some(&own))
+        .filter_map(|p| p.exe())
         .find(|exe| is_prism_exe(exe))
-        .map(Path::to_path_buf)
+        .map(Path::to_path_buf))
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]

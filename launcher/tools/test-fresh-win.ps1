@@ -132,6 +132,9 @@ function Run([string[]]$argv, [hashtable]$extra) {
     FRESH_HOME = $HOME_; FRESH_APPDATA = $A_; FRESH_LOCALAPPDATA = $L_; FRESH_DESKTOP = $D_
     FRESH_PROCS = $PROCS; FRESH_NO_REGISTRY = '1'; FRESH_STAMP = ('s' + [DateTime]::Now.Ticks)
     FRESH_FAIL_DST = ''; FRESH_CRASH_DST = ''; FRESH_JOURNAL_RO_DST = ''
+    # Hermetic: the machine's own Program Files, ProgramData, Scoop and Prism settings never count.
+    FRESH_PROGRAMFILES = (Join-Path $T 'PF'); FRESH_PROGRAMDATA = (Join-Path $T 'PD'); FRESH_PRISM_INSTALLDIR = ''
+    SCOOP = ''; SCOOP_GLOBAL = ''; PRISMLAUNCHER_DATA_DIR = ''
   }
   if ($extra) { foreach ($k in $extra.Keys) { $vars[$k] = $extra[$k] } }
   foreach ($k in $vars.Keys) { [Environment]::SetEnvironmentVariable($k, $vars[$k]) }
@@ -153,8 +156,15 @@ function Run([string[]]$argv, [hashtable]$extra) {
 }
 
 function OutHas([string]$re) { return [bool]((Get-Content -LiteralPath $OUT -Raw) -match $re) }
-function Stash { return @(Get-ChildItem -LiteralPath (Join-Path $HOME_ 'CobblifyStash') -Directory | Sort-Object Name | Select-Object -Last 1)[0].FullName }
+function Stash {
+  $root = Join-Path $HOME_ 'CobblifyStash'
+  if (-not (Test-Path -LiteralPath $root)) { return $null }
+  $d = @(Get-ChildItem -LiteralPath $root -Directory | Sort-Object Name | Select-Object -Last 1)
+  if ($d.Count -eq 0) { return $null }
+  return $d[0].FullName
+}
 function StateOf {
+  if (-not (Stash)) { return 'none' }
   $f = Join-Path (Stash) 'state'
   if (-not [IO.File]::Exists($f)) { return 'none' }
   return ([IO.File]::ReadAllText($f)).Trim()
@@ -330,7 +340,7 @@ try {
   icacls "$HOME_\.cobblify\private" /remove:d "$me" | Out-Null
   if ($rc -ne 0 -and (OutHas 'could not read every file')) { Ok 'aside names the unreadable folder' } else { Bad "unreadable folder accepted (exit $rc)"; Show }
   ExpectTree $before 'nothing moved'
-  $st = if (Test-Path -LiteralPath "$HOME_\CobblifyStash") { (StateOf) } else { 'none' }
+  $st = StateOf
   if ($st -ne 'active') { Ok 'no active stash left behind' } else { Bad 'stash left active' }
 
   Write-Output '== a resumed sweep still removes the folders testing created =='
@@ -392,10 +402,71 @@ try {
   $rc = Run @('aside', 'all', '--yes') @{ PRISMLAUNCHER_DATA_DIR = $outside }
   if ($rc -ne 0 -and (OutHas 'outside your user folder')) { Ok 'a Prism data folder outside the profile stops aside' } else { Bad "outside data accepted (exit $rc)"; Show }
   ExpectTree $before 'nothing moved'
-  if (-not (Test-Path -LiteralPath "$HOME_\CobblifyStash")) { Ok 'no stash made' } else { Bad 'a stash was made' }
+  if (-not (Stash)) { Ok 'no stash made' } else { Bad 'a stash was made' }
   if ((Run @('aside', 'lunar', '--yes') @{ PRISMLAUNCHER_DATA_DIR = $outside }) -eq 0) { Ok 'lunar mode does not care about Prism folders' } else { Bad 'lunar mode refused'; Show }
   if ((Run @('restore', '--yes')) -ne 0) { Bad 'restore failed'; Show }
   ExpectTree $before 'lunar-mode round trip'
+
+  Write-Output '== review code-1: paths are compared resolved, every Prism the launcher knows, any Java =='
+  Populate; $before = Tree
+  $sneaky = Join-Path $T 'Outside2\PrismData'
+  MkFile "$sneaky\accounts.json" '{}'
+  $rc = Run @('aside', 'all', '--yes') @{ PRISMLAUNCHER_DATA_DIR = "$HOME_\..\Outside2\PrismData" }
+  if ($rc -ne 0 -and (OutHas 'outside your user folder')) { Ok 'a .. path out of the profile is refused (B1)' } else { Bad "a .. path was accepted (exit $rc)"; Show }
+  ExpectTree $before 'nothing moved'
+  if (Test-Path -LiteralPath "$sneaky\accounts.json") { Ok 'the outside folder is untouched' } else { Bad 'the outside folder moved' }
+
+  Populate
+  MkFile "$HOME_\Tools\scoop\apps\prismlauncher\11.1.1\prismlauncher.exe" 'custom scoop prism'
+  MkFile "$HOME_\Tools\scoop\persist\prismlauncher\accounts.json" '{"signed":"in"}'
+  Junction "$HOME_\Tools\scoop\apps\prismlauncher\current" "$HOME_\Tools\scoop\apps\prismlauncher\11.1.1"
+  MkFile "$HOME_\Applications\Client\prismlauncher.exe" 'registry prism'
+  MkFile "$HOME_\Applications\Client\UserData\accounts.json" '{"signed":"in"}'
+  $pf = Join-Path $T 'PF'
+  MkFile "$pf\PrismLauncher\prismlauncher.exe" 'all-users prism'
+  $before = Tree
+  $extra = @{ SCOOP = "$HOME_\Tools\scoop"; FRESH_PRISM_INSTALLDIR = "$HOME_\Applications\Client" }
+  if ((Run @('aside', 'prism', '--yes') $extra) -eq 0) { Ok 'aside prism succeeds (I1)' } else { Bad 'aside prism failed'; Show }
+  if (-not (Test-Path -LiteralPath "$HOME_\Tools\scoop\apps\prismlauncher") -and -not (Test-Path -LiteralPath "$HOME_\Tools\scoop\persist\prismlauncher") -and -not (Test-Path -LiteralPath "$HOME_\Applications\Client")) {
+    Ok 'a custom Scoop Prism and a registry-recorded Prism with UserData are set aside'
+  } else { Bad 'custom Scoop or registry Prism stayed' }
+  if ((Test-Path -LiteralPath "$pf\PrismLauncher\prismlauncher.exe") -and (OutHas 'left installed, outside your user folder')) { Ok 'an all-users Prism outside the profile is left installed and named' } else { Bad 'all-users Prism handling'; Show }
+  if ((Run @('restore', '--yes') $extra) -ne 0) { Bad 'restore failed'; Show }
+  ExpectTree $before 'round trip with Scoop elsewhere and a registry Prism'
+  Remove-Item -LiteralPath "$pf\PrismLauncher" -Recurse -Force
+
+  Populate; $before = Tree
+  [IO.File]::WriteAllText($PROCS, "C:\Program Files\Eclipse Adoptium\jdk-8.0.442-hotspot\bin\javaw.exe`n", $UTF8)
+  if ((Run @('aside', 'all', '--yes')) -ne 0 -and (OutHas 'javaw')) { Ok 'any running Java stops aside (I2)' } else { Bad 'a running Java was ignored'; Show }
+  ClearProcs
+  ExpectTree $before 'nothing moved'
+
+  Write-Output '== review code-1 I4: a portable Prism installed while testing is swept =='
+  Populate; $before = Tree
+  if ((Run @('aside', 'all', '--yes')) -ne 0) { Bad 'aside failed' }
+  SimulateTesting
+  MkFile "$HOME_\Games\NewPrism\prismlauncher.exe" 'new portable'
+  MkFile "$HOME_\Games\NewPrism\portable.txt" ''
+  MkFile "$HOME_\Games\NewPrism\accounts.json" '{"signed":"in during the test"}'
+  MkFile "$HOME_\Games\NewPrism\prismlauncher.cfg" "[General]`nInstanceDir=$($HOME_.Replace('\','/'))/NewInstances"
+  MkFile "$HOME_\NewInstances\Cobblify 1.8.9\instance.cfg"
+  MkFile "$HOME_\.cobblify\prism-location.json" ('{"exe":"' + "$HOME_\Games\NewPrism\prismlauncher.exe".Replace('\','\\') + '"}')
+  if ((Run @('restore', '--yes')) -eq 0) { Ok 'restore succeeds' } else { Bad 'restore failed'; Show }
+  ExpectTree $before 'the new portable Prism, its data and its instances are gone from the profile'
+  if ((Test-Path -LiteralPath "$(Stash)\new\1\home\Games\NewPrism\accounts.json") -and (Test-Path -LiteralPath "$(Stash)\new\1\home\NewInstances")) { Ok '...and are under new\' } else { Bad 'new portable Prism not in new\' }
+
+  Write-Output '== review code-1 I6: one run at a time; never two active stashes =='
+  Populate; $before = Tree
+  [void][IO.Directory]::CreateDirectory("$HOME_\CobblifyStash")
+  $held = New-Object IO.FileStream("$HOME_\CobblifyStash\.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  try {
+    $rc = Run @('aside', 'all', '--yes')
+    if ($rc -ne 0 -and (OutHas 'another fresh-win.ps1 is running')) { Ok 'a second run waits its turn' } else { Bad "concurrent aside ran (exit $rc)"; Show }
+  } finally { $held.Dispose() }
+  ExpectTree $before 'nothing moved'
+  foreach ($n in @('a1', 'a2')) { MkFile "$HOME_\CobblifyStash\$n\state" 'active' }
+  if ((Run @('restore', '--yes')) -ne 0 -and (OutHas 'more than one stash is active')) { Ok 'two active stashes are named, not guessed between' } else { Bad 'two active stashes accepted'; Show }
+  Remove-Item -LiteralPath "$HOME_\CobblifyStash\a1", "$HOME_\CobblifyStash\a2" -Recurse -Force
 
   Write-Output "== Weave's jar is found at the home-based path, whatever %APPDATA% is =="
   Populate; $before = Tree
@@ -406,7 +477,8 @@ try {
   if ((Run @('restore', '--yes') @{ FRESH_APPDATA = $roaming }) -ne 0) { Bad 'restore failed'; Show }
   ExpectTree $before 'round trip with %APPDATA% elsewhere'
 } finally {
-  foreach ($k in @('FRESH_HOME', 'FRESH_APPDATA', 'FRESH_LOCALAPPDATA', 'FRESH_DESKTOP', 'FRESH_PROCS', 'FRESH_NO_REGISTRY', 'FRESH_STAMP')) {
+  foreach ($k in @('FRESH_HOME', 'FRESH_APPDATA', 'FRESH_LOCALAPPDATA', 'FRESH_DESKTOP', 'FRESH_PROCS', 'FRESH_NO_REGISTRY', 'FRESH_STAMP',
+                   'FRESH_PROGRAMFILES', 'FRESH_PROGRAMDATA', 'FRESH_PRISM_INSTALLDIR')) {
     [Environment]::SetEnvironmentVariable($k, $null)
   }
   try { Wipe $T } catch { Write-Output "  (could not remove $T)" }

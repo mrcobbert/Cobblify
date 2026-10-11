@@ -294,7 +294,8 @@ fn dispatch_forge(home: &Path, use_external_overlay: bool) -> Result<DispatchRes
         .filter(|n| !n.is_empty())
         .ok_or("Cannot determine the Prism instance id.")?;
 
-    let exe = forge::prism_exe();
+    // The Prism that holds this instance (Windows can have several, each with its own data).
+    let exe = forge::prism_exe_for(fresh.instance_root().as_deref());
     if !exe.is_file() {
         return Err("Prism Launcher is not installed in its standard location.".to_string());
     }

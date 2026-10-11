@@ -44,10 +44,26 @@ function EnvOr([string]$name, [string]$default) {
   if ($v) { return $v } else { return $default }
 }
 
-$HomeDir = EnvOr 'FRESH_HOME' $env:USERPROFILE
-$RoamingDir = EnvOr 'FRESH_APPDATA' $env:APPDATA
-$LocalDir = EnvOr 'FRESH_LOCALAPPDATA' $env:LOCALAPPDATA
-$DesktopDir = EnvOr 'FRESH_DESKTOP' ([Environment]::GetFolderPath('Desktop'))
+# A path with any `..` or `.` resolved, no trailing separator; $null when it isn't a usable
+# absolute path. Every containment decision below compares such paths (review code-1 B1).
+function Full([string]$p) {
+  if (-not $p) { return $null }
+  try {
+    if (-not [IO.Path]::IsPathRooted($p)) { return $null }
+    $f = [IO.Path]::GetFullPath($p)
+    if ($f.Length -gt 3) { $f = $f.TrimEnd('\') }
+    return $f
+  } catch { return $null }
+}
+
+$HomeDir = Full (EnvOr 'FRESH_HOME' $env:USERPROFILE)
+$RoamingDir = Full (EnvOr 'FRESH_APPDATA' $env:APPDATA)
+$LocalDir = Full (EnvOr 'FRESH_LOCALAPPDATA' $env:LOCALAPPDATA)
+$DesktopDir = Full (EnvOr 'FRESH_DESKTOP' ([Environment]::GetFolderPath('Desktop')))
+if (-not $DesktopDir) { $DesktopDir = Join-Path $HomeDir 'Desktop' }
+$ProgramFilesDirs = @((EnvOr 'FRESH_PROGRAMFILES' (@($env:ProgramFiles, ${env:ProgramFiles(x86)}) -join ';')).Split(';') | ForEach-Object { Full $_ } | Where-Object { $_ })
+$ProgramDataDir = Full (EnvOr 'FRESH_PROGRAMDATA' $env:ProgramData)
+if (-not $HomeDir -or -not $RoamingDir -or -not $LocalDir) { [Console]::Error.WriteLine('fresh-win: USERPROFILE, APPDATA or LOCALAPPDATA is not a usable folder'); exit 1 }
 $StartMenuDir = Join-Path $RoamingDir 'Microsoft\Windows\Start Menu\Programs'
 $STASH_ROOT = Join-Path $HomeDir 'CobblifyStash'
 $TAB = "`t"
@@ -103,31 +119,60 @@ function Inventory {
   return $items
 }
 
-# Prism folders the fixed list can't know, from what the player's machine says: the Prism
-# exe Cobblify remembered (a portable one), the data folder that Prism uses (Prism's own
-# rule: PRISMLAUNCHER_DATA_DIR, the exe's UserData folder, the exe's folder beside
-# portable.txt), and absolute InstanceDir / JavaDir settings in each known data folder's
-# prismlauncher.cfg. Marked Must: one outside the profile stops aside before anything moves.
+# Every Prism the launcher could find (prism.rs windows_candidates, plus the exe Cobblify
+# remembered), what each one uses for data (Prism's own rule: PRISMLAUNCHER_DATA_DIR, the exe's
+# UserData folder, the exe's folder beside portable.txt, else %APPDATA%\PrismLauncher) and the
+# absolute InstanceDir / JavaDir in each data folder's prismlauncher.cfg - minus what the fixed
+# list covers. App = a program folder holding no data (--data-only keeps it; one outside the
+# profile is left installed). Data outside the profile stops aside before anything moves.
 function PrismExtras {
   $found = New-Object System.Collections.Generic.List[object]
-  function AddX([string]$p, [bool]$app) { if ($p) { $found.Add([pscustomobject]@{ Group = 'prism'; Path = $p.TrimEnd('\'); App = $app; Must = $true }) } }
-  $dataDirs = @((Join-Path $RoamingDir 'PrismLauncher'), (Join-Path $HomeDir 'scoop\persist\prismlauncher'))
+  function AddX([string]$p, [bool]$app) {
+    $f = Full $p
+    if ($f) { $found.Add([pscustomobject]@{ Group = 'prism'; Path = $f; App = $app }) }
+  }
+  $exeDirs = @()
+  $dataDirs = @((Join-Path $RoamingDir 'PrismLauncher'))
   $envData = [Environment]::GetEnvironmentVariable('PRISMLAUNCHER_DATA_DIR')
   if ($envData) { AddX $envData $false; $dataDirs += $envData }
+  $installDir = [Environment]::GetEnvironmentVariable('FRESH_PRISM_INSTALLDIR')
+  if (-not $installDir -and -not [Environment]::GetEnvironmentVariable('FRESH_NO_REGISTRY')) {
+    try { $installDir = [string](Get-ItemProperty -Path 'HKCU:\Software\PrismLauncher' -Name InstallDir -ErrorAction Stop).InstallDir } catch { }
+  }
+  if ($installDir) { $exeDirs += $installDir }
+  $exeDirs += (Join-Path $LocalDir 'Programs\PrismLauncher')
+  foreach ($pf in $ProgramFilesDirs) { $exeDirs += (Join-Path $pf 'PrismLauncher') }
+  $scoops = @()
+  $scoopUser = EnvOr 'SCOOP' (Join-Path $HomeDir 'scoop')
+  $scoops += $scoopUser
+  $scoopGlobal = EnvOr 'SCOOP_GLOBAL' $(if ($ProgramDataDir) { Join-Path $ProgramDataDir 'scoop' } else { '' })
+  if ($scoopGlobal) { $scoops += $scoopGlobal }
+  # Scoop: its app folder (versions + the "current" junction) and its persisted data, known by
+  # the app folder alone (nothing is read through the junction).
+  foreach ($sc in $scoops) {
+    if ([IO.Directory]::Exists((Join-Path $sc 'apps\prismlauncher'))) {
+      AddX (Join-Path $sc 'apps\prismlauncher') $false
+      AddX (Join-Path $sc 'persist\prismlauncher') $false
+      $dataDirs += (Join-Path $sc 'persist\prismlauncher')
+    }
+  }
   $record = Join-Path $HomeDir '.cobblify\prism-location.json'
   if ([IO.File]::Exists($record)) {
     try { $exe = [string](Get-Content -LiteralPath $record -Raw | ConvertFrom-Json).exe } catch { $exe = '' }
-    if ($exe -and [IO.Path]::IsPathRooted($exe)) {
-      $dir = [IO.Path]::GetDirectoryName($exe)
-      $userData = Join-Path $dir 'UserData'
-      $portable = [IO.Directory]::Exists($userData) -or [IO.File]::Exists((Join-Path $dir 'portable.txt'))
-      # A portable Prism keeps its data in its own folder: not a program --data-only may keep.
-      AddX $dir (-not $portable)
-      if ([IO.Directory]::Exists($userData)) { $dataDirs += $userData } elseif ($portable) { $dataDirs += $dir }
-    }
+    if ($exe) { $exeDirs += [IO.Path]::GetDirectoryName($exe) }
+  }
+  foreach ($d in $exeDirs) {
+    $dir = Full $d
+    if (-not $dir -or -not [IO.File]::Exists((Join-Path $dir 'prismlauncher.exe'))) { continue }
+    $userData = Join-Path $dir 'UserData'
+    $portable = [IO.Directory]::Exists($userData) -or [IO.File]::Exists((Join-Path $dir 'portable.txt'))
+    AddX $dir (-not $portable)
+    if ([IO.Directory]::Exists($userData)) { $dataDirs += $userData } elseif ($portable) { $dataDirs += $dir }
   }
   foreach ($data in $dataDirs) {
-    $cfg = Join-Path $data 'prismlauncher.cfg'
+    $dfull = Full $data
+    if (-not $dfull) { continue }
+    $cfg = Join-Path $dfull 'prismlauncher.cfg'
     if (-not [IO.File]::Exists($cfg)) { continue }
     $general = $true
     foreach ($line in [IO.File]::ReadAllLines($cfg)) {
@@ -150,6 +195,9 @@ function PrismExtras {
   }
   return $out
 }
+
+# Inside the profile (never the profile itself), by normalized path.
+function InProfile([string]$p) { return (IsUnder $p $HomeDir) -and -not (SameText $p $HomeDir) }
 
 function GroupOfName([string]$path) {
   $n = (Split-Path -Leaf $path).ToLowerInvariant()
@@ -208,7 +256,8 @@ function Running {
             (Join-Path $HomeDir '.lunarclient'), (Join-Path $LocalDir 'Programs\PrismLauncher'),
             (Join-Path $RoamingDir 'PrismLauncher'), (Join-Path $HomeDir 'scoop\apps\prismlauncher'),
             (Join-Path $HomeDir 'scoop\persist\prismlauncher'), (Join-Path $LocalDir 'Cobblify Launcher'))
-  $names = @('Lunar Client.exe', 'prismlauncher.exe', 'cobblify-launcher.exe')
+  # Any Java program counts: Minecraft runs on whatever Java its launcher picked, from any folder.
+  $names = @('Lunar Client.exe', 'prismlauncher.exe', 'cobblify-launcher.exe', 'java.exe', 'javaw.exe')
   $procs = @()
   $fake = [Environment]::GetEnvironmentVariable('FRESH_PROCS')
   if ($fake) {
@@ -240,8 +289,8 @@ function Running {
 function RefuseIfRunning {
   $r = @(Running)
   if ($r.Count -gt 0) {
-    Die ("close these first (Lunar, Prism, their games, every Cobblify launcher; Lunar may be in the`n" +
-         "system tray - right-click its icon by the clock and quit it):`n" + ($r -join "`n"))
+    Die ("close these first (Lunar, Prism, Minecraft and any other Java program, every Cobblify launcher;`n" +
+         "Lunar may be in the system tray - right-click its icon by the clock and quit it):`n" + ($r -join "`n"))
   }
 }
 
@@ -268,11 +317,24 @@ function Startup {
 }
 
 function ActiveStash {
+  $active = @()
   foreach ($d in (Children $STASH_ROOT)) {
     $s = Join-Path $d 'state'
-    if ([IO.File]::Exists($s) -and ([IO.File]::ReadAllText($s).Trim() -eq 'active')) { return $d }
+    if ([IO.File]::Exists($s) -and ([IO.File]::ReadAllText($s).Trim() -eq 'active')) { $active += $d }
   }
+  if ($active.Count -gt 1) {
+    Die ("more than one stash is active:`n  " + ($active -join "`n  ") + "`nCheck them by hand: each holds originals.")
+  }
+  if ($active.Count -eq 1) { return $active[0] }
   return $null
+}
+
+# One aside or restore at a time (review code-1 I6): held until this run ends.
+function Lock {
+  [void][IO.Directory]::CreateDirectory($STASH_ROOT)
+  try {
+    $script:lock = New-Object IO.FileStream((Join-Path $STASH_ROOT '.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  } catch { Die 'another fresh-win.ps1 is running; let it finish first' }
 }
 
 # Where an original lives inside a stash area (items\ or new\<n>\).
@@ -578,22 +640,24 @@ function CmdAside([string[]]$argv) {
     }
   }
   if (-not $mode) { Die $usage }
+  Lock
   $s = ActiveStash
   if ($s) { Die "a stash is already active: $s. Run: fresh-win.ps1 restore" }
   RefuseIfRunning
 
   $inMode = { param($g) ($g -eq 'cobblify') -or ($g -eq $mode) -or ($mode -eq 'all' -and ($g -eq 'lunar' -or $g -eq 'prism')) }
   $extras = @(PrismExtras)
+  $leftInstalled = @()
   foreach ($x in $extras) {
-    if ((& $inMode $x.Group) -and (Exists $x.Path) -and (-not (IsUnder $x.Path $HomeDir) -or (SameText $x.Path $HomeDir))) {
-      Die ("Prism uses $($x.Path), which is outside your user folder; this tool only moves things inside it.`n" +
-           "Close Prism, move that folder aside by hand (rename it), then run aside again. Nothing was moved.")
-    }
+    if (-not (& $inMode $x.Group) -or -not (Exists $x.Path) -or (InProfile $x.Path)) { continue }
+    if ($x.App) { $leftInstalled += $x.Path; continue }
+    Die ("Prism keeps data in $($x.Path), outside your user folder; this tool only moves things inside it.`n" +
+         "Close Prism, move that folder aside by hand (rename it), then run aside again. Nothing was moved.")
   }
   $plan = @()
   foreach ($i in (@(Inventory) + $extras + @(Discover))) {
     # A path outside the profile (a Desktop redirected to another drive, say) is never moved.
-    if ($i.Group -eq 'other' -or -not (& $inMode $i.Group) -or -not (IsUnder $i.Path $HomeDir) -or (SameText $i.Path $HomeDir)) { $state = 'untouched' }
+    if ($i.Group -eq 'other' -or -not (& $inMode $i.Group) -or -not (InProfile $i.Path)) { $state = 'untouched' }
     elseif (-not (Exists $i.Path)) { $state = 'absent' }
     elseif ($dataOnly -and $i.App -and $i.Group -ne 'cobblify') { $state = 'kept' }
     else { $state = 'present' }
@@ -602,6 +666,7 @@ function CmdAside([string[]]$argv) {
   $present = @($plan | Where-Object { $_.State -eq 'present' })
   Say 'This will MOVE (not delete) these into %USERPROFILE%\CobblifyStash:'
   foreach ($p in $present) { Say "  $($p.Path)" }
+  foreach ($p in $leftInstalled) { Say "  (left installed, outside your user folder: $p - its data is set aside)" }
   if ($present.Count -eq 0) { Die 'nothing to set aside' }
   if (-not (Confirm 'Set these aside?')) { Die 'nothing was moved' }
 
@@ -665,6 +730,8 @@ function CmdAside([string[]]$argv) {
 
 function CmdRestore([string[]]$argv) {
   foreach ($a in $argv) { if ($a -eq '--yes') { $script:yes = $true } else { Die 'usage: fresh-win.ps1 restore [--yes]' } }
+  if (-not [IO.Directory]::Exists($STASH_ROOT)) { Die "no active stash under $STASH_ROOT" }
+  Lock
   $script:STASH = ActiveStash
   if (-not $script:STASH) { Die "no active stash under $STASH_ROOT" }
   RefuseIfRunning
@@ -687,12 +754,16 @@ function CmdRestore([string[]]$argv) {
     if ($r.State -eq 'absent' -and (Exists $r.Path)) { $sweep += $r.Path }
     if ($r.State -eq 'present' -and (Exists $r.Path) -and -not (Returned $r.Path) -and $pending.ContainsKey($r.Path.ToLowerInvariant())) { $sweep += $r.Path }
   }
-  foreach ($i in (Discover)) {
+  # What testing installed that the fixed list can't know: a Prism the test Cobblify remembered
+  # (read now, before its .cobblify is swept), its data and settings folders; and name discovery.
+  $outsideNew = @()
+  foreach ($i in (@(PrismExtras) + @(Discover))) {
     $want = ($i.Group -eq 'cobblify') -or ($i.Group -eq $mode) -or ($mode -eq 'all' -and ($i.Group -eq 'lunar' -or $i.Group -eq 'prism'))
-    if (-not $want) { continue }
+    if (-not $want -or -not (Exists $i.Path)) { continue }
     $known = $false
     foreach ($p in $recorded) { if (SameText $p $i.Path) { $known = $true } }
-    if (-not $known -and (IsUnder $i.Path $HomeDir) -and -not (SameText $i.Path $HomeDir)) { $sweep += $i.Path }
+    if ($known) { continue }
+    if (InProfile $i.Path) { $sweep += $i.Path } else { $outsideNew += $i.Path }
   }
 
   $failed = $false
@@ -715,6 +786,7 @@ function CmdRestore([string[]]$argv) {
   Say ''
   Say 'Restored. Every returned file matches the record taken at aside.'
   Say "Anything created while testing is in: $newdir"
+  foreach ($p in $outsideNew) { Say "Testing left this outside your user folder (not moved; remove it yourself if you don't want it): $p" }
   Say 'Login-time starters when you set things aside (re-check them):'
   foreach ($x in [IO.File]::ReadAllLines((Join-Path $script:STASH 'startup.txt'))) { if ($x) { Say "  $x" } }
   Say "Delete $($script:STASH) yourself once you are happy."

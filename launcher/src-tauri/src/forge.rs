@@ -184,6 +184,21 @@ pub fn prism_exe() -> PathBuf {
     }
 }
 
+/// The Prism to launch a saved instance with: on Windows the one whose data folder holds it
+/// (`prism::exe_owning`), else `prism_exe`. macOS has one Prism.
+pub fn prism_exe_for(instance_root: Option<&Path>) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        if let Some(exe) = instance_root.and_then(|root| crate::prism::exe_owning(&home, root)) {
+            return exe;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = instance_root;
+    prism_exe()
+}
+
 pub fn prism_installed() -> bool {
     prism_exe().is_file()
 }
