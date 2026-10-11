@@ -901,6 +901,7 @@ function launchView() {
     prefHealth: st.prefHealth,
     prefUncertain: st.prefUncertain,
     active: st.activeOutcome != null,
+    inGame: gameUp,
     showCancel: showsCancelLaunch({
       activeOutcome: st.activeOutcome,
       launchPhase: st.launchPhase,
@@ -1019,8 +1020,9 @@ function setStatus(status) {
 // ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
 // Launches never join a server: Lunar opens through the bare play link, Prism
 // without --server, and the player joins Hypixel themselves. The dashboard
-// opens only after an acknowledged live snapshot via handleLobbyPoll - not
-// from cosmetic progress alone. A progress `outcome` (wrong Lunar version,
+// opens once Cobblify reports in (progress `loaded`, or an acknowledged
+// snapshot of this game), asking the player to join Hypixel until a live
+// snapshot draws the board - never from cosmetic progress alone. A progress `outcome` (wrong Lunar version,
 // Cobblify didn't load) ends the launch back on home with that outcome.
 const PROGRESS_POLL_MS = 600;
 let progressTimer = null;
@@ -1033,11 +1035,15 @@ let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
 let manualRouteSubtitle = null;
 /**
- * Hold the home view (button narration) until the first acknowledged live
- * lobby snapshot. Set for every confirmed game dispatch; see
+ * Hold the home view (button narration, Cancel) until Cobblify reports in from
+ * this launch's game (enterGame). Set for every confirmed game dispatch; see
  * launch-view-route.js for the decision table.
  */
 let homeUntilLive = false;
+/** Cobblify reported in from this launch's game (`loaded`): the window is the dashboard, Cancel is gone. */
+let gameUp = false;
+/** Overlay off with a confirmed game: no dashboard at all, Cobblify quits once it loaded (overlay-exit.js). */
+let noDashboard = false;
 
 const connection = createConnectionModel();
 const connectionShell = createConnectionShell({
@@ -1166,6 +1172,8 @@ const sessionReset = createSessionReset({
     firstLiveSeen = false;
     manualRouteSubtitle = null;
     homeUntilLive = false;
+    gameUp = false;
+    noDashboard = false;
     suppressRefresh = false;
     progressStage = null;
     launchController.resetLaunchSession(prefs);
@@ -1237,6 +1245,7 @@ function startProgressPolling() {
         // The backend's proof that Cobblify loaded in this launch's game: the
         // overlay-off quit. The module quits exactly once across duplicate polls.
         overlayExit.onConfirmationSignal("loaded");
+        enterGame();
       }
     } catch {
       // cosmetic fail-soft
@@ -1265,6 +1274,8 @@ const launchHooks = {
     firstLiveSeen = false;
     launchController.bumpPollGen();
     const exitRoute = overlayExit.routeFor(reply.outcome);
+    noDashboard = exitRoute === "no_dashboard";
+    gameUp = false;
     if (exitRoute === "quit_now") {
       // Never-fired open-only with overlay off: the backend brought the
       // launcher forward - exit immediately after the reply. (A failed
@@ -1401,9 +1412,27 @@ async function resetFromLobby(reason) {
   return sessionReset.resetToHome(reason);
 }
 
+/**
+ * Cobblify reported in from this launch's game (TEST-NOTES 2, the user 2026-10-11): home gives way to the
+ * dashboard, which asks the player to join Hypixel until they are on it. Cancel goes with home; quitting Minecraft
+ * still returns home (the lobby poll's session end). Overlay off never shows it: Cobblify quits instead.
+ */
+function enterGame() {
+  if (gameUp || firstLiveSeen || noDashboard || sessionReset.isActive()) return;
+  if (launchController.getState().activeOutcome == null) return;
+  gameUp = true;
+  homeUntilLive = false;
+  stopProgressPolling();
+  suppressRefresh = false;
+  connectionShell.show("join");
+  stage.dataset.view = "dash";
+  refreshUi();
+}
+
 function enterDashboard() {
   connectionShell.enterConnected({ firstLive: !firstLiveSeen });
   firstLiveSeen = true;
+  gameUp = true;
   // The live snapshot the home view was held for: the marker's job is done.
   homeUntilLive = false;
   // First acknowledged live snapshot: proof Cobblify loaded, for the
@@ -1437,6 +1466,7 @@ async function handleLobbyPoll(poll) {
     setStageDash: () => {
       stage.dataset.view = "dash";
     },
+    enterGame,
   });
 }
 

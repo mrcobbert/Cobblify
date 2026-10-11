@@ -14,6 +14,7 @@ import { classifyLive, isValidLobbySnapshot } from "./lobby-validator.js";
  *   resetToHome: (reason: string) => void | Promise<void>,
  *   stopLobbyPolling: () => void,
  *   setStageDash: () => void,
+ *   enterGame?: () => void,
  *   now?: number,
  * }} deps
  */
@@ -66,10 +67,7 @@ export async function handleLobbyPoll(poll, deps) {
     deps.setStageDash();
     return;
   }
-  if (mode === "manual" && deps.manualRouteSubtitle != null) {
-    deps.connectionShell.show("manual", {
-      subtitle: deps.manualRouteSubtitle,
-    });
-    deps.setStageDash();
-  }
+  // Before the first live snapshot, an acknowledged snapshot of this game is proof Cobblify loaded (the mod writes
+  // lobby.json from the title screen on): the dashboard's Join Hypixel message (TEST-NOTES 2).
+  if (mode === "manual") deps.enterGame?.();
 }

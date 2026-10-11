@@ -1,6 +1,6 @@
 /** Interstitial copy for all connection shell modes. */
 
-/** @typedef {'manual' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed' | 'launch_aborted' | 'session_ended_resetting' | 'session_changed_resetting' | 'launch_aborted_resetting'} ConnectionMode */
+/** @typedef {'manual' | 'join' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed' | 'launch_aborted' | 'session_ended_resetting' | 'session_changed_resetting' | 'launch_aborted_resetting'} ConnectionMode */
 
 /** @type {Record<ConnectionMode, { title: string, subtitle: string, loading: boolean }>} */
 export const CONNECTION_COPY = {
@@ -9,14 +9,22 @@ export const CONNECTION_COPY = {
     subtitle: "Launch to open Lunar or Prism.",
     loading: false,
   },
+  // The game is up with Cobblify in it, and the player isn't on Hypixel: before they join, and after they leave
+  // (TEST-NOTES 2, the user 2026-10-11). Launches never join a server; the player does.
+  join: {
+    title: "Join Hypixel",
+    subtitle: "",
+    loading: false,
+  },
   connected: {
     title: "Connected",
     subtitle: "",
     loading: false,
   },
+  // Left Hypixel mid-session (title screen, another server): the same Join Hypixel message as before joining.
   disconnected: {
-    title: "Disconnected from Hypixel",
-    subtitle: "Reconnect in Minecraft to resume.",
+    title: "Join Hypixel",
+    subtitle: "",
     loading: false,
   },
   preexisting_game: {
@@ -68,7 +76,11 @@ export function connectionCopy(mode) {
   return CONNECTION_COPY[mode] ?? CONNECTION_COPY.manual;
 }
 
-const FORBIDDEN_PRE_LIVE = /Hypixel|joining|connected/i;
+/**
+ * Pre-live copy never claims a connection: it may ask the player to join Hypixel themselves ("Join Hypixel"),
+ * never say Cobblify is joining or connected.
+ */
+const FORBIDDEN_PRE_LIVE = /joining|connecting|connected|on Hypixel/i;
 
 /**
  * Route-specific manual subtitle after a launch dispatch (launches never join a server).

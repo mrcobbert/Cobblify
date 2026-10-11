@@ -89,6 +89,7 @@ function makeHarness({
   // Recorded, never silent: a stray dashboard open is exactly what the
   // home-until-live routing has to prevent.
   let dashOpens = 0;
+  let gameEntries = 0;
 
   const launchController = {
     launchGen: 1,
@@ -122,11 +123,17 @@ function makeHarness({
         setStageDash: () => {
           dashOpens += 1;
         },
+        enterGame: () => {
+          gameEntries += 1;
+        },
         now,
       });
     },
     get dashOpens() {
       return dashOpens;
+    },
+    get gameEntries() {
+      return gameEntries;
     },
     get applied() {
       return applied;
@@ -198,13 +205,24 @@ test("a confirmed launch's unavailable poll holds the home view until live", asy
   assert.equal(h.dashOpens, 0);
 });
 
-test("a confirmed launch's non-live snapshot holds the home view until live", async () => {
+test("a confirmed launch's first non-live snapshot (Cobblify loaded, title screen) enters the game: Join Hypixel", async () => {
   const h = makeHarness({ homeUntilLive: true, manualRouteSubtitle: null });
   h.connection.beginLaunchSession({ now: 0 });
   await h.poll({ kind: "snapshot", token: 1, snapshot: menuSnap() }, 100);
-  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.gameEntries, 1, "enterGame owns the dashboard's Join Hypixel message");
   assert.equal(h.dashOpens, 0);
-  assert.equal(h.applied, 0);
+  assert.equal(h.applied, 0, "no board before Hypixel");
+});
+
+test("the title screen after leaving Hypixel (inHypixel + LOBBY, no player) is not on Hypixel", async () => {
+  const h = makeHarness();
+  const titleScreen = liveSnap({ self: null, yourParty: [] });
+  await h.poll({ kind: "snapshot", token: 1, snapshot: titleScreen }, 0);
+  await h.poll({ kind: "snapshot", token: 2, snapshot: titleScreen }, 2500);
+  assert.equal(h.applied, 0, "the board is not redrawn from the title screen");
+  assert.equal(h.shell.getMode(), "disconnected");
+  assert.equal(h.subEl.textContent, "");
+  assert.equal(h.dashOpens, 1);
 });
 
 test("the live snapshot is the one dashboard entry while home-until-live", async () => {

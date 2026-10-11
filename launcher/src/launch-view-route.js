@@ -3,9 +3,10 @@
  * reply, for every (action x overlay) combination.
  *
  * The rule is one line: a confirmed game dispatch NEVER leaves the home
- * view. The launch key narrates progress and the dashboard opens only on the
- * first acknowledged live lobby snapshot (launches never join a server; the
- * player joins Hypixel themselves). The
+ * view on its own. The launch key narrates progress until Cobblify reports in
+ * (`loaded`, or an acknowledged snapshot of this game); then the dashboard asks
+ * the player to join Hypixel (launches never join a server; the player joins
+ * Hypixel themselves) and becomes the board once they are on it. The
  * two degraded outcomes keep their manual recovery screen, because that
  * screen IS the guidance ("press Play in Lunar").
  *
@@ -30,10 +31,9 @@ export function launchViewRoute(outcome) {
  * Visibility of the home-view "Cancel launch" escape control.
  *
  * It exists for exactly one window: a launch that has been dispatched but
- * has not produced a live lobby snapshot yet — the window in which quitting
- * the game used to wedge the app. `homeUntilLive` IS that window (it is
- * cleared by the first live snapshot), so once the dashboard is up the
- * control is gone. An in-flight reset already owns the surface, and an idle
+ * whose game has not reported Cobblify in yet (the progress bar).
+ * `homeUntilLive` IS that window (it is cleared once Cobblify loaded, when
+ * the dashboard takes over), so once the dashboard is up the control is gone. An in-flight reset already owns the surface, and an idle
  * home has nothing to cancel.
  *
  * @param {{ activeOutcome: object | null, launchPhase: string, homeUntilLive: boolean, resetActive: boolean }} args

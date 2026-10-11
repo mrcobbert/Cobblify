@@ -31,15 +31,21 @@ test("launch phases follow the backend's stages", () => {
   assert.deepEqual(launchHero("lunar", "attached").label, "Starting Minecraft");
   assert.deepEqual(launchHero("lunar", "discovered").label, "Loading mods");
   assert.deepEqual(launchHero("lunar", "mixing"), { kind: "prog", label: "Adding Cobblify", pct: 85 });
-  assert.deepEqual(launchHero("lunar", "settled"), { kind: "wait", label: "Join Hypixel" });
+  assert.deepEqual(launchHero("lunar", "settled"), { kind: "prog", label: "Adding Cobblify", pct: 85 });
   assert.deepEqual(launchHero("lunar", null).label, "Opening Lunar");
 });
 
-test("the game being up always reads Join Hypixel, never Joining: there is no auto-join", () => {
-  assert.deepEqual(launchHero("prism", "forge_settled"), { kind: "wait", label: "Join Hypixel" });
+test("a quiet log is no proof the game is up: home never shows Join Hypixel, the dashboard does", () => {
+  assert.deepEqual(launchHero("prism", "forge_settled"), { kind: "prog", label: "Adding Cobblify", pct: 85 });
   for (const stage of ["settled", "forge_settled"]) {
-    assert.doesNotMatch(launchHero("lunar", stage).label, /Joining/);
+    assert.doesNotMatch(launchHero("lunar", stage).label, /Hypixel|Joining/);
   }
+});
+
+test("settings lock: while launching, then during the game", () => {
+  assert.equal(sheetModel({ status: lunarReady, launch: { active: true, busy: false } }).reason, "Locked while launching");
+  assert.equal(sheetModel({ status: lunarReady, launch: { active: true, inGame: true } }).reason, "Locked during the game");
+  assert.equal(sheetModel({ status: lunarReady, launch: {} }).reason, null);
 });
 
 test("a made instance's first launch shows Downloading Minecraft at 22%", () => {

@@ -299,12 +299,14 @@ body {
   content: "";
   animation: dots 1.4s steps(4, end) infinite;
 }
-.joining[data-conn="disconnected"] .ring {
+.joining[data-conn="disconnected"] .ring,
+.joining[data-conn="join"] .ring {
   animation: none;
   border-top-color: var(--line-2);
   opacity: 0.45;
 }
-.joining[data-conn="disconnected"] .dots {
+.joining[data-conn="disconnected"] .dots,
+.joining[data-conn="join"] .dots {
   display: none;
 }
 @keyframes dots {

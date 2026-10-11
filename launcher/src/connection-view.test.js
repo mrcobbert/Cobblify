@@ -10,6 +10,17 @@ test("generic manual shell copy avoids Hypixel before live", () => {
   assert.doesNotMatch(CONNECTION_COPY.manual.subtitle, FORBIDDEN_PRE_LIVE);
 });
 
+test("the dashboard asks the player to join Hypixel, before joining and after leaving; never claims a connection", () => {
+  for (const mode of ["join", "disconnected"]) {
+    assert.equal(CONNECTION_COPY[mode].title, "Join Hypixel", mode);
+    assert.equal(CONNECTION_COPY[mode].subtitle, "", mode);
+    assert.equal(CONNECTION_COPY[mode].loading, false, mode);
+    assert.doesNotMatch(CONNECTION_COPY[mode].title, FORBIDDEN_PRE_LIVE, mode);
+  }
+  assert.match("Joining Hypixel", FORBIDDEN_PRE_LIVE);
+  assert.match("Connected to Hypixel", FORBIDDEN_PRE_LIVE);
+});
+
 test("launch-aborted copy is pre-live safe and says nothing about the network", () => {
   for (const mode of ["launch_aborted", "launch_aborted_resetting"]) {
     const copy = CONNECTION_COPY[mode];

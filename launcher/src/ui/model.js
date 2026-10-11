@@ -29,14 +29,14 @@ const N = CHECKS.length;
 const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 8", vanilla: "Downloading Minecraft 1.8.9" };
 
 /**
- * The launch key while launching. The game being up reads "Join Hypixel" (a wait): launches
- * never join a server, the player does. A Cobblify-made Prism instance's first launch shows
+ * The launch key while launching. Home holds it until Cobblify reports in (`loaded`), then the window is the
+ * dashboard, whose Join Hypixel message waits for the player (TEST-NOTES 2): a quiet log (`settled`) is no proof the
+ * game is up, so it keeps "Adding Cobblify". A Cobblify-made Prism instance's first launch shows
  * "Downloading Minecraft" (22%) between "Opening Prism" and "Starting Minecraft".
  */
 export function launchHero(id, stage) {
   if (stage === "forge_downloading") return { kind: "prog", label: "Downloading Minecraft", pct: 22 };
-  const i = STAGE_INDEX[stage] ?? 0;
-  if (i >= 4) return { kind: "wait", label: "Join Hypixel" };
+  const i = Math.min(3, STAGE_INDEX[stage] ?? 0);
   const labels = [id === "prism" ? "Opening Prism" : "Opening Lunar", "Starting Minecraft", "Loading mods", "Adding Cobblify"];
   return { kind: "prog", label: labels[i], pct: PHASE_PCT[i] };
 }
@@ -183,7 +183,8 @@ function chooseSaid(status, wait) {
  *   selected?: string|null,
  *   launch?: { kind?: string|null, phase?: string, busy?: boolean, stage?: string|null,
  *              outcome?: "wrong_version"|"not_loaded"|null, outcomeKind?: "lunar"|"forge"|null,
- *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean, showCancel?: boolean },
+ *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean, showCancel?: boolean,
+ *              inGame?: boolean },
  *   update?: object,
  *   setup?: { snap: object, stuckAt?: number|null } | null,   the setup run the window shows
  *   wait?: string|null,      first run: the client whose install is awaited
@@ -320,7 +321,7 @@ export function sheetModel({ status, launch = {}, update = {}, overlayOn = true,
   const prismSet = isSetUp(status, "prism");
   return {
     locked,
-    reason: locked ? "Locked while launching" : null,
+    reason: locked ? (launch.inGame ? "Locked during the game" : "Locked while launching") : null,
     overlay: { on: !!overlayOn, disabled: locked || overlaySaving || !!launch.prefUncertain },
     autoUpdate: { on: !!u.autoUpdateEnabled, disabled: false },
     // While the channel save is in flight the snapshot still carries the OLD channel: the switch keeps the

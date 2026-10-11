@@ -114,9 +114,14 @@ export function isOutdatedSnapshot(d) {
   return Boolean(d) && typeof d === "object" && Number.isInteger(d.v) && d.v < CONTRACT_VERSION;
 }
 
+/**
+ * live: on Hypixel in a lobby, queue or game. A Hypixel context with no player (`self` null) is the title screen
+ * after leaving Hypixel: Minecraft 1.8.9 keeps the last server's data after a disconnect, so the mod still reports
+ * inHypixel + LOBBY there. That counts as not on Hypixel (TEST-NOTES 2).
+ */
 export function classifyLive(snapshot) {
   if (!isValidLobbySnapshot(snapshot)) return "invalid";
-  if (snapshot.inHypixel === true && LIVE.has(snapshot.context)) return "live";
+  if (snapshot.inHypixel === true && LIVE.has(snapshot.context)) return snapshot.self === null ? "non_live" : "live";
   if (snapshot.inHypixel === false && snapshot.context === "MENU") return "non_live";
   return "other";
 }

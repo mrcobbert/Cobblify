@@ -320,3 +320,41 @@ test("an acknowledge that resolves after Cancel Launch committed home does not r
   assert.equal(dash.classList.contains("on"), false);
   assert.equal(dash.querySelector(".dsheet"), null);
 });
+
+// TEST-NOTES 2 (the user, 2026-10-11): once Cobblify reports in (`loaded`), home gives way to the dashboard, which
+// asks the player to join Hypixel; no Cancel there. On Hypixel the board; back on the title screen the Join Hypixel
+// message again; Minecraft quitting returns home.
+test("loaded: the dashboard's Join Hypixel message, then the board, the message again off Hypixel, home on quit", async () => {
+  replies.acknowledge_lobby_snapshot = () => ({});
+  replies.launch_lunar = () => LAUNCHED;
+  replies.launch_progress = () => ({ stage: "settled" });
+  playKey().click();
+  await waitFor(() => /Adding Cobblify/.test(heroKey()?.getAttribute("aria-label") ?? ""), { label: "settled holds the bar", timeout: 3000 });
+  assert.equal(stage.dataset.view, "home", "a quiet log is no proof: home and its bar stay");
+  assert.ok(cancelKey(), "Cancel while the bar shows");
+
+  replies.launch_progress = () => ({ stage: "settled", loaded: true });
+  await waitFor(() => stage.dataset.view === "dash", { label: "the dashboard", timeout: 3000 });
+  assert.equal(el("joining-title").textContent, "Join Hypixel");
+  assert.equal(el("joining").classList.contains("on"), true);
+  assert.equal(home.hidden, true, "home and its Cancel step aside");
+  assert.equal(dash.querySelector(".dsheet"), null, "no board before Hypixel");
+
+  replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 10 }), token: 10 });
+  await waitFor(() => dash.querySelector(".dsheet") != null, { label: "the board on Hypixel", timeout: 3000 });
+  assert.equal(el("joining").classList.contains("on"), false);
+
+  // the title screen after leaving: Minecraft keeps the server's data, so inHypixel + LOBBY with no player
+  let seq = 11;
+  replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: seq++, self: null, yourParty: [] }), token: seq });
+  await waitFor(() => el("joining").classList.contains("on") && el("joining-title").textContent === "Join Hypixel", {
+    label: "Join Hypixel again",
+    timeout: 4000,
+  });
+  assert.equal(dash.querySelector(".dsheet"), null, "the stale board is gone");
+
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  await waitFor(() => stage.dataset.view === "home" && launchable(), { label: "home after Minecraft quit", timeout: 3000 });
+  replies.lobby_state = () => ({ kind: "unavailable" });
+  replies.launch_progress = () => ({ stage: "fired" });
+});

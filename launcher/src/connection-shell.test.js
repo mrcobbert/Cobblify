@@ -186,6 +186,6 @@ test("disconnected clears roster before showing shell", () => {
   const ctx = makeShell();
   ctx.shell.enterDisconnected();
   assert.equal(ctx.rosterCleared, 1);
-  assert.equal(ctx.titleEl.textContent, "Disconnected from Hypixel");
+  assert.equal(ctx.titleEl.textContent, "Join Hypixel", "left Hypixel: the Join Hypixel message again");
   assert.equal(ctx.shell.getVisible(), true);
 });
