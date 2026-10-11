@@ -33,6 +33,8 @@ mod updater;
 mod vanilla;
 #[cfg(windows)]
 mod win_reg;
+#[cfg(windows)]
+mod win_sqlite;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

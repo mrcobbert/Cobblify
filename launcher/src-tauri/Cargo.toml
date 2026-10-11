@@ -42,6 +42,8 @@ windows-sys = { version = "0.61", features = [
   # though it is a generic access right (see src/process_liveness.rs).
   # Also MoveFileExW: prism::rename_no_replace never replaces what raced into place.
   "Win32_Storage_FileSystem",
+  # src/win_sqlite.rs: winsqlite3.dll, loaded from System32 (Lunar's profiles, read-only).
+  "Win32_System_LibraryLoader",
   "Win32_System_ProcessStatus",
   # src/win_reg.rs: read-only lookups of where an installer put Prism or Java 8.
   "Win32_System_Registry",

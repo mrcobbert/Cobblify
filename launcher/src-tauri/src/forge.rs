@@ -196,6 +196,7 @@ pub fn prism_installed() -> bool {
 /// directory would silently find nothing.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
+    #[cfg_attr(windows, allow(dead_code))]
     pub home: PathBuf,
     #[cfg_attr(not(windows), allow(dead_code))]
     pub appdata: Option<PathBuf>,

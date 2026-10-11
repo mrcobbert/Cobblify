@@ -1013,7 +1013,15 @@ impl World for ProdWorld {
         {
             crate::lunar_quit::request_lunar_quit()
         }
-        #[cfg(not(target_os = "macos"))]
+        // Windows: Lunar's own close link. Closing its window would only hide it in the tray;
+        // the link quits it. The engine then waits up to QUIT_DEADLINE and fails with Try again
+        // if Lunar is still running - it never kills it.
+        #[cfg(windows)]
+        {
+            tauri_plugin_opener::open_url(crate::launch::CLOSE_LAUNCHER, None::<&str>)
+                .map_err(|_| "Cobblify couldn't ask Lunar to quit.".to_string())
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             Err("Cobblify can't quit Lunar on this platform. Quit Lunar, then try again.".into())
         }

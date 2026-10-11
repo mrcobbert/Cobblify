@@ -2,8 +2,10 @@
 //!
 //! Weave 1.3.3 builds its mappings against the vanilla jar and reads classes out of it at run
 //! time. It looks for it only at `~/Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar`
-//! (macOS) and on the game's classpath; Lunar's classpath never has it, so without that file Weave
-//! stops the game ("Could not find vanilla jar for version 1.8.9"). The official Minecraft Launcher
+//! (macOS), `<user.home>\AppData\Roaming\.minecraft\versions\1.8.9\1.8.9.jar` (Windows: built
+//! from the home folder, not `%APPDATA%`; `FileManager.getVanillaMinecraftJar`) and on the
+//! game's classpath; Lunar's classpath never has it, so without that file Weave stops the game
+//! ("Could not find vanilla jar for version 1.8.9"). The official Minecraft Launcher
 //! puts it there the first time 1.8.9 is played in it, which is why most machines have it.
 //!
 //! When it is missing, Cobblify downloads the same file from Mojang's own server (the URL and
@@ -21,14 +23,19 @@ const URL: &str =
 const SHA1: &str = "3870888a6c3d349d3771a3e9d16c9bf5e076b908";
 const SIZE: usize = 8_461_484;
 
-/// Where Weave looks first on macOS.
+/// Where Weave looks first on this platform.
 pub fn jar_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar")
+    let folder = if cfg!(windows) {
+        "AppData/Roaming/.minecraft"
+    } else {
+        "Library/Application Support/minecraft"
+    };
+    home.join(folder).join("versions/1.8.9/1.8.9.jar")
 }
 
-/// Whether Weave will find the jar. Always true off macOS (not handled there yet).
+/// Whether Weave will find the jar. Always true off macOS and Windows (not handled there).
 pub fn present(home: &Path) -> bool {
-    !cfg!(target_os = "macos") || jar_path(home).exists()
+    !cfg!(any(target_os = "macos", windows)) || jar_path(home).exists()
 }
 
 /// Downloads the jar into place when it is missing. `Ok(true)` when it was downloaded.
@@ -121,6 +128,25 @@ mod tests {
         let short = |_: &str| Ok(BYTES[..4].to_vec());
         assert!(ensure_at(&dest, &short, &sha1(), BYTES.len()).is_err());
         assert!(!dest.exists());
+    }
+
+    /// Weave's own lookup (javap of FileManager.getVanillaMinecraftJar): home-based on Windows.
+    #[test]
+    fn the_jar_goes_where_weave_looks_on_this_platform() {
+        let home = Path::new("/h");
+        let want = if cfg!(windows) {
+            Path::new("/h/AppData/Roaming/.minecraft/versions/1.8.9/1.8.9.jar").to_path_buf()
+        } else {
+            Path::new("/h/Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar").to_path_buf()
+        };
+        assert_eq!(jar_path(home), want);
+        let dir = tempfile::tempdir().unwrap();
+        if cfg!(any(target_os = "macos", windows)) {
+            assert!(!present(dir.path()), "missing until it is there");
+            fs::create_dir_all(jar_path(dir.path()).parent().unwrap()).unwrap();
+            fs::write(jar_path(dir.path()), b"jar").unwrap();
+        }
+        assert!(present(dir.path()));
     }
 
     #[test]

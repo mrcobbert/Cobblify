@@ -18,6 +18,13 @@ use crate::preferences::{LaunchPreferencesView, LockedPrefs};
 /// `forceRecommendedVersion` only works together with them.
 pub const PLAY_BARE: &str = "lunarclient://play";
 
+/// Lunar's own graceful quit (Windows "Closing Lunar"): its deep-link handler quits the app
+/// (`app.quit()` with its closing flag set), where closing Lunar's window would only hide it
+/// in the tray. A running Lunar gets it through its single-instance forward. Never carries
+/// parameters.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const CLOSE_LAUNCHER: &str = "lunarclient://close-launcher";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOutcome {
@@ -84,10 +91,10 @@ pub fn dispatch(
 }
 
 /// Lunar starts the profile `settings.gameProfile` names, read when it starts: while it is fully
-/// quit (rarely - it stays in the Dock), make that its plain 1.8.9 profile before opening it
-/// (`lunar_profile.rs`). Best effort and silent; a running Lunar is never touched.
+/// quit (rarely - it stays in the Dock or the tray), make that its plain 1.8.9 profile before
+/// opening it (`lunar_profile.rs`). Best effort and silent; a running Lunar is never touched.
 fn select_1_8_9_if_lunar_is_quit(home: &Path) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         if crate::proc::lunar_running_checked() != Ok(false) {
             return;
@@ -100,7 +107,7 @@ fn select_1_8_9_if_lunar_is_quit(home: &Path) {
             );
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = home;
 }
 
@@ -531,6 +538,14 @@ mod tests {
         assert_eq!(PLAY_BARE, "lunarclient://play");
         assert!(!PLAY_BARE.contains('?'));
         assert!(!PLAY_BARE.contains("forceRecommendedVersion"));
+    }
+
+    /// The quit link is exactly Lunar's `close-launcher` route: nothing that could launch,
+    /// join or change a setting.
+    #[test]
+    fn the_quit_link_is_lunars_close_route_with_no_parameters() {
+        assert_eq!(CLOSE_LAUNCHER, "lunarclient://close-launcher");
+        assert!(!CLOSE_LAUNCHER.contains('?') && !CLOSE_LAUNCHER.contains('&'));
     }
 
     #[test]
