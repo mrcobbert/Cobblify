@@ -4,9 +4,11 @@
 //!   1. Prism downloads Java itself when `AutomaticJavaSwitch` AND `AutomaticJavaDownload`
 //!      are on (`Application.cpp:741-754`: each defaults to on exactly when the global
 //!      `JavaPath` is absent or empty) -> nothing to do.
-//!   2. `/usr/libexec/java_home -F -v 1.8 -a <arch>` finds a Java 8 -> pin `<home>/bin/java`
-//!      (`-F`: without it java_home silently falls back to a non-8 JVM). On Apple Silicon
-//!      x86_64 is also tried when Rosetta is present.
+//!   2. An installed Java 8 -> pin its java. macOS: `/usr/libexec/java_home -F -v 1.8 -a <arch>`
+//!      (`-F`: without it java_home silently falls back to a non-8 JVM); on Apple Silicon
+//!      x86_64 is also tried when Rosetta is present. Windows: the homes Java 8 installers
+//!      record in the registry and the vendors' default Program Files folders, each proven by
+//!      its `release` file (`java8_home`).
 //!   3. Prism's own `<JavaDir>/jre-legacy` already exists (Prism made it for another
 //!      instance) -> pin it, as Prism itself would reuse it.
 //!   4. Otherwise download Prism meta's `jre-legacy` for the arch into `<JavaDir>/jre-legacy`
@@ -17,7 +19,8 @@
 //!      existing folder; any failure removes the staging folder.
 //!
 //! "Pin" = `OverrideJavaLocation=true` + `JavaPath=<java>` in the INSTANCE's `instance.cfg`.
-//! Prism's global settings are never written.
+//! Prism's global settings are never written. The java pinned is `bin/java`, on Windows
+//! `bin\javaw.exe` (what Prism itself runs there, `JAVA_BIN`).
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -33,6 +36,8 @@ pub const JAVA8_URL: &str = "https://meta.prismlauncher.org/v1/net.minecraft.jav
 pub const JRE_NAME: &str = "jre-legacy";
 /// The largest single download accepted (the Mojang x64 runtime is ~171 MB in files).
 pub const MAX_DOWNLOAD: usize = 512 * 1024 * 1024;
+/// The java Prism runs, inside a Java home: `bin/java`; Windows `bin/javaw.exe` (no console).
+pub const JAVA_BIN: &str = if cfg!(windows) { "bin/javaw.exe" } else { "bin/java" };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
@@ -48,11 +53,13 @@ impl Arch {
             Arch::X64 => "x86_64",
         }
     }
-    /// Prism meta's `runtimeOS`.
+    /// Prism meta's `runtimeOS` on this platform.
     pub fn runtime_os(self) -> &'static str {
-        match self {
-            Arch::Arm64 => "mac-os-arm64",
-            Arch::X64 => "mac-os-x64",
+        match (cfg!(windows), self) {
+            (true, Arch::Arm64) => "windows-arm64",
+            (true, Arch::X64) => "windows-x64",
+            (false, Arch::Arm64) => "mac-os-arm64",
+            (false, Arch::X64) => "mac-os-x64",
         }
     }
 }
@@ -60,9 +67,10 @@ impl Arch {
 /// The machine facts and network the Java step needs, injected for tests.
 pub trait JavaEnv {
     fn arch(&self) -> Arch;
-    /// Rosetta 2 is installed (x86_64 Java can run on Apple Silicon).
+    /// x86_64 Java can run on this arm64 machine (Rosetta 2; Windows 11's x64 emulation).
     fn rosetta(&self) -> bool;
-    /// `java_home -F -v 1.8 -a <arch>`: a Java 8 home, or `None`.
+    /// An installed Java 8 home for `arch`, or `None` (macOS `java_home -F -v 1.8 -a <arch>`;
+    /// Windows `host_java_home`).
     fn java_home(&self, arch: Arch) -> Option<PathBuf>;
     /// One HTTPS GET, the whole body.
     fn fetch(&self, url: &str) -> Result<Vec<u8>, String>;
@@ -105,7 +113,7 @@ pub fn prism_downloads_java(data: &Path) -> bool {
 
 /// Prism's `jre-legacy` java, whether or not it exists.
 pub fn jre_legacy_java(data: &Path) -> PathBuf {
-    prism::java_dir(data).join(JRE_NAME).join("bin/java")
+    prism::java_dir(data).join(JRE_NAME).join(JAVA_BIN)
 }
 
 /// The order above, steps 1-3 decided; step 4 is `Plan::Download`.
@@ -119,7 +127,7 @@ pub fn plan(env: &dyn JavaEnv, data: &Path) -> Plan {
     }
     for arch in archs {
         if let Some(home) = env.java_home(arch) {
-            let java = home.join("bin/java");
+            let java = home.join(JAVA_BIN);
             if java.is_file() {
                 return Plan::Pin(java);
             }
@@ -203,7 +211,11 @@ fn pick_runtime(java8: &Value, env: &dyn JavaEnv) -> Result<Value, String> {
             return Ok(r);
         }
     }
-    Err("Prism has no Java 8 for this Mac.".to_string())
+    Err(if cfg!(windows) {
+        "Prism has no Java 8 for this PC.".to_string()
+    } else {
+        "Prism has no Java 8 for this Mac.".to_string()
+    })
 }
 
 /// Downloads and installs `jre-legacy`; returns its `bin/java`. Leaves nothing behind on
@@ -266,7 +278,7 @@ pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, Str
         };
         link_home(&root)?;
         set_exec_bits(&root)?;
-        if !root.join("bin/java").is_file() {
+        if !root.join(JAVA_BIN).is_file() {
             return Err("The Java 8 download has no java.".to_string());
         }
         prism::rename_no_replace(&root, &dest)
@@ -274,7 +286,7 @@ pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, Str
     })();
     let _ = fs::remove_dir_all(&work);
     result?;
-    Ok(dest.join("bin/java"))
+    Ok(dest.join(JAVA_BIN))
 }
 
 /// Writes the archive, extracts it, and strips its single top folder (as Prism's
@@ -404,9 +416,10 @@ fn stays_inside(path: &Path) -> bool {
 
 /// Prism's macOS `SymlinkTask`: when `<root>/bin/java` is missing, link every entry of the
 /// runtime's `Contents/Home` (at the root or one folder down) into the root. Relative
-/// targets, because the folder is renamed into place afterwards.
+/// targets, because the folder is renamed into place afterwards. (Windows runtimes are flat:
+/// `bin\javaw.exe` is already there.)
 fn link_home(root: &Path) -> Result<(), String> {
-    if root.join("bin/java").exists() {
+    if root.join(JAVA_BIN).exists() {
         return Ok(());
     }
     let mut home_rel = None;
@@ -540,11 +553,113 @@ pub fn host_arch() -> Arch {
 }
 
 pub fn host_rosetta() -> bool {
-    Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").exists()
+    if cfg!(windows) {
+        // Windows 11 on Arm runs x64 programs.
+        cfg!(target_arch = "aarch64")
+    } else {
+        Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").exists()
+    }
 }
 
-/// `/usr/libexec/java_home -F -v 1.8 -a <arch>`.
+/// The vendors' default install parents under Program Files (one Java home per child).
+#[cfg_attr(not(windows), allow(dead_code))]
+const VENDOR_DIRS: &[&str] = &[
+    "Java",
+    "Eclipse Adoptium",
+    "Eclipse Foundation",
+    "AdoptOpenJDK",
+    "Zulu",
+    "Amazon Corretto",
+    "BellSoft",
+    "Microsoft",
+];
+
+/// The folders one level under each vendor parent in `program_files`, sorted.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn vendor_homes(program_files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in program_files {
+        for vendor in VENDOR_DIRS {
+            let mut homes: Vec<PathBuf> = fs::read_dir(root.join(vendor))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            homes.sort();
+            out.extend(homes);
+        }
+    }
+    out
+}
+
+/// The first `candidates` home that is surely a Java 8 for `arch`: its `release` file says
+/// `JAVA_VERSION="1.8..."` and an `OS_ARCH` of that architecture, and `JAVA_BIN` exists.
+/// Nothing is run.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn java8_home(candidates: &[PathBuf], arch: Arch) -> Option<PathBuf> {
+    let arch_names: &[&str] = match arch {
+        Arch::X64 => &["amd64", "x86_64", "x64"],
+        Arch::Arm64 => &["aarch64", "arm64"],
+    };
+    candidates.iter().find(|home| {
+        let Ok(text) = fs::read_to_string(home.join("release")) else {
+            return false;
+        };
+        let value = |key: &str| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix(key)?.strip_prefix('='))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        };
+        let java8 = value("JAVA_VERSION").is_some_and(|v| v.starts_with("1.8"));
+        let right_arch = value("OS_ARCH").is_some_and(|v| arch_names.iter().any(|a| v.eq_ignore_ascii_case(a)));
+        java8 && right_arch && home.join(JAVA_BIN).is_file()
+    })
+    .cloned()
+}
+
+/// Every Java home the registry records (64-bit view): Oracle's JavaSoft keys, the Adoptium
+/// family's MSI keys, Azul's Zulu key. Read-only.
+#[cfg(windows)]
+fn registry_java_homes() -> Vec<PathBuf> {
+    use crate::win_reg::{string, subkeys, HKEY_LOCAL_MACHINE as HKLM};
+    let mut out = Vec::new();
+    for kind in ["Java Runtime Environment", "Java Development Kit"] {
+        let base = format!(r"SOFTWARE\JavaSoft\{kind}");
+        for v in subkeys(HKLM, &base) {
+            if v.starts_with("1.8") {
+                out.extend(string(HKLM, &format!(r"{base}\{v}"), "JavaHome").map(PathBuf::from));
+            }
+        }
+    }
+    for vendor in ["Eclipse Adoptium", "Eclipse Foundation", "AdoptOpenJDK"] {
+        for kind in ["JRE", "JDK"] {
+            let base = format!(r"SOFTWARE\{vendor}\{kind}");
+            for v in subkeys(HKLM, &base) {
+                if v.starts_with("8.") || v.starts_with("1.8") {
+                    out.extend(string(HKLM, &format!(r"{base}\{v}\hotspot\MSI"), "Path").map(PathBuf::from));
+                }
+            }
+        }
+    }
+    out.extend(string(HKLM, r"SOFTWARE\Azul Systems\Zulu\zulu-8", "InstallationPath").map(PathBuf::from));
+    out
+}
+
+/// macOS: `/usr/libexec/java_home -F -v 1.8 -a <arch>`. Windows: the registry's Java homes,
+/// then the vendors' Program Files folders, the first proven Java 8 (`java8_home`).
 pub fn host_java_home(arch: Arch) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut candidates = registry_java_homes();
+        let program_files: Vec<PathBuf> = ["ProgramW6432", "ProgramFiles"]
+            .iter()
+            .filter_map(|k| std::env::var_os(k).map(PathBuf::from))
+            .collect();
+        candidates.extend(vendor_homes(&program_files));
+        return java8_home(&candidates, arch);
+    }
     #[cfg(target_os = "macos")]
     {
         let out = std::process::Command::new("/usr/libexec/java_home")
@@ -560,7 +675,7 @@ pub fn host_java_home(arch: Arch) -> Option<PathBuf> {
         let home = home.trim();
         (!home.is_empty()).then(|| PathBuf::from(home))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = arch;
         None
@@ -728,10 +843,10 @@ pub(crate) mod tests {
         let java8 = serde_json::json!({
             "formatVersion": 1, "name": "Java 8", "uid": "net.minecraft.java", "version": "java8",
             "runtimes": [
-                {"name": "jre-legacy", "runtimeOS": "mac-os-x64", "downloadType": "manifest",
+                {"name": "jre-legacy", "runtimeOS": Arch::X64.runtime_os(), "downloadType": "manifest",
                  "url": "https://fixture.invalid/manifest.json",
                  "checksum": {"type": "sha1", "hash": "0000"}},
-                {"name": "jre-legacy", "runtimeOS": "mac-os-arm64", "downloadType": "archive",
+                {"name": "jre-legacy", "runtimeOS": Arch::Arm64.runtime_os(), "downloadType": "archive",
                  "url": ZIP_URL,
                  "checksum": {"type": "sha256",
                               "hash": archive_hash.map(str::to_string).unwrap_or_else(|| sha256_hex(&zip))}}
@@ -799,14 +914,14 @@ pub(crate) mod tests {
         let mut env = Stub::new(Arch::Arm64);
         let jdk = tempfile::tempdir().unwrap();
         fs::create_dir_all(jdk.path().join("bin")).unwrap();
-        fs::write(jdk.path().join("bin/java"), b"").unwrap();
+        fs::write(jdk.path().join(JAVA_BIN), b"").unwrap();
         env.homes.insert("arm64", jdk.path().to_path_buf());
 
         assert_eq!(plan(&env, d), Plan::PrismDownloads);
         assert!(env.asked.lock().unwrap().is_empty(), "java_home not consulted");
 
         auto_off(d);
-        assert_eq!(plan(&env, d), Plan::Pin(jdk.path().join("bin/java")));
+        assert_eq!(plan(&env, d), Plan::Pin(jdk.path().join(JAVA_BIN)));
 
         // No arm64 Java 8: x86_64 only with Rosetta.
         env.homes.clear();
@@ -815,7 +930,7 @@ pub(crate) mod tests {
         assert_eq!(plan(&env, d), Plan::Download);
         assert_eq!(*env.asked.lock().unwrap(), vec![Arch::Arm64]);
         env.rosetta = true;
-        assert_eq!(plan(&env, d), Plan::Pin(jdk.path().join("bin/java")));
+        assert_eq!(plan(&env, d), Plan::Pin(jdk.path().join(JAVA_BIN)));
 
         // Prism's own jre-legacy is reused before any download.
         env.homes.clear();
@@ -945,6 +1060,88 @@ pub(crate) mod tests {
         assert!(install_jre_legacy(&env, data.path()).is_err());
         let left: Vec<_> = fs::read_dir(data.path().join("java")).unwrap().flatten().collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// Mojang's flat runtimes (Windows x64/x86, Linux): no links, `JAVA_BIN` already at the
+    /// root. Every file is checked; the pinned java is `JAVA_BIN` (Windows `bin\javaw.exe`).
+    #[test]
+    fn a_flat_manifest_runtime_installs_with_its_java_where_prism_runs_it() {
+        let data = tempfile::tempdir().unwrap();
+        let mut env = Stub::new(Arch::X64);
+        let java_bytes = b"MZ fixture javaw".to_vec();
+        let dll_bytes = b"MZ fixture dll".to_vec();
+        let file = |url: &str, bytes: &[u8], exec: bool| serde_json::json!({
+            "type": "file", "executable": exec,
+            "downloads": {"raw": {"url": url, "sha1": sha1_hex(bytes), "size": bytes.len()}}});
+        let manifest = serde_json::json!({"files": {
+            "bin": {"type": "directory"},
+            JAVA_BIN: file("https://fixture.invalid/javaw", &java_bytes, true),
+            "bin/java.dll": file("https://fixture.invalid/dll", &dll_bytes, false),
+            "lib": {"type": "directory"}
+        }});
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        let java8 = serde_json::to_vec(&serde_json::json!({"runtimes": [
+            {"name": "jre-legacy", "runtimeOS": Arch::X64.runtime_os(), "downloadType": "manifest",
+             "url": "https://fixture.invalid/manifest.json",
+             "checksum": {"type": "sha1", "hash": sha1_hex(&manifest)}}]})).unwrap();
+        let index = serde_json::to_vec(&serde_json::json!({"versions": [
+            {"version": "java8", "sha256": sha256_hex(&java8)}]})).unwrap();
+        env.net.insert(INDEX_URL.into(), index);
+        env.net.insert(JAVA8_URL.into(), java8);
+        env.net.insert("https://fixture.invalid/manifest.json".into(), manifest);
+        env.net.insert("https://fixture.invalid/javaw".into(), java_bytes.clone());
+        env.net.insert("https://fixture.invalid/dll".into(), dll_bytes.clone());
+
+        let java = install_jre_legacy(&env, data.path()).unwrap();
+        assert_eq!(java, data.path().join("java/jre-legacy").join(JAVA_BIN));
+        assert_eq!(java, jre_legacy_java(data.path()), "what the next plan reuses");
+        assert_eq!(fs::read(&java).unwrap(), java_bytes);
+        assert_eq!(fs::read(data.path().join("java/jre-legacy/bin/java.dll")).unwrap(), dll_bytes);
+        assert!(data.path().join("java/jre-legacy/lib").is_dir());
+
+        // A wrong size or a wrong hash refuses the whole runtime and leaves nothing.
+        for bad in [b"MZ fixture javaw!".to_vec(), b"MZ fixture javaX".to_vec()] {
+            let data = tempfile::tempdir().unwrap();
+            env.net.insert("https://fixture.invalid/javaw".into(), bad);
+            assert!(install_jre_legacy(&env, data.path()).is_err());
+            let left: Vec<_> = fs::read_dir(data.path().join("java")).unwrap().flatten().collect();
+            assert!(left.is_empty(), "{left:?}");
+        }
+    }
+
+    /// Windows' installed-Java lookup, proven by each home's `release` file (plan-1 B2: a
+    /// Temurin 8 in its default folder counts with no registry entry).
+    #[test]
+    fn an_installed_java_8_is_proven_by_its_release_file() {
+        let pf = tempfile::tempdir().unwrap();
+        let home = |rel: &str, release: Option<&str>, java: bool| {
+            let h = pf.path().join(rel);
+            fs::create_dir_all(h.join("bin")).unwrap();
+            if let Some(r) = release {
+                fs::write(h.join("release"), r).unwrap();
+            }
+            if java {
+                fs::write(h.join(JAVA_BIN), b"").unwrap();
+            }
+            h
+        };
+        let java11 = home("Eclipse Adoptium/jdk-11.0.20-hotspot", Some("JAVA_VERSION=\"11.0.20\"\nOS_ARCH=\"x86_64\"\n"), true);
+        let x86 = home("Java/jre1.8.0_381 (x86)", Some("JAVA_VERSION=\"1.8.0_381\"\nOS_ARCH=\"x86\"\n"), true);
+        let no_java = home("Zulu/zulu-8-broken", Some("JAVA_VERSION=\"1.8.0_402\"\nOS_ARCH=\"amd64\"\n"), false);
+        let no_release = home("Java/jre-unknown", None, true);
+        let temurin = home("Eclipse Adoptium/jre-8.0.402.6-hotspot", Some("IMPLEMENTOR=\"Eclipse Adoptium\"\nJAVA_VERSION=\"1.8.0_402\"\nOS_ARCH=\"x86_64\"\n"), true);
+        let oracle = home("Java/jre1.8.0_381", Some("JAVA_VERSION=\"1.8.0_381\"\nOS_NAME=\"Windows\"\nOS_ARCH=\"amd64\"\n"), true);
+
+        let found = vendor_homes(&[pf.path().to_path_buf()]);
+        for h in [&java11, &x86, &no_java, &no_release, &temurin, &oracle] {
+            assert!(found.contains(h), "{} found by the folder scan", h.display());
+        }
+        assert_eq!(java8_home(&found, Arch::X64), Some(oracle.clone()), "the first proven one, in scan order");
+        assert_eq!(java8_home(&[java11.clone(), temurin.clone()], Arch::X64), Some(temurin.clone()));
+        assert_eq!(java8_home(&[java11.clone(), x86.clone(), no_java.clone(), no_release.clone()], Arch::X64), None);
+        assert_eq!(java8_home(&[oracle.clone()], Arch::X64), Some(oracle.clone()));
+        assert_eq!(java8_home(&[oracle], Arch::Arm64), None, "an x64 Java is not an arm64 one");
+        assert!(vendor_homes(&[pf.path().join("nowhere")]).is_empty());
     }
 
     #[test]

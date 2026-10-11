@@ -2028,12 +2028,12 @@ pub(crate) mod tests {
         let global = fs::read(rig.prism().join("prismlauncher.cfg")).unwrap();
         let jdk = rig.home.path().join("zulu-8.jdk/Contents/Home");
         fs::create_dir_all(jdk.join("bin")).unwrap();
-        fs::write(jdk.join("bin/java"), b"").unwrap();
+        fs::write(jdk.join(prism_java::JAVA_BIN), b"").unwrap();
         let world = Fake::new().with(|st| st.java_home = Some(jdk.clone()));
         assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Done);
         let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
         assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
-        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(jdk.join("bin/java")));
+        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(jdk.join(prism_java::JAVA_BIN)));
         assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance)]);
         assert_eq!(world.state().fetches, 0);
         assert_eq!(fs::read(rig.prism().join("prismlauncher.cfg")).unwrap(), global, "global settings untouched");
