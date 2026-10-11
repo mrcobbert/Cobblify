@@ -301,6 +301,50 @@ cause.
 crashes between a move and its journal entry, and a file changed while
 stashed.
 
+### A Next test build on Windows: next-build.ps1
+
+`launcher\tools\next-build.ps1 <N> -Vendor <dir>`, run on the Windows build box, is the
+twin of `next-build.sh`: "Cobblify Launcher (Next)", version `0.18.0-next.<N>`, identifier
+`club.cobblify.launcher.next` (its own single-instance lock and webview folder,
+`%LOCALAPPDATA%\club.cobblify.launcher.next`).
+
+- **Updater:** the three updater values are removed from the build's environment, and the
+  exe is searched for the update host (with a string that must be present, so the search is
+  known to work).
+- **Jars:** as on the Mac: checked against the vendor manifest and the pinned agent hash.
+- **Output:** `C:\Users\Public\CobblifyNext\<version>\` holds `Cobblify Launcher (Next).exe`
+  and `resources\` (resource resolution is relative to the exe), plus `fresh-win.ps1` one
+  folder up. Every account on the PC can read it. `-Replace` overwrites the same version.
+
+```powershell
+git push win feat/launcher-redesign          # from the Mac; the vendor dir goes over with scp
+powershell -ExecutionPolicy Bypass -File launcher\tools\next-build.ps1 11 -Vendor C:\Users\agent\cobblify-vendor
+```
+
+### Testing as a brand-new player on Windows: fresh-win.ps1
+
+`fresh-win.ps1` is `fresh-mac.sh` for Windows (PowerShell 5.1), with the same `status`,
+`aside <lunar|prism|all> [--data-only] [--yes]` and `restore [--yes]`. Run it in your own
+account with Lunar (check the system tray), Prism, their games and both launchers closed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\Public\CobblifyNext\fresh-win.ps1 status
+```
+
+- It moves Cobblify's state (`.cobblify`, `.weave`, `.bedwarsqol`, the installed launcher, its
+  webview data and shortcuts), Lunar's (both install layouts, `.lunarclient`, its AppData
+  folders, shortcuts, Weave's `.minecraft\versions\1.8.9`) and Prism's (installer and Scoop
+  installs, its data folders, shortcuts; a portable Prism Cobblify remembered; absolute
+  `InstanceDir`/`JavaDir`) into `%USERPROFILE%\CobblifyStash\<timestamp>\`, recording every
+  file first. Nothing outside your user folder is moved; a Prism folder outside it stops
+  `aside` before anything moves.
+- It never deletes. `restore` moves what testing created into `<stash>\new\`, returns the
+  originals and checks every file. It can be re-run after a crash or a failure.
+- It records login-time starters (the Run key, the Startup folder) for you to re-check, and
+  never writes the registry. A reinstalled Lunar or Prism re-registers its own links.
+
+`launcher\tools\test-fresh-win.ps1` runs it against a fake profile in `%TEMP%`.
+
 ## Ship it
 
 ```sh
