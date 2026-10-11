@@ -1011,7 +1011,7 @@ impl World for ProdWorld {
     fn quit_lunar(&self) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            crate::hide::request_lunar_quit()
+            crate::lunar_quit::request_lunar_quit()
         }
         #[cfg(not(target_os = "macos"))]
         {

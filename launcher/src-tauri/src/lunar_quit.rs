@@ -1,8 +1,7 @@
 //! Politely quitting Lunar's launcher, for setup's "Closing Lunar": Lunar must be quit before
 //! Cobblify writes its `launcher.json`.
 //!
-//! Cobblify never hides, minimises or quits a Lunar window anywhere else (the hide in the
-//! snippet below is the one exception, and goes next).
+//! Cobblify never hides, minimises or quits a Lunar window anywhere else.
 //!
 //! Identity is verified twice before anything is asked to quit: the pid comes from
 //! `proc::lunar_launcher_pid()` (exact executable-path match) and the JXA snippet re-checks
@@ -60,12 +59,12 @@ fn terminate_pass(pid: u32) -> Option<u32> {
 
 /// `pid` is an integer straight from sysinfo - no injection surface.
 ///
-/// Enumerates Lunar's bundle-matched applications and hides then terminates ONLY the entry whose pid
+/// Enumerates Lunar's bundle-matched applications and terminates ONLY the entry whose pid
 /// equals the exe-verified one. (`runningApplicationWithProcessIdentifier` returns nil for
 /// EVERY process via this bridge - measured against a live Lunar pid and against Finder.)
 fn terminate_snippet(pid: u32) -> String {
     format!(
-        r#"ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.moonsworth.client"); let n = 0; for (let i = 0; i < a.count; i++) {{ const p = a.objectAtIndex(i); if (p.processIdentifier === {pid}) {{ p.hide; p.terminate; n = 1; }} }} n"#
+        r#"ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.moonsworth.client"); let n = 0; for (let i = 0; i < a.count; i++) {{ const p = a.objectAtIndex(i); if (p.processIdentifier === {pid}) {{ p.terminate; n = 1; }} }} n"#
     )
 }
 
@@ -87,14 +86,13 @@ mod tests {
         assert_eq!(parse_count(&[0xFF, 0xFE]), None);
     }
 
-    /// The quit snippet hides BEFORE it terminates and still acts on nothing but the exact
-    /// exe-verified pid.
+    /// The quit snippet only terminates - it never hides - and still acts on nothing but the
+    /// exact exe-verified pid.
     #[test]
-    fn the_quit_snippet_hides_before_it_terminates_and_keeps_the_pid_guard() {
+    fn the_quit_snippet_terminates_without_hiding_and_keeps_the_pid_guard() {
         let s = terminate_snippet(4242);
-        let hide = s.find("p.hide").expect("the quit snippet hides");
-        let terminate = s.find("p.terminate").expect("the quit snippet terminates");
-        assert!(hide < terminate, "hide must precede terminate");
+        assert!(!s.contains("hide"), "the quit snippet never hides");
+        assert!(s.contains("p.terminate"), "the quit snippet terminates");
         assert!(s.contains("p.processIdentifier === 4242"), "pid guard kept");
         assert!(s.contains("com.moonsworth.client"), "bundle-id gate kept");
     }

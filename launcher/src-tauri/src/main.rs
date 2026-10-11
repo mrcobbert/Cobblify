@@ -14,13 +14,13 @@ mod lifecycle;
 mod lobby;
 mod preferences;
 mod process_liveness;
-#[cfg(target_os = "macos")]
-mod hide;
 mod install;
 mod nojoin;
 mod lunar_config;
 mod lunar_detect;
 mod lunar_profile;
+#[cfg(target_os = "macos")]
+mod lunar_quit;
 mod open_info;
 mod prism;
 mod prism_java;
