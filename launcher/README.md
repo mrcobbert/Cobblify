@@ -60,15 +60,12 @@ link parameter that picks a version without also joining a server, so the
 version is read at launch from the fresh Weave log instead: a Lunar that is not
 on 1.8.9 ends the launch with "Set Lunar to 1.8.9" + Open.
 
-`open -g` avoids stealing focus, and a background worker then hides the
-launcher window outright: it polls for the launcher by exact executable path
-(`proc::lunar_launcher_pid()` - the game JVM can never match), then runs an
-`osascript` JXA `NSRunningApplication.hide()` against that one pid,
-re-verifying the pid's bundle id before acting. One hide plus two
-confirmations, at most three osascript spawns per launch. Measured on this
-machine: Lunar shows its window once and never fights the hide, and
-`hide()` needs no TCC permission. The whole hide layer is fail-soft - if
-any of it breaks, the launch still works, just with a visible launcher.
+`open -g` avoids stealing focus. Cobblify never hides, minimises or re-hides a
+Lunar or Prism window, on macOS or Windows. Lunar hides its own launcher when
+the game starts (unless its "Launcher visibility on Game Launch" setting is Keep
+Open) and shows it again when the game exits. Lunar stays open after a game;
+Cobblify quits it only where it must write `launcher.json` - setup's "Closing
+Lunar", a polite quit (`lunar_quit.rs`).
 
 Before writing it:
 
@@ -429,28 +426,13 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 
 - The game boots whatever version profile is ACTIVE in Lunar. A 1.8.9
   profile merely existing is not enough; it must be the selected one.
-- Lunar's login and update windows still appear when Lunar needs them.
-  "Hidden" covers the ordinary launcher window, which appears once and is
-  hidden within about a second of being sighted.
-- The hide worker lives inside the Cobblify process. Quitting Cobblify
-  right after clicking kills the worker - the launch still completes, with
-  the launcher left visible.
+- Lunar's login and update windows appear when Lunar needs them, and
+  Cobblify leaves every Lunar and Prism window where it is.
 - The button disables for the rest of the session after a successful
   dispatch (a second play request mid-boot has no defined meaning);
   reopening Cobblify resets it.
-- Windows hides differently, because it has to. There is no app-level hide,
-  so `hide_windows.rs` walks the top-level windows and acts per window:
-  Lunar launcher windows (every process running `Lunar Client.exe` under
-  `%LOCALAPPDATA%\Programs` - Electron helpers share that path) are
-  MINIMIZED, and the game JVM's console window, when Lunar starts the game
-  on `java.exe` rather than `javaw.exe`, is hidden outright. A console
-  window is owned by `conhost.exe`, so its pid proves nothing; ownership
-  comes from `AttachConsole(game pid)` + `GetConsoleWindow` instead. The
-  Minecraft window is never a target. Each window is acted on at most three
-  times, so restoring one from the taskbar ends the argument - that is the
-  escape hatch for a login or update window caught in the sweep. The sweep
-  runs for 150 s (a cold start reaches the JVM long after the click) or
-  until nothing Lunar-shaped is running.
+- On Windows, when Lunar starts the game on `java.exe` rather than
+  `javaw.exe`, the game's console window stays on screen.
 - The deep link goes through ShellExecute on Windows (never `cmd /C start` -
   it breaks on `&` and flashes a console).
 - The Windows exe is linked into the GUI subsystem
@@ -469,8 +451,7 @@ launcher/
                   island3d.js (three.js island), kit.js, tokens.css, fonts/
   src-tauri/
     src/main.rs         startup sequence + the two commands
-    src/hide.rs         post-launch launcher hiding, macOS - fail-soft, pid-targeted
-    src/hide_windows.rs the same job on Windows, per top-level window
+    src/lunar_quit.rs   setup's polite Lunar quit ("Closing Lunar"), macOS - pid-targeted
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification: global fail-closed, per-target isolated
     src/install.rs      stage_verified + commit, the atomic jar primitive

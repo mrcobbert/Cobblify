@@ -49,20 +49,16 @@ Quit Lunar Client first, then open Cobblify Launcher. It will:
 
 FORGE: Cobblify lists compatible Prism instances. You need Prism with a
 Minecraft 1.8.9 + Forge 11.15.1.2318 instance already made. Click Set up
-once; Launch Forge then starts it, hides Prism and joins Hypixel.
+once; Launch Forge then starts it and joins Hypixel.
 
 If you already had an older Cobblify jar in there, it gets moved aside
 rather than deleted - Forge refuses to start if two copies are present.
 The launcher tells you the exact file and its new name.
 
 Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself -
-you never touch the Lunar launcher window. Cobblify hides it for you;
-Lunar keeps running in the background, which is normal.
-
-Give Cobblify a few seconds after clicking before you quit it - the
-hiding happens from inside Cobblify. If you close it the instant you
-click, the Lunar window may stay on screen (the game still launches
-fine either way).
+you never touch the Lunar launcher window. Cobblify never hides it;
+Lunar hides its own window when the game starts and shows it again
+when the game closes. Lunar keeps running, which is normal.
 
 The very first time, Lunar may ask you to log in - that window is real,
 log in like you always do. Same goes for Lunar updates.
