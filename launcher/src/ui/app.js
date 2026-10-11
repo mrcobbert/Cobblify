@@ -11,7 +11,7 @@
  *          retrySetup(), repairSetup(id), setupPrism(), pick(instanceId), change(), refresh(), repairPref(),
  *          update(action), setOverlay(on), setAutoUpdate(on), setDev(on), repairLunar(), idle()
  */
-import { shade, wordmark } from "./kit.js";
+import { KEY_WHITE, keyVars, shade, wordmark } from "./kit.js";
 import { ART, CL, T, esc, pix, pixSh, quarter, trimArt } from "./art.js";
 import { channelOf, fmtDate, noteFor, whatsNewItems } from "./notes.js";
 import NOTES from "../release-notes.json";
@@ -69,9 +69,9 @@ export function createApp(app, actions) {
       - 0.0040720468 * Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
   };
   const accentHex = () => win.getComputedStyle(root).getPropertyValue("--acc").trim() || "#C0DCFF";
+  /* the hero keys are always White (TEST-NOTES 3), so their ink is White's, never the accent's */
   function heroInk() {
-    const st = win.getComputedStyle(root);
-    const acc = accentHex(), on = (st.getPropertyValue("--acc-on").trim() || "#121212").toUpperCase();
+    const acc = KEY_WHITE, on = keyVars()["--key-on"].toUpperCase();
     const light = on !== "#121212", shadow = light && isMC();
     const ink = shadow ? "#FFFFFF" : on, ink2 = shade(acc, (okL(ink) - okL(acc)) / 2, light ? 0.9 : 0.8).toUpperCase();
     return `--ink:${ink};--ink2:${ink2};--ink-sh:${shadow ? quarter(ink) : "transparent"};--ink2-sh:${shadow ? quarter(ink2) : "transparent"}`;
@@ -145,14 +145,14 @@ export function createApp(app, actions) {
      * for an added client's install: the set-up clients (one returns to Launch for it), then the missing one. */
     if (H.hero.kind === "setup") {
       const label = (id) => (H.clients.length ? CL[id].name : CL[id].pick);
-      return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Set up" style="--acc-q:${quarter(accentHex())}">${(H.setupMenu || [])
+      return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Set up" style="--acc-q:${quarter(KEY_WHITE)}">${(H.setupMenu || [])
         .map((c) => `<button class="mrow" role="menuitem" tabindex="-1" data-act="${c.ready ? "sel" : c.installed ? "setup-now" : "get"}" data-id="${c.id}"${c.installed ? "" : ` aria-label="${esc(CL[c.id].name)}, download"`}><span class="tile">${art(c.id)}</span>${T(label(c.id), "sh grow")}<span class="ck">${c.installed ? "" : dlMark()}</span></button>`)
         .join("")}</div>`;
     }
     const rows = H.clients.map((id) => `<button class="mrow" role="menuitemradio" tabindex="-1" aria-checked="${id === H.sel}" data-act="sel" data-id="${id}"><span class="tile">${art(id)}</span>${T(CL[id].name, "sh grow")}<span class="ck">${id === H.sel ? pixSh(ART.check, "var(--acc)", null, "var(--ish-ck,transparent)") : ""}</span></button>`).join("");
     const a = H.add;
     const add = a ? `<div class="mdiv" role="separator"></div><button class="mrow madd" role="menuitem" tabindex="-1" data-act="add-client"${a.installed ? "" : ` aria-label="Add ${esc(CL[a.id].short)}, download"`}><span class="tile add">${pixSh(ART.plus, "currentColor", null, "var(--ish1,transparent)")}</span>${T("Add " + CL[a.id].short, "grow")}<span class="ck">${a.installed ? "" : dlMark()}</span></button>` : "";
-    return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Clients" style="--acc-q:${quarter(accentHex())}">${rows}${add}</div>`;
+    return `<div class="menu" id="client-menu" role="menu" tabindex="-1" aria-label="Clients" style="--acc-q:${quarter(KEY_WHITE)}">${rows}${add}</div>`;
   }
   /* the menu exists only while a key opens it: Launch's arrow, or the whole Choose Your Setup key */
   const hasMenu = () => !!H && !H.launching && (H.hero.kind === "play" || H.hero.kind === "setup");

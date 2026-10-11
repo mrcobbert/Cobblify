@@ -72,8 +72,18 @@ export function accentVars(hex) {
   };
 }
 
+/**
+ * The Launch key's colour: always the game's White accent (accent.js ACCENTS.white), whatever accent is set (TEST-NOTES 3,
+ * the user 2026-10-11). Its shades are `--key*`, beside the accent's `--acc*`; app.css points the hero keys, their
+ * progress fill, the menu's tick and the gear's dot at them. The wool and the settings keep the accent.
+ */
+export const KEY_WHITE = "#E6E6E6";
+export function keyVars() {
+  return Object.fromEntries(Object.entries(accentVars(KEY_WHITE)).map(([k, v]) => ["--key" + k.slice(5), v]));
+}
+
 export function setAccent(hex, root = document.documentElement) {
-  const vars = accentVars(hex);
+  const vars = { ...accentVars(hex), ...keyVars() };
   for (const k in vars) root.style.setProperty(k, vars[k]);
   root.dispatchEvent(new root.ownerDocument.defaultView.CustomEvent("cobblify:theme", { bubbles: true }));
 }

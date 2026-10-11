@@ -447,3 +447,10 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .heros{position:relative}
 /* under a full-height key (the install wait, Set Lunar to 1.8.9, Cobblify didn't load): the same row, lower */
 .heros>.under.wait{top:calc(29*var(--su))}
+
+/* ---------- the Launch key is always White (TEST-NOTES 3, the user 2026-10-11) ---------- */
+/* Every hero key in every face (Launch and its arrow, Choose Your Setup, Try again, Repair, Update, the setup and update
+   bars), the client menu's tick and the gear's update dot wear the game's White (kit.js KEY_WHITE, --key*), whatever
+   accent is set. The island's wool and the settings sheet keep the accent. */
+.hero,.caret,.mrow .ck,.hdr .key.gear .gdot{--acc:var(--key);--acc-hl:var(--key-hl);--acc-ln:var(--key-ln);--acc-dp:var(--key-dp);
+  --acc-rim:var(--key-rim);--acc-sh:var(--key-sh);--acc-sh2:var(--key-sh2);--acc-on:var(--key-on)}
