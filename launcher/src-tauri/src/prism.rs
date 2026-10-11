@@ -3,8 +3,13 @@
 //! * Installed: `Prism Launcher.app` in `/Applications` or `~/Applications`, else - only when
 //!   neither holds it - wherever Spotlight knows Prism's bundle id (an app left in Downloads,
 //!   say), with `lunar_detect`'s rules for which registrations count.
-//! * Data: `~/Library/Application Support/PrismLauncher`; instances under its `InstanceDir`
-//!   (`prismlauncher.cfg`, default `instances`), Java downloads under `JavaDir` (`java`).
+//!   Windows: `prismlauncher.exe` in the folder the installer recorded, its default per-user
+//!   folder, an all-users copy, or Scoop; else the Prism Cobblify remembered, the portable Prism
+//!   owning the saved instance, or - the stand-in for Spotlight - a running `prismlauncher.exe`
+//!   (`find_exe_among`).
+//! * Data: `~/Library/Application Support/PrismLauncher`; Windows: Prism's own rule
+//!   (`windows_data_dir`). Instances under its `InstanceDir` (`prismlauncher.cfg`, default
+//!   `instances`), Java downloads under `JavaDir` (`java`).
 //! * Signed in: `accounts.json` (formatVersion 3) has an ACTIVE, non-Offline account whose
 //!   `entitlement.ownsMinecraft` is true - what `--launch` needs to raise no account dialog.
 //! * Made instance: "Cobblify 1.8.9", written in the exact shape Prism 11 saves, staged under
@@ -21,6 +26,7 @@
 //! Prism's global settings (`prismlauncher.cfg`) are read, never written.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -90,6 +96,146 @@ fn find_app_among(candidates: &[PathBuf], lookup: &dyn Fn() -> Vec<PathBuf>) -> 
             .into_iter()
             .find(|app| crate::lunar_detect::usable_registration(app) && app.join(BUNDLE_EXE).is_file())
     })
+}
+
+/// Prism's executable in a Windows install folder.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WIN_EXE: &str = "prismlauncher.exe";
+/// The install folder's name (the installer's `Launcher_CommonName`).
+#[cfg_attr(not(windows), allow(dead_code))]
+const WIN_DIR: &str = "PrismLauncher";
+/// Where Cobblify remembers a Prism found outside the standard places (Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+const REMEMBERED: &str = ".cobblify/prism-location.json";
+
+/// The standard places a Windows Prism lives, in order: the folder the installer recorded
+/// (`HKCU\Software\PrismLauncher\InstallDir`, passed in), the installer's default per-user
+/// folder, all-users copies, then Scoop's current version (the user's Scoop, then the global
+/// one). `var` reads an environment variable; unusable (empty or relative) values are skipped.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn windows_candidates(var: &dyn Fn(&str) -> Option<OsString>, install_dir: Option<PathBuf>) -> Vec<PathBuf> {
+    let path = |k: &str| {
+        var(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let mut dirs: Vec<PathBuf> = install_dir.filter(|p| p.is_absolute()).into_iter().collect();
+    dirs.extend(path("LOCALAPPDATA").map(|l| l.join("Programs").join(WIN_DIR)));
+    for k in ["ProgramFiles", "ProgramFiles(x86)"] {
+        dirs.extend(path(k).map(|p| p.join(WIN_DIR)));
+    }
+    let scoop_user = path("SCOOP").or_else(|| path("USERPROFILE").map(|h| h.join("scoop")));
+    let scoop_global = path("SCOOP_GLOBAL").or_else(|| path("ProgramData").map(|d| d.join("scoop")));
+    for scoop in [scoop_user, scoop_global].into_iter().flatten() {
+        dirs.push(scoop.join("apps").join("prismlauncher").join("current"));
+    }
+    dirs.into_iter().map(|d| d.join(WIN_EXE)).collect()
+}
+
+/// The portable Prism that owns a saved instance folder, by Prism's portable layouts: the
+/// instances folder sits in the data folder, which is the exe's own folder (`portable.txt`)
+/// or its `UserData` subfolder. None when no exe is there (an installed Prism, or a custom
+/// `InstanceDir`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn owner_of_instance(instance_root: &Path) -> Option<PathBuf> {
+    let data = instance_root.parent()?.parent()?;
+    let beside = data.join(WIN_EXE);
+    if beside.is_file() && data.join("portable.txt").is_file() {
+        return Some(beside);
+    }
+    let is_user_data = data
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("UserData"));
+    data.parent()
+        .filter(|_| is_user_data)
+        .map(|dir| dir.join(WIN_EXE))
+        .filter(|exe| exe.is_file())
+}
+
+/// The Windows lookup with every source injected: the first standard candidate that exists,
+/// else the remembered exe, else the saved instance's portable owner, else a running Prism
+/// (`running` is asked only then). The flag says the find should be remembered: it came from
+/// the owner or the running process and is not already the remembered one.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn find_exe_among(
+    standard: &[PathBuf],
+    remembered: Option<PathBuf>,
+    owner: Option<PathBuf>,
+    running: &dyn Fn() -> Option<PathBuf>,
+) -> Option<(PathBuf, bool)> {
+    if let Some(exe) = standard.iter().find(|e| e.is_file()) {
+        return Some((exe.clone(), false));
+    }
+    let remembered = remembered.filter(|e| e.is_file());
+    if let Some(exe) = remembered.clone() {
+        return Some((exe, false));
+    }
+    owner
+        .filter(|e| e.is_file())
+        .or_else(|| running().filter(|e| e.is_file()))
+        .map(|exe| {
+            let new = remembered.as_ref() != Some(&exe);
+            (exe, new)
+        })
+}
+
+/// The exe Cobblify remembered, if the record is readable.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn remembered_exe(home: &Path) -> Option<PathBuf> {
+    let v: serde_json::Value = serde_json::from_slice(&fs::read(home.join(REMEMBERED)).ok()?).ok()?;
+    v.get("exe")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Records `exe` as the Prism to find next time (Cobblify's own state, never Prism's).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn remember_exe(home: &Path, exe: &Path) -> Result<(), String> {
+    let file = home.join(REMEMBERED);
+    let dir = file.parent().ok_or("No folder for the Prism record.")?;
+    fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    let body = serde_json::json!({ "exe": exe.to_string_lossy() }).to_string();
+    write_atomic(&file, body.as_bytes())
+}
+
+/// The installed Prism. Windows: its `prismlauncher.exe` (see `find_exe_among`).
+#[cfg(windows)]
+pub fn find_app(home: &Path) -> Option<PathBuf> {
+    let install = crate::win_reg::string(
+        crate::win_reg::HKEY_CURRENT_USER,
+        r"Software\PrismLauncher",
+        "InstallDir",
+    )
+    .map(PathBuf::from);
+    let standard = windows_candidates(&|k| std::env::var_os(k), install);
+    let owner = crate::forge::saved_instance_root(home).and_then(|r| owner_of_instance(&r));
+    let (exe, remember) = find_exe_among(&standard, remembered_exe(home), owner, &crate::proc::running_prism_exe)?;
+    if remember {
+        let _ = remember_exe(home, &exe);
+    }
+    Some(exe)
+}
+
+/// Prism's data folder on Windows, by Prism's own rule (`Application.cpp`): the
+/// `PRISMLAUNCHER_DATA_DIR` environment value, else the exe's `UserData` folder if it exists,
+/// else the exe's own folder when `portable.txt` is beside it, else `%APPDATA%\PrismLauncher`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn windows_data_dir(exe: Option<&Path>, appdata: Option<&Path>, data_env: Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = data_env.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = exe.and_then(Path::parent) {
+        let user_data = dir.join("UserData");
+        if user_data.is_dir() {
+            return Some(user_data);
+        }
+        if dir.join("portable.txt").is_file() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    appdata.map(data_dir)
 }
 
 /// Prism's data directory under the per-application data root.
@@ -290,7 +436,8 @@ pub fn unique() -> String {
 }
 
 /// Renames `from` to `to` only if nothing exists at `to`: never replaces a folder (or
-/// anything else) that raced into place. macOS: `renamex_np(RENAME_EXCL)`.
+/// anything else) that raced into place. macOS: `renamex_np(RENAME_EXCL)`; Windows:
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`.
 pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -316,7 +463,25 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
             Err(io::Error::last_os_error())
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    // Windows: MoveFileExW without MOVEFILE_REPLACE_EXISTING never replaces a file or a folder
+    // (`fs::rename` would replace a file).
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
+        let (a, b) = (wide(from), wide(to));
+        // SAFETY: two valid NUL-terminated paths; the call reads them only.
+        let ok = unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileExW(a.as_ptr(), b.as_ptr(), 0) };
+        if ok != 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if fs::symlink_metadata(to).is_ok() {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        Err(err)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         if fs::symlink_metadata(to).is_ok() {
             return Err(io::Error::from(io::ErrorKind::AlreadyExists));
@@ -679,6 +844,179 @@ pub(crate) mod tests {
 
         let again = make_instance(instances.path()).unwrap();
         assert_eq!(again, instances.path().join("Cobblify 1.8.9(2)"));
+    }
+
+    // ── Windows discovery (pure; every source injected, so it runs on any platform) ─────
+
+    fn touch(p: &Path) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, b"").unwrap();
+    }
+
+    fn vars(pairs: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> {
+        let map: HashMap<String, OsString> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.as_os_str().to_os_string())).collect();
+        move |k: &str| map.get(k).cloned()
+    }
+
+    #[test]
+    fn windows_candidates_come_in_the_planned_order_and_skip_unusable_values() {
+        let r = tempfile::tempdir().unwrap();
+        let root = r.path();
+        let var = vars(&[
+            ("LOCALAPPDATA", &root.join("Local")),
+            ("ProgramFiles", &root.join("PF")),
+            ("ProgramFiles(x86)", &root.join("PF86")),
+            ("USERPROFILE", &root.join("home")),
+            ("ProgramData", &root.join("PD")),
+        ]);
+        let got = windows_candidates(&var, Some(root.join("Custom")));
+        let want: Vec<PathBuf> = [
+            root.join("Custom"),
+            root.join("Local/Programs/PrismLauncher"),
+            root.join("PF/PrismLauncher"),
+            root.join("PF86/PrismLauncher"),
+            root.join("home/scoop/apps/prismlauncher/current"),
+            root.join("PD/scoop/apps/prismlauncher/current"),
+        ]
+        .into_iter()
+        .map(|d| d.join(WIN_EXE))
+        .collect();
+        assert_eq!(got, want);
+
+        // SCOOP / SCOOP_GLOBAL win over the defaults; relative and empty values are skipped.
+        let var = vars(&[
+            ("SCOOP", &root.join("S")),
+            ("SCOOP_GLOBAL", &root.join("SG")),
+            ("USERPROFILE", &root.join("home")),
+            ("LOCALAPPDATA", Path::new("relative")),
+            ("ProgramFiles", Path::new("")),
+        ]);
+        assert_eq!(
+            windows_candidates(&var, Some(PathBuf::from("relative/install"))),
+            vec![
+                root.join("S/apps/prismlauncher/current").join(WIN_EXE),
+                root.join("SG/apps/prismlauncher/current").join(WIN_EXE),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_existing_standard_place_wins_and_nothing_else_is_asked() {
+        let r = tempfile::tempdir().unwrap();
+        let a = r.path().join("a").join(WIN_EXE);
+        let b = r.path().join("b").join(WIN_EXE);
+        touch(&b);
+        let found = find_exe_among(&[a.clone(), b.clone()], None, None, &|| panic!("no process scan"));
+        assert_eq!(found, Some((b.clone(), false)));
+        touch(&a);
+        assert_eq!(find_exe_among(&[a.clone(), b], None, None, &|| None), Some((a, false)));
+    }
+
+    /// Review plan-2 B1: a portable Prism seen running is remembered, and is found again once
+    /// it is closed; a remembered exe that is gone is not.
+    #[test]
+    fn a_running_portable_prism_is_remembered_and_found_again_when_closed() {
+        let r = tempfile::tempdir().unwrap();
+        let home = r.path().join("home");
+        let portable = r.path().join("Games/Prism").join(WIN_EXE);
+        touch(&portable);
+        let standard = vec![r.path().join("Local/Programs/PrismLauncher").join(WIN_EXE)];
+
+        let running = { let p = portable.clone(); move || Some(p.clone()) };
+        let (exe, remember) = find_exe_among(&standard, remembered_exe(&home), None, &running).unwrap();
+        assert_eq!((exe.clone(), remember), (portable.clone(), true));
+        remember_exe(&home, &exe).unwrap();
+        assert_eq!(remembered_exe(&home), Some(portable.clone()));
+
+        // Closed now: the record finds it, and asks nothing else.
+        let found = find_exe_among(&standard, remembered_exe(&home), None, &|| panic!("no process scan"));
+        assert_eq!(found, Some((portable.clone(), false)));
+
+        // Gone: nothing (the stale record is not trusted).
+        fs::remove_file(&portable).unwrap();
+        assert_eq!(find_exe_among(&standard, remembered_exe(&home), None, &|| None), None);
+        // A malformed record reads as none.
+        fs::write(home.join(REMEMBERED), b"{").unwrap();
+        assert_eq!(remembered_exe(&home), None);
+    }
+
+    /// Both portable layouts own their instances: the exe beside `portable.txt` with the data
+    /// in its folder, and the exe above a `UserData` data folder. An installed Prism (data in
+    /// %APPDATA%) owns nothing this way.
+    #[test]
+    fn a_saved_instance_leads_back_to_its_portable_prism_in_both_layouts() {
+        let r = tempfile::tempdir().unwrap();
+        let flat = r.path().join("Flat");
+        touch(&flat.join(WIN_EXE));
+        touch(&flat.join("portable.txt"));
+        assert_eq!(owner_of_instance(&flat.join("instances/Cobblify 1.8.9")), Some(flat.join(WIN_EXE)));
+        fs::remove_file(flat.join("portable.txt")).unwrap();
+        assert_eq!(owner_of_instance(&flat.join("instances/Cobblify 1.8.9")), None, "no portable.txt");
+
+        let nested = r.path().join("Nested");
+        touch(&nested.join(WIN_EXE));
+        let inst = nested.join("UserData/instances/Cobblify 1.8.9");
+        fs::create_dir_all(&inst).unwrap();
+        assert_eq!(owner_of_instance(&inst), Some(nested.join(WIN_EXE)));
+
+        let installed = r.path().join("Roaming/PrismLauncher/instances/X");
+        fs::create_dir_all(&installed).unwrap();
+        assert_eq!(owner_of_instance(&installed), None);
+
+        // Found through the owner, with the standard places empty, and remembered.
+        let found = find_exe_among(&[], None, owner_of_instance(&inst), &|| None);
+        assert_eq!(found, Some((nested.join(WIN_EXE), true)));
+    }
+
+    /// Prism's `Application.cpp` rule, in its order.
+    #[test]
+    fn the_windows_data_folder_follows_prisms_own_rule() {
+        let r = tempfile::tempdir().unwrap();
+        let appdata = r.path().join("Roaming");
+        let exe_dir = r.path().join("Prism");
+        let exe = exe_dir.join(WIN_EXE);
+        touch(&exe);
+        let installed = windows_data_dir(Some(&exe), Some(&appdata), None);
+        assert_eq!(installed, Some(appdata.join("PrismLauncher")));
+        assert_eq!(windows_data_dir(None, Some(&appdata), None), Some(appdata.join("PrismLauncher")));
+        assert_eq!(windows_data_dir(None, None, None), None);
+
+        touch(&exe_dir.join("portable.txt"));
+        assert_eq!(windows_data_dir(Some(&exe), Some(&appdata), None), Some(exe_dir.clone()));
+        fs::create_dir_all(exe_dir.join("UserData")).unwrap();
+        assert_eq!(
+            windows_data_dir(Some(&exe), Some(&appdata), None),
+            Some(exe_dir.join("UserData")),
+            "UserData wins over portable.txt"
+        );
+        let env_dir = r.path().join("Elsewhere");
+        assert_eq!(
+            windows_data_dir(Some(&exe), Some(&appdata), Some(env_dir.clone().into_os_string())),
+            Some(env_dir),
+            "PRISMLAUNCHER_DATA_DIR wins over everything"
+        );
+        assert_eq!(
+            windows_data_dir(None, Some(&appdata), Some(OsString::new())),
+            Some(appdata.join("PrismLauncher")),
+            "an empty value is unset"
+        );
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_an_existing_file_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.jar");
+        let b = dir.path().join("b.jar");
+        fs::write(&a, b"new").unwrap();
+        fs::write(&b, b"theirs").unwrap();
+        let err = rename_no_replace(&a, &b).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&b).unwrap(), b"theirs", "never replaced");
+        assert_eq!(fs::read(&a).unwrap(), b"new");
+        fs::remove_file(&b).unwrap();
+        rename_no_replace(&a, &b).unwrap();
+        assert_eq!(fs::read(&b).unwrap(), b"new");
     }
 
     #[test]

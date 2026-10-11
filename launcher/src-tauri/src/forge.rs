@@ -160,11 +160,16 @@ fn recency(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
 
 /// The Prism executable used for launch and setup detection. macOS: the bundle `prism::find_app`
 /// finds (`/Applications`, `~/Applications`, then by bundle id), else `/Applications`'.
+/// Windows: the exe `prism::find_app` finds, else the installer's default per-user one.
 pub fn prism_exe() -> PathBuf {
     #[cfg(windows)]
     {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
-            .join("Programs/PrismLauncher/prismlauncher.exe")
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        crate::prism::find_app(&home).unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
+                .join("Programs/PrismLauncher")
+                .join(crate::prism::WIN_EXE)
+        })
     }
     #[cfg(target_os = "macos")]
     {
@@ -189,20 +194,29 @@ pub fn prism_installed() -> bool {
 /// platform. `%APPDATA%` matters: `home()` is `%USERPROFILE%` on Windows while `.minecraft`
 /// and Prism's data both live under `%APPDATA%`, so building those paths off the home
 /// directory would silently find nothing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Env {
     pub home: PathBuf,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub appdata: Option<PathBuf>,
+    /// Windows: the Prism exe found (its folder can hold the data: portable, Scoop).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub prism_exe: Option<PathBuf>,
+    /// Windows: `PRISMLAUNCHER_DATA_DIR`, which Prism itself obeys first.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub prism_data_env: Option<std::ffi::OsString>,
 }
 
 impl Env {
     pub fn from_process() -> Option<Env> {
         #[cfg(windows)]
         {
-            let home = std::env::var_os("USERPROFILE")?;
+            let home = PathBuf::from(std::env::var_os("USERPROFILE")?);
             Some(Env {
-                home: PathBuf::from(home),
+                prism_exe: crate::prism::find_app(&home),
+                home,
                 appdata: std::env::var_os("APPDATA").map(PathBuf::from),
+                prism_data_env: std::env::var_os("PRISMLAUNCHER_DATA_DIR"),
             })
         }
         #[cfg(not(windows))]
@@ -210,14 +224,26 @@ impl Env {
             let home = std::env::var_os("HOME")?;
             Some(Env {
                 home: PathBuf::from(home),
-                appdata: None,
+                ..Env::default()
             })
         }
     }
 
-    /// Prism's data directory (`<app data>/PrismLauncher`).
+    /// Prism's data directory: `<app data>/PrismLauncher`, or on Windows wherever Prism's own
+    /// rule puts it for the exe found (`prism::windows_data_dir`).
     pub fn prism_data(&self) -> Option<PathBuf> {
-        self.app_support().map(|p| crate::prism::data_dir(&p))
+        #[cfg(windows)]
+        {
+            crate::prism::windows_data_dir(
+                self.prism_exe.as_deref(),
+                self.appdata.as_deref(),
+                self.prism_data_env.clone(),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            self.app_support().map(|p| crate::prism::data_dir(&p))
+        }
     }
 
     /// macOS's per-application data root; on Windows this is `%APPDATA%`.
@@ -1523,6 +1549,7 @@ pub(crate) mod tests {
         let env = Env {
             home: home.path().to_path_buf(),
             appdata: Some(appdata.path().to_path_buf()),
+            ..Env::default()
         };
         let inst = env
             .app_support()
@@ -1610,6 +1637,7 @@ pub(crate) mod tests {
         let env = Env {
             home: home.path().to_path_buf(),
             appdata: Some(appdata.path().to_path_buf()),
+            ..Env::default()
         };
         let root = env.app_support().unwrap().join("PrismLauncher/instances");
         for (name, json) in [
@@ -1641,6 +1669,7 @@ pub(crate) mod tests {
         let env = Env {
             home: home.path().to_path_buf(),
             appdata: Some(appdata.path().to_path_buf()),
+            ..Env::default()
         };
         let root = env.app_support().unwrap().join("PrismLauncher/instances");
         for (name, json) in [
@@ -1669,6 +1698,7 @@ pub(crate) mod tests {
         let env = Env {
             home: home.path().to_path_buf(),
             appdata: Some(appdata.path().to_path_buf()),
+            ..Env::default()
         };
         assert!(detect(&env).is_empty());
     }

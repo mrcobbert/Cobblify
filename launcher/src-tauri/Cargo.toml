@@ -40,8 +40,11 @@ windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   # Only for SYNCHRONIZE, which this crate files here as a FILE_ACCESS_RIGHTS even
   # though it is a generic access right (see src/process_liveness.rs).
+  # Also MoveFileExW: prism::rename_no_replace never replaces what raced into place.
   "Win32_Storage_FileSystem",
   "Win32_System_ProcessStatus",
+  # src/win_reg.rs: read-only lookups of where an installer put Prism or Java 8.
+  "Win32_System_Registry",
   "Win32_System_Threading",
 ] }
 

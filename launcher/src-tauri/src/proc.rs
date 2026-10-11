@@ -142,8 +142,33 @@ pub fn prism_running_checked() -> Result<bool, String> {
     Ok(lunar_launcher_pid_among(&exes).is_some())
 }
 
-/// Not told on Windows yet: the launch watch keeps waiting while no game has appeared.
-#[cfg(not(target_os = "macos"))]
+/// Windows: any process of this account whose executable is named `prismlauncher.exe`
+/// (caseless), wherever it was installed: an installed, Scoop or portable Prism alike.
+#[cfg(windows)]
+pub fn prism_running_checked() -> Result<bool, String> {
+    Ok(running_prism_exe().is_some())
+}
+
+/// The executable of a running Prism (see `prism_running_checked`), for finding a portable
+/// Prism that is open. Other accounts' processes have no readable path and never match.
+#[cfg(windows)]
+pub fn running_prism_exe() -> Option<PathBuf> {
+    exe_snapshot()
+        .processes()
+        .values()
+        .filter_map(|process| process.exe())
+        .find(|exe| is_prism_exe(exe))
+        .map(Path::to_path_buf)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_prism_exe(exe: &Path) -> bool {
+    exe.file_name()
+        .is_some_and(|name| caseless_component_eq(name, OsStr::new(crate::prism::WIN_EXE)))
+}
+
+/// Not told elsewhere: the launch watch keeps waiting while no game has appeared.
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn prism_running_checked() -> Result<bool, String> {
     Err("Cannot tell whether Prism is running.".to_string())
 }
@@ -773,6 +798,22 @@ mod tests {
             Path::new("C:\\Games\\Lunar Client\\Lunar Client.exe"),
             root
         ));
+    }
+
+    /// Windows' Prism running check matches the exe name only, caseless, in any folder.
+    #[cfg(windows)]
+    #[test]
+    fn a_prism_exe_is_known_by_its_name_in_any_folder() {
+        for exe in [
+            "C:\\Users\\J\\AppData\\Local\\Programs\\PrismLauncher\\prismlauncher.exe",
+            "D:\\Games\\Prism\\PrismLauncher.EXE",
+            "/x/prismlauncher.exe",
+        ] {
+            assert!(is_prism_exe(Path::new(exe)), "{exe}");
+        }
+        for exe in ["C:\\P\\prismlauncher_updater.exe", "C:\\P\\prismlauncher.exe.bak", "C:\\prismlauncher\\java.exe"] {
+            assert!(!is_prism_exe(Path::new(exe)), "{exe}");
+        }
     }
 
     #[test]

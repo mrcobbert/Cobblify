@@ -31,6 +31,8 @@ mod setup;
 mod theme;
 mod updater;
 mod vanilla;
+#[cfg(windows)]
+mod win_reg;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
