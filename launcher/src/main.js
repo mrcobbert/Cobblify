@@ -619,6 +619,8 @@ const ui = createApp(el("app"), {
       return;
     }
     addWait = desc.id;
+    // Launch is paused while it waits: "Set Lunar to 1.8.9" must not relaunch by itself under it.
+    if (launchOutcome?.outcome === "wrong_version") launchOutcome = null;
     openDownload(desc.id);
     refreshUi();
     watchInstall();
@@ -1125,7 +1127,7 @@ const RESET_SHELL_MODES = {
   game_session_changed: ["session_changed_resetting", "session_changed"],
   launch_aborted: ["launch_aborted_resetting", "launch_aborted"],
   // A launch that ended with an outcome; its view is home (only the final give-up uses this).
-  launch_outcome: ["launch_aborted_resetting", "launch_aborted"],
+  launch_outcome: ["session_ended_resetting", "session_ended"],
 };
 const resetShellMode = (reason, phase) => {
   const [transitional, final] =
@@ -1422,6 +1424,11 @@ function enterGame() {
   if (launchController.getState().activeOutcome == null) return;
   gameUp = true;
   homeUntilLive = false;
+  // Proof Cobblify loaded (an acknowledged snapshot can beat the progress poll's `loaded`): the overlay-off quit,
+  // before the progress poll that would also send it stops.
+  overlayExit.onConfirmationSignal("loaded");
+  // Any later unavailable poll must not bring back the pre-game manual screen.
+  manualRouteSubtitle = null;
   stopProgressPolling();
   suppressRefresh = false;
   connectionShell.show("join");

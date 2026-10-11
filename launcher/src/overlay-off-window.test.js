@@ -94,3 +94,31 @@ test("settled without loaded never quits; loaded quits exactly once", async () =
   await polls(2);
   assert.equal(countCalls("quit_app"), 1, "exactly once across duplicate loaded polls");
 });
+
+test("unconfirmed launch: a snapshot of the game, acknowledged before progress says loaded, quits; never the manual copy again", async () => {
+  // home again: the last session's game ends
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  await waitFor(() => $('#main [data-act="play"]') != null, { label: "home", timeout: 3000 });
+  replies.lobby_state = () => ({ kind: "unavailable" });
+  progressReply = () => ({ stage: "fired", percent: 10 });
+  const quits = countCalls("quit_app");
+  replies.acknowledge_lobby_snapshot = () => ({});
+  const before = countCalls("launch_lunar");
+  hero().click();
+  await waitFor(() => countCalls("launch_lunar") > before && pendingLaunch != null, { label: "the launch call" });
+  const resolve = pendingLaunch;
+  pendingLaunch = null;
+  resolve({ status: "launched", outcome: { useExternalOverlay: false, action: "launch_unconfirmed" }, generation: 3 });
+  await waitFor(() => el("joining-sub").textContent.startsWith("Lunar is launching"), { label: "the manual screen", timeout: 3000 });
+  const menu = {
+    v: 2, seq: 1, jvmPid: 42, jvmStartTimeMs: 1_700_000_000_000, context: "MENU", inHypixel: false,
+    self: null, mode: null, partyCount: null, yourParty: [], players: [], teams: [],
+  };
+  let n = 0;
+  replies.lobby_state = () => (n++ % 2 ? { kind: "unavailable", reason: "process_unavailable" } : { kind: "snapshot", snapshot: menu, token: n });
+  await waitFor(() => countCalls("quit_app") > quits, { label: "the quit", timeout: 3000 });
+  await waitFor(() => el("joining-title").textContent === "Join Hypixel", { label: "Join Hypixel" });
+  await tick(600);
+  assert.equal(el("joining-title").textContent, "Join Hypixel", "an unavailable poll never brings back the manual screen");
+  replies.lobby_state = () => ({ kind: "unavailable" });
+});

@@ -46,7 +46,7 @@ export async function handleLobbyPoll(poll, deps) {
   const kind = classifyLive(snapshot);
   if (kind === "invalid" || kind === "other") return;
   // The generation the ack is for. A session reset invalidates it before any
-  // UI change, so an ack that resolves after Cancel/Back-to-Home committed is
+  // UI change, so an ack that resolves after a reset committed is
   // recognised here and dropped instead of reviving a dead dashboard (J2).
   const generation = deps.launchController.getState().launchGen;
   try {
