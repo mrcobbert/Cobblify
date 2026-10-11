@@ -41,43 +41,46 @@ Apple removed that in macOS 15, so use the System Settings steps above.
 3. WHAT IT DOES
 ---------------
 
-Quit Lunar Client first, then open Cobblify Launcher. It will:
+Open Cobblify Launcher and press Choose Your Setup, then pick Lunar
+Client or Prism Launcher. If the one you pick isn't on this Mac yet,
+Cobblify opens its download page and starts setup by itself once it's
+installed.
 
-  - install Cobblify and the Weave loader, and register them with Lunar
-  - offer to set up Forge (see below)
-  - say "Cobblify vX.X.X ready"
+LUNAR: Lunar has to have been signed in once. If it hasn't, Cobblify
+stops at "Sign in to Lunar" - press Open, sign in, and setup goes on.
+If Lunar is open, Cobblify closes it itself ("Closing Lunar") before it
+changes Lunar's settings, then finishes.
 
-FORGE: Cobblify lists compatible Prism instances. You need Prism with a
-Minecraft 1.8.9 + Forge 11.15.1.2318 instance already made. Click Set up
-once; Launch Forge then starts it and joins Hypixel.
+PRISM: Cobblify lists the Prism instances that can run Cobblify; pick
+one and press Set up Prism. With none, it makes a 1.8.9 instance for
+you, downloading Java 8 and Minecraft 1.8.9 if it has to. Prism needs
+a Microsoft account signed in first.
 
-If you already had an older Cobblify jar in there, it gets moved aside
-rather than deleted - Forge refuses to start if two copies are present.
-The launcher tells you the exact file and its new name.
+You can add the other client later from the arrow next to Launch.
 
-Then click LAUNCH LUNAR. The game starts and joins Hypixel by itself -
-you never touch the Lunar launcher window. Cobblify never hides it;
+Then press Launch Cobblify. The game starts with Cobblify; you join
+Hypixel yourself. Cobblify never hides Lunar's or Prism's windows:
 Lunar hides its own window when the game starts and shows it again
-when the game closes. Lunar keeps running, which is normal.
+when the game closes. Lunar keeps running afterwards, which is normal.
 
-The very first time, Lunar may ask you to log in - that window is real,
-log in like you always do. Same goes for Lunar updates.
+When you close the game, Cobblify comes back to Launch, so you can
+launch again any time. (With External Overlay off in Settings, Cobblify
+quits itself once the game has loaded instead.)
 
-The button works once per open. To launch again later, reopen Cobblify -
-or just start Lunar from the Dock or Spotlight; Cobblify loads either
-way, you only miss the auto-join.
+The very first time, Lunar may ask you to log in or update - that
+window is real, use it like you always do.
 
 
 4. IN GAME
 ----------
 
-  - ONE TIME: open Lunar once and make 1.8.9 your selected version.
-    The Launch Lunar button launches whatever version Lunar has selected,
-    and Cobblify only works on 1.8.9.
+  - Cobblify only works on Minecraft 1.8.9. If Lunar is on another
+    version, Cobblify stops at "Set Lunar to 1.8.9" - press Open, pick
+    1.8.9 in Lunar, and launch again.
   - press RIGHT SHIFT in game to open Cobblify's settings
 
-Launch Forge has the same loading updates and live lobby/queue/game
-dashboard as Launch Lunar.
+Prism has the same loading updates and live lobby/queue/game dashboard
+as Lunar.
 
 IMPORTANT: turn Lunar's "Waypoints" module OFF in the settings profile
 you actually play on. Leaving it on can make Cobblify's stats go
@@ -87,31 +90,18 @@ missing. This is per-profile, so if you switch profiles, check again.
 5. IF SOMETHING GOES WRONG
 --------------------------
 
-"Quit Lunar"
-    Lunar is still running. Quit it fully with Cmd+Q, then reopen the
-    launcher. Lunar overwrites its own settings when it closes, so
-    Cobblify waits rather than fighting it.
+Repair
+    Shown after a Cobblify update while Lunar is open: Cobblify's files
+    in Lunar need updating. Press it; Cobblify closes Lunar, updates
+    them and you're back at Launch.
 
-"Conflicting jars", or a message about another Cobblify jar
-    The launcher deletes older Cobblify versions by itself. If you see
-    this, close the game and reopen the launcher first: an old copy
-    can't be deleted while the game is using it. If it's still there,
-    the extra copy is one the launcher won't touch, such as a renamed
-    or test build, or a newer version. Click the button to open the
-    folder, remove that extra jar, then reopen the launcher.
+Try again (setup didn't finish)
+    Close the game if it's open, then press Try again. Setup runs
+    again.
 
-    On Forge this matters more than it sounds: the game will not start
-    at all with two copies of the same mod.
-
-"This copy is incomplete"
-    The download didn't finish or got corrupted. Download it again.
-
-The app opens but nothing happens in game
-    Make sure 1.8.9 is your selected version in Lunar, and that you quit
-    Lunar completely before running the launcher the first time.
-
-The Launch Lunar button is greyed out
-    It works once per open. Quit Cobblify and reopen it to launch again.
+"Cobblify didn't load"
+    Minecraft started without Cobblify. Press Try again. If it keeps
+    happening on Lunar, press Repair in Settings; then message Jacob.
 
 
 6. UNINSTALLING
@@ -126,10 +116,10 @@ anything. To undo everything it changed, paste this into Terminal:
 Then delete Cobblify Launcher.app, and delete the ~/.weave folder if you
 don't use any other Weave mods.
 
-For Forge, delete the Cobblify jar out of your instance's "mods" folder -
-the launcher showed you exactly where it put it. You can also delete
-~/.cobblify, which is where its settings and its note of which folder
-you chose are kept.
+For Prism, delete the Cobblify jar out of your instance's "mods" folder,
+or delete the instance Cobblify made. You can also delete ~/.cobblify,
+which is where its settings and its note of which instance you chose
+are kept.
 
 
 Questions: message Jacob.

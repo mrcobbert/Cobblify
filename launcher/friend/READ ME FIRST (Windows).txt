@@ -59,8 +59,7 @@ Quit Lunar Client first, then open Cobblify Launcher. It will:
   - say "Cobblify vX.X.X ready"
 
 FORGE: Cobblify lists compatible Prism instances. Click Set up once;
-afterward Launch Forge starts that instance and joins Hypixel
-automatically.
+afterward Launch starts that instance; you join Hypixel yourself.
 
 It remembers your choice, so next time it just updates that folder.
 
@@ -68,17 +67,16 @@ If you already had an older Cobblify jar in there, it gets moved aside
 rather than deleted - Forge refuses to start if two copies are present.
 The launcher tells you the exact file and its new name.
 
-Then click LAUNCH LUNAR. It should start the game and join Hypixel by
-itself.
+Then click Launch Cobblify. It starts the game with Cobblify; you join
+Hypixel yourself.
 
 Cobblify never hides or minimizes Lunar's or Prism's windows.
 
 The very first time, Lunar may ask you to log in - that window is real,
 log in like you always do. Same goes for Lunar updates.
 
-The button works once per open. To launch again later, reopen Cobblify -
-or just start Lunar normally; Cobblify should load either way, you only
-miss the auto-join.
+When you close the game, Cobblify comes back to Launch, so you can launch
+again any time - or just start Lunar normally; Cobblify loads either way.
 
 
 5. IN GAME
@@ -86,8 +84,8 @@ miss the auto-join.
 
   - press RIGHT SHIFT in game to open Cobblify's settings
 
-Launch Forge has the same loading updates and live lobby/queue/game
-dashboard as Launch Lunar.
+Prism has the same loading updates and live lobby/queue/game dashboard
+as Lunar.
 
 IMPORTANT: turn Lunar's "Waypoints" module OFF in the settings profile
 you actually play on. Leaving it on can make Cobblify's stats go
