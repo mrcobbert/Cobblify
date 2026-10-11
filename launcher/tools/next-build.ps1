@@ -101,6 +101,11 @@ $conf = Join-Path ([IO.Path]::GetTempPath()) "cobblify-next-$version.conf.json"
 $confJson = @{ productName = $NEXT_NAME; identifier = $NEXT_IDENTIFIER; version = $version } | ConvertTo-Json -Compress
 [IO.File]::WriteAllText($conf, $confJson, (New-Object System.Text.UTF8Encoding $false))
 $builtExe = Join-Path $launcher 'src-tauri\target\release\cobblify-launcher.exe'
+# The tauri CLI rewrites Cargo.toml with LF endings; on a CRLF checkout that leaves the tree
+# dirty and the next `git push win` refused. Put it back when that is all that changed.
+$cargoToml = 'launcher/src-tauri/Cargo.toml'
+& git -C $repoRoot diff --quiet -- $cargoToml
+$cargoWasClean = ($LASTEXITCODE -eq 0)
 $started = Get-Date
 Push-Location $launcher
 try {
@@ -108,7 +113,14 @@ try {
   if ($LASTEXITCODE -ne 0) { Die 'npm ci failed' }
   & npx.cmd --no-install tauri build --no-bundle --config $conf
   if ($LASTEXITCODE -ne 0) { Die 'tauri build failed' }
-} finally { Pop-Location; Remove-Item -LiteralPath $conf -ErrorAction SilentlyContinue }
+} finally {
+  Pop-Location
+  Remove-Item -LiteralPath $conf -ErrorAction SilentlyContinue
+  if ($cargoWasClean) {
+    & git -C $repoRoot diff --quiet --ignore-cr-at-eol -- $cargoToml
+    if ($LASTEXITCODE -eq 0) { & git -C $repoRoot checkout -- $cargoToml 2>$null }
+  }
+}
 if (-not (Test-Path -LiteralPath $builtExe)) { Die "no exe at $builtExe" }
 if ((Get-Item -LiteralPath $builtExe).LastWriteTime -lt $started.AddSeconds(-5)) { Die "$builtExe was not rebuilt" }
 Check 'built'
