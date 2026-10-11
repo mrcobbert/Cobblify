@@ -154,6 +154,15 @@ test("a set-up client whose files couldn't be updated runs its setup again from 
   assert.equal(m.said, "Setup didn't finish. Play waits until setup finishes.");
 });
 
+test("Cobblify's files in an open Lunar only need updating: Repair runs setup (and its Closing Lunar), no failure", () => {
+  for (const issue of ["running_lunar", "not_current"]) {
+    const m = homeModel({ status: st(lunarT({ state: "blocked", issue, set_up: true }), FORGE_MISSING) });
+    assert.deepEqual(m.hero, { kind: "act", label: "Repair", act: "repair-setup" }, issue);
+    assert.equal(m.sel, "lunar");
+    assert.equal(m.said, "Cobblify's files in Lunar need updating.", issue);
+  }
+});
+
 test("just set up: the ready line with one client, nothing with two", () => {
   assert.equal(homeModel({ status: lunarReady, freshSetup: true }).said, "In game, Right Shift opens Cobblify's settings.");
   assert.equal(homeModel({ status: bothReady, freshSetup: true }).said, "");

@@ -265,6 +265,12 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   if (launch.prefError) {
     return { ...base, hero: { kind: "act", label: "Try again", act: "play" }, said: launch.prefError };
   }
+  // Cobblify's files in Lunar are out of date (an update) while Lunar is open, so they can't be written yet. Nothing
+  // failed: Repair runs setup, whose "Closing Lunar" quits Lunar politely, writes them and goes on.
+  const issue = targetFor(status, sel)?.issue;
+  if (issue === "running_lunar" || issue === "not_current") {
+    return { ...base, hero: { kind: "act", label: "Repair", act: "repair-setup" }, said: "Cobblify's files in Lunar need updating." };
+  }
   // A set-up client whose files could not be brought up to date (a game was open, a jar it may not touch, a
   // write that failed): its setup runs again, through the flow and its stops.
   if (targetFor(status, sel)?.state !== "ready") {
