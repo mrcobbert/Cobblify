@@ -7,7 +7,7 @@
  * hands it a model (ui/model.js) plus the actions below. The prototype's demo, playground, QA hooks and mock window
  * frame are not part of it.
  *
- * actions: play(id), cancel(), select(id), setupNow(id), get(id), add(addDescriptor), download(id), openClient(id),
+ * actions: play(id), select(id), setupNow(id), get(id), add(addDescriptor), download(id), openClient(id),
  *          retrySetup(), repairSetup(id), setupPrism(), pick(instanceId), change(), refresh(), repairPref(),
  *          update(action), setOverlay(on), setAutoUpdate(on), setDev(on), repairLunar(), idle()
  */
@@ -124,7 +124,7 @@ export function createApp(app, actions) {
   }
 
   /* Home's left side is the button and nothing else: the button says what to do; progress and waits are its face;
-   * a second key (Cancel) and Prism's instance choice are the only other controls. What a status line would say is
+   * Prism's instance choice is the only other control. What a status line would say is
    * read out to screen readers. With nothing set up the key stands alone in the middle and the island waits. */
   function homeHTML() {
     const lead = leadHTML(H.lead);
@@ -566,7 +566,6 @@ export function createApp(app, actions) {
     const a = b.dataset.act;
     if (a === "menu") toggleMenu();
     else if (a === "play") actions.play(H.sel);
-    else if (a === "cancel") actions.cancel();
     else if (a === "sel") { menuOpen = false; toggleMenu(false); if (b.dataset.id !== H.sel || H.hero.kind === "setup") actions.select(b.dataset.id); }
     else if (a === "add-client") { toggleMenu(false); actions.add(H.add); }
     else if (a === "setup-now") { toggleMenu(false); actions.setupNow(b.dataset.id); }

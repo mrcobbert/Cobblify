@@ -32,11 +32,14 @@ const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Ja
  * The launch key while launching. Home holds it until Cobblify reports in (`loaded`), then the window is the
  * dashboard, whose Join Hypixel message waits for the player (TEST-NOTES 2): a quiet log (`settled`) is no proof the
  * game is up, so it keeps "Adding Cobblify". A Cobblify-made Prism instance's first launch shows
- * "Downloading Minecraft" (22%) between "Opening Prism" and "Starting Minecraft".
+ * "Downloading Minecraft" (22%) between "Opening Prism" and "Starting Minecraft". With no game ~15 s after the click
+ * and the client still up (`waiting`: an update or a sign-in in its own window), "Opening" reads "Waiting for Lunar"
+ * / "Waiting for Prism": not an error, and Cobblify waits as long as the client runs.
  */
-export function launchHero(id, stage) {
+export function launchHero(id, stage, waiting = false) {
   if (stage === "forge_downloading") return { kind: "prog", label: "Downloading Minecraft", pct: 22 };
   const i = Math.min(3, STAGE_INDEX[stage] ?? 0);
+  if (waiting && i === 0) return { kind: "prog", label: `Waiting for ${CL[id].short}`, pct: PHASE_PCT[0] };
   const labels = [id === "prism" ? "Opening Prism" : "Opening Lunar", "Starting Minecraft", "Loading mods", "Adding Cobblify"];
   return { kind: "prog", label: labels[i], pct: PHASE_PCT[i] };
 }
@@ -47,8 +50,13 @@ export function launchHero(id, stage) {
  * - wrong_version: Lunar isn't on 1.8.9. Launch stays (it retries); under: "Set Lunar to
  *   1.8.9" + Open.
  * - not_loaded: Minecraft started without Cobblify. "Try again"; under: "Cobblify didn't load".
+ * - not_started: Lunar/Prism closed before any game appeared. "Try again", nothing under it.
  */
-function outcomeView(outcome) {
+function outcomeView(outcome, id) {
+  if (outcome === "not_started") {
+    const name = CL[id].short;
+    return { hero: { kind: "act", label: "Try again", act: "play" }, under: null, said: `${name} didn't start. Nothing is running. Try again when you're ready.` };
+  }
   if (outcome === "wrong_version") {
     return { hero: { kind: "play" }, under: { kind: "setLunar" }, said: "Lunar isn't set to 1.8.9." };
   }
@@ -182,9 +190,9 @@ function chooseSaid(status, wait) {
  *   status: object,
  *   selected?: string|null,
  *   launch?: { kind?: string|null, phase?: string, busy?: boolean, stage?: string|null,
- *              outcome?: "wrong_version"|"not_loaded"|null, outcomeKind?: "lunar"|"forge"|null,
- *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean, showCancel?: boolean,
- *              inGame?: boolean },
+ *              outcome?: "wrong_version"|"not_loaded"|"not_started"|null, outcomeKind?: "lunar"|"forge"|null,
+ *              prefError?: string|null, prefHealth?: string, prefUncertain?: boolean,
+ *              waiting?: boolean, inGame?: boolean },
  *   update?: object,
  *   setup?: { snap: object, stuckAt?: number|null } | null,   the setup run the window shows
  *   wait?: string|null,      first run: the client whose install is awaited
@@ -253,8 +261,9 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   const base = { ...blank, solo: false, clients: order, sel, add, launching };
 
   if (launching) {
-    const hero = launchHero(sel, launch.stage);
-    return { ...base, hero, keys: launch.showCancel ? [{ label: "Cancel", act: "cancel" }] : [], said: hero.label };
+    // No Cancel (TEST-NOTES 2): once Lunar/Prism has the launch, Cobblify can't stop it.
+    const hero = launchHero(sel, launch.stage, launch.waiting);
+    return { ...base, hero, said: hero.label };
   }
   if (blocksLaunch(update)) {
     const hero = updateHero(update);
@@ -290,7 +299,7 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
     return { ...base, hero: { kind: "act", label: "Try again", act: "repair-setup" }, said: "Setup didn't finish. Play waits until setup finishes." };
   }
   // The outcome belongs to the client that launched; picking the other one leaves it behind.
-  const ended = !launch.outcomeKind || CL[sel].kind === launch.outcomeKind ? outcomeView(launch.outcome) : null;
+  const ended = !launch.outcomeKind || CL[sel].kind === launch.outcomeKind ? outcomeView(launch.outcome, sel) : null;
   if (ended) return { ...base, ...ended };
   const hero = { kind: "play" };
   const said = freshSetup ? (order.length === 1 ? "In game, Right Shift opens Cobblify's settings." : "") : `Launch Cobblify in ${CL[sel].name}`;

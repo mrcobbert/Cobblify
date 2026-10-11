@@ -155,20 +155,19 @@ test("Try Again into a launch that throws lands back on the home view too (J1)",
   assert.ok(launchable());
 });
 
-test("Try Again into a successful launch starts on home with Cancel reachable (J1)", async () => {
+test("Try Again into a successful launch starts on home with the progress, and no Cancel (J1)", async () => {
   await enterPreexistingGame();
   replies.launch_lunar = () => LAUNCHED;
 
   connAction.click();
-  await waitFor(() => cancelKey() != null, { label: "the Cancel control" });
+  await waitFor(() => heroKey()?.classList.contains("prog"), { label: "the progress key" });
   assert.equal(stage.dataset.view, "home");
-  assert.ok(heroKey().classList.contains("prog"), "the Launch key is the progress");
+  assert.equal(cancelKey(), null, "Cobblify can't stop Lunar or Prism once it has the launch");
 
-  // Back to a launchable home for the tests that follow.
-  cancelKey().click();
-  await waitFor(() => stage.dataset.view === "home" && cancelKey() == null && launchable(), {
-    label: "the cancelled launch to reset home",
-  });
+  // Back to a launchable home for the tests that follow: the game ends.
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  await waitFor(() => stage.dataset.view === "home" && launchable(), { label: "home after the game ended" });
+  replies.lobby_state = () => ({ kind: "unavailable" });
 });
 
 test("a rejected launch re-arms the background refresh (J5)", async () => {
@@ -279,46 +278,14 @@ test("a roster render that throws still shows a visible dashboard with an error 
   assert.equal(dash.classList.contains("on"), true);
 });
 
-// Code review round 1 coverage gap (A-J2): the real window, not a fake controller. The
-// first live snapshot's acknowledge is still in flight when the user cancels the launch;
-// the reset commits home, then the ack resolves. The dashboard must stay closed.
-test("an acknowledge that resolves after Cancel Launch committed home does not reopen the dashboard (J2)", async () => {
+test("a launch whose game ends returns home from the dashboard", async () => {
   // Leave the dashboard the J7 test ended on: the backend reports the session ended.
   replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
   replies.reset_session_end = () => ({ status: "ok", preferences: PREFS });
   await waitFor(() => stage.dataset.view === "home" && launchable(), {
     label: "home after the previous session ended",
   });
-
-  let resolveAck;
-  const ackSeen = new Promise((resolveSeen) => {
-    replies.acknowledge_lobby_snapshot = () =>
-      new Promise((resolve) => {
-        resolveAck = resolve;
-        resolveSeen();
-      });
-  });
-  replies.launch_lunar = () => LAUNCHED;
-  replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 3 }), token: 3 });
-  replies.abort_launch_session = () => ({ status: "ok", preferences: PREFS });
-  playKey().click();
-  await ackSeen;
-  assert.equal(stage.dataset.view, "home", "the home view is held until the ack lands");
-
-  // Cancel while the ack is pending: the reset invalidates the session and commits home.
-  replies.lobby_state = () => ({ kind: "unavailable", reason: "missing_file" });
-  cancelKey().click();
-  await waitFor(() => launchable(), {
-    label: "a launchable home after Cancel",
-  });
-  assert.equal(stage.dataset.view, "home");
-
-  // Now the stale ack resolves.
-  resolveAck({});
-  await tick(50);
-  assert.equal(stage.dataset.view, "home", "a stale ack must not flip the view to the dashboard");
-  assert.equal(dash.classList.contains("on"), false);
-  assert.equal(dash.querySelector(".dsheet"), null);
+  replies.lobby_state = () => ({ kind: "unavailable" });
 });
 
 // TEST-NOTES 2 (the user, 2026-10-11): once Cobblify reports in (`loaded`), home gives way to the dashboard, which
@@ -331,7 +298,7 @@ test("loaded: the dashboard's Join Hypixel message, then the board, the message 
   playKey().click();
   await waitFor(() => /Adding Cobblify/.test(heroKey()?.getAttribute("aria-label") ?? ""), { label: "settled holds the bar", timeout: 3000 });
   assert.equal(stage.dataset.view, "home", "a quiet log is no proof: home and its bar stay");
-  assert.ok(cancelKey(), "Cancel while the bar shows");
+  assert.equal(cancelKey(), null, "no Cancel");
 
   replies.launch_progress = () => ({ stage: "settled", loaded: true });
   await waitFor(() => stage.dataset.view === "dash", { label: "the dashboard", timeout: 3000 });
@@ -357,4 +324,22 @@ test("loaded: the dashboard's Join Hypixel message, then the board, the message 
   await waitFor(() => stage.dataset.view === "home" && launchable(), { label: "home after Minecraft quit", timeout: 3000 });
   replies.lobby_state = () => ({ kind: "unavailable" });
   replies.launch_progress = () => ({ stage: "fired" });
+});
+
+test("Lunar closes before any game: Try again at once; the next Launch starts (never Game Already Running)", async () => {
+  replies.launch_lunar = () => LAUNCHED;
+  replies.launch_progress = () => ({ stage: "fired", waiting: true });
+  playKey().click();
+  await waitFor(() => /Waiting for Lunar/.test(heroKey()?.getAttribute("aria-label") ?? ""), { label: "Waiting for Lunar", timeout: 3000 });
+  replies.launch_progress = () => ({ stage: "fired", outcome: "not_started" });
+  await waitFor(() => heroKey()?.textContent.trim() === "Try again", { label: "Try again", timeout: 3000 });
+  assert.equal(said(), "Lunar didn't start. Nothing is running. Try again when you're ready.");
+  assert.equal(stage.dataset.view, "home");
+  const launches = countCalls("launch_lunar");
+  replies.launch_progress = () => ({ stage: "fired" });
+  heroKey().click();
+  await waitFor(() => countCalls("launch_lunar") > launches && heroKey()?.classList.contains("prog"), { label: "the launch again", timeout: 3000 });
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  await waitFor(() => stage.dataset.view === "home" && launchable(), { label: "home", timeout: 3000 });
+  replies.lobby_state = () => ({ kind: "unavailable" });
 });

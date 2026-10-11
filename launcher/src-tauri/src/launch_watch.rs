@@ -22,6 +22,14 @@ use crate::progress::{Facts, GameJvm, LoadWatch, LoaderLog, Outcome};
 /// While the game JVM is not identified, a full process scan runs at most this often (the
 /// progress poll is 600 ms; the verdict's timers are tens of seconds).
 const SCAN_EVERY: Duration = Duration::from_millis(1500);
+/// No game this long after the click, with Lunar/Prism still up: the bar says it waits for the
+/// client (an update or a sign-in in its own window). Never an error and never a timeout.
+pub const CLIENT_WAIT: Duration = Duration::from_secs(15);
+/// The client is proven gone this long, with a complete scan since finding no game: the
+/// launch ends (a game the client spawned on its way out has had a scan to show up).
+const CLIENT_GONE_CONFIRM: Duration = Duration::from_secs(3);
+/// The client was never seen running this long after the click: it did not come up.
+const CLIENT_NEVER_SEEN: Duration = Duration::from_secs(30);
 
 /// A game JVM by pid and OS birth, so a reused pid is never mistaken for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +62,8 @@ pub trait Env {
     fn scan(&mut self, place: &Place) -> Scan;
     fn check(&mut self, game: GameId) -> IdentityCheck;
     fn observe(&mut self, pid: u32) -> Option<ProcessObservation>;
+    /// Whether Lunar's (or Prism's) own app is running; None when that cannot be told.
+    fn client_running(&mut self, place: &Place) -> Option<bool>;
 }
 
 pub struct SystemEnv;
@@ -86,6 +96,22 @@ impl Env for SystemEnv {
     fn observe(&mut self, pid: u32) -> Option<ProcessObservation> {
         process_liveness::observe_process(pid)
     }
+
+    fn client_running(&mut self, place: &Place) -> Option<bool> {
+        match place {
+            Place::Lunar(_) => crate::proc::lunar_running_checked().ok(),
+            Place::Prism(_) => crate::proc::prism_running_checked().ok(),
+        }
+    }
+}
+
+/// Lunar/Prism before any game of this launch appeared, as one poll saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClientWait {
+    /// No game yet after CLIENT_WAIT, the client not proven gone: "Waiting for Lunar/Prism".
+    pub waiting: bool,
+    /// The client closed (or never came up) and no game appeared: the launch ends.
+    pub gone: bool,
 }
 
 /// One launch's watch, replaced at every launch and cleared by the session reset.
@@ -101,6 +127,15 @@ pub struct Watch {
     seen: bool,
     exited: bool,
     last_scan: Option<SystemTime>,
+    /// The last complete scan that found no game of this launch.
+    last_empty_scan: Option<SystemTime>,
+    /// The loader log of this launch appeared at some point (a game is up, identified or not).
+    log_seen: bool,
+    /// Lunar/Prism was seen running since the click.
+    client_seen: bool,
+    /// Since when Lunar/Prism has been proven not running (None: running, or not known).
+    client_gone_since: Option<SystemTime>,
+    last_client_check: Option<SystemTime>,
     verdict: LoadWatch,
 }
 
@@ -185,7 +220,67 @@ impl Watch {
             self.exited = true;
             return GameJvm::Exited;
         }
+        if scan.complete && !unknown_birth {
+            self.last_empty_scan = Some(now);
+        }
         GameJvm::NotSeen
+    }
+
+    /// Lunar/Prism while no game of this launch has appeared (TEST-NOTES 2): Cobblify can't stop
+    /// the client once it has the launch, so it waits as long as the client runs - an update
+    /// or a lapsed sign-in shows in the client's own window. The launch ends only when the
+    /// client is proven gone (or never came up) and a complete scan since found no game. Once
+    /// a game or its loader log appears, this has nothing more to say. Called after
+    /// `observe_game`, with whether this poll read a fresh loader log.
+    pub fn observe_client(
+        &mut self,
+        env: &mut dyn Env,
+        log_fresh: bool,
+        baseline: SystemTime,
+        now: SystemTime,
+    ) -> ClientWait {
+        self.log_seen |= log_fresh;
+        let Some(place) = self.place.clone() else {
+            return ClientWait::default();
+        };
+        if self.seen || self.log_seen || self.verdict.decided() {
+            return ClientWait::default();
+        }
+        let due = self
+            .last_client_check
+            .is_none_or(|at| now.duration_since(at).unwrap_or(Duration::ZERO) >= SCAN_EVERY);
+        if due {
+            self.last_client_check = Some(now);
+            match env.client_running(&place) {
+                Some(true) => {
+                    self.client_seen = true;
+                    self.client_gone_since = None;
+                }
+                Some(false) => {
+                    self.client_gone_since.get_or_insert(now);
+                }
+                None => {}
+            }
+        }
+        let after_click = now.duration_since(baseline).unwrap_or(Duration::ZERO);
+        let gone = self.client_gone_since.is_some_and(|since| {
+            let long_enough = if self.client_seen {
+                now.duration_since(since).unwrap_or(Duration::ZERO) >= CLIENT_GONE_CONFIRM
+            } else {
+                after_click >= CLIENT_NEVER_SEEN
+            };
+            long_enough && self.last_empty_scan.is_some_and(|scan| scan > since)
+        });
+        ClientWait {
+            waiting: !gone && after_click >= CLIENT_WAIT,
+            gone,
+        }
+    }
+
+    /// Ends the launch: the client closed before any game appeared (see `observe_client`).
+    pub fn end_not_started(&mut self) -> Option<Outcome> {
+        self.place.as_ref()?;
+        self.verdict.end(Outcome::NotStarted)
     }
 
     /// Cobblify loaded: a fresh `~/.cobblify/lobby.json` (modified at or after the launch)
@@ -275,6 +370,8 @@ pub(crate) mod tests {
         pub scans: u32,
         /// pid -> (OS birth, alive)
         pub procs: HashMap<u32, (EpochNs, bool)>,
+        /// What `client_running` answers (Lunar/Prism's own app).
+        pub client: Option<bool>,
     }
 
     impl FakeEnv {
@@ -287,6 +384,7 @@ pub(crate) mod tests {
                 },
                 scans: 0,
                 procs: HashMap::new(),
+                client: Some(true),
             }
         }
 
@@ -336,6 +434,108 @@ pub(crate) mod tests {
                 },
             })
         }
+
+        fn client_running(&mut self, _place: &Place) -> Option<bool> {
+            self.client
+        }
+    }
+
+    // ── Lunar/Prism before any game (TEST-NOTES 2) ──────────────────────────────
+
+    /// One poll as `compute_launch_progress_in` runs it: the game, then the client.
+    fn client_poll(w: &mut Watch, env: &mut FakeEnv, baseline: SystemTime, log_fresh: bool) -> ClientWait {
+        let now = env.now;
+        w.observe_game(env, baseline, now);
+        w.observe_client(env, log_fresh, baseline, now)
+    }
+
+    #[test]
+    fn the_client_still_up_with_no_game_waits_for_ever_and_says_so_after_15_s() {
+        let base = SystemTime::now();
+        let mut env = FakeEnv::new(base);
+        let mut w = Watch::lunar(Path::new("/home/u"));
+        assert_eq!(client_poll(&mut w, &mut env, base, false), ClientWait::default());
+        env.advance(14);
+        assert!(!client_poll(&mut w, &mut env, base, false).waiting);
+        env.advance(1);
+        assert_eq!(client_poll(&mut w, &mut env, base, false), ClientWait { waiting: true, gone: false });
+        env.advance(3600);
+        assert_eq!(client_poll(&mut w, &mut env, base, false), ClientWait { waiting: true, gone: false }, "no timeout");
+    }
+
+    #[test]
+    fn the_client_closing_before_any_game_ends_the_launch_once_a_scan_confirms() {
+        let base = SystemTime::now();
+        let mut env = FakeEnv::new(base);
+        let mut w = Watch::prism(Path::new("/nonexistent-home"));
+        client_poll(&mut w, &mut env, base, false);
+        env.advance(5);
+        env.client = Some(false);
+        assert!(!client_poll(&mut w, &mut env, base, false).gone, "not on the first sight");
+        env.advance(2);
+        assert!(!client_poll(&mut w, &mut env, base, false).gone);
+        env.advance(2);
+        assert!(client_poll(&mut w, &mut env, base, false).gone);
+        assert_eq!(w.end_not_started(), Some(Outcome::NotStarted));
+        assert_eq!(w.end_not_started(), Some(Outcome::NotStarted), "latched");
+    }
+
+    #[test]
+    fn a_game_appearing_at_any_point_carries_on_even_if_the_client_closes() {
+        let base = SystemTime::now();
+        let mut env = FakeEnv::new(base);
+        let mut w = Watch::lunar(Path::new("/home/u"));
+        env.advance(40);
+        assert!(client_poll(&mut w, &mut env, base, false).waiting);
+        env.spawn(4242, base + Duration::from_secs(39));
+        env.client = Some(false);
+        for _ in 0..5 {
+            env.advance(2);
+            assert_eq!(client_poll(&mut w, &mut env, base, false), ClientWait::default());
+        }
+        // Prism with no saved instance can't see the JVM: its fresh loader log is the game.
+        let mut env = FakeEnv::new(base);
+        let mut w = Watch::prism(Path::new("/nonexistent-home"));
+        client_poll(&mut w, &mut env, base, true);
+        env.client = Some(false);
+        for _ in 0..5 {
+            env.advance(2);
+            assert_eq!(client_poll(&mut w, &mut env, base, false), ClientWait::default());
+        }
+    }
+
+    #[test]
+    fn an_unknown_client_or_an_incomplete_scan_never_ends_the_launch() {
+        let base = SystemTime::now();
+        let mut env = FakeEnv::new(base);
+        env.client = None;
+        let mut w = Watch::lunar(Path::new("/home/u"));
+        for _ in 0..30 {
+            env.advance(2);
+            assert!(!client_poll(&mut w, &mut env, base, false).gone);
+        }
+        let mut env = FakeEnv::new(base);
+        env.scan.complete = false;
+        let mut w = Watch::lunar(Path::new("/home/u"));
+        client_poll(&mut w, &mut env, base, false);
+        env.client = Some(false);
+        for _ in 0..30 {
+            env.advance(2);
+            assert!(!client_poll(&mut w, &mut env, base, false).gone);
+        }
+    }
+
+    #[test]
+    fn a_client_never_seen_running_ends_the_launch_after_30_s() {
+        let base = SystemTime::now();
+        let mut env = FakeEnv::new(base);
+        env.client = Some(false);
+        let mut w = Watch::lunar(Path::new("/home/u"));
+        assert!(!client_poll(&mut w, &mut env, base, false).gone);
+        env.advance(28);
+        assert!(!client_poll(&mut w, &mut env, base, false).gone, "it may still be starting");
+        env.advance(2);
+        assert!(client_poll(&mut w, &mut env, base, false).gone);
     }
 
     fn game(w: &mut Watch, env: &mut FakeEnv, baseline: SystemTime) -> GameJvm {

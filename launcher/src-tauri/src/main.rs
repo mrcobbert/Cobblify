@@ -2035,6 +2035,8 @@ fn compute_launch_progress_in(
             && std::fs::read_to_string(&guard_log).is_ok_and(|text| guard::says_other_version(&text))
     };
     let loaded = progress.watch.loaded(env, home, baseline, now);
+    // Lunar/Prism before any game: wait while it runs; it closing first ends the launch.
+    let client = progress.watch.observe_client(env, log.is_some(), baseline, now);
     let outcome = progress.watch.verdict(
         forge_session,
         log.as_deref()
@@ -2084,7 +2086,11 @@ fn compute_launch_progress_in(
             }
         }
     };
-    bar.outcome = outcome;
+    bar.outcome = match outcome {
+        None if client.gone && !loaded => progress.watch.end_not_started(),
+        other => other,
+    };
+    bar.waiting = client.waiting && bar.outcome.is_none();
     bar.loaded = progress.watch.is_loaded();
     bar
 }

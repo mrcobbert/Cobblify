@@ -42,6 +42,7 @@ const replies = {
   launch_progress: () => progressReply(),
   lobby_state: () => ({ kind: "unavailable" }),
   abort_launch_session: () => ({ status: "ok", preferences: PREFS }),
+  reset_session_end: () => ({ status: "ok", preferences: PREFS }),
   open_launcher: () => null,
   lunar_version_ready: () => versionReady,
 };
@@ -139,9 +140,10 @@ test("while launching, Launch is the progress and the sheet's launch settings ar
 
   pendingLaunch(LAUNCHED);
   await waitFor(() => $("#main .hero.prog")?.getAttribute("aria-label").startsWith("Starting Minecraft"), { label: "the next phase", timeout: 3000 });
-  await waitFor(() => $('#main .keys2 [data-act="cancel"]') != null, { label: "Cancel" });
-  $('#main .keys2 [data-act="cancel"]').click();
-  await waitFor(() => $('#main [data-act="play"]') != null, { label: "home again" });
+  assert.equal($("#main .keys2"), null, "no Cancel: Cobblify can't stop Lunar or Prism");
+  replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
+  await waitFor(() => $('#main [data-act="play"]') != null, { label: "home again once the game ended" });
+  replies.lobby_state = () => ({ kind: "unavailable" });
 });
 
 test("the version opens the release notes; Back returns home", async () => {

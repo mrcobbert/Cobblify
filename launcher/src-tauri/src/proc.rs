@@ -128,6 +128,26 @@ pub fn lunar_running_checked() -> Result<bool, String> {
     Ok(!lunar_launcher_pids()?.is_empty())
 }
 
+/// Whether Prism Launcher's own app is running (its bundle's main executable, by the same exact
+/// path match as Lunar's), or `Err` when that cannot be told. The launch watch waits as long
+/// as it runs and no game has appeared (TEST-NOTES 2).
+#[cfg(target_os = "macos")]
+pub fn prism_running_checked() -> Result<bool, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("no home folder")?;
+    let mut apps = crate::prism::app_candidates(&home);
+    if crate::prism::find_app_in(&apps).is_none() {
+        apps.extend(crate::prism::find_app(&home));
+    }
+    let exes: Vec<PathBuf> = apps.iter().map(|a| a.join(crate::prism::BUNDLE_EXE)).collect();
+    Ok(lunar_launcher_pid_among(&exes).is_some())
+}
+
+/// Not told on Windows yet: the launch watch keeps waiting while no game has appeared.
+#[cfg(not(target_os = "macos"))]
+pub fn prism_running_checked() -> Result<bool, String> {
+    Err("Cannot tell whether Prism is running.".to_string())
+}
+
 /// Every Lunar launcher pid: the Electron main process AND its helpers, which
 /// on Windows all run from the SAME executable path (unlike macOS, where the
 /// helpers have their own binaries).

@@ -28,24 +28,6 @@ export function launchViewRoute(outcome) {
 }
 
 /**
- * Visibility of the home-view "Cancel launch" escape control.
- *
- * It exists for exactly one window: a launch that has been dispatched but
- * whose game has not reported Cobblify in yet (the progress bar).
- * `homeUntilLive` IS that window (it is cleared once Cobblify loaded, when
- * the dashboard takes over), so once the dashboard is up the control is gone. An in-flight reset already owns the surface, and an idle
- * home has nothing to cancel.
- *
- * @param {{ activeOutcome: object | null, launchPhase: string, homeUntilLive: boolean, resetActive: boolean }} args
- */
-export function showsCancelLaunch({ activeOutcome, launchPhase, homeUntilLive, resetActive }) {
-  if (resetActive) return false;
-  if (!activeOutcome) return false;
-  if (launchPhase === "idle") return false;
-  return homeUntilLive === true;
-}
-
-/**
  * True while the launch button of `kind` is narrating backend launch stages,
  * so a re-render must leave its text alone. Stage text is strictly more
  * informative than the generic phase label, and a `notify()` from any

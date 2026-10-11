@@ -41,7 +41,7 @@ import {
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
-import { launchViewRoute, showsCancelLaunch } from "./launch-view-route.js";
+import { launchViewRoute } from "./launch-view-route.js";
 import { createApp } from "./ui/app.js";
 import { CL, uiId } from "./ui/art.js";
 import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
@@ -593,7 +593,6 @@ let installTimer = null;
 
 const ui = createApp(el("app"), {
   play: (id) => startLaunch(CL[id]?.kind ?? "lunar"),
-  cancel: () => sessionReset.resetToHome("launch_aborted"),
   select: (id) => {
     if (launchOutcome && launchOutcome.kind !== CL[id]?.kind) launchOutcome = null;
     selected = id;
@@ -902,12 +901,7 @@ function launchView() {
     prefUncertain: st.prefUncertain,
     active: st.activeOutcome != null,
     inGame: gameUp,
-    showCancel: showsCancelLaunch({
-      activeOutcome: st.activeOutcome,
-      launchPhase: st.launchPhase,
-      homeUntilLive,
-      resetActive: sessionReset.isActive(),
-    }),
+    waiting: progressWaiting,
   };
 }
 
@@ -1035,13 +1029,15 @@ let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
 let manualRouteSubtitle = null;
 /**
- * Hold the home view (button narration, Cancel) until Cobblify reports in from
+ * Hold the home view (button narration) until Cobblify reports in from
  * this launch's game (enterGame). Set for every confirmed game dispatch; see
  * launch-view-route.js for the decision table.
  */
 let homeUntilLive = false;
-/** Cobblify reported in from this launch's game (`loaded`): the window is the dashboard, Cancel is gone. */
+/** Cobblify reported in from this launch's game (`loaded`): the window is the dashboard. */
 let gameUp = false;
+/** No game yet ~15 s after the click, Lunar/Prism still up (launch_progress `waiting`). */
+let progressWaiting = false;
 /** Overlay off with a confirmed game: no dashboard at all, Cobblify quits once it loaded (overlay-exit.js). */
 let noDashboard = false;
 
@@ -1153,7 +1149,7 @@ const sessionReset = createSessionReset({
   },
   invalidate: () => {
     launchController.invalidateSession();
-    // The reset owns the surface from here: the Cancel control goes away
+    // The reset owns the surface from here: the launch key gives way
     // before its own command has even answered.
     refreshUi();
   },
@@ -1174,13 +1170,14 @@ const sessionReset = createSessionReset({
     homeUntilLive = false;
     gameUp = false;
     noDashboard = false;
+    progressWaiting = false;
     suppressRefresh = false;
     progressStage = null;
     launchController.resetLaunchSession(prefs);
     stage.dataset.view = "home";
     refreshUi();
     updateController.setGameActive(false);
-    // Cancel, or the game ended: an add-wait follows through on the idle home.
+    // The launch ended: an add-wait follows through on the idle home.
     addWaitGo();
   },
   refreshHome: async () => {
@@ -1233,8 +1230,10 @@ function startProgressPolling() {
         return;
       }
       if (p?.stage) {
-        if (p.stage !== progressStage) {
+        const waiting = p.waiting === true;
+        if (p.stage !== progressStage || waiting !== progressWaiting) {
           progressStage = p.stage;
+          progressWaiting = waiting;
           refreshUi();
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
@@ -1320,6 +1319,7 @@ function startLaunch(kind, { retry = false } = {}) {
   lastLaunchKind = kind;
   suppressRefresh = true;
   progressStage = null;
+  progressWaiting = false;
   launchOutcome = null;
   freshSetup = false;
   const run = retry ? launchController.tryAgainLaunch(kind, launchHooks) : launchController.launch(kind, launchHooks);
@@ -1328,7 +1328,7 @@ function startLaunch(kind, { retry = false } = {}) {
 
 /**
  * The launch ended without Cobblify: the backend's verdict (`wrong_version` / `not_loaded`).
- * The session is released through the forcing abort - the same path Cancel takes, which
+ * The session is released through the forcing abort, which
  * guards a game still running so the next Launch cannot start a second one over it - and
  * home shows the outcome. Never kills the game; never quits the app (overlay off quits only
  * once Cobblify loaded, and an outcome means it did not).
@@ -1414,7 +1414,7 @@ async function resetFromLobby(reason) {
 
 /**
  * Cobblify reported in from this launch's game (TEST-NOTES 2, the user 2026-10-11): home gives way to the
- * dashboard, which asks the player to join Hypixel until they are on it. Cancel goes with home; quitting Minecraft
+ * dashboard, which asks the player to join Hypixel until they are on it. Quitting Minecraft
  * still returns home (the lobby poll's session end). Overlay off never shows it: Cobblify quits instead.
  */
 function enterGame() {

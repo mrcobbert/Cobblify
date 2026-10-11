@@ -150,6 +150,9 @@ pub struct Progress {
     pub stage: &'static str,
     pub percent: u8,
     pub loaded: bool,
+    /// No game from this launch yet, CLIENT_WAIT after the click, and Lunar/Prism still up (an
+    /// update or a sign-in in its own window): the bar reads "Waiting for Lunar/Prism".
+    pub waiting: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<Outcome>,
 }
@@ -171,6 +174,7 @@ fn stage(stage: &'static str, percent: u8) -> Progress {
         stage,
         percent,
         loaded: false,
+        waiting: false,
         outcome: None,
     }
 }
@@ -193,6 +197,7 @@ pub fn progress_for_forge(milestone: Milestone, settled: bool) -> Progress {
         stage,
         percent,
         loaded: false,
+        waiting: false,
         outcome: None,
     }
 }
@@ -207,6 +212,8 @@ pub enum Outcome {
     WrongVersion,
     /// Minecraft started (or died) without Cobblify loading.
     NotLoaded,
+    /// Lunar/Prism closed (or never came up) before any game of this launch appeared.
+    NotStarted,
 }
 
 /// (a) Forge finished loading mods; Cobblify has this long to write `lobby.json`.
@@ -277,6 +284,14 @@ impl LoadWatch {
     /// Cobblify loaded, or an outcome is decided: nothing more to watch.
     pub fn decided(&self) -> bool {
         self.loaded || self.outcome.is_some()
+    }
+
+    /// Ends an undecided launch with `outcome` (latched like every other verdict).
+    pub fn end(&mut self, outcome: Outcome) -> Option<Outcome> {
+        if !self.decided() {
+            self.outcome = Some(outcome);
+        }
+        self.outcome
     }
 
     /// Folds one poll's facts in at `now` and returns the outcome, if the launch has one.

@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   launchViewRoute,
   keepsStageNarration,
-  showsCancelLaunch,
 } from "./launch-view-route.js";
 
 const ACTIONS = ["game_launch_requested", "launcher_opened", "launch_unconfirmed"];
@@ -69,31 +68,6 @@ test("unknown and missing actions take the safe home route", () => {
     subtitleKind: null,
   });
   assert.equal(launchViewRoute(undefined).stayHome, true);
-});
-
-test("cancel launch is offered only in the dispatched-but-not-live window", () => {
-  const live = { action: "game_launch_requested" };
-  const base = {
-    activeOutcome: live,
-    launchPhase: "loading",
-    homeUntilLive: true,
-    resetActive: false,
-  };
-  // The window itself: dispatched, held on home, no reset running.
-  assert.equal(showsCancelLaunch(base), true);
-  // Settled but still pre-live is the same window - the quit that wedged
-  // the app happens here too.
-  assert.equal(showsCancelLaunch({ ...base, launchPhase: "done" }), true);
-  // Idle home: nothing to cancel.
-  assert.equal(
-    showsCancelLaunch({ ...base, activeOutcome: null, launchPhase: "idle" }),
-    false,
-  );
-  assert.equal(showsCancelLaunch({ ...base, launchPhase: "idle" }), false);
-  // Post-live: the marker is cleared when the dashboard opens.
-  assert.equal(showsCancelLaunch({ ...base, homeUntilLive: false }), false);
-  // A reset already in flight owns the surface.
-  assert.equal(showsCancelLaunch({ ...base, resetActive: true }), false);
 });
 
 test("stage narration is preserved only for the loading kind that owns it", () => {

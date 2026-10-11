@@ -53,11 +53,30 @@ test("a made instance's first launch shows Downloading Minecraft at 22%", () => 
   const m = homeModel({
     status: bothReady,
     selected: "prism",
-    launch: { kind: "forge", phase: "loading", stage: "forge_downloading", showCancel: true },
+    launch: { kind: "forge", phase: "loading", stage: "forge_downloading", waiting: true },
   });
-  assert.deepEqual(m.hero, { kind: "prog", label: "Downloading Minecraft", pct: 22 });
+  assert.deepEqual(m.hero, { kind: "prog", label: "Downloading Minecraft", pct: 22 }, "Prism downloading is not a wait");
   assert.equal(m.said, "Downloading Minecraft");
-  assert.deepEqual(m.keys, [{ label: "Cancel", act: "cancel" }]);
+  assert.deepEqual(m.keys, []);
+});
+
+test("no game 15 s after the click, the client still up: Waiting for Lunar / Prism, no error, no Cancel", () => {
+  assert.deepEqual(launchHero("lunar", "fired", true), { kind: "prog", label: "Waiting for Lunar", pct: 10 });
+  assert.deepEqual(launchHero("prism", "forge_fired", true), { kind: "prog", label: "Waiting for Prism", pct: 10 });
+  assert.equal(launchHero("lunar", "attached", true).label, "Starting Minecraft", "a game is up: the phases go on");
+  const m = homeModel({ status: bothReady, selected: "lunar", launch: { kind: "lunar", phase: "loading", stage: "fired", waiting: true } });
+  assert.equal(m.hero.label, "Waiting for Lunar");
+  assert.equal(m.said, "Waiting for Lunar");
+  assert.deepEqual(m.keys, []);
+});
+
+test("Lunar or Prism closed before any game: Try again, nothing under it", () => {
+  const m = homeModel({ status: bothReady, selected: "prism", launch: { outcome: "not_started", outcomeKind: "forge" } });
+  assert.deepEqual(m.hero, { kind: "act", label: "Try again", act: "play" });
+  assert.equal(m.under, null);
+  assert.equal(m.said, "Prism didn't start. Nothing is running. Try again when you're ready.");
+  const lunar = homeModel({ status: bothReady, selected: "lunar", launch: { outcome: "not_started", outcomeKind: "lunar" } });
+  assert.equal(lunar.said, "Lunar didn't start. Nothing is running. Try again when you're ready.");
 });
 
 test("wrong Lunar version: Launch stays, with the Set Lunar to 1.8.9 under-row", () => {
@@ -90,16 +109,16 @@ test("an outcome stays with the client that launched, and gives way to a new lau
   assert.equal(homeModel({ status: nothing }).under, null);
 });
 
-test("launching: the key is the progress, Cancel while it may be cancelled", () => {
+test("launching: the key is the progress, and nothing else (no Cancel)", () => {
   const m = homeModel({
     status: bothReady,
     selected: "lunar",
-    launch: { kind: "forge", phase: "loading", stage: "forge_mixing", showCancel: true },
+    launch: { kind: "forge", phase: "loading", stage: "forge_mixing" },
   });
   assert.equal(m.sel, "prism");
   assert.equal(m.launching, true);
   assert.deepEqual(m.hero, { kind: "prog", label: "Adding Cobblify", pct: 85 });
-  assert.deepEqual(m.keys, [{ label: "Cancel", act: "cancel" }]);
+  assert.deepEqual(m.keys, []);
   const busy = homeModel({ status: lunarReady, launch: { kind: "lunar", phase: "loading", busy: true } });
   assert.equal(busy.hero.label, "Opening Lunar");
 });

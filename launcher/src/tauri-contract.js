@@ -175,9 +175,10 @@ export function lunarVersionReady(invoke) {
  * `launch_progress`. Stages: fired / attached / discovered / mixing / settled (Lunar),
  * forge_fired / forge_downloading (a made instance's first launch) / forge_attached /
  * forge_discovered / forge_mixing / forge_settled (Prism). `outcome`, once present, ends the
- * launch: `wrong_version` (Lunar is not on 1.8.9, from the version guard's line or Weave's log) or `not_loaded`
- * (Minecraft started, or died, without Cobblify).
- * @typedef {{ stage: string, percent: number, loaded?: boolean, outcome?: 'wrong_version' | 'not_loaded' }} LaunchProgress
+ * launch: `wrong_version` (Lunar is not on 1.8.9, from the version guard's line or Weave's log), `not_loaded`
+ * (Minecraft started, or died, without Cobblify) or `not_started` (Lunar/Prism closed before any game appeared).
+ * `waiting`: no game ~15 s after the click and Lunar/Prism still up.
+ * @typedef {{ stage: string, percent: number, loaded?: boolean, waiting?: boolean, outcome?: 'wrong_version' | 'not_loaded' | 'not_started' }} LaunchProgress
  */
 /** @typedef {{ kind: 'snapshot', snapshot: object, token: number } | { kind: 'unavailable', reason?: string } | { kind: 'session_ended', reason: string }} LobbyPoll */
 /** Reply of BOTH `reset_session_end` and `abort_launch_session`. */
