@@ -13,7 +13,7 @@ import static org.junit.Assert.assertTrue;
 /**
  * Covers the {@code moduleTheme} -> {@code guiAccent} config migration and the pure token normalization
  * in {@link GuiTheme}. The migration is deliberately Gson-driven: an old JSON with {@code moduleTheme}
- * loads (unknown members are ignored), defaults {@code guiAccent} to orange, and drops the legacy key on
+ * loads (unknown members are ignored), defaults {@code guiAccent} to pale-blue, and drops the legacy key on
  * the next save.
  */
 public class ClientSettingsConfigTest {
@@ -24,10 +24,10 @@ public class ClientSettingsConfigTest {
     private static final String LEGACY_JSON = "{\"moduleTheme\":7,\"guiSize\":1,\"autoGg\":true}";
 
     @Test
-    public void legacyModuleThemeMigratesToOrangeAndKeepsUnrelated() {
+    public void legacyModuleThemeMigratesToTheDefaultAccentAndKeepsUnrelated() {
         ClientSettings s = GSON.fromJson(LEGACY_JSON, ClientSettings.class);
         s.sanitize();
-        assertEquals("legacy moduleTheme collapses to the default accent", "orange", s.guiAccent);
+        assertEquals("legacy moduleTheme collapses to the default accent", "pale-blue", s.guiAccent);
         assertEquals("unrelated int setting survives", 1, s.guiSize);
         assertTrue("unrelated boolean setting survives", s.autoGg);
     }
@@ -161,11 +161,11 @@ public class ClientSettingsConfigTest {
 
     @Test
     public void normalizeTokenDefaultsAndPreserves() {
-        assertEquals("orange", GuiTheme.normalizeToken(null));
-        assertEquals("orange", GuiTheme.normalizeToken(""));
+        assertEquals("pale-blue", GuiTheme.normalizeToken(null));
+        assertEquals("pale-blue", GuiTheme.normalizeToken(""));
         assertEquals("orange", GuiTheme.normalizeToken("ORANGE"));
         assertEquals("blue", GuiTheme.normalizeToken("  Blue  "));
-        assertEquals("orange", GuiTheme.normalizeToken("chartreuse"));
+        assertEquals("pale-blue", GuiTheme.normalizeToken("chartreuse"));
         assertEquals("teal", GuiTheme.normalizeToken("Teal"));
         assertEquals("purple", GuiTheme.normalizeToken("Purple"));
         assertEquals("red", GuiTheme.normalizeToken("red"));
@@ -173,9 +173,9 @@ public class ClientSettingsConfigTest {
 
     @Test
     public void fromTokenResolvesAccents() {
-        assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken(null));
-        assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken(""));
-        assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken("chartreuse"));
+        assertEquals(GuiTheme.Accent.PALE_BLUE, GuiTheme.fromToken(null));
+        assertEquals(GuiTheme.Accent.PALE_BLUE, GuiTheme.fromToken(""));
+        assertEquals(GuiTheme.Accent.PALE_BLUE, GuiTheme.fromToken("chartreuse"));
         assertEquals(GuiTheme.Accent.TEAL, GuiTheme.fromToken("teal"));
         assertEquals(GuiTheme.Accent.WHITE, GuiTheme.fromToken("white"));
         assertEquals(GuiTheme.Accent.ORANGE, GuiTheme.fromToken("ORANGE"));
@@ -260,17 +260,17 @@ public class ClientSettingsConfigTest {
     }
 
     @Test
-    public void fontDefaultsToModernAndOnlyMinecraftSwitchesIt() {
+    public void fontDefaultsToMinecraftAndOnlyModernSwitchesIt() {
         ClientSettings s = new ClientSettings();
         s.sanitize();
-        assertEquals("modern", s.guiFont);
-        assertFalse(s.minecraftFont());
-        ClientSettings mc = GSON.fromJson("{\"guiFont\":\"minecraft\"}", ClientSettings.class);
-        mc.sanitize();
-        assertTrue(mc.minecraftFont());
+        assertEquals("minecraft", s.guiFont);
+        assertTrue(s.minecraftFont());
+        ClientSettings modern = GSON.fromJson("{\"guiFont\":\"modern\"}", ClientSettings.class);
+        modern.sanitize();
+        assertFalse(modern.minecraftFont());
         ClientSettings odd = GSON.fromJson("{\"guiFont\":\"comic-sans\"}", ClientSettings.class);
         odd.sanitize();
-        assertEquals("modern", odd.guiFont);
+        assertEquals("minecraft", odd.guiFont);
     }
 
     @Test

@@ -286,7 +286,7 @@ public final class SheetSchema {
                         seg("sbSize", "Scoreboard Size", "Size of the sidebar scoreboard", "sidebar", "Small", "Medium", "Large"),
                         seg("tabSize", "Tab List Size", "Size of the player list", "players", "Small", "Medium", "Large"),
                         seg("guiSize", "GUI Size", "Size of this menu", "menu scale", "Small", "Medium", "Large"),
-                        seg("font", "Font", "Text in this menu and the HUD", "minecraft typeface text", "Modern", "Minecraft"),
+                        seg("font", "Font", "Text in this menu and the HUD", "minecraft typeface text", "Minecraft", "Modern"),
                         swatch("accent", "Accent", "Colour for on, selected and highlights", "colour color theme",
                                 accentNames(), accentColors()))}));
         CATS = Collections.unmodifiableList(cats);
