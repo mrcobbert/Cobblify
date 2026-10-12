@@ -468,6 +468,49 @@ try {
   if ((Run @('restore', '--yes')) -ne 0 -and (OutHas 'more than one stash is active')) { Ok 'two active stashes are named, not guessed between' } else { Bad 'two active stashes accepted'; Show }
   Remove-Item -LiteralPath "$HOME_\CobblifyStash\a1", "$HOME_\CobblifyStash\a2" -Recurse -Force
 
+  Write-Output '== review code-2: links above a folder, Prism --data-only with UserData, a crash mid-sweep =='
+  Populate; $before = Tree
+  $outside3 = Join-Path $T 'Outside3'
+  MkFile "$outside3\PrismData\accounts.json" '{}'
+  Junction "$HOME_\PrismLink" $outside3
+  $before = Tree
+  $rc = Run @('aside', 'all', '--yes') @{ PRISMLAUNCHER_DATA_DIR = "$HOME_\PrismLink\PrismData" }
+  $row = @(if (Stash) { [IO.File]::ReadAllLines((Join-Path (Stash) 'inventory.tsv')) | Where-Object { $_ -like "*PrismLink*" } })
+  if (($rc -ne 0 -and (OutHas 'outside your user folder')) -or ($rc -eq 0 -and $row.Count -eq 1 -and $row[0] -like "prism${TAB}untouched${TAB}*")) {
+    Ok 'a folder reached through a junction is never moved (B1)'
+  } else { Bad "a folder behind a junction was taken (exit $rc, row '$row')"; Show }
+  if (Test-Path -LiteralPath "$outside3\PrismData\accounts.json") { Ok 'the folder behind the junction is untouched' } else { Bad 'outside data moved' }
+  if ($rc -eq 0) { if ((Run @('restore', '--yes')) -ne 0) { Bad 'restore failed'; Show } }
+  ExpectTree $before 'round trip with a junction in the profile'
+  cmd /c rmdir "$HOME_\PrismLink"
+
+  Populate
+  MkFile "$L_\Programs\PrismLauncher\UserData\accounts.json" '{"signed":"in"}'
+  MkFile "$L_\Programs\PrismLauncher\UserData\instances\I\instance.cfg"
+  $before = Tree
+  if ((Run @('aside', 'prism', '--data-only', '--yes')) -eq 0) { Ok 'aside prism --data-only succeeds' } else { Bad 'aside failed'; Show }
+  if ((Test-Path -LiteralPath "$L_\Programs\PrismLauncher\prismlauncher.exe") -and -not (Test-Path -LiteralPath "$L_\Programs\PrismLauncher\UserData") -and -not (Test-Path -LiteralPath "$A_\PrismLauncher")) {
+    Ok 'the program stays, its UserData and AppData data move (I1)'
+  } else { Bad 'data-only with UserData' }
+  if ((Run @('restore', '--yes')) -ne 0) { Bad 'restore failed'; Show }
+  ExpectTree $before 'data-only round trip with UserData'
+  if ((Run @('aside', 'prism', '--yes')) -eq 0 -and -not (Test-Path -LiteralPath "$L_\Programs\PrismLauncher")) { Ok 'without --data-only the program moves whole, UserData inside it' } else { Bad 'full aside with UserData'; Show }
+  if ((Run @('restore', '--yes')) -ne 0) { Bad 'restore failed'; Show }
+  ExpectTree $before 'full round trip with UserData'
+
+  Populate; $before = Tree
+  if ((Run @('aside', 'all', '--yes')) -ne 0) { Bad 'aside failed' }
+  SimulateTesting
+  MkFile "$HOME_\Games\NewPrism\prismlauncher.exe" 'new portable'
+  MkFile "$HOME_\Games\NewPrism\portable.txt" ''
+  MkFile "$HOME_\Games\NewPrism\prismlauncher.cfg" "[General]`nInstanceDir=$($HOME_.Replace('\','/'))/NewInstances"
+  MkFile "$HOME_\NewInstances\Cobblify 1.8.9\instance.cfg"
+  MkFile "$HOME_\.cobblify\prism-location.json" ('{"exe":"' + "$HOME_\Games\NewPrism\prismlauncher.exe".Replace('\','\\') + '"}')
+  $rc = Run @('restore', '--yes') @{ FRESH_CRASH_DST = 'new\\1\\home\\\.cobblify$' }
+  if ($rc -eq 7 -and (Test-Path -LiteralPath "$HOME_\Games\NewPrism")) { Ok 'the crash came after .cobblify, before the new Prism' } else { Bad "crash order (exit $rc)"; Show }
+  if ((Run @('restore', '--yes')) -eq 0) { Ok 'the retried restore succeeds' } else { Bad 'retried restore failed'; Show }
+  ExpectTree $before 'the retry still sweeps the Prism installed while testing (I2)'
+
   Write-Output "== Weave's jar is found at the home-based path, whatever %APPDATA% is =="
   Populate; $before = Tree
   $roaming = Join-Path $T 'Redirected\Roaming'

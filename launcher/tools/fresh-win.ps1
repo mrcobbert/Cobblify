@@ -165,9 +165,19 @@ function PrismExtras {
     $dir = Full $d
     if (-not $dir -or -not [IO.File]::Exists((Join-Path $dir 'prismlauncher.exe'))) { continue }
     $userData = Join-Path $dir 'UserData'
-    $portable = [IO.Directory]::Exists($userData) -or [IO.File]::Exists((Join-Path $dir 'portable.txt'))
-    AddX $dir (-not $portable)
-    if ([IO.Directory]::Exists($userData)) { $dataDirs += $userData } elseif ($portable) { $dataDirs += $dir }
+    if ([IO.Directory]::Exists($userData)) {
+      # The program, with its data in its UserData folder: --data-only keeps the one and moves
+      # the other (review code-2 I1).
+      AddX $dir $true
+      AddX $userData $false
+      $dataDirs += $userData
+    } elseif ([IO.File]::Exists((Join-Path $dir 'portable.txt'))) {
+      # Portable: the data is the folder itself, so it always moves whole.
+      AddX $dir $false
+      $dataDirs += $dir
+    } else {
+      AddX $dir $true
+    }
   }
   foreach ($data in $dataDirs) {
     $dfull = Full $data
@@ -185,19 +195,35 @@ function PrismExtras {
       }
     }
   }
-  # Drop what the fixed list (or an earlier extra) already covers.
-  $cover = @(Inventory | ForEach-Object { $_.Path })
+  # Drop what the fixed list (or an earlier extra) already covers: the same path, or one inside
+  # a folder that moves whole. Data inside a program folder stays listed (--data-only moves it
+  # out of the kept program; otherwise aside sees it inside a moved item and skips it).
+  $cover = @(Inventory)
   $out = @()
   foreach ($x in $found) {
     $covered = $false
-    foreach ($c in ($cover + @($out | ForEach-Object { $_.Path }))) { if (IsUnder $x.Path $c) { $covered = $true; break } }
+    foreach ($c in ($cover + $out)) {
+      if ((SameText $x.Path $c.Path) -or ((IsUnder $x.Path $c.Path) -and -not $c.App)) { $covered = $true; break }
+    }
     if (-not $covered) { $out += $x }
   }
   return $out
 }
 
-# Inside the profile (never the profile itself), by normalized path.
-function InProfile([string]$p) { return (IsUnder $p $HomeDir) -and -not (SameText $p $HomeDir) }
+# Inside the profile (never the profile itself), by normalized path, and reached without
+# passing through a junction or link: a folder below a link may really be anywhere (review
+# code-2 B1). The item itself may be a link; it is moved as one.
+function InProfile([string]$p) {
+  if (-not (IsUnder $p $HomeDir) -or (SameText $p $HomeDir)) { return $false }
+  $d = [IO.Path]::GetDirectoryName($p)
+  while ($d -and -not (SameText $d $HomeDir)) {
+    try {
+      if ([IO.File]::GetAttributes($d) -band [IO.FileAttributes]::ReparsePoint) { return $false }
+    } catch { }
+    $d = [IO.Path]::GetDirectoryName($d)
+  }
+  return $true
+}
 
 function GroupOfName([string]$path) {
   $n = (Split-Path -Leaf $path).ToLowerInvariant()
@@ -663,6 +689,13 @@ function CmdAside([string[]]$argv) {
     else { $state = 'present' }
     $plan += [pscustomobject]@{ Group = $i.Group; State = $state; Path = $i.Path }
   }
+  # Something inside an item that moves whole moves with it (and its record covers it).
+  foreach ($p in $plan) {
+    if ($p.State -ne 'present') { continue }
+    foreach ($q in $plan) {
+      if ($q -ne $p -and $q.State -eq 'present' -and (IsUnder $p.Path $q.Path) -and -not (SameText $p.Path $q.Path)) { $p.State = 'untouched'; break }
+    }
+  }
   $present = @($plan | Where-Object { $_.State -eq 'present' })
   Say 'This will MOVE (not delete) these into %USERPROFILE%\CobblifyStash:'
   foreach ($p in $present) { Say "  $($p.Path)" }
@@ -766,6 +799,21 @@ function CmdRestore([string[]]$argv) {
     if (InProfile $i.Path) { $sweep += $i.Path } else { $outsideNew += $i.Path }
   }
 
+  # What this restore found to sweep is written down before anything moves: a crash after
+  # .cobblify is swept loses the record that pointed at a Prism installed while testing, and a
+  # retry must still sweep it (review code-2 I2).
+  $foundFile = Join-Path $script:STASH 'found.txt'
+  if ($sweep.Count -gt 0) { [IO.File]::AppendAllText($foundFile, (($sweep -join "`n") + "`n"), $UTF8) }
+  if ([IO.File]::Exists($foundFile)) {
+    foreach ($p in [IO.File]::ReadAllLines($foundFile, $UTF8)) {
+      # Recorded paths are classified above from the record itself; only the rest come from here.
+      if ($p -and (Exists $p) -and (InProfile $p) -and -not ($sweep -contains $p)) {
+        $isRecorded = $false
+        foreach ($r in $recorded) { if (SameText $r $p) { $isRecorded = $true } }
+        if (-not $isRecorded) { $sweep += $p }
+      }
+    }
+  }
   $failed = $false
   if ($sweep.Count -gt 0) {
     foreach ($p in (TopMost $sweep)) {
