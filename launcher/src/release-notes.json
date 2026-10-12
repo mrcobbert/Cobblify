@@ -2,13 +2,18 @@
   {
     "version": "0.18.0",
     "channel": "stable",
-    "date": "2026-10-06",
+    "date": "2026-10-11",
     "sections": [
       ["New", [
         "A new launcher, built like the in-game menu: one Launch button that remembers Lunar or Prism, and settings in a side sheet.",
+        "The stats board is drawn like Bed Wars' sidebar: one line per player, sized to your window.",
         "What's New shows the changes once after each update.",
         "The launcher follows the accent colour and font you picked in game.",
         "Updates download by themselves until you turn Auto-update off."
+      ]],
+      ["Changes", [
+        "The Minecraft font and Pale Blue are now the in-game default look.",
+        "Session Stats draws on top of everything; Session Stats and Map Info hide when you're not on Hypixel."
       ]]
     ]
   },
