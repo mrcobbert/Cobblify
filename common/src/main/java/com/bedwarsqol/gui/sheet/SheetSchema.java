@@ -222,11 +222,11 @@ public final class SheetSchema {
                         inGame("genTimersInGame", "Hide them in lobbies")),
                 module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
                         inGame("keystrokesInGame", "Hide it in lobbies")),
+                module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
+                        inGame("mapInfoInGame", "Hide it in lobbies")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
                         toggle("sessionHold", "Hold Key to Show", "Show the stats only while a key is held"),
-                        sessionKey, sessionReset),
-                module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
-                        inGame("mapInfoInGame", "Hide it in lobbies"))));
+                        sessionKey, sessionReset)));
         cats.add(category("combat", "Combat",
                 module("handPos", "Hand Position", "Move and resize held item", "item sword viewmodel",
                         slider("handX", "X", "Left and right", -1, 1, 0.01, 2, ""),

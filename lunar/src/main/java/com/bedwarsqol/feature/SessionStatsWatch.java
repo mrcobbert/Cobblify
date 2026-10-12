@@ -238,7 +238,7 @@ public final class SessionStatsWatch {
     }
 
     /**
-     * Whether the box draws now: enabled, always in the HUD editor, otherwise only on Hypixel, and in
+     * Whether the box draws now: enabled, always in the HUD editor, otherwise on any server, and in
      * Hold Key to Show mode only while the Session Stats key is held with no screen open
      * ({@link SessionHoldKey#hudVisible}).
      */
@@ -247,8 +247,8 @@ public final class SessionStatsWatch {
         Minecraft mc = Minecraft.getMinecraft();
         boolean screenOpen = mc != null && mc.currentScreen != null;
         boolean keyDown = cfg.sessionStatsHoldKey && !screenOpen && holdKeyDown(cfg.sessionStatsKeyCode);
-        return SessionHoldKey.hudVisible(cfg.sessionStatsEnabled, example, HypixelContext.isOnHypixel(),
-                cfg.sessionStatsHoldKey, cfg.sessionStatsKeyCode, screenOpen, keyDown);
+        return SessionHoldKey.hudVisible(cfg.sessionStatsEnabled, example, cfg.sessionStatsHoldKey,
+                cfg.sessionStatsKeyCode, screenOpen, keyDown);
     }
 
     /** Whether the Session Stats key is held right now, read straight from the keyboard or mouse. */
