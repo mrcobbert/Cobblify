@@ -51,7 +51,7 @@ const app = await bootWindow({
   replies,
   setup: (w) => w.localStorage.setItem("cobblify.client", "prism"),
 });
-const { window, document, el, waitFor, calls } = app;
+const { window, document, el, waitFor, calls, tick } = app;
 const home = el("app");
 const $ = (s) => home.querySelector(s);
 const root = document.documentElement;
@@ -249,7 +249,9 @@ test("Set Lunar to 1.8.9: a Lunar game seen while waiting ends the wait for good
   await waitFor(() => looks() > atGame, { label: "the game seen", timeout: 3000 });
   versionReady = "ready";
   const after = looks();
-  await new Promise((r) => setTimeout(r, 2500));
+  // The harness's own wait: the global setTimeout is the app's, unref'd, and would let Node end
+  // the test before it runs (Windows did).
+  await tick(2500);
   assert.equal(looks(), after, "no more looks");
   assert.equal(calls.filter((c) => c.command === "launch_lunar").length, launches + 1, "nothing relaunched");
 });
