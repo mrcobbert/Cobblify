@@ -1,22 +1,10 @@
-import "@fontsource/unbounded/latin-700.css";
-import "@fontsource/dm-mono/latin-400.css";
-import "@fontsource/dm-mono/latin-500.css";
 import "./ui/fonts.css";
 import "./ui/tokens.css";
 import "./dash.css";
 import "./ui/app.css";
 
-import {
-  activeFirst,
-  aliases,
-  dashboardParty,
-  isActive,
-  presenceBadge,
-  rankedOpponentTeams,
-  sortRoster,
-  withoutPlayers,
-} from "./roster-identity.js";
 import { PREVIEW_STATUS, resolvePreviewStatus } from "./setup-fixtures.js";
+import { PREVIEW_LOBBY } from "./board-fixtures.js";
 import { PREVIEW_UPDATE, resolvePreviewUpdate } from "./update-fixtures.js";
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
@@ -26,7 +14,8 @@ import { createSessionReset } from "./session-reset.js";
 import { createUpdateController } from "./update-controller.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
-import { colorClass, rowModel, sectionSpans } from "./row-model.js";
+import { boardView } from "./board-model.js";
+import { createBoard, subHTML } from "./board-render.js";
 import {
   SETUP_EVENT,
   abortLaunchSession,
@@ -63,7 +52,7 @@ const connAnnounce = el("conn-announce");
  *   ?ctx=lobby|unsupported|disconnected  lobby dashboard / disconnected
  *   ?outcome=wrong_version|not_loaded  how a preview launch ends (launch_progress' outcome)
  *   ?first=1  a Prism preview launch is a made instance's first (Downloading Minecraft)
- *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
+ *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted (+ _resetting)|join|manual
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
  *   ?open=updated|fresh&version=…  what open_info answers
@@ -71,199 +60,6 @@ const connAnnounce = el("conn-announce");
  *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
-
-// ── preview sample data ─────────────────────────────────────────────────────
-// Shaped exactly like a v2 lobby.json row: the mod has already decided the
-// tier, the cheater flag, the badge and the chips, so the sample carries them.
-const RANK_CODES = {
-  "[MVP++]": "§6[MVP§c++§6]",
-  "[MVP+]": "§b[MVP§c+§b]",
-  "[MVP]": "§b[MVP]",
-  "[VIP+]": "§a[VIP§6+§a]",
-  "[VIP]": "§a[VIP]",
-};
-const chip = (code, color, label, positive = false) => ({ code, color, label, positive });
-const tagged = (chips, cheater) => ({ chips, badge: chips[0] ?? null, cheater });
-const pp = (o) =>
-  Object.assign(
-    {
-      state: "OK",
-      nicked: false,
-      realName: null,
-      rank: "",
-      rankCodes: RANK_CODES[o.rank] ?? "",
-      mode: "Overall",
-      fkdr: 0,
-      wlr: 0,
-      finalKills: 0,
-      kd: 0,
-      fkdrTier: 0,
-      cheater: false,
-      badge: null,
-      chips: [],
-      seraphThreat: -1,
-    },
-    o,
-  );
-
-const P = {
-  you: pp({ name: "you_", rank: "[MVP+]", fkdrTier: 2, fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
-  duo: pp({ name: "duo_diff", rank: "[VIP+]", fkdrTier: 2, fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
-  third: pp({ name: "third_wheeler", rank: "[MVP]", fkdrTier: 1, fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
-  clutch: pp({ name: "clutch_or_kick", rank: "[VIP]", fkdrTier: 0, fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
-  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdrTier: 3, fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, ...tagged([chip("BC", "§6", "Blatant Cheater"), chip("BL", "§4", "Blacklisted (verified)")], true) }),
-  wallhax: pp({ name: "wallhax_", rank: "[VIP]", fkdrTier: 3, fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, ...tagged([chip("CC", "§6", "Closet Cheater")], true) }),
-  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdrTier: 3, fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
-  zenith: pp({ name: "ok_zenith", rank: "[MVP+]", fkdrTier: 2, fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
-  prot: pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdrTier: 2, fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
-  frost: pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdrTier: 1, fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
-  moss: pp({ name: "mossling", rank: "[MVP]", fkdrTier: 1, fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
-  ogre: pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdrTier: 1, fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
-  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdrTier: 1, fkdr: 2.1, ...tagged([chip("SL", "§a", "Safelisted", true)], false), wlr: 1.4, finalKills: 3120, kd: 1.6 }),
-  virus: pp({ name: "notavirus_exe", rank: "[VIP+]", fkdrTier: 0, fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, ...tagged([chip("S", "§4", "Sniper")], false) }),
-  bread: pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdrTier: 0, fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
-  cool: pp({ name: "coolkid2013", rank: "", fkdrTier: 0, fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
-  nick: pp({ name: "iToxicWaffle", rank: "", state: "NICKED", nicked: true }),
-  grandpa: pp({ name: "Grandpa_Joe", rank: "", state: "NEVER_PLAYED" }),
-  lag: pp({ name: "lagswitch99", rank: "[VIP]", state: "LOADING" }),
-  sniped: pp({ name: "sniped_u", rank: "", state: "LOADING" }),
-};
-
-/** Preview only: the same player, out of the game. */
-const out = (p, presence) => ({ ...p, presence });
-
-const PREVIEW_PARTY1 = [P.you];
-const PREVIEW_PARTY = [P.you, P.duo];
-const PREVIEW_PARTY3 = [P.you, P.duo, P.third];
-const PREVIEW_PARTY4 = [P.you, P.duo, P.third, P.clutch];
-
-function previewSnap(context, extra) {
-  return Object.assign(
-    {
-      v: 1,
-      jvmPid: 4242,
-      jvmStartTimeMs: 1_700_000_000_000,
-      inHypixel: true,
-      self: "you_",
-      mode: null,
-      partyCount: null,
-      yourParty: [],
-      teams: [],
-      players: [],
-    },
-    extra,
-    { context },
-  );
-}
-
-const team = (name, players) => ({ name, players });
-
-const PREVIEW_LOBBY = {
-  lobby: previewSnap("LOBBY", {
-    seq: 1001,
-    yourParty: PREVIEW_PARTY,
-    players: [P.shadow, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.aqua, P.bread, P.cool, P.nick, P.grandpa, P.lag],
-  }),
-  unsupported: previewSnap("LOBBY", { seq: 1002, dashboardEligible: false }),
-  queueSolo: previewSnap("QUEUE", {
-    seq: 1010,
-    mode: "Solos",
-    partyCount: 8,
-    yourParty: PREVIEW_PARTY1,
-    players: [P.wallhax, P.tenko, P.sniped],
-  }),
-  queueDoubles: previewSnap("QUEUE", {
-    seq: 1011,
-    mode: "Doubles",
-    partyCount: 5,
-    yourParty: PREVIEW_PARTY,
-    players: [P.wallhax, P.tenko, P.zenith, P.frost, P.sniped],
-  }),
-  queueThrees: previewSnap("QUEUE", {
-    seq: 1012,
-    mode: "3v3v3v3",
-    partyCount: 4,
-    yourParty: PREVIEW_PARTY3,
-    players: [P.shadow, P.wallhax, P.tenko, P.zenith, P.frost, P.moss, P.nick, P.lag],
-  }),
-  queueFours: previewSnap("QUEUE", {
-    seq: 1013,
-    mode: "4v4v4v4",
-    partyCount: 6,
-    yourParty: PREVIEW_PARTY4,
-    players: [P.shadow, P.wallhax, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.ogre, P.aqua, P.virus, P.bread, P.cool, P.nick, P.grandpa, P.lag, P.sniped],
-  }),
-  gameSolo: previewSnap("GAME", {
-    seq: 1020,
-    mode: "Solos",
-    yourParty: PREVIEW_PARTY1,
-    teams: [
-      team("Red", [P.shadow]),
-      team("Blue", [P.you]),
-      team("Green", [P.tenko]),
-      team("Yellow", [P.zenith]),
-      team("Aqua", [P.moss]),
-      team("White", [P.bread]),
-      team("Pink", [P.nick]),
-      team("Gray", [P.grandpa]),
-    ],
-  }),
-  gameDoubles: previewSnap("GAME", {
-    seq: 1021,
-    mode: "Doubles",
-    yourParty: PREVIEW_PARTY,
-    teams: [
-      team("Red", [P.shadow, P.wallhax]),
-      team("Blue", [P.you, P.duo]),
-      team("Green", [P.tenko, P.zenith]),
-      team("Yellow", [P.prot, P.frost]),
-      team("Aqua", [P.moss, P.aqua]),
-      team("White", [P.bread, P.cool]),
-      team("Pink", [P.virus, P.nick]),
-      team("Gray", [P.grandpa, P.lag]),
-    ],
-  }),
-  gameThrees: previewSnap("GAME", {
-    seq: 1022,
-    mode: "3v3v3v3",
-    yourParty: PREVIEW_PARTY,
-    teams: [
-      team("Red", [P.shadow, P.tenko, P.zenith]),
-      team("Blue", [P.you, P.duo, P.bread]),
-      team("Green", [P.moss, P.cool, P.grandpa]),
-      team("Yellow", [P.aqua, P.nick, P.prot]),
-    ],
-  }),
-  gameFours: previewSnap("GAME", {
-    seq: 1023,
-    mode: "4v4v4v4",
-    yourParty: PREVIEW_PARTY4,
-    teams: [
-      team("Red", [P.shadow, P.wallhax, P.tenko, out(P.zenith, "ELIMINATED")]),
-      team("Blue", [P.you, P.duo, P.third, P.clutch]),
-      team("Green", [P.frost, P.moss, out(P.cool, "DISCONNECTED"), out(P.grandpa, "MISSING")]),
-      team("Yellow", [
-        out(P.virus, "ELIMINATED"),
-        out(P.bread, "ELIMINATED"),
-        out(P.nick, "ELIMINATED"),
-        out(P.prot, "ELIMINATED"),
-      ]),
-    ],
-  }),
-  game4v4: previewSnap("GAME", {
-    seq: 1024,
-    mode: "4v4",
-    yourParty: PREVIEW_PARTY4,
-    teams: [
-      team("Red", [P.shadow, P.wallhax, P.tenko, P.zenith]),
-      team("Blue", [P.you, P.duo, P.third, P.clutch]),
-    ],
-  }),
-};
-PREVIEW_LOBBY.queue = PREVIEW_LOBBY.queueDoubles;
-PREVIEW_LOBBY.queue16 = PREVIEW_LOBBY.queueFours;
-PREVIEW_LOBBY.game = PREVIEW_LOBBY.gameThrees;
-PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
 
 let previewLaunchAt = null;
 let previewLaunchForge = false;
@@ -980,13 +776,15 @@ function applyTheme(sel) {
 }
 
 /**
- * The first open after an update: the island's build replay, then What's New. Once, on the first READY home of the
- * session: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is
- * marked played only when ui.open actually played it.
+ * Every open: the island's build replay, then What's New after an update. Once per session. An open without an update
+ * replays only when its first settled home is ready to play: a first run or a setup has just built the island part by
+ * part, and a build arriving later in the session is no longer the open. After an update the first READY home plays
+ * it: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is marked
+ * played only when ui.open actually played it.
  */
 function maybeOpen(home) {
   if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
-  if (!openInfoReply.updated) {
+  if (!openInfoReply.updated && home.hero?.kind !== "play") {
     openPlayed = true;
     return;
   }
@@ -1025,7 +823,6 @@ let progressTimer = null;
 let lobbyTimer = null;
 let lobbyPollInFlight = false;
 let lastKey = null;
-let lastView = null;
 let firstLiveSeen = false;
 let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
@@ -1043,12 +840,42 @@ let progressWaiting = false;
 /** Overlay off with a confirmed game: no dashboard at all, Cobblify quits once it loaded (overlay-exit.js). */
 let noDashboard = false;
 
+const boardUi = createBoard({ stage, board: dash, title: el("dash-title"), joining });
+const joiningSub = el("joining-sub");
+const connActionKey = el("conn-action");
+const connActionSlot = el("conn-act");
+
 const connection = createConnectionModel();
 const connectionShell = createConnectionShell({
   titleEl: el("joining-title"),
-  subEl: el("joining-sub"),
+  // The sub line draws the glyphs the pixel font lacks and steps the dots of "Returning home…".
+  subEl: {
+    get textContent() {
+      return joiningSub.dataset.text ?? "";
+    },
+    set textContent(text) {
+      joiningSub.dataset.text = text;
+      joiningSub.innerHTML = subHTML(text);
+    },
+  },
   shellEl: joining,
-  actionEl: el("conn-action"),
+  // The key sits in its own slot (the gap above it): the slot shows and hides with it.
+  actionEl: {
+    get hidden() {
+      return connActionKey.hidden;
+    },
+    set hidden(on) {
+      connActionKey.hidden = on;
+      connActionSlot.hidden = on;
+    },
+    get textContent() {
+      return connActionKey.textContent;
+    },
+    set textContent(text) {
+      connActionKey.textContent = text;
+    },
+    addEventListener: (...args) => connActionKey.addEventListener(...args),
+  },
   announceEl: connAnnounce,
   actions: {
     preexisting_game: {
@@ -1068,13 +895,7 @@ const connectionShell = createConnectionShell({
     },
   },
   clearRoster: () => {
-    dash.classList.remove("on");
-    dash.replaceChildren();
-    delete dash.dataset.ctx;
-    delete dash.dataset.density;
-    delete dash.dataset.teams;
-    lastKey = null;
-    lastView = null;
+    clearBoard();
   },
   stopProgress: () => {
     stopProgressPolling();
@@ -1160,13 +981,7 @@ const sessionReset = createSessionReset({
     connection.reset();
     connectionShell.reset();
     connAnnounce.textContent = "";
-    dash.classList.remove("on");
-    dash.replaceChildren();
-    delete dash.dataset.ctx;
-    delete dash.dataset.density;
-    delete dash.dataset.teams;
-    lastKey = null;
-    lastView = null;
+    clearBoard();
     firstLiveSeen = false;
     manualRouteSubtitle = null;
     homeUntilLive = false;
@@ -1481,7 +1296,7 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
   const step = nextLiveDashboard(d, {
     firstLiveSeen,
     wasDisconnected: reconnect,
-    eligibleViewOf: viewOfEligible,
+    eligibleViewOf: boardView,
   });
   if (step.enterDashboard) {
     enterDashboard();
@@ -1492,345 +1307,72 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
   const key = `${ctx}:${d.seq ?? ""}:${step.eligible ? "1" : "0"}`;
   if (key !== lastKey) {
     try {
-      const view = step.view;
-      const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
-      dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
-      lastView = view;
+      // The view is a pure model (board-model.js); the board draws it and lays it out for this window and context
+      // (board-render.js, board-layout.js), never re-deciding the layout on a data tick.
+      boardUi.draw(step.view);
       lastKey = key;
       dash.dataset.ctx = ctx.toLowerCase();
       if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
       else delete dash.dataset.teams;
-      fitDash();
     } catch (e) {
-      // The dashboard view is already up (it has to be: the dash is
-      // display:none until then, so the column plan cannot measure it). A
-      // render that throws used to return from here, leaving that view on
-      // screen with an empty, never-shown roster - a black window with no
-      // way back. Say so instead, and keep the next snapshot free to redraw.
+      // The dashboard view is already up. A render that throws used to leave that view on screen with an empty,
+      // never-shown roster - a black window with no way back. Say so instead, and keep the next snapshot free to
+      // redraw.
       console.error(e);
-      const note = document.createElement("div");
-      note.className = "dash-error";
-      note.textContent = `The roster could not be drawn. ${String(e)}`;
-      dash.replaceChildren(note);
+      boardUi.fail(`The roster could not be drawn. ${String(e)}`);
       delete dash.dataset.ctx;
       delete dash.dataset.teams;
-      lastView = null;
       lastKey = null;
     }
   }
   dash.classList.add("on");
 }
 
-const currentCols = () =>
-  Number(dash.firstElementChild?.style.getPropertyValue("--n")) || 1;
-
-// A resized window is a different layout problem: a column may now fit that
-// didn't, and the density that fitted the old height may not fit the new one.
-// Re-columning means re-rendering, so it only happens when the count changes.
-function syncDashLayout() {
-  if (stage.dataset.view !== "dash" || !lastView || !dash.firstElementChild) return;
-  const have = currentCols();
-  const want = planCols(lastView, dash.clientWidth, have);
-  if (want !== have) dash.innerHTML = sheetHtml(lastView, want);
-  fitDash();
-}
-new ResizeObserver(syncDashLayout).observe(stage);
-
-// Compact cozy → compact → dense so the roster tries to fit the window.
-// If it still overflows after dense, the dash scrolls.
-function fitDash() {
-  dash.dataset.density = "cozy";
-  for (const step of ["compact", "dense"]) {
-    if (dash.scrollHeight <= dash.clientHeight) return;
-    dash.dataset.density = step;
-  }
+/** Forget the drawn roster: the board, its header title and the data hooks. */
+function clearBoard() {
+  dash.classList.remove("on");
+  boardUi.clear();
+  delete dash.dataset.ctx;
+  delete dash.dataset.teams;
+  lastKey = null;
 }
 
-// ── dashboard rendering (from ~/.cobblify/lobby.json) ───────────────────────
-// Every decision on a row was made in the mod (see row-model.js); this only
-// draws the model it is handed.
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
-}
-
-// OK players high→low by FKDR; unresolved states (loading/nick/never/error)
-// keep their given order below them; players who are out of the game last.
-const bySweat = sortRoster;
-
-function pname(p, chips) {
-  const flags = chips && chips.length ? `<span class="flags-inline">${chips.join("")}</span>` : "";
-  return `<div class="pname"><span class="sweat-bar"></span>
-    <div class="identity">${rankHtml(p)}<span class="pn">${esc(p.name)}</span></div>${flags}</div>`;
-}
-
-// The mod exports the rank with its own § colour codes; each code becomes a
-// class. A row with no codes falls back to the plain label.
-function rankHtml(p) {
-  const spans = sectionSpans(p.rankCodes);
-  if (spans.length) {
-    const inner = spans
-      .map((s) => (s.cls ? `<span class="${s.cls}">${esc(s.text)}</span>` : esc(s.text)))
-      .join("");
-    return `<span class="rank">${inner}</span>`;
-  }
-  const raw = String(p.rank ?? "").trim();
-  return raw ? `<span class="rank">${esc(raw)}</span>` : "";
-}
-
-const TEAM_SLUG = {
-  Red: "red",
-  Blue: "blue",
-  Green: "green",
-  Yellow: "yellow",
-  Aqua: "aqua",
-  White: "white",
-  Pink: "pink",
-  Gray: "gray",
-};
-
-function teamClass(name) {
-  const slug = TEAM_SLUG[name];
-  return slug ? ` team-${slug}` : "";
-}
-
-// A chip carries the mod's colour as a class (see .dash .chip.mc-*); the
-// style decides how much of that colour the sheet shows.
-const chipHtml = (c) => {
-  const mc = colorClass(c.color);
-  return `<span class="chip ${c.cls}${mc ? ` ${mc}` : ""}">${esc(c.text)}</span>`;
-};
-const cellHtml = (c) =>
-  c.skeleton
-    ? `<div class="stat ${c.cls}"><span class="skel" style="width:${c.width}px"></span></div>`
-    : `<div class="stat${c.muted ? " muted" : ""} ${c.cls}">${esc(c.text)}</div>`;
-
-// A player who is out of the game keeps their row - dimmed, badged, and
-// struck through once eliminated - so the team never shrinks or reorders
-// under the reader. The model decides the classes, chips and cells.
-function row(p, teamName) {
-  const m = rowModel(p);
-  const cls = [...m.classes, teamClass(teamName).trim()].filter(Boolean).join(" ");
-  return `<div class="${cls}">
-    ${pname(p, m.chips.map(chipHtml))}
-    ${m.cells.map(cellHtml).join("")}</div>`;
-}
-
-// ── column layout ───────────────────────────────────────────────────────────
-// A view is { title, sub, blocks }; a block is a section - a head plus its rows
-// - or an atomic one (a team) that has to stay whole. A window wide enough for
-// two readable columns gets two, so the roster fills the width instead of
-// sitting in a strip with black either side. The split is done here rather than
-// in CSS because every column has to be headed and a team must not be cut in
-// half. One column produces exactly the markup this always had.
-const MIN_COL = 560; // narrowest column that still fits a name and four stats
-const COL_GAP = 26; // keep in step with --gap in the stylesheet
-const PER_COL = 9; // lines wanted before a second column is worth opening
-const MAX_COLS = 3;
-
-const blockRows = (b) => b.n ?? b.rows?.length ?? 0;
-
-// Columns are worth opening only if there is width for a readable one and
-// enough lines to fill it. `current` is what is on screen now: a column, once
-// opened, is held until the roster drops well under the point that opened it,
-// so players trickling in and out of a lobby can't flap the layout.
-function planCols(view, width, current) {
-  const lines = units(view.blocks).reduce((s, u) => s + u.w, 0);
-  const byWidth = Math.floor((width + COL_GAP) / (MIN_COL + COL_GAP));
-  const open = Math.ceil(lines / PER_COL);
-  const hold = current > 1 && lines >= (current - 1) * PER_COL - 3 ? current : 1;
-  return Math.max(1, Math.min(MAX_COLS, byWidth, Math.max(open, hold)));
-}
-
-// Flatten to placeable units. A head weighs what a row weighs; an atomic block
-// weighs what it would have weighed split.
-function units(blocks) {
-  const out = [];
-  for (const b of blocks) {
-    if (b.atomic) {
-      out.push({ html: b.atomic, w: blockRows(b) + 1 });
-      continue;
-    }
-    if (b.head) out.push({ html: b.head, w: 1, head: true });
-    for (const r of b.rows ?? []) out.push({ html: r, w: 1 });
-    if (b.foot) out.push({ html: b.foot, w: 1 });
-  }
-  return out;
-}
-
-// Greedy fill to an even share. A column never ends on a section head - a head
-// belongs with the rows it labels - and never opens with nothing left to place.
-function columnize(blocks, n) {
-  const list = units(blocks);
-  if (n <= 1) return [list];
-  const share = list.reduce((s, u) => s + u.w, 0) / n;
-  const cols = [];
-  let col = [];
-  let acc = 0;
-  list.forEach((u, i) => {
-    col.push(u);
-    acc += u.w;
-    const left = n - cols.length - 1; // columns still to open after this one
-    const rest = list.length - i - 1; // units still to place
-    if (left > 0 && rest > left && acc >= share && !u.head) {
-      cols.push(col);
-      col = [];
-      acc = 0;
+// A resized window, a new display scale or another font is a new layout problem: the same view is laid out again.
+let relayoutFrame = 0;
+function relayoutBoard() {
+  if (relayoutFrame) return;
+  relayoutFrame = (window.requestAnimationFrame ?? ((f) => setTimeout(f, 16)))(() => {
+    relayoutFrame = 0;
+    if (stage.dataset.view !== "dash") return;
+    try {
+      boardUi.relayout();
+    } catch (e) {
+      console.error(e);
     }
   });
-  cols.push(col);
-  return cols;
 }
-
-const STAT_LABELS = `<span>FKDR</span><span>WLR</span><span>Finals</span><span>K/D</span>`;
-
-function sheetHtml(view, n) {
-  const cols = columnize(view.blocks, n);
-  // What columnize could actually fill, which is fewer than asked for when the
-  // blocks refuse to divide - one team bigger than the share, say. The sheet is
-  // told that number, never the wish, so it can't lay out an empty track.
-  const k = cols.length;
-  const body = cols
-    .map((col) => {
-      const labels = !view.bare && k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
-      return `<div class="dcol">${labels}${col.map((u) => u.html).join("")}</div>`;
-    })
-    .join("");
-  if (view.bare) {
-    return `<div class="dsheet bare" style="--n:${k}">${body}</div>`;
-  }
-  const ctx = `<span class="ctx"><span class="live"></span>
-      <span class="ctx-title">${view.title}</span>
-      <span class="ctx-sub">${view.sub}</span></span>`;
-  // One column keeps the context and the labels on a single sticky row. Past
-  // that the labels can no longer line up with one shared header, so each
-  // column heads itself and the bar carries the context alone.
-  const head =
-    k > 1
-      ? `<div class="dash-sticky ctx-bar">${ctx}</div>`
-      : `<div class="dash-sticky col-head">${ctx}${STAT_LABELS}</div>`;
-  return `<div class="dsheet" style="--n:${k}">${head}${body}</div>`;
-}
-
-function sectHead(title, note) {
-  return `<div class="sect"><h3>${title}</h3><span class="n">${note}</span></div>`;
-}
-
-function roster(players, teamOf) {
-  if (!players || !players.length) return "";
-  return `<div class="roster">${players.map((p) => row(p, teamNameFor(teamOf, p))).join("")}</div>`;
-}
-
-function teamOfPlayers(d) {
-  const map = new Map();
-  for (const t of d.teams ?? []) {
-    for (const p of t.players ?? []) {
-      for (const name of aliases(p)) map.set(name, t.name);
-    }
-  }
-  return map;
-}
-
-function teamNameFor(teamOf, player) {
-  if (!teamOf) return undefined;
-  for (const name of aliases(player)) {
-    const team = teamOf.get(name);
-    if (team) return team;
-  }
-  return undefined;
-}
-
-// The party keeps its own order (you, then your party, then the rest of your
-// team) - it is not ranked by sweat - but a member who is out of the game
-// drops below the ones still in it, like every other block.
-function partyBlock(list, teamOf) {
-  if (!list || !list.length) return null;
-  return {
-    head: sectHead("Your Party", list.length),
-    rows: activeFirst(list).map((p) => row(p, teamNameFor(teamOf, p))),
-  };
-}
-
-function viewOf(d) {
-  return nextLiveDashboard(d, { firstLiveSeen: true, eligibleViewOf: viewOfEligible }).view;
-}
-
-function viewOfEligible(d) {
-  const ctx = d.context;
-  if (ctx === "QUEUE") return viewQueue(d);
-  if (ctx === "GAME") return viewGame(d);
-  return viewLobby(d);
-}
-
-function viewLobby(d) {
-  const all = d.players ?? [];
-  const partyPlayers = dashboardParty(d);
-  const rest = bySweat(withoutPlayers(all, partyPlayers));
-  const blocks = [];
-  if (rest.length) {
-    blocks.push({ head: sectHead("Lobby", rest.length), rows: rest.map((p) => row(p)) });
-  }
-  const party = partyBlock(partyPlayers);
-  if (party) blocks.push(party);
-  return { title: "Main Lobby", sub: `· ${all.length} players`, blocks };
-}
-
-function viewQueue(d) {
-  const all = d.players ?? [];
-  const partyPlayers = dashboardParty(d);
-  const rest = bySweat(withoutPlayers(all, partyPlayers));
-  const parties = typeof d.partyCount === "number" ? `${d.partyCount} parties · ` : "";
-  const hidden = `<div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>`;
-  const blocks = [
-    rest.length
-      ? {
-          head: sectHead("Chatted", "only typed players resolve"),
-          rows: rest.map((p) => row(p)),
-          foot: hidden,
-        }
-      : { rows: [], foot: hidden },
-  ];
-  const party = partyBlock(partyPlayers);
-  if (party) blocks.push(party);
-  return {
-    title: d.mode ? `${esc(d.mode)} Queue` : "Queue",
-    sub: `· ${parties}${all.length} known`,
-    blocks,
-  };
-}
-
-function viewGame(d) {
-  const teamOf = teamOfPlayers(d);
-  const partyPlayers = dashboardParty(d);
-  // Order, averages and the Target choice are decided in roster-identity.js
-  // (pure, tested); this only draws what it is handed.
-  const blocks = rankedOpponentTeams(d).map(({ team, players, agg, standing, target }) => {
-    const slug = TEAM_SLUG[team.name];
-    const teamCls = (slug ? ` team-${slug}` : "") + (standing === "eliminated" ? " is-eliminated" : "");
-    const rail =
-      standing === "eliminated"
-        ? '<span class="agg">Eliminated</span>'
-        : `<span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>
-        ${target ? '<span class="target-badge">Target</span>' : ""}`;
-    // Atomic: a team's border, colour scope and rows are placed as one unit. The
-    // team is named by its border colour alone; the rail breaks that border to
-    // carry the average, and the target flag on the sweatiest team.
-    return {
-      n: players.length,
-      atomic: `<div class="team${teamCls}"><div class="team-rail">${rail}</div>
-        ${roster(players, teamOf)}</div>`,
-    };
-  });
-  const party = partyBlock(partyPlayers, teamOf);
-  if (party) blocks.push(party);
-  return {
-    title: d.mode ? esc(d.mode) : "Live Match",
-    sub: `· ${(d.teams ?? []).length} teams`,
-    blocks,
-  };
-}
+new ResizeObserver(relayoutBoard).observe(stage);
+document.addEventListener("cobblify:units", relayoutBoard);
+document.addEventListener("cobblify:theme", () => {
+  boardUi.invalidate();
+  relayoutBoard();
+});
+// A face that finishes loading (the bold Minecraft face is first used by the board) changes every width.
+document.fonts?.addEventListener?.("loadingdone", () => {
+  boardUi.invalidate();
+  relayoutBoard();
+});
+// The connection screens follow the board's scale: placed whenever the shell shows, changes mode or busy state.
+new window.MutationObserver(relayoutBoard).observe(joining, {
+  attributes: true,
+  attributeFilter: ["class", "data-conn", "aria-busy"],
+});
+// The header's view name and the board's a11y state follow the board's visibility.
+new window.MutationObserver(() => {
+  const on = dash.classList.contains("on");
+  dash.setAttribute("aria-hidden", on ? "false" : "true");
+  el("dash-title").hidden = !on;
+}).observe(dash, { attributes: true, attributeFilter: ["class"] });
 
 // ── boot ────────────────────────────────────────────────────────────────────
 const previewing = !window.__TAURI__;
@@ -1853,10 +1395,18 @@ function afterStatus(status) {
     ctx === "session_ended" ||
     ctx === "session_changed" ||
     ctx === "launch_aborted" ||
-    ctx === "session_ended_resetting"
+    ctx === "session_ended_resetting" ||
+    ctx === "session_changed_resetting" ||
+    ctx === "launch_aborted_resetting"
   ) {
     stage.dataset.view = "dash";
     connectionShell.enterTerminal(ctx);
+  } else if (ctx === "join") {
+    stage.dataset.view = "dash";
+    connectionShell.show("join");
+  } else if (ctx === "manual") {
+    stage.dataset.view = "dash";
+    connectionShell.show("manual", { subtitle: manualRouteSubtitleFor("launcher_opened") });
   } else if (PREVIEW_LOBBY[ctx]) {
     stage.dataset.view = "dash";
     applyLobbySnapshot(PREVIEW_LOBBY[ctx]);

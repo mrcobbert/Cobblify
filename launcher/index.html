@@ -11,9 +11,11 @@
     <!-- ── the 0.18 home (src/ui/app.js renders into it) ── -->
     <div class="app" id="app"></div>
 
-    <!-- ── the post-launch dashboard: hidden until launch, then swapped in (the 0.18 board replaces it in stage 5) ── -->
+    <!-- ── the post-launch stats board (src/board-render.js draws it): hidden until launch, then swapped in ── -->
     <main class="stage" id="stage" data-view="home">
-      <header class="dhdr" data-tauri-drag-region><span id="dash-wm"></span></header>
+      <header class="dhdr" data-tauri-drag-region>
+        <span id="dash-wm"></span><span class="htitle" id="dash-title" data-tauri-drag-region hidden></span>
+      </header>
       <div
         class="joining"
         id="joining"
@@ -24,16 +26,16 @@
         aria-busy="false"
         aria-hidden="true"
       >
-        <div class="ring" aria-hidden="true"></div>
-        <div class="jt" id="joining-title">Ready</div>
-        <div class="js">
-          <span id="joining-sub">Launch to open Lunar or Prism.</span
-          ><span class="dots" aria-hidden="true"></span>
+        <div class="msg">
+          <div class="mt mc" id="joining-title">Ready</div>
+          <div class="s mc" id="joining-sub">Launch to open Lunar or Prism.</div>
+          <!-- one action slot; its label and handler come from the shell mode -->
+          <div class="act" id="conn-act" hidden>
+            <button class="key acc hero" id="conn-action" type="button" hidden>Try Again</button>
+          </div>
         </div>
-        <!-- one action slot; its label and handler come from the shell mode -->
-        <button class="btn setup-btn" id="conn-action" type="button" hidden>Try Again</button>
       </div>
-      <div class="dash" id="dash"></div>
+      <div class="dash" id="dash" aria-hidden="true"></div>
       <div class="conn-announce" id="conn-announce" aria-live="polite" aria-atomic="true"></div>
     </main>
 

@@ -523,8 +523,8 @@ export function createApp(app, actions) {
     img.classList.toggle("grey", islandTarget().grey);
   }
 
-  /* What opening Cobblify shows: a normal open shows the whole island, no motion; the first open after an update
-   * replays the setup build at 1.4 s, then What's New. Any click or key ends the build at once (the parts left drop
+  /* What opening Cobblify shows: every open replays the setup build at 1.4 s; the first open after an update then
+   * shows What's New. Any click or key ends the build at once (the parts left drop
    * quickly). Under reduced motion the island is whole at once. */
   const nextFrame = () => new Promise((r) => win.requestAnimationFrame(() => r()));
   const within = (p, ms) => Promise.race([p, new Promise((r) => win.setTimeout(r, ms))]);
@@ -654,12 +654,13 @@ export function createApp(app, actions) {
       if (isl3) isl3.setActive(active && !!H && !H.solo && view === "home");
       if (active && H) render();
     },
-    /** The open behaviour: the build replay then What's New after an update; a still island otherwise. Answers
-     * whether it played: only a ready home plays it, never first run, setup, the pick, a stop or a blocked client
-     * (spec 1.10), so the caller offers it again on the next home until one is ready. */
+    /** The open behaviour: the build replay on every open (the user, 2026-10-11), then What's New after an update.
+     * Answers whether it played: only a ready home plays it, never first run, setup, the pick, a stop or a blocked
+     * client (spec 1.10), so the caller offers it again on the next home until one is ready. */
     open(info) {
-      if (!info?.updated || H?.hero?.kind !== "play") return false;
-      playIntro().then(openWhatsNew, openWhatsNew);
+      if (H?.hero?.kind !== "play") return false;
+      const after = info?.updated ? openWhatsNew : () => {};
+      playIntro().then(after, after);
       return true;
     },
     get state() {
