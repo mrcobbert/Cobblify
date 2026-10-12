@@ -18,13 +18,13 @@ export function liveDashboardAction(d, { firstLiveSeen = false, wasDisconnected 
 
 export function viewUnsupported(d) {
   const note = `<div class="empty-note">${NOTE}</div>`;
-  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true };
+  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true, note: NOTE };
 }
 
 /** A well-formed snapshot from an older mod jar: the launcher cannot draw its rows. */
 export function viewOutdated() {
   const note = `<div class="empty-note">${OUTDATED}</div>`;
-  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true };
+  return { title: "", sub: "", blocks: [{ rows: [], foot: note }], bare: true, note: OUTDATED };
 }
 
 /** Choose the outdated note, the unsupported empty state, or the caller's normal roster view. */

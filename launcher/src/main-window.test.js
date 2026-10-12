@@ -273,7 +273,7 @@ test("a roster render that throws still shows a visible dashboard with an error 
   // The next snapshot recovers: the roster draws and the note is gone.
   delete dash.innerHTML;
   replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 2 }), token: 2 });
-  await waitFor(() => dash.querySelector(".dsheet") != null, { label: "the recovered roster" });
+  await waitFor(() => dash.querySelector(".sb") != null, { label: "the recovered roster" });
   assert.equal(dash.querySelector(".dash-error"), null);
   assert.equal(dash.classList.contains("on"), true);
 });
@@ -305,10 +305,10 @@ test("loaded: the dashboard's Join Hypixel message, then the board, the message 
   assert.equal(el("joining-title").textContent, "Join Hypixel");
   assert.equal(el("joining").classList.contains("on"), true);
   assert.equal(home.hidden, true, "home and its Cancel step aside");
-  assert.equal(dash.querySelector(".dsheet"), null, "no board before Hypixel");
+  assert.equal(dash.querySelector(".sb"), null, "no board before Hypixel");
 
   replies.lobby_state = () => ({ kind: "snapshot", snapshot: liveSnap({ seq: 10 }), token: 10 });
-  await waitFor(() => dash.querySelector(".dsheet") != null, { label: "the board on Hypixel", timeout: 3000 });
+  await waitFor(() => dash.querySelector(".sb") != null, { label: "the board on Hypixel", timeout: 3000 });
   assert.equal(el("joining").classList.contains("on"), false);
 
   // the title screen after leaving: Minecraft keeps the server's data, so inHypixel + LOBBY with no player
@@ -318,7 +318,7 @@ test("loaded: the dashboard's Join Hypixel message, then the board, the message 
     label: "Join Hypixel again",
     timeout: 4000,
   });
-  assert.equal(dash.querySelector(".dsheet"), null, "the stale board is gone");
+  assert.equal(dash.querySelector(".sb"), null, "the stale board is gone");
 
   replies.lobby_state = () => ({ kind: "session_ended", reason: "game_session_ended" });
   await waitFor(() => stage.dataset.view === "home" && launchable(), { label: "home after Minecraft quit", timeout: 3000 });
