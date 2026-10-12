@@ -776,12 +776,18 @@ function applyTheme(sel) {
 }
 
 /**
- * Every open: the island's build replay, then What's New after an update. Once, on the first READY home of the
- * session: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is
- * marked played only when ui.open actually played it.
+ * Every open: the island's build replay, then What's New after an update. Once per session. An open without an update
+ * replays only when its first settled home is ready to play: a first run or a setup has just built the island part by
+ * part, and a build arriving later in the session is no longer the open. After an update the first READY home plays
+ * it: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is marked
+ * played only when ui.open actually played it.
  */
 function maybeOpen(home) {
   if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
+  if (!openInfoReply.updated && home.hero?.kind !== "play") {
+    openPlayed = true;
+    return;
+  }
   openPlayed = ui.open(openInfoReply) === true;
 }
 
@@ -817,7 +823,6 @@ let progressTimer = null;
 let lobbyTimer = null;
 let lobbyPollInFlight = false;
 let lastKey = null;
-let lastView = null;
 let firstLiveSeen = false;
 let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
@@ -1305,7 +1310,6 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
       // The view is a pure model (board-model.js); the board draws it and lays it out for this window and context
       // (board-render.js, board-layout.js), never re-deciding the layout on a data tick.
       boardUi.draw(step.view);
-      lastView = step.view;
       lastKey = key;
       dash.dataset.ctx = ctx.toLowerCase();
       if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
@@ -1318,7 +1322,6 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
       boardUi.fail(`The roster could not be drawn. ${String(e)}`);
       delete dash.dataset.ctx;
       delete dash.dataset.teams;
-      lastView = null;
       lastKey = null;
     }
   }
@@ -1332,7 +1335,6 @@ function clearBoard() {
   delete dash.dataset.ctx;
   delete dash.dataset.teams;
   lastKey = null;
-  lastView = null;
 }
 
 // A resized window, a new display scale or another font is a new layout problem: the same view is laid out again.

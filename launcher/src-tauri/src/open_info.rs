@@ -1,7 +1,7 @@
 //! What kind of open this is: a first install, the first open after an update, or neither.
 //!
-//! The 0.18 home plays the island's 1.4 s build and then What's New once after every update
-//! (dev and next builds included), and shows the island still on any other open.
+//! The 0.18 home plays the island's 1.4 s build on every open whose first home is ready, and What's New once
+//! after every update (dev and next builds included).
 //!
 //! The record is `~/.cobblify/launcher-last-seen`: the highest launcher version ever opened.
 //! A 0.17 launcher never wrote it, so on the first 0.18 open the updater's own

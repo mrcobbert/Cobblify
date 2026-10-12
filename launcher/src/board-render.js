@@ -112,7 +112,7 @@ function notesHTML(r) {
   const add = (cls, html) => out.push(`<span class="${cls}">${html}</span>`);
   const badge = badgeOf(r)?.text ?? null;
   for (const c of r.chips) if (c.kind === "out") add("pres", esc(c.text));
-  for (const c of r.chips) if (c.kind === "nick" && c.text !== "Nicked") add("q", glyphs(c.text));
+  for (const c of r.chips) if (c.kind === "nick") add("q", glyphs(c.text));
   const extra = r.tags.filter((t) => t.code !== badge);
   if (extra.length) add("tags", extra.map((t) => token(t.code, t.mc, t.label)).join(" "));
   for (const c of r.chips) if (c.kind === "neutral" || c.kind === "mode") add("q", glyphs(c.text));
@@ -121,9 +121,10 @@ function notesHTML(r) {
 
 const PH = [16, 14, 20, 12]; // resolving placeholders, GUI px
 /** `Nicked` / `never played` / `resolving` are the stat cells' hover title, not words on the row. */
+const stateOf = (r) => r.chips.find((x) => x.kind === "state")?.text ?? null;
 function stateWord(r) {
-  const c = r.chips.find((x) => x.kind === "state" || (x.kind === "nick" && x.text === "Nicked"));
-  return c ? ` title="${esc(c.text)}"` : "";
+  const s = stateOf(r);
+  return s ? ` title="${esc(s)}"` : "";
 }
 
 function statCells(g, line, r, rc) {
@@ -140,7 +141,9 @@ function statCells(g, line, r, rc) {
       else if (i === 0) c += ` fk${r.kind === "stats" ? ` t${r.tier}` : ""}`;
       else c += " st";
     }
-    g.put(line, COL[k], COL[k] + 1, c, html, stateWord(r));
+    // screen readers get the state word once, with the first cell (the cells only show ? / — / bars)
+    const sr = i === 0 && stateOf(r) ? `<span class="sr">${esc(stateOf(r))}</span>` : "";
+    g.put(line, COL[k], COL[k] + 1, c, sr + html, stateWord(r));
   });
 }
 
@@ -192,7 +195,7 @@ function gameHTML(v) {
       if (target && g.rows.length - r0 < 1) g.row(9); // a one-player team still gets its Target line
       const status =
         b.standing === "eliminated"
-          ? `<span style="color:var(--tc)" title="Eliminated">${glyphs("✘")}</span>`
+          ? `<span style="color:var(--tc)" title="Eliminated">${glyphs("✘")}<span class="sr">Eliminated</span></span>`
           : b.avg == null
             ? `<span style="color:var(--t7)">${glyphs("—")}</span>`
             : esc(b.avg.toFixed(1));
@@ -257,6 +260,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
   let REF = null;
   let REF_FONT = null;
   let current = null; // the view on the board: a roster view or {note}
+  const layouts = new Map(); // window + font + context → {k, vars}, cleared when the window or font changes
   let last = null; // the last layout, for the preview and tests
 
   const dpr = () => win.devicePixelRatio || 1;
@@ -391,13 +395,26 @@ export function createBoard({ stage, board, title, joining, win = window }) {
     const base = measure(html);
     const game = v.context === "GAME";
     const spec = game ? { game, h: base.h, L: base.L, G: base.G } : { game, ...reserveSpec(base, v.context, rowCount(v)) };
-    // one k per window for every context; a roster wider than the reference steps it down rather than clip
-    const k = kForWidth(kFor(R.GAME.core, R.GAME.h, f, d), base.core, f, d);
+    // One k per window for every context; a roster wider than the reference steps it down rather than clip. The
+    // scale and fill are kept per window, font and context (a game: its roster's size), so a data tick never
+    // re-spaces the board: k only ever steps down until the window or the context changes.
+    const key = `${f.W}x${f.H}@${d}:${font()}:${v.context}` + (game ? `:${rowCount(v)}:${v.blocks.length}` : "");
+    const kept = layouts.get(key);
+    const kWin = kFor(R.GAME.core, R.GAME.h, f, d);
+    const k = Math.min(kept?.k ?? kWin, kForWidth(kWin, base.core, f, d));
     const ref = game ? R.GAME : R.LIST;
-    const lay = fill(spec, { core: Math.max(ref.core, base.core), notes: ref.notes }, k, f, d);
+    const fresh = () => fill(spec, { core: Math.max(ref.core, base.core), notes: ref.notes }, k, f, d).vars;
+    let vars = kept && kept.k === k ? kept.vars : fresh();
     const bp = k / d;
     let narrow = "";
-    let m = measure(html, "", lay.vars);
+    let m = measure(html, "", vars);
+    // a kept fill that no longer fits this roster's width is worked out again for it
+    if (kept && m.core * bp > f.aw) {
+      vars = fresh();
+      m = measure(html, "", vars);
+    }
+    layouts.set(key, { k, vars });
+    const lay = { vars };
     // at the floor scale a board too wide first gives up the side margins, then Finals and K/D, then WLR
     let aw = f.aw;
     if (k === floorK(d) && m.core * bp > aw) {
@@ -443,6 +460,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
 
   /** The window, its scale or the font changed: lay the same view out again. */
   function relayout() {
+    layouts.clear();
     if (current && board.dataset.mode) draw(current);
     placeScreen();
   }
@@ -476,5 +494,10 @@ export function createBoard({ stage, board, title, joining, win = window }) {
     placeMsg(joining, frameNow().top);
   }
 
-  return { draw, relayout, fail, clear, placeScreen, layout: () => last, invalidate: () => (REF = null) };
+  function invalidate() {
+    REF = null;
+    layouts.clear();
+  }
+
+  return { draw, relayout, fail, clear, placeScreen, invalidate, layout: () => last };
 }

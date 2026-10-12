@@ -65,7 +65,9 @@ test("one line per player; state words are the cells' hover title; the badge's t
   assert.match(html, /title="resolving"/);
   assert.match(html, /title="never played"/);
   assert.match(html, /title="Nicked"/);
-  assert.doesNotMatch(html, />resolving<|>never played<|>Nicked</, "no state words on the rows");
+  const visible = html.replace(/<span class="sr">[^<]*<\/span>/g, "");
+  assert.doesNotMatch(visible, />resolving<|>never played<|>Nicked</, "no state words on the rows");
+  assert.match(html, /<span class="sr">Nicked<\/span>/, "screen readers still hear the state");
   // xXShadowSlayerXx: BC is the badge (a filled tile, the mod's cheater), BL stays in the notes
   assert.match(html, /class="ftile[^"]*"[^>]*title="Blatant Cheater">BC</);
   assert.match(html, /<span class="g"[^>]*>BL</);

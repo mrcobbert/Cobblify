@@ -37,7 +37,8 @@ export function boardRow(p) {
     cheater: p?.cheater === true,
     out: m.classes.includes("is-out"),
     eliminated: m.classes.includes("is-eliminated"),
-    chips: m.chips.map((c) => ({ kind: c.cls, text: c.text, mc: codeOf(c.color) })),
+    // a nicked row's "Nicked" chip says the row's state, like "resolving": the reveal (nick→X) is the other nick chip
+    chips: m.chips.map((c) => ({ kind: c.cls === "nick" && m.kind === "nicked" ? "state" : c.cls, text: c.text, mc: codeOf(c.color) })),
     cells: m.cells.map((c) => (c.skeleton ? { text: null, muted: false } : { text: c.text, muted: !!c.muted })),
     tags:
       m.kind === "stats"
