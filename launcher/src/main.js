@@ -776,16 +776,12 @@ function applyTheme(sel) {
 }
 
 /**
- * The first open after an update: the island's build replay, then What's New. Once, on the first READY home of the
+ * Every open: the island's build replay, then What's New after an update. Once, on the first READY home of the
  * session: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is
  * marked played only when ui.open actually played it.
  */
 function maybeOpen(home) {
   if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
-  if (!openInfoReply.updated) {
-    openPlayed = true;
-    return;
-  }
   openPlayed = ui.open(openInfoReply) === true;
 }
 
