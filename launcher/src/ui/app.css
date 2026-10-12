@@ -396,6 +396,10 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
    they stay clickable. */
 .hdr.bare{z-index:auto}
 .home .art{z-index:3}
+/* ...but only the island itself takes the mouse (it turns under a drag): the rest of its layer lets clicks through to the
+   header below, the window's only drag handle on macOS, where the title bar is hidden (the hotfix, 2026-10-12) */
+.home .art{pointer-events:none}
+.home .art .isl3d{pointer-events:auto}
 .hdr.bare .key{z-index:4}
 .col{z-index:5}
 

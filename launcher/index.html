@@ -13,8 +13,9 @@
 
     <!-- ── the post-launch stats board (src/board-render.js draws it): hidden until launch, then swapped in ── -->
     <main class="stage" id="stage" data-view="home">
-      <header class="dhdr" data-tauri-drag-region>
-        <span id="dash-wm"></span><span class="htitle" id="dash-title" data-tauri-drag-region hidden></span>
+      <!-- "deep": the whole band drags the window, the wordmark and the view's name included (Tauri's drag.js) -->
+      <header class="dhdr" data-tauri-drag-region="deep">
+        <span id="dash-wm"></span><span class="htitle" id="dash-title" hidden></span>
       </header>
       <div
         class="joining"

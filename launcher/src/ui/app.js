@@ -48,10 +48,10 @@ export function createApp(app, actions) {
     `<button class="key gear" data-act="settings" aria-haspopup="dialog" aria-controls="sheet" aria-expanded="${sheetOpen}" aria-label="${updReady() ? "Settings, an update is ready" : "Settings"}" title="Settings">${pix(ART.gear, "var(--hi)")}${updReady() ? '<span class="gdot" aria-hidden="true"></span>' : ""}</button>`;
   function headerHTML() {
     if (view === "history") {
-      return `<header class="hdr" data-tauri-drag-region><button class="key back" data-act="back" aria-label="Back">${pix(ART.back, "var(--hi)")}</button>${T("Release notes", "sh")}<span class="grow"></span></header>`;
+      return `<header class="hdr" data-tauri-drag-region="deep"><button class="key back" data-act="back" aria-label="Back">${pix(ART.back, "var(--hi)")}</button>${T("Release notes", "sh")}<span class="grow"></span></header>`;
     }
     const k = Math.max(1, Math.round(suPx() * dpr()));
-    return `<header class="hdr bare" data-tauri-drag-region>
+    return `<header class="hdr bare" data-tauri-drag-region="deep">
       <div class="brand"><span class="wm">${wordmark(k, { font: isMC() ? "minecraft" : "modern" }, dpr())}</span><button class="ver${devTag ? " dev" : ""}" data-act="history" title="Release notes">${esc(version)}</button>${devTag ? `<span class="tag dev">${T("Dev builds")}</span>` : ""}</div>
       <span class="grow"></span>${gearKey()}
     </header>`;
