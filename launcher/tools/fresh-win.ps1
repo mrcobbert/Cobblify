@@ -109,7 +109,9 @@ function Inventory {
   # the rest of .minecraft is the player's own.
   Add lunar (Join-Path $HomeDir 'AppData\Roaming\.minecraft\versions\1.8.9') $false
   Add prism (Join-Path $LocalDir 'Programs\PrismLauncher') $true
-  Add prism (Join-Path $HomeDir 'scoop\apps\prismlauncher') $true
+  # Scoop installs the portable build: its app folder holds the live accounts.json and settings,
+  # so it is data and moves whole even with --data-only (subagent review I1).
+  Add prism (Join-Path $HomeDir 'scoop\apps\prismlauncher') $false
   Add prism (Join-Path $StartMenuDir 'Prism Launcher.lnk') $true
   Add prism (Join-Path $StartMenuDir 'Scoop Apps\Prism Launcher.lnk') $true
   Add prism (Join-Path $DesktopDir 'Prism Launcher.lnk') $true
@@ -702,6 +704,7 @@ function CmdAside([string[]]$argv) {
   foreach ($p in $leftInstalled) { Say "  (left installed, outside your user folder: $p - its data is set aside)" }
   if ($present.Count -eq 0) { Die 'nothing to set aside' }
   if (-not (Confirm 'Set these aside?')) { Die 'nothing was moved' }
+  RefuseIfRunning
 
   $stamp = EnvOr 'FRESH_STAMP' (Get-Date -Format 'yyyyMMdd-HHmmss')
   $script:STASH = Join-Path $STASH_ROOT $stamp
@@ -769,6 +772,7 @@ function CmdRestore([string[]]$argv) {
   if (-not $script:STASH) { Die "no active stash under $STASH_ROOT" }
   RefuseIfRunning
   if (-not (Confirm "Restore from $($script:STASH)? Anything created while testing moves into $($script:STASH)\new\.")) { Die 'nothing was changed' }
+  RefuseIfRunning
 
   if (-not (Reconcile)) { exit 1 }
 

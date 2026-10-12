@@ -511,6 +511,15 @@ try {
   if ((Run @('restore', '--yes')) -eq 0) { Ok 'the retried restore succeeds' } else { Bad 'retried restore failed'; Show }
   ExpectTree $before 'the retry still sweeps the Prism installed while testing (I2)'
 
+  Populate
+  MkFile "$HOME_\scoop\apps\prismlauncher\11.1.1\accounts.json" '{"signed":"in"}'
+  $before = Tree
+  if ((Run @('aside', 'prism', '--data-only', '--yes')) -eq 0 -and -not (Test-Path -LiteralPath "$HOME_\scoop\apps\prismlauncher") -and -not (Test-Path -LiteralPath "$HOME_\scoop\persist\prismlauncher")) {
+    Ok 'a Scoop Prism (portable: its sign-in is in its app folder) moves whole even with --data-only'
+  } else { Bad 'Scoop Prism data-only'; Show }
+  if ((Run @('restore', '--yes')) -ne 0) { Bad 'restore failed'; Show }
+  ExpectTree $before 'Scoop data-only round trip'
+
   Write-Output "== Weave's jar is found at the home-based path, whatever %APPDATA% is =="
   Populate; $before = Tree
   $roaming = Join-Path $T 'Redirected\Roaming'

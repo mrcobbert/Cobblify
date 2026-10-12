@@ -281,12 +281,43 @@ pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, Str
         if !root.join(JAVA_BIN).is_file() {
             return Err("The Java 8 download has no java.".to_string());
         }
-        prism::rename_no_replace(&root, &dest)
+        rename_settling(&root, &dest)
             .map_err(|e| format!("Cannot put Java 8 in Prism's Java folder: {e}"))
     })();
-    let _ = fs::remove_dir_all(&work);
+    remove_settling(&work);
     result?;
     Ok(dest.join(JAVA_BIN))
+}
+
+/// How long a just-written runtime may stay locked. On Windows a folder can't be renamed or
+/// removed while any file in it is open, and antivirus opens new executables and DLLs to scan
+/// them right after they are written.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
+const SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `rename_no_replace`, retried while the folder is still held open (never over an existing
+/// target: that answer is final).
+fn rename_settling(from: &Path, to: &Path) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + SETTLE;
+    loop {
+        match prism::rename_no_replace(from, to) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists
+                && from.exists()
+                && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(SETTLE_STEP)
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Removes a staging folder, retried the same way; best effort.
+fn remove_settling(dir: &Path) {
+    let deadline = std::time::Instant::now() + SETTLE;
+    while fs::remove_dir_all(dir).is_err() && dir.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(SETTLE_STEP);
+    }
 }
 
 /// Writes the archive, extracts it, and strips its single top folder (as Prism's
@@ -1142,6 +1173,32 @@ pub(crate) mod tests {
         assert_eq!(java8_home(&[oracle.clone()], Arch::X64), Some(oracle.clone()));
         assert_eq!(java8_home(&[oracle], Arch::Arm64), None, "an x64 Java is not an arm64 one");
         assert!(vendor_homes(&[pf.path().join("nowhere")]).is_empty());
+    }
+
+    /// Subagent review I2: a runtime folder held open for a moment (antivirus scanning a new
+    /// DLL) is still put in place once it is released; an existing target is final at once.
+    #[test]
+    fn a_briefly_locked_runtime_is_renamed_once_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("staged");
+        fs::create_dir_all(from.join("bin")).unwrap();
+        fs::write(from.join("bin/x.dll"), b"dll").unwrap();
+        let to = dir.path().join("jre-legacy");
+        let held = fs::File::open(from.join("bin/x.dll")).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            drop(held);
+        });
+        rename_settling(&from, &to).unwrap();
+        release.join().unwrap();
+        assert!(to.join("bin/x.dll").is_file() && !from.exists());
+
+        let again = dir.path().join("again");
+        fs::create_dir_all(&again).unwrap();
+        let started = std::time::Instant::now();
+        let err = rename_settling(&again, &to).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "no waiting on a taken name");
     }
 
     #[test]

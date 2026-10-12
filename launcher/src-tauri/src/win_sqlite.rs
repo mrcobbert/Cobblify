@@ -178,5 +178,11 @@ mod tests {
         exec_for_tests(&db, "CREATE TABLE t (v TEXT);");
         assert_eq!(query(&db.to_string_lossy(), "SELECT nope FROM t;"), None, "a bad statement");
         assert_eq!(query(&db.to_string_lossy(), "INSERT INTO t VALUES ('x');"), None, "a write is refused");
+
+        // Locked by a writer (Lunar mid-write): unknown at once, never a wait.
+        let _writer = hold_open_for_tests(&db, "PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; INSERT INTO t VALUES ('w');");
+        let started = std::time::Instant::now();
+        assert_eq!(query(&db.to_string_lossy(), "SELECT v FROM t;"), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
     }
 }
