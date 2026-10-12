@@ -8,7 +8,7 @@
 #
 # Run it in your own Windows account, from PowerShell, with Lunar, Prism, their
 # games and every Cobblify launcher closed:
-#   powershell -ExecutionPolicy Bypass -File C:\Users\Public\CobblifyNext\fresh-win.ps1 status
+#   powershell -ExecutionPolicy Bypass -File C:\ProgramData\CobblifyNext\fresh-win.ps1 status
 # It never deletes anything:
 #   - aside MOVES items into %USERPROFILE%\CobblifyStash\<timestamp>\items\;
 #   - restore moves anything created while testing into <stash>\new\, moves the

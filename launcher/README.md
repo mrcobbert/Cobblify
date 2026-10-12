@@ -312,7 +312,7 @@ twin of `next-build.sh`: "Cobblify Launcher (Next)", version `0.18.0-next.<N>`, 
   exe is searched for the update host (with a string that must be present, so the search is
   known to work).
 - **Jars:** as on the Mac: checked against the vendor manifest and the pinned agent hash.
-- **Output:** `C:\Users\Public\CobblifyNext\<version>\` holds `Cobblify Launcher (Next).exe`
+- **Output:** `C:\ProgramData\CobblifyNext\<version>\` holds `Cobblify Launcher (Next).exe`
   and `resources\` (resource resolution is relative to the exe), plus `fresh-win.ps1` one
   folder up. Every account on the PC can read it. `-Replace` overwrites the same version.
 
@@ -328,7 +328,7 @@ powershell -ExecutionPolicy Bypass -File launcher\tools\next-build.ps1 11 -Vendo
 account with Lunar (check the system tray), Prism, their games and both launchers closed:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\Public\CobblifyNext\fresh-win.ps1 status
+powershell -ExecutionPolicy Bypass -File C:\ProgramData\CobblifyNext\fresh-win.ps1 status
 ```
 
 - It moves Cobblify's state (`.cobblify`, `.weave`, `.bedwarsqol`, the installed launcher, its

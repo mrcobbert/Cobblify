@@ -1,6 +1,7 @@
 #
 # Builds "Cobblify Launcher (Next)" for Windows: a local test build of the launcher
-# that can sit beside the stable one, and hands it over in C:\Users\Public. The
+# that can sit beside the stable one, and hands it over in C:\ProgramData (C:\Users\Public can be closed to
+# other accounts; ProgramData folders are readable by every account). The
 # Windows twin of next-build.sh; run it on the Windows build box.
 #
 # What makes it safe to open (see .ai research BUILD-PLAN "Release safety"):
@@ -24,8 +25,8 @@
 #   -Vendor   the vendor dir (a copy of .ai\vendor)
 #   -Replace  overwrite an earlier delivery of the same version
 #
-# Output: C:\Users\Public\CobblifyNext\0.18.0-next.<N>\Cobblify Launcher (Next).exe
-# with resources\ beside it, and C:\Users\Public\CobblifyNext\fresh-win.ps1
+# Output: C:\ProgramData\CobblifyNext\0.18.0-next.<N>\Cobblify Launcher (Next).exe
+# with resources\ beside it, and C:\ProgramData\CobblifyNext\fresh-win.ps1
 # (NEXT_DELIVER_ROOT overrides the root). Every account on the PC can read it.
 
 param(
@@ -56,7 +57,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $launcher = Join-Path $repoRoot 'launcher'
 if (-not (Test-Path -LiteralPath $Vendor -PathType Container)) { Die "vendor dir not found: $Vendor" }
 $Vendor = (Resolve-Path -LiteralPath $Vendor).Path
-$deliverRoot = if ($env:NEXT_DELIVER_ROOT) { $env:NEXT_DELIVER_ROOT } else { 'C:\Users\Public\CobblifyNext' }
+$deliverRoot = if ($env:NEXT_DELIVER_ROOT) { $env:NEXT_DELIVER_ROOT } else { 'C:\ProgramData\CobblifyNext' }
 $exeName = "$NEXT_NAME.exe"
 
 function Sha([string]$f) { return (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant() }
