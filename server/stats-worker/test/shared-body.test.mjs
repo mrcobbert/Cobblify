@@ -1,6 +1,6 @@
 /**
  * W1: an in-flight cold scrape is shared per player (scrape.js IN_FLIGHT), and the routes add
- * per-identity provider fields (urchin and seraph keys) to the body they receive. Every caller must
+ * per-identity provider fields (urchin keys, and the retired seraph answer) to the body they receive. Every caller must
  * therefore get its OWN body: one identity's opt-in fields, or its "resolved unavailable" flag,
  * must never ride into another identity's response - single or batch, Urchin or Seraph.
  *
@@ -61,7 +61,8 @@ function fresh() {
 
 const providerKeys = (obj) => Object.keys(obj).filter((k) => /urchin|seraph/i.test(k)).sort();
 
-/** Origin (hypixel) delayed 300 ms; Coral and Seraph answer instantly with an "ok" result. */
+/** Origin (hypixel) delayed 300 ms; Coral answers instantly with an "ok" result. Seraph is retired:
+ *  nothing may contact it. */
 function installFetch(s) {
   const counts = { origin: 0 };
   globalThis.fetch = async (url) => {
@@ -69,9 +70,6 @@ function installFetch(s) {
     if (u.startsWith("https://coral.test")) {
       return new Response(JSON.stringify({ players: { [s.uuid]: [{ tag_type: "blatant_cheater", reason: "kb", added_on: 1 }] } }),
         { headers: { "content-type": "application/json" } });
-    }
-    if (u.startsWith("https://seraph.test")) {
-      return new Response(JSON.stringify({ data: {} }), { headers: { "content-type": "application/json" } });
     }
     counts.origin++;
     await sleep(300);
@@ -82,7 +80,7 @@ function installFetch(s) {
 
 const HEADER = { urchin: "X-BWQOL-Urchin", seraph: "X-BWQOL-Seraph" };
 function baseEnv(s, extra = {}) {
-  return { STATS_TOKEN: `${s.owner},${s.friend}`, HYPIXEL_BASE: "https://hy.test", URCHIN_BASE: "https://coral.test", SERAPH_BASE: "https://seraph.test", ...extra };
+  return { STATS_TOKEN: `${s.owner},${s.friend}`, HYPIXEL_BASE: "https://hy.test", URCHIN_BASE: "https://coral.test", ...extra };
 }
 function req(s, path, token, provider) {
   return new Request(`https://w.test${path}`, { headers: { "X-BedwarsQol-Token": token, ...(provider ? { [HEADER[provider]]: "1" } : {}) } });
@@ -120,6 +118,8 @@ test.beforeEach(() => { stubCaches(); });
 
 for (const provider of ["urchin", "seraph"]) {
   const Flag = provider === "urchin" ? "urchinUnavailable" : "seraphUnavailable";
+  // Urchin concludes a lookup with "checked"; the retired Seraph answer is always "unavailable".
+  const Done = provider === "urchin" ? "urchinChecked" : "seraphUnavailable";
 
   test(`${provider}: owner single without KV -> only the owner sees "${Flag}"`, async () => {
     const s = fresh();
@@ -145,7 +145,7 @@ for (const provider of ["urchin", "seraph"]) {
       req(s, `/bedwars/${s.name}`, s.friend, null), s.name);
     assert.equal(counts.origin, 1);
     assert.ok(providerKeys(owner).length > 0, "the owner's own line must carry its provider fields");
-    assert.equal(owner[`${provider}Checked`], true);
+    assert.equal(owner[Done], true);
     assert.deepEqual(providerKeys(friend), [], `friend leaked ${JSON.stringify(providerKeys(friend))}`);
   });
 
@@ -158,7 +158,7 @@ for (const provider of ["urchin", "seraph"]) {
       req(s, `/bedwars/${s.name}`, s.owner, null),
       req(s, `/bedwars/${s.name}?uuid=${s.uuid}`, s.friend, provider), s.name);
     assert.equal(counts.origin, 1);
-    assert.equal(friend[`${provider}Checked`], true);
+    assert.equal(friend[Done], true);
     assert.deepEqual(providerKeys(owner), [], `owner leaked ${JSON.stringify(providerKeys(owner))}`);
   });
 
@@ -171,7 +171,7 @@ for (const provider of ["urchin", "seraph"]) {
       req(s, `/bedwars/batch?names=${s.name}&uuids=${s.uuid}`, s.owner, provider),
       req(s, `/bedwars/batch?names=${s.name}`, s.friend, null), s.name);
     assert.equal(counts.origin, 1);
-    assert.equal(owner[`${provider}Checked`], true);
+    assert.equal(owner[Done], true);
     assert.deepEqual(providerKeys(friend), [], `friend leaked ${JSON.stringify(providerKeys(friend))}`);
     assert.equal(friend.state, "OK");
   });

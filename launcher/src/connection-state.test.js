@@ -9,31 +9,24 @@ import {
 const liveLobby = { context: "LOBBY", inHypixel: true };
 const idleMenu = { context: "MENU", inHypixel: false };
 
-test("manual mode when auto-join off before live", () => {
+test("manual before live: the player joins Hypixel themselves", () => {
   const model = createConnectionModel({ graceMs: 2000 });
-  model.setAutoJoin(false);
-  model.beginLaunchSession({ autoJoin: false, now: 0 });
+  model.beginLaunchSession({ now: 0 });
   assert.equal(model.tick("non_live", 100).mode, "manual");
   assert.equal(model.tick("live", 200).mode, "connected");
 });
 
-test("joining when auto-join on until live", () => {
-  const model = createConnectionModel({ waitingMs: 60_000 });
-  model.beginLaunchSession({ autoJoin: true, now: 0 });
-  assert.equal(model.tick("non_live", 100).mode, "joining");
-  assert.equal(model.tick("live", 200).mode, "connected");
-});
-
-test("waiting after 60s deadline", () => {
-  const model = createConnectionModel({ waitingMs: 1000 });
-  model.beginLaunchSession({ autoJoin: true, now: 0 });
-  assert.equal(model.stateAt(500).mode, "joining");
-  assert.equal(model.stateAt(1000).mode, "waiting");
+test("no joining or waiting mode exists, however long the wait", () => {
+  const model = createConnectionModel();
+  model.beginLaunchSession({ now: 0 });
+  assert.equal(model.stateAt(0).mode, "manual");
+  assert.equal(model.stateAt(10 * 60_000).mode, "manual");
+  assert.equal(model.reset().mode, "manual");
 });
 
 test("disconnect grace requires two acknowledged menus", () => {
   const model = createConnectionModel({ graceMs: DISCONNECT_GRACE_MS });
-  model.beginLaunchSession({ autoJoin: true, now: 0 });
+  model.beginLaunchSession({ now: 0 });
   model.tick("live", 0);
   model.tick("non_live", 250);
   // Mid-grace with a single ack: still connected.
@@ -45,7 +38,7 @@ test("disconnect grace requires two acknowledged menus", () => {
 
 test("unavailable poll does not confirm disconnect during grace", () => {
   const model = createConnectionModel({ graceMs: DISCONNECT_GRACE_MS });
-  model.beginLaunchSession({ autoJoin: true, now: 0 });
+  model.beginLaunchSession({ now: 0 });
   model.tick("live", 0);
   model.tick("non_live", 250);
   // An ignored poll never confirms a disconnect, not even past the grace.
@@ -54,7 +47,7 @@ test("unavailable poll does not confirm disconnect during grace", () => {
 
 test("contradictory snapshot is ignored", () => {
   const model = createConnectionModel({ graceMs: 2000 });
-  model.beginLaunchSession({ autoJoin: true, now: 0 });
+  model.beginLaunchSession({ now: 0 });
   model.tick("live", 0);
   // LOBBY/false and MENU/true are "other" — must not start disconnect.
   assert.equal(model.tick("ignore", 500).mode, "connected");

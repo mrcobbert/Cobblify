@@ -7,9 +7,8 @@ import {
   launchForge,
   launchLunar,
   quitApp,
-  rehideAfterConfirmation,
   resetSessionEnd,
-  setAutoJoinHypixel,
+  launchProgress,
   setAutoUpdate,
   setUpdateChannel,
   setUseExternalOverlay,
@@ -21,44 +20,44 @@ import {
   resumeUpdate,
   installUpdate,
   deferUpdate,
+  beginSetup,
+  resumeSetup,
+  setupState,
+  SETUP_EVENT,
 } from "./tauri-contract.js";
 
 test("invoke uses exact wire keys", async () => {
   const calls = [];
   const invoke = (cmd, args) => {
     calls.push({ cmd, args });
-    return Promise.resolve({ status: "saved", autoJoinHypixel: false });
+    return Promise.resolve({ status: "saved", useExternalOverlay: false });
   };
-  await setAutoJoinHypixel(invoke, false);
   await setUseExternalOverlay(invoke, false);
-  await launchLunar(invoke, true, false);
-  await launchForge(invoke, false, true);
+  await launchLunar(invoke, false);
+  await launchForge(invoke, true);
   await resetSessionEnd(invoke);
-  await rehideAfterConfirmation(invoke, false);
   await quitApp(invoke);
   await abortLaunchSession(invoke);
-  assert.equal(calls[0].cmd, CMD.setAutoJoinHypixel);
+  await launchProgress(invoke);
+  assert.equal(calls[0].cmd, CMD.setUseExternalOverlay);
   assert.deepEqual(calls[0].args, { enabled: false });
-  assert.equal(calls[1].cmd, CMD.setUseExternalOverlay);
-  assert.deepEqual(calls[1].args, { enabled: false });
-  assert.equal(calls[2].cmd, CMD.launchLunar);
-  assert.deepEqual(calls[2].args, {
-    expectedAutoJoinHypixel: true,
-    expectedUseExternalOverlay: false,
-  });
-  assert.equal(calls[3].cmd, CMD.launchForge);
-  assert.deepEqual(calls[3].args, {
-    expectedAutoJoinHypixel: false,
-    expectedUseExternalOverlay: true,
-  });
-  assert.equal(calls[4].cmd, CMD.resetSessionEnd);
+  assert.equal(calls[1].cmd, CMD.launchLunar);
+  assert.deepEqual(calls[1].args, { expectedUseExternalOverlay: false });
+  assert.equal(calls[2].cmd, CMD.launchForge);
+  assert.deepEqual(calls[2].args, { expectedUseExternalOverlay: true });
+  assert.equal(calls[3].cmd, CMD.resetSessionEnd);
+  assert.equal(calls[3].args, undefined);
+  assert.equal(calls[4].cmd, CMD.quitApp);
   assert.equal(calls[4].args, undefined);
-  assert.equal(calls[5].cmd, CMD.rehideAfterConfirmation);
-  assert.deepEqual(calls[5].args, { useExternalOverlay: false });
-  assert.equal(calls[6].cmd, CMD.quitApp);
+  assert.equal(calls[5].cmd, CMD.abortLaunchSession);
+  assert.equal(calls[5].args, undefined);
+  assert.equal(calls[6].cmd, "launch_progress");
   assert.equal(calls[6].args, undefined);
-  assert.equal(calls[7].cmd, CMD.abortLaunchSession);
-  assert.equal(calls[7].args, undefined);
+});
+
+test("no auto-join anywhere on the wire: no setter, no launch argument", () => {
+  assert.equal(Object.values(CMD).some((c) => /auto.join/.test(c)), false);
+  assert.equal(Object.keys(CMD).some((k) => /auto.?join/i.test(k)), false);
 });
 
 test("updater commands keep native names and arguments behind the adapter", async () => {
@@ -95,14 +94,14 @@ test("abort_launch_session is argument-free and answers in the reset shape", asy
     calls.push({ cmd, args });
     return Promise.resolve({
       status: "ok",
-      preferences: { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, health: "valid" },
     });
   };
   const reply = await abortLaunchSession(invoke);
   assert.deepEqual(calls, [{ cmd: "abort_launch_session", args: undefined }]);
   // Identical to ResetReply: the orchestrator treats both commands alike.
   assert.equal(reply.status, "ok");
-  assert.equal(typeof reply.preferences.autoJoinHypixel, "boolean");
+  assert.equal(typeof reply.preferences.useExternalOverlay, "boolean");
   for (const status of ["ok", "already_reset", "not_terminal", "busy"]) {
     assert.match(status, /^[a-z0-9_]+$/);
   }
@@ -123,13 +122,70 @@ test("launch_cooldown rides the existing rejected launch shape", () => {
 test("reply tags use snake_case status values", async () => {
   const tags = [
     { status: "not_saved", diagnostic: "disk full" },
-    { status: "preexisting_game", preferences: { autoJoinHypixel: true, health: "valid" } },
+    { status: "preexisting_game", preferences: { useExternalOverlay: true, health: "valid" } },
     { status: "session_ended", reason: "game_session_ended" },
     { status: "indeterminate" },
-    { status: "reconciled", autoJoinHypixel: true },
+    { status: "reconciled", useExternalOverlay: true },
   ];
   for (const reply of tags) {
     assert.match(reply.status, /^[a-z0-9_]+$/);
     assert.doesNotMatch(reply.status, /[A-Z]/);
   }
+});
+
+test("open_info and game_theme use exact wire names and keys", async () => {
+  const { openInfo, gameTheme } = await import("./tauri-contract.js");
+  const calls = [];
+  const invoke = (cmd, args) => {
+    calls.push({ cmd, args });
+    return Promise.resolve({});
+  };
+  await openInfo(invoke);
+  await gameTheme(invoke, "forge");
+  assert.deepEqual(calls, [
+    { cmd: "open_info", args: undefined },
+    { cmd: "game_theme", args: { kind: "forge" } },
+  ]);
+});
+
+test("setup commands keep their native names, argument keys and event name", async () => {
+  const calls = [];
+  const invoke = async (cmd, args) => {
+    calls.push({ cmd, args });
+    return null;
+  };
+  await beginSetup(invoke, "lunar");
+  await beginSetup(invoke, "forge", "d0");
+  await resumeSetup(invoke, "lunar");
+  await setupState(invoke);
+  assert.deepEqual(calls, [
+    { cmd: "begin_setup", args: { kind: "lunar" } },
+    { cmd: "begin_setup", args: { kind: "forge", instanceId: "d0" } },
+    { cmd: "resume_setup", args: { kind: "lunar" } },
+    { cmd: "setup_state", args: undefined },
+  ]);
+  assert.equal(CMD.beginSetup, "begin_setup");
+  assert.equal(CMD.resumeSetup, "resume_setup");
+  assert.equal(CMD.setupState, "setup_state");
+  assert.equal(SETUP_EVENT, "setup://progress");
+});
+
+test("the setup snapshot wire shape matches the backend's camelCase fields", () => {
+  // Mirrors setup.rs `the_snapshot_wire_shape_is_camel_case_with_optional_fields_omitted`.
+  const failed = { gen: 1, kind: "forge", check: 4, phase: "failed", failedAt: 5, message: "x" };
+  const stopped = { gen: 3, kind: "lunar", check: 3, phase: "stop", stop: "closing_lunar", label: "closing_lunar" };
+  for (const snap of [failed, stopped]) {
+    for (const key of Object.keys(snap)) {
+      assert.match(key, /^[a-z][A-Za-z]*$/, "camelCase keys");
+    }
+    assert.ok(["running", "stop", "failed", "done"].includes(snap.phase));
+    assert.ok(snap.check >= 0 && snap.check <= 6);
+  }
+  for (const stop of ["signin", "game_open", "closing_lunar"]) {
+    assert.match(stop, /^[a-z_]+$/);
+  }
+});
+
+test("no window hiding on the wire: Cobblify never hides Lunar or Prism", () => {
+  assert.equal(Object.values(CMD).some((c) => /hide/.test(c)), false);
 });

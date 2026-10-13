@@ -68,7 +68,7 @@ function makeHarness({
   homeUntilLive = false,
 } = {}) {
   const connection = createConnectionModel({ graceMs: 2000 });
-  connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  connection.beginLaunchSession({ now: 0 });
   connection.tick("live", 0);
 
   const titleEl = fakeEl();
@@ -81,9 +81,6 @@ function makeHarness({
     stopProgress: () => {},
     showDash: () => {},
     hideDash: () => {},
-    clock: () => 0,
-    schedule: (fn, ms) => setTimeout(fn, ms),
-    cancel: clearTimeout,
   });
 
   let applied = 0;
@@ -92,6 +89,7 @@ function makeHarness({
   // Recorded, never silent: a stray dashboard open is exactly what the
   // home-until-live routing has to prevent.
   let dashOpens = 0;
+  let gameEntries = 0;
 
   const launchController = {
     launchGen: 1,
@@ -125,11 +123,17 @@ function makeHarness({
         setStageDash: () => {
           dashOpens += 1;
         },
+        enterGame: () => {
+          gameEntries += 1;
+        },
         now,
       });
     },
     get dashOpens() {
       return dashOpens;
+    },
+    get gameEntries() {
+      return gameEntries;
     },
     get applied() {
       return applied;
@@ -161,8 +165,7 @@ test("second menu after grace disconnects and clears via shell", async () => {
 test("unavailable manual poll preserves route-specific subtitle", async () => {
   const subtitle = "Lunar is open — press Play in Lunar when ready.";
   const h = makeHarness({ manualRouteSubtitle: subtitle });
-  h.connection.setAutoJoin(false);
-  h.connection.beginLaunchSession({ autoJoin: false, now: 0 });
+  h.connection.beginLaunchSession({ now: 0 });
   await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 0);
   assert.equal(h.subEl.textContent, subtitle);
 });
@@ -186,35 +189,45 @@ test("live snapshot applies roster while connected", async () => {
 
 test("direct-launch route (null subtitle) stays on the home page", async () => {
   const h = makeHarness({ manualRouteSubtitle: null });
-  h.connection.setAutoJoin(false);
-  h.connection.beginLaunchSession({ autoJoin: false, now: 0 });
+  h.connection.beginLaunchSession({ now: 0 });
   await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 0);
   // No manual screen, no dash: the home buttons narrate progress instead.
   assert.equal(h.shell.getVisible(), false);
   assert.equal(h.dashOpens, 0);
 });
 
-test("auto-join-on unavailable poll holds the home view until live", async () => {
-  const h = makeHarness({ homeUntilLive: true });
-  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
-  assert.equal(h.connection.stateAt(0).mode, "joining");
+test("a confirmed launch's unavailable poll holds the home view until live", async () => {
+  const h = makeHarness({ homeUntilLive: true, manualRouteSubtitle: null });
+  h.connection.beginLaunchSession({ now: 0 });
+  assert.equal(h.connection.stateAt(0).mode, "manual");
   await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 0);
   assert.equal(h.shell.getVisible(), false);
   assert.equal(h.dashOpens, 0);
 });
 
-test("auto-join-on non-live snapshot holds the home view until live", async () => {
-  const h = makeHarness({ homeUntilLive: true });
-  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+test("a confirmed launch's first non-live snapshot (Cobblify loaded, title screen) enters the game: Join Hypixel", async () => {
+  const h = makeHarness({ homeUntilLive: true, manualRouteSubtitle: null });
+  h.connection.beginLaunchSession({ now: 0 });
   await h.poll({ kind: "snapshot", token: 1, snapshot: menuSnap() }, 100);
-  assert.equal(h.shell.getVisible(), false);
+  assert.equal(h.gameEntries, 1, "enterGame owns the dashboard's Join Hypixel message");
   assert.equal(h.dashOpens, 0);
-  assert.equal(h.applied, 0);
+  assert.equal(h.applied, 0, "no board before Hypixel");
+});
+
+test("the title screen after leaving Hypixel (inHypixel + LOBBY, no player) is not on Hypixel", async () => {
+  const h = makeHarness();
+  const titleScreen = liveSnap({ self: null, yourParty: [] });
+  await h.poll({ kind: "snapshot", token: 1, snapshot: titleScreen }, 0);
+  await h.poll({ kind: "snapshot", token: 2, snapshot: titleScreen }, 2500);
+  assert.equal(h.applied, 0, "the board is not redrawn from the title screen");
+  assert.equal(h.shell.getMode(), "disconnected");
+  assert.equal(h.subEl.textContent, "");
+  assert.equal(h.dashOpens, 1);
 });
 
 test("the live snapshot is the one dashboard entry while home-until-live", async () => {
-  const h = makeHarness({ homeUntilLive: true });
-  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  const h = makeHarness({ homeUntilLive: true, manualRouteSubtitle: null });
+  h.connection.beginLaunchSession({ now: 0 });
   await h.poll({ kind: "snapshot", token: 1, snapshot: liveSnap({ seq: 3 }) }, 100);
   // applyLobbySnapshot owns the transition (enterDashboard); the handler
   // never opens the dash itself.
@@ -222,30 +235,20 @@ test("the live snapshot is the one dashboard entry while home-until-live", async
   assert.equal(h.dashOpens, 0);
 });
 
-test("the poll path never opens the waiting dash while home-until-live", async () => {
-  // Review fix: connection-state arms its internal waiting deadline for
-  // EVERY auto-join session, including the headless overlay-off route. Only
-  // the explicit 60s deadline (armed solely for overlay-on) may open the
-  // waiting dash; this poll path must stay silent.
-  const h = makeHarness({ homeUntilLive: true });
-  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
-  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 61_000);
-  assert.equal(h.connection.stateAt(61_000).mode, "waiting");
+test("however long the wait, no joining or waiting screen opens", async () => {
+  // No auto-join: the player joins Hypixel themselves, so a long pre-live
+  // wait never turns into a "still waiting for Hypixel" screen.
+  const h = makeHarness({ homeUntilLive: true, manualRouteSubtitle: null });
+  h.connection.beginLaunchSession({ now: 0 });
+  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 10 * 60_000);
+  assert.equal(h.connection.stateAt(10 * 60_000).mode, "manual");
   assert.equal(h.shell.getVisible(), false);
   assert.equal(h.dashOpens, 0);
 });
 
-test("without the marker the waiting poll path keeps its dash behavior", async () => {
-  const h = makeHarness({ homeUntilLive: false });
-  h.connection.beginLaunchSession({ autoJoin: true, now: 0 });
-  await h.poll({ kind: "unavailable", reason: "stale_mtime" }, 61_000);
-  assert.equal(h.shell.getVisible(), true);
-  assert.equal(h.dashOpens, 1);
-});
-
 test("first live ineligible poll enters, later eligible poll restores the roster", async () => {
   const connection = createConnectionModel();
-  connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  connection.beginLaunchSession({ now: 0 });
   const shell = createConnectionShell({
     root: { hidden: true, dataset: {} },
     titleEl: {},
@@ -321,7 +324,7 @@ test("first live ineligible poll enters, later eligible poll restores the roster
 // the handler re-reads it after the await and discards the stale result.
 test("an ack that resolves after the reset committed is discarded", async () => {
   const connection = createConnectionModel({ graceMs: 2000 });
-  connection.beginLaunchSession({ autoJoin: true, now: 0 });
+  connection.beginLaunchSession({ now: 0 });
   const shell = createConnectionShell({
     titleEl: fakeEl(),
     subEl: fakeEl(),
@@ -330,9 +333,6 @@ test("an ack that resolves after the reset committed is discarded", async () => 
     stopProgress: () => {},
     showDash: () => {},
     hideDash: () => {},
-    clock: () => 0,
-    schedule: (fn, ms) => setTimeout(fn, ms),
-    cancel: clearTimeout,
   });
   let resolveAck;
   const launchController = {

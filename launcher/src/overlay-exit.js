@@ -1,22 +1,25 @@
 /**
- * Overlay-off quit and late-success rehide coordination, extracted so the
- * production trigger selection is directly testable.
+ * Overlay-off quit coordination, extracted so the production trigger
+ * selection is directly testable. Cobblify never hides Lunar or Prism, so
+ * the only thing to coordinate is when Cobblify itself quits.
  *
  * Routes per launch outcome (exhaustive):
- * - overlay on: normal overlay flow for every action.
+ * - overlay on: normal overlay flow for every action; never quits.
  * - overlay off + `launcher_opened` (never-fired open-only): quit
  *   immediately - the backend returns this outcome only when the launcher
- *   is proven presented and no hide work is in flight.
- * - overlay off + `game_launch_requested`: skip the dashboard (no lobby
- *   polling); progress polling keeps running; quit at settled, once.
+ *   was brought forward.
+ * - overlay off + `game_launch_requested`: stay home (headless lobby
+ *   polling); progress polling keeps running; quit once Cobblify is known to
+ *   have loaded - the backend's `loaded` (a fresh lobby.json from this
+ *   launch's game JVM) or an acknowledged live snapshot (itself a lobby.json
+ *   from a proven game writer). A quiet log (`settled`) is not proof and
+ *   never quits: the didn't-load verdict may still follow it, and an outcome
+ *   resets the session instead (home shows it).
  * - overlay off + `launch_unconfirmed`: stay in the overlay flow as the
- *   recovery surface; on the FIRST of settled or an acknowledged live
- *   snapshot, invoke the rehide command (single-flight across both
- *   signals) and quit only after its reply.
+ *   recovery surface; quit once Cobblify is known to have loaded.
  * - rejected / preexisting_game never reach this module: no session begins.
  *
  * @param {{
- *   rehide: (useExternalOverlay: boolean) => Promise<void>,
  *   quit: () => Promise<void>,
  *   fallbackToOverlayFlow: () => void,
  * }} deps
@@ -24,17 +27,16 @@
 export function createOverlayExit(deps) {
   // Generation-scoped: every routeFor/resetSession bumps `session`, and
   // every continuation that resumes after an await re-checks it, so a
-  // pending rehide/quit from session A can never act on session B.
+  // pending quit from session A can never act on session B.
   let session = 0;
   let outcome = null;
   let quitFired = false;
-  let rehidePromise = null;
 
   /**
    * Begin a session from a launched outcome; returns the wiring route.
    * The three wire actions are matched explicitly; an unknown future
    * action deliberately gets the safest route (overlay: app stays open,
-   * nothing quits or rehides).
+   * nothing quits).
    * @param {{ action: string, useExternalOverlay: boolean }} o
    * @returns {'overlay' | 'quit_now' | 'no_dashboard'}
    */
@@ -42,7 +44,6 @@ export function createOverlayExit(deps) {
     session += 1;
     outcome = o;
     quitFired = false;
-    rehidePromise = null;
     if (o.useExternalOverlay) return "overlay";
     if (o.action === "launcher_opened") return "quit_now";
     if (o.action === "game_launch_requested") return "no_dashboard";
@@ -54,7 +55,6 @@ export function createOverlayExit(deps) {
     session += 1;
     outcome = null;
     quitFired = false;
-    rehidePromise = null;
   }
 
   /** Quit exactly once; one retry, then fall back to the overlay flow. */
@@ -76,50 +76,18 @@ export function createOverlayExit(deps) {
   }
 
   /**
-   * Single-flight rehide shared by both confirmation signals. The retry
-   * continuation is session-guarded too: a rejection that resolves after
-   * a reset/relaunch must not spawn hide work into the new session.
-   */
-  function rehideOnce(overlay, expectedSession) {
-    if (!rehidePromise) {
-      rehidePromise = (async () => {
-        try {
-          await deps.rehide(overlay);
-        } catch {
-          if (session !== expectedSession) return;
-          try {
-            await deps.rehide(overlay);
-          } catch {
-            // Fail-soft terminal: overlay-on makes no further attempts;
-            // overlay-off still exits (the launch is proven).
-          }
-        }
-      })();
-    }
-    return rehidePromise;
-  }
-
-  /**
-   * A confirmation signal: `'settled'` from progress, `'live'` from the
-   * first acknowledged live lobby snapshot.
-   * @param {'settled' | 'live'} source
+   * Proof that Cobblify loaded: `'loaded'` from progress (the backend's
+   * proof), `'live'` from the first acknowledged live lobby snapshot (a
+   * lobby.json from a proven game writer).
+   * @param {'loaded' | 'live'} source
    */
   async function onConfirmationSignal(source) {
     if (!outcome) return;
-    const mySession = session;
+    if (source !== "loaded" && source !== "live") return;
     const o = outcome;
-    if (o.action === "launch_unconfirmed") {
-      await rehideOnce(o.useExternalOverlay, mySession);
-      if (session !== mySession) return; // reset/relaunch superseded us
-      if (!o.useExternalOverlay) await quitNow(mySession);
-      return;
-    }
-    if (
-      !o.useExternalOverlay &&
-      o.action === "game_launch_requested" &&
-      source === "settled"
-    ) {
-      await quitNow(mySession);
+    if (o.useExternalOverlay) return;
+    if (o.action === "game_launch_requested" || o.action === "launch_unconfirmed") {
+      await quitNow(session);
     }
   }
 

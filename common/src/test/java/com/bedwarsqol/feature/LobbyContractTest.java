@@ -53,7 +53,6 @@ public class LobbyContractTest {
         p.badge = new PlayerCard.Chip("BC", "§6", "Blatant Cheater", false);
         p.chips.add(p.badge);
         p.chips.add(new PlayerCard.Chip("SL", "§a", "Safelisted", true));
-        p.seraphThreat = 4;
         p.presence = GameRoster.ELIMINATED;
         return p;
     }

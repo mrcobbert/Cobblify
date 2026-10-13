@@ -50,24 +50,22 @@ That is the whole trick, and it is why the launcher is not a "you must launch
 from here" tool: once Lunar's own config carries the agent, Cobblify loads from
 the Dock, from Spotlight, from anywhere.
 
-The **Launch Lunar** button goes further: it fires Lunar's official deep link,
+**Launch Cobblify** (Lunar) fires Lunar's official bare deep link,
 
-    open -g "lunarclient://play?serverAddress=play.hypixel.net"
+    open -g "lunarclient://play"
 
-which makes Lunar's OWN launcher boot the game on the ACTIVE version profile
-and auto-join Hypixel - no Press Play, no manual server join. Never add
-`forceRecommendedVersion` to that link: it can silently switch the profile
-off 1.8.9 (there is a test pinning this).
+which makes Lunar's OWN launcher boot the game on its ACTIVE version profile.
+Launches never join a server: the player joins Hypixel themselves. Lunar has no
+link parameter that picks a version without also joining a server, so the
+version is read at launch from the fresh Weave log instead: a Lunar that is not
+on 1.8.9 ends the launch with "Set Lunar to 1.8.9" + Open.
 
-`open -g` avoids stealing focus, and a background worker then hides the
-launcher window outright: it polls for the launcher by exact executable path
-(`proc::lunar_launcher_pid()` - the game JVM can never match), then runs an
-`osascript` JXA `NSRunningApplication.hide()` against that one pid,
-re-verifying the pid's bundle id before acting. One hide plus two
-confirmations, at most three osascript spawns per launch. Measured on this
-machine: Lunar shows its window once and never fights the hide, and
-`hide()` needs no TCC permission. The whole hide layer is fail-soft - if
-any of it breaks, the launch still works, just with a visible launcher.
+`open -g` avoids stealing focus. Cobblify never hides, minimises or re-hides a
+Lunar or Prism window, on macOS or Windows. Lunar hides its own launcher when
+the game starts (unless its "Launcher visibility on Game Launch" setting is Keep
+Open) and shows it again when the game exits. Lunar stays open after a game;
+Cobblify quits it only where it must write `launcher.json` - setup's "Closing
+Lunar", a polite quit (`lunar_quit.rs`, macOS).
 
 Before writing it:
 
@@ -111,14 +109,44 @@ Lunar or Cobblify process started in the milliseconds between the check and
 the write is not covered. `launcher.json.bak-cobblify` is deliberately left in
 place - it is the user's pristine pre-Cobblify copy.
 
+## First run and setup (0.18)
+
+Startup only reads: it never writes into a client the player has not set up. A
+client is **set up** once Cobblify is registered in it (Lunar: our javaagent in
+`launcher.json` and the jar in `~/.weave/mods`; Prism: a valid saved instance in
+`~/.cobblify/launcher-targets.json`). A set-up client still gets current jars
+silently after an update.
+
+- **Nothing set up:** the window shows "Choose Your Setup" alone, with no island.
+  Its menu lists Lunar Client and Forge (Prism); a client that is not installed
+  carries a download mark. Picking it opens its download page and shows
+  "Install Lunar/Prism" + Download; detection is polled every 2 s and setup
+  starts by itself once it is installed.
+- **Setup** (`begin_setup` / `resume_setup`, progress on `setup://progress`)
+  runs six checks, each held to 0.9 s so the island visibly builds one part per
+  check: Cobblify's own files, the client, sign-in, the client closed (Lunar is
+  quit politely; Prism's instance must not be running), old Cobblify files, then
+  adding Cobblify. It stops at "Sign in to Lunar/Prism" + Open until an account
+  exists, at "Close Minecraft" while that client's game runs, and fails with
+  "Try again" (which resumes at the failed check). Launch arrives with the bed.
+- **Prism:** one compatible 1.8.9 Forge instance is used; several bring up a
+  pick with the most recently played preselected; none makes "Cobblify 1.8.9",
+  with Java 8 for that instance only when Prism will not fetch it itself.
+- **From home**, the client menu's "Add Prism/Lunar" sets the other client up the
+  same way (download + "Install …" wait first when it is missing; it follows
+  through only on an idle home). Settings: Lunar **Repair** re-runs Lunar's
+  setup; Prism **Add** is the same add flow, **Change** re-picks the instance.
+- **The window** is created hidden and shown once the island's first frame is
+  drawn (at once without one, 1.5 s at most); the backend shows it after 3 s if
+  it is somehow still hidden.
+
 ## Forge
 
 The Forge build is a **pure drop-in**: Mixin is shaded into the jar and its
 manifest carries `TweakClass` + `ForceLoadAsMod`, which FML auto-registers. No
 JVM argument, no coremod, no bootstrap, no config edit. The launcher deliberately
 supports Prism only: Prism provides a documented instance-id CLI, so Forge can match
-Lunar's one-click launch, automatic Hypixel join, hidden launcher, progress text and
-external lobby/queue/game dashboard.
+Lunar's one-click launch, progress text and external lobby/queue/game dashboard.
 
 `forge.rs` scans Prism's default instances directory and reads `mmc-pack.json`:
 
@@ -222,6 +250,101 @@ Cobblify.
 manifest, signing, signature validation and the archive listing - using fake
 jars and no token.
 
+### A Next test build beside the stable launcher
+
+`launcher/tools/next-build.sh <N> --vendor <dir>` builds "Cobblify Launcher
+(Next)", version `0.18.0-next.<N>`, identifier `club.cobblify.launcher.next`.
+
+- **Updater:** built with the three updater values unset. `strings` confirms
+  the binary has no update host.
+- **Jars:** the vendor dir is a released launcher's
+  `Contents/Resources/resources` (three jars + `manifest.json`). The jars are
+  checked against that manifest, and the Weave agent against the hash pinned in
+  `launcher-update.yml`. Only the launcher carries the prerelease version; the
+  jars keep their release names.
+- **Output:** `/Users/Shared/CobblifyNext/<version>/`. That folder is sticky:
+  copy the app out, don't move it. `--quarantine` makes Gatekeeper ask as it
+  would for a download.
+
+The identity only separates the single-instance lock and the `~/Library`
+webview folders. Every other launcher file is in `$HOME`, shared with the
+stable launcher, and opening Next writes there at once (`~/.weave`,
+`launcher.json`, a saved Prism instance). Open it only with your setup set
+aside.
+
+### Testing as a brand-new player: fresh-mac.sh
+
+`launcher/tools/fresh-mac.sh`, delivered next to the Next build, moves a Mac's
+Lunar / Prism / Cobblify state out of the way and puts it back exactly. Run it
+in your own account, with Lunar, Prism, their games and both launchers closed.
+
+1. **`status`** is read-only. It lists every known path, other matches in
+   `~/Library`, related processes, login items, and any active stash.
+2. **`aside <lunar|prism|all> [--data-only]`** moves the chosen clients' state,
+   plus Cobblify's own, into `~/CobblifyStash/<timestamp>/`. Before anything
+   moves, it records every file's path, mode, size and sha256. Apps become
+   `.app.stashed` so nothing can start them. `--data-only` leaves the apps
+   installed.
+3. **`restore`** first finishes any move a crash interrupted. It then moves
+   anything created while testing into `<stash>/new/`, moves the originals back,
+   and checks every file against the record. If something fails, run it again;
+   it picks up where it stopped.
+
+It never deletes. Delete the stash folder yourself once you are happy.
+Reinstall Lunar or Prism into `/Applications` while testing: the launcher only
+looks there. On macOS 15, moving apps may need Terminal to have App Management
+(System Settings › Privacy & Security); the tool says so when that is the
+cause.
+
+`launcher/tools/test-fresh-mac.sh` runs the tool against a fake home and a fake
+`/Applications`. It covers round trips, refusals, injected move failures,
+crashes between a move and its journal entry, and a file changed while
+stashed.
+
+### A Next test build on Windows: next-build.ps1
+
+`launcher\tools\next-build.ps1 <N> -Vendor <dir>`, run on the Windows build box, is the
+twin of `next-build.sh`: "Cobblify Launcher (Next)", version `0.18.0-next.<N>`, identifier
+`club.cobblify.launcher.next` (its own single-instance lock and webview folder,
+`%LOCALAPPDATA%\club.cobblify.launcher.next`).
+
+- **Updater:** the three updater values are removed from the build's environment, and the
+  exe is searched for the update host (with a string that must be present, so the search is
+  known to work).
+- **Jars:** as on the Mac: checked against the vendor manifest and the pinned agent hash.
+- **Output:** `C:\ProgramData\CobblifyNext\<version>\` holds `Cobblify Launcher (Next).exe`
+  and `resources\` (resource resolution is relative to the exe), plus `fresh-win.ps1` one
+  folder up. Every account on the PC can read it. `-Replace` overwrites the same version.
+
+```powershell
+git push win feat/launcher-redesign          # from the Mac; the vendor dir goes over with scp
+powershell -ExecutionPolicy Bypass -File launcher\tools\next-build.ps1 11 -Vendor C:\Users\agent\cobblify-vendor
+```
+
+### Testing as a brand-new player on Windows: fresh-win.ps1
+
+`fresh-win.ps1` is `fresh-mac.sh` for Windows (PowerShell 5.1), with the same `status`,
+`aside <lunar|prism|all> [--data-only] [--yes]` and `restore [--yes]`. Run it in your own
+account with Lunar (check the system tray), Prism, their games and both launchers closed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\ProgramData\CobblifyNext\fresh-win.ps1 status
+```
+
+- It moves Cobblify's state (`.cobblify`, `.weave`, `.bedwarsqol`, the installed launcher, its
+  webview data and shortcuts), Lunar's (both install layouts, `.lunarclient`, its AppData
+  folders, shortcuts, Weave's `.minecraft\versions\1.8.9`) and Prism's (installer and Scoop
+  installs, its data folders, shortcuts; a portable Prism Cobblify remembered; absolute
+  `InstanceDir`/`JavaDir`) into `%USERPROFILE%\CobblifyStash\<timestamp>\`, recording every
+  file first. Nothing outside your user folder is moved; a Prism folder outside it stops
+  `aside` before anything moves.
+- It never deletes. `restore` moves what testing created into `<stash>\new\`, returns the
+  originals and checks every file. It can be re-run after a crash or a failure.
+- It records login-time starters (the Run key, the Startup folder) for you to re-check, and
+  never writes the registry. A reinstalled Lunar or Prism re-registers its own links.
+
+`launcher\tools\test-fresh-win.ps1` runs it against a fake profile in `%TEMP%`.
+
 ## Ship it
 
 ```sh
@@ -295,14 +418,12 @@ user to quit and reopen. It now lives behind a `Mutex` because an *explicit* use
 action - choosing a Forge instance - produces a new one; it is still never
 recomputed behind the user's back, which is the invariant that mattered.
 
-**Auto-join Hypixel (shared preference).** A compact checkbox under the launch row
-defaults on and is stored at `~/.cobblify/launcher-preferences.json` (backend-owned
-path and lock; the UI never supplies a filesystem location). When on, Lunar uses the
-official `lunarclient://play?serverAddress=play.hypixel.net` deep link and Prism gets
-`--server play.hypixel.net`. When off, Lunar opens only (`Open Lunar` / `Opening Lunar…`
-/ `Lunar Opened`) and Prism launches with `--launch <instance-id>` only (no server
-argument). The UI does not narrate Hypixel connectivity until a verified live lobby
-snapshot proves it.
+**No auto-join (0.18).** Lunar always opens through the bare `lunarclient://play` link
+and Prism always launches with `--launch <instance-id>` only. The 0.17 launcher's
+`auto_join_hypixel` key in `~/.cobblify/launcher-preferences.json` is still read
+leniently and written back unchanged (0.17 shares the file and requires it), but
+nothing acts on it. The UI does not narrate Hypixel connectivity until a verified
+live lobby snapshot proves it.
 
 **Test dev builds (update channel).** A third checkbox in the same row switches the
 updater to the opt-in dev channel (`update_channel` in the same preference file). Ticked,
@@ -322,9 +443,9 @@ never activate the dashboard.
 **`lobby.json` is contract v2 and the launcher only draws it.** Every presentation decision
 about a player - FKDR tier, cheater flag, single priority badge, gated tag chips, which mode the
 numbers came from, nick reveal with the real account's stats - is made once in the mod by
-`PlayerCard` (the same policy the tab list and chat use, honouring the Tag Utils (Urchin /
-Seraph) and Nick Utils / Auto Denick toggles, tag expiry, the identity gate and the forced
-`/bw mode`) and exported
+`PlayerCard` (the same policy the tab list and chat use, honouring the Tag Utils (Urchin) and
+Nick Utils / Auto Denick toggles, tag expiry, the identity gate and the forced `/bw mode`) and
+exported
 verbatim. `row-model.js` arranges those fields into classes, chips and cells; nothing in the
 launcher derives a tier, a cheater flag or a badge, and `main-no-policy.test.js` pins that. The
 shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `invalid/`,
@@ -332,6 +453,9 @@ shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `in
 tests, so the three copies of the shape cannot drift. A well-formed v1 file from an older mod jar
 still binds the session but the dashboard shows "Update Cobblify to use the overlay" instead of a
 roster.
+`seraphThreat` is retired with Seraph (its API shut down in October 2026): mod jars keep writing
+`-1` because launchers built before the removal require the key, while the launcher accepts a player without it
+(fixture `valid/no-seraph-threat.json`) and never draws it.
 
 **The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a
 per-launch baseline; only snapshots from a JVM born after that baseline and still alive
@@ -349,28 +473,13 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 
 - The game boots whatever version profile is ACTIVE in Lunar. A 1.8.9
   profile merely existing is not enough; it must be the selected one.
-- Lunar's login and update windows still appear when Lunar needs them.
-  "Hidden" covers the ordinary launcher window, which appears once and is
-  hidden within about a second of being sighted.
-- The hide worker lives inside the Cobblify process. Quitting Cobblify
-  right after clicking kills the worker - the launch still completes, with
-  the launcher left visible.
+- Lunar's login and update windows appear when Lunar needs them, and
+  Cobblify leaves every Lunar and Prism window where it is.
 - The button disables for the rest of the session after a successful
   dispatch (a second play request mid-boot has no defined meaning);
   reopening Cobblify resets it.
-- Windows hides differently, because it has to. There is no app-level hide,
-  so `hide_windows.rs` walks the top-level windows and acts per window:
-  Lunar launcher windows (every process running `Lunar Client.exe` under
-  `%LOCALAPPDATA%\Programs` - Electron helpers share that path) are
-  MINIMIZED, and the game JVM's console window, when Lunar starts the game
-  on `java.exe` rather than `javaw.exe`, is hidden outright. A console
-  window is owned by `conhost.exe`, so its pid proves nothing; ownership
-  comes from `AttachConsole(game pid)` + `GetConsoleWindow` instead. The
-  Minecraft window is never a target. Each window is acted on at most three
-  times, so restoring one from the taskbar ends the argument - that is the
-  escape hatch for a login or update window caught in the sweep. The sweep
-  runs for 150 s (a cold start reaches the JVM long after the click) or
-  until nothing Lunar-shaped is running.
+- On Windows, when Lunar starts the game on `java.exe` rather than
+  `javaw.exe`, the game's console window stays on screen.
 - The deep link goes through ShellExecute on Windows (never `cmd /C start` -
   it breaks on `&` and flashes a console).
 - The Windows exe is linked into the GUI subsystem
@@ -383,11 +492,13 @@ it, and do not call `new_all()` or `refresh_all()` anywhere.
 
 ```
 launcher/
-  src/            UI - main.js, scene.js (three.js voxel hero), style.css
+  src/            UI - main.js (backend wiring), dash.css (the post-launch dashboard),
+                  release-notes.json (What's New and the history)
+  src/ui/         the 0.18 home: app.js (DOM), model.js (backend -> what it shows),
+                  island3d.js (three.js island), kit.js, tokens.css, fonts/
   src-tauri/
     src/main.rs         startup sequence + the two commands
-    src/hide.rs         post-launch launcher hiding, macOS - fail-soft, pid-targeted
-    src/hide_windows.rs the same job on Windows, per top-level window
+    src/lunar_quit.rs   setup's polite Lunar quit ("Closing Lunar"), macOS - pid-targeted
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification: global fail-closed, per-target isolated
     src/install.rs      stage_verified + commit, the atomic jar primitive

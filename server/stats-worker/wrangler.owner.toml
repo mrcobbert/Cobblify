@@ -13,18 +13,20 @@ preview_urls = true
 # (the parser splits on ",", trims, drops empties, dedupes; every entry must match
 # ^[A-Za-z0-9_-]{16,64}$ - malformed entries are DROPPED and never authenticate; a list
 # with zero valid entries denies every authenticated route, it never falls open).
-# The FIRST valid entry is the OWNER: the URCHIN_KEY/SERAPH_KEY secrets, when set, manage
+# The FIRST valid entry is the OWNER: the URCHIN_KEY secret, when set, manages
 # the owner's provider-key slot only; every other identity manages its own slot via the key
 # routes. Revocation = remove the entry and redeploy. Set: wrangler secret put STATS_TOKEN
 #
 # One-time owner steps after first deploying the multi-token Worker (provider state became
 # per-identity - nothing reads the legacy unsuffixed KV entries anymore):
-#   1. Re-paste your Urchin and Seraph keys once (POST /urchin/key + /seraph/key, via the
-#      owner-only /cobblify urchinkey|seraphkey commands).
+#   1. Re-paste your Urchin key once (POST /urchin/key, via the owner-only
+#      /cobblify urchinkey command).
 #   2. Delete the legacy unsuffixed entries:
 #        wrangler kv key delete --namespace-id 16fd5eea0e37475c91e5f255d45d82ce "urchin:cfg:key"
-#      and likewise urchin:cfg:backoff, urchin:cfg:disabled, seraph:cfg:key,
-#      seraph:cfg:backoff, seraph:cfg:disabled.
+#      and likewise urchin:cfg:backoff, urchin:cfg:disabled.
+#
+# Seraph is retired (its API shut down, October 2026): the SERAPH_KEY secret is unused and can be
+# deleted with `npx wrangler secret delete SERAPH_KEY -c wrangler.owner.toml`; see README.md.
 
 # Run the Worker near hypixel.net (it makes many same-origin subrequests), trimming per-scrape
 # latency. Takes ~15 min to take effect after deploy and only routes to colos it has run in.
@@ -34,7 +36,7 @@ preview_urls = true
 [placement]
 mode = "off"
 
-# Namespace for the per-identity Urchin/Seraph API keys + backoff/disabled state, the "origin
+# Namespace for the per-identity Urchin API keys + backoff/disabled state, the "origin
 # blocked" breaker, and the stats L2: positive and NICKED player results are cached in KV when
 # this binding exists (transient negatives stay per-colo L1 only). A deployment without the
 # binding loses provider tags (unavailable) and cross-colo stats reuse, but stats still work

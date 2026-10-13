@@ -18,7 +18,6 @@ import com.bedwarsqol.feature.PauseKeyHandler;
 import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SettingsKeyHandler;
 import com.bedwarsqol.feature.SweatReport;
-import com.bedwarsqol.feature.SeraphAlert;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.stats.BedwarsModeDetector;
@@ -37,7 +36,7 @@ public class BedwarsQol implements ModInitializer {
 
     public static final String MODID = "bedwarsqol";
     public static final String NAME = "Cobblify";
-    public static final String VERSION = "0.16.2";
+    public static final String VERSION = "0.18.0";
 
     public static ClientSettings config;
 
@@ -63,7 +62,6 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(new GeneratorTracker());
         EventBus.subscribe(new GameSessionTracker());
         EventBus.subscribe(new UrchinAlert());
-        EventBus.subscribe(new SeraphAlert());
         EventBus.subscribe(new QueueAlert());
         EventBus.subscribe(new com.bedwarsqol.feature.LobbyChatWatch());
         EventBus.subscribe(new com.bedwarsqol.feature.SessionStatsWatch());

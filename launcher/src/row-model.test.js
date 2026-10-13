@@ -89,19 +89,21 @@ test("the mode the numbers came from is shown when it is not Overall", () => {
   assert.deepEqual(rowChips({ ...base, mode: "4s" }), [{ cls: "mode", text: "4s stats" }]);
   assert.deepEqual(rowChips({ ...base, mode: "Overall" }), []);
   assert.deepEqual(rowChips({ ...base, mode: "" }), []);
-  // Order: badge, labels, mode, threat.
-  const all = { ...base, mode: "Solo", seraphThreat: 2, badge: chip("BOT", "§e", "Bot"), chips: [chip("BOT", "§e", "Bot")] };
+  // Order: badge, labels, mode.
+  const all = { ...base, mode: "Solo", badge: chip("BOT", "§e", "Bot"), chips: [chip("BOT", "§e", "Bot")] };
   assert.deepEqual(
     rowChips(all).map((c) => c.cls),
-    ["badge cheat", "cheat", "mode", "neutral"],
+    ["badge cheat", "cheat", "mode"],
   );
   // Never on a row without numbers.
   assert.deepEqual(rowChips({ ...base, state: "NICKED", nicked: true, mode: "4s" }), [{ cls: "nick", text: "Nicked" }]);
 });
 
-test("a known threat level is a neutral chip, never an alarm", () => {
-  assert.deepEqual(rowChips({ ...base, seraphThreat: 4 }), [{ cls: "neutral", text: "threat 4" }]);
+test("Seraph's retired threat level is never drawn, whatever an older jar sent", () => {
+  assert.deepEqual(rowChips({ ...base, seraphThreat: 4 }), []);
   assert.deepEqual(rowChips({ ...base, seraphThreat: -1 }), []);
+  const { seraphThreat, ...withoutThreat } = base;
+  assert.deepEqual(rowChips(withoutThreat), []);
   assert.deepEqual(rowClasses({ ...base, seraphThreat: 4 }), ["prow", "t0"]);
 });
 

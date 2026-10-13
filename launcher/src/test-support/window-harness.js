@@ -14,12 +14,12 @@ import { JSDOM, VirtualConsole } from "jsdom";
  * the top and then drives the app through the real DOM controls and the
  * scripted `invoke` replies.
  *
- * JSDOM has no WebGL, so the hero scene cannot boot here: the renderer
+ * JSDOM has no WebGL, so the 3D island cannot boot here: the renderer
  * constructor throws (three 0.181 reports it as `TypeError: error is not a
- * function` - its own catch block shadows its logger), `createHeroScene`
- * reports it through `console.error` and answers null, and `main.js` carries
- * on without a scene. That one stack trace per window test file is expected
- * output, not a failure.
+ * function` - its own catch block shadows its logger), `ui/island3d.js`
+ * reports it and its mount answers null, and the home shows the still island
+ * instead. That one stack trace per window test file is expected output, not a
+ * failure.
  */
 
 const INDEX_HTML = new URL("../../index.html", import.meta.url);
@@ -63,12 +63,16 @@ function unrefWrap(fn) {
 }
 
 /**
- * @param {{ replies?: Record<string, unknown>, url?: string }} opts
+ * The bridge also carries Tauri's event API (`emit(name, payload)` reaches every `listen` the app made, as the
+ * backend's events do) and the current window's `show` (`windowShows.count`).
+ *
+ * @param {{ replies?: Record<string, unknown>, url?: string, setup?: (window: object) => void }} opts
  *   `replies` maps a Tauri command name to its reply: a value, or a function
  *   (sync or async) called with the command arguments. The object is kept by
- *   reference, so a test rewrites an entry between steps.
+ *   reference, so a test rewrites an entry between steps. `setup` runs on the
+ *   window before `main.js` is imported (e.g. to seed localStorage).
  */
-export async function bootWindow({ replies = {}, url = "http://localhost/" } = {}) {
+export async function bootWindow({ replies = {}, url = "http://localhost/", setup } = {}) {
   registerLoaderHooks();
 
   const html = readFileSync(INDEX_HTML, "utf8").replace(MODULE_SCRIPT, "");
@@ -93,9 +97,22 @@ export async function bootWindow({ replies = {}, url = "http://localhost/" } = {
 
   // Installed before the import: `main.js` reads `window.__TAURI__.core.invoke`
   // and decides `previewing` at module evaluation time.
+  /** Tauri event listeners by event name; `emit` delivers a payload the way the backend's `emit` does. */
+  const listeners = new Map();
+  const listen = async (name, handler) => {
+    if (!listeners.has(name)) listeners.set(name, new Set());
+    listeners.get(name).add(handler);
+    return () => listeners.get(name)?.delete(handler);
+  };
+  const emit = (name, payload) => {
+    for (const handler of listeners.get(name) ?? []) handler({ event: name, payload });
+  };
+  /** How often the frontend asked to show its (hidden-at-start) window. */
+  const windowShows = { count: 0 };
   window.__TAURI__ = {
     core: { invoke },
-    event: { listen: async () => () => {} },
+    event: { listen },
+    window: { getCurrentWindow: () => ({ show: async () => void windowShows.count++ }) },
   };
 
   const realSetTimeout = globalThis.setTimeout;
@@ -113,6 +130,7 @@ export async function bootWindow({ replies = {}, url = "http://localhost/" } = {
   defineGlobal("setTimeout", unrefWrap(globalThis.setTimeout));
   defineGlobal("setInterval", unrefWrap(globalThis.setInterval));
 
+  setup?.(window);
   await import("../main.js");
 
   const sleep = (ms) => new Promise((done) => realSetTimeout(done, ms));
@@ -139,6 +157,8 @@ export async function bootWindow({ replies = {}, url = "http://localhost/" } = {
     replies,
     calls,
     countCalls: (command) => calls.filter((c) => c.command === command).length,
+    emit,
+    windowShows,
     tick,
     waitFor,
   };

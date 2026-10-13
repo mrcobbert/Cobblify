@@ -87,7 +87,8 @@ public class SheetLayoutTest {
         Frame f = layout();
         assertEquals(12f, find(f, T.MODULE_TOGGLE, "potion").y, 0f);
         assertEquals(12f + 39f, find(f, T.MODULE_TOGGLE, "armor").y, 0f);
-        assertEquals(12f + 6 * 39f, find(f, T.MODULE_TOGGLE, "mapInfo").y, 0f);
+        assertEquals(12f + 5 * 39f, find(f, T.MODULE_TOGGLE, "mapInfo").y, 0f);
+        assertEquals(12f + 6 * 39f, find(f, T.MODULE_TOGGLE, "session").y, 0f);
         Node tg = find(f, T.MODULE_TOGGLE, "potion");
         assertEquals(207f, tg.x, 0f); // a <button>: no margin
         assertEquals(28f, tg.w, 0f);
@@ -301,7 +302,7 @@ public class SheetLayoutTest {
         assertNotNull(find(f, T.TOGGLE, "tagSound"));
         assertNull(find(f, T.TOGGLE, "tagUrchin"));
         Node more = find(f, T.MORE, "tagUtils");
-        assertEquals("Show all 6 settings in Tag Utils", more.text);
+        assertEquals("Show all 5 settings in Tag Utils", more.text);
         for (Node c : f.chrome) if (c.type == T.CATEGORY) assertFalse(c.on);
         state.showAll.add("tagUtils");
         assertNotNull(find(layout(), T.TOGGLE, "tagUrchin"));

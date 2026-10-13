@@ -20,7 +20,6 @@ import com.bedwarsqol.feature.PauseKeyHandler;
 import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SettingsKeyHandler;
 import com.bedwarsqol.feature.SweatReport;
-import com.bedwarsqol.feature.SeraphAlert;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.stats.BedwarsModeDetector;
@@ -80,7 +79,6 @@ public class BedwarsQol {
         MinecraftForge.EVENT_BUS.register(new TntFuseDisplay());
         MinecraftForge.EVENT_BUS.register(new GameSessionTracker());
         MinecraftForge.EVENT_BUS.register(new UrchinAlert());
-        MinecraftForge.EVENT_BUS.register(new SeraphAlert());
         MinecraftForge.EVENT_BUS.register(new QueueAlert());
         MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.LobbyChatWatch());
         MinecraftForge.EVENT_BUS.register(new com.bedwarsqol.feature.SessionStatsWatch());

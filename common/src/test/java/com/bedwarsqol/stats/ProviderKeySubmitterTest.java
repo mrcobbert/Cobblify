@@ -27,7 +27,7 @@ import static org.junit.Assert.assertTrue;
  * {@link ProviderKeySubmitter} contract, exercised end-to-end through the real
  * {@link ScraperBackendClient#postSecret} via the package-private connection-factory seam and
  * synchronous executors: payload escaping, the 8-200 length gate (no transport touched on
- * rejection), provider-to-path mapping (URCHIN -&gt; /urchin/key, SERAPH -&gt; /seraph/key), one
+ * rejection), provider-to-path mapping (URCHIN -&gt; /urchin/key), one
  * captured {@link BackendTarget} per submission, set/clear x success/failure dispatch to the right
  * callbacks (invalidate only on set success; strip BEFORE the request on clear), and that a
  * submission never writes key material to stdout/stderr.
@@ -241,26 +241,13 @@ public class ProviderKeySubmitterTest {
     }
 
     @Test
-    public void seraphSubmissionPostsTheTargetPairToTheSeraphPath() throws IOException {
-        Factory f = install(200, "{}");
-        Cb cb = new Cb();
-
-        submitter().submitSet(ProviderKeySubmitter.Provider.SERAPH,
-                new BackendTarget("https://worker.example.com", "tok-seraph"), KEY, null, cb);
-
-        assertEquals(1, f.opened.size());
-        assertEquals("https://worker.example.com/seraph/key", f.opened.get(0).toString());
-        assertTrue(f.conn.headers.contains("X-BedwarsQol-Token: tok-seraph"));
-    }
-
-    @Test
     public void clearPostsToTheProviderPathToo() throws IOException {
         Factory f = install(200, "{}");
 
-        submitter().submitClear(ProviderKeySubmitter.Provider.SERAPH,
+        submitter().submitClear(ProviderKeySubmitter.Provider.URCHIN,
                 new BackendTarget("https://worker.example.com", "tok"), null, new Cb());
 
-        assertEquals("https://worker.example.com/seraph/key", f.opened.get(0).toString());
+        assertEquals("https://worker.example.com/urchin/key", f.opened.get(0).toString());
         assertEquals("{\"key\":null}", f.conn.body());
     }
 
@@ -376,7 +363,8 @@ public class ProviderKeySubmitterTest {
     @Test
     public void providerPathsAreFixed() {
         assertEquals("/urchin/key", ProviderKeySubmitter.Provider.URCHIN.path);
-        assertEquals("/seraph/key", ProviderKeySubmitter.Provider.SERAPH.path);
         assertNotNull(ProviderKeySubmitter.Provider.valueOf("URCHIN"));
+        assertEquals("Urchin is the only provider key (Seraph closed its API)", 1,
+                ProviderKeySubmitter.Provider.values().length);
     }
 }

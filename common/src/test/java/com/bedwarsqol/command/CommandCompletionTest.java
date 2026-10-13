@@ -17,6 +17,8 @@ public class CommandCompletionTest {
         assertEquals(Arrays.asList("mode"), CommandCompletion.suggest(new String[]{"mo"}));
         assertEquals(Arrays.asList("stats", "statsurl", "statstoken"), CommandCompletion.suggest(new String[]{"STAT"}));
         assertEquals(Collections.emptyList(), CommandCompletion.suggest(new String[]{"zzz"}));
+        // Seraph closed its API: its retired words are never offered.
+        assertEquals(Arrays.asList("session", "settings"), CommandCompletion.suggest(new String[]{"se"}));
     }
 
     @Test

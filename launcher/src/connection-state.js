@@ -1,19 +1,17 @@
-/** @typedef {'manual' | 'joining' | 'waiting' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed'} ConnectionMode */
+/** @typedef {'manual' | 'connected' | 'disconnected' | 'preexisting_game' | 'session_ended' | 'session_changed'} ConnectionMode */
 
 export const DISCONNECT_GRACE_MS = 1000;
-const WAITING_MS = 60_000;
 
 /**
- * @param {{ graceMs?: number, waitingMs?: number }} [opts]
+ * Connection state of one launch session. Launches never join a server, so before the first
+ * live snapshot the mode is always `manual`: the player joins Hypixel themselves.
+ * @param {{ graceMs?: number }} [opts]
  */
-export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS, waitingMs = WAITING_MS } = {}) {
-  let autoJoinOn = true;
+export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS } = {}) {
   let sawLive = false;
   let disconnectConfirmed = false;
   /** @type {number | null} */
   let pendingSince = null;
-  /** @type {number | null} */
-  let waitingDeadline = null;
   /** @type {ConnectionMode} */
   let forcedMode = null;
   let menuAckCount = 0;
@@ -21,29 +19,19 @@ export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS, waitingMs
   /** @returns {{ mode: ConnectionMode }} */
   function stateAt(now) {
     if (forcedMode) return { mode: forcedMode };
-    if (!autoJoinOn && !sawLive) return { mode: "manual" };
-    if (autoJoinOn && !sawLive && waitingDeadline != null && now >= waitingDeadline) {
-      return { mode: "waiting" };
-    }
-    if (!sawLive) return { mode: autoJoinOn ? "joining" : "manual" };
+    if (!sawLive) return { mode: "manual" };
     if (pendingSince === null) return { mode: "connected" };
     if (disconnectConfirmed) return { mode: "disconnected" };
     return { mode: "connected" };
   }
 
   return {
-    setAutoJoin(on) {
-      autoJoinOn = on;
-    },
-
-    beginLaunchSession({ autoJoin, now }) {
-      autoJoinOn = autoJoin;
+    beginLaunchSession({ now }) {
       sawLive = false;
       pendingSince = null;
       disconnectConfirmed = false;
       menuAckCount = 0;
       forcedMode = null;
-      waitingDeadline = autoJoin ? now + waitingMs : null;
       return stateAt(now);
     },
 
@@ -61,7 +49,6 @@ export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS, waitingMs
       pendingSince = null;
       disconnectConfirmed = false;
       menuAckCount = 0;
-      waitingDeadline = null;
       forcedMode = null;
       return stateAt(0);
     },
@@ -77,7 +64,6 @@ export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS, waitingMs
         pendingSince = null;
         disconnectConfirmed = false;
         menuAckCount = 0;
-        waitingDeadline = null;
         return { mode: "connected" };
       }
       if (!sawLive) return stateAt(now);
@@ -103,7 +89,6 @@ export function createConnectionModel({ graceMs = DISCONNECT_GRACE_MS, waitingMs
       pendingSince = null;
       disconnectConfirmed = false;
       menuAckCount = 0;
-      waitingDeadline = null;
       return { mode: forcedMode };
     },
 

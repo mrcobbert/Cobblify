@@ -87,7 +87,7 @@ function harness({
 
 test("ok commits home once, invalidating before any UI change", async () => {
   const { reset, events } = harness({
-    replies: [{ status: "ok", preferences: { autoJoinHypixel: true } }],
+    replies: [{ status: "ok", preferences: { useExternalOverlay: true } }],
   });
   await reset.resetToHome("game_session_ended");
   // The pre-show timer is cancelled before home commits: a reset that beat
@@ -103,7 +103,7 @@ test("ok commits home once, invalidating before any UI change", async () => {
 
 test("already_reset commits home from its carried view", async () => {
   const { reset, events } = harness({
-    replies: [{ status: "already_reset", preferences: { autoJoinHypixel: false } }],
+    replies: [{ status: "already_reset", preferences: { useExternalOverlay: false } }],
   });
   await reset.resetToHome("game_session_ended");
   assert.deepEqual(events, [
@@ -117,14 +117,14 @@ test("already_reset commits home from its carried view", async () => {
 
 test("home is refreshed after commit and a refresh failure surfaces", async () => {
   const ok = harness({
-    replies: [{ status: "ok", preferences: { autoJoinHypixel: true } }],
+    replies: [{ status: "ok", preferences: { useExternalOverlay: true } }],
     withRefresh: true,
   });
   await ok.reset.resetToHome("game_session_ended");
   assert.deepEqual(ok.events.slice(-2), ["commit(prefs)", "refresh"]);
 
   const failing = harness({
-    replies: [{ status: "ok", preferences: { autoJoinHypixel: true } }],
+    replies: [{ status: "ok", preferences: { useExternalOverlay: true } }],
     withRefresh: true,
     refreshFails: true,
   });
@@ -217,7 +217,7 @@ test("transitional copy is shown before a slow reset resolves", async () => {
   await ctx.runTimer();
   assert.equal(ctx.events.at(-1), "transitional(game_session_ended)");
   // The late success still commits home exactly once.
-  ctx.release({ status: "ok", preferences: { autoJoinHypixel: true } });
+  ctx.release({ status: "ok", preferences: { useExternalOverlay: true } });
   await pending;
   assert.equal(ctx.events.at(-1), "commit(prefs)");
   assert.equal(ctx.events.filter((e) => e.startsWith("commit")).length, 1);
@@ -225,7 +225,7 @@ test("transitional copy is shown before a slow reset resolves", async () => {
 
 test("a fast reset (<150ms) never flashes the transitional copy", async () => {
   const { reset, events, timers } = harness({
-    replies: [{ status: "ok", preferences: { autoJoinHypixel: true } }],
+    replies: [{ status: "ok", preferences: { useExternalOverlay: true } }],
   });
   await reset.resetToHome("game_session_ended");
   assert.equal(events.filter((e) => e.startsWith("transitional")).length, 0);
@@ -237,7 +237,7 @@ test("a superseding reset cancels the pending transitional timer", async () => {
   // The host cancel is deliberately leaky here, so only the generation
   // guard can stop reset A's timer from firing into reset B.
   const ctx = harness({
-    replies: ["pending", { status: "ok", preferences: { autoJoinHypixel: true } }],
+    replies: ["pending", { status: "ok", preferences: { useExternalOverlay: true } }],
     leakTimers: true,
   });
   ctx.reset.resetToHome("game_session_ended");
@@ -269,7 +269,6 @@ test("reset-to-home wiring: invalidate, commit through the controller, fresh sec
   const invoke = (cmd, args) => {
     if (cmd === CMD.launchPreferences) {
       return Promise.resolve({
-        autoJoinHypixel: true,
         useExternalOverlay: true,
         health: "valid",
       });
@@ -279,7 +278,6 @@ test("reset-to-home wiring: invalidate, commit through the controller, fresh sec
         status: "launched",
         generation,
         outcome: {
-          autoJoinHypixel: true,
           useExternalOverlay: true,
           action: "game_launch_requested",
         },
@@ -297,7 +295,6 @@ test("reset-to-home wiring: invalidate, commit through the controller, fresh sec
           resolve({
             status: "ok",
             preferences: {
-              autoJoinHypixel: false,
               useExternalOverlay: false,
               health: "valid",
             },
@@ -348,8 +345,7 @@ test("reset-to-home wiring: invalidate, commit through the controller, fresh sec
 
   const afterReset = ctrl.getState();
   assert.equal(afterReset.activeOutcome, null);
-  assert.equal(afterReset.confirmedAutoJoin, false, "checkboxes resynced from the reset view");
-  assert.equal(afterReset.confirmedOverlay, false);
+  assert.equal(afterReset.confirmedOverlay, false, "the checkbox resynced from the reset view");
 
   // Second launch through the SAME controller adopts the new generation.
   generation = 6;

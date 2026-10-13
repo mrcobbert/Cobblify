@@ -6,7 +6,6 @@ import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.EligibilitySnapshot;
 import com.bedwarsqol.stats.HypixelContext;
-import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.StatsCache;
 import com.bedwarsqol.stats.TabListLookup;
 import com.bedwarsqol.stats.UrchinTag;
@@ -41,8 +40,8 @@ public class NametagStats {
         if (self == null) return;
 
         ClientSettings cfg = BedwarsQol.config;
-        // Draw when Player Stats OR an Urchin/Seraph nametag badge needs this identity.
-        if (!UrchinTag.needsNametagIdentity(cfg) && !SeraphTag.needsNametagIdentity(cfg)) return;
+        // Draw when Player Stats OR an Urchin nametag badge needs this identity.
+        if (!UrchinTag.needsNametagIdentity(cfg)) return;
         if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return;
 
         // RenderLivingEvent.Specials.Post fires even when the vanilla name is hidden,
@@ -59,16 +58,14 @@ public class NametagStats {
         String name = player.getGameProfile().getName();
         boolean urchinEligible = cfg.urchinOn()
                 && UrchinTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
-        boolean seraphEligible = cfg.seraphOn()
-                && SeraphTag.badgeAllowed(EligibilitySnapshot.current(), name, uuid);
 
         BedwarsStats stats = StatsCache.getCached(uuid);
         if (stats == null) {
-            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_VISIBLE, urchinEligible, seraphEligible);
+            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_VISIBLE, urchinEligible);
             return;
         }
-        if (urchinEligible || seraphEligible) {
-            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_VISIBLE, urchinEligible, seraphEligible);
+        if (urchinEligible) {
+            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_VISIBLE, true);
         }
 
         // Rendering stays per-module: Player Stats off + a provider on -> only the badge draws.
@@ -80,10 +77,6 @@ public class NametagStats {
         }
         if (cfg.tagBadgeNametag && urchinEligible) {
             UrchinTag tag = stats.priorityUrchinTag(System.currentTimeMillis());
-            if (tag != null) text += tag.badgeToken();
-        }
-        if (cfg.tagBadgeNametag && seraphEligible) {
-            SeraphTag tag = stats.prioritySeraphTag();
             if (tag != null) text += tag.badgeToken();
         }
         if (text.isEmpty()) return;

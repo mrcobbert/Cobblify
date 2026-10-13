@@ -1,0 +1,347 @@
+/* The 0.18 stats board ("External Overlay") and its connection screens: Hypixel Bed Wars' sidebar as vanilla 1.8.9
+   draws it (GuiIngame.renderScoreboard), on home's #1A1A1A ground. Rows 9 GUI px apart, no text shadow, team lines
+   "R 18.7" / "✘", the sidebar's §e title and §7 lines. Every length on the board is in --bp: one Minecraft GUI pixel
+   = k whole device px (board-render.js sets it). Source: .ai/research/launcher/board/designs/final-fill.
+   Everything is scoped under .stage so it never styles the home (#app, ui/app.css). */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+.selectable,
+.selectable * {
+  user-select: text;
+  cursor: text;
+}
+[hidden] {
+  display: none !important;
+}
+::-webkit-scrollbar {
+  width: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 178, 214, 0.16);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- the stage: one window, home's ground, bare header like home ---------- */
+.stage {
+  --bp: 2px;
+  --e: 0; --g: 0; --gs: 0; --gf: 0; --gn: 0; --gg: 0;
+  /* § text on the ground (dark codes lifted to >= 4.5:1, ore-board.md 4.1); fills keep the game's own colours */
+  --t0: #828282; --t1: #3e7cff; --t2: #00aa00; --t3: #00aaaa; --t4: #e54d3e; --t5: #d342d1; --t6: #ffaa00; --t7: #aaaaaa;
+  --t8: #838383; --t9: #6a72ff; --ta: #55ff55; --tb: #55ffff; --tc: #ff5555; --td: #ff55ff; --te: #ffff55; --tf: #ffffff;
+  --out: #7a7a7a; /* one quiet level for players who are out */
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  background: var(--ground);
+  color: var(--tf);
+  font-family: var(--font-ui);
+  overflow: hidden;
+  will-change: transform; /* own layer: grayscale AA, no ClearType fringes on pixel text (app.css .app) */
+}
+:root[data-font="modern"] .stage { --tf: #ededed; }
+.stage[data-view="home"] { display: none; }
+.stage .sr {
+  position: absolute !important;
+  margin: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.conn-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* the header: home's (wordmark at 11 su, fixed home size); the view's name at the right on the same line */
+.stage .dhdr {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(24 * var(--su));
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  padding: 0 calc(5 * var(--su)) 0 calc(11 * var(--su));
+}
+.stage[data-platform="mac"] .dhdr { padding-left: calc(40 * var(--su)); }
+.stage .dhdr svg { display: block; margin-top: var(--su); }
+.stage .htitle {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: calc(5 * var(--su));
+  white-space: nowrap;
+  font-size: calc(9 * var(--su));
+  line-height: calc(9 * var(--su));
+  margin-top: var(--su);
+  padding-right: calc(6 * var(--su));
+}
+:root[data-font="minecraft"] .stage .htitle { letter-spacing: calc(-0.5 * var(--su)); word-spacing: calc(0.5 * var(--su)); }
+:root[data-font="modern"] .stage .htitle { font-size: calc(8 * var(--su)); font-weight: 500; }
+.stage .htitle .t { color: var(--te); font-weight: 700; }
+:root[data-font="modern"] .stage .htitle .t { font-weight: 600; }
+.stage .htitle .u { color: var(--t7); }
+
+/* ---------- Minecraft text ---------- */
+.stage .mc { font-size: calc(9 * var(--bp)); line-height: calc(9 * var(--bp)); white-space: nowrap; }
+:root[data-font="minecraft"] .stage .mc { letter-spacing: calc(-0.5 * var(--bp)); word-spacing: calc(0.5 * var(--bp)); }
+/* the stand-in font inks each glyph half a font pixel right of its origin: at an odd scale that lands between device
+   pixels, so the board's text moves back by half a device pixel */
+:root[data-font="minecraft"] .stage .sb { transform: translateX(var(--nudge, 0px)); }
+:root[data-font="modern"] .stage .mc { font-size: calc(7.5 * var(--bp)); font-weight: 500; letter-spacing: 0; }
+
+/* ---------- the board ---------- */
+.stage .dash {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
+  scrollbar-width: thin;
+}
+.stage[data-view="dash"] .dash.on { visibility: visible; pointer-events: auto; }
+.stage .dash::-webkit-scrollbar { width: calc(4 * var(--su)); }
+.stage .dash::-webkit-scrollbar-track { background: var(--band); }
+.stage .dash::-webkit-scrollbar-thumb { background: var(--thumb); border: var(--su) solid #000; border-radius: 0; min-height: calc(10 * var(--su)); }
+.stage .panel { position: relative; }
+.stage .sb { display: grid; padding: 0 calc(2 * var(--bp)); column-gap: 0; align-items: start; overflow: clip; }
+.stage .sb > * { min-width: 0; }
+/* letter | team | avg | flag | rank name | notes | FKDR | WLR | Finals | K/D. The notes take the slack, so the stats sit
+   against the board's right edge (the user, 2026-10-13). Stat tracks have fixed minimums so a resolving row never moves
+   a column; the name track is the roster's longest name, never cut. The fill (--e --g --gs --gf --gn --gg, whole GUI
+   px) is set once per window size and context, never on a data tick. */
+.stage .sb {
+  grid-template-columns: max-content max-content max-content minmax(calc((22 + var(--gg)) * var(--bp)), max-content) max-content
+    minmax(0, 1fr) minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content)
+    minmax(calc((38 + var(--gs)) * var(--bp)), max-content) minmax(calc((26 + var(--gs)) * var(--bp)), max-content);
+}
+.stage .sb.list {
+  grid-template-columns: 0 0 0 minmax(calc(16 * var(--bp)), max-content) max-content
+    minmax(0, 1fr) minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content)
+    minmax(calc((38 + var(--gs)) * var(--bp)), max-content) minmax(calc((26 + var(--gs)) * var(--bp)), max-content);
+}
+.stage .n1 {
+  grid-template-columns: max-content max-content max-content minmax(calc(24 * var(--bp)), max-content) max-content
+    minmax(0, 1fr) minmax(calc(39 * var(--bp)), max-content) minmax(calc(32 * var(--bp)), max-content) 0 0;
+}
+.stage .n1.n2 {
+  grid-template-columns: max-content max-content max-content minmax(calc(24 * var(--bp)), max-content) max-content
+    minmax(0, 1fr) minmax(calc(39 * var(--bp)), max-content) 0 0 0;
+}
+.stage .c { height: calc(9 * var(--bp)); }
+/* column spacing in GUI px (a space is 4, a digit 6); the fill widens the gaps between columns, never inside one */
+.stage .pl { padding-left: calc(4 * var(--bp)); }
+.stage .pm { padding-left: calc(6 * var(--bp)); }
+.stage .pw { padding-left: calc(8 * var(--bp)); }
+.stage .c-fk.pw { padding-left: calc((8 + var(--gf)) * var(--bp)); }
+.stage .c-wl.pm,
+.stage .c-fn.pm,
+.stage .c-kd.pm { padding-left: calc((6 + var(--gs)) * var(--bp)); }
+.stage .nt.pw { padding-left: calc((8 + var(--gn)) * var(--bp)); }
+.stage .fl.pm { padding-left: calc((6 + var(--gg)) * var(--bp)); }
+.stage .avg.pl,
+.stage .mark.you.pl,
+.stage .lab.pl { padding-left: calc((4 + var(--gg)) * var(--bp)); }
+.stage .num { text-align: right; }
+:root[data-font="modern"] .stage .num { font-variant-numeric: tabular-nums; }
+
+/* your party pins to the bottom while a long list scrolls */
+.stage .pin,
+.stage .pinbg { position: sticky; align-self: end; }
+.stage .pin { z-index: 2; height: calc((9 + var(--e)) * var(--bp)); }
+.stage .pinbg { z-index: 1; height: calc((9 + var(--e)) * var(--bp)); background: var(--ground); }
+.stage .pinbg.head {
+  box-shadow: 0 calc(-0.5 * (6 + var(--g)) * var(--bp)) 0 0 var(--ground), 0 calc(-1 * (6 + var(--g)) * var(--bp)) 0 0 var(--ground);
+}
+
+/* labels, the team gutter, section lines */
+.stage .lab { color: var(--t8); }
+.stage .tlet { display: inline-block; }
+.stage .mark { color: var(--tf); }
+.stage .mark.you { color: var(--t7); }
+.stage .avg { color: var(--tf); }
+.stage .bsec { color: var(--tf); margin: 0; font: inherit; }
+.stage .bsec .n { color: var(--t7); }
+
+/* player rows */
+.stage .nm { color: var(--tf); }
+.stage .fk { color: var(--tf); }
+.stage .fk.t1 { color: var(--te); }
+.stage .fk.t2 { color: var(--t6); }
+.stage .fk.t3 { color: var(--tc); }
+/* weight pairs with the tier colour (t2, t3 bold), so the ramp survives colour blindness */
+.stage .fk.t2,
+.stage .fk.t3,
+.stage .mark.tgt { font-weight: 700; }
+:root[data-font="modern"] .stage .nm { font-weight: 600; }
+:root[data-font="modern"] .stage .st,
+:root[data-font="modern"] .stage .mu,
+:root[data-font="modern"] .stage .fk { font-weight: 400; }
+:root[data-font="modern"] .stage .fk.t2,
+:root[data-font="modern"] .stage .fk.t3,
+:root[data-font="modern"] .stage .mark.tgt { font-weight: 600; }
+.stage .st { color: var(--t7); }
+.stage .mu { color: var(--t8); }
+.stage .nt { overflow: hidden; color: var(--t7); }
+.stage .nt > span { display: inline-block; width: max-content; }
+.stage .nt .sep { color: var(--t8); }
+.stage .nt .hide { display: none; }
+.stage .nt .more { color: var(--t8); padding-left: calc(2 * var(--bp)); }
+
+/* flag slot: the mod's badge glyph; a cheater's is the board's only fill */
+.stage .fl { display: flex; justify-content: flex-start; }
+.stage .ftile { display: inline-block; height: calc(9 * var(--bp)); line-height: calc(9 * var(--bp)); padding: 0 var(--bp); background: var(--tf-fill); }
+/* a tile right under another keeps the row seam, so two flagged players never read as one block */
+.stage .ftile.stack { background: linear-gradient(to bottom, transparent var(--bp), var(--tf-fill) var(--bp)); }
+:root[data-font="modern"] .stage .ftile { padding: 0 calc(1.5 * var(--bp)); font-size: calc(6.5 * var(--bp)); line-height: calc(10 * var(--bp)); }
+.stage .tok .br { color: var(--t8); }
+
+/* out players: one quiet grey, a 1 GUI px strike when final-killed */
+.stage .o,
+.stage .o .nm,
+.stage .o .fk,
+.stage .o .st,
+.stage .o .mu,
+.stage .o .r,
+.stage .o .tok .br,
+.stage .o .tok .g { color: var(--out) !important; font-weight: 400 !important; }
+.stage .o .ftile { --tf-fill: #2e2e2e !important; color: var(--out) !important; }
+.stage .x .strike { text-decoration: line-through; text-decoration-thickness: var(--bp); text-decoration-color: var(--out); }
+.stage .o .nt .pres { color: var(--t7); }
+
+/* resolving: a static, quiet placeholder (no shimmer) */
+.stage .ph { display: inline-block; height: calc(2 * var(--bp)); margin-top: calc(4 * var(--bp)); background: #2c2c2c; vertical-align: top; }
+
+/* pixel glyphs the font lacks (the game draws them from its unicode pages); the character stays in the DOM */
+.stage .pg {
+  display: inline-block;
+  vertical-align: top;
+  height: calc(9 * var(--bp));
+  background: currentColor;
+  position: relative;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+.stage .pg > .sr { color: transparent; }
+.stage .pg.x { width: calc(8 * var(--bp)); -webkit-mask-image: var(--g-x); mask-image: var(--g-x); }
+:root[data-font="minecraft"] .stage .pg.dsh { width: calc(8 * var(--bp)); -webkit-mask-image: var(--g-dash); mask-image: var(--g-dash); }
+:root[data-font="minecraft"] .stage .pg.arr { width: calc(7 * var(--bp)); -webkit-mask-image: var(--g-arr); mask-image: var(--g-arr); }
+:root[data-font="minecraft"] .stage .pg.ell { width: calc(6 * var(--bp)); -webkit-mask-image: var(--g-ell); mask-image: var(--g-ell); }
+:root[data-font="modern"] .stage .pg:not(.x) { background: none; width: auto; height: auto; -webkit-mask: none; mask: none; }
+:root[data-font="modern"] .stage .pg:not(.x) > .sr { position: static !important; width: auto; height: auto; clip: auto; clip-path: none; color: inherit; }
+.stage {
+  --g-x: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9' shape-rendering='crispEdges'%3E%3Cpath d='M0 1h2v1H0zM5 1h2v1H5zM0 2h3v1H0zM4 2h3v1H4zM1 3h5v1H1zM2 4h3v1H2zM1 5h5v1H1zM0 6h3v1H0zM4 6h3v1H4zM0 7h2v1H0zM5 7h2v1H5z'/%3E%3C/svg%3E");
+  --g-dash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9' shape-rendering='crispEdges'%3E%3Cpath d='M0 4h7v1H0z'/%3E%3C/svg%3E");
+  --g-arr: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 9' shape-rendering='crispEdges'%3E%3Cpath d='M3 2h1v1H3zM4 3h1v1H4zM0 4h6v1H0zM4 5h1v1H4zM3 6h1v1H3z'/%3E%3C/svg%3E");
+  --g-ell: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 9' shape-rendering='crispEdges'%3E%3Cpath d='M0 7h1v1H0zM2 7h1v1H2zM4 7h1v1H4z'/%3E%3C/svg%3E");
+}
+
+/* narrow windows: Finals and K/D go first, then WLR */
+.stage .n1 .c-fn,
+.stage .n1 .c-kd { display: none; }
+.stage .n2 .c-wl { display: none; }
+
+/* ---------- connection screens and bare views: centred 2x title, one §7 line ---------- */
+.stage .joining {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(24 * var(--su));
+  bottom: 0;
+  display: none;
+  pointer-events: none;
+}
+.stage[data-view="dash"] .joining.on { display: block; }
+.stage .msg {
+  --su: var(--bp);
+  --fpx: var(--bp);
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 calc(11 * var(--su));
+}
+.stage .msg .mt { font-size: calc(18 * var(--bp)); line-height: calc(18 * var(--bp)); color: var(--tf); white-space: normal; text-wrap: balance; }
+:root[data-font="minecraft"] .stage .msg .mt {
+  letter-spacing: calc(-1 * var(--bp));
+  word-spacing: calc(1 * var(--bp));
+  text-shadow: calc(2 * var(--bp)) calc(2 * var(--bp)) 0 #3f3f3f;
+}
+:root[data-font="modern"] .stage .msg .mt { font-size: calc(14 * var(--bp)); line-height: calc(17 * var(--bp)); font-weight: 600; }
+.stage .msg .s { margin-top: calc(7 * var(--bp)); color: var(--t7); white-space: normal; }
+.stage .msg .s:empty { display: none; }
+.stage .msg .s .dot { display: inline-block; }
+/* Try Again is home's white Launch key (ui/app.css .key.acc.hero); the shell is click-through, its action is not */
+.stage .msg .act { margin-top: calc(12 * var(--bp)); pointer-events: auto; }
+.stage .msg .key { font-family: var(--font-ui); font-size: calc(9 * var(--fpx)); line-height: calc(9 * var(--fpx)); cursor: pointer; }
+:root[data-font="minecraft"] .stage .msg .key { letter-spacing: calc(-0.5 * var(--fpx)); word-spacing: calc(0.5 * var(--fpx)); }
+.stage .msg .key.hero { height: calc(24 * var(--su)); width: auto; min-width: calc(84 * var(--su)); padding: calc(5 * var(--su)) calc(14 * var(--su)) 0; }
+:root[data-font="modern"] .stage .msg .key { font-size: calc(8.5 * var(--su)); line-height: calc(10 * var(--su)); }
+/* Returning home…: the three dots step, the one moving thing, only while the reset runs */
+.stage .joining[aria-busy="true"] .dot { animation: board-step 1.2s steps(1, end) infinite; }
+.stage .joining[aria-busy="true"] .dot.d2 { animation-delay: 0.4s; }
+.stage .joining[aria-busy="true"] .dot.d3 { animation-delay: 0.8s; }
+@keyframes board-step {
+  0% { opacity: 1; }
+  33% { opacity: 0.25; }
+  100% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage .joining .dot { animation: none; }
+}
+
+/* J7: a roster render that threw says so instead of leaving the window blank */
+.stage .dash-error {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  max-width: 60ch;
+  padding: 24px;
+  text-align: center;
+  font-family: var(--font-read);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--t7);
+}

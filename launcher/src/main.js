@@ -1,322 +1,155 @@
-import "@fontsource/unbounded/latin-700.css";
-import "@fontsource/dm-mono/latin-400.css";
-import "@fontsource/dm-mono/latin-500.css";
-import "./style.css";
+import "./ui/fonts.css";
+import "./ui/tokens.css";
+import "./dash.css";
+import "./ui/app.css";
 
-import { createHeroScene } from "./scene.js";
-import {
-  activeFirst,
-  aliases,
-  dashboardParty,
-  isActive,
-  presenceBadge,
-  rankedOpponentTeams,
-  sortRoster,
-  withoutPlayers,
-} from "./roster-identity.js";
-import {
-  PREVIEW_SETUP_KEYS,
-  PREVIEW_SETUP_LABELS,
-  PREVIEW_STATUS,
-  resolvePreviewStatus,
-} from "./setup-fixtures.js";
-import {
-  PREVIEW_UPDATE,
-  PREVIEW_UPDATE_KEYS,
-  PREVIEW_UPDATE_LABELS,
-  resolvePreviewUpdate,
-} from "./update-fixtures.js";
+import { PREVIEW_STATUS, resolvePreviewStatus } from "./setup-fixtures.js";
+import { PREVIEW_LOBBY } from "./board-fixtures.js";
+import { PREVIEW_UPDATE, resolvePreviewUpdate } from "./update-fixtures.js";
 import { createConnectionModel } from "./connection-state.js";
 import { createConnectionShell } from "./connection-shell.js";
 import { createLaunchController } from "./launch-controller.js";
 import { createOverlayExit } from "./overlay-exit.js";
 import { createSessionReset } from "./session-reset.js";
 import { createUpdateController } from "./update-controller.js";
-import { updateView } from "./update-view.js";
 import { handleLobbyPoll as runLobbyPoll } from "./lobby-poll-handler.js";
 import { nextLiveDashboard } from "./dashboard-view.js";
-import { colorClass, rowModel, sectionSpans } from "./row-model.js";
+import { boardView } from "./board-model.js";
+import { createBoard, subHTML } from "./board-render.js";
 import {
+  SETUP_EVENT,
   abortLaunchSession,
+  beginSetup,
+  gameTheme,
+  lunarVersionReady,
+  openInfo,
   quitApp,
-  rehideAfterConfirmation,
   resetSessionEnd,
+  resumeSetup,
+  setupState,
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
-import {
-  ISSUE,
-  launchLabel,
-  readyTargets,
-  setupBlocks,
-  topLevelError,
-} from "./setup-view.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
-import {
-  keepsStageNarration,
-  launchViewRoute,
-  showsCancelLaunch,
-} from "./launch-view-route.js";
+import { launchViewRoute } from "./launch-view-route.js";
+import { createApp } from "./ui/app.js";
+import { CL, uiId } from "./ui/art.js";
+import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
+import { setAccent, setFont, watchUnits, wordmark } from "./ui/kit.js";
+import { homeModel, isInstalled, isSetUp, prismInstances, setUpClients, sheetModel, stuckAfter } from "./ui/model.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
 const joining = el("joining");
 const dash = el("dash");
 const connAnnounce = el("conn-announce");
-const autoJoinWrap = el("auto-join-wrap");
-const autoJoinInput = el("auto-join");
-const overlayWrap = el("overlay-wrap");
-const overlayInput = el("use-overlay");
-const devChannelWrap = el("dev-channel-wrap");
-const devChannelInput = el("dev-channel");
-const prefError = el("pref-error");
-const repairPref = el("repair-pref");
-const cancelLaunch = el("cancel-launch");
-const updateStrip = el("update-strip");
-const updateTitle = el("update-title");
-const updateDetail = el("update-detail");
-const updatePrimary = el("update-primary");
-const updateSecondary = el("update-secondary");
-const updateProgress = el("update-progress");
-const updateProgressFill = el("update-progress-fill");
-const scene = createHeroScene(el("hero-canvas"));
-// Scene boot (shader compile included) is behind us - let the entrance run.
-stage.classList.add("lit");
-
-function syncHomeLayout() {
-  // The homepage keeps its defining cabinet composition at every supported
-  // launcher size: copy on the left, voxel island on the right. The old stack
-  // breakpoint centered the wordmark and moved the art above it in narrower or
-  // taller windows, which made the launcher feel like a different screen.
-  const next = "split";
-  if (stage.dataset.layout === next) return;
-  stage.dataset.layout = next;
-  scene?.relayout?.();
-}
-new ResizeObserver(() => {
-  syncHomeLayout();
-  syncDashLayout();
-}).observe(stage);
-syncHomeLayout();
 
 /**
  * The Tauri bridge is injected by the app shell (withGlobalTauri). Outside it -
- * `npm run preview` in a browser - fall back to a stub so the whole flow can be
+ * `npm run dev` in a browser - fall back to a stub so the whole flow can be
  * watched without touching the real Lunar config or the mod's lobby.json.
  *   ?state=lunarReady|prismChoose|bothReady|…  picks the initial setup case
- *   ?update=consent|checking|available|critical|downloading|…  updater row
- *   ?ctx=lobby|unsupported|joining|waiting|disconnected  lobby dashboard / joining / waiting
- *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted
+ *   ?update=consent|checking|available|critical|downloading|…  updater state
+ *   ?ctx=lobby|unsupported|disconnected  lobby dashboard / disconnected
+ *   ?outcome=wrong_version|not_loaded  how a preview launch ends (launch_progress' outcome)
+ *   ?first=1  a Prism preview launch is a made instance's first (Downloading Minecraft)
+ *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted (+ _resetting)|join|manual
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
+ *   ?open=updated|fresh&version=…  what open_info answers
+ *   ?accent=<token>&font=minecraft|modern  what game_theme answers
+ *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
 
-// ── preview sample data ─────────────────────────────────────────────────────
-// Shaped exactly like a v2 lobby.json row: the mod has already decided the
-// tier, the cheater flag, the badge and the chips, so the sample carries them.
-const RANK_CODES = {
-  "[MVP++]": "§6[MVP§c++§6]",
-  "[MVP+]": "§b[MVP§c+§b]",
-  "[MVP]": "§b[MVP]",
-  "[VIP+]": "§a[VIP§6+§a]",
-  "[VIP]": "§a[VIP]",
-};
-const chip = (code, color, label, positive = false) => ({ code, color, label, positive });
-const tagged = (chips, cheater) => ({ chips, badge: chips[0] ?? null, cheater });
-const pp = (o) =>
-  Object.assign(
-    {
-      state: "OK",
-      nicked: false,
-      realName: null,
-      rank: "",
-      rankCodes: RANK_CODES[o.rank] ?? "",
-      mode: "Overall",
-      fkdr: 0,
-      wlr: 0,
-      finalKills: 0,
-      kd: 0,
-      fkdrTier: 0,
-      cheater: false,
-      badge: null,
-      chips: [],
-      seraphThreat: -1,
-    },
-    o,
-  );
+let previewLaunchAt = null;
+let previewLaunchForge = false;
+let previewUpdateKey = "consent";
+/** Preview: clients whose download page was opened (installed 2.4 s later), and clients set up meanwhile. */
+const previewInstalled = new Set();
+const previewDone = new Set();
+let previewSetupGen = 0;
+let previewFailed = null;
 
-const P = {
-  you: pp({ name: "you_", rank: "[MVP+]", fkdrTier: 2, fkdr: 5.9, wlr: 3.8, finalKills: 15200, kd: 3.2 }),
-  duo: pp({ name: "duo_diff", rank: "[VIP+]", fkdrTier: 2, fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
-  third: pp({ name: "third_wheeler", rank: "[MVP]", fkdrTier: 1, fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
-  clutch: pp({ name: "clutch_or_kick", rank: "[VIP]", fkdrTier: 0, fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
-  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdrTier: 3, fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, ...tagged([chip("BC", "§6", "Blatant Cheater"), chip("BL", "§4", "Blacklisted (verified)")], true) }),
-  wallhax: pp({ name: "wallhax_", rank: "[VIP]", fkdrTier: 3, fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, ...tagged([chip("CC", "§6", "Closet Cheater")], true) }),
-  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdrTier: 3, fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
-  zenith: pp({ name: "ok_zenith", rank: "[MVP+]", fkdrTier: 2, fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
-  prot: pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdrTier: 2, fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
-  frost: pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdrTier: 1, fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
-  moss: pp({ name: "mossling", rank: "[MVP]", fkdrTier: 1, fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
-  ogre: pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdrTier: 1, fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
-  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdrTier: 1, fkdr: 2.1, ...tagged([chip("SL", "§a", "Safelisted", true)], false), wlr: 1.4, finalKills: 3120, kd: 1.6 }),
-  virus: pp({ name: "notavirus_exe", rank: "[VIP+]", fkdrTier: 0, fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, ...tagged([chip("S", "§4", "Sniper")], false) }),
-  bread: pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdrTier: 0, fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
-  cool: pp({ name: "coolkid2013", rank: "", fkdrTier: 0, fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),
-  nick: pp({ name: "iToxicWaffle", rank: "", state: "NICKED", nicked: true }),
-  grandpa: pp({ name: "Grandpa_Joe", rank: "", state: "NEVER_PLAYED" }),
-  lag: pp({ name: "lagswitch99", rank: "[VIP]", state: "LOADING" }),
-  sniped: pp({ name: "sniped_u", rank: "", state: "LOADING" }),
-};
-
-/** Preview only: the same player, out of the game. */
-const out = (p, presence) => ({ ...p, presence });
-
-const PREVIEW_PARTY1 = [P.you];
-const PREVIEW_PARTY = [P.you, P.duo];
-const PREVIEW_PARTY3 = [P.you, P.duo, P.third];
-const PREVIEW_PARTY4 = [P.you, P.duo, P.third, P.clutch];
-
-function previewSnap(context, extra) {
-  return Object.assign(
-    {
-      v: 1,
-      jvmPid: 4242,
-      jvmStartTimeMs: 1_700_000_000_000,
-      inHypixel: true,
-      self: "you_",
-      mode: null,
-      partyCount: null,
-      yourParty: [],
-      teams: [],
-      players: [],
-    },
-    extra,
-    { context },
-  );
+/** Preview: a fixture with the 0.18 facts (installed, set_up, instances) and what happened since. */
+function previewStatus(which) {
+  const s = resolvePreviewStatus(which);
+  return {
+    ...s,
+    targets: s.targets.map((t) => {
+      const done = previewDone.has(t.kind);
+      const out = { ...t, installed: t.issue !== "missing_launcher" || previewInstalled.has(t.kind), set_up: t.state === "ready" || done };
+      if (done && t.state !== "ready") Object.assign(out, { state: "ready", issue: null, action: "none", candidates: [] });
+      if (t.kind === "forge") {
+        out.instances = (t.candidates ?? []).map((c, i) => ({ id: c.id, name: c.name, detail: "Forge 11.15.1.2318", last_launch_ms: 100 - i }));
+      }
+      return out;
+    }),
+  };
 }
 
-const team = (name, players) => ({ name, players });
-
-const PREVIEW_LOBBY = {
-  lobby: previewSnap("LOBBY", {
-    seq: 1001,
-    yourParty: PREVIEW_PARTY,
-    players: [P.shadow, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.aqua, P.bread, P.cool, P.nick, P.grandpa, P.lag],
-  }),
-  unsupported: previewSnap("LOBBY", { seq: 1002, dashboardEligible: false }),
-  queueSolo: previewSnap("QUEUE", {
-    seq: 1010,
-    mode: "Solos",
-    partyCount: 8,
-    yourParty: PREVIEW_PARTY1,
-    players: [P.wallhax, P.tenko, P.sniped],
-  }),
-  queueDoubles: previewSnap("QUEUE", {
-    seq: 1011,
-    mode: "Doubles",
-    partyCount: 5,
-    yourParty: PREVIEW_PARTY,
-    players: [P.wallhax, P.tenko, P.zenith, P.frost, P.sniped],
-  }),
-  queueThrees: previewSnap("QUEUE", {
-    seq: 1012,
-    mode: "3v3v3v3",
-    partyCount: 4,
-    yourParty: PREVIEW_PARTY3,
-    players: [P.shadow, P.wallhax, P.tenko, P.zenith, P.frost, P.moss, P.nick, P.lag],
-  }),
-  queueFours: previewSnap("QUEUE", {
-    seq: 1013,
-    mode: "4v4v4v4",
-    partyCount: 6,
-    yourParty: PREVIEW_PARTY4,
-    players: [P.shadow, P.wallhax, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.ogre, P.aqua, P.virus, P.bread, P.cool, P.nick, P.grandpa, P.lag, P.sniped],
-  }),
-  gameSolo: previewSnap("GAME", {
-    seq: 1020,
-    mode: "Solos",
-    yourParty: PREVIEW_PARTY1,
-    teams: [
-      team("Red", [P.shadow]),
-      team("Blue", [P.you]),
-      team("Green", [P.tenko]),
-      team("Yellow", [P.zenith]),
-      team("Aqua", [P.moss]),
-      team("White", [P.bread]),
-      team("Pink", [P.nick]),
-      team("Gray", [P.grandpa]),
-    ],
-  }),
-  gameDoubles: previewSnap("GAME", {
-    seq: 1021,
-    mode: "Doubles",
-    yourParty: PREVIEW_PARTY,
-    teams: [
-      team("Red", [P.shadow, P.wallhax]),
-      team("Blue", [P.you, P.duo]),
-      team("Green", [P.tenko, P.zenith]),
-      team("Yellow", [P.prot, P.frost]),
-      team("Aqua", [P.moss, P.aqua]),
-      team("White", [P.bread, P.cool]),
-      team("Pink", [P.virus, P.nick]),
-      team("Gray", [P.grandpa, P.lag]),
-    ],
-  }),
-  gameThrees: previewSnap("GAME", {
-    seq: 1022,
-    mode: "3v3v3v3",
-    yourParty: PREVIEW_PARTY,
-    teams: [
-      team("Red", [P.shadow, P.tenko, P.zenith]),
-      team("Blue", [P.you, P.duo, P.bread]),
-      team("Green", [P.moss, P.cool, P.grandpa]),
-      team("Yellow", [P.aqua, P.nick, P.prot]),
-    ],
-  }),
-  gameFours: previewSnap("GAME", {
-    seq: 1023,
-    mode: "4v4v4v4",
-    yourParty: PREVIEW_PARTY4,
-    teams: [
-      team("Red", [P.shadow, P.wallhax, P.tenko, out(P.zenith, "ELIMINATED")]),
-      team("Blue", [P.you, P.duo, P.third, P.clutch]),
-      team("Green", [P.frost, P.moss, out(P.cool, "DISCONNECTED"), out(P.grandpa, "MISSING")]),
-      team("Yellow", [
-        out(P.virus, "ELIMINATED"),
-        out(P.bread, "ELIMINATED"),
-        out(P.nick, "ELIMINATED"),
-        out(P.prot, "ELIMINATED"),
-      ]),
-    ],
-  }),
-  game4v4: previewSnap("GAME", {
-    seq: 1024,
-    mode: "4v4",
-    yourParty: PREVIEW_PARTY4,
-    teams: [
-      team("Red", [P.shadow, P.wallhax, P.tenko, P.zenith]),
-      team("Blue", [P.you, P.duo, P.third, P.clutch]),
-    ],
-  }),
-};
-PREVIEW_LOBBY.queue = PREVIEW_LOBBY.queueDoubles;
-PREVIEW_LOBBY.queue16 = PREVIEW_LOBBY.queueFours;
-PREVIEW_LOBBY.game = PREVIEW_LOBBY.gameThrees;
-PREVIEW_LOBBY.game16 = PREVIEW_LOBBY.gameFours;
-
-let previewLaunchAt = null;
-let previewUpdateKey = "consent";
+/** Preview: a setup run at the prototype's pacing, with the stop or failure `?setup=` asks for. */
+function previewSetupRun(kind, from) {
+  const gen = ++previewSetupGen;
+  const stopAt = new URLSearchParams(location.search).get("setup");
+  let k = from;
+  const snap = (check, extra = {}) => ({ gen, kind, check, phase: "running", ...extra });
+  const step = () => {
+    if (gen !== previewSetupGen) return;
+    if (k > 6) {
+      previewDone.add(kind);
+      onSetupSnapshot(snap(6, { phase: "done" }));
+      return;
+    }
+    if (k === 3 && stopAt === "signin" && !previewDone.has("signin:" + kind)) {
+      previewDone.add("signin:" + kind);
+      onSetupSnapshot(snap(2, { phase: "stop", stop: "signin" }));
+      setTimeout(step, 3000);
+      return;
+    }
+    if (k === 4 && stopAt === "game" && !previewDone.has("game:" + kind)) {
+      previewDone.add("game:" + kind);
+      onSetupSnapshot(snap(3, { phase: "stop", stop: "game_open" }));
+      setTimeout(step, 3000);
+      return;
+    }
+    if (k === 5 && stopAt === "fail" && !previewDone.has("fail:" + kind)) {
+      previewDone.add("fail:" + kind);
+      previewFailed = { kind, at: 5 };
+      onSetupSnapshot(snap(4, { phase: "failed", failedAt: 5 }));
+      return;
+    }
+    onSetupSnapshot(snap(k - 1));
+    k++;
+    setTimeout(step, 900);
+  };
+  setTimeout(step, 0);
+  return snap(from - 1);
+}
 
 function previewInvoke(command, args) {
   if (command === "status" || command === "refresh_setup") {
     const which = new URLSearchParams(location.search).get("state");
     return new Promise((resolve) =>
-      setTimeout(() => resolve(resolvePreviewStatus(which)), 250),
+      setTimeout(() => resolve(previewStatus(which)), 250),
     );
+  }
+
+  if (command === "begin_setup") {
+    return Promise.resolve(previewSetupRun(args?.kind ?? "lunar", 1));
+  }
+  if (command === "resume_setup") {
+    if (!previewFailed || previewFailed.kind !== args?.kind) return Promise.reject("nothing_to_resume");
+    const at = previewFailed.at;
+    previewFailed = null;
+    return Promise.resolve(previewSetupRun(args.kind, at));
+  }
+  if (command === "setup_state") {
+    return Promise.resolve(null);
   }
 
   if (command === "get_launcher") {
     const kind = args?.kind ?? "lunar";
+    setTimeout(() => previewInstalled.add(kind), 2400);
     return Promise.resolve({
       installed: kind === "forge" ? !PREVIEW_STATUS.prismNoInstances : false,
       download_url:
@@ -330,30 +163,24 @@ function previewInvoke(command, args) {
     return Promise.resolve();
   }
 
+  if (command === "lunar_version_ready") {
+    return Promise.resolve("unknown");
+  }
+
   if (command === "choose_forge_target") {
     return Promise.resolve(PREVIEW_STATUS.bothReady);
   }
 
   if (command === "launch_preferences") {
     return Promise.resolve({
-      autoJoinHypixel: true,
       useExternalOverlay: true,
       health: "missing",
-    });
-  }
-
-  if (command === "set_auto_join_hypixel") {
-    return Promise.resolve({
-      status: "saved",
-      autoJoinHypixel: args?.enabled ?? true,
-      useExternalOverlay: true,
     });
   }
 
   if (command === "set_use_external_overlay") {
     return Promise.resolve({
       status: "saved",
-      autoJoinHypixel: true,
       useExternalOverlay: args?.enabled ?? true,
     });
   }
@@ -401,37 +228,44 @@ function previewInvoke(command, args) {
   if (command === "reset_session_end" || command === "abort_launch_session") {
     return Promise.resolve({
       status: "ok",
-      preferences: { autoJoinHypixel: true, useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, health: "valid" },
     });
   }
 
-  if (command === "rehide_after_confirmation" || command === "quit_app") {
+  if (command === "quit_app") {
     // Preview never exits the page; quit is a no-op here.
     return Promise.resolve();
   }
 
   if (command === "launch_lunar" || command === "launch_forge") {
     previewLaunchAt = Date.now();
-    const autoJoin = args?.expectedAutoJoinHypixel ?? true;
-    const overlay = args?.expectedUseExternalOverlay ?? true;
-    if (!autoJoin) {
-      return Promise.resolve({
-        status: "launched",
-        outcome: {
-          autoJoinHypixel: false,
-          useExternalOverlay: overlay,
-          action: "game_launch_requested",
-        },
-      });
-    }
+    previewLaunchForge = command === "launch_forge";
     return Promise.resolve({
       status: "launched",
       outcome: {
-        autoJoinHypixel: true,
-        useExternalOverlay: overlay,
+        useExternalOverlay: args?.expectedUseExternalOverlay ?? true,
         action: "game_launch_requested",
       },
     });
+  }
+
+  if (command === "open_info") {
+    // ?open=updated plays the first-open-after-update replay and What's New.
+    const q = new URLSearchParams(location.search);
+    return Promise.resolve({
+      version: q.get("version") || "0.18.0-next.1",
+      updated: q.get("open") === "updated",
+      fresh: q.get("open") === "fresh",
+    });
+  }
+
+  if (command === "game_theme") {
+    // ?accent=deep-teal&font=modern stand in for the game's cobblify.json.
+    const q = new URLSearchParams(location.search);
+    const reply = {};
+    if (q.get("accent")) reply.accent = q.get("accent");
+    if (q.get("font")) reply.font = q.get("font");
+    return Promise.resolve(reply);
   }
 
   if (command === "acknowledge_lobby_snapshot") {
@@ -439,17 +273,27 @@ function previewInvoke(command, args) {
   }
 
   if (command === "launch_progress") {
+    const q = new URLSearchParams(location.search);
     const t = previewLaunchAt ? Date.now() - previewLaunchAt : 0;
+    const prefix = previewLaunchForge ? "forge_" : "";
+    const outcome = q.get("outcome");
+    if (outcome && t >= 2300) return Promise.resolve({ stage: `${prefix}discovered`, percent: 60, outcome });
+    // A made instance's first launch: Prism downloads Minecraft first (prototype pacing).
+    const download = previewLaunchForge && q.get("first") ? 3200 : 0;
+    if (download && t >= 900 && t < 900 + download) {
+      return Promise.resolve({ stage: "forge_downloading", percent: 22 });
+    }
     const steps = [
-      [3000, "settled", 100],
-      [2300, "mixing", 85],
-      [1600, "discovered", 60],
-      [900, "attached", 35],
+      [3000 + download, "settled", 100],
+      [2300 + download, "mixing", 85],
+      [1600 + download, "discovered", 60],
+      [900 + download, "attached", 35],
     ];
     for (const [ms, s, percent] of steps) {
-      if (t >= ms) return Promise.resolve({ stage: s, percent });
+      // The preview's game "loads" Cobblify as it settles (the real backend's `loaded`).
+      if (t >= ms) return Promise.resolve({ stage: `${prefix}${s}`, percent, ...(s === "settled" ? { loaded: true } : {}) });
     }
-    return Promise.resolve({ stage: "fired", percent: 10 });
+    return Promise.resolve({ stage: `${prefix}fired`, percent: 10 });
   }
 
   if (command === "lobby_state") {
@@ -475,203 +319,563 @@ function previewInvoke(command, args) {
   return Promise.resolve();
 }
 
-// ── initial status render (loading / ready / blocked / error) ───────────────
-const setupBox = el("setup");
-let setupBusy = false;
+// ── the 0.18 home (ui/app.js), fed from the backend ─────────────────────────
+// The theme before anything answers: a brand-new player's (decision 8).
+watchUnits();
+setAccent(NEW_PLAYER_THEME.accent);
+setFont(NEW_PLAYER_THEME.font);
+
+const CLIENT_KEY = "cobblify.client";
+function readStoredClient() {
+  try {
+    return window.localStorage?.getItem(CLIENT_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+function storeClient(id) {
+  try {
+    window.localStorage?.setItem(CLIENT_KEY, id);
+  } catch {
+    // a remembered client is a convenience: without storage the first ready client is used
+  }
+}
+
 let lastStatus = { state: "loading", targets: [] };
 let refreshTimer = null;
 let suppressRefresh = false;
+/** The remembered client (decision 5). */
+let selected = readStoredClient();
+/** The latest backend launch stage (progress.rs), shown as the Launch key's phase. */
+let progressStage = null;
+/**
+ * How the last launch ended when Cobblify did not come up in it: the progress poll's
+ * `outcome` ("wrong_version" | "not_loaded") and the client it was for. Kept on the home the
+ * launch returns to, until the next launch or another client is picked.
+ * @type {{ outcome: string, kind: string } | null}
+ */
+let launchOutcome = null;
+/** The dev switch's value while its save is in flight. */
+let devPending = null;
+/** open_info: the running version, and whether this is the first open after an update. */
+let openInfoReply = null;
+let openPlayed = false;
+let themeKind = null;
+/** The last home model drawn (the add-wait follows through only on an idle home). */
+let lastHome = null;
 
-function render(status) {
-  lastStatus = status;
-  const ready = readyTargets(status);
-  const hasReady = ready.length > 0;
-  const err = topLevelError(status);
-  const state = err
-    ? "error"
-    : hasReady
-      ? "ready"
-      : ["blocked", "error"].includes(status.state)
-        ? status.state
-        : "blocked";
-  const version = status.mod_version ? `v${status.mod_version}` : null;
+// ── setting a client up (spec-flows.md §1.1-1.7) ────────────────────────────
+/** The setup run the window shows (a `setup://progress` snapshot), or null. Failed stays until Try again. */
+let setupSnap = null;
+/** The check whose island part hangs grey (model.stuckAfter). */
+let setupStuckAt = null;
+/** Setup is done: the bar holds full while the last part and the bed land. */
+let setupHolding = false;
+/** The last run that finished: its snapshots (a late begin reply included) are never shown again. */
+let doneGen = -1;
+/** A begin/resume request is in flight (one setup at a time). */
+let setupRequest = false;
+/** First run: the client whose download page was opened; setup starts by itself once it is installed. */
+let installWait = null;
+/** Home: "Add <client>" opened its download page; its setup starts once it is installed and home is idle. Session only. */
+let addWait = null;
+/** The Prism instance pick: { picked } while it is up. */
+let pick = null;
+/** Setup just finished: the ready line (one client) until the next launch or pick. */
+let freshSetup = false;
 
-  el("chip-text").textContent =
-    state === "ready" ? (version ?? "installed") : state === "loading" ? "checking setup" : (version ?? "—");
+const INSTALL_POLL_MS = 2000;
+let installTimer = null;
 
-  const lunarReady = ready.some((t) => t.kind === "lunar");
-  const forgeReady = ready.some((t) => t.kind === "forge");
-  launchController.projectLaunchButtons({ lunarReady, forgeReady });
-  syncLaunchUi();
-
-  renderSetup(status, state);
-  stage.dataset.state = state;
-  scene?.setMood(state);
-}
-
-function renderSetup(status, state) {
-  const blocks = setupBlocks(status);
-  const err = topLevelError(status);
-  const showSetup = blocks.length > 0 || err;
-  setupBox.hidden = !showSetup;
-  setupBox.replaceChildren();
-
-  if (err) {
-    setupBox.append(setupErrorNode(err));
-  }
-
-  const compact = state === "ready";
-  for (const block of blocks) {
-    setupBox.append(setupBlockNode(block, compact || block.compact));
-  }
-}
-
-function setupErrorNode(err) {
-  const box = node("div", "setup-block");
-  box.append(node("p", "setup-head", err.heading));
-  const actions = node("div", "setup-actions");
-  for (const action of err.actions) actions.append(setupActionButton(action));
-  box.append(actions);
-  if (err.detail) box.append(setupDetails(err.detail));
-  return box;
-}
-
-function setupBlockNode(block, compact) {
-  const box = node("div", compact ? "setup-block setup-block-compact" : "setup-block");
-  box.append(node("p", "setup-head", block.heading));
-  if (block.hint) box.append(node("p", "setup-hint", block.hint));
-
-  if (block.candidates.length) {
-    const list = node("ul", "setup-cands");
-    for (const row of block.candidates) {
-      const li = node("li", "setup-cand");
-      li.append(node("span", "setup-cand-name", row.name));
-      li.append(setupActionButton(row.action));
-      list.append(li);
+const ui = createApp(el("app"), {
+  play: (id) => startLaunch(CL[id]?.kind ?? "lunar"),
+  select: (id) => {
+    if (launchOutcome && launchOutcome.kind !== CL[id]?.kind) launchOutcome = null;
+    selected = id;
+    freshSetup = false;
+    // picking a set-up client drops Add's wait: Launch is back for it
+    addWait = null;
+    storeClient(id);
+    refreshUi();
+  },
+  // Choose Your Setup's installed row; settings Repair; the add row of an installed client.
+  setupNow: (id) => addClient(id),
+  // Choose Your Setup's row for a client that isn't installed: its download page, then wait for the install.
+  // Add's wait: the missing client's row opens its download page again and keeps waiting.
+  get: (id) => (addWait === id ? openDownload(id) : awaitInstall(id)),
+  add: (desc) => {
+    if (!desc) return;
+    if (desc.installed) {
+      addClient(desc.id);
+      return;
     }
-    box.append(list);
-  }
+    // Settings' Add before anything is set up: the first run's own wait.
+    if (!setUpClients(lastStatus).length) {
+      awaitInstall(desc.id);
+      return;
+    }
+    addWait = desc.id;
+    // Launch is paused while it waits: "Set Lunar to 1.8.9" must not relaunch by itself under it.
+    if (launchOutcome?.outcome === "wrong_version") launchOutcome = null;
+    openDownload(desc.id);
+    refreshUi();
+    watchInstall();
+  },
+  download: (id) => openDownload(id),
+  openClient: (id) => {
+    invoke("open_launcher", { kind: CL[id].kind }).catch((e) => console.warn("open_launcher failed", e));
+  },
+  retrySetup: () => retrySetup(),
+  repairSetup: (id) => addClient(id),
+  setupPrism: () => {
+    const id = pick?.picked ?? prismInstances(lastStatus)[0]?.id;
+    addClient("prism", id ?? undefined);
+  },
+  pick: (id) => {
+    if (!pick) return;
+    pick = { picked: id };
+    refreshUi();
+  },
+  // Settings' Change: the instance pick, then setup on the chosen instance.
+  change: () => openPick(),
+  refresh: () => {
+    invoke("refresh_setup")
+      .then((next) => next && setStatus(next))
+      .catch((e) => setStatus(setupErrorStatus(e)));
+  },
+  repairPref: () => {
+    // Any save rewrites a valid document (the backend salvages every valid key, and writes
+    // back the key the 0.17 launcher needs); an uncertain save repairs with its own value.
+    const st = launchController.getState();
+    launchController.setOverlay(st.optimisticOverlay, { repair: true });
+  },
+  update: (action) => updateController.action(action),
+  setOverlay: (on) => launchController.setOverlay(on),
+  setAutoUpdate: (on) => updateController.action(on ? "enable" : "disable"),
+  setDev: (on) => {
+    devPending = on;
+    refreshUi();
+    Promise.resolve(updateController.setUpdateChannel(on ? "dev" : "stable")).finally(() => {
+      devPending = null;
+      refreshUi();
+    });
+  },
+  // Repair re-runs Lunar's setup through the flow (default 12).
+  repairLunar: () => addClient("lunar"),
+  // The sheet or What's New closed: the add-wait may follow through now.
+  idle: () => addWaitGo(),
+});
 
-  if (block.actions.length) {
-    const actions = node("div", "setup-actions");
-    for (const action of block.actions) actions.append(setupActionButton(action));
-    box.append(actions);
-  }
-
-  if (block.hasDetails && block.detailText) {
-    box.append(setupDetails(block.detailText));
-  }
-
-  return box;
+/** First run: the client's download page opens and Choose Your Setup waits for the install (spec 1.1). */
+function awaitInstall(id) {
+  installWait = id;
+  openDownload(id);
+  refreshUi();
+  watchInstall();
 }
 
-function setupDetails(text) {
-  const det = document.createElement("details");
-  det.className = "setup-details";
-  const sum = document.createElement("summary");
-  sum.textContent = "Details";
-  det.append(sum, node("p", "setup-detail-text selectable", text));
-  return det;
+/** Opens a client's download page in the browser (get_launcher). */
+function openDownload(id) {
+  invoke("get_launcher", { kind: CL[id].kind }).catch((e) => console.warn("get_launcher failed", e));
 }
 
-function setupActionButton(action) {
-  const btn = node("button", action.kind === "setup_prism" ? "btn setup-btn" : "btn setup-btn", action.label);
-  btn.type = "button";
-  btn.dataset.action = action.kind;
-  if (action.launcher) btn.dataset.launcher = action.launcher;
-  if (action.candidateId) btn.dataset.candidateId = action.candidateId;
-  btn.addEventListener("click", () => runSetupAction(action, btn));
-  return btn;
-}
+const setupShown = () => setupSnap != null;
+/** A setup run is under way (begun and not failed): nothing else starts one. */
+const setupRunning = () => setupRequest || (setupSnap != null && setupSnap.phase !== "failed");
 
-async function runSetupAction(action, btn) {
+/**
+ * Sets a client up (proto addClient): the menu and the sheet close, a pending wait is dropped. Prism with several
+ * compatible instances and none picked shows the pick first; a Prism that is already set up uses its own instance.
+ */
+async function addClient(id, instanceId) {
+  if (setupRunning()) return;
   const st = launchController.getState();
-  if (setupBusy || st.activeOutcome != null || st.launchBusy || st.prefSaving || st.prefUncertain) {
+  if (st.activeOutcome != null || st.launchBusy) return;
+  ui.closeOverlays();
+  installWait = null;
+  if (addWait === id) addWait = null;
+  pick = null;
+  const kind = CL[id].kind;
+  if (kind === "forge" && instanceId === undefined && !isSetUp(lastStatus, "prism") && prismInstances(lastStatus).length >= 2) {
+    openPick();
     return;
   }
-  setupBusy = true;
-  const prev = btn.textContent;
-  if (action.kind === "setup_prism") {
-    btn.disabled = true;
-    btn.textContent = "Setting Up…";
-    btn.setAttribute("aria-busy", "true");
-  } else {
-    for (const b of setupBox.querySelectorAll("button")) b.disabled = true;
-  }
+  setupRequest = true;
   try {
-    if (action.kind === "refresh") {
-      const next = await invoke("refresh_setup");
-      if (next) render(next);
-      return;
-    }
-    if (action.kind === "download") {
-      await invoke("get_launcher", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "open_launcher") {
-      await invoke("open_launcher", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "open_folder") {
-      await invoke("open_setup_location", { kind: action.launcher });
-      return;
-    }
-    if (action.kind === "setup_prism") {
-      const next = await invoke("choose_forge_target", { id: action.candidateId });
-      if (next) render(next);
-    }
+    const snap = await beginSetup(invoke, kind, instanceId);
+    setupRequest = false;
+    onSetupSnapshot(snap, { fromReply: true, fresh: true });
   } catch (e) {
-    setupBox.append(node("p", "alert", String(e)));
-  } finally {
-    setupBusy = false;
-    for (const b of setupBox.querySelectorAll("button")) {
-      b.disabled = false;
-      b.removeAttribute("aria-busy");
+    setupRequest = false;
+    if (String(e) === "choose_instance") {
+      await refreshStatusQuietly();
+      openPick();
+      return;
     }
-    if (action.kind === "setup_prism") btn.textContent = prev;
+    console.warn("begin_setup failed", kind, e);
+    refreshUi();
   }
 }
 
-function node(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = text;
-  return n;
+/** Try again: the failed setup resumes at the check it failed at (default 22). */
+async function retrySetup() {
+  if (!setupSnap || setupSnap.phase !== "failed" || setupRequest) return;
+  const kind = setupSnap.kind;
+  setupRequest = true;
+  try {
+    const snap = await resumeSetup(invoke, kind);
+    setupRequest = false;
+    onSetupSnapshot(snap, { fromReply: true });
+  } catch (e) {
+    setupRequest = false;
+    if (String(e) === "nothing_to_resume") {
+      // The backend no longer holds the failure (it began elsewhere, or restarted): start over.
+      setupSnap = null;
+      setupStuckAt = null;
+      addClient(uiId(kind));
+      return;
+    }
+    console.warn("resume_setup failed", kind, e);
+  }
+}
+
+/** The Prism instance pick: the most recently played instance is preselected (the backend sorts them). */
+function openPick() {
+  if (setupRunning()) return;
+  ui.closeOverlays();
+  pick = { picked: prismInstances(lastStatus)[0]?.id ?? null };
+  refreshUi();
+}
+
+/**
+ * Every setup snapshot, from `setup://progress`, the begin/resume replies and `setup_state` at boot. Snapshots of an
+ * older run are dropped, as is a reply its own run's events already overtook.
+ */
+function onSetupSnapshot(s, { fromReply = false, fresh = false } = {}) {
+  if (!s || typeof s !== "object") return;
+  if (setupHolding || s.gen <= doneGen) return;
+  if (setupSnap && s.gen < setupSnap.gen) return;
+  if (fromReply && setupSnap && s.gen === setupSnap.gen) return;
+  // A finished run nobody watched (a reload after it ended) is not shown; one whose begin is still answering is.
+  if (!setupSnap && !setupRequest && s.phase === "done") return;
+  // A new run starting below the hanging part is a fresh begin, not the resume that keeps it.
+  if (fresh || (setupSnap && s.gen !== setupSnap.gen && setupStuckAt != null && s.check < setupStuckAt)) setupStuckAt = null;
+  setupStuckAt = stuckAfter(setupStuckAt, s);
+  setupSnap = s;
+  pick = null;
+  freshSetup = false;
+  if (s.phase === "done") {
+    finishSetup(s);
+    return;
+  }
+  refreshUi();
+}
+
+/**
+ * The last check passed: the bar holds full while the last part and then the bed land, and Launch comes with the
+ * bed (proto setupDone). Meanwhile the status is read again, so home has the new client.
+ */
+function finishSetup(s) {
+  setupHolding = true;
+  doneGen = s.gen;
+  refreshUi();
+  const land = new Promise((r) => setTimeout(r, ui.buildEnd()));
+  Promise.all([refreshStatusQuietly(), land]).then(() => {
+    const id = uiId(s.kind);
+    setupHolding = false;
+    setupSnap = null;
+    setupStuckAt = null;
+    selected = id;
+    storeClient(id);
+    freshSetup = true;
+    launchOutcome = null;
+    refreshUi();
+    addWaitGo();
+  });
+}
+
+/** refresh_setup, falling back to the cached `status` when a refresh is refused (busy). Never throws. */
+async function refreshStatusQuietly() {
+  try {
+    const next = await invoke("refresh_setup");
+    if (next) setStatus(next);
+    return;
+  } catch {
+    // refused (another claim holds the lifecycle): the cached status is still current enough
+  }
+  try {
+    const next = await invoke("status");
+    if (next) setStatus(next);
+  } catch {
+    // keep what we have
+  }
+}
+
+/**
+ * An idle home (proto idleHome): Launch (or Add's wait) showing, nothing running, no sheet, no What's New, no setup
+ * or pick.
+ */
+function homeIdle() {
+  const s = ui.state;
+  return (
+    !!lastHome &&
+    (lastHome.hero.kind === "play" || (addWait != null && lastHome.hero.kind === "setup")) &&
+    !lastHome.launching &&
+    !lastHome.under?.kind?.match(/setLunar|notLoaded/) &&
+    !setupShown() &&
+    !setupRequest &&
+    !pick &&
+    stage.dataset.view !== "dash" &&
+    !s.sheetOpen &&
+    !s.modal &&
+    s.view === "home"
+  );
+}
+
+/** Add's wait: once that client is installed and home is idle, its setup starts. */
+function addWaitGo() {
+  if (!addWait || !isInstalled(lastStatus, addWait) || !homeIdle()) return false;
+  const id = addWait;
+  addWait = null;
+  addClient(id);
+  return true;
+}
+
+/** Polls detection every 2 s while an install is awaited (default 2). */
+function watchInstall() {
+  if (installTimer) return;
+  installTimer = setInterval(pollInstall, INSTALL_POLL_MS);
+}
+
+let installPollInFlight = false;
+async function pollInstall() {
+  if (!installWait && !addWait) {
+    clearInterval(installTimer);
+    installTimer = null;
+    return;
+  }
+  if (installPollInFlight || suppressRefresh || setupRunning() || stage.dataset.view === "dash") return;
+  const st = launchController.getState();
+  if (st.launchBusy || st.activeOutcome != null) return;
+  installPollInFlight = true;
+  try {
+    const next = await invoke("refresh_setup");
+    if (next) setStatus(next);
+  } catch {
+    // fail-soft: the next poll tries again
+  } finally {
+    installPollInFlight = false;
+  }
+  if (installWait && isInstalled(lastStatus, installWait)) addClient(installWait);
+  else addWaitGo();
+}
+
+// The home window and the post-launch dashboard take turns: stage.dataset.view
+// is the one switch every launch and reset path already sets.
+new window.MutationObserver(() => ui.setActive(stage.dataset.view !== "dash")).observe(stage, {
+  attributes: true,
+  attributeFilter: ["data-view"],
+});
+stage.dataset.platform = el("app").dataset.platform;
+function drawDashMark() {
+  const k = Math.max(1, Math.round((parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--su")) || 2) * (window.devicePixelRatio || 1)));
+  el("dash-wm").innerHTML = wordmark(k, { font: document.documentElement.dataset.font }, window.devicePixelRatio || 1);
+}
+document.addEventListener("cobblify:units", drawDashMark);
+document.addEventListener("cobblify:theme", drawDashMark);
+drawDashMark();
+
+function launchView() {
+  const st = launchController.getState();
+  return {
+    kind: st.launchKind,
+    phase: st.launchPhase,
+    busy: st.launchBusy,
+    stage: progressStage,
+    outcome: launchOutcome?.outcome ?? null,
+    outcomeKind: launchOutcome?.kind ?? null,
+    prefError: st.prefError,
+    prefHealth: st.prefHealth,
+    prefUncertain: st.prefUncertain,
+    active: st.activeOutcome != null,
+    inGame: gameUp,
+    waiting: progressWaiting,
+  };
+}
+
+function refreshUi() {
+  const st = launchController.getState();
+  const launch = launchView();
+  const update = updateController.getState();
+  const version = openInfoReply?.version || update.currentVersion || "";
+  const home = homeModel({
+    status: lastStatus,
+    selected,
+    launch,
+    update,
+    setup: setupSnap ? { snap: setupSnap, stuckAt: setupStuckAt } : null,
+    wait: installWait,
+    addWait,
+    pick,
+    freshSetup,
+  });
+  lastHome = home;
+  const sheet = sheetModel({
+    status: lastStatus,
+    launch,
+    update,
+    overlayOn: st.optimisticOverlay,
+    overlaySaving: st.prefSaving,
+    version,
+    devPending,
+    setupActive: setupShown() || setupRequest || !!pick,
+  });
+  ui.update({ home, sheet, version, dev: update.updateChannel === "dev" });
+  applyTheme(home.sel);
+  maybeOpen(home);
+  maybeShowWindow();
+}
+
+// ── the window: created hidden, shown once its first frame is drawn ─────────
+// tauri.conf.json creates the window with `visible: false` so the island never flashes in half-drawn. It is shown
+// after the island's first frame (at once when there is no island to wait for), and 1.5 s after boot at the latest;
+// the backend also shows it 3 s after start if it is still hidden, so a script failure can never leave it invisible.
+const SHOW_WINDOW_MAX_MS = 1500;
+let windowShown = false;
+let windowAsked = false;
+function showWindow() {
+  if (windowShown) return;
+  windowShown = true;
+  try {
+    const w = window.__TAURI__?.window?.getCurrentWindow?.();
+    Promise.resolve(w?.show?.()).catch(() => {});
+  } catch {
+    // the backend's own timer shows it
+  }
+}
+function maybeShowWindow() {
+  if (windowShown || windowAsked || lastStatus.state === "loading") return;
+  windowAsked = true;
+  ui.firstFrame().then(showWindow, showWindow);
+}
+setTimeout(showWindow, SHOW_WINDOW_MAX_MS);
+
+/** The launcher wears the accent and font of the client you play (decision 8). */
+function applyTheme(sel) {
+  const kind = sel ? CL[sel].kind : "lunar";
+  if (kind === themeKind) return;
+  themeKind = kind;
+  gameTheme(invoke, kind)
+    .then((reply) => {
+      if (themeKind !== kind) return;
+      const t = themeFor(reply);
+      setAccent(t.accent);
+      setFont(t.font);
+    })
+    .catch(() => {});
+}
+
+/**
+ * Every open: the island's build replay, then What's New after an update. Once per session. An open without an update
+ * replays only when its first settled home is ready to play: a first run or a setup has just built the island part by
+ * part, and a build arriving later in the session is no longer the open. After an update the first READY home plays
+ * it: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is marked
+ * played only when ui.open actually played it.
+ */
+function maybeOpen(home) {
+  if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
+  if (!openInfoReply.updated && home.hero?.kind !== "play") {
+    openPlayed = true;
+    return;
+  }
+  openPlayed = ui.open(openInfoReply) === true;
+}
+
+/** The highest backend status revision applied (main.rs `Status.rev`); -1 before any. */
+let lastStatusRev = -1;
+
+/**
+ * Applies a status reply. A reply carrying an older `rev` than the last one applied is a refresh that read the
+ * clients before a newer publish (a setup finishing) and is ignored (code review round 1, I2). Replies without a
+ * `rev` (an error made here) always apply.
+ */
+function setStatus(status) {
+  const rev = typeof status?.rev === "number" ? status.rev : null;
+  if (rev !== null) {
+    if (rev < lastStatusRev) return;
+    lastStatusRev = rev;
+  }
+  lastStatus = status;
+  // A fresh setup read also re-reads the game's theme: the player may have changed it in game meanwhile.
+  themeKind = null;
+  refreshUi();
 }
 
 // ── launch: stay on the homepage, narrate boot progress, poll lobby.json ───
-// Auto-join on uses the backend-owned Hypixel routes; off uses open-only Lunar
-// or Prism without --server. The dashboard opens only after an acknowledged
-// live snapshot via handleLobbyPoll — not from cosmetic progress alone.
+// Launches never join a server: Lunar opens through the bare play link, Prism
+// without --server, and the player joins Hypixel themselves. The dashboard
+// opens once Cobblify reports in (progress `loaded`, or an acknowledged
+// snapshot of this game), asking the player to join Hypixel until a live
+// snapshot draws the board - never from cosmetic progress alone. A progress `outcome` (wrong Lunar version,
+// Cobblify didn't load) ends the launch back on home with that outcome.
 const PROGRESS_POLL_MS = 600;
 let progressTimer = null;
 let lobbyTimer = null;
 let lobbyPollInFlight = false;
 let lastKey = null;
-let lastView = null;
 let firstLiveSeen = false;
 let lastLaunchKind = "lunar";
 /** Route-specific manual subtitle preserved across unavailable polls. */
 let manualRouteSubtitle = null;
 /**
- * Hold the home view (button narration) until the first acknowledged live
- * lobby snapshot. Set for every confirmed game dispatch, both auto-join
- * states; see launch-view-route.js for the decision table.
+ * Hold the home view (button narration) until Cobblify reports in from
+ * this launch's game (enterGame). Set for every confirmed game dispatch; see
+ * launch-view-route.js for the decision table.
  */
 let homeUntilLive = false;
-/** Launch kind whose button currently shows backend stage text, if any. */
-let stageNarrationKind = null;
+/** Cobblify reported in from this launch's game (`loaded`): the window is the dashboard. */
+let gameUp = false;
+/** No game yet ~15 s after the click, Lunar/Prism still up (launch_progress `waiting`). */
+let progressWaiting = false;
+/** Overlay off with a confirmed game: no dashboard at all, Cobblify quits once it loaded (overlay-exit.js). */
+let noDashboard = false;
 
-const launch = el("launch");
-const launchForge = el("launch-forge");
-const launchError = el("launch-error");
+const boardUi = createBoard({ stage, board: dash, title: el("dash-title"), joining });
+const joiningSub = el("joining-sub");
+const connActionKey = el("conn-action");
+const connActionSlot = el("conn-act");
 
 const connection = createConnectionModel();
 const connectionShell = createConnectionShell({
   titleEl: el("joining-title"),
-  subEl: el("joining-sub"),
+  // The sub line draws the glyphs the pixel font lacks and steps the dots of "Returning home…".
+  subEl: {
+    get textContent() {
+      return joiningSub.dataset.text ?? "";
+    },
+    set textContent(text) {
+      joiningSub.dataset.text = text;
+      joiningSub.innerHTML = subHTML(text);
+    },
+  },
   shellEl: joining,
-  actionEl: el("conn-action"),
+  // The key sits in its own slot (the gap above it): the slot shows and hides with it.
+  actionEl: {
+    get hidden() {
+      return connActionKey.hidden;
+    },
+    set hidden(on) {
+      connActionKey.hidden = on;
+      connActionSlot.hidden = on;
+    },
+    get textContent() {
+      return connActionKey.textContent;
+    },
+    set textContent(text) {
+      connActionKey.textContent = text;
+    },
+    addEventListener: (...args) => connActionKey.addEventListener(...args),
+  },
   announceEl: connAnnounce,
   actions: {
     preexisting_game: {
@@ -680,41 +884,21 @@ const connectionShell = createConnectionShell({
         connection.clearForcedMode();
         connectionShell.hide();
         // Hiding the shell is not leaving the screen: the dashboard view is
-        // still the one on top, with the launch panel behind it. A retry that
-        // is rejected or throws reports on the home view, so the return to
-        // home happens HERE, before the retry - a retry that succeeds routes
-        // itself away again through onLaunchReply.
+        // still the one on top. A retry that is rejected or throws reports on
+        // the home view, so the return to home happens HERE, before the retry -
+        // a retry that succeeds routes itself away again through onLaunchReply.
         dash.classList.remove("on");
         stage.dataset.view = "home";
-        syncLaunchUi();
-        launchController.tryAgainLaunch(lastLaunchKind, launchHooks);
+        refreshUi();
+        startLaunch(lastLaunchKind, { retry: true });
       },
-    },
-    // The 60s escape hatch: the launch never reached Hypixel, so the same
-    // forcing abort the home-view Cancel control uses gets the app back to
-    // a launchable home instead of leaving it stranded here.
-    waiting: {
-      label: "Back to Home",
-      onAction: () => sessionReset.resetToHome("launch_aborted"),
     },
   },
   clearRoster: () => {
-    dash.classList.remove("on");
-    dash.replaceChildren();
-    delete dash.dataset.ctx;
-    delete dash.dataset.density;
-    delete dash.dataset.teams;
-    lastKey = null;
-    lastView = null;
+    clearBoard();
   },
   stopProgress: () => {
-    if (progressTimer) {
-      clearInterval(progressTimer);
-      progressTimer = null;
-    }
-    stageNarrationKind = null;
-    launch.classList.remove("is-loading");
-    launchForge.classList.remove("is-loading");
+    stopProgressPolling();
     suppressRefresh = false;
   },
   showDash: () => {
@@ -726,131 +910,20 @@ const connectionShell = createConnectionShell({
 });
 
 const launchController = createLaunchController(invoke, {
-  onChange: syncLaunchUi,
+  onChange: () => refreshUi(),
 });
-let updateBlocksLaunch = false;
-const updateController = createUpdateController(invoke, { onChange: syncUpdateUi });
-
-function syncUpdateUi() {
-  const snapshot = updateController.getState();
-  const view = updateView(snapshot);
-  updateTitle.textContent = view.title;
-  updateDetail.textContent = view.detail;
-  updateDetail.hidden = !view.detail;
-  updatePrimary.hidden = !view.primaryAction;
-  updatePrimary.textContent = view.primaryLabel ?? "";
-  updatePrimary.dataset.action = view.primaryAction ?? "";
-  updateSecondary.hidden = !view.secondaryAction;
-  updateSecondary.textContent = view.secondaryLabel ?? "";
-  updateSecondary.dataset.action = view.secondaryAction ?? "";
-  const showProgress = ["downloading", "paused"].includes(snapshot.state) && snapshot.sizeBytes > 0;
-  updateProgress.hidden = !showProgress;
-  updateProgress.setAttribute("aria-hidden", showProgress ? "false" : "true");
-  const percent = showProgress
-    ? Math.min(100, Math.round((snapshot.downloadedBytes / snapshot.sizeBytes) * 100))
-    : 0;
-  updateProgressFill.style.width = `${percent}%`;
-  // Belongs to the updater, not the launch targets: visible as soon as the preference is
-  // known, even on a machine with nothing installed yet.
-  devChannelWrap.hidden = !snapshot.channelLoaded;
-  // Not while the save is in flight: the snapshot still carries the OLD
-  // channel, so re-rendering from it would visibly undo the tick the user
-  // just made and is waiting on.
-  if (!snapshot.channelSaving) devChannelInput.checked = snapshot.updateChannel === "dev";
-  devChannelInput.disabled = snapshot.channelSaving || snapshot.state === "checking";
-  updateBlocksLaunch = view.blocksLaunch;
-  syncLaunchUi();
-}
-
-devChannelInput.addEventListener("change", () => {
-  updateController.setUpdateChannel(devChannelInput.checked ? "dev" : "stable");
-});
-
-for (const button of [updatePrimary, updateSecondary]) {
-  button.addEventListener("click", () => {
-    const action = button.dataset.action;
-    if (action) updateController.action(action);
-  });
-}
+const updateController = createUpdateController(invoke, { onChange: () => refreshUi() });
 
 function applyPreviewUpdate(key) {
-  previewUpdateKey = PREVIEW_UPDATE[key] ? key : "consent";
+  previewUpdateKey = PREVIEW_UPDATE[key] ? key : "current";
   updateController.acceptStatus({ ...resolvePreviewUpdate(previewUpdateKey), channelLoaded: true });
 }
-
-function syncLaunchUi() {
-  const st = launchController.getState();
-  const ready = readyTargets(lastStatus);
-  const lunarReady = ready.some((t) => t.kind === "lunar");
-  const forgeReady = ready.some((t) => t.kind === "forge");
-  const buttons = launchController.projectForCurrentPhase({ lunarReady, forgeReady });
-  const lunarButton = buttons.find((b) => b.kind === "lunar");
-  const forgeButton = buttons.find((b) => b.kind === "forge");
-  // The projection decides who is in the row: a target that is not installed,
-  // or the one that was NOT clicked while the other's session runs, is absent
-  // and therefore hidden. Only the launched button narrates.
-  launch.hidden = !lunarButton;
-  launchForge.hidden = !forgeButton;
-  // A re-render must never clobber live stage narration with the generic
-  // phase label: the launch button IS the progress surface now.
-  const narration = { launchPhase: st.launchPhase, narratingKind: stageNarrationKind };
-  if (lunarButton) {
-    if (!keepsStageNarration({ ...narration, kind: "lunar" })) {
-      el("launch-label").textContent = lunarButton.label;
-    }
-    launch.disabled = !lunarButton.enabled || updateBlocksLaunch;
-    launch.classList.toggle("is-loading", lunarButton.loading);
-  }
-  if (forgeButton) {
-    if (!keepsStageNarration({ ...narration, kind: "forge" })) {
-      el("launch-forge-label").textContent = forgeButton.label;
-    }
-    launchForge.disabled = !forgeButton.enabled || updateBlocksLaunch;
-    launchForge.classList.toggle("is-loading", forgeButton.loading);
-  }
-  autoJoinWrap.hidden = !st.showAutoJoinSwitch;
-  autoJoinInput.checked = st.optimisticAutoJoin;
-  autoJoinInput.disabled = st.launchBusy || st.prefSaving || st.prefUncertain || st.activeOutcome != null;
-  overlayWrap.hidden = !st.showAutoJoinSwitch;
-  overlayInput.checked = st.optimisticOverlay;
-  overlayInput.disabled = autoJoinInput.disabled;
-  repairPref.hidden = st.prefHealth !== "invalid" && !st.prefUncertain;
-  cancelLaunch.hidden = !showsCancelLaunch({
-    activeOutcome: st.activeOutcome,
-    launchPhase: st.launchPhase,
-    homeUntilLive,
-    resetActive: sessionReset.isActive(),
-  });
-  if (st.prefError) {
-    prefError.textContent = st.prefError;
-    prefError.hidden = false;
-  } else {
-    prefError.hidden = true;
-  }
-}
-
-autoJoinInput.addEventListener("change", () => {
-  launchController.setAutoJoin(autoJoinInput.checked);
-});
-overlayInput.addEventListener("change", () => {
-  launchController.setOverlay(overlayInput.checked);
-});
-repairPref.addEventListener("click", () => {
-  // Any save rewrites a valid two-key document (backend salvages the valid
-  // sibling); an uncertain save must be repaired through its own key.
-  if (launchController.getState().prefUncertainKey === "overlay") {
-    launchController.setOverlay(overlayInput.checked, { repair: true });
-  } else {
-    launchController.setAutoJoin(autoJoinInput.checked, { repair: true });
-  }
-});
 
 function stopProgressPolling() {
   if (progressTimer) {
     clearInterval(progressTimer);
     progressTimer = null;
   }
-  stageNarrationKind = null;
 }
 
 function stopLobbyPolling() {
@@ -860,10 +933,9 @@ function stopLobbyPolling() {
   }
 }
 
-// Overlay-off quit / late-success rehide coordination (dependency-injected
-// module; see overlay-exit.js for the exhaustive route table).
+// Overlay-off quit coordination (dependency-injected module; see
+// overlay-exit.js for the exhaustive route table).
 const overlayExit = createOverlayExit({
-  rehide: (useExternalOverlay) => rehideAfterConfirmation(invoke, useExternalOverlay),
   quit: () => quitApp(invoke),
   // Double quit rejection: enter the overlay flow instead of stranding an
   // Active app - lobby polling gives it a live loop that can reach the
@@ -875,6 +947,8 @@ const overlayExit = createOverlayExit({
 const RESET_SHELL_MODES = {
   game_session_changed: ["session_changed_resetting", "session_changed"],
   launch_aborted: ["launch_aborted_resetting", "launch_aborted"],
+  // A launch that ended with an outcome; its view is home (only the final give-up uses this).
+  launch_outcome: ["session_ended_resetting", "session_ended"],
 };
 const resetShellMode = (reason, phase) => {
   const [transitional, final] =
@@ -889,55 +963,58 @@ const sessionReset = createSessionReset({
   // forcing abort command; every backend-latched reason takes the ordinary
   // reset. Both answer in the same reply shape.
   invokeReset: (reason) =>
-    reason === "launch_aborted" ? abortLaunchSession(invoke) : resetSessionEnd(invoke),
+    reason === "launch_aborted" || reason === "launch_outcome"
+      ? abortLaunchSession(invoke)
+      : resetSessionEnd(invoke),
   stopPolling: () => {
     stopProgressPolling();
     stopLobbyPolling();
   },
   invalidate: () => {
     launchController.invalidateSession();
-    // The reset owns the surface from here: the Cancel control goes away
+    // The reset owns the surface from here: the launch key gives way
     // before its own command has even answered.
-    syncLaunchUi();
+    refreshUi();
   },
   commitHome: (prefs) => {
     overlayExit.resetSession();
     connection.reset();
     connectionShell.reset();
     connAnnounce.textContent = "";
-    dash.classList.remove("on");
-    dash.replaceChildren();
-    delete dash.dataset.ctx;
-    delete dash.dataset.density;
-    delete dash.dataset.teams;
-    lastKey = null;
-    lastView = null;
+    clearBoard();
     firstLiveSeen = false;
     manualRouteSubtitle = null;
     homeUntilLive = false;
+    gameUp = false;
+    noDashboard = false;
+    progressWaiting = false;
     suppressRefresh = false;
-    launch.classList.remove("is-loading");
-    launchForge.classList.remove("is-loading");
-    launchError.hidden = true;
+    progressStage = null;
     launchController.resetLaunchSession(prefs);
     stage.dataset.view = "home";
-    syncLaunchUi();
+    refreshUi();
     updateController.setGameActive(false);
+    // The launch ended: an add-wait follows through on the idle home.
+    addWaitGo();
   },
   refreshHome: async () => {
     const next = await invoke("refresh_setup");
-    if (next) render(next);
+    if (next) setStatus(next);
   },
   onRefreshError: (e) => {
-    // Home stays visible with the existing setup-error rendering (the
-    // same projection the boot path uses) - recoverable, never silent.
-    render(setupErrorStatus(e));
+    // Home stays visible with the setup-error key - recoverable, never silent.
+    setStatus(setupErrorStatus(e));
   },
   showTransitional: (reason) => {
+    if (reason === "launch_outcome") {
+      // The launch ended with an outcome: home is where it is shown, never a shell.
+      stage.dataset.view = "home";
+      return;
+    }
     connectionShell.enterTerminal(resetShellMode(reason, "transitional"));
     // Only a session that actually reached the dashboard shows this copy
     // there. A pre-live quit or a cancelled launch never left home
-    // (`homeUntilLive` is still set): it stays on home, buttons re-enabling
+    // (`homeUntilLive` is still set): it stays on home, the key re-enabling
     // as the reset completes, with no dashboard flash on the way out.
     if (!homeUntilLive) stage.dataset.view = "dash";
   },
@@ -952,10 +1029,8 @@ const sessionReset = createSessionReset({
 let progressPollInFlight = false;
 let progressLaunchGen = 0;
 
-function startProgressPolling(kind, autoJoin = true) {
+function startProgressPolling() {
   stopProgressPolling();
-  const labelEl = kind === "forge" ? el("launch-forge-label") : el("launch-label");
-  const labels = launchController.getState().stageLabels(autoJoin);
   progressLaunchGen = launchController.getState().launchGen;
   progressTimer = setInterval(async () => {
     if (progressPollInFlight) return;
@@ -967,19 +1042,26 @@ function startProgressPolling(kind, autoJoin = true) {
     try {
       const p = await launchController.pollProgress();
       if (launchController.getState().launchGen !== progressLaunchGen) return;
+      if (p?.outcome) {
+        endLaunchWithOutcome(p.outcome);
+        return;
+      }
       if (p?.stage) {
-        if (labels[p.stage]) {
-          labelEl.textContent = labels[p.stage];
-          stageNarrationKind = kind;
+        const waiting = p.waiting === true;
+        if (p.stage !== progressStage || waiting !== progressWaiting) {
+          progressStage = p.stage;
+          progressWaiting = waiting;
+          refreshUi();
         }
         if (p.stage === "settled" || p.stage === "forge_settled") {
-          // Both auto-join states settle on the home button now.
           launchController.settleLaunchPhase();
-          syncLaunchUi();
-          // Overlay-off quit / unconfirmed late-success trigger; the module
-          // fires each obligation exactly once across duplicate polls.
-          overlayExit.onConfirmationSignal("settled");
         }
+      }
+      if (p?.loaded === true) {
+        // The backend's proof that Cobblify loaded in this launch's game: the
+        // overlay-off quit. The module quits exactly once across duplicate polls.
+        overlayExit.onConfirmationSignal("loaded");
+        enterGame();
       }
     } catch {
       // cosmetic fail-soft
@@ -990,8 +1072,12 @@ function startProgressPolling(kind, autoJoin = true) {
 }
 
 const launchHooks = {
+  onWrongVersion() {
+    launchOutcome = { outcome: "wrong_version", kind: lastLaunchKind };
+    watchLunarVersion();
+    refreshUi();
+  },
   onLaunchReply(reply) {
-    launchError.hidden = true;
     if (reply.status === "preexisting_game") {
       connection.setForcedMode("preexisting_game");
       connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
@@ -1000,17 +1086,16 @@ const launchHooks = {
     }
     if (reply.status !== "launched") return;
     updateController.setGameActive(true);
-    const autoJoin = reply.outcome.autoJoinHypixel;
-    const now = Date.now();
-    connection.setAutoJoin(autoJoin);
-    connection.beginLaunchSession({ autoJoin, now });
+    connection.beginLaunchSession({ now: Date.now() });
     firstLiveSeen = false;
     launchController.bumpPollGen();
     const exitRoute = overlayExit.routeFor(reply.outcome);
+    noDashboard = exitRoute === "no_dashboard";
+    gameUp = false;
     if (exitRoute === "quit_now") {
-      // Never-fired open-only with overlay off: the backend proved the
-      // launcher presented and quiescent - exit immediately after the
-      // reply. (Unproven cleanup arrives as launch_unconfirmed instead.)
+      // Never-fired open-only with overlay off: the backend brought the
+      // launcher forward - exit immediately after the reply. (A failed
+      // re-present arrives as launch_unconfirmed instead.)
       overlayExit.quitNow();
       return;
     }
@@ -1022,32 +1107,18 @@ const launchHooks = {
       : null;
     // Every surviving route polls the lobby. The overlay-off confirmed route
     // polls HEADLESSLY (the marker suppresses its shell) purely so a
-    // session_ended poll can still reset the app to a launchable home; its
-    // quit-at-settled obligation is untouched.
+    // session_ended poll can still reset the app to a launchable home; it
+    // quits once Cobblify is known to have loaded (overlay-exit.js).
     startLobbyPolling();
-    if (autoJoin && reply.outcome.useExternalOverlay) {
-      // The 60s escape hatch, armed only where a dashboard may appear at
-      // all. The overlay-off route must stay headless: surfacing the
-      // waiting dash there would also stop progress polling and starve
-      // its quit-at-settled obligation on a slow cold start.
-      connectionShell.scheduleWaitingDeadline(60_000, () => {
-        stopProgressPolling();
-        const { mode } = connection.stateAt(Date.now());
-        if (mode === "waiting") {
-          connectionShell.show("waiting");
-          stage.dataset.view = "dash";
-        }
-      });
-    }
     if (!view.stayHome) {
       // Open-only / unconfirmed: the manual screen IS the guidance.
       connectionShell.show(view.shellMode, { subtitle: manualRouteSubtitle });
       stage.dataset.view = "dash";
     }
-    syncLaunchUi();
+    refreshUi();
   },
-  onProgressStart(autoJoin = true) {
-    startProgressPolling(lastLaunchKind, autoJoin);
+  onProgressStart() {
+    startProgressPolling();
   },
 };
 
@@ -1061,30 +1132,133 @@ function releaseRefreshUnlessLive() {
   if (launchController.getState().activeOutcome == null) suppressRefresh = false;
 }
 
-launch.addEventListener("click", () => {
-  lastLaunchKind = "lunar";
+function startLaunch(kind, { retry = false } = {}) {
+  lastLaunchKind = kind;
   suppressRefresh = true;
-  launchController.launch("lunar", launchHooks).finally(releaseRefreshUnlessLive);
-});
-launchForge.addEventListener("click", () => {
-  lastLaunchKind = "forge";
-  suppressRefresh = true;
-  launchController.launch("forge", launchHooks).finally(releaseRefreshUnlessLive);
-});
-// The pre-live escape hatch. The backend has nothing to latch on yet, so
-// this takes the forcing abort; the orchestrator handles the rest exactly
-// like any other return to home.
-cancelLaunch.addEventListener("click", () => {
-  sessionReset.resetToHome("launch_aborted");
-});
+  progressStage = null;
+  progressWaiting = false;
+  launchOutcome = null;
+  freshSetup = false;
+  const run = retry ? launchController.tryAgainLaunch(kind, launchHooks) : launchController.launch(kind, launchHooks);
+  return run.finally(releaseRefreshUnlessLive);
+}
+
+/**
+ * The launch ended without Cobblify: the backend's verdict (`wrong_version` / `not_loaded`).
+ * The session is released through the forcing abort, which
+ * guards a game still running so the next Launch cannot start a second one over it - and
+ * home shows the outcome. Never kills the game; never quits the app (overlay off quits only
+ * once Cobblify loaded, and an outcome means it did not).
+ */
+function endLaunchWithOutcome(outcome) {
+  if (sessionReset.isActive()) return;
+  launchOutcome = { outcome, kind: lastLaunchKind };
+  stopProgressPolling();
+  sessionReset.resetToHome("launch_outcome");
+  if (outcome === "wrong_version") watchLunarVersion();
+}
+
+const VERSION_POLL_MS = 1000;
+/** Ready this many looks in a row before the launch goes on (a moment for Lunar to settle). */
+const VERSION_READY_LOOKS = 3;
+/** The wait gives up after this long; Launch still works by hand. */
+const VERSION_WAIT_MS = 10 * 60 * 1000;
+let versionTimer = null;
+/**
+ * While "Set Lunar to 1.8.9" shows, the launch goes on by itself once the player has switched Lunar
+ * to 1.8.9 (lunar_version_ready): only after the selection was seen on another version and then
+ * reads ready for VERSION_READY_LOOKS looks in a row. A Lunar game seen at any point ends the wait
+ * for good - the player is playing from Lunar, and no second game is started - and so does
+ * VERSION_WAIT_MS. Each call starts a fresh wait.
+ */
+function watchLunarVersion() {
+  clearInterval(versionTimer);
+  const started = Date.now();
+  let sawOther = false;
+  let readyLooks = 0;
+  let inFlight = false;
+  const timer = setInterval(async () => {
+    const waiting = () => versionTimer === timer && launchOutcome?.outcome === "wrong_version" && launchOutcome.kind === "lunar";
+    const stop = () => {
+      clearInterval(timer);
+      if (versionTimer === timer) versionTimer = null;
+    };
+    if (!waiting() || Date.now() - started > VERSION_WAIT_MS) return stop();
+    if (inFlight || setupRunning() || stage.dataset.view === "dash") return;
+    const st = launchController.getState();
+    if (st.launchBusy || st.activeOutcome != null) return;
+    inFlight = true;
+    let seen = "unknown";
+    try {
+      seen = await lunarVersionReady(invoke);
+    } catch {
+      // fail-soft: the next look asks again
+    } finally {
+      inFlight = false;
+    }
+    if (!waiting()) return stop();
+    if (seen === "game") return stop();
+    if (seen === "other") sawOther = true;
+    readyLooks = seen === "ready" && sawOther ? readyLooks + 1 : 0;
+    if (readyLooks < VERSION_READY_LOOKS) return;
+    stop();
+    startLaunch("lunar");
+  }, VERSION_POLL_MS);
+  versionTimer = timer;
+}
+
+/**
+ * The lobby poll latched the game's end before the first live snapshot. If Cobblify never
+ * came up, the game died early: the progress poll owns that verdict (Weave's log may say
+ * wrong version), so ask it once before the ordinary reset.
+ */
+async function resetFromLobby(reason) {
+  const gen = launchController.getState().launchGen;
+  if (reason === "game_session_ended" && !firstLiveSeen && gen !== 0) {
+    try {
+      const p = await launchController.pollProgress();
+      if (launchController.getState().launchGen !== gen) return;
+      if (p?.outcome) {
+        endLaunchWithOutcome(p.outcome);
+        return;
+      }
+    } catch {
+      // fall through to the ordinary reset
+    }
+  }
+  return sessionReset.resetToHome(reason);
+}
+
+/**
+ * Cobblify reported in from this launch's game (TEST-NOTES 2, the user 2026-10-11): home gives way to the
+ * dashboard, which asks the player to join Hypixel until they are on it. Quitting Minecraft
+ * still returns home (the lobby poll's session end). Overlay off never shows it: Cobblify quits instead.
+ */
+function enterGame() {
+  if (gameUp || firstLiveSeen || noDashboard || sessionReset.isActive()) return;
+  if (launchController.getState().activeOutcome == null) return;
+  gameUp = true;
+  homeUntilLive = false;
+  // Proof Cobblify loaded (an acknowledged snapshot can beat the progress poll's `loaded`): the overlay-off quit,
+  // before the progress poll that would also send it stops.
+  overlayExit.onConfirmationSignal("loaded");
+  // Any later unavailable poll must not bring back the pre-game manual screen.
+  manualRouteSubtitle = null;
+  stopProgressPolling();
+  suppressRefresh = false;
+  connectionShell.show("join");
+  stage.dataset.view = "dash";
+  refreshUi();
+}
 
 function enterDashboard() {
   connectionShell.enterConnected({ firstLive: !firstLiveSeen });
   firstLiveSeen = true;
+  gameUp = true;
   // The live snapshot the home view was held for: the marker's job is done.
   homeUntilLive = false;
-  // First acknowledged live snapshot: the second late-success trigger
-  // (covers dashboard entry stopping progress polling before settled).
+  // First acknowledged live snapshot: proof Cobblify loaded, for the
+  // overlay-off quit (covers dashboard entry stopping progress polling).
   overlayExit.onConfirmationSignal("live");
 }
 
@@ -1107,14 +1281,14 @@ async function handleLobbyPoll(poll) {
     connectionShell,
     launchController,
     manualRouteSubtitle,
-    homeUntilLive,
     firstLiveSeen,
     applyLobbySnapshot,
-    resetToHome: (reason) => sessionReset.resetToHome(reason),
+    resetToHome: (reason) => resetFromLobby(reason),
     stopLobbyPolling,
     setStageDash: () => {
       stage.dataset.view = "dash";
     },
+    enterGame,
   });
 }
 
@@ -1122,7 +1296,7 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
   const step = nextLiveDashboard(d, {
     firstLiveSeen,
     wasDisconnected: reconnect,
-    eligibleViewOf: viewOfEligible,
+    eligibleViewOf: boardView,
   });
   if (step.enterDashboard) {
     enterDashboard();
@@ -1133,366 +1307,85 @@ function applyLobbySnapshot(d, { reconnect = false } = {}) {
   const key = `${ctx}:${d.seq ?? ""}:${step.eligible ? "1" : "0"}`;
   if (key !== lastKey) {
     try {
-      const view = step.view;
-      const held = dash.dataset.ctx === ctx.toLowerCase() ? currentCols() : 1;
-      dash.innerHTML = sheetHtml(view, planCols(view, dash.clientWidth, held));
-      lastView = view;
+      // The view is a pure model (board-model.js); the board draws it and lays it out for this window and context
+      // (board-render.js, board-layout.js), never re-deciding the layout on a data tick.
+      boardUi.draw(step.view);
       lastKey = key;
       dash.dataset.ctx = ctx.toLowerCase();
       if (d.teams && d.teams.length) dash.dataset.teams = String(d.teams.length);
       else delete dash.dataset.teams;
-      fitDash();
     } catch (e) {
-      // The dashboard view is already up (it has to be: the dash is
-      // display:none until then, so the column plan cannot measure it). A
-      // render that throws used to return from here, leaving that view on
-      // screen with an empty, never-shown roster - a black window with no
-      // way back. Say so instead, and keep the next snapshot free to redraw.
+      // The dashboard view is already up. A render that throws used to leave that view on screen with an empty,
+      // never-shown roster - a black window with no way back. Say so instead, and keep the next snapshot free to
+      // redraw.
       console.error(e);
-      dash.replaceChildren(node("div", "dash-error", `The roster could not be drawn. ${String(e)}`));
+      boardUi.fail(`The roster could not be drawn. ${String(e)}`);
       delete dash.dataset.ctx;
       delete dash.dataset.teams;
-      lastView = null;
       lastKey = null;
     }
   }
   dash.classList.add("on");
 }
 
-function applyLobby(d) {
-  applyLobbySnapshot(d);
+/** Forget the drawn roster: the board, its header title and the data hooks. */
+function clearBoard() {
+  dash.classList.remove("on");
+  boardUi.clear();
+  delete dash.dataset.ctx;
+  delete dash.dataset.teams;
+  lastKey = null;
 }
 
-const currentCols = () =>
-  Number(dash.firstElementChild?.style.getPropertyValue("--n")) || 1;
-
-// A resized window is a different layout problem: a column may now fit that
-// didn't, and the density that fitted the old height may not fit the new one.
-// Re-columning means re-rendering, so it only happens when the count changes.
-function syncDashLayout() {
-  if (stage.dataset.view !== "dash" || !lastView || !dash.firstElementChild) return;
-  const have = currentCols();
-  const want = planCols(lastView, dash.clientWidth, have);
-  if (want !== have) dash.innerHTML = sheetHtml(lastView, want);
-  fitDash();
-}
-
-// Compact cozy → compact → dense so the roster tries to fit the window.
-// If it still overflows after dense, the dash scrolls.
-function fitDash() {
-  dash.dataset.density = "cozy";
-  for (const step of ["compact", "dense"]) {
-    if (dash.scrollHeight <= dash.clientHeight) return;
-    dash.dataset.density = step;
-  }
-}
-
-// ── dashboard rendering (from ~/.cobblify/lobby.json) ───────────────────────
-// Every decision on a row was made in the mod (see row-model.js); this only
-// draws the model it is handed.
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
-}
-
-// OK players high→low by FKDR; unresolved states (loading/nick/never/error)
-// keep their given order below them; players who are out of the game last.
-const bySweat = sortRoster;
-
-function pname(p, chips) {
-  const flags = chips && chips.length ? `<span class="flags-inline">${chips.join("")}</span>` : "";
-  return `<div class="pname"><span class="sweat-bar"></span>
-    <div class="identity">${rankHtml(p)}<span class="pn">${esc(p.name)}</span></div>${flags}</div>`;
-}
-
-// The mod exports the rank with its own § colour codes; each code becomes a
-// class. A row with no codes falls back to the plain label.
-function rankHtml(p) {
-  const spans = sectionSpans(p.rankCodes);
-  if (spans.length) {
-    const inner = spans
-      .map((s) => (s.cls ? `<span class="${s.cls}">${esc(s.text)}</span>` : esc(s.text)))
-      .join("");
-    return `<span class="rank">${inner}</span>`;
-  }
-  const raw = String(p.rank ?? "").trim();
-  return raw ? `<span class="rank">${esc(raw)}</span>` : "";
-}
-
-const TEAM_SLUG = {
-  Red: "red",
-  Blue: "blue",
-  Green: "green",
-  Yellow: "yellow",
-  Aqua: "aqua",
-  White: "white",
-  Pink: "pink",
-  Gray: "gray",
-};
-
-function teamClass(name) {
-  const slug = TEAM_SLUG[name];
-  return slug ? ` team-${slug}` : "";
-}
-
-// A chip carries the mod's colour as a class (see .dash .chip.mc-*); the
-// style decides how much of that colour the sheet shows.
-const chipHtml = (c) => {
-  const mc = colorClass(c.color);
-  return `<span class="chip ${c.cls}${mc ? ` ${mc}` : ""}">${esc(c.text)}</span>`;
-};
-const cellHtml = (c) =>
-  c.skeleton
-    ? `<div class="stat ${c.cls}"><span class="skel" style="width:${c.width}px"></span></div>`
-    : `<div class="stat${c.muted ? " muted" : ""} ${c.cls}">${esc(c.text)}</div>`;
-
-// A player who is out of the game keeps their row - dimmed, badged, and
-// struck through once eliminated - so the team never shrinks or reorders
-// under the reader. The model decides the classes, chips and cells.
-function row(p, teamName) {
-  const m = rowModel(p);
-  const cls = [...m.classes, teamClass(teamName).trim()].filter(Boolean).join(" ");
-  return `<div class="${cls}">
-    ${pname(p, m.chips.map(chipHtml))}
-    ${m.cells.map(cellHtml).join("")}</div>`;
-}
-
-// ── column layout ───────────────────────────────────────────────────────────
-// A view is { title, sub, blocks }; a block is a section - a head plus its rows
-// - or an atomic one (a team) that has to stay whole. A window wide enough for
-// two readable columns gets two, so the roster fills the width instead of
-// sitting in a strip with black either side. The split is done here rather than
-// in CSS because every column has to be headed and a team must not be cut in
-// half. One column produces exactly the markup this always had.
-const MIN_COL = 560; // narrowest column that still fits a name and four stats
-const COL_GAP = 26; // keep in step with --gap in the stylesheet
-const PER_COL = 9; // lines wanted before a second column is worth opening
-const MAX_COLS = 3;
-
-const blockRows = (b) => b.n ?? b.rows?.length ?? 0;
-
-// Columns are worth opening only if there is width for a readable one and
-// enough lines to fill it. `current` is what is on screen now: a column, once
-// opened, is held until the roster drops well under the point that opened it,
-// so players trickling in and out of a lobby can't flap the layout.
-function planCols(view, width, current) {
-  const lines = units(view.blocks).reduce((s, u) => s + u.w, 0);
-  const byWidth = Math.floor((width + COL_GAP) / (MIN_COL + COL_GAP));
-  const open = Math.ceil(lines / PER_COL);
-  const hold = current > 1 && lines >= (current - 1) * PER_COL - 3 ? current : 1;
-  return Math.max(1, Math.min(MAX_COLS, byWidth, Math.max(open, hold)));
-}
-
-// Flatten to placeable units. A head weighs what a row weighs; an atomic block
-// weighs what it would have weighed split.
-function units(blocks) {
-  const out = [];
-  for (const b of blocks) {
-    if (b.atomic) {
-      out.push({ html: b.atomic, w: blockRows(b) + 1 });
-      continue;
-    }
-    if (b.head) out.push({ html: b.head, w: 1, head: true });
-    for (const r of b.rows ?? []) out.push({ html: r, w: 1 });
-    if (b.foot) out.push({ html: b.foot, w: 1 });
-  }
-  return out;
-}
-
-// Greedy fill to an even share. A column never ends on a section head - a head
-// belongs with the rows it labels - and never opens with nothing left to place.
-function columnize(blocks, n) {
-  const list = units(blocks);
-  if (n <= 1) return [list];
-  const share = list.reduce((s, u) => s + u.w, 0) / n;
-  const cols = [];
-  let col = [];
-  let acc = 0;
-  list.forEach((u, i) => {
-    col.push(u);
-    acc += u.w;
-    const left = n - cols.length - 1; // columns still to open after this one
-    const rest = list.length - i - 1; // units still to place
-    if (left > 0 && rest > left && acc >= share && !u.head) {
-      cols.push(col);
-      col = [];
-      acc = 0;
+// A resized window, a new display scale or another font is a new layout problem: the same view is laid out again.
+let relayoutFrame = 0;
+function relayoutBoard() {
+  if (relayoutFrame) return;
+  relayoutFrame = (window.requestAnimationFrame ?? ((f) => setTimeout(f, 16)))(() => {
+    relayoutFrame = 0;
+    if (stage.dataset.view !== "dash") return;
+    try {
+      boardUi.relayout();
+    } catch (e) {
+      console.error(e);
     }
   });
-  cols.push(col);
-  return cols;
 }
-
-const STAT_LABELS = `<span>FKDR</span><span>WLR</span><span>Finals</span><span>K/D</span>`;
-
-function sheetHtml(view, n) {
-  const cols = columnize(view.blocks, n);
-  // What columnize could actually fill, which is fewer than asked for when the
-  // blocks refuse to divide - one team bigger than the share, say. The sheet is
-  // told that number, never the wish, so it can't lay out an empty track.
-  const k = cols.length;
-  const body = cols
-    .map((col) => {
-      const labels = !view.bare && k > 1 ? `<div class="col-head"><span></span>${STAT_LABELS}</div>` : "";
-      return `<div class="col">${labels}${col.map((u) => u.html).join("")}</div>`;
-    })
-    .join("");
-  if (view.bare) {
-    return `<div class="sheet bare" style="--n:${k}">${body}</div>`;
-  }
-  const ctx = `<span class="ctx"><span class="live"></span>
-      <span class="ctx-title">${view.title}</span>
-      <span class="ctx-sub">${view.sub}</span></span>`;
-  // One column keeps the context and the labels on a single sticky row. Past
-  // that the labels can no longer line up with one shared header, so each
-  // column heads itself and the bar carries the context alone.
-  const head =
-    k > 1
-      ? `<div class="dash-sticky ctx-bar">${ctx}</div>`
-      : `<div class="dash-sticky col-head">${ctx}${STAT_LABELS}</div>`;
-  return `<div class="sheet" style="--n:${k}">${head}${body}</div>`;
-}
-
-function sectHead(title, note) {
-  return `<div class="sect"><h3>${title}</h3><span class="n">${note}</span></div>`;
-}
-
-function roster(players, teamOf) {
-  if (!players || !players.length) return "";
-  return `<div class="roster">${players.map((p) => row(p, teamNameFor(teamOf, p))).join("")}</div>`;
-}
-
-function teamOfPlayers(d) {
-  const map = new Map();
-  for (const t of d.teams ?? []) {
-    for (const p of t.players ?? []) {
-      for (const name of aliases(p)) map.set(name, t.name);
-    }
-  }
-  return map;
-}
-
-function teamNameFor(teamOf, player) {
-  if (!teamOf) return undefined;
-  for (const name of aliases(player)) {
-    const team = teamOf.get(name);
-    if (team) return team;
-  }
-  return undefined;
-}
-
-// The party keeps its own order (you, then your party, then the rest of your
-// team) - it is not ranked by sweat - but a member who is out of the game
-// drops below the ones still in it, like every other block.
-function partyBlock(list, teamOf) {
-  if (!list || !list.length) return null;
-  return {
-    head: sectHead("Your Party", list.length),
-    rows: activeFirst(list).map((p) => row(p, teamNameFor(teamOf, p))),
-  };
-}
-
-function viewOf(d) {
-  return nextLiveDashboard(d, { firstLiveSeen: true, eligibleViewOf: viewOfEligible }).view;
-}
-
-function viewOfEligible(d) {
-  const ctx = d.context;
-  if (ctx === "QUEUE") return viewQueue(d);
-  if (ctx === "GAME") return viewGame(d);
-  return viewLobby(d);
-}
-
-function viewLobby(d) {
-  const all = d.players ?? [];
-  const partyPlayers = dashboardParty(d);
-  const rest = bySweat(withoutPlayers(all, partyPlayers));
-  const blocks = [];
-  if (rest.length) {
-    blocks.push({ head: sectHead("Lobby", rest.length), rows: rest.map((p) => row(p)) });
-  }
-  const party = partyBlock(partyPlayers);
-  if (party) blocks.push(party);
-  return { title: "Main Lobby", sub: `· ${all.length} players`, blocks };
-}
-
-function viewQueue(d) {
-  const all = d.players ?? [];
-  const partyPlayers = dashboardParty(d);
-  const rest = bySweat(withoutPlayers(all, partyPlayers));
-  const parties = typeof d.partyCount === "number" ? `${d.partyCount} parties · ` : "";
-  const hidden = `<div class="empty-note">Remaining players stay hidden by Hypixel until the match starts.</div>`;
-  const blocks = [
-    rest.length
-      ? {
-          head: sectHead("Chatted", "only typed players resolve"),
-          rows: rest.map((p) => row(p)),
-          foot: hidden,
-        }
-      : { rows: [], foot: hidden },
-  ];
-  const party = partyBlock(partyPlayers);
-  if (party) blocks.push(party);
-  return {
-    title: d.mode ? `${esc(d.mode)} Queue` : "Queue",
-    sub: `· ${parties}${all.length} known`,
-    blocks,
-  };
-}
-
-function viewGame(d) {
-  const teamOf = teamOfPlayers(d);
-  const partyPlayers = dashboardParty(d);
-  // Order, averages and the Target choice are decided in roster-identity.js
-  // (pure, tested); this only draws what it is handed.
-  const blocks = rankedOpponentTeams(d).map(({ team, players, agg, standing, target }) => {
-    const slug = TEAM_SLUG[team.name];
-    const teamCls = (slug ? ` team-${slug}` : "") + (standing === "eliminated" ? " is-eliminated" : "");
-    const rail =
-      standing === "eliminated"
-        ? '<span class="agg">Eliminated</span>'
-        : `<span class="agg">avg FKDR ${agg === null ? "—" : agg.toFixed(1)}</span>
-        ${target ? '<span class="target-badge">Target</span>' : ""}`;
-    // Atomic: a team's border, colour scope and rows are placed as one unit. The
-    // team is named by its border colour alone; the rail breaks that border to
-    // carry the average, and the target flag on the sweatiest team.
-    return {
-      n: players.length,
-      atomic: `<div class="team${teamCls}"><div class="team-rail">${rail}</div>
-        ${roster(players, teamOf)}</div>`,
-    };
-  });
-  const party = partyBlock(partyPlayers, teamOf);
-  if (party) blocks.push(party);
-  return {
-    title: d.mode ? esc(d.mode) : "Live Match",
-    sub: `· ${(d.teams ?? []).length} teams`,
-    blocks,
-  };
-}
+new ResizeObserver(relayoutBoard).observe(stage);
+document.addEventListener("cobblify:units", relayoutBoard);
+document.addEventListener("cobblify:theme", () => {
+  boardUi.invalidate();
+  relayoutBoard();
+});
+// A face that finishes loading (the bold Minecraft face is first used by the board) changes every width.
+document.fonts?.addEventListener?.("loadingdone", () => {
+  boardUi.invalidate();
+  relayoutBoard();
+});
+// The connection screens follow the board's scale: placed whenever the shell shows, changes mode or busy state.
+new window.MutationObserver(relayoutBoard).observe(joining, {
+  attributes: true,
+  attributeFilter: ["class", "data-conn", "aria-busy"],
+});
+// The header's view name and the board's a11y state follow the board's visibility.
+new window.MutationObserver(() => {
+  const on = dash.classList.contains("on");
+  dash.setAttribute("aria-hidden", on ? "false" : "true");
+  el("dash-title").hidden = !on;
+}).observe(dash, { attributes: true, attributeFilter: ["class"] });
 
 // ── boot ────────────────────────────────────────────────────────────────────
 const previewing = !window.__TAURI__;
 if (previewing) document.body.classList.add("previewing");
 
 const bootParams = new URLSearchParams(location.search);
-const bootKind = bootParams.get("ctx") || bootParams.get("state");
 
 function afterStatus(status) {
-  render(status);
+  setStatus(status);
   if (!previewing) launchController.refreshPreferences();
   if (!previewing) return;
-  mountPreviewBar(bootParams.get("update") || bootKind || "lunarReady");
   const ctx = bootParams.get("ctx");
-  if (ctx === "joining") {
-    stage.dataset.view = "dash";
-    connectionShell.show("joining");
-  } else if (ctx === "waiting") {
-    stage.dataset.view = "dash";
-    connectionShell.show("waiting");
-  } else if (ctx === "disconnected") {
+  if (ctx === "disconnected") {
     stage.dataset.view = "dash";
     connectionShell.enterDisconnected();
   } else if (ctx === "preexisting_game") {
@@ -1502,11 +1395,20 @@ function afterStatus(status) {
     ctx === "session_ended" ||
     ctx === "session_changed" ||
     ctx === "launch_aborted" ||
-    ctx === "session_ended_resetting"
+    ctx === "session_ended_resetting" ||
+    ctx === "session_changed_resetting" ||
+    ctx === "launch_aborted_resetting"
   ) {
     stage.dataset.view = "dash";
     connectionShell.enterTerminal(ctx);
+  } else if (ctx === "join") {
+    stage.dataset.view = "dash";
+    connectionShell.show("join");
+  } else if (ctx === "manual") {
+    stage.dataset.view = "dash";
+    connectionShell.show("manual", { subtitle: manualRouteSubtitleFor("launcher_opened") });
   } else if (PREVIEW_LOBBY[ctx]) {
+    stage.dataset.view = "dash";
     applyLobbySnapshot(PREVIEW_LOBBY[ctx]);
   }
 }
@@ -1521,16 +1423,22 @@ function setupErrorStatus(e) {
   };
 }
 
-if (previewing && bootParams.get("state") === "loading") {
-  mountPreviewBar("loading");
-} else {
+refreshUi();
+openInfo(invoke)
+  .then((info) => {
+    openInfoReply = info;
+    refreshUi();
+  })
+  .catch(() => {});
+
+if (!(previewing && bootParams.get("state") === "loading")) {
   invoke("refresh_setup")
     .then(afterStatus)
     .catch((e) => afterStatus(setupErrorStatus(e)));
 }
 
 if (previewing) {
-  applyPreviewUpdate(bootParams.get("update") || "consent");
+  applyPreviewUpdate(bootParams.get("update") || "current");
 } else {
   updateController.bootstrap().catch(() => {
     updateController.acceptStatus({ state: "error", manual: false });
@@ -1541,14 +1449,22 @@ if (!previewing && window.__TAURI__?.event?.listen) {
   window.__TAURI__.event.listen("updater://status", ({ payload }) => {
     updateController.acceptStatus(payload);
   });
+  // Every setup run's progress (setup.rs); the snapshot is whole each time.
+  window.__TAURI__.event.listen(SETUP_EVENT, ({ payload }) => onSetupSnapshot(payload));
 }
 
+// A setup that was under way (or failed) before this page loaded: catch up with it.
+setupState(invoke)
+  .then((snap) => {
+    if (snap && snap.phase !== "done") onSetupSnapshot(snap, { fromReply: true });
+  })
+  .catch(() => {});
+
 function canAutoRefresh() {
-  if (previewing || suppressRefresh || setupBusy) return false;
+  if (previewing || suppressRefresh) return false;
   if (stage.dataset.view === "dash") return false;
-  if (launch.classList.contains("is-loading") || launchForge.classList.contains("is-loading")) {
-    return false;
-  }
+  const st = launchController.getState();
+  if (st.launchBusy || st.launchPhase === "loading") return false;
   return true;
 }
 
@@ -1559,7 +1475,7 @@ function scheduleRefresh() {
     if (!canAutoRefresh()) return;
     try {
       const next = await invoke("refresh_setup");
-      if (next) render(next);
+      if (next) setStatus(next);
     } catch {
       // fail-soft on background refresh
     }
@@ -1576,417 +1492,4 @@ if (!previewing) {
     lostFocus = false;
     scheduleRefresh();
   });
-}
-
-// Browser-only chrome: a 900×620 frame plus a bar to flip every UI state.
-const PREVIEW_TOUR_MS = 1000;
-const PREVIEW_TOUR_KEYS = [
-  "loading",
-  ...PREVIEW_SETUP_KEYS,
-  "lunarReady",
-  "lunarReadyOff",
-  "overlayOff",
-  "forgeReadyOff",
-  "bothReady",
-  "invalidPref",
-  ...PREVIEW_UPDATE_KEYS,
-  "lobby",
-  "joining",
-  "disconnected",
-  "waiting",
-  "preexisting_game",
-  "session_ended",
-  "session_changed",
-  "launch_aborted",
-  "session_ended_resetting",
-  "queueSolo",
-  "queueDoubles",
-  "queueThrees",
-  "queueFours",
-  "gameSolo",
-  "gameDoubles",
-  "gameThrees",
-  "gameFours",
-  "game4v4",
-];
-
-let previewTourTimer = null;
-let previewTourIndex = -1;
-
-function syncPreviewPlayButton(playing) {
-  const btn = document.getElementById("preview-play");
-  if (!btn) return;
-  btn.classList.toggle("on", playing);
-  btn.textContent = playing ? "■" : "▶";
-  btn.setAttribute("aria-label", playing ? "Stop demo tour" : "Play through every state");
-  btn.title = playing ? "Stop demo tour" : "Play through every state (1s each)";
-}
-
-function stopPreviewTour() {
-  if (previewTourTimer != null) {
-    clearInterval(previewTourTimer);
-    previewTourTimer = null;
-  }
-  previewTourIndex = -1;
-  syncPreviewPlayButton(false);
-}
-
-function startPreviewTour() {
-  stopPreviewTour();
-  previewTourIndex = 0;
-  syncPreviewPlayButton(true);
-  showPreview(PREVIEW_TOUR_KEYS[0]);
-  previewTourTimer = setInterval(() => {
-    previewTourIndex += 1;
-    if (previewTourIndex >= PREVIEW_TOUR_KEYS.length) {
-      stopPreviewTour();
-      return;
-    }
-    showPreview(PREVIEW_TOUR_KEYS[previewTourIndex]);
-  }, PREVIEW_TOUR_MS);
-}
-
-function togglePreviewTour() {
-  if (previewTourTimer != null) stopPreviewTour();
-  else startPreviewTour();
-}
-
-function mountPreviewBar(active) {
-  if (document.getElementById("preview-bar")) {
-    markPreviewActive(active);
-    mountPreviewWindow();
-    return;
-  }
-  const bar = document.createElement("nav");
-  bar.id = "preview-bar";
-  bar.className = "preview-bar";
-  const setupButtons = PREVIEW_SETUP_KEYS.map(
-    (key) =>
-      `<button type="button" data-preview="${key}">${PREVIEW_SETUP_LABELS[key] ?? key}</button>`,
-  ).join("");
-  const updateButtons = PREVIEW_UPDATE_KEYS.map(
-    (key) =>
-      `<button type="button" data-preview="${key}">${PREVIEW_UPDATE_LABELS[key] ?? key}</button>`,
-  ).join("");
-  bar.innerHTML = `
-    <button type="button" id="preview-play" class="preview-play" title="Play through every state (1s each)" aria-label="Play through every state">▶</button>
-    <span class="preview-size">900×620</span>
-    <span class="preview-group">setup</span>
-    <button type="button" data-preview="loading">loading</button>
-    ${setupButtons}
-    <span class="preview-group">ready</span>
-    <button type="button" data-preview="lunarReady">lunar on</button>
-    <button type="button" data-preview="lunarReadyOff">lunar off</button>
-    <button type="button" data-preview="overlayOff">overlay off</button>
-    <button type="button" data-preview="forgeReadyOff">prism off</button>
-    <button type="button" data-preview="bothReady">both</button>
-    <button type="button" data-preview="invalidPref">bad pref</button>
-    <span class="preview-group">update</span>
-    ${updateButtons}
-    <span class="preview-group">lobby</span>
-    <button type="button" data-preview="lobby">lobby</button>
-    <button type="button" data-preview="joining">joining</button>
-    <button type="button" data-preview="disconnected">disconnected</button>
-    <span class="preview-group">session</span>
-    <button type="button" data-preview="waiting">waiting</button>
-    <button type="button" data-preview="preexisting_game">already running</button>
-    <button type="button" data-preview="session_ended">ended</button>
-    <button type="button" data-preview="session_changed">changed</button>
-    <button type="button" data-preview="launch_aborted">cancelled</button>
-    <button type="button" data-preview="session_ended_resetting">returning</button>
-    <span class="preview-group">queue</span>
-    <button type="button" data-preview="queueSolo">solos</button>
-    <button type="button" data-preview="queueDoubles">doubles</button>
-    <button type="button" data-preview="queueThrees">3s</button>
-    <button type="button" data-preview="queueFours">4s</button>
-    <span class="preview-group">game</span>
-    <button type="button" data-preview="gameSolo">solos</button>
-    <button type="button" data-preview="gameDoubles">doubles</button>
-    <button type="button" data-preview="gameThrees">3s</button>
-    <button type="button" data-preview="gameFours">4s</button>
-    <button type="button" data-preview="game4v4">4v4</button>`;
-  bar.addEventListener("click", (e) => {
-    if (e.target.closest("#preview-play")) {
-      togglePreviewTour();
-      return;
-    }
-    const btn = e.target.closest("[data-preview]");
-    if (btn) {
-      stopPreviewTour();
-      showPreview(btn.dataset.preview);
-    }
-  });
-  document.body.prepend(bar);
-  markPreviewActive(active);
-  mountPreviewWindow();
-}
-
-const PREVIEW_DEFAULT_W = 900;
-const PREVIEW_DEFAULT_H = 620;
-const PREVIEW_MIN_W = 640;
-const PREVIEW_MIN_H = 480;
-const PREVIEW_MOVE_H = 26;
-
-function mountPreviewWindow() {
-  if (document.getElementById("preview-window")) return;
-
-  const win = document.createElement("div");
-  win.id = "preview-window";
-  win.className = "preview-window";
-
-  const move = document.createElement("div");
-  move.className = "preview-move";
-  move.innerHTML = `<span>move</span><span class="preview-size">${PREVIEW_DEFAULT_W}×${PREVIEW_DEFAULT_H}</span>`;
-  move.title = "Drag to move · double-click to reset";
-
-  const resize = document.createElement("button");
-  resize.type = "button";
-  resize.className = "preview-resize";
-  resize.title = "Drag to resize";
-  resize.setAttribute("aria-label", "Resize window");
-
-  stage.replaceWith(win);
-  win.append(move, stage, resize);
-
-  let w = PREVIEW_DEFAULT_W;
-  let h = PREVIEW_DEFAULT_H;
-  let x = 0;
-  let y = 0;
-
-  function barHeight() {
-    return document.getElementById("preview-bar")?.offsetHeight ?? 0;
-  }
-
-  function clampSize(nw, nh) {
-    const maxW = Math.max(PREVIEW_MIN_W, window.innerWidth - 32);
-    const maxH = Math.max(PREVIEW_MIN_H, window.innerHeight - barHeight() - PREVIEW_MOVE_H - 24);
-    return {
-      w: Math.round(Math.min(maxW, Math.max(PREVIEW_MIN_W, nw))),
-      h: Math.round(Math.min(maxH, Math.max(PREVIEW_MIN_H, nh))),
-    };
-  }
-
-  function clampPos(nx, ny, nw, nh) {
-    const minY = barHeight() + PREVIEW_MOVE_H + 8;
-    const maxX = window.innerWidth - nw - 12;
-    const maxY = window.innerHeight - nh - 12;
-    return {
-      x: Math.round(Math.min(Math.max(12, nx), Math.max(12, maxX))),
-      y: Math.round(Math.min(Math.max(minY, ny), Math.max(minY, maxY))),
-    };
-  }
-
-  function apply() {
-    win.style.width = `${w}px`;
-    win.style.height = `${h}px`;
-    win.style.left = `${x}px`;
-    win.style.top = `${y}px`;
-    document.querySelectorAll(".preview-size").forEach((node) => {
-      node.textContent = `${w}×${h}`;
-    });
-    const ctx = dash.dataset.ctx;
-    if (ctx) fitDash();
-  }
-
-  function centerDefault() {
-    ({ w, h } = clampSize(PREVIEW_DEFAULT_W, PREVIEW_DEFAULT_H));
-    const pos = clampPos((window.innerWidth - w) / 2, (window.innerHeight - h) / 2, w, h);
-    x = pos.x;
-    y = pos.y;
-    apply();
-  }
-
-  function drag(onMove) {
-    return (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      const pointer = e.currentTarget;
-      pointer.setPointerCapture(e.pointerId);
-      document.body.classList.add("is-dragging");
-      const sx = e.clientX;
-      const sy = e.clientY;
-      const start = onMove.start();
-      const movePtr = (ev) => onMove.move(ev.clientX - sx, ev.clientY - sy, start);
-      const up = () => {
-        pointer.releasePointerCapture(e.pointerId);
-        pointer.removeEventListener("pointermove", movePtr);
-        pointer.removeEventListener("pointerup", up);
-        pointer.removeEventListener("pointercancel", up);
-        document.body.classList.remove("is-dragging");
-        win.classList.remove("is-resizing");
-      };
-      pointer.addEventListener("pointermove", movePtr);
-      pointer.addEventListener("pointerup", up);
-      pointer.addEventListener("pointercancel", up);
-    };
-  }
-
-  move.addEventListener(
-    "pointerdown",
-    drag({
-      start: () => ({ x, y }),
-      move: (dx, dy, start) => {
-        const pos = clampPos(start.x + dx, start.y + dy, w, h);
-        x = pos.x;
-        y = pos.y;
-        apply();
-      },
-    }),
-  );
-  move.addEventListener("dblclick", centerDefault);
-
-  resize.addEventListener(
-    "pointerdown",
-    (e) => {
-      win.classList.add("is-resizing");
-      drag({
-        start: () => ({ w, h }),
-        move: (dx, dy, start) => {
-          ({ w, h } = clampSize(start.w + dx, start.h + dy));
-          const pos = clampPos(x, y, w, h);
-          x = pos.x;
-          y = pos.y;
-          apply();
-        },
-      })(e);
-    },
-  );
-
-  window.addEventListener("resize", () => {
-    ({ w, h } = clampSize(w, h));
-    const pos = clampPos(x, y, w, h);
-    x = pos.x;
-    y = pos.y;
-    apply();
-  });
-
-  centerDefault();
-}
-
-function markPreviewActive(kind) {
-  document.querySelectorAll(".preview-bar [data-preview]").forEach((btn) => {
-    btn.classList.toggle("on", btn.dataset.preview === kind);
-  });
-}
-
-function resetPreviewSession() {
-  stopProgressPolling();
-  stopLobbyPolling();
-  sessionReset.cancelRetry();
-  overlayExit.resetSession();
-  lastKey = null;
-  lastView = null;
-  firstLiveSeen = false;
-  homeUntilLive = false;
-  previewLaunchAt = null;
-  setupBusy = false;
-  suppressRefresh = false;
-  connection.reset();
-  connectionShell.reset();
-  connAnnounce.textContent = "";
-  dash.classList.remove("on");
-  dash.replaceChildren();
-  delete dash.dataset.ctx;
-  delete dash.dataset.density;
-  delete dash.dataset.teams;
-  stage.dataset.view = "home";
-  launch.disabled = false;
-  launch.classList.remove("is-loading");
-  launchForge.disabled = false;
-  launchForge.classList.remove("is-loading");
-  launchError.hidden = true;
-  prefError.hidden = true;
-  prefError.textContent = "";
-  syncLaunchUi();
-}
-
-function showPreview(kind) {
-  resetPreviewSession();
-  const params = new URLSearchParams();
-  if (kind === "loading") {
-    stage.dataset.state = "loading";
-    el("chip-text").textContent = "checking setup";
-    params.set("state", "loading");
-  } else if (kind === "joining") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.show("joining");
-    params.set("ctx", "joining");
-  } else if (kind === "waiting") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.show("waiting");
-    params.set("ctx", "waiting");
-  } else if (kind === "disconnected") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterDisconnected();
-    params.set("ctx", "disconnected");
-  } else if (kind === "preexisting_game") {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterTerminal("preexisting_game", { showTryAgain: true });
-    params.set("ctx", "preexisting_game");
-  } else if (kind === "invalidPref") {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    repairPref.hidden = false;
-    prefError.textContent = "Preference file is invalid.";
-    prefError.hidden = false;
-    params.set("state", "lunarReady");
-  } else if (kind === "lunarReadyOff" || kind === "forgeReadyOff") {
-    render(
-      kind === "lunarReadyOff" ? PREVIEW_STATUS.lunarReady : PREVIEW_STATUS.forgeReady,
-    );
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = false;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    params.set("state", kind === "lunarReadyOff" ? "lunarReady" : "forgeReady");
-  } else if (kind === "overlayOff") {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = false;
-    params.set("state", "lunarReady");
-  } else if (kind === "bothReady") {
-    render(PREVIEW_STATUS.bothReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    params.set("state", "bothReady");
-  } else if (
-    kind === "session_ended" ||
-    kind === "session_changed" ||
-    kind === "launch_aborted" ||
-    kind === "session_ended_resetting"
-  ) {
-    render(PREVIEW_STATUS.lunarReady);
-    stage.dataset.view = "dash";
-    connectionShell.enterTerminal(kind);
-    params.set("ctx", kind);
-  } else if (PREVIEW_UPDATE[kind]) {
-    render(PREVIEW_STATUS.lunarReady);
-    autoJoinWrap.hidden = false;
-    autoJoinInput.checked = true;
-    overlayWrap.hidden = false;
-    overlayInput.checked = true;
-    applyPreviewUpdate(kind);
-    params.set("state", "lunarReady");
-    params.set("update", kind);
-  } else if (PREVIEW_LOBBY[kind]) {
-    render(PREVIEW_STATUS.lunarReady);
-    applyLobbySnapshot(PREVIEW_LOBBY[kind]);
-    params.set("ctx", kind);
-  } else {
-    render(resolvePreviewStatus(kind));
-    params.set("state", kind);
-  }
-  history.replaceState(null, "", `${location.pathname}?${params}`);
-  markPreviewActive(kind);
 }

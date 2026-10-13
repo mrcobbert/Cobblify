@@ -22,7 +22,6 @@ pub enum PreferenceHealth {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchPreferencesView {
-    pub auto_join_hypixel: bool,
     pub use_external_overlay: bool,
     pub health: PreferenceHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,14 +76,10 @@ pub struct UpdatePreferencesView {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PreferenceSaveReply {
     Saved {
-        #[serde(rename = "autoJoinHypixel")]
-        auto_join_hypixel: bool,
         #[serde(rename = "useExternalOverlay")]
         use_external_overlay: bool,
     },
     Reconciled {
-        #[serde(rename = "autoJoinHypixel")]
-        auto_join_hypixel: bool,
         #[serde(rename = "useExternalOverlay")]
         use_external_overlay: bool,
     },
@@ -119,8 +114,19 @@ fn default_true() -> bool {
     true
 }
 
+/// 0.17's auto-join key, kept only for 0.17. The 0.17 launcher shares this file and its
+/// parser REQUIRES the key (a file without it makes 0.17 reject every launch with
+/// `preference_error`), so 0.18 reads it leniently - missing or not a bool reads as `true`
+/// and never makes the file invalid for 0.18 - and every 0.18 save writes it back: the
+/// stored bool unchanged, or `true` where there was none. 0.18 never acts on it.
+fn lenient_auto_join<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_bool().unwrap_or(true))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PreferenceDoc {
+    #[serde(default = "default_true", deserialize_with = "lenient_auto_join")]
     auto_join_hypixel: bool,
     #[serde(default = "default_true")]
     use_external_overlay: bool,
@@ -131,6 +137,15 @@ struct PreferenceDoc {
     /// Stored as the channel name so a hand-edited or future value never invalidates the file.
     #[serde(default)]
     update_channel: String,
+}
+
+impl PreferenceDoc {
+    /// Updates download by default until the player has chosen (0.18 decision 14). The stored
+    /// field keeps its old meaning, so a 0.17 launcher reading the same file is unaffected; a
+    /// player who chose (prompted) gets exactly what they chose.
+    fn effective_auto_update(&self) -> bool {
+        self.auto_update_enabled || !self.auto_update_prompted
+    }
 }
 
 impl PreferenceDoc {
@@ -207,19 +222,16 @@ impl LockedPrefs {
     pub(crate) fn read_view(&self) -> LaunchPreferencesView {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => LaunchPreferencesView {
-                auto_join_hypixel: doc.auto_join_hypixel,
                 use_external_overlay: doc.use_external_overlay,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
             Err(ReadOutcome::Missing) => LaunchPreferencesView {
-                auto_join_hypixel: true,
                 use_external_overlay: true,
                 health: PreferenceHealth::Missing,
                 diagnostic: None,
             },
             Err(ReadOutcome::Invalid(msg)) => LaunchPreferencesView {
-                auto_join_hypixel: true,
                 use_external_overlay: true,
                 health: PreferenceHealth::Invalid,
                 diagnostic: Some(msg),
@@ -230,14 +242,15 @@ impl LockedPrefs {
     pub(crate) fn read_update_view(&self) -> UpdatePreferencesView {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => UpdatePreferencesView {
-                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_enabled: doc.effective_auto_update(),
                 auto_update_prompted: doc.auto_update_prompted,
                 update_channel: doc.channel(),
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
+            // Updates download by default until the player chooses (0.18 decision 14).
             Err(ReadOutcome::Missing) => UpdatePreferencesView {
-                auto_update_enabled: false,
+                auto_update_enabled: true,
                 auto_update_prompted: false,
                 update_channel: UpdateChannel::Stable,
                 health: PreferenceHealth::Missing,
@@ -253,34 +266,30 @@ impl LockedPrefs {
         }
     }
 
-    pub(crate) fn read_strict(&self) -> Result<(bool, bool), String> {
+    /// The stored External Overlay choice, strictly: an invalid file is an error.
+    pub(crate) fn read_strict(&self) -> Result<bool, String> {
         match read_doc(&pref_path(&self.home)) {
-            Ok(doc) => Ok((doc.auto_join_hypixel, doc.use_external_overlay)),
-            Err(ReadOutcome::Missing) => Ok((true, true)),
+            Ok(doc) => Ok(doc.use_external_overlay),
+            Err(ReadOutcome::Missing) => Ok(true),
             Err(ReadOutcome::Invalid(msg)) => Err(msg),
         }
     }
 
-    /// Save one field, preserving the sibling. The sibling comes from a
-    /// lenient per-field read so a valid value survives even when the other
-    /// field (or the document's health) is invalid; only a file that is not
-    /// a JSON object at all falls back to both defaults.
-    fn write_key(&self, key: SetterKey, enabled: bool) -> PreferenceSaveReply {
+    /// Save the External Overlay choice, preserving every other key. The
+    /// others come from a lenient per-field read so a valid value survives
+    /// even when another field (or the document's health) is invalid; only a
+    /// file that is not a JSON object at all falls back to the defaults.
+    fn write_overlay(&self, enabled: bool) -> PreferenceSaveReply {
         let path = pref_path(&self.home);
         let mut doc = read_fields_lenient(&path);
-        match key {
-            SetterKey::AutoJoin => doc.auto_join_hypixel = enabled,
-            SetterKey::Overlay => doc.use_external_overlay = enabled,
-        }
+        doc.use_external_overlay = enabled;
         match write_doc(&path, &doc) {
             Ok(()) => PreferenceSaveReply::Saved {
-                auto_join_hypixel: doc.auto_join_hypixel,
                 use_external_overlay: doc.use_external_overlay,
             },
             Err(SaveOutcome::NotSaved(msg)) => PreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => PreferenceSaveReply::Indeterminate,
             Err(SaveOutcome::Reconciled(current)) => PreferenceSaveReply::Reconciled {
-                auto_join_hypixel: current.auto_join_hypixel,
                 use_external_overlay: current.use_external_overlay,
             },
         }
@@ -304,14 +313,14 @@ impl LockedPrefs {
     fn update_reply(outcome: Result<(), SaveOutcome>, doc: &PreferenceDoc) -> UpdatePreferenceSaveReply {
         match outcome {
             Ok(()) => UpdatePreferenceSaveReply::Saved {
-                auto_update_enabled: doc.auto_update_enabled,
+                auto_update_enabled: doc.effective_auto_update(),
                 auto_update_prompted: doc.auto_update_prompted,
                 update_channel: doc.channel(),
             },
             Err(SaveOutcome::NotSaved(msg)) => UpdatePreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => UpdatePreferenceSaveReply::Indeterminate,
             Err(SaveOutcome::Reconciled(current)) => UpdatePreferenceSaveReply::Reconciled {
-                auto_update_enabled: current.auto_update_enabled,
+                auto_update_enabled: current.effective_auto_update(),
                 auto_update_prompted: current.auto_update_prompted,
                 update_channel: current.channel(),
             },
@@ -319,14 +328,9 @@ impl LockedPrefs {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SetterKey {
-    AutoJoin,
-    Overlay,
-}
-
 /// Per-field salvage for the save path: each known key is read
-/// independently; a bool survives, anything else takes its default.
+/// independently; a bool survives, anything else takes its default. This is
+/// what carries 0.17's `auto_join_hypixel` through every 0.18 save.
 fn read_fields_lenient(path: &Path) -> PreferenceDoc {
     let defaults = || PreferenceDoc {
         auto_join_hypixel: true,
@@ -427,20 +431,12 @@ pub fn update_preferences(home: &Path) -> Result<UpdatePreferencesView, Preferen
     Ok(locked.read_update_view())
 }
 
-pub fn set_auto_join_hypixel(
-    home: &Path,
-    enabled: bool,
-) -> Result<PreferenceSaveReply, PreferenceReadError> {
-    let locked = LockedPrefs::acquire(home)?;
-    Ok(locked.write_key(SetterKey::AutoJoin, enabled))
-}
-
 pub fn set_use_external_overlay(
     home: &Path,
     enabled: bool,
 ) -> Result<PreferenceSaveReply, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
-    Ok(locked.write_key(SetterKey::Overlay, enabled))
+    Ok(locked.write_overlay(enabled))
 }
 
 pub fn set_auto_update(
@@ -478,90 +474,157 @@ mod tests {
             .into_path()
     }
 
+    fn write_raw(home: &Path, text: &str) {
+        let dir = ensure_cobblify_dir(home).unwrap();
+        fs::write(dir.join(PREF_FILE), text).unwrap();
+    }
+
+    fn raw(home: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(pref_path(home)).unwrap()).unwrap()
+    }
+
+    /// The 0.17 launcher's own parser, as shipped: `auto_join_hypixel` is a REQUIRED bool.
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct Doc017 {
+        auto_join_hypixel: bool,
+        #[serde(default = "default_true")]
+        use_external_overlay: bool,
+    }
+
+    fn parses_for_0_17(home: &Path) -> Option<bool> {
+        let text = fs::read_to_string(pref_path(home)).ok()?;
+        serde_json::from_str::<Doc017>(&text).ok().map(|d| d.auto_join_hypixel)
+    }
+
     #[test]
     fn missing_defaults_on() {
         let home = temp_home();
         let view = launch_preferences(&home).unwrap();
-        assert_eq!(view.auto_join_hypixel, true);
+        assert_eq!(view.use_external_overlay, true);
         assert_eq!(view.health, PreferenceHealth::Missing);
+    }
+
+    /// 0.18 never acts on the auto-join key, but the 0.17 launcher shares the file and needs
+    /// it: a stored value survives every kind of 0.18 save unchanged.
+    #[test]
+    fn a_0_18_save_preserves_the_0_17_auto_join_key() {
+        let home = temp_home();
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":true}"#);
+        set_use_external_overlay(&home, false).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
+        set_auto_update(&home, true).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
+        set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
+        assert_eq!(parses_for_0_17(&home), Some(false), "0.17 still reads the file");
+        assert_eq!(raw(&home)["use_external_overlay"], false);
+    }
+
+    /// A file without the key (written by hand, or by nothing yet) gets it as `true` on the
+    /// first 0.18 save, so 0.17 can read the file again. 0.18 itself reads such a file as
+    /// valid.
+    #[test]
+    fn a_missing_auto_join_key_is_written_as_true() {
+        let home = temp_home();
+        write_raw(&home, r#"{"use_external_overlay":false}"#);
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid, "0.18 reads it leniently");
+        assert_eq!(view.use_external_overlay, false);
+        assert_eq!(parses_for_0_17(&home), None, "0.17 cannot read it yet");
+        set_auto_update(&home, false).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], true);
+        assert_eq!(parses_for_0_17(&home), Some(true));
+
+        let fresh = temp_home();
+        set_use_external_overlay(&fresh, true).unwrap();
+        assert_eq!(raw(&fresh)["auto_join_hypixel"], true, "a brand-new file carries it too");
+    }
+
+    /// A wrong-typed auto-join value does not make the file invalid for 0.18 (it is never
+    /// used); a save repairs it to `true` for 0.17.
+    #[test]
+    fn a_wrong_type_auto_join_key_is_lenient_and_repaired_on_save() {
+        let home = temp_home();
+        write_raw(&home, r#"{"auto_join_hypixel":"yes","use_external_overlay":false}"#);
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert_eq!(view.use_external_overlay, false);
+        let locked = LockedPrefs::acquire(&home).unwrap();
+        assert_eq!(locked.read_strict().unwrap(), false);
+        drop(locked);
+        set_use_external_overlay(&home, false).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], true);
     }
 
     #[test]
     fn first_save_persists() {
         let home = temp_home();
-        let reply = set_auto_join_hypixel(&home, false).unwrap();
-        assert!(matches!(
-            reply,
-            PreferenceSaveReply::Saved {
-                auto_join_hypixel: false,
-                use_external_overlay: true,
-            }
-        ));
-        let view = launch_preferences(&home).unwrap();
-        assert_eq!(view.auto_join_hypixel, false);
-        assert_eq!(view.use_external_overlay, true);
-        assert_eq!(view.health, PreferenceHealth::Valid);
-    }
-
-    #[test]
-    fn overlay_save_persists_and_preserves_auto_join() {
-        let home = temp_home();
-        set_auto_join_hypixel(&home, false).unwrap();
         let reply = set_use_external_overlay(&home, false).unwrap();
         assert!(matches!(
             reply,
             PreferenceSaveReply::Saved {
-                auto_join_hypixel: false,
                 use_external_overlay: false,
             }
         ));
         let view = launch_preferences(&home).unwrap();
-        assert_eq!(view.auto_join_hypixel, false);
         assert_eq!(view.use_external_overlay, false);
-    }
-
-    #[test]
-    fn auto_join_save_preserves_overlay_sibling() {
-        let home = temp_home();
-        set_use_external_overlay(&home, false).unwrap();
-        set_auto_join_hypixel(&home, true).unwrap();
-        let view = launch_preferences(&home).unwrap();
-        assert_eq!(view.auto_join_hypixel, true);
-        assert_eq!(view.use_external_overlay, false);
+        assert_eq!(view.health, PreferenceHealth::Valid);
     }
 
     #[test]
     fn old_one_key_file_reads_overlay_default_on() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(dir.join(PREF_FILE), r#"{"auto_join_hypixel":false}"#).unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":false}"#);
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Valid);
-        assert_eq!(view.auto_join_hypixel, false);
         assert_eq!(view.use_external_overlay, true);
         let locked = LockedPrefs::acquire(&home).unwrap();
-        assert_eq!(locked.read_strict().unwrap(), (false, true));
+        assert_eq!(locked.read_strict().unwrap(), true);
     }
 
     #[test]
-    fn old_launch_preferences_prompt_for_updates_without_enabling_them() {
+    fn old_launch_preferences_default_auto_update_on_until_chosen() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":false,"use_external_overlay":true}"#,
-        )
-        .unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":true}"#);
         let view = update_preferences(&home).unwrap();
-        assert!(!view.auto_update_enabled);
+        assert!(view.auto_update_enabled);
         assert!(!view.auto_update_prompted);
         assert_eq!(view.health, PreferenceHealth::Valid);
+        // The file itself is not rewritten by reading it.
+        let text = fs::read_to_string(pref_path(&home)).unwrap();
+        assert!(!text.contains("auto_update"));
     }
 
     #[test]
-    fn update_consent_preserves_both_launch_preferences() {
+    fn a_missing_file_defaults_auto_update_on() {
         let home = temp_home();
-        set_auto_join_hypixel(&home, false).unwrap();
+        let view = update_preferences(&home).unwrap();
+        assert!(view.auto_update_enabled);
+        assert!(!view.auto_update_prompted);
+    }
+
+    #[test]
+    fn choosing_off_is_respected_and_choosing_on_stays_on() {
+        let home = temp_home();
+        let off = set_auto_update(&home, false).unwrap();
+        assert!(matches!(off, UpdatePreferenceSaveReply::Saved { auto_update_enabled: false, .. }));
+        assert!(!update_preferences(&home).unwrap().auto_update_enabled);
+        set_auto_update(&home, true).unwrap();
+        assert!(update_preferences(&home).unwrap().auto_update_enabled);
+    }
+
+    #[test]
+    fn switching_channel_before_choosing_keeps_the_default_on() {
+        let home = temp_home();
+        let reply = set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        assert!(matches!(reply, UpdatePreferenceSaveReply::Saved { auto_update_enabled: true, .. }));
+    }
+
+    #[test]
+    fn update_consent_preserves_the_launch_preferences() {
+        let home = temp_home();
+        write_raw(&home, r#"{"auto_join_hypixel":false}"#);
         set_use_external_overlay(&home, false).unwrap();
         let reply = set_auto_update(&home, true).unwrap();
         assert!(matches!(
@@ -573,8 +636,8 @@ mod tests {
             }
         ));
         let launch = launch_preferences(&home).unwrap();
-        assert!(!launch.auto_join_hypixel);
         assert!(!launch.use_external_overlay);
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
     }
 
     #[test]
@@ -601,13 +664,13 @@ mod tests {
     #[test]
     fn update_channel_leaves_every_other_preference_alone() {
         let home = temp_home();
-        set_auto_join_hypixel(&home, false).unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":false}"#);
         set_use_external_overlay(&home, false).unwrap();
         set_auto_update(&home, true).unwrap();
         set_update_channel(&home, UpdateChannel::Dev).unwrap();
         let launch = launch_preferences(&home).unwrap();
-        assert!(!launch.auto_join_hypixel);
         assert!(!launch.use_external_overlay);
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
         let update = update_preferences(&home).unwrap();
         assert!(update.auto_update_enabled);
         assert!(update.auto_update_prompted);
@@ -620,27 +683,18 @@ mod tests {
     #[test]
     fn unknown_or_broken_channel_values_read_as_stable() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":true,"update_channel":"nightly"}"#,
-        )
-        .unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":true,"update_channel":"nightly"}"#);
         let view = update_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Valid);
         assert_eq!(view.update_channel, UpdateChannel::Stable);
         assert_eq!(update_channel(&home), UpdateChannel::Stable);
 
         // A file that does not parse never yields dev, even if the text says so.
-        fs::write(dir.join(PREF_FILE), r#"{"update_channel":"dev""#).unwrap();
+        write_raw(&home, r#"{"update_channel":"dev""#);
         assert_eq!(update_channel(&home), UpdateChannel::Stable);
 
         // Salvage on save keeps a stored dev channel when another field is junk.
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":"yes","update_channel":"dev"}"#,
-        )
-        .unwrap();
+        write_raw(&home, r#"{"use_external_overlay":"yes","update_channel":"dev"}"#);
         set_auto_update(&home, true).unwrap();
         assert_eq!(update_channel(&home), UpdateChannel::Dev);
     }
@@ -657,68 +711,37 @@ mod tests {
     #[test]
     fn repairing_overlay_salvages_valid_auto_join_from_invalid_doc() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":false,"use_external_overlay":"yes"}"#,
-        )
-        .unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":"yes"}"#);
         let reply = set_use_external_overlay(&home, true).unwrap();
         assert!(matches!(
             reply,
             PreferenceSaveReply::Saved {
-                auto_join_hypixel: false,
                 use_external_overlay: true,
             }
         ));
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Valid);
-        assert_eq!(view.auto_join_hypixel, false);
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
     }
 
     #[test]
-    fn repairing_auto_join_salvages_valid_overlay_from_invalid_doc() {
+    fn unparseable_file_resets_to_defaults_on_save() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":"yes","use_external_overlay":false}"#,
-        )
-        .unwrap();
-        let reply = set_auto_join_hypixel(&home, true).unwrap();
+        write_raw(&home, "{not json");
+        let reply = set_use_external_overlay(&home, false).unwrap();
         assert!(matches!(
             reply,
             PreferenceSaveReply::Saved {
-                auto_join_hypixel: true,
                 use_external_overlay: false,
             }
         ));
-    }
-
-    #[test]
-    fn unparseable_file_resets_both_to_defaults_on_save() {
-        let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(dir.join(PREF_FILE), "{not json").unwrap();
-        let reply = set_auto_join_hypixel(&home, false).unwrap();
-        assert!(matches!(
-            reply,
-            PreferenceSaveReply::Saved {
-                auto_join_hypixel: false,
-                use_external_overlay: true,
-            }
-        ));
+        assert_eq!(raw(&home)["auto_join_hypixel"], true);
     }
 
     #[test]
     fn wrong_type_overlay_is_invalid_but_defaults_on_in_view() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(
-            dir.join(PREF_FILE),
-            r#"{"auto_join_hypixel":true,"use_external_overlay":"yes"}"#,
-        )
-        .unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":true,"use_external_overlay":"yes"}"#);
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Invalid);
         assert_eq!(view.use_external_overlay, true);
@@ -727,14 +750,16 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_of_both_keys() {
+    fn round_trip_of_the_overlay_key() {
         let home = temp_home();
-        set_auto_join_hypixel(&home, false).unwrap();
         set_use_external_overlay(&home, false).unwrap();
-        set_auto_join_hypixel(&home, true).unwrap();
+        {
+            let locked = LockedPrefs::acquire(&home).unwrap();
+            assert_eq!(locked.read_strict().unwrap(), false);
+        }
         set_use_external_overlay(&home, true).unwrap();
         let locked = LockedPrefs::acquire(&home).unwrap();
-        assert_eq!(locked.read_strict().unwrap(), (true, true));
+        assert_eq!(locked.read_strict().unwrap(), true);
     }
 
     #[test]
@@ -751,11 +776,10 @@ mod tests {
     #[test]
     fn malformed_is_invalid_but_defaults_on_in_view() {
         let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(dir.join(PREF_FILE), "{not json").unwrap();
+        write_raw(&home, "{not json");
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Invalid);
-        assert_eq!(view.auto_join_hypixel, true);
+        assert_eq!(view.use_external_overlay, true);
         assert!(view.diagnostic.is_some());
     }
 
@@ -771,7 +795,7 @@ mod tests {
         let mut perms = fs::metadata(&cobblify).unwrap().permissions();
         perms.set_mode(0o444);
         fs::set_permissions(&cobblify, perms).unwrap();
-        let err = set_auto_join_hypixel(&home, false).unwrap_err();
+        let err = set_use_external_overlay(&home, false).unwrap_err();
         assert!(matches!(err, PreferenceReadError::PermissionDenied | PreferenceReadError::Io(_)));
         let mut perms = fs::metadata(&cobblify).unwrap().permissions();
         perms.set_mode(0o755);
@@ -785,28 +809,18 @@ mod tests {
         fs::create_dir(dir.join(PREF_FILE)).unwrap();
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Invalid);
-        assert_eq!(view.auto_join_hypixel, true);
-    }
-
-    #[test]
-    fn wrong_type_auto_join_is_invalid() {
-        let home = temp_home();
-        let dir = ensure_cobblify_dir(&home).unwrap();
-        fs::write(dir.join(PREF_FILE), r#"{"auto_join_hypixel":"yes"}"#).unwrap();
-        let view = launch_preferences(&home).unwrap();
-        assert_eq!(view.health, PreferenceHealth::Invalid);
-        assert_eq!(view.auto_join_hypixel, true);
+        assert_eq!(view.use_external_overlay, true);
     }
 
     #[test]
     fn save_reply_serializes_snake_case_tags() {
         let saved = serde_json::to_value(PreferenceSaveReply::Saved {
-            auto_join_hypixel: true,
             use_external_overlay: false,
         })
         .unwrap();
         assert_eq!(saved["status"], "saved");
         assert_eq!(saved["useExternalOverlay"], false);
+        assert!(saved.get("autoJoinHypixel").is_none(), "no auto-join on the wire");
         let not_saved = serde_json::to_value(PreferenceSaveReply::NotSaved {
             diagnostic: "disk".into(),
         })

@@ -36,7 +36,7 @@ public class AccentPaletteTest {
             assertEquals(tokens[i], a.token());
             assertEquals(tokens[i], colours[i], a.base() & 0xFFFFFF);
         }
-        assertEquals("orange", GuiTheme.normalizeToken("not-a-colour"));
+        assertEquals("pale-blue", GuiTheme.normalizeToken("not-a-colour"));
     }
 
     @Test

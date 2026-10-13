@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Premain-Class: net.cobblify.guard.Guard
+Can-Retransform-Classes: true
+Implementation-Title: Cobblify Guard
+Implementation-Version: 1
