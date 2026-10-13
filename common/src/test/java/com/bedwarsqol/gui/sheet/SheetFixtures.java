@@ -162,7 +162,7 @@ final class SheetFixtures {
                     + "blockOverlay boSee boWhite tabHF").split(" ")) v.put(id, false);
             for (String id : ("chatStack stackTime stackBlanks chatNotify notifyMention notifyInc chatUnlimited chatKeep "
                     + "chatCopy chatLong incKey stats statsNametag statsTab statsHover statsChat statsRank statsReport "
-                    + "nickUtils nickNotify autoDenick tagUtils tagUrchin tagSeraph tagTab tagNametag tagChat tagSound "
+                    + "nickUtils nickNotify autoDenick tagUtils tagUrchin tagTab tagNametag tagChat tagSound "
                     + "autoGg partyJoin").split(" ")) v.put(id, true);
             v.put("handX", 0.0);
             v.put("handY", 0.0);

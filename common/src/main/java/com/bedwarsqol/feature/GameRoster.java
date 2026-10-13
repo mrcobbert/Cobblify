@@ -226,7 +226,6 @@ public final class GameRoster {
         p.cheater = src.cheater;
         p.badge = src.badge; // immutable
         p.chips.addAll(src.chips);
-        p.seraphThreat = src.seraphThreat;
         p.presence = src.presence;
         return p;
     }

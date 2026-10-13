@@ -439,7 +439,13 @@ public final class LobbyExport {
         public boolean cheater;              // priority tag is a cheater type
         public PlayerCard.Chip badge;        // single priority chip, or null
         public List<PlayerCard.Chip> chips = new ArrayList<PlayerCard.Chip>();
-        public int seraphThreat = -1;        // display only; -1 = unknown / gated
+        /**
+         * Retired with Seraph (its API shut down, October 2026): always -1. Kept in the contract
+         * because launchers built before the Seraph removal (0.16.x, 0.17, early 0.18 dev builds)
+         * reject a v2 player without a safe-int {@code seraphThreat};
+         * drop it once no supported launcher requires it.
+         */
+        public int seraphThreat = -1;
         /** ACTIVE|DISCONNECTED|ELIMINATED|MISSING — standing in the current game; see {@link GameRoster}. */
         public String presence = GameRoster.ACTIVE;
 
@@ -464,7 +470,6 @@ public final class LobbyExport {
             cheater = c.cheater;
             badge = c.badge;
             chips = new ArrayList<PlayerCard.Chip>(c.chips);
-            seraphThreat = c.seraphThreat;
         }
     }
 

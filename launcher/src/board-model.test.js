@@ -51,7 +51,7 @@ test("a row carries the mod's decisions verbatim: tier, cheater, chips, cells, t
   assert.equal(shadow.cheater, true);
   assert.deepEqual(shadow.rank, [{ c: "6", t: "[MVP" }, { c: "c", t: "++" }, { c: "6", t: "]" }]);
   assert.deepEqual(shadow.cells.map((c) => c.text), ["22.70", "14.00", "71,200", "8.90"]);
-  assert.deepEqual(shadow.tags.map((t) => t.code), ["BC", "BL"]);
+  assert.deepEqual(shadow.tags.map((t) => t.code), ["BC", "S"]);
   const resolving = boardRow({ name: "lag", state: "LOADING" });
   assert.deepEqual(resolving.cells.map((c) => c.text), [null, null, null, null]);
   const nicked = boardRow({ name: "n", state: "NICKED" });
@@ -68,9 +68,9 @@ test("one line per player; state words are the cells' hover title; the badge's t
   const visible = html.replace(/<span class="sr">[^<]*<\/span>/g, "");
   assert.doesNotMatch(visible, />resolving<|>never played<|>Nicked</, "no state words on the rows");
   assert.match(html, /<span class="sr">Nicked<\/span>/, "screen readers still hear the state");
-  // xXShadowSlayerXx: BC is the badge (a filled tile, the mod's cheater), BL stays in the notes
+  // xXShadowSlayerXx: BC is the badge (a filled tile, the mod's cheater), S stays in the notes
   assert.match(html, /class="ftile[^"]*"[^>]*title="Blatant Cheater">BC</);
-  assert.match(html, /<span class="g"[^>]*>BL</);
+  assert.match(html, /<span class="g"[^>]*>S</);
   assert.doesNotMatch(html, /<span class="g"[^>]*>BC</);
 });
 

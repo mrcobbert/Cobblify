@@ -29,7 +29,7 @@ final class SettingsBindings implements SheetValues {
             "handPos", "handX", "handY", "handZ", "handScale", "noEsc", "tabHF", "incAlert", "incKey",
             "stats", "statsNametag", "statsTab", "statsHover", "statsChat", "statsRank", "statsReport",
             "nickUtils", "nickNotify", "autoDenick",
-            "tagUtils", "tagUrchin", "tagSeraph", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin",
+            "tagUtils", "tagUrchin", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin",
             "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent"));
 
     static ClientSettings settings() {
@@ -91,7 +91,6 @@ final class SettingsBindings implements SheetValues {
             case "autoDenick": return c.autoDenick;
             case "tagUtils": return c.tagUtils;
             case "tagUrchin": return c.urchinTags;
-            case "tagSeraph": return c.seraphTags;
             case "tagTab": return c.tagBadgeTab;
             case "tagNametag": return c.tagBadgeNametag;
             case "tagChat": return c.tagChatAlert;
@@ -131,10 +130,8 @@ final class SettingsBindings implements SheetValues {
             case "tagUtils":
                 c.tagUtils = v;
                 StatsCache.invalidateUrchinResolution();
-                StatsCache.invalidateSeraphResolution();
                 break;
             case "tagUrchin": c.urchinTags = v; StatsCache.invalidateUrchinResolution(); break;
-            case "tagSeraph": c.seraphTags = v; StatsCache.invalidateSeraphResolution(); break;
             case "tagTab": c.tagBadgeTab = v; break;
             case "tagNametag": c.tagBadgeNametag = v; break;
             case "tagChat": c.tagChatAlert = v; break;

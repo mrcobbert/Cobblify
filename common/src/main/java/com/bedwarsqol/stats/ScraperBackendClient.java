@@ -39,9 +39,6 @@ public final class ScraperBackendClient {
     /** The opt-in header the eligible owner client sends so the Worker enriches Urchin tags. */
     private static final String URCHIN_OPT_IN_HEADER = "X-BWQOL-Urchin";
 
-    /** The opt-in header the eligible owner client sends so the Worker enriches Seraph tags. */
-    private static final String SERAPH_OPT_IN_HEADER = "X-BWQOL-Seraph";
-
     private ScraperBackendClient() {}
 
     /**
@@ -77,27 +74,18 @@ public final class ScraperBackendClient {
      */
     public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
             String urchinUuid, Consumer<UrchinResult> onUrchin) throws IOException {
-        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, null, null, false);
-    }
-
-    public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
-            String urchinUuid, Consumer<UrchinResult> onUrchin,
-            String seraphUuid, Consumer<SeraphResult> onSeraph) throws IOException {
-        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, seraphUuid, onSeraph, false);
+        return fetch(playerName, baseUrl, token, fresh, urchinUuid, onUrchin, false);
     }
 
     /**
-     * Single fetch enriched by any subset of providers. Each provider's non-null uuid adds its opt-in
-     * header and (the shared) {@code ?uuid=}, and its resolution is delivered to its callback. All-null
-     * provider args = pure legacy request, zero provider traffic.
+     * Single fetch, optionally Urchin-enriched as above.
      *
      * <p>{@code highPriority} sends {@code &prio=1}, which only REORDERS work at the backend's origin
      * pacer - a high-lane request is granted ahead of queued background work. It does not raise the
      * origin request rate, so it makes a waited-on lookup land sooner without adding scrape load.
      */
     public static BedwarsStats fetch(String playerName, String baseUrl, String token, boolean fresh,
-            String urchinUuid, Consumer<UrchinResult> onUrchin,
-            String seraphUuid, Consumer<SeraphResult> onSeraph, boolean highPriority) throws IOException {
+            String urchinUuid, Consumer<UrchinResult> onUrchin, boolean highPriority) throws IOException {
         if (playerName == null || playerName.trim().isEmpty()) {
             throw new BackendException("Empty player name");
         }
@@ -105,9 +93,7 @@ public final class ScraperBackendClient {
         if (base == null) throw new BackendException("No stats backend URL configured");
 
         boolean wantUrchin = urchinUuid != null && !urchinUuid.isEmpty();
-        boolean wantSeraph = seraphUuid != null && !seraphUuid.isEmpty();
-        // Both providers key off the same canonical uuid; send it if either wants enrichment.
-        String uuid = wantUrchin ? urchinUuid : (wantSeraph ? seraphUuid : null);
+        String uuid = wantUrchin ? urchinUuid : null;
 
         String encoded = java.net.URLEncoder.encode(playerName.trim(), "UTF-8");
         StringBuilder query = new StringBuilder();
@@ -120,17 +106,12 @@ public final class ScraperBackendClient {
         String url = base + "/bedwars/" + encoded + query;
         HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS);
         if (wantUrchin) conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
-        if (wantSeraph) conn.setRequestProperty(SERAPH_OPT_IN_HEADER, "1");
 
         String body = readBody(conn);
         JsonObject po = parseJsonObject(body);
         if (onUrchin != null) {
             UrchinResult r = parseUrchin(po);
             if (r != null) onUrchin.accept(r);
-        }
-        if (onSeraph != null) {
-            SeraphResult r = parseSeraph(po);
-            if (r != null) onSeraph.accept(r);
         }
         return statsFromPlayerObject(po, playerName.trim());
     }
@@ -156,21 +137,12 @@ public final class ScraperBackendClient {
     public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
             BiConsumer<String, BedwarsStats> onResult,
             String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin) throws IOException {
-        fetchBatchStreaming(names, baseUrl, token, onResult, uuidsCsv, onUrchin, null, false);
-    }
-
-    public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
-            BiConsumer<String, BedwarsStats> onResult,
-            String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin,
-            BiConsumer<String, SeraphResult> onSeraph) throws IOException {
-        fetchBatchStreaming(names, baseUrl, token, onResult, uuidsCsv, onUrchin, onSeraph, false);
+        fetchBatchStreaming(names, baseUrl, token, onResult, uuidsCsv, onUrchin, false);
     }
 
     /**
-     * As above, plus Seraph: the same aligned {@code uuidsCsv} feeds both providers. Each provider's
-     * opt-in header is sent when its callback is non-null; resolutions arrive on the matching callback
-     * (inline on base lines and via {@code urchinUpdate}/{@code seraphUpdate} follow-ups). A provider
-     * with a null callback causes zero traffic.
+     * As above. Any follow-up line kind other than {@code urchinUpdate} (for instance the
+     * {@code seraphUpdate} an older Worker could send) carries no {@code state} and is skipped.
      *
      * <p>{@code highPriority} sends {@code &prio=1}, which only REORDERS work at the backend's origin
      * pacer - a high-lane request is granted ahead of queued background work. It does not raise the
@@ -178,8 +150,7 @@ public final class ScraperBackendClient {
      */
     public static void fetchBatchStreaming(List<String> names, String baseUrl, String token,
             BiConsumer<String, BedwarsStats> onResult,
-            String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin,
-            BiConsumer<String, SeraphResult> onSeraph, boolean highPriority) throws IOException {
+            String uuidsCsv, BiConsumer<String, UrchinResult> onUrchin, boolean highPriority) throws IOException {
         if (names == null || names.isEmpty()) return;
         String base = normalizeBase(baseUrl);
         if (base == null) throw new BackendException("No stats backend URL configured");
@@ -196,16 +167,14 @@ public final class ScraperBackendClient {
 
         boolean haveUuids = uuidsCsv != null && !uuidsCsv.isEmpty();
         boolean wantUrchin = haveUuids && onUrchin != null;
-        boolean wantSeraph = haveUuids && onSeraph != null;
 
         String url = base + "/bedwars/batch?names=" + param;
-        if (haveUuids && (wantUrchin || wantSeraph)) url += "&uuids=" + uuidsCsv;
+        if (wantUrchin) url += "&uuids=" + uuidsCsv;
         if (highPriority) url += "&prio=1";
         HttpURLConnection conn = open(url, token, BATCH_READ_TIMEOUT_MS);
         conn.setRequestProperty("Accept", "application/x-ndjson");
         conn.setRequestProperty("Accept-Encoding", "identity"); // keep NDJSON lines unbuffered
         if (wantUrchin) conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
-        if (wantSeraph) conn.setRequestProperty(SERAPH_OPT_IN_HEADER, "1");
 
         int code = conn.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
@@ -232,13 +201,6 @@ public final class ScraperBackendClient {
                     }
                     continue;
                 }
-                if (bool(po, "seraphUpdate", false)) {
-                    if (onSeraph != null) {
-                        SeraphResult sr = parseSeraph(po);
-                        if (sr != null) onSeraph.accept(name, sr);
-                    }
-                    continue;
-                }
                 // Every base line carries a state; follow-up lines never do. An unrecognized
                 // follow-up (a legacy starUpdate from a backend that still scrapes the star page,
                 // or any kind added later) would otherwise parse as a base line with no counters
@@ -249,10 +211,6 @@ public final class ScraperBackendClient {
                 if (onUrchin != null) {
                     UrchinResult ur = parseUrchin(po); // inline resolution on a base line
                     if (ur != null) onUrchin.accept(name, ur);
-                }
-                if (onSeraph != null) {
-                    SeraphResult sr = parseSeraph(po); // inline resolution on a base line
-                    if (sr != null) onSeraph.accept(name, sr);
                 }
             }
         }
@@ -430,45 +388,6 @@ public final class ScraperBackendClient {
         return new UrchinResult(parseTags(urchin), checked, unavailable, notFound, canonicalUuid(string(po, "urchinUuid")));
     }
 
-    /**
-     * Parse the Seraph resolution fields from one player object (base line, single body, or
-     * {@code seraphUpdate} follow-up). Returns null when the line carries NO resolution fields at all
-     * (a lookup failure/timeout the client may retry). Static + pure for unit testing.
-     */
-    public static SeraphResult parseSeraph(JsonObject po) {
-        if (po == null) return null;
-        boolean checked = bool(po, "seraphChecked", false);
-        boolean unavailable = bool(po, "seraphUnavailable", false);
-        boolean notFound = bool(po, "seraphNotFound", false);
-        JsonObject seraph = obj(po, "seraph");
-        if (!checked && !unavailable && !notFound && seraph == null) return null;
-        int threat = -1, encounters = -1;
-        if (seraph != null) {
-            if (seraph.has("threatLevel") && !seraph.get("threatLevel").isJsonNull()) threat = number(seraph, "threatLevel");
-            if (seraph.has("encounters") && !seraph.get("encounters").isJsonNull()) encounters = number(seraph, "encounters");
-        }
-        return new SeraphResult(parseSeraphTags(seraph), checked, unavailable, notFound,
-                canonicalUuid(string(po, "seraphUuid")), threat, encounters);
-    }
-
-    /** Parse the {@code tags} array of a {@code seraph} object into {@link SeraphTag}s. */
-    public static List<SeraphTag> parseSeraphTags(JsonObject seraph) {
-        List<SeraphTag> out = new ArrayList<SeraphTag>();
-        if (seraph == null || !seraph.has("tags")) return out;
-        JsonElement el = seraph.get("tags");
-        if (el == null || !el.isJsonArray()) return out;
-        JsonArray arr = el.getAsJsonArray();
-        for (JsonElement e : arr) {
-            if (e == null || !e.isJsonObject()) continue;
-            JsonObject t = e.getAsJsonObject();
-            String kind = string(t, "kind");
-            if (kind == null || kind.isEmpty()) continue;
-            out.add(new SeraphTag(kind, string(t, "subtype"), string(t, "reason"),
-                    longNum(t, "addedOn"), bool(t, "verified", false)));
-        }
-        return out;
-    }
-
     /** Canonical (lowercase, undashed) UUID form, or null when absent/blank. Defends the B1 merge key. */
     private static String canonicalUuid(String raw) {
         if (raw == null) return null;
@@ -542,54 +461,6 @@ public final class ScraperBackendClient {
         }
         return new UrchinLookup(bool(po, "success", false), string(po, "player"), string(po, "uuid"),
                 tags, bool(po, "stale", false), bool(po, "notFound", false), bool(po, "unavailable", false));
-    }
-
-    /** Result of a manual Seraph lookup by name (the {@code /cobblify seraph} command path). */
-    public static final class SeraphLookup {
-        public final boolean success;
-        public final String player;
-        public final String uuid;
-        public final List<SeraphTag> tags;
-        public final boolean notFound;
-        public final boolean unavailable;
-
-        SeraphLookup(boolean success, String player, String uuid, List<SeraphTag> tags,
-                     boolean notFound, boolean unavailable) {
-            this.success = success;
-            this.player = player;
-            this.uuid = uuid;
-            this.tags = tags == null ? new ArrayList<SeraphTag>() : tags;
-            this.notFound = notFound;
-            this.unavailable = unavailable;
-        }
-    }
-
-    /**
-     * Manual Seraph lookup by name. Seraph is UUID-only, so the name is resolved to a UUID
-     * client-side (via {@link MojangNameResolver}) before the Worker's uuid-keyed Seraph route is
-     * called with the opt-in header (owner-gated on the Worker). An unresolvable name -> notFound.
-     */
-    public static SeraphLookup getSeraph(String baseUrl, String token, String name) throws IOException {
-        String base = normalizeBase(baseUrl);
-        if (base == null) throw new BackendException("No stats backend URL configured");
-        java.util.UUID resolved = MojangNameResolver.resolve(name.trim());
-        if (resolved == null) {
-            return new SeraphLookup(true, name.trim(), null, new ArrayList<SeraphTag>(), true, false);
-        }
-        String uuid = resolved.toString().replace("-", "");
-        String url = base + "/seraph/" + uuid;
-        HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS);
-        conn.setRequestProperty(SERAPH_OPT_IN_HEADER, "1");
-        String body = readBody(conn);
-        JsonObject po = parseJsonObject(body);
-        List<SeraphTag> tags = new ArrayList<SeraphTag>();
-        if (po.has("tags") && po.get("tags").isJsonArray()) {
-            JsonObject wrap = new JsonObject();
-            wrap.add("tags", po.get("tags"));
-            tags = parseSeraphTags(wrap);
-        }
-        return new SeraphLookup(bool(po, "success", false), name.trim(), string(po, "uuid"),
-                tags, bool(po, "notFound", false), bool(po, "unavailable", false));
     }
 
     /** Result of a fail-closed secret POST. */

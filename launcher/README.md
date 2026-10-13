@@ -443,9 +443,9 @@ never activate the dashboard.
 **`lobby.json` is contract v2 and the launcher only draws it.** Every presentation decision
 about a player - FKDR tier, cheater flag, single priority badge, gated tag chips, which mode the
 numbers came from, nick reveal with the real account's stats - is made once in the mod by
-`PlayerCard` (the same policy the tab list and chat use, honouring the Tag Utils (Urchin /
-Seraph) and Nick Utils / Auto Denick toggles, tag expiry, the identity gate and the forced
-`/bw mode`) and exported
+`PlayerCard` (the same policy the tab list and chat use, honouring the Tag Utils (Urchin) and
+Nick Utils / Auto Denick toggles, tag expiry, the identity gate and the forced `/bw mode`) and
+exported
 verbatim. `row-model.js` arranges those fields into classes, chips and cells; nothing in the
 launcher derives a tier, a cheater flag or a badge, and `main-no-policy.test.js` pins that. The
 shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `invalid/`,
@@ -453,6 +453,9 @@ shared fixtures under `common/src/test/resources/lobby-contract/` (`valid/`, `in
 tests, so the three copies of the shape cannot drift. A well-formed v1 file from an older mod jar
 still binds the session but the dashboard shows "Update Cobblify to use the overlay" instead of a
 roster.
+`seraphThreat` is retired with Seraph (its API shut down in October 2026): mod jars keep writing
+`-1` because launchers built before the removal require the key, while the launcher accepts a player without it
+(fixture `valid/no-seraph-threat.json`) and never draws it.
 
 **The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a
 per-launch baseline; only snapshots from a JVM born after that baseline and still alive

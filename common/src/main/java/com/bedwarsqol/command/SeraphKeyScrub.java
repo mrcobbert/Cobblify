@@ -6,8 +6,9 @@ import java.util.regex.Pattern;
 
 /**
  * Pure up-arrow-history scrub for {@code /bw seraphkey}, mirroring {@link UrchinKeyScrub} so it can be
- * unit-tested headlessly. The key itself never reaches this helper - it only ever sees the raw history
- * lines and returns a boolean verdict. The caller MUST abort the key submission on false.
+ * unit-tested headlessly. The command is retired (Seraph closed its API in October 2026), but a line
+ * typed out of habit can still carry a pasted key, so it is still scrubbed. The key itself never
+ * reaches this helper - it only ever sees the raw history lines and returns a boolean verdict.
  */
 final class SeraphKeyScrub {
 

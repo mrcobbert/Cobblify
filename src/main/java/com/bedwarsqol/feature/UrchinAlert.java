@@ -71,11 +71,8 @@ public final class UrchinAlert {
             if (!snap.eligible(name, uuid)) continue;
 
             // Population: keep the Urchin fetch moving for every eligible tab player, even with both
-            // badge surfaces off (so the chat alert alone still works). Carry the sibling provider's
-            // eligibility too — a single-bit task leaves the other provider unresolved, and its own
-            // sweep would fire a second full fetch for the same player seconds later.
-            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_TAB, true,
-                    snap.eligibleSeraph(name, uuid));
+            // badge surfaces off (so the chat alert alone still works).
+            StatsCache.ensureFetched(uuid, StatsCache.PRIORITY_TAB, true);
 
             BedwarsStats stats = StatsCache.getCached(uuid);
             if (stats == null) continue;

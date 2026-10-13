@@ -16,7 +16,7 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 4;
+    static final int CURRENT_SETTINGS_VERSION = 5;
     public int settingsVersion = 0;
 
     /**
@@ -186,17 +186,14 @@ public class ClientSettings {
     public boolean autoDenick = true;
 
     /**
-     * Tag Utils: master toggle for community cheater tags from Urchin (urchin.ws) and Seraph
-     * (api.seraph.si), both resolved server-side by the stats Worker (see
-     * {@link com.bedwarsqol.feature.UrchinAlert} / {@link com.bedwarsqol.feature.SeraphAlert}). On by
-     * default; inert off Hypixel. Off, or with both sources off, the mod causes zero provider traffic
-     * and shows no tags. Read the sources through {@link #urchinOn()} / {@link #seraphOn()}.
+     * Tag Utils: master toggle for community cheater tags from Urchin (urchin.ws), resolved
+     * server-side by the stats Worker (see {@link com.bedwarsqol.feature.UrchinAlert}). On by
+     * default; inert off Hypixel. Off, or with Urchin off, the mod causes zero provider traffic and
+     * shows no tags. Read the source through {@link #urchinOn()}.
      */
     public boolean tagUtils = true;
     /** Sub of Tag Utils: the Urchin source. The key predates Tag Utils, so a saved choice carries over. */
     public boolean urchinTags = true;
-    /** Sub of Tag Utils: the Seraph source. The key predates Tag Utils, so a saved choice carries over. */
-    public boolean seraphTags = true;
     /** Sub of Tag Utils: append the priority tag badge to the tab-list overlay. */
     public boolean tagBadgeTab = true;
     /** Sub of Tag Utils: append the priority tag badge above the in-game nametag. */
@@ -209,19 +206,15 @@ public class ClientSettings {
     /** Sub of Tag Utils: play a pling with the chat alert (cheater-type tags only). */
     public boolean tagAlertSound = true;
 
-    // The per-source sub-options saved before settings v2. migrate() reads them once and nulls them;
-    // Gson never writes a null member, so they drop on the next save.
+    // The per-source sub-options saved before settings v2, and the Seraph source (Seraph closed its
+    // API in October 2026). migrate() reads them once and nulls them; Gson never writes a null
+    // member, so they drop on the next save. A null seraphTags is the old default, on.
     Boolean urchinBadgeTab, urchinChatAlert, urchinAlertSound, urchinBadgeNametag;
-    Boolean seraphBadgeTab, seraphChatAlert, seraphAlertSound, seraphBadgeNametag;
+    Boolean seraphTags, seraphBadgeTab, seraphChatAlert, seraphAlertSound, seraphBadgeNametag;
 
     /** Urchin is looked up and shown only while Tag Utils and its Urchin sub-option are both on. */
     public boolean urchinOn() {
         return tagUtils && urchinTags;
-    }
-
-    /** Seraph is looked up and shown only while Tag Utils and its Seraph sub-option are both on. */
-    public boolean seraphOn() {
-        return tagUtils && seraphTags;
     }
 
     // A backend may be baked into the jar at build time via the cobblify-backend.properties
@@ -302,6 +295,9 @@ public class ClientSettings {
      * any HUD Size. A module still at its exact old default spot moves into it; anything the user
      * moved is kept.</li>
      * <li>v4: Block Overlay takes the accent instead of its own colour; an overlay that was white stays white.</li>
+     * <li>v5: Seraph closed its API (October 2026). Its saved keys ({@code seraphTags} and the
+     * pre-v2 {@code seraph*} sub-options) are dropped; nothing else changes. The v2 step above still
+     * reads them for a file older than v2.</li>
      * </ul>
      */
     void migrate() {
@@ -311,7 +307,7 @@ public class ClientSettings {
             if (emeraldTimerHudAnchor == 2 && emeraldTimerHudX == 5) emeraldTimerHudX = -5;
         }
         if (settingsVersion < 2) {
-            boolean urchin = urchinTags, seraph = seraphTags;
+            boolean urchin = urchinTags, seraph = seraphTags == null || seraphTags;
             tagUtils = urchin || seraph;
             tagBadgeTab = carried(urchin, urchinBadgeTab, seraph, seraphBadgeTab);
             tagBadgeNametag = carried(urchin, urchinBadgeNametag, seraph, seraphBadgeNametag);
@@ -330,6 +326,7 @@ public class ClientSettings {
         }
         if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
+        seraphTags = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
         settingsVersion = CURRENT_SETTINGS_VERSION;
     }

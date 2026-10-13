@@ -40,7 +40,9 @@ function validCommonPlayer(p) {
   if (typeof p.rank !== "string") return false;
   if (!isFiniteNumber(p.fkdr) || !isFiniteNumber(p.wlr) || !isFiniteNumber(p.kd)) return false;
   if (!isSafeInt(p.finalKills)) return false;
-  if (!isSafeInt(p.seraphThreat)) return false;
+  // seraphThreat is retired with Seraph (its API shut down, October 2026): mod jars up to 0.18 write it,
+  // newer ones may not. Optional now; a present value must still be a safe integer.
+  if (p.seraphThreat !== undefined && !isSafeInt(p.seraphThreat)) return false;
   if (p.presence !== undefined && !PRESENCE.has(p.presence)) return false;
   return true;
 }

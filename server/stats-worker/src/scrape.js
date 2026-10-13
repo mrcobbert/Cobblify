@@ -15,7 +15,6 @@ import {
   readCached, writeCached, readBlocked, writeBlocked, NEG_TTL_SEC, NICKED_TTL_SEC, NICK_404_TTL_SEC,
 } from "./cache.js";
 import { tagsForUuids, resultFields } from "./urchin.js";
-import { tagsForUuids as seraphTagsForUuids, resultFields as seraphResultFields } from "./seraph.js";
 import { shmeadoScrapeAndCache } from "./shmeado.js";
 
 const BROWSER_UA =
@@ -422,7 +421,7 @@ function scrapeShared(player, env, ctx, lane, maxAttempts, source) {
 
 /**
  * Every caller of a shared scrape - the initiator included - gets its OWN shallow copy of the
- * terminal result. The routes add per-identity provider fields (urchin*, seraph*, the
+ * terminal result. The routes add per-identity provider fields (urchin*, the retired seraph*, the
  * "resolved unavailable" flags) to the body they receive, so handing joiners the initiator's
  * object let one identity's fields ride into another identity's response (W1). The cache is
  * unaffected: writeCached serialised the body before any route touched it. Shallow suffices
@@ -489,6 +488,11 @@ function dedupeValidate(names) {
   return valid;
 }
 
+/** Retired Seraph (see worker.js): the final "unavailable" fields an old client merges by uuid. */
+export function retiredSeraphFields(uuid) {
+  return { seraphUuid: uuid, seraphUnavailable: true };
+}
+
 /**
  * Streaming batch: returns a Response that emits one NDJSON line per player AS it resolves — cache
  * hits first (instant), then cold scrapes paced at ~1.6/s. The client reads line-by-line and renders
@@ -496,7 +500,7 @@ function dedupeValidate(names) {
  * second and an all-cold lobby fills in progressively instead of blocking on the slowest player.
  * Each line carries a "name" field (the requested name) so the client can map it back.
  */
-export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane = LANE_LOW) {
+export function streamBedwarsBatch(names, env, ctx, urchinCtx, retiredSeraph, lane = LANE_LOW) {
   const valid = dedupeValidate(names);
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -531,32 +535,15 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
     return Object.keys(f).length > 1 || (Object.keys(f).length === 1 && !f.urchinUuid) ? f : null;
   };
 
-  // Seraph tags resolve in parallel with the same shape (per-UUID fan-out; §7d no cache), attaching
-  // inline when settled or as "seraphUpdate" follow-up lines after the counter pass.
-  const seraphPromise =
-    seraphCtx && seraphCtx.uuidByName && seraphCtx.uuidByName.size > 0 && !seraphCtx.unavailableOnly
-      ? seraphTagsForUuids([...seraphCtx.uuidByName.values()], env, ctx, seraphCtx.auth).catch(() => new Map())
-      : null;
-  let seraphResults = null;
-  if (seraphPromise) {
-    seraphPromise.then((m) => { seraphResults = m; });
-    ctx.waitUntil(seraphPromise.then(() => {}));
-  }
-  const seraphFieldsFor = (name) => {
-    if (!seraphResults || !seraphCtx) return null;
-    const uuid = seraphCtx.uuidByName.get(name.toLowerCase());
-    if (!uuid) return null;
-    const f = seraphResultFields(seraphResults.get(uuid), uuid);
-    // seraphUuid alone (no metadata) is meaningless - require actual resolution fields.
-    return Object.keys(f).length > 1 || (Object.keys(f).length === 1 && !f.seraphUuid) ? f : null;
-  };
+  // Seraph is retired (see worker.js): `retiredSeraph` is the uuid alignment when an old client
+  // opted in, and each aligned base line carries the final "unavailable" answer inline - no lookup,
+  // no follow-up lines.
 
   ctx.waitUntil(
     (async () => {
       try {
-        // Names whose urchin/seraph result was NOT ready at base-line time (follow-up pass).
+        // Names whose urchin result was NOT ready at base-line time (follow-up pass).
         const needUrchin = [];
-        const needSeraph = [];
         const emitLine = async (name, body) => {
           if (urchinCtx && urchinCtx.unavailableOnly && urchinCtx.uuidByName.has(name.toLowerCase())) {
             body.urchinUnavailable = true; // no KV -> zero Coral calls, resolved unavailable
@@ -565,13 +552,8 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
             if (f) Object.assign(body, f);
             else needUrchin.push(name);
           }
-          if (seraphCtx && seraphCtx.unavailableOnly && seraphCtx.uuidByName.has(name.toLowerCase())) {
-            body.seraphUnavailable = true; // no key source -> zero Seraph calls, resolved unavailable
-          } else if (seraphPromise && seraphCtx.uuidByName.has(name.toLowerCase())) {
-            const f = seraphFieldsFor(name);
-            if (f) Object.assign(body, f);
-            else needSeraph.push(name);
-          }
+          const seraphUuid = retiredSeraph && retiredSeraph.get(name.toLowerCase());
+          if (seraphUuid) Object.assign(body, retiredSeraphFields(seraphUuid));
           await writeLine(name, body);
         };
 
@@ -603,14 +585,6 @@ export function streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, lane =
           for (const name of needUrchin) {
             const f = urchinFieldsFor(name);
             if (f) await writeLine(name, { success: true, urchinUpdate: true, ...f });
-          }
-        }
-        // 4) Seraph follow-ups, same invariant: emitted only after every base line.
-        if (seraphPromise && needSeraph.length > 0) {
-          await Promise.race([seraphPromise, sleep(3000)]);
-          for (const name of needSeraph) {
-            const f = seraphFieldsFor(name);
-            if (f) await writeLine(name, { success: true, seraphUpdate: true, ...f });
           }
         }
       } catch (e) {

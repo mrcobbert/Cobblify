@@ -11,7 +11,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import worker, { authenticate } from "../src/worker.js";
 import { urchinAllowed } from "../src/urchin.js";
-import { seraphAllowed } from "../src/seraph.js";
 
 const OWNER = "OwnerToken_0123456789abcdef";
 const FRIEND = "FriendToken_0123456789abcd";
@@ -131,7 +130,9 @@ test("open worker (unset/empty secret): null-identity auth, provider gates fail 
     const auth = await authenticate(reqFor("/x", {}), env);
     assert.deepEqual(auth, { identity: null, isOwner: false });
     assert.equal(urchinAllowed(auth, reqFor("/x", { optUrchin: true })), false);
-    assert.equal(seraphAllowed(auth, reqFor("/x", { optSeraph: true })), false);
+    // The retired Seraph routes keep the old fail-closed gate too.
+    const res = await worker.fetch(reqFor("/seraph/069a79f444e94726a5befca90e38aaf5", { optSeraph: true }), env, makeCtx().ctx);
+    assert.equal(res.status, 403);
   }
   // And the checkAuth-tier routes really are open, exactly as today.
   const w = makeCtx();
@@ -150,7 +151,8 @@ test("route matrix: owner/friend/second-friend accepted, bad callers rejected on
     { path: `/urchin/${"MatrixGuy"}`, optUrchin: true, deniedStatus: 403 },
     { path: `/seraph/${UUID}`, optSeraph: true, deniedStatus: 403 },
     { path: "/urchin/key", method: "POST", body: () => JSON.stringify({ key: "matrix-key-0123456789" }), deniedStatus: 403 },
-    { path: "/seraph/key", method: "POST", body: () => JSON.stringify({ key: "matrix-key-0123456789" }), deniedStatus: 403 },
+    // Seraph is retired: only a clear still succeeds (a set is a 410, see seraph-retired.test.mjs).
+    { path: "/seraph/key", method: "POST", body: () => JSON.stringify({ key: null }), deniedStatus: 403 },
   ];
   for (const route of routes) {
     for (const good of [OWNER, FRIEND, FRIEND2]) {
