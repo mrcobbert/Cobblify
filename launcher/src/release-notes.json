@@ -13,7 +13,8 @@
       ]],
       ["Changes", [
         "The Minecraft font and Pale Blue are now the in-game default look.",
-        "Session Stats draws on top of everything; Session Stats and Map Info hide when you're not on Hypixel."
+        "Session Stats draws on top of everything; Session Stats and Map Info hide when you're not on Hypixel.",
+        "Seraph closed its API, so cheater tags now come from Urchin only."
       ]]
     ]
   },
