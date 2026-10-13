@@ -9,7 +9,6 @@ import com.bedwarsqol.stats.EligibilitySnapshot;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.PlayerCard;
-import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.StatsCache;
 import com.bedwarsqol.stats.UrchinTag;
 import com.mojang.authlib.GameProfile;
@@ -184,12 +183,11 @@ public final class LobbySnapshot {
     private static LobbyExport.Player player(String name, UUID uuid) {
         ClientSettings cfg = BedwarsQol.config;
         PlayerCard.Toggles toggles = cfg == null ? PlayerCard.Toggles.ALL_OFF
-                : new PlayerCard.Toggles(cfg.urchinOn(), cfg.seraphOn(), cfg.nickUtils, cfg.autoDenick);
+                : new PlayerCard.Toggles(cfg.urchinOn(), cfg.nickUtils, cfg.autoDenick);
         EligibilitySnapshot snap = EligibilitySnapshot.current();
         boolean urchinEligible = uuid != null && UrchinTag.badgeAllowed(snap, name, uuid);
-        boolean seraphEligible = uuid != null && SeraphTag.badgeAllowed(snap, name, uuid);
         PlayerCard card = PlayerCard.build(SOURCE, name, uuid, BedwarsModeDetector.displayMode(cfg),
-                toggles, urchinEligible, seraphEligible, Denicks.realNameForNick(name),
+                toggles, urchinEligible, Denicks.realNameForNick(name),
                 System.currentTimeMillis());
         LobbyExport.Player p = new LobbyExport.Player(name);
         p.apply(card);

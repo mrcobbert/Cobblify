@@ -37,7 +37,7 @@ public class UrchinBadgeGateTest {
 
     private static EligibilitySnapshot snap(int sessionId, IdentitySnapshot id) {
         return new EligibilitySnapshot(sessionId, true /*exactHost*/, true /*activeGame*/,
-                true /*masterOn*/, false /*seraphOn*/, id);
+                true /*masterOn*/, id);
     }
 
     @Test

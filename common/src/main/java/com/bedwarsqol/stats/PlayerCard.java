@@ -7,7 +7,7 @@ import java.util.UUID;
 
 /**
  * THE per-player presentation decision, computed once from the same policy classes every in-game
- * surface consults ({@link UrchinTag}, {@link SeraphTag}, {@link BedwarsStats#fkdrTier}) and
+ * surface consults ({@link UrchinTag}, {@link BedwarsStats#fkdrTier}) and
  * exported to the launcher overlay verbatim. The launcher draws a card; it never re-derives a
  * tier, a cheater flag or a badge.
  *
@@ -20,13 +20,12 @@ import java.util.UUID;
  *   <li><b>Numbers.</b> {@link BedwarsStats#statsFor(BedwarsMode)} for the caller's display mode,
  *       the same resolver the chat bracket and hover card use; {@link #modeLabel} names the mode
  *       the numbers actually came from.</li>
- *   <li><b>Tags.</b> Each provider's tags pass through {@code activeTags} (expiry, displayability)
- *       and are dropped entirely unless the provider's master toggle is on and the caller's
- *       eligibility gate ({@code badgeAllowed}) confirmed this (name, uuid) pair.</li>
- *   <li><b>Badge and cheater.</b> The badge is the single priority chip across both providers
- *       ({@link #priorityBadge}); {@code cheater} is true only when a provider's priority tag is a
- *       cheater type (Urchin confirmed/blatant/closet, Seraph blacklist). Threat level is carried
- *       for display and never acted on.</li>
+ *   <li><b>Tags.</b> Urchin tags pass through {@code activeTags} (expiry, displayability) and are
+ *       dropped entirely unless Urchin is on and the caller's eligibility gate
+ *       ({@code badgeAllowed}) confirmed this (name, uuid) pair.</li>
+ *   <li><b>Badge and cheater.</b> The badge is the single priority chip ({@link #priorityBadge});
+ *       {@code cheater} is true only when the priority tag is a cheater type (confirmed, blatant or
+ *       closet).</li>
  * </ol>
  *
  * <p>Pure and platform-neutral (Java 8, no Minecraft types); the mod supplies a {@link Source}
@@ -54,28 +53,22 @@ public final class PlayerCard {
         static Chip of(UrchinTag t) {
             return new Chip(t.displayIcon(), t.color(), t.displayName(), false);
         }
-
-        static Chip of(SeraphTag t) {
-            return new Chip(t.displayIcon(), t.color(), t.displayName(), "safelist".equals(t.kind));
-        }
     }
 
-    /** The four master toggles the card honours. */
+    /** The three master toggles the card honours. */
     public static final class Toggles {
         public final boolean urchin;
-        public final boolean seraph;
         public final boolean nickUtils;
         public final boolean autoDenick;
 
-        public Toggles(boolean urchin, boolean seraph, boolean nickUtils, boolean autoDenick) {
+        public Toggles(boolean urchin, boolean nickUtils, boolean autoDenick) {
             this.urchin = urchin;
-            this.seraph = seraph;
             this.nickUtils = nickUtils;
             this.autoDenick = autoDenick;
         }
 
-        public static final Toggles ALL_ON = new Toggles(true, true, true, true);
-        public static final Toggles ALL_OFF = new Toggles(false, false, false, false);
+        public static final Toggles ALL_ON = new Toggles(true, true, true);
+        public static final Toggles ALL_OFF = new Toggles(false, false, false);
     }
 
     /** Cache reads the card needs; the mod backs this with {@code StatsCache}. */
@@ -104,17 +97,14 @@ public final class PlayerCard {
     public final double kd;
     public final int fkdrTier;
     public final boolean cheater;
-    /** Single priority chip across both providers, or null. */
+    /** Single priority chip, or null. */
     public final Chip badge;
-    /** Every active, gated chip, Urchin first then Seraph, each in provider order. */
+    /** Every active, gated chip, in provider order. */
     public final List<Chip> chips;
-    /** Seraph threat level for display, -1 when absent or gated off. */
-    public final int seraphThreat;
 
     private PlayerCard(String name, BedwarsStats.State state, boolean nicked, String realName,
                        String rank, String rankCodes, String modeLabel, double fkdr, double wlr,
-                       int finalKills, double kd, boolean cheater, Chip badge, List<Chip> chips,
-                       int seraphThreat) {
+                       int finalKills, double kd, boolean cheater, Chip badge, List<Chip> chips) {
         this.name = name;
         this.state = state;
         this.nicked = nicked;
@@ -130,7 +120,6 @@ public final class PlayerCard {
         this.cheater = cheater;
         this.badge = badge;
         this.chips = Collections.unmodifiableList(new ArrayList<Chip>(chips));
-        this.seraphThreat = seraphThreat < 0 ? -1 : seraphThreat;
     }
 
     /** The contract state string: OK|NICKED|NEVER_PLAYED|ERROR, or LOADING while unresolved. */
@@ -139,13 +128,12 @@ public final class PlayerCard {
     }
 
     /**
-     * Build the card. {@code urchinEligible} / {@code seraphEligible} are the caller's
-     * {@code badgeAllowed} results for the displayed (name, uuid); {@code verifiedRealName} is the
+     * Build the card. {@code urchinEligible} is the caller's {@code badgeAllowed} result for the
+     * displayed (name, uuid); {@code verifiedRealName} is the
      * {@code Denicks} verified real name or null. Never throws; a missing source yields a loading card.
      */
     public static PlayerCard build(Source src, String name, UUID uuid, BedwarsMode mode, Toggles t,
-                                   boolean urchinEligible, boolean seraphEligible,
-                                   String verifiedRealName, long nowMs) {
+                                   boolean urchinEligible, String verifiedRealName, long nowMs) {
         if (t == null) t = Toggles.ALL_OFF;
         if (mode == null) mode = BedwarsMode.UNKNOWN;
         boolean reveal = t.nickUtils && t.autoDenick && verifiedRealName != null
@@ -164,7 +152,7 @@ public final class PlayerCard {
         String realName = reveal ? verifiedRealName : null;
         if (st == null) {
             return new PlayerCard(name, null, reveal, realName, "", "", OVERALL, 0, 0, 0, 0,
-                    false, null, Collections.<Chip>emptyList(), -1);
+                    false, null, Collections.<Chip>emptyList());
         }
 
         boolean nicked = reveal || st.state == BedwarsStats.State.NICKED;
@@ -174,39 +162,25 @@ public final class PlayerCard {
 
         List<UrchinTag> urchin = (t.urchin && urchinEligible)
                 ? UrchinTag.activeTags(st.urchinTags, nowMs) : Collections.<UrchinTag>emptyList();
-        List<SeraphTag> seraph = (t.seraph && seraphEligible)
-                ? SeraphTag.activeTags(st.seraphTags) : Collections.<SeraphTag>emptyList();
 
-        List<Chip> chips = new ArrayList<Chip>(urchin.size() + seraph.size());
+        List<Chip> chips = new ArrayList<Chip>(urchin.size());
         for (UrchinTag u : urchin) chips.add(Chip.of(u));
-        for (SeraphTag s : seraph) chips.add(Chip.of(s));
 
         UrchinTag pu = UrchinTag.priority(urchin, nowMs);
-        SeraphTag ps = SeraphTag.priority(seraph);
-        boolean cheater = (pu != null && pu.isCheaterType()) || (ps != null && ps.isCheaterType());
-        int threat = (t.seraph && seraphEligible) ? st.seraphThreat : -1;
+        boolean cheater = pu != null && pu.isCheaterType();
 
         return new PlayerCard(name, st.state, nicked, realName, stripSection(st.rankPrefix),
                 st.rankPrefix, label, m.fkdr, m.wlr, m.finalKills, m.kd, cheater,
-                priorityBadge(urchin, nowMs, seraph), chips, threat);
+                priorityBadge(urchin, nowMs), chips);
     }
 
     /**
-     * The single most-severe signal across both providers, or null. Any danger signal (all
-     * Urchin tags, and non-safelist Seraph tags) outranks a Seraph safelist; within a band the
-     * higher {@code severity()} wins, ties favour Seraph. The overlay badge
-     * comes from here. Callers pass already gating-filtered lists.
+     * The single most-severe tag (highest {@code severity()}), or null. The overlay badge comes
+     * from here. Callers pass an already gating-filtered list.
      */
-    public static Chip priorityBadge(List<UrchinTag> urchin, long nowMs, List<SeraphTag> seraph) {
+    public static Chip priorityBadge(List<UrchinTag> urchin, long nowMs) {
         UrchinTag u = UrchinTag.priority(urchin, nowMs);
-        SeraphTag s = SeraphTag.priority(seraph);
-        int uRank = u == null ? Integer.MIN_VALUE : 100 + u.severity();
-        int sRank;
-        if (s == null) sRank = Integer.MIN_VALUE;
-        else if ("safelist".equals(s.kind)) sRank = s.severity();
-        else sRank = 100 + s.severity();
-        if (uRank == Integer.MIN_VALUE && sRank == Integer.MIN_VALUE) return null;
-        return sRank >= uRank ? Chip.of(s) : Chip.of(u);
+        return u == null ? null : Chip.of(u);
     }
 
     /** Strip §-codes from a rank label. */

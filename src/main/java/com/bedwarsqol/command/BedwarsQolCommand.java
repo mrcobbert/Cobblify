@@ -112,13 +112,11 @@ public class BedwarsQolCommand extends CommandBase {
                 handleUrchin(sender, args);
                 return;
             case "seraph":
-                handleSeraph(sender, args);
+            case "seraphkey":
+                handleRetiredSeraph(sender, args);
                 return;
             case "urchinkey":
                 handleUrchinKey(sender, args);
-                return;
-            case "seraphkey":
-                handleSeraphKey(sender, args);
                 return;
             case "session":
                 handleSession(sender, args);
@@ -163,8 +161,7 @@ public class BedwarsQolCommand extends CommandBase {
         send(sender, "§f/cobblify statsurl <url> §7— set the stats backend");
         send(sender, "§f/cobblify statstoken <token> §7— set the backend token");
         send(sender, "§f/cobblify urchin <player> §7— community Urchin tags for a player");
-        send(sender, "§f/cobblify seraph <player> §7— Seraph tags for a player");
-        send(sender, "§f/cobblify session [reset] §7— this session's Bedwars tally");
+                send(sender, "§f/cobblify session [reset] §7— this session's Bedwars tally");
         send(sender, "§f/cobblify heightlimit §7— current map, build limit and how it was determined");
         send(sender, "§f/cobblify help §7— this page");
         send(sender, "§7§m------------------------------");
@@ -247,7 +244,7 @@ public class BedwarsQolCommand extends CommandBase {
                 return t;
             });
 
-    /** Shared submit path for the urchinkey/seraphkey handlers: validation, JSON body, background
+    /** Shared submit path for the urchinkey handler: validation, JSON body, background
      *  POST on {@link #URCHIN_EXEC}, client-thread result marshal, and the post-set invalidate /
      *  pre-clear strip sequencing (see {@link ProviderKeySubmitter}). */
     private static final ProviderKeySubmitter KEY_SUBMITTER =
@@ -306,66 +303,6 @@ public class BedwarsQolCommand extends CommandBase {
         local("§8[§6Cobblify§8] §fUrchin tags for §e" + name + (r.stale ? " §8(cached)" : "") + "§7:");
         java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US);
         for (com.bedwarsqol.stats.UrchinTag t : tags) {
-            StringBuilder sb = new StringBuilder("  ").append(t.color()).append("[")
-                    .append(t.displayIcon()).append("] §f").append(t.displayName());
-            if (!t.reason.isEmpty()) sb.append(" §7- §f").append(t.reason);
-            if (t.addedOnMs > 0) sb.append(" §8(").append(fmt.format(new java.util.Date(t.addedOnMs))).append(')');
-            local(sb.toString());
-        }
-    }
-
-    /** {@code /cobblify seraph <name>} — on-demand Seraph-tag lookup via the Worker's manual route. */
-    private void handleSeraph(ICommandSender sender, String[] args) {
-        ClientSettings cfg = settings();
-        if (!cfg.seraphOn()) {
-            send(sender, "§cSeraph is off. Turn on Tag Utils > Seraph in /cobblify.");
-            return;
-        }
-        if (args.length < 2 || args[1].trim().isEmpty()) {
-            send(sender, "§eUsage: §f/cobblify seraph <player>");
-            return;
-        }
-        final String name = args[1].trim();
-        final BackendTarget backend = cfg.backendTarget(); // one atomic capture per operation
-        final String url = backend.url;
-        final String token = backend.token;
-        if (url.isEmpty()) {
-            send(sender, "§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
-            return;
-        }
-        send(sender, "§7Looking up Seraph tags for §f" + name + "§7...");
-        URCHIN_EXEC.submit(() -> {
-            try {
-                com.bedwarsqol.stats.ScraperBackendClient.SeraphLookup r =
-                        com.bedwarsqol.stats.ScraperBackendClient.getSeraph(url, token, name);
-                scheduled(() -> printSeraph(name, r));
-            } catch (Throwable t) {
-                scheduled(() -> send(sender, "§cSeraph lookup failed for §f" + name + "§c."));
-            }
-        });
-    }
-
-    private static void printSeraph(String name, com.bedwarsqol.stats.ScraperBackendClient.SeraphLookup r) {
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc == null || mc.thePlayer == null) return;
-        if (r == null || !r.success) {
-            local("§cSeraph unavailable right now.");
-            return;
-        }
-        if (r.notFound) {
-            local("§7No Hypixel player named §f" + name + "§7 was found.");
-            return;
-        }
-        java.util.List<com.bedwarsqol.stats.SeraphTag> tags =
-                com.bedwarsqol.stats.SeraphTag.activeTags(r.tags);
-        if (tags.isEmpty()) {
-            if (r.unavailable) local("§7Seraph unavailable right now.");
-            else local("§a" + name + " §7has no Seraph tags.");
-            return;
-        }
-        local("§8[§6Cobblify§8] §fSeraph tags for §e" + name + "§7:");
-        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US);
-        for (com.bedwarsqol.stats.SeraphTag t : tags) {
             StringBuilder sb = new StringBuilder("  ").append(t.color()).append("[")
                     .append(t.displayIcon()).append("] §f").append(t.displayName());
             if (!t.reason.isEmpty()) sb.append(" §7- §f").append(t.reason);
@@ -467,70 +404,16 @@ public class BedwarsQolCommand extends CommandBase {
     }
 
     /**
-     * {@code /cobblify seraphkey <key|clear>} — sets/clears the server-side Seraph key. Mirrors
-     * {@link #handleUrchinKey}: the key never touches chat history, disk, logs, exceptions, or URLs, and
-     * the whole handler is guarded so it can never throw.
+     * {@code /cobblify seraph} and {@code /cobblify seraphkey} are retired: Seraph closed its API in
+     * October 2026. A {@code seraphkey} line may still carry a pasted key, so it is scrubbed from
+     * up-arrow history as before; nothing is sent anywhere. Guarded so it can never throw.
      */
-    private void handleSeraphKey(ICommandSender sender, String[] args) {
+    private void handleRetiredSeraph(ICommandSender sender, String[] args) {
         try {
-            if (!scrubSeraphKeyHistory()) {
-                send(sender, "§cCould not clear the command from chat history - key not sent. "
-                        + "Use §fwrangler secret put SERAPH_KEY§c instead.");
-                return;
-            }
-            ClientSettings cfg = settings();
-            final BackendTarget backend = cfg.backendTarget(); // one atomic capture per submission
-            if (backend.url.isEmpty()) {
-                send(sender, "§cNo stats backend URL. Set §f/cobblify statsurl <url>§c first.");
-                return;
-            }
-            if (args.length < 2 || args[1].trim().isEmpty()) {
-                send(sender, "§eUsage: §f/cobblify seraphkey <key|clear>");
-                return;
-            }
-            final boolean clear = "clear".equalsIgnoreCase(args[1].trim())
-                    || "none".equalsIgnoreCase(args[1].trim());
-            send(sender, "§7Submitting Seraph key...");
-            if (clear) {
-                // The submitter strips local tags BEFORE the request goes out (I1): the Worker
-                // commits the deletion before it replies, so a committed-but-response-lost clear
-                // must still leave the display safe.
-                KEY_SUBMITTER.submitClear(ProviderKeySubmitter.Provider.SERAPH, backend,
-                        StatsCache::stripSeraphTags, res -> finishSeraphKey(res, true));
-            } else {
-                KEY_SUBMITTER.submitSet(ProviderKeySubmitter.Provider.SERAPH, backend, args[1].trim(),
-                        StatsCache::invalidateSeraphResolution, res -> finishSeraphKey(res, false));
-            }
-        } catch (Throwable t) {
-            try { send(sender, "§cSeraph key update failed."); } catch (Throwable ignored) { }
-        }
-    }
-
-    private static void finishSeraphKey(com.bedwarsqol.stats.ScraperBackendClient.SecretPostResult res, boolean clear) {
-        if (clear) {
-            if (res != null && res.success) {
-                local("§aSeraph key cleared.");
-            } else {
-                local("§eSeraph key clear submitted, but the server did not confirm it - the server-side "
-                        + "clear may not have taken effect. Retry, or remove it with §fwrangler secret "
-                        + "delete SERAPH_KEY§e / §fwrangler kv§e.");
-            }
-            return;
-        }
-        if (res != null && res.success) {
-            // Provider resolution was already invalidated by the submitter (client thread, pre-callback).
-            local("§aSeraph key updated.");
-            return;
-        }
-        String err = res == null ? null : res.error;
-        if ("key_managed_by_secret".equals(err)) {
-            local("§cThe key is managed by a wrangler secret - use §fwrangler secret delete SERAPH_KEY§c first.");
-        } else if ("invalid_key_length".equals(err)) {
-            local("§cKey must be 8-200 characters.");
-        } else if (res != null && res.status == 403) {
-            local("§cUnauthorized. Set a matching §f/cobblify statstoken§c, or provision with §fwrangler secret put SERAPH_KEY§c.");
-        } else {
-            local("§cSeraph key update failed. Check §f/cobblify statsurl§c/§fstatstoken§c, or use §fwrangler secret put SERAPH_KEY§c.");
+            boolean scrubbed = !"seraphkey".equalsIgnoreCase(args[0]) || scrubSeraphKeyHistory();
+            send(sender, "§7Seraph closed its API, so Cobblify no longer uses it. Cheater tags come from Urchin.");
+            if (!scrubbed) send(sender, "§eCould not clear that line from your chat history.");
+        } catch (Throwable ignored) {
         }
     }
 

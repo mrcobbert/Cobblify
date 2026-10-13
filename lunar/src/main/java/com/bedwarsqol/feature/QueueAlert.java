@@ -7,7 +7,6 @@ import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.MojangNameResolver;
 import com.bedwarsqol.stats.ScraperBackendClient;
-import com.bedwarsqol.stats.SeraphTag;
 import com.bedwarsqol.stats.UrchinTag;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.ChatComponentText;
@@ -22,19 +21,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Pregame-queue chat alerts: community cheater tags (Urchin / Seraph) and nicked players, for anyone
+ * Pregame-queue chat alerts: community cheater tags (Urchin) and nicked players, for anyone
  * who <b>types</b> in the Bedwars queue.
  *
  * <p><b>Why chat is the only channel here.</b> Since Hypixel's pregame name obfuscation the queue's tab
- * list carries junk names and stripped skins, so {@link UrchinAlert}/{@link SeraphAlert} — which sweep
- * the tab list and are gated to an active game — can never fire in the queue. What Hypixel never
+ * list carries junk names and stripped skins, so {@link UrchinAlert} — which sweeps
+ * the tab list and is gated to an active game — can never fire in the queue. What Hypixel never
  * obfuscates is what a player <i>types</i>: a {@code "<sender>: message"} line always names its real
  * sender. So this surface is driven purely by received chat, and only by the typed shape
  * ({@link ChatSender#typedChatName}); the queue's join/leave broadcasts are deliberately not parsed.
  *
  * <p><b>Why it does not touch the stats pipeline.</b> Lookups go through the same MANUAL, name-keyed
- * route {@code /cobblify urchin <name>} uses ({@link ScraperBackendClient#getUrchin}/
- * {@link ScraperBackendClient#getSeraph}), off the client thread. Nothing here writes the stats cache
+ * route {@code /cobblify urchin <name>} uses ({@link ScraperBackendClient#getUrchin}), off the client
+ * thread. Nothing here writes the stats cache
  * or the eligibility snapshot, so no badge (tab, nametag) can render from a queue lookup — the
  * identity invariants that gate badges are unchanged.
  *
@@ -42,8 +41,8 @@ import java.util.concurrent.Executors;
  * reports is the same account {@link MojangNameResolver} resolved the typed name to. A missing or
  * disagreeing UUID (a stale name alias, a re-registered name) is dropped silently.
  *
- * <p><b>Settings.</b> There is no queue toggle of its own: tag lines follow Tag Utils' Chat Alert for
- * whichever sources are on, and nick lines follow Nick Utils' Nick Notify ({@link QueueAlertGate}) -
+ * <p><b>Settings.</b> There is no queue toggle of its own: tag lines follow Tag Utils' Chat Alert while
+ * Urchin is on, and nick lines follow Nick Utils' Nick Notify ({@link QueueAlertGate}) -
  * the same switches that cover the lobby and the game.
  *
  * <p><b>Outbound volume.</b> One lookup per distinct name per queue, at most
@@ -95,12 +94,11 @@ public final class QueueAlert {
         final boolean wantTag = QueueAlertGate.wantsTags(cfg);
         final boolean wantNick = QueueAlertGate.wantsNicks(cfg);
         final boolean urchin = cfg.urchinOn();
-        final boolean seraph = cfg.seraphOn();
         final BackendTarget backend = cfg.backendTarget(); // one atomic capture per lookup
         final String url = backend.url;
         final String token = backend.token;
         final String name = sender;
-        EXEC.submit(() -> lookup(name, wantTag, wantNick, urchin, seraph, url, token));
+        EXEC.submit(() -> lookup(name, wantTag, wantNick, urchin, url, token));
     }
 
     /**
@@ -127,7 +125,7 @@ public final class QueueAlert {
 
     /** Off-thread: resolve the name, then (for a real account) ask the enabled providers. */
     private static void lookup(String name, boolean wantTag, boolean wantNick,
-                               boolean urchin, boolean seraph, String url, String token) {
+                               boolean urchin, String url, String token) {
         UUID resolved;
         try {
             resolved = MojangNameResolver.resolve(name);
@@ -142,7 +140,6 @@ public final class QueueAlert {
         if (!wantTag) return;
         if (url == null || url.trim().isEmpty()) return; // no backend configured — nothing to ask
         if (urchin) lookupUrchin(name, resolved, url, token);
-        if (seraph) lookupSeraph(name, resolved, url, token);
     }
 
     private static void lookupUrchin(String name, UUID resolved, String url, String token) {
@@ -159,20 +156,6 @@ public final class QueueAlert {
         scheduled(() -> announceUrchin(name, tag));
     }
 
-    private static void lookupSeraph(String name, UUID resolved, String url, String token) {
-        ScraperBackendClient.SeraphLookup r;
-        try {
-            r = ScraperBackendClient.getSeraph(url, token, name);
-        } catch (Throwable t) {
-            return;
-        }
-        if (r == null || !r.success || r.notFound) return;
-        if (!uuidMatches(resolved, r.uuid)) return; // mismatch => never accuse
-        final SeraphTag tag = SeraphTag.priority(r.tags);
-        if (tag == null) return;
-        scheduled(() -> announceSeraph(name, tag));
-    }
-
     /** Client thread: the same cheater-type-only wording {@link UrchinAlert} uses. */
     private static void announceUrchin(String name, UrchinTag tag) {
         String line = UrchinAlertFormat.formatOrdinary(TeamColors.nameColor(name), name, tag);
@@ -180,15 +163,6 @@ public final class QueueAlert {
         print(line);
         ClientSettings cfg = BedwarsQol.config;
         if (cfg != null && cfg.tagAlertSound) pling();
-    }
-
-    /** Client thread: the same negative-tag-only wording {@link SeraphAlert} uses. */
-    private static void announceSeraph(String name, SeraphTag tag) {
-        String line = SeraphAlertFormat.formatOrdinary(TeamColors.nameColor(name), name, tag);
-        if (line == null) return; // safelist/unknown kinds stay silent
-        print(line);
-        ClientSettings cfg = BedwarsQol.config;
-        if (cfg != null && cfg.tagAlertSound && tag.isCheaterType()) pling();
     }
 
     /** Client thread: the silent nick notice. */

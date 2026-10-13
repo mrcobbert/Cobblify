@@ -19,15 +19,15 @@ public class AlertCopyReasonTest {
     }
 
     @Test
-    public void appendsPrimaryReasonToCopiedSeraphAlert() {
+    public void appendsReasonAttachedToAnExplicitHover() {
         ChatComponentText hover =
                 AlertCopyReason.attach(new ChatComponentText("hover"), "Verified report");
-        ChatComponentText message = ModChat.mark(new ChatComponentText("[Seraph] Dream is blacklisted"));
+        ChatComponentText message = ModChat.mark(new ChatComponentText("[Urchin] Dream is a blatant cheater"));
         message.getChatStyle().setChatHoverEvent(
                 new HoverEvent(HoverEvent.Action.SHOW_TEXT, hover));
 
-        assertEquals("[Seraph] Dream is blacklisted \u2014 Reason: Verified report",
-                AlertCopyReason.appendToPlain(message, "[Seraph] Dream is blacklisted"));
+        assertEquals("[Urchin] Dream is a blatant cheater \u2014 Reason: Verified report",
+                AlertCopyReason.appendToPlain(message, "[Urchin] Dream is a blatant cheater"));
     }
 
     @Test

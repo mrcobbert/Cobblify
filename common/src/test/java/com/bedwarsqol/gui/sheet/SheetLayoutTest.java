@@ -302,7 +302,7 @@ public class SheetLayoutTest {
         assertNotNull(find(f, T.TOGGLE, "tagSound"));
         assertNull(find(f, T.TOGGLE, "tagUrchin"));
         Node more = find(f, T.MORE, "tagUtils");
-        assertEquals("Show all 6 settings in Tag Utils", more.text);
+        assertEquals("Show all 5 settings in Tag Utils", more.text);
         for (Node c : f.chrome) if (c.type == T.CATEGORY) assertFalse(c.on);
         state.showAll.add("tagUtils");
         assertNotNull(find(layout(), T.TOGGLE, "tagUrchin"));

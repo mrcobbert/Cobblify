@@ -18,8 +18,8 @@ public final class CommandCompletion {
 
     /** First-word subcommands, in help order; a bare player name is also accepted but not suggested. */
     public static final String[] SUBCOMMANDS = {
-            "help", "mode", "stats", "statsurl", "statstoken", "urchin", "seraph",
-            "urchinkey", "seraphkey", "session", "heightlimit", "settings",
+            "help", "mode", "stats", "statsurl", "statstoken", "urchin",
+            "urchinkey", "session", "heightlimit", "settings",
     };
 
     private CommandCompletion() {

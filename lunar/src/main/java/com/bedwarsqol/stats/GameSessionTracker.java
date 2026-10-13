@@ -106,7 +106,6 @@ public final class GameSessionTracker {
         // Publish the per-tick eligibility snapshot the background dispatch threads consume.
         ClientSettings cfg = BedwarsQol.config;
         boolean masterOn = cfg != null && cfg.urchinOn();
-        boolean seraphOn = cfg != null && cfg.seraphOn();
         boolean exactHost = false;
         if (mc != null && !mc.isSingleplayer()) {
             ServerData server = mc.getCurrentServerData();
@@ -115,7 +114,7 @@ public final class GameSessionTracker {
             }
         }
         EligibilitySnapshot.publish(new EligibilitySnapshot(
-                id, exactHost, activeGame, masterOn, seraphOn,
+                id, exactHost, activeGame, masterOn,
                 NickUtils.identitySnapshot()));
 
         // Feed the Cobblify lobby-dashboard export (throttled + written off-thread).
