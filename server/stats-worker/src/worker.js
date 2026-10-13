@@ -17,6 +17,7 @@ import {
   noteOrigin429,
   LANE_HIGH,
   LANE_LOW,
+  retiredSeraphFields,
 } from "./scrape.js";
 import {
   urchinAllowed,
@@ -27,13 +28,6 @@ import {
   resultFields,
   handleKeySet,
 } from "./urchin.js";
-import {
-  seraphAllowed,
-  seraphCapable,
-  tagsForUuids as seraphTagsForUuids,
-  resultFields as seraphResultFields,
-  handleKeySet as seraphHandleKeySet,
-} from "./seraph.js";
 import {
   cleanupUpdateEvents,
   handleUpdateDownload,
@@ -130,10 +124,10 @@ export default {
       // index-aligned uuids ("-" = ineligible member, never resolved). Anything off -> pure
       // legacy stream. The uuid alignment is provider-independent, so it is built once and shared.
       const uAllowed = urchinAllowed(auth, request);
-      const sAllowed = seraphAllowed(auth, request);
+      const sOptIn = retiredSeraphOptIn(auth, request);
       let urchinCtx = null;
-      let seraphCtx = null;
-      if (uAllowed || sAllowed) {
+      let retiredSeraph = null;
+      if (uAllowed || sOptIn) {
         const uuidsParam = url.searchParams.get("uuids") || "";
         const rawUuids = uuidsParam ? uuidsParam.split(",").map((s) => s.trim()) : [];
         if (rawUuids.length === names.length) {
@@ -154,12 +148,12 @@ export default {
           // client "resolved unavailable" so it does not misdiagnose authentication.
           if (uuidByName.size > 0) {
             if (uAllowed) urchinCtx = { uuidByName, unavailableOnly: !urchinCapable(env), auth };
-            if (sAllowed) seraphCtx = { uuidByName, unavailableOnly: !seraphCapable(env), auth };
+            if (sOptIn) retiredSeraph = uuidByName;
           }
         }
       }
       // Streams NDJSON (one line per player as it resolves) — not a buffered JSON response.
-      return streamBedwarsBatch(names, env, ctx, urchinCtx, seraphCtx, laneFor(url));
+      return streamBedwarsBatch(names, env, ctx, urchinCtx, retiredSeraph, laneFor(url));
     }
 
     const bedwars = path.match(/^\/bedwars\/([^/]+)$/);
@@ -186,19 +180,10 @@ export default {
           }
         }
       }
-      // Automatic-single Seraph enrichment is likewise UUID-only, gated by its own opt-in header.
-      if (seraphAllowed(auth, request)) {
+      // Seraph is retired: an old client that still opts in gets its final answer, no upstream call.
+      if (retiredSeraphOptIn(auth, request)) {
         const uuid = normalizeUuid(url.searchParams.get("uuid") || "");
-        if (uuid) {
-          if (!seraphCapable(env)) {
-            body.seraphUnavailable = true;
-          } else {
-            try {
-              const results = await seraphTagsForUuids([uuid], env, ctx, auth);
-              Object.assign(body, seraphResultFields(results.get(uuid), uuid));
-            } catch (_) { /* silent degradation */ }
-          }
-        }
+        if (uuid) Object.assign(body, retiredSeraphFields(uuid));
       }
       return jsonResponse(body);
     }
@@ -208,7 +193,7 @@ export default {
     }
 
     if (path === "/seraph/key" && request.method === "POST") {
-      return seraphHandleKeySet(request, env, ctx, auth);
+      return retiredSeraphKey(request, env, auth);
     }
 
     // Manual lookup: the only name-resolving Coral path.
@@ -240,11 +225,11 @@ export default {
       });
     }
 
-    // Manual Seraph lookup: UUID-only. Seraph exposes no name endpoint, so the client resolves
-    // name->uuid before calling; the route otherwise mirrors the urchin manual route's gating/shape.
+    // Retired manual Seraph lookup: same gate and validation as before, a final "unavailable"
+    // answer, no upstream call.
     const seraph = path.match(/^\/seraph\/([^/]+)$/);
     if (seraph && request.method === "GET") {
-      if (!seraphAllowed(auth, request)) {
+      if (!retiredSeraphOptIn(auth, request)) {
         return jsonResponse({ success: false, error: "unauthorized" }, 403);
       }
       const rawUuid = decodeSegment(seraph[1]);
@@ -252,20 +237,7 @@ export default {
       if (!uuid) {
         return jsonResponse({ success: false, error: "invalid_uuid" }, 400);
       }
-      if (!seraphCapable(env)) {
-        return jsonResponse({ success: true, uuid, tags: [], notFound: false, unavailable: true });
-      }
-      const results = await seraphTagsForUuids([uuid], env, ctx, auth);
-      const r = results.get(uuid) || { state: "unavailable", tags: [] };
-      return jsonResponse({
-        success: true,
-        uuid,
-        tags: (r.tags || []).map(({ kind, subtype, reason, addedOn, verified }) => ({
-          kind, ...(subtype ? { subtype } : {}), reason, addedOn, ...(verified ? { verified: true } : {}),
-        })),
-        notFound: r.state === "notfound",
-        unavailable: r.state === "unavailable",
-      });
+      return jsonResponse({ success: true, uuid, tags: [], notFound: false, unavailable: true });
     }
 
     const test = path.match(/^\/test\/([^/]+)$/);
@@ -281,6 +253,44 @@ export default {
     return new Response("Not found. Try GET /bedwars/PlayerName", { status: 404 });
   },
 };
+
+// ---- Seraph (retired) ---------------------------------------------------------------------
+// Seraph's public API shut down in October 2026 (502 on every route); nothing here calls it.
+// Clients up to 0.18 still send `X-BWQOL-Seraph: 1` for Seraph-eligible players and may call
+// /seraph/<uuid> and /seraph/key. They treat `seraphUnavailable` (with the `seraphUuid` the batch
+// merge keys on) as a concluded lookup and never ask again for that player, whereas a missing field
+// keeps the player pending and re-asked every 60 s. So every opted-in lookup gets that final answer.
+
+/** The old Seraph gate, unchanged: an authenticated identity that sent the opt-in header. */
+function retiredSeraphOptIn(auth, request) {
+  return Boolean(auth && auth.identity && request.headers.get("X-BWQOL-Seraph") === "1");
+}
+
+/**
+ * POST /seraph/key. A clear deletes whatever this identity once stored and reports the truth; a set
+ * is refused (410) and stores nothing. Never echoes the key.
+ */
+async function retiredSeraphKey(request, env, auth) {
+  if (!(auth && auth.identity)) return jsonResponse({ success: false, error: "unauthorized" }, 403);
+  let body;
+  try { body = await request.json(); } catch (_) {
+    return jsonResponse({ success: false, error: "bad_request" }, 400);
+  }
+  if (!body || typeof body !== "object" || !Object.prototype.hasOwnProperty.call(body, "key")) {
+    return jsonResponse({ success: false, error: "bad_request" }, 400);
+  }
+  if (body.key !== null) return jsonResponse({ success: false, error: "seraph_retired" }, 410);
+  if (env && env.STATS_KV) {
+    try {
+      for (const k of ["key", "backoff", "disabled"]) {
+        await env.STATS_KV.delete(`seraph:cfg:${k}:${auth.identity}`);
+      }
+    } catch (_) {
+      return jsonResponse({ success: false, error: "kv_write_failed" }, 503);
+    }
+  }
+  return jsonResponse({ success: true });
+}
 
 /**
  * Gate the data endpoints behind the STATS_TOKEN secret: a comma-separated token list

@@ -1,7 +1,8 @@
 # Cobblify stats worker
 
-Cloudflare Worker that scrapes Hypixel stats and proxies Urchin/Seraph cheater
-tags for the mod. Two deployment configs:
+Cloudflare Worker that scrapes Hypixel stats and proxies Urchin cheater tags
+for the mod. (Seraph was a second tag source until its API shut down in October
+2026; see "Seraph (retired)" below.) Two deployment configs:
 
 - `wrangler.toml` - self-hosters. Deploy with `npm run deploy`. No KV binding,
   so provider tags resolve unavailable; stats work.
@@ -41,11 +42,10 @@ entry per user:
   provider routes fail closed. A secret with entries but **zero valid ones**
   means auth was intended and misconfigured: every authenticated route is
   denied (fail closed), never fallen open.
-- Owner-only behavior: the `URCHIN_KEY`/`SERAPH_KEY` env secrets, when set,
-  manage the owner identity's provider-key slot only. Every other identity
-  manages its own slot via `POST /urchin/key` / `/seraph/key`, reachable only
-  through the owner-facing `/cobblify urchinkey|seraphkey` commands (there is no
-  in-game UI for provider keys).
+- Owner-only behavior: the `URCHIN_KEY` env secret, when set, manages the
+  owner identity's provider-key slot only. Every other identity manages its own
+  slot via `POST /urchin/key`, reachable only through the owner-facing
+  `/cobblify urchinkey` command (there is no in-game UI for provider keys).
 
 Each token maps to an **identity**: the first 16 hex chars of SHA-256(token).
 All per-user provider state (stored key, backoff, disabled flag, breaker) is
@@ -70,19 +70,43 @@ and redeploy. The revoked token stops authenticating; everyone else's identity
 Provider state became per-identity; nothing reads the legacy unsuffixed KV
 entries anymore. After the first deploy of the multi-token Worker:
 
-1. Re-paste your Urchin and Seraph keys once (`/cobblify urchinkey` /
-   `/cobblify seraphkey`).
-2. Delete the six legacy unsuffixed KV entries (use the namespace id from
+1. Re-paste your Urchin key once (`/cobblify urchinkey`).
+2. Delete the three legacy unsuffixed KV entries (use the namespace id from
    `wrangler.owner.toml`):
 
    ```sh
    wrangler kv key delete --namespace-id <id> "urchin:cfg:key"
    wrangler kv key delete --namespace-id <id> "urchin:cfg:backoff"
    wrangler kv key delete --namespace-id <id> "urchin:cfg:disabled"
-   wrangler kv key delete --namespace-id <id> "seraph:cfg:key"
-   wrangler kv key delete --namespace-id <id> "seraph:cfg:backoff"
-   wrangler kv key delete --namespace-id <id> "seraph:cfg:disabled"
    ```
+
+## Seraph (retired)
+
+Seraph's public API (the second cheater-tag source) shut down in October 2026
+and the Worker no longer calls it. Mod and launcher builds from 0.18 on never
+ask for Seraph. Older clients (0.16.x, 0.17, 0.18 dev builds) still send the
+`X-BWQOL-Seraph: 1` opt-in header and may call `/seraph/<uuid>` and
+`/seraph/key`; the Worker answers them without any upstream call, in the shape
+they treat as final, so they stop asking:
+
+- `/bedwars/<name>?uuid=<uuid>` and `/bedwars/batch?...&uuids=...`: each
+  opted-in player gets `seraphUuid` + `seraphUnavailable: true` inline on its
+  stats line (no follow-up lines). Without the uuid the batch client drops the
+  answer and would re-ask every 60 s.
+- `GET /seraph/<uuid>`: `{success: true, uuid, tags: [], notFound: false,
+  unavailable: true}` (same identity + opt-in gate and uuid validation as before).
+- `POST /seraph/key`: `{key: null}` deletes the caller's old `seraph:cfg:*`
+  entries and answers `{success: true}` (503 `kv_write_failed` if a delete
+  fails); any key is refused with 410 `seraph_retired` and nothing is stored.
+
+`test/seraph-retired.test.mjs` pins all of this. Owner clean-up, once, after
+deploying (neither is needed for correctness):
+
+```sh
+npx wrangler secret delete SERAPH_KEY -c wrangler.owner.toml
+npx wrangler kv key list --namespace-id <id> --prefix "seraph:" -c wrangler.owner.toml
+# then `wrangler kv key delete --namespace-id <id> "<name>"` for each listed entry
+```
 
 ## Attribution
 
@@ -94,8 +118,7 @@ token). To find the KV identity suffix for a token:
 node -e "crypto.subtle.digest('SHA-256',new TextEncoder().encode(process.argv[1])).then(b=>console.log(Buffer.from(b).toString('hex').slice(0,16)))" <token>
 ```
 
-That printed value is the `<identity>` suffix on the `urchin:cfg:*`/
-`seraph:cfg:*` KV entries.
+That printed value is the `<identity>` suffix on the `urchin:cfg:*` KV entries.
 
 ## Owner packaging flow
 
