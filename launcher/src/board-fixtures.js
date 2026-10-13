@@ -13,7 +13,7 @@ const RANK_CODES = {
   "[VIP+]": "§a[VIP§6+§a]",
   "[VIP]": "§a[VIP]",
 };
-const chip = (code, color, label, positive = false) => ({ code, color, label, positive });
+const chip = (code, color, label) => ({ code, color, label, positive: false });
 const tagged = (chips, cheater) => ({ chips, badge: chips[0] ?? null, cheater });
 const pp = (o) =>
   Object.assign(
@@ -32,7 +32,6 @@ const pp = (o) =>
       cheater: false,
       badge: null,
       chips: [],
-      seraphThreat: -1,
     },
     o,
   );
@@ -42,15 +41,15 @@ const P = {
   duo: pp({ name: "duo_diff", rank: "[VIP+]", fkdrTier: 2, fkdr: 7.2, wlr: 4.9, finalKills: 19000, kd: 3.9 }),
   third: pp({ name: "third_wheeler", rank: "[MVP]", fkdrTier: 1, fkdr: 3.1, wlr: 2.2, finalKills: 6400, kd: 2.4 }),
   clutch: pp({ name: "clutch_or_kick", rank: "[VIP]", fkdrTier: 0, fkdr: 1.8, wlr: 1.1, finalKills: 2100, kd: 1.4 }),
-  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdrTier: 3, fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, seraphThreat: 4, ...tagged([chip("BC", "§6", "Blatant Cheater"), chip("BL", "§4", "Blacklisted (verified)")], true) }),
+  shadow: pp({ name: "xXShadowSlayerXx", rank: "[MVP++]", fkdrTier: 3, fkdr: 22.7, wlr: 14.0, finalKills: 71200, kd: 8.9, ...tagged([chip("BC", "§6", "Blatant Cheater"), chip("S", "§4", "Sniper")], true) }),
   wallhax: pp({ name: "wallhax_", rank: "[VIP]", fkdrTier: 3, fkdr: 19.1, wlr: 11.4, finalKills: 60300, kd: 7.7, ...tagged([chip("CC", "§6", "Closet Cheater")], true) }),
-  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdrTier: 3, fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7, seraphThreat: 2 }),
+  tenko: pp({ name: "Tenko", rank: "[MVP++]", fkdrTier: 3, fkdr: 14.2, wlr: 9.1, finalKills: 48210, kd: 6.7 }),
   zenith: pp({ name: "ok_zenith", rank: "[MVP+]", fkdrTier: 2, fkdr: 8.4, wlr: 5.2, finalKills: 22140, kd: 4.1 }),
   prot: pp({ name: "Prot_IV_Diamond", rank: "[MVP+]", fkdrTier: 2, fkdr: 6.8, wlr: 4.4, finalKills: 17700, kd: 3.6 }),
   frost: pp({ name: "GodBridgeGod", nicked: true, realName: "Frostbyte_", rank: "[MVP]", fkdrTier: 1, fkdr: 4.6, wlr: 3.1, finalKills: 9800, kd: 2.8 }),
   moss: pp({ name: "mossling", rank: "[MVP]", fkdrTier: 1, fkdr: 3.3, wlr: 2.0, finalKills: 5600, kd: 2.2 }),
   ogre: pp({ name: "TheObsidianOgre", rank: "[MVP]", fkdrTier: 1, fkdr: 2.9, wlr: 1.8, finalKills: 4900, kd: 2.0 }),
-  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdrTier: 1, fkdr: 2.1, ...tagged([chip("SL", "§a", "Safelisted", true)], false), wlr: 1.4, finalKills: 3120, kd: 1.6 }),
+  aqua: pp({ name: "aqua_gg", rank: "[VIP+]", fkdrTier: 1, fkdr: 2.1, wlr: 1.4, finalKills: 3120, kd: 1.6 }),
   virus: pp({ name: "notavirus_exe", rank: "[VIP+]", fkdrTier: 0, fkdr: 1.6, wlr: 1.2, finalKills: 2440, kd: 1.3, ...tagged([chip("S", "§4", "Sniper")], false) }),
   bread: pp({ name: "Bread_Enjoyer", rank: "[VIP]", fkdrTier: 0, fkdr: 1.05, wlr: 0.9, finalKills: 880, kd: 1.1 }),
   cool: pp({ name: "coolkid2013", rank: "", fkdrTier: 0, fkdr: 0.42, wlr: 0.5, finalKills: 120, kd: 0.7 }),

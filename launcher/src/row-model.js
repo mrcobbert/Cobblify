@@ -69,9 +69,6 @@ export function rowChips(p) {
     if (typeof p?.mode === "string" && p.mode && p.mode !== "Overall") {
       chips.push({ cls: "mode", text: `${p.mode} stats` });
     }
-    if (Number.isInteger(p?.seraphThreat) && p.seraphThreat >= 0) {
-      chips.push({ cls: "neutral", text: `threat ${p.seraphThreat}` });
-    }
   }
   return chips;
 }
