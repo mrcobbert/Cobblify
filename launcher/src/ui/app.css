@@ -458,3 +458,9 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
    accent is set. The island's wool and the settings sheet keep the accent. */
 .hero,.caret,.mrow .ck,.hdr .key.gear .gdot{--acc:var(--key);--acc-hl:var(--key-hl);--acc-ln:var(--key-ln);--acc-dp:var(--key-dp);
   --acc-rim:var(--key-rim);--acc-sh:var(--key-sh);--acc-sh2:var(--key-sh2);--acc-on:var(--key-on);--acc-tsh:transparent}
+
+/* ---------- home in two halves (the user, 2026-10-13) ---------- */
+/* the left half holds Play's group, centred across it at the old column's content width; the island centres in the
+   right half (placeHome) */
+.col{width:50%;align-items:center;padding-left:calc(12*var(--su))}
+.col>.grp{width:calc(157*var(--su));max-width:100%}

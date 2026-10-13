@@ -485,19 +485,20 @@ export function createApp(app, actions) {
   }
   /* The slot is the whole window, header row included (the home header is bare), behind the column. Scales stay
    * whole (device px per art px), so the island keeps the game's pixel grid; at 900x520 it is 2x. Placed by the
-   * island as drawn at rest: the same margin above, below and to the right. */
+   * island as drawn at rest: the same margin above and below, centred across the right half. */
   function placeHome(i3, art) {
     const d = dpr(), su = suPx(), ar = app.getBoundingClientRect(), hdr = $(".hdr"), col = $(".col");
     const hh = hdr ? hdr.getBoundingClientRect().bottom - ar.top : 0, colR = col ? col.getBoundingClientRect().right - ar.left : 0;
     const W = app.clientWidth, Ht = app.clientHeight, pad = 8 * su;
-    const bx = I3.boxSize(6);
-    const k = Math.max(1, Math.min(8, Math.floor(((Ht - 2 * pad) * d) / (bx.h - HEAD)), Math.floor(((W - 2 * pad) * d) / bx.w)));
+    const bx = I3.boxSize(6), sw = I3.sweptBox(6), rb = I3.restBox(6, (FRONT * Math.PI) / 180);
+    const k = Math.max(1, Math.min(8, Math.floor((0.85 * (Ht - 2 * pad) * d) / (bx.h - HEAD)), Math.floor(((W / 2 - 2 * pad) * d) / (rb.maxX - rb.minX))));
     const cw = (bx.w * k) / d, ch = (bx.h * k) / d;
     const snap = (v) => Math.round(v * d) / d;
-    const sw = I3.sweptBox(6), rb = I3.restBox(6, (FRONT * Math.PI) / 180), u = k / d;
+    const u = k / d;
     const visW = (rb.maxX - rb.minX) * u, visH = (rb.maxY - rb.minY) * u, offX = (rb.minX - sw.minX) * u, offY = (rb.minY - sw.minY) * u;
     const g = (Ht - visH) / 2;
-    const left = snap(Math.max(pad, W - g - visW) - offX), top = snap(g - offY);
+    /* centred in the right half, sized to 85% of the height (the user, 2026-10-13) */
+    const left = snap((3 * W) / 4 - visW / 2 - offX), top = snap(g - offY);
     art.style.top = -hh + "px";
     const key = ["home", k, d].join("|");
     if (!fitCache || fitCache.key !== key) { interruptIntro(); fitCache = { key, r: i3.fit((bx.w * k + 0.5) / d, (bx.h * k + 0.5) / d) }; }
