@@ -142,26 +142,27 @@ body {
 .stage .panel { position: relative; }
 .stage .sb { display: grid; padding: 0 calc(2 * var(--bp)); column-gap: 0; align-items: start; overflow: clip; }
 .stage .sb > * { min-width: 0; }
-/* letter | team | avg | flag | rank name | FKDR | WLR | Finals | K/D | notes. Stat tracks have fixed minimums so a
-   resolving row never moves a column; the name track is the roster's longest name, never cut. The fill (--e --g --gs
-   --gf --gn --gg, whole GUI px) is set once per window size and context, never on a data tick. */
+/* letter | team | avg | flag | rank name | notes | FKDR | WLR | Finals | K/D. The notes take the slack, so the stats sit
+   against the board's right edge (the user, 2026-10-13). Stat tracks have fixed minimums so a resolving row never moves
+   a column; the name track is the roster's longest name, never cut. The fill (--e --g --gs --gf --gn --gg, whole GUI
+   px) is set once per window size and context, never on a data tick. */
 .stage .sb {
   grid-template-columns: max-content max-content max-content minmax(calc((22 + var(--gg)) * var(--bp)), max-content) max-content
-    minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content) minmax(calc((38 + var(--gs)) * var(--bp)), max-content)
-    minmax(calc((26 + var(--gs)) * var(--bp)), max-content) minmax(0, 1fr);
+    minmax(0, 1fr) minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content)
+    minmax(calc((38 + var(--gs)) * var(--bp)), max-content) minmax(calc((26 + var(--gs)) * var(--bp)), max-content);
 }
 .stage .sb.list {
   grid-template-columns: 0 0 0 minmax(calc(16 * var(--bp)), max-content) max-content
-    minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content) minmax(calc((38 + var(--gs)) * var(--bp)), max-content)
-    minmax(calc((26 + var(--gs)) * var(--bp)), max-content) minmax(0, 1fr);
+    minmax(0, 1fr) minmax(calc((39 + var(--gf)) * var(--bp)), max-content) minmax(calc((32 + var(--gs)) * var(--bp)), max-content)
+    minmax(calc((38 + var(--gs)) * var(--bp)), max-content) minmax(calc((26 + var(--gs)) * var(--bp)), max-content);
 }
 .stage .n1 {
   grid-template-columns: max-content max-content max-content minmax(calc(24 * var(--bp)), max-content) max-content
-    minmax(calc(39 * var(--bp)), max-content) minmax(calc(32 * var(--bp)), max-content) 0 0 minmax(0, 1fr);
+    minmax(0, 1fr) minmax(calc(39 * var(--bp)), max-content) minmax(calc(32 * var(--bp)), max-content) 0 0;
 }
 .stage .n1.n2 {
   grid-template-columns: max-content max-content max-content minmax(calc(24 * var(--bp)), max-content) max-content
-    minmax(calc(39 * var(--bp)), max-content) 0 0 0 minmax(0, 1fr);
+    minmax(0, 1fr) minmax(calc(39 * var(--bp)), max-content) 0 0 0;
 }
 .stage .c { height: calc(9 * var(--bp)); }
 /* column spacing in GUI px (a space is 4, a digit 6); the fill widens the gaps between columns, never inside one */

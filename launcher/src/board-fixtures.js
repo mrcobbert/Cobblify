@@ -124,6 +124,13 @@ export const PREVIEW_LOBBY = {
     yourParty: PREVIEW_PARTY4,
     players: [P.shadow, P.wallhax, P.tenko, P.zenith, P.prot, P.frost, P.moss, P.ogre, P.aqua, P.virus, P.bread, P.cool, P.nick, P.grandpa, P.lag, P.sniped],
   }),
+  queue4v4: previewSnap("QUEUE", {
+    seq: 1014,
+    mode: "4v4",
+    partyCount: 2,
+    yourParty: PREVIEW_PARTY4,
+    players: [P.shadow, P.wallhax, P.tenko, P.zenith],
+  }),
   gameSolo: previewSnap("GAME", {
     seq: 1020,
     mode: "Solos",

@@ -35,8 +35,9 @@ export function subHTML(s) {
 }
 
 // ---------- grid assembly: every cell is placed on an explicit row; rows have explicit heights ----------
-// columns: 1 letter, 2 team, 3 avg, 4 flag, 5 name, 6 FKDR, 7 WLR, 8 Finals, 9 K/D, 10 notes
-const COL = { L: 1, TN: 2, AV: 3, FL: 4, NM: 5, FK: 6, WL: 7, FN: 8, KD: 9, NT: 10, END: 11 };
+// columns: 1 letter, 2 team, 3 avg, 4 flag, 5 name, 6 notes, 7 FKDR, 8 WLR, 9 Finals, 10 K/D (the user, 2026-10-13:
+// the notes follow the name and take the slack, so K/D ends at the board's right edge)
+const COL = { L: 1, TN: 2, AV: 3, FL: 4, NM: 5, NT: 6, FK: 7, WL: 8, FN: 9, KD: 10, END: 11 };
 /** Row heights: a number is fixed GUI px; L a text line (pitch 9 + e), T the gap between teams, P before a section. */
 const ROWH = { L: "(9 + var(--e))", T: "(3 + var(--g))", P: "(6 + var(--g))" };
 const PITCH = "(9 + var(--e))*var(--bp)";
@@ -156,7 +157,7 @@ function playerRow(g, r, gutter) {
   g.put(line, COL.NM, COL.NM + 1, `pl pr${rc}`, `<span class="strike">${rankHTML(r)}<span class="nm">${esc(r.name)}</span></span>`);
   statCells(g, line, r, rc);
   const tip = r.chips.filter((c) => !c.kind.startsWith("badge")).map((c) => c.text).join(" · ");
-  g.put(line, COL.NT, COL.END, `nt pw${rc}`, notesHTML(r), tip ? ` title="${esc(tip)}"` : "");
+  g.put(line, COL.NT, COL.NT + 1, `nt pw${rc}`, notesHTML(r), tip ? ` title="${esc(tip)}"` : "");
   return line;
 }
 
@@ -362,7 +363,10 @@ export function createBoard({ stage, board, title, joining, win = window }) {
   function place(m, bp, aw, vars) {
     const f = frameNow();
     const d = dpr();
-    const w = Math.min(aw, snapPx(m.full * bp, d));
+    // the board spans the window: its text runs from the wordmark's 11 su line to the header title's right edge (11 su
+    // in), never narrower than its own content
+    const span = f.W - 2 * (11 * f.su - 2 * bp);
+    const w = Math.min(aw, snapPx(Math.max(span, m.full * bp), d));
     const ph = snapPx(m.h * bp, d);
     const box = boardBox(f, w, ph, bp, d);
     board.style.left = box.x + "px";
