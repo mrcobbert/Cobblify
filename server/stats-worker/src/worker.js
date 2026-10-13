@@ -282,7 +282,8 @@ async function retiredSeraphKey(request, env, auth) {
   if (body.key !== null) return jsonResponse({ success: false, error: "seraph_retired" }, 410);
   if (env && env.STATS_KV) {
     try {
-      for (const k of ["key", "backoff", "disabled"]) {
+      // Auxiliary state first, the key last: a failure answer then always means the key is still there.
+      for (const k of ["backoff", "disabled", "key"]) {
         await env.STATS_KV.delete(`seraph:cfg:${k}:${auth.identity}`);
       }
     } catch (_) {

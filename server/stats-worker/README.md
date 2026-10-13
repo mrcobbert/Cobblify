@@ -83,8 +83,8 @@ entries anymore. After the first deploy of the multi-token Worker:
 ## Seraph (retired)
 
 Seraph's public API (the second cheater-tag source) shut down in October 2026
-and the Worker no longer calls it. Mod and launcher builds from 0.18 on never
-ask for Seraph. Older clients (0.16.x, 0.17, 0.18 dev builds) still send the
+and the Worker no longer calls it. Mod builds with the removal never ask for
+Seraph. Older clients (0.16.x, 0.17, and 0.18 dev builds before it) still send the
 `X-BWQOL-Seraph: 1` opt-in header and may call `/seraph/<uuid>` and
 `/seraph/key`; the Worker answers them without any upstream call, in the shape
 they treat as final, so they stop asking:

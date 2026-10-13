@@ -441,7 +441,8 @@ public final class LobbyExport {
         public List<PlayerCard.Chip> chips = new ArrayList<PlayerCard.Chip>();
         /**
          * Retired with Seraph (its API shut down, October 2026): always -1. Kept in the contract
-         * because launchers up to 0.18.0 reject a v2 player without a safe-int {@code seraphThreat};
+         * because launchers built before the Seraph removal (0.16.x, 0.17, early 0.18 dev builds)
+         * reject a v2 player without a safe-int {@code seraphThreat};
          * drop it once no supported launcher requires it.
          */
         public int seraphThreat = -1;

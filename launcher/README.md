@@ -454,7 +454,7 @@ tests, so the three copies of the shape cannot drift. A well-formed v1 file from
 still binds the session but the dashboard shows "Update Cobblify to use the overlay" instead of a
 roster.
 `seraphThreat` is retired with Seraph (its API shut down in October 2026): mod jars keep writing
-`-1` because launchers up to 0.18.0 require the key, while the launcher accepts a player without it
+`-1` because launchers built before the removal require the key, while the launcher accepts a player without it
 (fixture `valid/no-seraph-threat.json`) and never draws it.
 
 **The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a

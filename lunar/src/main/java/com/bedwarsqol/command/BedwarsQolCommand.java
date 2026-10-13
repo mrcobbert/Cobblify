@@ -143,7 +143,7 @@ public class BedwarsQolCommand extends Command {
         send("§f/cobblify statsurl <url> §7— set the stats backend");
         send("§f/cobblify statstoken <token> §7— set the backend token");
         send("§f/cobblify urchin <player> §7— community Urchin tags for a player");
-                send("§f/cobblify session [reset] §7— this session's Bedwars tally");
+        send("§f/cobblify session [reset] §7— this session's Bedwars tally");
         send("§f/cobblify heightlimit §7— current map, build limit and how it was determined");
         send("§f/cobblify help §7— this page");
         send("§7§m------------------------------");
