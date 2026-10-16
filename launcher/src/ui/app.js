@@ -247,7 +247,8 @@ export function createApp(app, actions) {
   }
 
   /* ---------- settings sheet (the in-game RShift sheet) ---------- */
-  const row = (id, label, ctl, extra = "") => `<div class="srow" data-row="${id}"><div class="lbl">${T(label, "sh")}${extra}</div><div class="ctl">${ctl}</div></div>`;
+  /* `sub`: a line of sub-text under the label */
+  const row = (id, label, ctl, extra = "", sub = "") => `<div class="srow" data-row="${id}"><div class="lbl">${T(label, "sh")}${extra}</div><div class="ctl">${ctl}</div>${sub ? T(sub, "d") : ""}</div>`;
   const tog = (key, label, st) => `<button class="tog" role="switch" aria-checked="${!!st.on}" aria-label="${esc(label)}" data-act="tog" data-key="${key}"${st.disabled ? " disabled" : ""}><span class="tf"></span><span class="ti"></span><span class="to"></span><span class="tk"></span></button>`;
   const keyBtn = (k, extra = "") => `<button class="key" data-act="${k.act}"${k.action ? ` data-action="${esc(k.action)}"` : ""}${extra}${k.disabled ? " disabled" : ""}>${T(k.label, "sh")}</button>`;
   function sheetRows() {
@@ -258,7 +259,8 @@ export function createApp(app, actions) {
       s.lunar ? row("lunar", "Lunar Client", keyBtn(s.lunar)) : "",
       s.prism ? row("prism", "Prism Launcher", keyBtn(s.prism)) : "",
     ].join("");
-    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}</section>
+    const quit = row("quit", "Quit Lunar after launch", tog("quit", "Quit Lunar after launch", s.quitLunar), "", "Close Lunar's launcher once Cobblify loads in game");
+    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}${quit}</section>
       <section class="sec">${row("auto", "Auto-update", tog("auto", "Auto-update", s.autoUpdate))}${row("dev", "Dev builds", tog("dev", "Dev builds", s.dev))}${verRow}</section>
       ${clients ? `<section class="sec">${clients}</section>` : ""}
       <p class="read disclaim">Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.</p>`;
@@ -595,7 +597,7 @@ export function createApp(app, actions) {
     else if (a === "tog") {
       const on = b.getAttribute("aria-checked") !== "true";
       b.setAttribute("aria-checked", String(on));
-      ({ overlay: actions.setOverlay, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
+      ({ overlay: actions.setOverlay, quit: actions.setQuitLunar, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
     }
     else if (a === "repair-lunar") { closeSheet({ quiet: true }); actions.repairLunar(); }
     else if (a === "sheet-add") { closeSheet({ quiet: true }); if (S?.prism?.add) actions.add(S.prism.add); }

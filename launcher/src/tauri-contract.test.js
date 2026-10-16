@@ -12,6 +12,7 @@ import {
   setAutoUpdate,
   setUpdateChannel,
   setUseExternalOverlay,
+  setQuitLunarAfterLaunch,
   checkForUpdate,
   updatePreferences,
   updateStatus,
@@ -53,6 +54,23 @@ test("invoke uses exact wire keys", async () => {
   assert.equal(calls[5].args, undefined);
   assert.equal(calls[6].cmd, "launch_progress");
   assert.equal(calls[6].args, undefined);
+});
+
+test("Quit Lunar after launch: its own setter, no launch argument, the preferences view back", async () => {
+  assert.equal(CMD.setQuitLunarAfterLaunch, "set_quit_lunar_after_launch");
+  const calls = [];
+  const invoke = (cmd, args) => {
+    calls.push({ cmd, args });
+    return Promise.resolve({ useExternalOverlay: true, quitLunarAfterLaunch: args.enabled, health: "valid" });
+  };
+  const view = await setQuitLunarAfterLaunch(invoke, true);
+  assert.deepEqual(calls, [{ cmd: "set_quit_lunar_after_launch", args: { enabled: true } }]);
+  assert.equal(view.quitLunarAfterLaunch, true);
+  // The launch commands carry only the External Overlay check: the backend reads this
+  // setting itself, once Cobblify has loaded.
+  calls.length = 0;
+  await launchLunar(invoke, true);
+  assert.deepEqual(calls[0].args, { expectedUseExternalOverlay: true });
 });
 
 test("no auto-join anywhere on the wire: no setter, no launch argument", () => {

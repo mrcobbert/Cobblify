@@ -568,7 +568,7 @@ test("an uncertain overlay save is repaired only with the same value", async () 
 
 test("the controller has no auto-join surface", () => {
   const ctrl = createLaunchController(fakeInvoke(baseHandlers));
-  assert.deepEqual(Object.keys(ctrl).filter((k) => /^set[A-Z]/.test(k)), ["setOverlay"]);
+  assert.deepEqual(Object.keys(ctrl).filter((k) => /^set[A-Z]/.test(k)), ["setOverlay", "setQuitLunar"]);
   const st = ctrl.getState();
   for (const key of Object.keys(st)) assert.doesNotMatch(key, /auto.?join/i);
 });
@@ -607,6 +607,137 @@ test("saves are rejected at the controller during launch and active session", as
   await ctrl.setOverlay(false);
   assert.equal(saves, 0);
   assert.equal(ctrl.getState().optimisticOverlay, true);
+});
+
+// ── Quit Lunar after launch ─────────────────────────────────────────────────
+
+test("Quit Lunar after launch reads off unless the preferences view says on", async () => {
+  const ctrl = createLaunchController(fakeInvoke(twoKeyHandlers));
+  assert.equal(ctrl.getState().quitLunar, false, "off before the first read");
+  await ctrl.refreshPreferences();
+  assert.equal(ctrl.getState().quitLunar, false, "a view without the key (an older backend) is off");
+  const on = createLaunchController(
+    fakeInvoke({
+      ...baseHandlers,
+      [CMD.launchPreferences]: () => ({ useExternalOverlay: true, quitLunarAfterLaunch: true, health: "valid" }),
+    }),
+  );
+  await on.refreshPreferences();
+  assert.equal(on.getState().quitLunar, true);
+  // A session reset resyncs it like the overlay.
+  on.resetLaunchSession({ useExternalOverlay: true, quitLunarAfterLaunch: false, health: "valid" });
+  assert.equal(on.getState().quitLunar, false);
+});
+
+test("Quit Lunar after launch saves through its own command and shows what the file holds", async () => {
+  const calls = [];
+  let stored = false;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.setQuitLunarAfterLaunch]: ({ enabled }) => {
+      calls.push(enabled);
+      stored = enabled;
+      return { useExternalOverlay: true, quitLunarAfterLaunch: stored, health: "valid" };
+    },
+  });
+  const states = [];
+  const ctrl = createLaunchController(invoke, { onChange: () => states.push(ctrl.getState()) });
+  await ctrl.refreshPreferences();
+  await ctrl.setQuitLunar(true);
+  assert.deepEqual(calls, [true]);
+  assert.ok(states.some((s) => s.quitLunar === true && s.quitLunarSaving === true), "the switch keeps the click while saving");
+  const st = ctrl.getState();
+  assert.equal(st.quitLunar, true);
+  assert.equal(st.quitLunarSaving, false);
+  // It is not the overlay: no overlay save, no overlay state, Launch never waits on it.
+  assert.equal(st.optimisticOverlay, true);
+  assert.equal(st.prefSaving, false);
+  assert.equal(st.prefError, null);
+  await ctrl.setQuitLunar(false);
+  assert.deepEqual(calls, [true, false]);
+  assert.equal(ctrl.getState().quitLunar, false);
+});
+
+test("a Quit Lunar save that did not land shows the old value again", async () => {
+  // The backend answers with the file's value: a failed write still says off.
+  const unchanged = createLaunchController(
+    fakeInvoke({
+      ...twoKeyHandlers,
+      [CMD.setQuitLunarAfterLaunch]: () => ({ useExternalOverlay: true, quitLunarAfterLaunch: false, health: "valid" }),
+    }),
+  );
+  await unchanged.refreshPreferences();
+  await unchanged.setQuitLunar(true);
+  assert.equal(unchanged.getState().quitLunar, false);
+  // The command itself failed: back to the previous value.
+  const thrown = createLaunchController(
+    fakeInvoke({
+      ...twoKeyHandlers,
+      [CMD.setQuitLunarAfterLaunch]: () => {
+        throw new Error("ParentNotDirectory");
+      },
+    }),
+  );
+  await thrown.refreshPreferences();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await thrown.setQuitLunar(true);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(thrown.getState().quitLunar, false);
+  assert.equal(thrown.getState().quitLunarSaving, false);
+});
+
+test("a preference read that began before a Quit Lunar save keeps the save's value and still syncs the rest", async () => {
+  let resolveRead;
+  const invoke = fakeInvoke({
+    ...baseHandlers,
+    [CMD.launchPreferences]: () => new Promise((resolve) => (resolveRead = resolve)),
+    [CMD.setQuitLunarAfterLaunch]: () => ({ useExternalOverlay: false, quitLunarAfterLaunch: true, health: "valid" }),
+  });
+  const ctrl = createLaunchController(invoke);
+  const reading = ctrl.refreshPreferences();
+  await ctrl.setQuitLunar(true);
+  // The read saw the file before the save.
+  resolveRead({ useExternalOverlay: false, quitLunarAfterLaunch: false, health: "valid" });
+  await reading;
+  const st = ctrl.getState();
+  assert.equal(st.quitLunar, true, "the save is newer than the read");
+  assert.equal(st.confirmedOverlay, false, "the read still syncs the overlay");
+  assert.equal(st.prefHealth, "valid");
+});
+
+test("Quit Lunar saves are rejected during a launch and an active session", async () => {
+  let saves = 0;
+  let resolveLaunch;
+  const invoke = fakeInvoke({
+    ...twoKeyHandlers,
+    [CMD.setQuitLunarAfterLaunch]: () => {
+      saves += 1;
+      return { useExternalOverlay: true, quitLunarAfterLaunch: true, health: "valid" };
+    },
+    [CMD.launchLunar]: () =>
+      new Promise((resolve) => {
+        resolveLaunch = () =>
+          resolve({
+            status: "launched",
+            generation: 3,
+            outcome: { useExternalOverlay: true, action: "game_launch_requested" },
+          });
+      }),
+  });
+  const ctrl = createLaunchController(invoke);
+  await ctrl.refreshPreferences();
+  const launching = ctrl.launch("lunar", { onLaunchReply() {}, onProgressStart() {} });
+  await ctrl.setQuitLunar(true);
+  assert.equal(saves, 0);
+  resolveLaunch();
+  await launching;
+  await ctrl.setQuitLunar(true);
+  assert.equal(saves, 0);
+  assert.equal(ctrl.getState().quitLunar, false);
 });
 
 test("launch_cooldown surfaces the backend message on the rejection surface", async () => {
