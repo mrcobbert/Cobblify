@@ -257,9 +257,24 @@ function png(img) {
   ihdr.writeUInt32BE(img.w, 0); ihdr.writeUInt32BE(img.h, 4); ihdr[8] = 8; ihdr[9] = 6;
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw, { level: 9 })), chunk("IEND", Buffer.alloc(0))]);
 }
-/** ICO with PNG entries (Windows Vista and later read them at every size). */
+/** A 32-bit bottom-up DIB with its AND mask, the way an .ico stores a bitmap entry. */
+function dib(img) {
+  const maskRow = Math.ceil(img.w / 32) * 4, header = Buffer.alloc(40);
+  header.writeUInt32LE(40, 0); header.writeInt32LE(img.w, 4); header.writeInt32LE(img.h * 2, 8);
+  header.writeUInt16LE(1, 12); header.writeUInt16LE(32, 14);
+  header.writeUInt32LE(img.w * img.h * 4 + maskRow * img.h, 20);
+  const pixels = Buffer.alloc(img.w * img.h * 4), mask = Buffer.alloc(maskRow * img.h);
+  for (let y = 0; y < img.h; y++) for (let x = 0; x < img.w; x++) {
+    const s = (y * img.w + x) * 4, d = ((img.h - 1 - y) * img.w + x) * 4;
+    const c = (i) => Math.round(Math.min(255, Math.max(0, img.px[s + i])));
+    pixels[d] = c(2); pixels[d + 1] = c(1); pixels[d + 2] = c(0); pixels[d + 3] = c(3);
+    if (!c(3)) mask[(img.h - 1 - y) * maskRow + (x >> 3)] |= 0x80 >> (x & 7);
+  }
+  return Buffer.concat([header, pixels, mask]);
+}
+/** ICO the conventional way: bitmap entries below 256 px (every Windows loader reads them), PNG at 256. */
 function ico(images) {
-  const head = Buffer.alloc(6 + 16 * images.length), bodies = images.map(png);
+  const head = Buffer.alloc(6 + 16 * images.length), bodies = images.map((img) => (img.w >= 256 ? png(img) : dib(img)));
   head.writeUInt16LE(0, 0); head.writeUInt16LE(1, 2); head.writeUInt16LE(images.length, 4);
   let off = head.length;
   images.forEach((img, i) => {
