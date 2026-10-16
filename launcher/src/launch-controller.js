@@ -6,6 +6,7 @@ import {
   acknowledgeLobbySnapshot,
   launchProgress,
   setUseExternalOverlay,
+  setQuitLunarAfterLaunch,
 } from "./tauri-contract.js";
 import { classifyLive } from "./lobby-validator.js";
 
@@ -63,6 +64,10 @@ export function createLaunchController(invoke, { onChange } = {}) {
   let prefUncertainKey = null;
   let prefError = null;
   let prefSaving = false;
+  /** "Quit Lunar after launch" (off unless the file says on) and its save in flight. */
+  let quitLunar = false;
+  let quitLunarSaving = false;
+  let quitLunarOpGen = 0;
   let launchBusy = false;
   let activeOutcome = null;
   /** @type {'idle' | 'loading' | 'done'} */
@@ -84,6 +89,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
   function syncFromView(view) {
     optimisticOverlay = view.useExternalOverlay;
     confirmedOverlay = view.useExternalOverlay;
+    quitLunar = view.quitLunarAfterLaunch === true;
     prefHealth = view.health;
     prefDiagnostic = view.diagnostic ?? null;
     prefUncertain = false;
@@ -93,10 +99,14 @@ export function createLaunchController(invoke, { onChange } = {}) {
 
   async function refreshPreferences() {
     const gen = ++refreshGen;
+    const quitGen = quitLunarOpGen;
     try {
       const view = await launchPreferences(invoke);
       if (gen !== refreshGen) return;
+      const quitNow = quitLunar;
       syncFromView(view);
+      // A Quit Lunar save made during this read holds the newer value.
+      if (quitGen !== quitLunarOpGen) quitLunar = quitNow;
       notify();
     } catch (e) {
       if (gen !== refreshGen) return;
@@ -169,6 +179,36 @@ export function createLaunchController(invoke, { onChange } = {}) {
 
   async function setOverlay(enabled, opts) {
     return setPreference("overlay", enabled, opts);
+  }
+
+  /**
+   * "Quit Lunar after launch". Not lifecycle-gated in the backend (it is read once Cobblify
+   * has loaded, never at a launch), so its save neither blocks Launch nor touches the External
+   * Overlay state; like the others it is refused during a launch or a session. The reply is
+   * what the file holds after the save, so a failed save shows the old value again.
+   * @param {boolean} enabled
+   */
+  async function setQuitLunar(enabled) {
+    if (quitLunarSaving || launchBusy || activeOutcome != null) return;
+    const gen = ++quitLunarOpGen;
+    const prev = quitLunar;
+    quitLunarSaving = true;
+    quitLunar = enabled;
+    notify();
+    try {
+      const view = await setQuitLunarAfterLaunch(invoke, enabled);
+      if (gen !== quitLunarOpGen) return;
+      quitLunar = view?.quitLunarAfterLaunch === true;
+    } catch (e) {
+      if (gen !== quitLunarOpGen) return;
+      quitLunar = prev;
+      console.warn("set_quit_lunar_after_launch failed", e);
+    } finally {
+      if (gen === quitLunarOpGen) {
+        quitLunarSaving = false;
+        notify();
+      }
+    }
   }
 
   function lunarLabel(phase) {
@@ -320,6 +360,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
   return {
     refreshPreferences,
     setOverlay,
+    setQuitLunar,
     launch,
     tryAgainLaunch,
     pollLobbyOnce,
@@ -335,6 +376,8 @@ export function createLaunchController(invoke, { onChange } = {}) {
         prefUncertainKey,
         prefError,
         prefSaving,
+        quitLunar,
+        quitLunarSaving,
         launchBusy,
         activeOutcome,
         launchButtons,

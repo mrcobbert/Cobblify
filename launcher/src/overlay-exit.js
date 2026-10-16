@@ -1,7 +1,10 @@
 /**
  * Overlay-off quit coordination, extracted so the production trigger
  * selection is directly testable. Cobblify never hides Lunar or Prism, so
- * the only thing to coordinate is when Cobblify itself quits.
+ * the only thing to coordinate here is when Cobblify itself quits. The
+ * opt-in "Quit Lunar after launch" is the backend's: it is sent on the same
+ * proof that Cobblify loaded, before the reply that carries that proof, and
+ * `quit_app` waits for it, so quitting here never cuts it off.
  *
  * Routes per launch outcome (exhaustive):
  * - overlay on: normal overlay flow for every action; never quits.

@@ -62,6 +62,9 @@ Then press Launch Cobblify. The game starts with Cobblify; you join
 Hypixel yourself. Cobblify never hides Lunar's or Prism's windows:
 Lunar hides its own window when the game starts and shows it again
 when the game closes. Lunar keeps running afterwards, which is normal.
+To close Lunar's launcher instead, turn on "Quit Lunar after launch"
+in Settings: once Cobblify has loaded in the game, Cobblify quits
+Lunar, so nothing comes back when the game closes.
 
 When you close the game, Cobblify comes back to Launch, so you can
 launch again any time. (With External Overlay off in Settings, Cobblify
