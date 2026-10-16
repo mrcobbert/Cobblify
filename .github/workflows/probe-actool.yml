@@ -6,35 +6,35 @@ permissions:
   contents: read
 jobs:
   probe:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15-intel]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - name: actool on our icon and on Tauri's example icon
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: tauri build with a logging actool
+        working-directory: launcher
         run: |
-          sw_vers
-          ls -d /Applications/Xcode*.app
           xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
-          echo "using $xcode26"
-          export DEVELOPER_DIR="$xcode26/Contents/Developer"
-          xcrun actool --version --output-format human-readable-text
-          icon=launcher/src-tauri/icons/Cobblify.icon
-          for target in unset 10.13 26.0; do
-            echo "=================== MACOSX_DEPLOYMENT_TARGET=$target"
-            if [ "$target" = unset ]; then unset MACOSX_DEPLOYMENT_TARGET; else export MACOSX_DEPLOYMENT_TARGET=$target; fi
-            work=$(mktemp -d)
-            cp -R "$icon" "$work/Icon.icon"
-            mkdir "$work/out"
-            xcrun actool "$work/Icon.icon" --compile "$work/out" --output-format human-readable-text --notices --warnings \
-              --output-partial-info-plist "$work/out/assetcatalog_generated_info.plist" --app-icon Icon --include-all-app-icons \
-              --accent-color AccentColor --enable-on-demand-resources NO --development-region en --target-device mac \
-              --minimum-deployment-target 26.0 --platform macosx 2>&1 | grep -v '^dyld'; echo "actool exit $?"
-            ls -la "$work/out"
-            if [ -f "$work/out/Assets.car" ]; then
-              /usr/bin/assetutil --info "$work/out/Assets.car" 2>/dev/null | grep -E '"Name"|Appearance|AssetType' | sort | uniq -c
-            fi
-          done
+          mkdir -p "$RUNNER_TEMP/xcode26-bin"
+          cat > "$RUNNER_TEMP/xcode26-bin/actool" <<WRAP
+          #!/bin/sh
+          log="$RUNNER_TEMP/actool.log"
+          {
+            echo "=== actool \$*"
+            echo "cwd: \$(pwd)"
+            env | sort | grep -v -i "token\|key\|secret"
+            for a in "\$@"; do case "\$a" in *.icon) echo "input:"; find "\$a" -exec ls -ld {} \; ; cat "\$a/icon.json";; esac; done
+          } >> "\$log" 2>&1
+          DEVELOPER_DIR="$xcode26/Contents/Developer" /usr/bin/xcrun actool "\$@" > "\$log.out" 2>&1
+          rc=\$?
+          grep -v '^dyld' "\$log.out" | tee -a "\$log"
+          echo "rc=\$rc" >> "\$log"
+          for a in "\$@"; do case "\$a" in */out) echo "out dir:"; ls -la "\$a";; esac; done >> "\$log" 2>&1
+          exit \$rc
+          WRAP
+          chmod +x "$RUNNER_TEMP/xcode26-bin/actool"
+          export PATH="$RUNNER_TEMP/xcode26-bin:$PATH"
+          npm ci
+          npx tauri build --bundles app --ci || echo "tauri build failed: $?"
+          cat "$RUNNER_TEMP/actool.log"
