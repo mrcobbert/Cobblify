@@ -1246,6 +1246,9 @@ struct ProgressState {
     steady_polls: u32,
     /// Whether Cobblify loaded in this launch's game, or the launch ended without it.
     watch: launch_watch::Watch,
+    /// "Quit Lunar after launch" may still fire for this session (`arms_lunar_quit`); taken
+    /// once by `lunar_quit_due`, cleared by the session reset.
+    quit_lunar: bool,
 }
 
 /// Split mutexes so stalled lobby polling cannot block lifecycle admission.
@@ -1400,6 +1403,21 @@ async fn set_update_channel(channel: String) -> Result<UpdatePreferenceSaveReply
         .map_err(|e| format!("{e:?}"))
 }
 
+/// "Quit Lunar after launch". Not lifecycle-gated, like the update settings: nothing at a
+/// launch reads it (it is read when Cobblify has loaded), so a save cannot make a launch stale
+/// or uncertain, and the settings sheet locks it during a launch or a game. Replies with what
+/// the file says after the save.
+#[tauri::command]
+async fn set_quit_lunar_after_launch(enabled: bool) -> Result<LaunchPreferencesView, String> {
+    let home = home()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        preferences::set_quit_lunar_after_launch(&home, enabled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("{e:?}"))
+}
+
 async fn set_preference(
     key: lifecycle::PrefKey,
     enabled: bool,
@@ -1509,12 +1527,19 @@ async fn acknowledge_lobby_snapshot(
     session: tauri::State<'_, SessionParts>,
 ) -> Result<(), String> {
     let lobby = Arc::clone(&session.lobby);
+    let progress = Arc::clone(&session.progress);
     tauri::async_runtime::spawn_blocking(move || {
         lobby
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .acknowledge(token, generation, &snapshot)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // An acknowledged snapshot is a lobby.json from a proven game writer: Cobblify loaded
+        // (it can beat the progress poll's `loaded`, which then never comes).
+        if lunar_quit_due(&mut progress.lock().unwrap_or_else(|e| e.into_inner()), true) {
+            spawn_lunar_quit();
+        }
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1538,6 +1563,7 @@ fn prefs_view_or_fallback(home: &Path) -> LaunchPreferencesView {
         Ok(view) => view,
         Err(e) => LaunchPreferencesView {
             use_external_overlay: true,
+            quit_lunar_after_launch: false,
             health: preferences::PreferenceHealth::Invalid,
             diagnostic: Some(format!("{e:?}")),
         },
@@ -1558,7 +1584,8 @@ enum ResetMode {
 /// The reset transaction. Locks are taken one at a time; the exclusive
 /// `Resetting` lifecycle state is the mutual exclusion for the whole
 /// sequence, and Idle is published last. Lunar is never quit here: it
-/// stays open after a game, as it normally does.
+/// stays open after a game, as it normally does, unless "Quit Lunar after
+/// launch" already quit it once Cobblify loaded (`lunar_quit_due`).
 fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -> ResetReply {
     let prefs_view = || prefs_view_or_fallback(home);
     match parts
@@ -1605,6 +1632,7 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
         progress.last_mtime = None;
         progress.steady_polls = 0;
         progress.watch = launch_watch::Watch::default();
+        progress.quit_lunar = false;
     }
     parts
         .coordinator
@@ -1617,9 +1645,16 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
 }
 
 /// Overlay-off exit. The game, Lunar, and Prism are separate processes and
-/// survive.
+/// survive. It follows the same `loaded` that sends "Quit Lunar after
+/// launch", so a request in flight is waited for first (bounded): exiting
+/// never cuts it off.
 #[tauri::command]
-fn quit_app(app_handle: tauri::AppHandle) {
+async fn quit_app(app_handle: tauri::AppHandle) {
+    let pending = LUNAR_QUIT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        wait_for_lunar_quit(pending, LUNAR_QUIT_WAIT)
+    })
+    .await;
     app_handle.exit(0);
 }
 
@@ -1900,6 +1935,7 @@ async fn launch_target(
                     LaunchKind::Lunar => launch_watch::Watch::lunar(&watch_home),
                     LaunchKind::Forge => launch_watch::Watch::prism(&watch_home),
                 };
+                progress.quit_lunar = arms_lunar_quit(kind, &attempt.reply);
                 session
                     .lobby
                     .lock()
@@ -2106,12 +2142,95 @@ async fn launch_progress(
     let progress = Arc::clone(&session.progress);
     match tauri::async_runtime::spawn_blocking(move || {
         let mut st = progress.lock().unwrap_or_else(|e| e.into_inner());
-        compute_launch_progress(&mut st)
+        let bar = compute_launch_progress(&mut st);
+        if lunar_quit_due(&mut st, bar.loaded) {
+            spawn_lunar_quit();
+        }
+        bar
     })
     .await
     {
         Ok(progress) => Ok(progress),
         Err(_) => Ok(progress::progress_for(progress::Milestone::Fired, false)),
+    }
+}
+
+// ── Quit Lunar after launch ─────────────────────────────────────────────────
+//
+// Opt-in (the setting is off by default). The trigger is the backend's own proof that Cobblify
+// loaded, wherever the frontend first learns it: the progress poll's `loaded` and an
+// acknowledged lobby snapshot. Both are answered only after the request is under way, so the
+// overlay-off quit that follows them (`quit_app`) can wait for it.
+
+/// Whether this launch may quit Lunar's launcher once Cobblify loads in its game (the setting
+/// itself is read when it fires). Only a Lunar launch whose play request Lunar confirmed: never
+/// Prism, and never `launch_unconfirmed` or `launcher_opened`, where Lunar has to stay so the
+/// player can press Play. A game started from Lunar itself is no launch of Cobblify's.
+fn arms_lunar_quit(kind: LaunchKind, reply: &LaunchReply) -> bool {
+    kind == LaunchKind::Lunar
+        && matches!(
+            reply,
+            LaunchReply::Launched { outcome, .. }
+                if matches!(outcome.action, launch::LaunchAction::GameLaunchRequested)
+        )
+}
+
+/// Whether the armed quit is due: Cobblify is known to have loaded in this session's game and
+/// the launch did not end with an outcome. True at most once per session.
+fn lunar_quit_due(progress: &mut ProgressState, loaded: bool) -> bool {
+    loaded && !progress.watch.ended() && std::mem::take(&mut progress.quit_lunar)
+}
+
+/// The quit request in flight. Its sender drops when the request is over.
+static LUNAR_QUIT: Mutex<Option<std::sync::mpsc::Receiver<()>>> = Mutex::new(None);
+/// The longest `quit_app` waits for that request before Cobblify exits anyway.
+const LUNAR_QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads the setting and asks Lunar's launcher to quit, off-thread. Best effort and silent: a
+/// failure is logged, nothing is shown, nothing is killed, and the session goes on either way.
+fn spawn_lunar_quit() {
+    let (done, pending) = std::sync::mpsc::channel::<()>();
+    *LUNAR_QUIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
+    std::thread::spawn(move || {
+        let _done = done;
+        let Ok(home) = home() else {
+            return;
+        };
+        if !preferences::quit_lunar_after_launch(&home) {
+            return;
+        }
+        if let Err(e) = request_lunar_quit() {
+            eprintln!("Quit Lunar after launch: {e}");
+        }
+    });
+}
+
+/// Lunar's own polite quit, the request setup's "Closing Lunar" sends. macOS: a quit to the
+/// exe-verified launcher pid (`lunar_quit.rs`). Windows: Lunar's close-launcher link, only
+/// while Lunar runs (the link would otherwise start it). The game JVM is never the target.
+fn request_lunar_quit() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        lunar_quit::request_lunar_quit()
+    }
+    #[cfg(windows)]
+    {
+        if !crate::proc::lunar_running_checked()? {
+            return Ok(());
+        }
+        tauri_plugin_opener::open_url(crate::launch::CLOSE_LAUNCHER, None::<&str>)
+            .map_err(|_| "Cobblify couldn't ask Lunar to quit.".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Ok(())
+    }
+}
+
+/// Waits until the request's sender drops (it is over), at most `limit`.
+fn wait_for_lunar_quit(pending: Option<std::sync::mpsc::Receiver<()>>, limit: std::time::Duration) {
+    if let Some(pending) = pending {
+        let _ = pending.recv_timeout(limit);
     }
 }
 
@@ -3053,6 +3172,166 @@ java.lang.IllegalStateException: Could not find game version\n",
             assert_eq!(p.stage, "fired");
             assert!(p.outcome.is_none());
         }
+
+        // ── Quit Lunar after launch: due once, and only once Cobblify loaded ──────
+
+        /// One poll as `launch_progress` runs it: the reply, and whether it sent the quit.
+        fn poll(st: &mut ProgressState, home: &Path, env: &mut FakeEnv) -> (progress::Progress, bool) {
+            let p = compute_launch_progress_in(st, home, env);
+            let quit = lunar_quit_due(st, p.loaded);
+            (p, quit)
+        }
+
+        fn armed(home: &Path, baseline: SystemTime) -> ProgressState {
+            ProgressState {
+                quit_lunar: true,
+                ..lunar_state(home, baseline)
+            }
+        }
+
+        #[test]
+        fn the_lunar_quit_is_due_on_the_poll_that_proves_cobblify_loaded_and_never_again() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = armed(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            weave_log(
+                home.path(),
+                "Attached Weave\nDiscovered 1 mod files\nMixing Example from mixins.bedwarsqol.json\n",
+            );
+            for _ in 0..4 {
+                let (p, quit) = poll(&mut st, home.path(), &mut env);
+                assert!(!quit, "a game and a quiet log are not Cobblify loading (stage {})", p.stage);
+                env.advance(1);
+            }
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(p.loaded && quit, "due with the reply that says loaded");
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(p.loaded && !quit, "once per session");
+            assert!(!lunar_quit_due(&mut st, true), "an acknowledged snapshot after it does not send it again");
+        }
+
+        /// An acknowledged snapshot can beat the progress poll's `loaded`: it sends the quit, and
+        /// the poll's `loaded` that follows does not send it again.
+        #[test]
+        fn an_acknowledged_snapshot_first_sends_it_and_the_later_loaded_does_not() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = armed(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            assert!(!lunar_quit_due(&mut st, false), "no proof, no quit");
+            assert!(lunar_quit_due(&mut st, true), "the acknowledged snapshot");
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(p.loaded && !quit);
+        }
+
+        /// A launch that ended with an outcome never quits Lunar, not even on a late
+        /// acknowledged snapshot: Lunar stays for the next try.
+        #[test]
+        fn a_launch_that_ended_with_an_outcome_never_quits_lunar() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = armed(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            env.spawn(77, baseline + Duration::from_secs(1));
+            weave_log(home.path(), "Attached Weave\nDiscovered 0 mod files\n");
+            poll(&mut st, home.path(), &mut env);
+            env.advance(61);
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert_eq!(p.outcome, Some(progress::Outcome::NotLoaded));
+            assert!(!quit);
+            assert!(!lunar_quit_due(&mut st, true));
+
+            // Lunar closed before any game appeared: the same.
+            let mut st = armed(home.path(), baseline);
+            assert_eq!(st.watch.end_not_started(), Some(progress::Outcome::NotStarted));
+            assert!(!lunar_quit_due(&mut st, true));
+        }
+
+        /// Nothing armed it (Prism, an unconfirmed launch, no launch at all): loaded never quits.
+        #[test]
+        fn an_unarmed_session_never_quits_lunar() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = lunar_state(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(p.loaded && !quit);
+            assert!(!lunar_quit_due(&mut ProgressState::default(), true));
+        }
+    }
+
+    fn launched(action: launch::LaunchAction) -> LaunchReply {
+        LaunchReply::Launched {
+            outcome: launch::LaunchOutcome {
+                use_external_overlay: true,
+                action,
+            },
+            generation: 1,
+        }
+    }
+
+    /// Only Cobblify's own Lunar launch, confirmed, arms "Quit Lunar after launch". An
+    /// unconfirmed one may still need the player to press Play in Lunar.
+    #[test]
+    fn only_a_confirmed_lunar_launch_arms_the_lunar_quit() {
+        use launch::LaunchAction::{GameLaunchRequested, LaunchUnconfirmed, LauncherOpened};
+        assert!(arms_lunar_quit(LaunchKind::Lunar, &launched(GameLaunchRequested)));
+        assert!(!arms_lunar_quit(LaunchKind::Lunar, &launched(LaunchUnconfirmed)));
+        assert!(!arms_lunar_quit(LaunchKind::Lunar, &launched(LauncherOpened)));
+        assert!(!arms_lunar_quit(LaunchKind::Forge, &launched(GameLaunchRequested)), "never Prism");
+        assert!(!arms_lunar_quit(LaunchKind::Lunar, &launch_rejection("busy")));
+        let preferences = prefs_view_or_fallback(&temp_home());
+        assert!(!arms_lunar_quit(LaunchKind::Lunar, &LaunchReply::PreexistingGame { preferences }));
+    }
+
+    /// The session reset (a game's end) and the forcing abort both disarm it.
+    #[test]
+    fn the_reset_and_the_abort_disarm_the_lunar_quit() {
+        for mode in [ResetMode::Terminal, ResetMode::Abort] {
+            let parts = SessionParts::new();
+            let home = temp_home();
+            active_with_latch(&parts, 1);
+            parts.progress.lock().unwrap().quit_lunar = true;
+            let reply = reset_session_end_inner(&parts, &home, mode);
+            assert!(matches!(reply, ResetReply::Ok { .. }), "{mode:?}");
+            assert!(!parts.progress.lock().unwrap().quit_lunar, "{mode:?}");
+        }
+    }
+
+    /// `quit_app` waits for a quit request in flight until it is over (its sender drops), and
+    /// no longer than the limit; with none in flight it does not wait.
+    #[test]
+    fn quit_app_waits_for_the_lunar_quit_request_bounded() {
+        use std::time::{Duration, Instant};
+        let (done, pending) = std::sync::mpsc::channel::<()>();
+        let request = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(done);
+        });
+        let started = Instant::now();
+        wait_for_lunar_quit(Some(pending), Duration::from_secs(10));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(100) && waited < Duration::from_secs(5), "{waited:?}");
+        request.join().unwrap();
+
+        let (_stuck, pending) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        wait_for_lunar_quit(Some(pending), Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_secs(5), "bounded");
+
+        let started = Instant::now();
+        wait_for_lunar_quit(None, Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     fn active_with_latch(parts: &SessionParts, generation: u64) {
@@ -3721,6 +4000,7 @@ fn main() {
             launch_preferences,
             update_preferences,
             set_use_external_overlay,
+            set_quit_lunar_after_launch,
             set_auto_update,
             set_update_channel,
             updater::update_status,

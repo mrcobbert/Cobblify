@@ -23,6 +23,8 @@ pub enum PreferenceHealth {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchPreferencesView {
     pub use_external_overlay: bool,
+    /// "Quit Lunar after launch". Off unless the file says exactly `true`.
+    pub quit_lunar_after_launch: bool,
     pub health: PreferenceHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
@@ -124,12 +126,22 @@ fn lenient_auto_join<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::
     Ok(value.as_bool().unwrap_or(true))
 }
 
+/// "Quit Lunar after launch" is opt-in: missing or not a bool reads as off and never makes the
+/// file invalid (an invalid file rejects every launch with `preference_error`). A 0.17 save
+/// drops the key, which reads as off again.
+fn lenient_off<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_bool().unwrap_or(false))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PreferenceDoc {
     #[serde(default = "default_true", deserialize_with = "lenient_auto_join")]
     auto_join_hypixel: bool,
     #[serde(default = "default_true")]
     use_external_overlay: bool,
+    #[serde(default, deserialize_with = "lenient_off")]
+    quit_lunar_after_launch: bool,
     #[serde(default)]
     auto_update_enabled: bool,
     #[serde(default)]
@@ -223,16 +235,19 @@ impl LockedPrefs {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => LaunchPreferencesView {
                 use_external_overlay: doc.use_external_overlay,
+                quit_lunar_after_launch: doc.quit_lunar_after_launch,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
             Err(ReadOutcome::Missing) => LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Missing,
                 diagnostic: None,
             },
             Err(ReadOutcome::Invalid(msg)) => LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Invalid,
                 diagnostic: Some(msg),
             },
@@ -295,6 +310,18 @@ impl LockedPrefs {
         }
     }
 
+    /// Save "Quit Lunar after launch", preserving every other key like `write_overlay`, and
+    /// answer with what the file now says: a save that failed shows the old value again.
+    fn write_quit_lunar(&self, enabled: bool) -> LaunchPreferencesView {
+        let path = pref_path(&self.home);
+        let mut doc = read_fields_lenient(&path);
+        doc.quit_lunar_after_launch = enabled;
+        if let Err(SaveOutcome::NotSaved(msg)) = write_doc(&path, &doc) {
+            eprintln!("Quit Lunar after launch was not saved: {msg}");
+        }
+        self.read_view()
+    }
+
     fn write_auto_update(&self, enabled: bool) -> UpdatePreferenceSaveReply {
         let path = pref_path(&self.home);
         let mut doc = read_fields_lenient(&path);
@@ -335,6 +362,7 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
     let defaults = || PreferenceDoc {
         auto_join_hypixel: true,
         use_external_overlay: true,
+        quit_lunar_after_launch: false,
         auto_update_enabled: false,
         auto_update_prompted: false,
         update_channel: String::new(),
@@ -353,6 +381,7 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
     PreferenceDoc {
         auto_join_hypixel: field("auto_join_hypixel", true),
         use_external_overlay: field("use_external_overlay", true),
+        quit_lunar_after_launch: field("quit_lunar_after_launch", false),
         auto_update_enabled: field("auto_update_enabled", false),
         auto_update_prompted: field("auto_update_prompted", false),
         update_channel: map
@@ -437,6 +466,20 @@ pub fn set_use_external_overlay(
 ) -> Result<PreferenceSaveReply, PreferenceReadError> {
     let locked = LockedPrefs::acquire(home)?;
     Ok(locked.write_overlay(enabled))
+}
+
+pub fn set_quit_lunar_after_launch(
+    home: &Path,
+    enabled: bool,
+) -> Result<LaunchPreferencesView, PreferenceReadError> {
+    let locked = LockedPrefs::acquire(home)?;
+    Ok(locked.write_quit_lunar(enabled))
+}
+
+/// Whether to quit Lunar now that Cobblify loaded. Read when it is acted on; any problem
+/// reading preferences means off.
+pub fn quit_lunar_after_launch(home: &Path) -> bool {
+    launch_preferences(home).is_ok_and(|view| view.quit_lunar_after_launch)
 }
 
 pub fn set_auto_update(
@@ -810,6 +853,109 @@ mod tests {
         let view = launch_preferences(&home).unwrap();
         assert_eq!(view.health, PreferenceHealth::Invalid);
         assert_eq!(view.use_external_overlay, true);
+    }
+
+    // ── Quit Lunar after launch ─────────────────────────────────────────────
+
+    /// Opt-in: no file, a 0.17 file and a 0.18 file without the key all read as off (and valid).
+    #[test]
+    fn quit_lunar_after_launch_defaults_off() {
+        let home = temp_home();
+        assert!(!launch_preferences(&home).unwrap().quit_lunar_after_launch);
+        assert!(!quit_lunar_after_launch(&home));
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":true,"auto_update_prompted":true}"#);
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert!(!view.quit_lunar_after_launch);
+        assert!(!quit_lunar_after_launch(&home));
+    }
+
+    /// A value that is not a bool reads as off and never makes the file invalid: an invalid
+    /// file would reject every launch with `preference_error`.
+    #[test]
+    fn a_non_bool_quit_lunar_value_reads_off_and_the_file_stays_valid() {
+        let home = temp_home();
+        for junk in [r#""yes""#, "1", "null", "{}", "[true]"] {
+            write_raw(
+                &home,
+                &format!(r#"{{"auto_join_hypixel":true,"use_external_overlay":false,"quit_lunar_after_launch":{junk}}}"#),
+            );
+            let view = launch_preferences(&home).unwrap();
+            assert_eq!(view.health, PreferenceHealth::Valid, "{junk}");
+            assert!(!view.quit_lunar_after_launch, "{junk}");
+            assert!(!view.use_external_overlay, "{junk}: the other keys still read");
+            let locked = LockedPrefs::acquire(&home).unwrap();
+            assert_eq!(locked.read_strict(), Ok(false), "{junk}: a launch still reads the file");
+            drop(locked);
+            assert!(!quit_lunar_after_launch(&home), "{junk}");
+        }
+    }
+
+    #[test]
+    fn quit_lunar_after_launch_round_trips() {
+        let home = temp_home();
+        let view = set_quit_lunar_after_launch(&home, true).unwrap();
+        assert!(view.quit_lunar_after_launch, "the reply is what the file now says");
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert_eq!(raw(&home)["quit_lunar_after_launch"], true);
+        assert!(quit_lunar_after_launch(&home));
+        assert!(!set_quit_lunar_after_launch(&home, false).unwrap().quit_lunar_after_launch);
+        assert_eq!(raw(&home)["quit_lunar_after_launch"], false);
+        assert!(!quit_lunar_after_launch(&home));
+    }
+
+    /// Saving it keeps every other key (0.17's auto-join included, so 0.17 still reads the
+    /// file), and every other 0.18 save keeps it - also when a sibling key is junk.
+    #[test]
+    fn quit_lunar_and_every_other_key_survive_each_others_saves() {
+        let home = temp_home();
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":false,"update_channel":"dev"}"#);
+        set_quit_lunar_after_launch(&home, true).unwrap();
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
+        assert_eq!(raw(&home)["use_external_overlay"], false);
+        assert_eq!(raw(&home)["update_channel"], "dev");
+        assert_eq!(parses_for_0_17(&home), Some(false), "0.17 still reads the file");
+        set_use_external_overlay(&home, true).unwrap();
+        set_auto_update(&home, true).unwrap();
+        set_update_channel(&home, UpdateChannel::Stable).unwrap();
+        assert!(launch_preferences(&home).unwrap().quit_lunar_after_launch);
+
+        write_raw(&home, r#"{"use_external_overlay":"yes","quit_lunar_after_launch":true}"#);
+        set_use_external_overlay(&home, true).unwrap();
+        assert!(quit_lunar_after_launch(&home));
+    }
+
+    /// The 0.17 launcher's save writes its own keys only: the setting is off again, never an
+    /// invalid file.
+    #[test]
+    fn a_0_17_save_drops_the_key_and_it_reads_off() {
+        let home = temp_home();
+        set_quit_lunar_after_launch(&home, true).unwrap();
+        write_raw(&home, r#"{"auto_join_hypixel":true,"use_external_overlay":true}"#);
+        let view = launch_preferences(&home).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert!(!view.quit_lunar_after_launch);
+    }
+
+    /// An unparseable file reads as off; saving the setting repairs it around the new value.
+    #[test]
+    fn an_unparseable_file_reads_off_and_a_save_repairs_it() {
+        let home = temp_home();
+        write_raw(&home, "{not json");
+        assert!(!quit_lunar_after_launch(&home));
+        let view = set_quit_lunar_after_launch(&home, true).unwrap();
+        assert_eq!(view.health, PreferenceHealth::Valid);
+        assert!(view.quit_lunar_after_launch);
+        assert_eq!(parses_for_0_17(&home), Some(true));
+    }
+
+    #[test]
+    fn the_view_carries_the_setting_in_camel_case() {
+        let home = temp_home();
+        set_quit_lunar_after_launch(&home, true).unwrap();
+        let wire = serde_json::to_value(launch_preferences(&home).unwrap()).unwrap();
+        assert_eq!(wire["quitLunarAfterLaunch"], true);
+        assert!(wire.get("quit_lunar_after_launch").is_none());
     }
 
     #[test]

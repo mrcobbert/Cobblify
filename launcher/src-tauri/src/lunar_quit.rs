@@ -1,7 +1,8 @@
-//! Politely quitting Lunar's launcher, for setup's "Closing Lunar": Lunar must be quit before
-//! Cobblify writes its `launcher.json`.
+//! Politely quitting Lunar's launcher, for setup's "Closing Lunar" (Lunar must be quit before
+//! Cobblify writes its `launcher.json`) and for the opt-in "Quit Lunar after launch", once
+//! Cobblify has loaded in the game of a launch it made (`main.rs`, `lunar_quit_due`).
 //!
-//! Cobblify never hides, minimises or quits a Lunar window anywhere else.
+//! Cobblify never hides or minimises a Lunar window, and quits Lunar nowhere else.
 //!
 //! Identity is verified twice before anything is asked to quit: the pid comes from
 //! `proc::lunar_launcher_pid()` (exact executable-path match) and the JXA snippet re-checks
@@ -14,13 +15,15 @@ use crate::proc;
 
 /// The polite quit request on its own: exe-verified pid, OS birth revalidated just before
 /// the send, bundle id re-checked in the snippet. It does NOT wait - setup waits on its own
-/// clock (15 s, re-checking before every write), which keeps the wait testable. The
-/// terminate is a normal AppleEvent quit, the same thing Lunar's own "close launcher after
-/// launch" setting does.
+/// clock (15 s, re-checking before every write), which keeps the wait testable, and "Quit
+/// Lunar after launch" does not wait for Lunar at all. The terminate is
+/// `NSRunningApplication`'s normal quit, as if the player chose Quit (Lunar's own launch
+/// setting can only hide its window, never close it).
 ///
 /// `Ok(())` = no launcher was running, or the request was delivered to it. `Err` = it
-/// could not be delivered; the caller re-checks whether Lunar is still running before
-/// treating that as a failure (the launcher may simply have exited meanwhile).
+/// could not be delivered; setup re-checks whether Lunar is still running before treating
+/// that as a failure (the launcher may simply have exited meanwhile), and "Quit Lunar after
+/// launch" only logs it.
 pub fn request_lunar_quit() -> Result<(), String> {
     let Some(pid) = proc::lunar_launcher_pid() else {
         return Ok(());
