@@ -206,7 +206,7 @@ either way; only the dmg step fails.
 The build is **blank on purpose** - no jars inside it. That is what keeps the
 backend token out of every build artifact. Jars are injected later, locally.
 
-The app icon (a pocket island with a blue bed) is drawn by
+The app icon (a pocket island with a red bed) is drawn by
 `node tools/make-app-icon.mjs`, which writes everything in `src-tauri/icons/`; edit
 the script, never the images. `Cobblify.icon` is the macOS 26 icon with its light and
 dark tiles. Tauri compiles it with actool, which has to be Xcode 26's: without it

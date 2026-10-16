@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Draws the launcher's app icon, a pocket Bed Wars island with a blue bed, and writes every icon file Tauri bundles:
+// Draws the launcher's app icon, a pocket Bed Wars island with a red bed, and writes every icon file Tauri bundles:
 //   src-tauri/icons/Cobblify.icon   Icon Composer file: light and dark tiles for macOS 26+ (compiled by actool 26 at build)
 //   src-tauri/icons/icon.icns       older macOS: the dark tile on Apple's 1024 grid (824 body, drop shadow)
 //   src-tauri/icons/icon.ico        Windows: the dark tile, edge to edge
@@ -25,7 +25,7 @@ const SPAN = 0.7; // the island's share of the tile, as in the options page
 // ---- the island ----
 const MAT = {
   grass: "#91bd59", grassSide: "#7aa94a", dirt: "#866043", stone: "#7f7f7f", deep: "#5e5e5e",
-  wood: "#9c7a48", pillow: "#e8e8e8", blue: "#3c44aa",
+  wood: "#9c7a48", pillow: "#e8e8e8", red: "#b02f2f",
 };
 const TEXTURED = { grass: 1, grassSide: 1, dirt: 1, stone: 1, deep: 1, wood: 0.5 };
 const hex = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -48,10 +48,10 @@ function floating(rows, layers) {
   return out;
 }
 
-// two blocks long along +x: wood frame, blue blanket, white pillow at the head
+// two blocks long along +x: wood frame, red blanket, white pillow at the head
 const bed = (x, y, z) => [
   { box: [x, y, z, x + 2, y + 0.25, z + 1], m: "wood" },
-  { box: [x, y + 0.25, z, x + 1.45, y + 0.62, z + 1], m: "blue" },
+  { box: [x, y + 0.25, z, x + 1.45, y + 0.62, z + 1], m: "red" },
   { box: [x + 1.45, y + 0.25, z, x + 2, y + 0.62, z + 1], m: "pillow" },
 ];
 
