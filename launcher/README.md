@@ -63,9 +63,22 @@ on 1.8.9 ends the launch with "Set Lunar to 1.8.9" + Open.
 `open -g` avoids stealing focus. Cobblify never hides, minimises or re-hides a
 Lunar or Prism window, on macOS or Windows. Lunar hides its own launcher when
 the game starts (unless its "Launcher visibility on Game Launch" setting is Keep
-Open) and shows it again when the game exits. Lunar stays open after a game;
-Cobblify quits it only where it must write `launcher.json` - setup's "Closing
-Lunar", a polite quit (`lunar_quit.rs`, macOS).
+Open) and shows it again when the game exits; that setting has no option to
+close it. Lunar stays open after a game. Cobblify quits it in two places only,
+always politely (macOS: a quit to the exe-verified pid, `lunar_quit.rs`;
+Windows: Lunar's own `lunarclient://close-launcher` link), never with a kill:
+
+- setup's "Closing Lunar", where it must write `launcher.json`;
+- **Quit Lunar after launch**, a setting that is off by default. Once Cobblify
+  has loaded in the game of a Lunar launch that Lunar confirmed, Cobblify asks
+  Lunar's launcher to quit, once per session, so nothing reappears when the
+  game closes. Never for Prism, an unconfirmed launch (Lunar stays so the
+  player can press Play), a launch that ended without Cobblify, or a game
+  started from Lunar itself. The backend sends it when it proves the load (the
+  progress poll's `loaded` or the first acknowledged lobby snapshot), so with
+  External Overlay off it goes out before Cobblify quits itself. Failures are
+  only logged. The session goes on and ends as usual, and the next Launch
+  reopens Lunar.
 
 Before writing it:
 
@@ -403,6 +416,9 @@ box during the dev loop and in `Launcher Update Candidate`. Beyond that, as of
   the launch. Both are covered by tests only. Still-waiting may be hard to
   reach in practice - Minecraft's own connect timeout is short enough that it
   tends to fail first.
+- **Not exercised yet:** Quit Lunar after launch - whether the game keeps
+  running when Lunar's launcher quits under it, and whether the close-launcher
+  link quits Lunar on Windows at that point. Covered by tests only.
 
 ## Gotchas worth knowing
 
@@ -506,7 +522,8 @@ launcher/
                   island3d.js (three.js island), kit.js, tokens.css, fonts/
   src-tauri/
     src/main.rs         startup sequence + the two commands
-    src/lunar_quit.rs   setup's polite Lunar quit ("Closing Lunar"), macOS - pid-targeted
+    src/lunar_quit.rs   the polite Lunar quit ("Closing Lunar", Quit Lunar after launch),
+                        macOS - pid-targeted
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification: global fail-closed, per-target isolated
     src/install.rs      stage_verified + commit, the atomic jar primitive
