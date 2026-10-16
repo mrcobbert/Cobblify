@@ -338,6 +338,11 @@ impl Watch {
         self.verdict.decided() && !self.verdict.is_loaded()
     }
 
+    /// This launch's game JVM was seen exiting (latched).
+    pub fn game_exited(&self) -> bool {
+        self.exited
+    }
+
     /// The verdict over this poll's facts (see `progress::LoadWatch`). None while no launch
     /// is watched.
     pub fn verdict(

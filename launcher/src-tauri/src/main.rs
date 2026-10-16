@@ -2175,10 +2175,14 @@ fn arms_lunar_quit(kind: LaunchKind, reply: &LaunchReply) -> bool {
         )
 }
 
-/// Whether the armed quit is due: Cobblify is known to have loaded in this session's game and
-/// the launch did not end with an outcome. True at most once per session.
+/// Whether the armed quit is due: Cobblify is known to have loaded in this session's game, the
+/// launch did not end with an outcome and the game was not seen exiting (a poll after a quick
+/// crash can still report loaded). True at most once per session.
 fn lunar_quit_due(progress: &mut ProgressState, loaded: bool) -> bool {
-    loaded && !progress.watch.ended() && std::mem::take(&mut progress.quit_lunar)
+    loaded
+        && !progress.watch.ended()
+        && !progress.watch.game_exited()
+        && std::mem::take(&mut progress.quit_lunar)
 }
 
 /// The quit request in flight. Its sender drops when the request is over.
@@ -3212,6 +3216,27 @@ java.lang.IllegalStateException: Could not find game version\n",
             let (p, quit) = poll(&mut st, home.path(), &mut env);
             assert!(p.loaded && !quit, "once per session");
             assert!(!lunar_quit_due(&mut st, true), "an acknowledged snapshot after it does not send it again");
+        }
+
+        /// A game that loaded Cobblify and crashed before any poll saw it loaded: the poll that
+        /// finds both still reports loaded, but Lunar is left alone for the next try.
+        #[test]
+        fn a_game_seen_exiting_never_quits_lunar() {
+            let home = tempfile::tempdir().unwrap();
+            let baseline = SystemTime::now() - Duration::from_secs(5);
+            let mut st = armed(home.path(), baseline);
+            let mut env = FakeEnv::new(SystemTime::now());
+            let birth = baseline + Duration::from_secs(1);
+            env.spawn(77, birth);
+            let (_, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(!quit);
+            write_lobby(home.path(), 77, birth + Duration::from_millis(400));
+            env.kill(77);
+            env.advance(1);
+            let (p, quit) = poll(&mut st, home.path(), &mut env);
+            assert!(p.loaded, "the stale lobby still proves the load");
+            assert!(!quit, "the game is gone");
+            assert!(!lunar_quit_due(&mut st, true), "nor on a late acknowledged snapshot");
         }
 
         /// An acknowledged snapshot can beat the progress poll's `loaded`: it sends the quit, and

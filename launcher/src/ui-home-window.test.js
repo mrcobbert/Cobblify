@@ -121,11 +121,11 @@ test("the settings sheet: its rows, a switch that saves, Esc closes", async () =
   await waitFor(() => calls.some((c) => c.command === "set_use_external_overlay" && c.args.enabled === false), { label: "the overlay save" });
   await waitFor(() => sheet.querySelector('.tog[data-key="overlay"]').getAttribute("aria-checked") === "false", { label: "the switch off" });
 
-  // Quit Lunar after launch: beside External Overlay, off by default, with its sub-text; it saves through its own command.
+  // Quit Lunar after launch: beside External Overlay, off by default, one line like the rest; it saves through its own command.
   const quit = () => sheet.querySelector('[data-row="quit"] .tog[data-key="quit"]');
   assert.equal(quit().closest(".sec"), sheet.querySelector('[data-row="overlay"]').closest(".sec"), "beside External Overlay");
   assert.equal(quit().getAttribute("aria-checked"), "false");
-  assert.equal(sheet.querySelector('[data-row="quit"] .d').textContent, "Close Lunar's launcher once Cobblify loads in game");
+  assert.equal(sheet.querySelector('[data-row="quit"] .d'), null, "no sub-text");
   quit().click();
   await waitFor(() => calls.some((c) => c.command === "set_quit_lunar_after_launch" && c.args.enabled === true), { label: "the quit save" });
   await waitFor(() => quit().getAttribute("aria-checked") === "true", { label: "the quit switch on" });
