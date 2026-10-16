@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.18.2",
+    "channel": "stable",
+    "date": "2026-10-16",
+    "sections": [["New", [
+      "Bed Alert and BG Alert: a sound when a teammate or your party calls bed or bg in a Bed Wars game, each with its own sound.",
+      "Quit Lunar after launch: a launcher setting that closes Lunar's launcher once Cobblify loads in game. Off by default."
+    ]]]
+  },
+  {
     "version": "0.18.1",
     "channel": "stable",
     "date": "2026-10-15",
