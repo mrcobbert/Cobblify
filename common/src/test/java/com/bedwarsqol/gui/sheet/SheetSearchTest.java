@@ -16,10 +16,10 @@ public class SheetSearchTest {
         assertEquals(2, hits.size());
         assertEquals("chatNotify", hits.get(0).module.id);
         assertTrue(hits.get(0).moduleHit);
-        assertEquals(2, hits.get(0).rows.size());
+        assertEquals(4, hits.get(0).rows.size());
         assertEquals("tagUtils", hits.get(1).module.id);
         assertEquals(1, hits.get(1).rows.size());
-        assertEquals(3, SheetSearch.count(hits));
+        assertEquals(5, SheetSearch.count(hits));
     }
 
     @Test
@@ -58,9 +58,13 @@ public class SheetSearchTest {
         values.missing.add("chatNotify");
         values.missing.add("notifyMention");
         values.missing.add("notifyInc");
+        values.missing.add("notifyBed");
+        values.missing.add("notifyBg");
         List<SheetSearch.Hit> hits = SheetSearch.search("sound", values);
         assertEquals("incAlert", hits.get(0).module.id);
-        assertEquals(2, SheetSearch.count(hits));
+        assertEquals("bedAlert", hits.get(1).module.id);
+        assertEquals("bgAlert", hits.get(2).module.id);
+        assertEquals(4, SheetSearch.count(hits));
     }
 
     @Test

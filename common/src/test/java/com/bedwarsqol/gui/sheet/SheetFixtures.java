@@ -160,7 +160,8 @@ final class SheetFixtures {
             for (String id : ("potion armor inventory genTimers keystrokes session mapInfo potionInGame armorInGame "
                     + "inventoryInGame genTimersInGame keystrokesInGame mapInfoInGame sessionHold handPos tnt noEsc "
                     + "blockOverlay boSee boWhite tabHF").split(" ")) v.put(id, false);
-            for (String id : ("chatStack stackTime stackBlanks chatNotify notifyMention notifyInc chatUnlimited chatKeep "
+            for (String id : ("chatStack stackTime stackBlanks chatNotify notifyMention notifyInc notifyBed notifyBg "
+                    + "chatUnlimited chatKeep "
                     + "chatCopy chatLong incKey stats statsNametag statsTab statsHover statsChat statsRank statsReport "
                     + "nickUtils nickNotify autoDenick tagUtils tagUrchin tagTab tagNametag tagChat tagSound "
                     + "autoGg partyJoin").split(" ")) v.put(id, true);
@@ -179,6 +180,8 @@ final class SheetFixtures {
             v.put("font", "Modern");
             v.put("accent", "Orange");
             missing.add("incAlert");
+            missing.add("bedAlert");
+            missing.add("bgAlert");
         }
 
         @Override
