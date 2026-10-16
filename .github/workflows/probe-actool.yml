@@ -1,0 +1,39 @@
+name: Probe actool (temporary, never merged)
+on:
+  push:
+    branches: [probe/actool]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: actool on our icon and on Tauri's example icon
+        run: |
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "using $xcode26"
+          export DEVELOPER_DIR="$xcode26/Contents/Developer"
+          xcrun actool --version --output-format human-readable-text
+          for icon in launcher/src-tauri/icons/Cobblify.icon probe-icon/Example.icon; do
+            echo "=================== $icon"
+            work=$(mktemp -d)
+            cp -R "$icon" "$work/Icon.icon"
+            mkdir "$work/out"
+            xcrun actool "$work/Icon.icon" --compile "$work/out" --output-format human-readable-text --notices --warnings \
+              --output-partial-info-plist "$work/out/assetcatalog_generated_info.plist" --app-icon Icon --include-all-app-icons \
+              --accent-color AccentColor --enable-on-demand-resources NO --development-region en --target-device mac \
+              --minimum-deployment-target 26.0 --platform macosx; echo "actool exit $?"
+            ls -la "$work/out"
+            if [ -f "$work/out/Assets.car" ]; then
+              /usr/bin/assetutil --info "$work/out/Assets.car" | head -c 6000
+              cat "$work/out/assetcatalog_generated_info.plist"
+            fi
+          done
