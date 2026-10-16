@@ -84,10 +84,12 @@ jobs:
           # macOS 26's light and dark app icon: Tauri compiles icons/Cobblify.icon into Assets.car with
           # actool, and only Xcode 26's actool can (an older one makes Tauri skip it silently). The image
           # keeps its default Xcode for the build itself; actool alone comes from the newest Xcode 26.
+          # stdin is /dev/null: under Tauri's inherited stdin actool prints "Bad file descriptor", exits 0
+          # and writes nothing (tauri-apps/tauri#15315, fix pending in #15991).
           xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           test -n "$xcode26"
           mkdir -p "$RUNNER_TEMP/xcode26-bin"
-          printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@"\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
+          printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@" < /dev/null\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
           chmod +x "$RUNNER_TEMP/xcode26-bin/actool"
           export PATH="$RUNNER_TEMP/xcode26-bin:$PATH"
           actool --version --output-format human-readable-text
