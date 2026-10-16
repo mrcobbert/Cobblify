@@ -1,5 +1,11 @@
 [
   {
+    "version": "0.18.1",
+    "channel": "stable",
+    "date": "2026-10-15",
+    "sections": [["New", ["A new app icon: a Bed Wars island with a blue bed. On macOS 26 it follows light and dark mode."]]]
+  },
+  {
     "version": "0.18.0",
     "channel": "stable",
     "date": "2026-10-11",

@@ -18,7 +18,7 @@ test("the bundled notes are well formed and newest first", () => {
       assert.ok(items.length >= 1);
     }
   }
-  assert.equal(NOTES[0].version, "0.18.0");
+  assert.equal(NOTES[0].version, "0.18.1");
   const dates = NOTES.map((n) => n.date);
   assert.deepEqual([...dates].sort().reverse(), dates, "dates run newest first");
 });

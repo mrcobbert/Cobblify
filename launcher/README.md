@@ -206,6 +206,14 @@ either way; only the dmg step fails.
 The build is **blank on purpose** - no jars inside it. That is what keeps the
 backend token out of every build artifact. Jars are injected later, locally.
 
+The app icon (a pocket island with a blue bed) is drawn by
+`node tools/make-app-icon.mjs`, which writes everything in `src-tauri/icons/`; edit
+the script, never the images. `Cobblify.icon` is the macOS 26 icon with its light and
+dark tiles. Tauri compiles it with actool, which has to be Xcode 26's: without it
+the build logs an actool error and ships only `icon.icns` (the dark tile), which is
+what older macOS shows anyway. The release workflow points actool at the runner's
+Xcode 26 and fails if `Assets.car` is missing.
+
 ### Build on Windows
 
 A Windows machine builds and tests the whole launcher locally - this is the

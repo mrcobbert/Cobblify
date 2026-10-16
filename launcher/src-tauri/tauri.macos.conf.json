@@ -20,5 +20,12 @@
         }
       }
     ]
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/Cobblify.icon"
+    ]
   }
 }
