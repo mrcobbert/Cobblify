@@ -18,7 +18,7 @@ import java.util.Set;
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * Lunar ships Potion, Armor, Keystrokes, TNT Countdown, Block Overlay, the generic chat modules and Auto GG itself,
- * so those are absent here; with no Chat Notifications module, Inc Alert is a module of its own.
+ * so those are absent here; with no Chat Notifications module, Inc, Bed and BG Alert are modules of their own.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -26,7 +26,8 @@ final class SettingsBindings implements SheetValues {
     private static final Set<String> IDS = new HashSet<String>(Arrays.asList(
             "inventory", "inventoryInGame", "genTimers", "genTimersInGame",
             "session", "sessionHold", "sessionKey", "sessionReset", "mapInfo", "mapInfoInGame",
-            "handPos", "handX", "handY", "handZ", "handScale", "noEsc", "tabHF", "incAlert", "incKey",
+            "handPos", "handX", "handY", "handZ", "handScale", "noEsc", "tabHF",
+            "incAlert", "bedAlert", "bgAlert", "incKey",
             "stats", "statsNametag", "statsTab", "statsHover", "statsChat", "statsRank", "statsReport",
             "nickUtils", "nickNotify", "autoDenick",
             "tagUtils", "tagUrchin", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin",
@@ -78,6 +79,8 @@ final class SettingsBindings implements SheetValues {
             case "noEsc": return c.suppressEscMenu;
             case "tabHF": return c.tabHideHeaderFooter;
             case "incAlert": return c.chatNotifyInc;
+            case "bedAlert": return c.chatNotifyBed;
+            case "bgAlert": return c.chatNotifyBg;
             case "incKey": return c.pcIncKey;
             case "stats": return c.playerStats;
             case "statsNametag": return c.playerStatsNametag;
@@ -116,6 +119,8 @@ final class SettingsBindings implements SheetValues {
             case "noEsc": c.suppressEscMenu = v; break;
             case "tabHF": c.tabHideHeaderFooter = v; break;
             case "incAlert": c.chatNotifyInc = v; break;
+            case "bedAlert": c.chatNotifyBed = v; break;
+            case "bgAlert": c.chatNotifyBg = v; break;
             case "incKey": c.pcIncKey = v; break;
             case "stats": c.playerStats = v; break;
             case "statsNametag": c.playerStatsNametag = v; break;
