@@ -81,13 +81,16 @@ jobs:
           npm ci
           npm test
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          # macOS 26's light and dark app icon: Tauri compiles icons/Cobblify.icon into Assets.car with
-          # actool, and only Xcode 26's actool can (an older one makes Tauri skip it silently). The image
-          # keeps its default Xcode for the build itself; actool alone comes from the newest Xcode 26.
-          # stdin is /dev/null: under Tauri's inherited stdin actool prints "Bad file descriptor", exits 0
+          # The whole build uses the newest Xcode 26. Linked against an older SDK, the app runs in macOS 26's
+          # compatibility mode: the pre-26 window frame and window buttons, unlike every other app. Only
+          # Xcode 26's actool compiles icons/Cobblify.icon (the light and dark app icon) into Assets.car; an
+          # older one makes Tauri skip it silently.
+          # actool's stdin is /dev/null: under Tauri's inherited stdin it prints "Bad file descriptor", exits 0
           # and writes nothing (tauri-apps/tauri#15315, fix pending in #15991).
           xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           test -n "$xcode26"
+          export DEVELOPER_DIR="$xcode26/Contents/Developer"
+          xcrun --sdk macosx --show-sdk-version
           mkdir -p "$RUNNER_TEMP/xcode26-bin"
           printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@" < /dev/null\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
           chmod +x "$RUNNER_TEMP/xcode26-bin/actool"
@@ -101,6 +104,10 @@ jobs:
           app=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d -print -quit)
           test -f "$app/Contents/Resources/Assets.car"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$app/Contents/Info.plist"
+          exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          for arch in arm64 x86_64; do
+            otool -arch "$arch" -l "$exe" | grep -E '^ *sdk 26\.'
+          done
           codesign --verify --deep --strict "$app"
           # The install image is a plain hdiutil disk image, not Tauri's dmg bundle: that
           # one lays the window out through Finder AppleScript, which needs automation
