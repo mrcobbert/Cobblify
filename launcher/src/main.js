@@ -760,6 +760,18 @@ function maybeShowWindow() {
 }
 setTimeout(showWindow, SHOW_WINDOW_MAX_MS);
 
+// macOS full screen hides the window buttons, so the header drops the room it keeps for them (app.css). Tauri sends
+// a resize once a full-screen change has settled, and the state is read then.
+function trackFullscreen() {
+  const app = el("app");
+  const w = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (app.dataset.platform !== "mac" || !w?.isFullscreen || !w.onResized) return;
+  const sync = () => w.isFullscreen().then((on) => app.toggleAttribute("data-fullscreen", on), () => {});
+  sync();
+  w.onResized(sync).catch(() => {});
+}
+trackFullscreen();
+
 /** The launcher wears the accent and font of the client you play (decision 8). */
 function applyTheme(sel) {
   const kind = sel ? CL[sel].kind : "lunar";

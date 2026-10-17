@@ -10,6 +10,13 @@
   RMDir /r "$INSTDIR\resources"
 !macroend
 
+; Explorer caches the exe's icon for the Start menu, desktop and taskbar shortcuts, and an update keeps
+; the exe path, so a new app icon never showed after updating (0.18.1). SHCNE_ASSOCCHANGED with
+; SHCNF_FLUSH makes Explorer drop its cached icons; the template only sends it for file associations.
+!macro NSIS_HOOK_POSTINSTALL
+  System::Call "shell32::SHChangeNotify(i,i,i,i) (0x08000000, 0x1000, 0, 0)" ; the call FileAssociation.nsh makes
+!macroend
+
 ; Uninstalling the launcher must not leave Lunar Client pointed at a
 ; `-javaagent:` whose jar is about to be deleted - that is a Lunar that will
 ; not start. The exe undoes its own Lunar registration when it is run with

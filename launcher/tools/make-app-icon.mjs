@@ -324,7 +324,8 @@ for (const s of [16, 32, 128, 256, 512]) {
 execFileSync("iconutil", ["-c", "icns", iconset, "-o", path.join(ICONS, "icon.icns")]);
 fs.rmSync(path.dirname(iconset), { recursive: true, force: true });
 
-fs.writeFileSync(path.join(ICONS, "icon.ico"), ico([16, 24, 32, 48, 64, 128, 256].map((s) => iconImage(s, "win"))));
+// 32 px first: Tauri makes the window's title-bar and taskbar icon from the .ico's first entry (tauri-codegen)
+fs.writeFileSync(path.join(ICONS, "icon.ico"), ico([32, 16, 24, 48, 64, 128, 256].map((s) => iconImage(s, "win"))));
 fs.writeFileSync(path.join(ICONS, "icon.png"), png(iconImage(512, "mac")));
 
 if (preview) {

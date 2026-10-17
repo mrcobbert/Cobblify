@@ -64,7 +64,8 @@ function unrefWrap(fn) {
 
 /**
  * The bridge also carries Tauri's event API (`emit(name, payload)` reaches every `listen` the app made, as the
- * backend's events do) and the current window's `show` (`windowShows.count`).
+ * backend's events do) and the current window's `show` (`windowShows.count`), `isFullscreen`
+ * (`windowState.fullscreen`) and `onResized` (`emit("tauri://resize")`).
  *
  * @param {{ replies?: Record<string, unknown>, url?: string, setup?: (window: object) => void }} opts
  *   `replies` maps a Tauri command name to its reply: a value, or a function
@@ -109,10 +110,17 @@ export async function bootWindow({ replies = {}, url = "http://localhost/", setu
   };
   /** How often the frontend asked to show its (hidden-at-start) window. */
   const windowShows = { count: 0 };
+  const windowState = { fullscreen: false };
   window.__TAURI__ = {
     core: { invoke },
     event: { listen },
-    window: { getCurrentWindow: () => ({ show: async () => void windowShows.count++ }) },
+    window: {
+      getCurrentWindow: () => ({
+        show: async () => void windowShows.count++,
+        isFullscreen: async () => windowState.fullscreen,
+        onResized: (handler) => listen("tauri://resize", handler),
+      }),
+    },
   };
 
   const realSetTimeout = globalThis.setTimeout;
@@ -159,6 +167,7 @@ export async function bootWindow({ replies = {}, url = "http://localhost/", setu
     countCalls: (command) => calls.filter((c) => c.command === command).length,
     emit,
     windowShows,
+    windowState,
     tick,
     waitFor,
   };
