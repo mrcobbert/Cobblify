@@ -20,11 +20,11 @@ export const FILLVARS = ["e", "g", "gs", "gf", "gn", "gg"];
 export const ZERO = Object.freeze({ e: 0, g: 0, gs: 0, gf: 0, gn: 0, gg: 0 });
 
 /**
- * The window in CSS px: header band 24 su, 5 su margins; `aw`/`ah` the board's room, `awMin` the room once a board
- * at the floor scale gives up its side margins.
+ * The window in CSS px: header band `hdr` su (24; 36 on macOS outside full screen), 5 su margins; `aw`/`ah` the
+ * board's room, `awMin` the room once a board at the floor scale gives up its side margins.
  */
-export function frame(W, H, su) {
-  return { W, H, su, top: 24 * su, m: 5 * su, aw: W - 15 * su, awMin: W - 8 * su, ah: H - 24 * su - 10 * su };
+export function frame(W, H, su, hdr = 24) {
+  return { W, H, su, top: hdr * su, m: 5 * su, aw: W - 15 * su, awMin: W - 8 * su, ah: H - hdr * su - 10 * su };
 }
 
 /** GUI scale 2 in device px. */

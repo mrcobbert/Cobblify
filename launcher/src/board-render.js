@@ -266,7 +266,9 @@ export function createBoard({ stage, board, title, joining, win = window }) {
 
   const dpr = () => win.devicePixelRatio || 1;
   const su = () => parseFloat(win.getComputedStyle(doc.documentElement).getPropertyValue("--su")) || 2;
-  const frameNow = () => frame(win.innerWidth, win.innerHeight, su());
+  /* the header's height in su (dash.css --hdr-su) */
+  const hdrSu = () => parseFloat(win.getComputedStyle(stage).getPropertyValue("--hdr-su")) || 24;
+  const frameNow = () => frame(win.innerWidth, win.innerHeight, su(), hdrSu());
   const font = () => doc.documentElement.dataset.font || "minecraft";
 
   /** Width and height in GUI px, at the tight spacing unless `vars`; `core` leaves the notes out. */
@@ -402,7 +404,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
     // One k per window for every context; a roster wider than the reference steps it down rather than clip. The
     // scale and fill are kept per window, font and context (a game: its roster's size), so a data tick never
     // re-spaces the board: k only ever steps down until the window or the context changes.
-    const key = `${f.W}x${f.H}@${d}:${font()}:${v.context}` + (game ? `:${rowCount(v)}:${v.blocks.length}` : "");
+    const key = `${f.W}x${f.H}+${f.top}@${d}:${font()}:${v.context}` + (game ? `:${rowCount(v)}:${v.blocks.length}` : "");
     const kept = layouts.get(key);
     const kWin = kFor(R.GAME.core, R.GAME.h, f, d);
     const k = Math.min(kept?.k ?? kWin, kForWidth(kWin, base.core, f, d));

@@ -8,9 +8,10 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .app[hidden] { display: none; }
 /* the view under the header fills the window, so home's column centres on the window's middle (prototype #main) */
 #main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-/* macOS: the overlay title bar puts the window buttons over our header (tauri.macos.conf.json); full screen hides
-   them, so the header gives their room back (main.js sets data-fullscreen) */
-.app[data-platform=mac]:not([data-fullscreen]) .hdr { padding-left: calc(40*var(--su)); }
+/* macOS: the window buttons sit top left over a 12 su strip the header keeps above its row (tauri.macos.conf.json puts
+   them at 11 su, so the wordmark lines up under them). Full screen hides them and the row moves up (main.js sets
+   data-fullscreen). */
+.app[data-platform=mac]:not([data-fullscreen]) .hdr { height: calc(36*var(--su)); padding-top: calc(12*var(--su)); }
 
 /* ---------- root ---------- */
 .app{position:relative;display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;background:var(--ground);color:var(--hi);

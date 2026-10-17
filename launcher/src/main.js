@@ -731,6 +731,7 @@ function refreshUi() {
     setupActive: setupShown() || setupRequest || !!pick,
   });
   ui.update({ home, sheet, version, dev: update.updateChannel === "dev" });
+  el("dash-dev").hidden = update.updateChannel !== "dev";
   applyTheme(home.sel);
   maybeOpen(home);
   maybeShowWindow();
@@ -760,13 +761,19 @@ function maybeShowWindow() {
 }
 setTimeout(showWindow, SHOW_WINDOW_MAX_MS);
 
-// macOS full screen hides the window buttons, so the header drops the room it keeps for them (app.css). Tauri sends
-// a resize once a full-screen change has settled, and the state is read then.
+// macOS full screen hides the window buttons, so the home and board headers drop the strip they keep for them
+// (app.css, dash.css). Tauri sends a resize once a full-screen change has settled, and the state is read then.
 function trackFullscreen() {
   const app = el("app");
   const w = window.__TAURI__?.window?.getCurrentWindow?.();
   if (app.dataset.platform !== "mac" || !w?.isFullscreen || !w.onResized) return;
-  const sync = () => w.isFullscreen().then((on) => app.toggleAttribute("data-fullscreen", on), () => {});
+  const sync = () =>
+    w.isFullscreen().then((on) => {
+      if (app.hasAttribute("data-fullscreen") === on) return;
+      app.toggleAttribute("data-fullscreen", on);
+      stage.toggleAttribute("data-fullscreen", on);
+      relayoutBoard();
+    }, () => {});
   sync();
   w.onResized(sync).catch(() => {});
 }
