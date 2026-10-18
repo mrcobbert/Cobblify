@@ -1,4 +1,5 @@
 name: Launcher Update Candidate
+run-name: Launcher ${{ inputs.version }}${{ inputs.local_build && format(' local {0}', inputs.local_id) || '' }}
 
 on:
   workflow_dispatch:
@@ -6,6 +7,13 @@ on:
       version:
         description: Exact repo version to build
         required: true
+      local_build:
+        description: Build on the owner's on-demand Mac and Windows runners (start with tools/local-ci/run-release.py)
+        type: boolean
+        default: false
+      local_id:
+        description: Controller-generated random label; required only for local builds
+        default: ''
       publish_dev:
         description: Also publish this build to the opt-in dev channel as <version>-dev.<run number>
         type: boolean
@@ -24,29 +32,96 @@ env:
   BUILD_VERSION: ${{ inputs.publish_dev && format('{0}-dev.{1}', inputs.version, github.run_number) || inputs.version }}
 
 jobs:
+  local-assets:
+    if: ${{ inputs.local_build }}
+    runs-on: macos-15-intel
+    steps:
+      - name: Authorize local release
+        env:
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          LOCAL_ID: ${{ inputs.local_id }}
+        run: |
+          test "$ACTOR" = mrcobbert
+          test "$REPOSITORY" = mrcobbert/Cobblify
+          [[ "$LOCAL_ID" =~ ^[a-f0-9]{32}$ ]]
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: Compile the current Mac icon with Xcode
+        run: |
+          xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          test -n "$xcode26"
+          export DEVELOPER_DIR="$xcode26/Contents/Developer"
+          mkdir -p "$RUNNER_TEMP/icon-source" macos-icon
+          cp -R launcher/src-tauri/icons/Cobblify.icon "$RUNNER_TEMP/icon-source/Icon.icon"
+          xcrun actool "$RUNNER_TEMP/icon-source/Icon.icon" --compile macos-icon \
+            --output-format human-readable-text --notices --warnings \
+            --output-partial-info-plist macos-icon/assetcatalog_generated_info.plist \
+            --app-icon Icon --include-all-app-icons --accent-color AccentColor \
+            --enable-on-demand-resources NO --development-region en --target-device mac \
+            --minimum-deployment-target 26.0 --platform macosx < /dev/null
+          test -s macos-icon/Assets.car
+          python3 tools/local-ci/icon-assets.py record launcher/src-tauri/icons/Cobblify.icon macos-icon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-macos-icon
+          path: macos-icon/
+          retention-days: 7
+          if-no-files-found: error
+
   macos:
+    needs: [local-assets]
+    if: ${{ always() && (needs.local-assets.result == 'success' || (!inputs.local_build && needs.local-assets.result == 'skipped')) }}
     # Java 8 is unavailable on GitHub's ARM macOS image. The Intel image can
     # install it and still cross-compile the universal Apple bundle.
-    runs-on: macos-15-intel
+    runs-on: ${{ inputs.local_build && fromJSON(format('["cobblify-{0}-macos"]', inputs.local_id)) || 'macos-15-intel' }}
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ inputs.local_build && 'local-macos-build' || format('hosted-macos-{0}', github.run_id) }}
+      cancel-in-progress: false
     environment: launcher-stable
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - name: Configure private local caches
+        if: ${{ inputs.local_build }}
+        shell: bash
+        run: |
+          test -n "$COBBLIFY_CI_CACHE"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo"
+          echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = macOS ]; then
+            jdk21=$(/usr/libexec/java_home -v 21)
+            jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
+            test -x "$jdk8/bin/java"
+            echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "$jdk21/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
+        if: ${{ !inputs.local_build || runner.os != 'macOS' }}
         with:
           distribution: temurin
           java-version: |
             8
             21
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.local_build && runner.os == 'macOS' }}
+        with:
+          name: local-macos-icon
+          path: ${{ runner.temp }}/macos-icon
       - name: Verify version
         env: { RELEASE_VERSION: "${{ inputs.version }}" }
         run: |
           ./tools/check-release-version.sh
+          bash tools/check-tree-drift.sh
+          if [ "$RUNNER_OS" != Windows ]; then bash launcher/tools/test-release-workflows.sh; fi
           test "$(sed -n 's/^mod_version=//p' gradle.properties)" = "$RELEASE_VERSION"
       - name: Build private mod resources
         env:
@@ -55,10 +130,11 @@ jobs:
           WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
           WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
-          mkdir -p "$RUNNER_TEMP/gradle-home"
-          printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
-          GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew :1.8.9-forge:assemble --no-daemon
-          (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
+          export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
+          export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
+          ./gradlew :1.8.9-forge:assemble --no-daemon
+          (cd lunar && ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
             launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
@@ -80,6 +156,9 @@ jobs:
         run: |
           npm ci
           npm test
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
+          fi
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           # The whole build uses the newest Xcode 26. Linked against an older SDK, the app runs in macOS 26's
           # compatibility mode: the pre-26 window frame and window buttons, unlike every other app. Only
@@ -87,18 +166,25 @@ jobs:
           # older one makes Tauri skip it silently.
           # actool's stdin is /dev/null: under Tauri's inherited stdin it prints "Bad file descriptor", exits 0
           # and writes nothing (tauri-apps/tauri#15315, fix pending in #15991).
-          xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
-          test -n "$xcode26"
-          export DEVELOPER_DIR="$xcode26/Contents/Developer"
-          xcrun --sdk macosx --show-sdk-version
           mkdir -p "$RUNNER_TEMP/xcode26-bin"
-          printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@" < /dev/null\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+            test -d "$SDKROOT"
+            python3 ../tools/local-ci/icon-assets.py verify src-tauri/icons/Cobblify.icon "$RUNNER_TEMP/macos-icon"
+            export COBBLIFY_ICON_ASSETS="$RUNNER_TEMP/macos-icon"
+            cp ../tools/local-ci/actool.py "$RUNNER_TEMP/xcode26-bin/actool"
+          else
+            xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+            test -n "$xcode26"
+            export DEVELOPER_DIR="$xcode26/Contents/Developer"
+            printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@" < /dev/null\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
+          fi
           chmod +x "$RUNNER_TEMP/xcode26-bin/actool"
           export PATH="$RUNNER_TEMP/xcode26-bin:$PATH"
           actool --version --output-format human-readable-text
           config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
           npx tauri build --target universal-apple-darwin --bundles app --ci --config "$config"
-          bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          bundle_dir="${CARGO_TARGET_DIR:-src-tauri/target}/universal-apple-darwin/release/bundle/macos"
           app_count=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d | wc -l | tr -d '[:space:]')
           test "$app_count" = 1
           app=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d -print -quit)
@@ -126,28 +212,78 @@ jobs:
           test -f "$verify_dir/MAC INSTALL.txt"
           test "$(readlink "$verify_dir/Applications")" = /Applications
           hdiutil detach "$verify_dir"
+      - name: Locate release artifacts
+        shell: bash
+        working-directory: launcher
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/release/bundle/nsis" >> "$GITHUB_ENV"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-macos-${{ inputs.version }}
           path: |
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/Cobblify-Launcher-*.dmg
+            ${{ env.RELEASE_BUNDLE_DIR }}/*.app.tar.gz
+            ${{ env.RELEASE_BUNDLE_DIR }}/*.app.tar.gz.sig
+            ${{ env.RELEASE_BUNDLE_DIR }}/Cobblify-Launcher-*.dmg
           retention-days: 30
           if-no-files-found: error
 
+      - name: Remove private intermediate resources
+        if: ${{ always() && inputs.local_build }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS_CLEAN'
+          import { lstatSync, readdirSync, rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.GITHUB_WORKSPACE;
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+            const folder = join(root, relative);
+            let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+            if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');
+            if (relative.endsWith('resources')) {
+              for (const name of readdirSync(folder)) if (name.endsWith('.jar') || name === 'manifest.json') rmSync(join(folder, name));
+            } else rmSync(folder, { recursive: true });
+          }
+          JS_CLEAN
+
   windows:
-    runs-on: windows-latest
+    needs: [local-assets]
+    if: ${{ always() && (needs.local-assets.result == 'success' || (!inputs.local_build && needs.local-assets.result == 'skipped')) }}
+    runs-on: ${{ inputs.local_build && fromJSON(format('["cobblify-{0}-windows"]', inputs.local_id)) || 'windows-latest' }}
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ inputs.local_build && 'local-windows-build' || format('hosted-windows-{0}', github.run_id) }}
+      cancel-in-progress: false
     environment: launcher-stable
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - name: Configure private local caches
+        if: ${{ inputs.local_build }}
+        shell: bash
+        run: |
+          test -n "$COBBLIFY_CI_CACHE"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo"
+          echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = macOS ]; then
+            jdk21=$(/usr/libexec/java_home -v 21)
+            jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
+            test -x "$jdk8/bin/java"
+            echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "$jdk21/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
+        if: ${{ !inputs.local_build || runner.os != 'macOS' }}
         with:
           distribution: temurin
           java-version: |
@@ -158,6 +294,8 @@ jobs:
         env: { RELEASE_VERSION: "${{ inputs.version }}" }
         run: |
           ./tools/check-release-version.sh
+          bash tools/check-tree-drift.sh
+          if [ "$RUNNER_OS" != Windows ]; then bash launcher/tools/test-release-workflows.sh; fi
           test "$(sed -n 's/^mod_version=//p' gradle.properties)" = "$RELEASE_VERSION"
       - name: Build private mod resources
         shell: bash
@@ -167,10 +305,11 @@ jobs:
           WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
           WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
-          mkdir -p "$RUNNER_TEMP/gradle-home"
-          printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
-          GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat :1.8.9-forge:assemble --no-daemon
-          (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
+          export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
+          export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
+          ./gradlew.bat :1.8.9-forge:assemble --no-daemon
+          (cd lunar && ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
             launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
@@ -193,19 +332,49 @@ jobs:
         run: |
           npm ci
           npm test
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
+          fi
           config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
           npx tauri build --bundles nsis --ci --config "$config"
-          bundle_dir="src-tauri/target/release/bundle/nsis"
+          bundle_dir="${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/nsis"
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe.sig' -type f | wc -l | tr -d '[:space:]')" = 1
+      - name: Locate release artifacts
+        shell: bash
+        working-directory: launcher
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/release/bundle/nsis" >> "$GITHUB_ENV"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-windows-${{ inputs.version }}
           path: |
-            launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
-            launcher/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            ${{ env.RELEASE_BUNDLE_DIR }}/*-setup.exe
+            ${{ env.RELEASE_BUNDLE_DIR }}/*-setup.exe.sig
           retention-days: 30
           if-no-files-found: error
+
+      - name: Remove private intermediate resources
+        if: ${{ always() && inputs.local_build }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS_CLEAN'
+          import { lstatSync, readdirSync, rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.GITHUB_WORKSPACE;
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+            const folder = join(root, relative);
+            let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+            if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');
+            if (relative.endsWith('resources')) {
+              for (const name of readdirSync(folder)) if (name.endsWith('.jar') || name === 'manifest.json') rmSync(join(folder, name));
+            } else rmSync(folder, { recursive: true });
+          }
+          JS_CLEAN
 
   ready:
     needs: [macos, windows]

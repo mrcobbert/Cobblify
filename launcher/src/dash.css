@@ -56,7 +56,7 @@ body {
   --t8: #838383; --t9: #6a72ff; --ta: #55ff55; --tb: #55ffff; --tc: #ff5555; --td: #ff55ff; --te: #ffff55; --tf: #ffffff;
   --out: #7a7a7a; /* one quiet level for players who are out */
   position: fixed;
-  inset: 0;
+  inset: var(--window-top-inset, 0px) 0 0;
   margin: 0;
   background: var(--ground);
   color: var(--tf);

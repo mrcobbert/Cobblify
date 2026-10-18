@@ -6,8 +6,8 @@ import { bootWindow } from "./test-support/window-harness.js";
 
 /**
  * The board's header carries the Dev builds tag as home's does. On macOS the window keeps a native title bar, made
- * transparent so the window's ground color shows: macOS places the buttons and hides the bar in full screen, so neither
- * header leaves room for them. One boot per file.
+ * transparent while measuring its height, then overlays it so the sheet reaches the top. Main content alone
+ * reserves the measured height. macOS places the buttons and removes the inset in full screen. One boot per file.
  */
 
 const replies = {
@@ -29,12 +29,14 @@ test("the board's header shows the Dev builds tag on the dev channel, as home do
   assert.ok(el("app").querySelector(".brand .tag.dev"), "home shows it too");
 });
 
-test("macOS keeps a native ground-color title bar and no header makes room for the window buttons", () => {
+test("macOS lets the sheet reach the window top, reserving the native bar only for main content", () => {
   const mac = JSON.parse(readFileSync(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8")).app.windows[0];
-  assert.equal(mac.titleBarStyle, "Transparent");
+  assert.equal(mac.titleBarStyle, "Transparent", "startup measures the native bar before switching to full-size content");
+  const native = readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
+  assert.match(native, /set_title_bar_style\(tauri::TitleBarStyle::Overlay\)/);
   assert.equal(mac.backgroundColor, "#1A1A1A");
   assert.equal(mac.trafficLightPosition, undefined, "macOS places the buttons");
-  for (const css of ["./ui/app.css", "./dash.css"]) {
-    assert.doesNotMatch(readFileSync(new URL(css, import.meta.url), "utf8"), /data-platform/, css);
-  }
+  const css = readFileSync(new URL("./ui/app.css", import.meta.url), "utf8");
+  assert.match(css, /#main\s*\{[^}]*margin-top:\s*var\(--window-top-inset/);
+  assert.match(css, /\.sheet\{[^}]*top:0/);
 });

@@ -53,6 +53,15 @@ use preferences::{
 };
 use resources::ForgeJar;
 
+/// Measured from the hidden native frame before enabling full-size content.
+/// Keep the chosen two-row layout for main content; sheets can cover the entire frame.
+struct WindowTopInset(f64);
+
+#[tauri::command]
+fn window_top_inset(window: tauri::WebviewWindow, inset: tauri::State<WindowTopInset>) -> Result<f64, String> {
+    window.is_fullscreen().map(|full| if full { 0.0 } else { inset.0 }).map_err(|e| e.to_string())
+}
+
 /// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
 mod issue {
     pub const MISSING_LAUNCHER: &str = "missing_launcher";
@@ -3686,6 +3695,21 @@ fn main() {
             }
         }))
         .setup(|app| {
+            let top_inset = 0.0;
+            #[cfg(target_os = "macos")]
+            let top_inset = {
+                let window = app.get_webview_window("main").ok_or("missing main window")?;
+                // Measure before changing the style: WKWebView resizes on a later layout pass.
+                let content = window.inner_size()?;
+                let frame = window.outer_size()?;
+                let inset = frame.height.saturating_sub(content.height) as f64 / window.scale_factor()?;
+                window.set_title_bar_style(tauri::TitleBarStyle::Overlay)?;
+                // AppKit preserves content size when changing style, shrinking the frame.
+                // Restore the original total size so main content retains its previous height.
+                window.set_size(frame)?;
+                inset
+            };
+            app.manage(WindowTopInset(top_inset));
             let (status, forge_state, ctx) = start_up(app.handle());
             app.manage(Mutex::new(status));
             app.manage(Mutex::new(forge_state));
@@ -3713,6 +3737,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            window_top_inset,
             status,
             refresh_setup,
             get_launcher,

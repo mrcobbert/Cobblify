@@ -29,6 +29,7 @@ import {
   setupState,
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
+import { installWindowChrome } from "./window-chrome.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
 import { launchViewRoute } from "./launch-view-route.js";
 import { createApp } from "./ui/app.js";
@@ -60,6 +61,7 @@ const connAnnounce = el("conn-announce");
  *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
+const chromeReady = window.__TAURI__ ? installWindowChrome(window, invoke) : Promise.resolve();
 
 let previewLaunchAt = null;
 let previewLaunchForge = false;
@@ -743,9 +745,10 @@ function refreshUi() {
 const SHOW_WINDOW_MAX_MS = 1500;
 let windowShown = false;
 let windowAsked = false;
-function showWindow() {
+async function showWindow() {
   if (windowShown) return;
   windowShown = true;
+  await chromeReady;
   try {
     const w = window.__TAURI__?.window?.getCurrentWindow?.();
     Promise.resolve(w?.show?.()).catch(() => {});
