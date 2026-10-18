@@ -80,6 +80,11 @@ jobs:
       group: ${{ inputs.local_build && 'local-macos-build' || format('hosted-macos-{0}', github.run_id) }}
       cancel-in-progress: false
     environment: launcher-stable
+    env:
+      # Keep checkout bytes identical to the index without changing either user's git settings.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -258,6 +263,11 @@ jobs:
       group: ${{ inputs.local_build && 'local-windows-build' || format('hosted-windows-{0}', github.run_id) }}
       cancel-in-progress: false
     environment: launcher-stable
+    env:
+      # Keep checkout bytes identical to the index without changing either user's git settings.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
