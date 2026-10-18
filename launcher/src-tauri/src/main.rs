@@ -59,7 +59,7 @@ struct WindowTopInset(f64);
 
 #[tauri::command]
 fn window_top_inset(window: tauri::WebviewWindow, inset: tauri::State<WindowTopInset>) -> Result<f64, String> {
-    window.is_fullscreen().map(|full| if full { 0.0 } else { inset.0 }).map_err(|e| e.to_string())
+    window.is_fullscreen().map(|full| if full { 0.0 } else { inset.inner().0 }).map_err(|e| e.to_string())
 }
 
 /// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
