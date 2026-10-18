@@ -887,15 +887,29 @@ mod tests {
         assert!(!is_windows_system_pid(std::process::id()));
     }
 
-    /// The completeness proof is live, not scripted: a real scan must pass
-    /// the raw-list reconciliation and the same-user readability check on
-    /// this host. If either enumeration degrades, `complete` goes false and
-    /// the witness path reads Indeterminate instead of proving absence.
+    /// A real host can legitimately be uncertain (protected Windows processes, for example).
+    /// It must still never invent a game under this nonexistent home.
     #[test]
-    fn a_real_scan_reconciles_to_complete_on_this_host() {
+    fn a_real_scan_does_not_invent_game_candidates() {
         let scan = game_jvm_scan(Path::new("/nonexistent-home-for-this-test"));
-        assert!(scan.complete, "reconciled real snapshot reads complete");
         assert!(scan.pids.is_empty(), "no game JVM under a nonexistent home");
+    }
+
+    /// Completeness is proved against a controlled snapshot, independent of other apps on the host.
+    #[test]
+    fn completeness_requires_a_readable_self_and_every_live_raw_pid() {
+        let own = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[own]), true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always).with_user(UpdateKind::Always),
+        );
+        assert!(scan_is_complete(&system, Some(vec![own.as_u32()])));
+        assert!(!scan_is_complete(&system, None), "failed raw enumeration cannot prove absence");
+        assert!(!scan_is_complete(&System::new(), Some(vec![own.as_u32()])), "missing self fails closed");
+        let child = spawn_canary();
+        assert!(!scan_is_complete(&system, Some(vec![own.as_u32(), child.child.id()])),
+            "a live process omitted by the snapshot makes it uncertain");
     }
 
     /// The reconciliation source must be a real, independent enumeration:

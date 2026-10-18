@@ -185,27 +185,32 @@ pub trait GameProbe: Send {
 /// birth. Privacy contract unchanged - `proc` never requests argv.
 pub struct SystemGameProbe;
 
+/// Preserve uncertainty and positive identities when adapting the native process scan.
+fn scan_from_game_jvms(scan: crate::proc::GameJvmScan) -> Scan {
+    Scan {
+        // A snapshot that failed its self-inclusion completeness proof
+        // may have missed a live JVM: it can witness, never prove
+        // absence (see `GameJvmScan::complete`).
+        outcome: if scan.complete {
+            ScanOutcome::Complete
+        } else {
+            ScanOutcome::Uncertain
+        },
+        candidates: scan
+            .pids
+            .into_iter()
+            .map(|pid| GameCandidate {
+                pid,
+                birth: process_liveness::process_birth_ns(pid),
+            })
+            .collect(),
+    }
+}
+
 impl GameProbe for SystemGameProbe {
     fn scan(&mut self, home: &Path) -> Scan {
         let scan = crate::proc::game_jvm_scan(home);
-        Scan {
-            // A snapshot that failed its self-inclusion completeness proof
-            // may have missed a live JVM: it can witness, never prove
-            // absence (see `GameJvmScan::complete`).
-            outcome: if scan.complete {
-                ScanOutcome::Complete
-            } else {
-                ScanOutcome::Uncertain
-            },
-            candidates: scan
-                .pids
-                .into_iter()
-                .map(|pid| GameCandidate {
-                    pid,
-                    birth: process_liveness::process_birth_ns(pid),
-                })
-                .collect(),
-        }
+        scan_from_game_jvms(scan)
     }
 
     fn check(&mut self, pid: u32, birth: EpochNs) -> IdentityCheck {
@@ -1358,8 +1363,8 @@ mod tests {
 
     fn spawn_post_baseline_writer() -> (u32, i64, std::process::Child) {
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
-            .args(["/C", "ping", "127.0.0.1", "-n", "120", ">", "nul"])
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 120"])
             .spawn()
             .expect("spawn post-baseline writer stand-in");
         #[cfg(not(windows))]
@@ -2403,34 +2408,44 @@ mod tests {
         );
     }
 
-    /// The production probe's completeness is live, not scripted: a real
-    /// snapshot must pass the reconciliation proof and report `Complete`.
     #[test]
-    fn the_production_probe_reports_complete_on_a_real_snapshot() {
+    fn the_production_probe_preserves_completeness_and_positive_candidates() {
+        let own = std::process::id();
+        for complete in [true, false] {
+            let scan = scan_from_game_jvms(crate::proc::GameJvmScan { complete, pids: vec![own] });
+            assert_eq!(scan.outcome, if complete { ScanOutcome::Complete } else { ScanOutcome::Uncertain });
+            assert_eq!(scan.candidates.len(), 1, "uncertainty never erases a positive identity");
+            assert_eq!(scan.candidates[0].pid, own);
+            assert!(scan.candidates[0].birth.is_some(), "the production adapter reads OS identity");
+        }
         let mut probe = SystemGameProbe;
-        let scan = probe.scan(Path::new("/nonexistent-home-for-this-test"));
-        assert_eq!(scan.outcome, ScanOutcome::Complete);
-        assert!(scan.candidates.is_empty());
+        assert!(probe.scan(Path::new("/nonexistent-home-for-this-test")).candidates.is_empty());
     }
 
     #[test]
     fn abort_guards_the_bound_writer_whose_death_was_never_proven() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut session = LobbySession::default();
-        session.reset_for_launch(1, SystemTime::now(), false);
-        let (pid, start_ms, mut child) = spawn_post_baseline_writer();
-        write_lobby(dir.path(), pid, start_ms, "LOBBY", true);
-        let LobbyPoll::Snapshot { snapshot, token } = session.poll(dir.path(), SystemTime::now())
-        else {
-            panic!("expected snapshot");
-        };
-        session.acknowledge(token, 1, &snapshot).expect("bind writer");
-        session.clear_for_abort(false, dir.path());
-        let guards = session.session_guards();
-        assert_eq!(guards.len(), 1);
-        assert_eq!(guards[0].pid, pid);
-        assert!(session.unproven_abort().is_none());
-        let _ = child.kill();
+        for uncertain in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let probe = ScriptedProbe::new();
+            probe.set_fallback(if uncertain { uncertain_scan() } else { complete_scan(&[]) });
+            let mut session = LobbySession::default();
+            session.set_probe(probe.boxed());
+            session.reset_for_launch(1, SystemTime::now(), false);
+            let (pid, start_ms, mut child) = spawn_post_baseline_writer();
+            probe.set_check(pid, IdentityCheck::AliveSameIdentity);
+            write_lobby(dir.path(), pid, start_ms, "LOBBY", true);
+            let LobbyPoll::Snapshot { snapshot, token } = session.poll(dir.path(), SystemTime::now())
+            else { panic!("expected snapshot"); };
+            session.acknowledge(token, 1, &snapshot).expect("bind writer");
+            session.clear_for_abort(false, dir.path());
+            let guards = session.session_guards();
+            assert_eq!(guards.len(), 1);
+            assert_eq!(guards[0].pid, pid);
+            assert_eq!(session.unproven_abort().is_some(), uncertain,
+                "a guarded writer must not erase uncertainty about other processes");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]

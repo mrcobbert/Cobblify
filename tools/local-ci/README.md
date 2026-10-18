@@ -26,9 +26,10 @@ Runner labels and hooks reduce accidental scheduling; they do not isolate a host
 from malicious trusted code. Keep the hosted fallback for untrusted changes.
 GitHub documents this risk in its [runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
 
-Persistent dependency/compilation caches live in private
+Persistent Gradle, npm and Cargo caches live in private
 `~/.local/share/cobblify-ci/cache` directories on both machines. They can contain
-private compiled resources, so do not share or upload them. Backend credentials
+private compiled resources, so do not share or upload them. Local jobs never
+upload the workstation's caches to GitHub. Backend credentials
 are passed as Gradle project environment variables, never saved to persistent
 Gradle properties. Job cleanup removes staged jars and mod build directories.
 The previous platform bundle directory is cleared before each build so old
