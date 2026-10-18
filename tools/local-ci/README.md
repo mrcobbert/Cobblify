@@ -43,7 +43,7 @@ registration token goes through SSH stdin and is cleared before running jobs.
 This Mac has no Xcode `actool`. A small hosted Mac prerequisite compiles the
 current `.icon`; the local adapter checks the exact source tree, output hashes
 and commit before giving those files to Tauri. Rust, Gradle, universal linking,
-packaging and signing happen on the local machines. Light/dark icon presence,
+native Rust tests, packaging and signing happen on the local machines. Light/dark icon presence,
 SDK version and code signature checks remain mandatory.
 
 Runner binaries must be installed before first use (no admin/service install).

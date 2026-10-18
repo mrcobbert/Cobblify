@@ -100,6 +100,7 @@ jobs:
             jdk21=$(/usr/libexec/java_home -v 21)
             jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
             test -x "$jdk8/bin/java"
+            echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
             echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
             echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
             echo "$jdk21/bin" >> "$GITHUB_PATH"
@@ -162,6 +163,8 @@ jobs:
           npm ci
           npm test
           if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            npm run build
+            cargo test --locked --manifest-path src-tauri/Cargo.toml
             node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
           fi
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -283,6 +286,7 @@ jobs:
             jdk21=$(/usr/libexec/java_home -v 21)
             jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
             test -x "$jdk8/bin/java"
+            echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
             echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
             echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
             echo "$jdk21/bin" >> "$GITHUB_PATH"
@@ -343,6 +347,8 @@ jobs:
           npm ci
           npm test
           if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            npm run build
+            cargo test --locked --manifest-path src-tauri/Cargo.toml
             node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
           fi
           config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
