@@ -12,6 +12,7 @@
       ]],
       ["Fixes", [
         "On macOS, Settings extends to the top of the window while the home title stays below the window buttons.",
+        "On macOS, the home title returns below the window buttons after leaving full screen.",
         "On macOS 26 the window and its buttons look like every other app's.",
         "Windows shows the new icon in the taskbar and Start menu right after updating."
       ]]

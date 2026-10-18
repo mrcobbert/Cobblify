@@ -13,5 +13,12 @@ export async function installWindowChrome(win, invoke) {
     }
   };
   win.addEventListener("resize", update);
+  try {
+    // Fullscreen completion can emit a native resize with unchanged bounds.
+    // WebKit sends no browser resize then, so listen on the window as well.
+    await win.__TAURI__?.window?.getCurrentWindow?.().onResized?.(update);
+  } catch {
+    // Keep browser resize handling if the native event bridge is unavailable.
+  }
   await update();
 }
