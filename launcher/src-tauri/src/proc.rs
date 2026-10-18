@@ -787,6 +787,7 @@ mod tests {
     /// Lunar's install folder name is not stable, so identity is the exe NAME
     /// under `%LOCALAPPDATA%\Programs`. Both observed layouts must match, and
     /// the neighbours that share that folder must not.
+    #[cfg(windows)]
     #[test]
     fn lunar_launcher_exe_matches_every_observed_install_layout() {
         let root = Path::new("C:\\Users\\Jane\\AppData\\Local\\Programs");
@@ -995,7 +996,7 @@ mod tests {
         std::fs::copy("/bin/sleep", &exe).unwrap();
         let found = app.clone();
         let lookup = move || vec![found.clone()];
-        let exes = crate::lunar_detect::launcher_exes_with(Some(&home), &lookup);
+        let exes = crate::lunar_detect::launcher_exes_among(&[home.join("Applications/Lunar Client.app")], &lookup);
 
         let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
         let pid = child.id();
@@ -1011,7 +1012,7 @@ mod tests {
         let _ = child.wait();
         assert_eq!(seen, Some(pid), "the bundle-id Lunar's own exe is matched: {exes:?}");
         // Without the lookup's bundle the same process is invisible to the check.
-        assert!(!crate::lunar_detect::launcher_exes_with(Some(&home), &Vec::new).contains(&exe));
+        assert!(!crate::lunar_detect::launcher_exes_among(&[home.join("Applications/Lunar Client.app")], &Vec::new).contains(&exe));
     }
 
     /// The cwd scan reads working directories (the canary runs in a folder of ours and is

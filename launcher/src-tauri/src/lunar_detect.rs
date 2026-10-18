@@ -71,7 +71,12 @@ pub fn find_app(home: &Path) -> Option<PathBuf> {
 /// bundle-id `lookup` names (run only when neither standard folder has one).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn find_app_with(home: &Path, lookup: &dyn Fn() -> Vec<PathBuf>) -> Option<PathBuf> {
-    find_app_in(&app_candidates(home)).or_else(|| registered_app(&lookup()))
+    find_app_among(&app_candidates(home), lookup)
+}
+
+/// Candidate locations are injectable so tests never inspect an installed app on the build host.
+fn find_app_among(candidates: &[PathBuf], lookup: &dyn Fn() -> Vec<PathBuf>) -> Option<PathBuf> {
+    find_app_in(candidates).or_else(|| registered_app(&lookup()))
 }
 
 /// The first registration that is a real install (see `usable_registration`) and exists as
@@ -232,8 +237,12 @@ pub fn launcher_exes_with(home: Option<&Path>, lookup: &dyn Fn() -> Vec<PathBuf>
         Some(home) => app_candidates(home),
         None => vec![Path::new("/Applications").join(BUNDLE_NAME)],
     };
+    launcher_exes_among(&bundles, lookup)
+}
+
+pub(crate) fn launcher_exes_among(bundles: &[PathBuf], lookup: &dyn Fn() -> Vec<PathBuf>) -> Vec<PathBuf> {
     let mut exes: Vec<PathBuf> = bundles.iter().map(|a| bundle_exe(a)).collect();
-    if find_app_in(&bundles).is_none() {
+    if find_app_in(bundles).is_none() {
         if let Some(app) = registered_app(&lookup()) {
             exes.push(bundle_exe(&app));
         }
@@ -341,6 +350,10 @@ impl<'de> Deserialize<'de> for EntryCount {
 pub(crate) mod tests {
     use super::*;
 
+    fn isolated_candidates(home: &Path) -> Vec<PathBuf> {
+        vec![home.join("System/Applications").join(BUNDLE_NAME), home.join("Applications").join(BUNDLE_NAME)]
+    }
+
     /// A realistic file, tokens included, so the test proves they are skipped.
     pub(crate) const SIGNED_IN: &str = r#"{
         "activeAccountLocalId": "a1b2",
@@ -443,9 +456,9 @@ pub(crate) mod tests {
         let found = games.clone();
         let lookup = move || vec![found.clone()];
 
-        assert_eq!(find_app_in(&app_candidates(&home)), None, "not in either Applications folder");
-        assert_eq!(find_app_with(&home, &lookup), Some(games.clone()));
-        let exes = launcher_exes_with(Some(&home), &lookup);
+        assert_eq!(find_app_in(&isolated_candidates(&home)), None, "not in either Applications folder");
+        assert_eq!(find_app_among(&isolated_candidates(&home), &lookup), Some(games.clone()));
+        let exes = launcher_exes_among(&isolated_candidates(&home), &lookup);
         assert!(exes.contains(&games.join("Contents/MacOS/Lunar Client")), "{exes:?}");
         // The standard locations stay in the list.
         assert!(exes.contains(&home.join("Applications/Lunar Client.app/Contents/MacOS/Lunar Client")));
@@ -462,8 +475,8 @@ pub(crate) mod tests {
             ran.set(ran.get() + 1);
             vec![fake_bundle(&root.path().join("Elsewhere"))]
         };
-        assert_eq!(find_app_with(&home, &lookup), Some(app));
-        let exes = launcher_exes_with(Some(&home), &lookup);
+        assert_eq!(find_app_among(&isolated_candidates(&home), &lookup), Some(app));
+        let exes = launcher_exes_among(&isolated_candidates(&home), &lookup);
         assert!(!exes.iter().any(|e| e.starts_with(root.path().join("Elsewhere"))));
         assert_eq!(ran.get(), 0);
     }
@@ -498,7 +511,7 @@ pub(crate) mod tests {
             second,
         ];
         let lookup = move || paths.clone();
-        assert_eq!(find_app_with(&home, &lookup), Some(good));
+        assert_eq!(find_app_among(&isolated_candidates(&home), &lookup), Some(good));
         assert!(!usable_registration(Path::new("/Volumes/Backup/Applications/Lunar Client.app")));
     }
 
@@ -510,8 +523,8 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        assert_eq!(find_app_with(&home, &Vec::new), None);
-        assert!(launcher_exes_with(Some(&home), &Vec::new)
+        assert_eq!(find_app_among(&isolated_candidates(&home), &Vec::new), None);
+        assert!(launcher_exes_among(&isolated_candidates(&home), &Vec::new)
             .iter()
             .all(|e| e.starts_with("/Applications") || e.starts_with(&home)));
 
@@ -528,7 +541,7 @@ pub(crate) mod tests {
         make_executable(&hung);
         let started = std::time::Instant::now();
         let lookup = || spotlight_lookup_with(&hung, Duration::from_millis(300));
-        assert_eq!(find_app_with(&home, &lookup), None);
+        assert_eq!(find_app_among(&isolated_candidates(&home), &lookup), None);
         assert!(started.elapsed() < Duration::from_secs(5), "bounded: {:?}", started.elapsed());
     }
 
