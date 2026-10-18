@@ -38,6 +38,7 @@ class ReleaseSafety(unittest.TestCase):
                 return subprocess.run(['python3', str(HERE / name), *map(str,args)], env=env, capture_output=True)
             self.assertEqual(run('icon-assets.py', 'record', source, output).returncode, 0)
             self.assertEqual(run('icon-assets.py', 'verify', source, output).returncode, 0)
+            self.assertIn(b'short-bundle-version: 26.3', run('actool.py', '--version', '--output-format=human-readable-text').stdout)
             args = [source, '--compile', dest, '--app-icon', 'Icon', '--output-partial-info-plist', dest / 'assetcatalog_generated_info.plist']
             self.assertEqual(run('actool.py', *args).returncode, 0)
             self.assertEqual((dest / 'Assets.car').read_bytes(), b'compiled')

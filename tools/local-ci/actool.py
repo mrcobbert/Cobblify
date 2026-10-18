@@ -20,7 +20,7 @@ for relative, digest in record['outputs'].items():
     if hashlib.sha256((assets / relative).read_bytes()).hexdigest() != digest:
         raise SystemExit('compiled icon output changed')
 if '--version' in args:
-    print('actool version 26.3 (verified precompiled icon adapter)')
+    print('/* com.apple.actool.version */\nshort-bundle-version: 26.3')
     raise SystemExit(0)
 source = Path(args[0])
 actual = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
