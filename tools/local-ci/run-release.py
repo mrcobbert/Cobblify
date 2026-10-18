@@ -189,9 +189,16 @@ def main():
                 except ProcessLookupError:
                     pass
         try:
-            script = ("$root='C:\\Users\\agent\\.local\\share\\cobblify-ci\\runner-windows'; "
-                      f"if ((Test-Path \"$root\\.runner\") -and ((Get-Content \"$root\\.runner\" | ConvertFrom-Json).agentName -eq 'cobblify-windows-{run}')) {{ "
-                      "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Runner.Listener.exe' -and $_.ExecutablePath -eq \"$root\\bin\\Runner.Listener.exe\" } | ForEach-Object { & taskkill /PID $_.ProcessId /T /F | Out-Null }; }")
+            script = (
+                "$root='C:\\Users\\agent\\.local\\share\\cobblify-ci\\runner-windows'; "
+                f"$expected='cobblify-windows-{run}'; "
+                "if ((Test-Path (Join-Path $root '.runner')) -and "
+                "((Get-Content (Join-Path $root '.runner') | ConvertFrom-Json).agentName -eq $expected)) { "
+                "$paths=@((Join-Path $root 'bin\\Runner.Listener.exe'),(Join-Path $root 'bin\\Runner.Worker.exe')); "
+                "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -in $paths } | "
+                "ForEach-Object { & taskkill /PID $_.ProcessId /T /F | Out-Null }; "
+                "if (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -in $paths }) "
+                "{ throw 'Local runner process remains after shutdown' }; }")
             command(['ssh', 'win', script], capture_output=True, timeout=30)
         except Exception as error:
             cleanup_errors.append(type(error).__name__ + ': Windows process cleanup failed')
