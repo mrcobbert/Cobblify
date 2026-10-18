@@ -38,6 +38,7 @@ export function createApp(app, actions) {
   let view = "home";
   let menuOpen = false, sheetOpen = false, historyFromSheet = false, modal = null, histSel = NOTES[0]?.version ?? null;
   let active = true;
+  let sheetFocus = null; // action to restore after a focused sheet key is temporarily disabled
 
   app.innerHTML = `<div id="main"></div><aside class="sheet" id="sheet" role="dialog" aria-label="Settings"></aside><div id="layer"></div><div id="istage" aria-hidden="true"></div>`;
 
@@ -271,6 +272,7 @@ export function createApp(app, actions) {
     if (!body) { sh.innerHTML = sheetHTML(); nudge(sh); return; }
     const tmp = doc.createElement("div");
     tmp.innerHTML = sheetRows();
+    if (sheetFocus && doc.activeElement !== doc.body) sheetFocus = null;
     const same = tmp.querySelectorAll("[data-row]").length === body.querySelectorAll("[data-row]").length
       && [...tmp.querySelectorAll("[data-row]")].every((r, i) => r.dataset.row === body.querySelectorAll("[data-row]")[i].dataset.row);
     if (!same) {
@@ -285,9 +287,14 @@ export function createApp(app, actions) {
           ot.setAttribute("aria-checked", nt.getAttribute("aria-checked"));
           ot.disabled = nt.disabled;
         } else if (old.innerHTML !== r.innerHTML) {
-          const hadFocus = old.contains(doc.activeElement);
+          const focusedAction = old.contains(doc.activeElement) ? doc.activeElement.dataset.act
+            : sheetFocus?.row === r.dataset.row ? sheetFocus.act : null;
           old.innerHTML = r.innerHTML;
-          if (hadFocus) old.querySelector("button")?.focus({ preventScroll: true });
+          if (focusedAction) {
+            const key = old.querySelector(`[data-act="${focusedAction}"]`) || old.querySelector("button");
+            sheetFocus = key?.disabled ? { row: r.dataset.row, act: focusedAction } : null;
+            key?.focus({ preventScroll: true });
+          }
         }
       });
       const oldWhy = body.querySelector(".reason"), newWhy = tmp.querySelector(".reason");
@@ -296,6 +303,7 @@ export function createApp(app, actions) {
     nudge(sh);
   }
   function openSheet() {
+    sheetFocus = null;
     sheetOpen = true;
     toggleMenu(false);
     $(".gear")?.setAttribute("aria-expanded", "true");
@@ -311,6 +319,7 @@ export function createApp(app, actions) {
   function closeSheet({ quiet = false } = {}) {
     if (!sheetOpen) return;
     sheetOpen = false;
+    sheetFocus = null;
     $(".gear")?.setAttribute("aria-expanded", "false");
     $("#sheet").classList.remove("open");
     if (quiet) return;

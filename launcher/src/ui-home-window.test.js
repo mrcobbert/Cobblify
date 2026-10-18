@@ -120,6 +120,16 @@ test("the settings sheet: its rows, a switch that saves, Esc returns to Settings
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");
   assert.match(sheet.textContent, /Not an official Minecraft product/);
 
+  // The version label is now a separate history button in the same row. An updater refresh must keep focus on Check.
+  await tick(170); // let the sheet's opening focus settle
+  const checks = calls.filter((c) => c.command === "check_for_update").length;
+  const check = sheet.querySelector('[data-row="version"] [data-act="update"]');
+  check.focus();
+  check.click();
+  await waitFor(() => calls.filter((c) => c.command === "check_for_update").length > checks, { label: "the manual update check" });
+  await tick();
+  assert.equal(document.activeElement, sheet.querySelector('[data-row="version"] [data-act="update"]'));
+
   sheet.querySelector('.tog[data-key="overlay"]').click();
   await waitFor(() => calls.some((c) => c.command === "set_use_external_overlay" && c.args.enabled === false), { label: "the overlay save" });
   await waitFor(() => sheet.querySelector('.tog[data-key="overlay"]').getAttribute("aria-checked") === "false", { label: "the switch off" });
