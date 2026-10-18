@@ -88,21 +88,18 @@ body {
   border: 0;
 }
 
-/* the header: home's (wordmark at 11 su, fixed home size, the Dev builds tag); the view's name at the right on the same
-   line. --hdr-su is its height in su (board-render.js reads it): the 24 su row, and on macOS a 12 su strip above it for
-   the window buttons, as on home (ui/app.css), gone in full screen. */
-.stage { --hdr-su: 24; }
-.stage[data-platform="mac"]:not([data-fullscreen]) { --hdr-su: 36; }
+/* the header: home's (wordmark at 11 su, fixed home size, the Dev builds tag in home's text); the view's name at the
+   right on the same line */
 .stage .dhdr {
   position: absolute;
   left: 0;
   right: 0;
   top: 0;
-  height: calc(var(--hdr-su) * var(--su));
+  height: calc(24 * var(--su));
   z-index: 6;
   display: flex;
   align-items: center;
-  padding: calc((var(--hdr-su) - 24) * var(--su)) calc(5 * var(--su)) 0 calc(11 * var(--su));
+  padding: 0 calc(5 * var(--su)) 0 calc(11 * var(--su));
   --row-line: calc(9 * var(--fpx));
   font-size: calc(9 * var(--fpx));
   line-height: calc(9 * var(--fpx));
@@ -292,7 +289,7 @@ body {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(var(--hdr-su) * var(--su));
+  top: calc(24 * var(--su));
   bottom: 0;
   display: none;
   pointer-events: none;

@@ -6,7 +6,7 @@
     "sections": [
       ["New", ["A new app icon: a Bed Wars island with a red bed. On macOS 26 it follows light and dark mode."]],
       ["Changes", [
-        "On macOS the Cobblify title sits under the window buttons, and moves up in full screen.",
+        "On macOS the window buttons sit in a black title bar, which full screen hides.",
         "The stats board shows the Dev builds tag too."
       ]],
       ["Fixes", [

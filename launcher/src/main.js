@@ -676,7 +676,6 @@ new window.MutationObserver(() => ui.setActive(stage.dataset.view !== "dash")).o
   attributes: true,
   attributeFilter: ["data-view"],
 });
-stage.dataset.platform = el("app").dataset.platform;
 function drawDashMark() {
   const k = Math.max(1, Math.round((parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--su")) || 2) * (window.devicePixelRatio || 1)));
   el("dash-wm").innerHTML = wordmark(k, { font: document.documentElement.dataset.font }, window.devicePixelRatio || 1);
@@ -760,24 +759,6 @@ function maybeShowWindow() {
   ui.firstFrame().then(showWindow, showWindow);
 }
 setTimeout(showWindow, SHOW_WINDOW_MAX_MS);
-
-// macOS full screen hides the window buttons, so the home and board headers drop the strip they keep for them
-// (app.css, dash.css). Tauri sends a resize once a full-screen change has settled, and the state is read then.
-function trackFullscreen() {
-  const app = el("app");
-  const w = window.__TAURI__?.window?.getCurrentWindow?.();
-  if (app.dataset.platform !== "mac" || !w?.isFullscreen || !w.onResized) return;
-  const sync = () =>
-    w.isFullscreen().then((on) => {
-      if (app.hasAttribute("data-fullscreen") === on) return;
-      app.toggleAttribute("data-fullscreen", on);
-      stage.toggleAttribute("data-fullscreen", on);
-      relayoutBoard();
-    }, () => {});
-  sync();
-  w.onResized(sync).catch(() => {});
-}
-trackFullscreen();
 
 /** The launcher wears the accent and font of the client you play (decision 8). */
 function applyTheme(sel) {

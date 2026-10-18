@@ -8,10 +8,6 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .app[hidden] { display: none; }
 /* the view under the header fills the window, so home's column centres on the window's middle (prototype #main) */
 #main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-/* macOS: the window buttons sit top left over a 12 su strip the header keeps above its row (tauri.macos.conf.json puts
-   them at 11 su, so the wordmark lines up under them). Full screen hides them and the row moves up (main.js sets
-   data-fullscreen). */
-.app[data-platform=mac]:not([data-fullscreen]) .hdr { height: calc(36*var(--su)); padding-top: calc(12*var(--su)); }
 
 /* ---------- root ---------- */
 .app{position:relative;display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;background:var(--ground);color:var(--hi);
@@ -250,7 +246,7 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 #istage{position:absolute;left:0;right:0;bottom:0;top:0;pointer-events:none;z-index:0}
 
 /* ---------- home (decision 38): no bar, one left column, the island free on the right ---------- */
-/* the header row stays (wordmark, gear, drag region, the mac lights' room) but loses its band and rule */
+/* the header row stays (wordmark, gear, drag region) but loses its band and rule */
 .hdr.bare{background:transparent;border-bottom-color:transparent}
 .body.home{background:var(--ground)}
 .col{flex:none;width:calc(180*var(--su));display:flex;flex-direction:column;justify-content:safe center;min-height:0;padding:calc(12*var(--su)) calc(12*var(--su)) calc(12*var(--su)) calc(11*var(--su));position:relative;z-index:1}
@@ -399,7 +395,7 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .hdr.bare{z-index:auto}
 .home .art{z-index:3}
 /* ...but only the island itself takes the mouse (it turns under a drag): the rest of its layer lets clicks through to the
-   header below, the window's only drag handle on macOS, where the title bar is hidden (the hotfix, 2026-10-12) */
+   header below, a drag handle besides macOS's title bar (the hotfix, 2026-10-12) */
 .home .art{pointer-events:none}
 .home .art .isl3d{pointer-events:auto}
 .hdr.bare .key{z-index:4}

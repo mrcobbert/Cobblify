@@ -24,13 +24,6 @@ test("k is the largest whole scale at which the worst game fits, with a presence
   assert.ok(kFor(GAME.core, GAME.h, frame(1920, 1080, 2), 1) > k, "a bigger window reads bigger");
 });
 
-test("the board starts under the header: 24 su, or 36 su with the macOS window-button strip", () => {
-  assert.equal(frame(900, 520, 2).top, 48);
-  const mac = frame(900, 520, 2, 36);
-  assert.equal(mac.top, 72);
-  assert.equal(mac.ah, 520 - 72 - 20);
-});
-
 test("a window k depends only on the window, never on the live roster", () => {
   const f = frame(1280, 720, 2);
   assert.equal(kFor(GAME.core, GAME.h, f, 1), kFor(GAME.core, GAME.h, f, 1));

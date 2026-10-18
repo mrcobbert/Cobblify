@@ -31,7 +31,6 @@ export function createApp(app, actions) {
   const suPx = () => parseFloat(win.getComputedStyle(root).getPropertyValue("--su")) || 2;
   const isMC = () => root.dataset.font !== "modern";
   const reduced = () => !!win.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  app.dataset.platform = /Mac/i.test(win.navigator.platform || win.navigator.userAgent || "") ? "mac" : "win";
 
   let H = null; // home model
   let S = null; // sheet model
@@ -613,8 +612,6 @@ export function createApp(app, actions) {
     }
   });
   if (typeof win.ResizeObserver === "function") new win.ResizeObserver(() => { if (active && H) after(); }).observe(app);
-  /* full screen changes the header's height (app.css), and the island's slot starts at the window's top */
-  if (typeof win.MutationObserver === "function") new win.MutationObserver(() => { if (active && H) after(); }).observe(app, { attributes: true, attributeFilter: ["data-fullscreen"] });
   /* a layout measured on the fallback font is off once the real one lands: lay out again then (prototype) */
   win.addEventListener("load", () => { if (active && H) after(); });
   if (doc.fonts?.load) {
