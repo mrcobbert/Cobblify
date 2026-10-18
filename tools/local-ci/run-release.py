@@ -5,6 +5,7 @@ First provision runner binaries at ~/.local/share/cobblify-ci/runner-macos and
 Windows equivalent (see README). Never runs on pull requests or listens as a service.
 """
 import argparse
+import base64
 from datetime import datetime, timezone
 import json
 import os
@@ -18,6 +19,7 @@ import time
 REPO = 'mrcobbert/Cobblify'
 ROOT = Path(__file__).resolve().parents[2]
 HOME = Path.home() / '.local/share/cobblify-ci'
+WINDOWS_PWSH = r'C:\Users\agent\.local\share\cobblify-ci\pwsh\pwsh.exe'
 
 
 def command(args, **kwargs):
@@ -52,6 +54,38 @@ def stop(signum, frame):
     raise KeyboardInterrupt()
 
 
+def windows_cleanup_script(run):
+    # Standard Windows accounts may lack WMI/taskkill access. PS7 provides the
+    # native .NET process-tree API; unreadable identities and failed stops are fatal.
+    return (
+        "$ErrorActionPreference='Stop'; "
+        "$root='C:\\Users\\agent\\.local\\share\\cobblify-ci\\runner-windows'; "
+        f"$expected='cobblify-windows-{run}'; "
+        "if ((Test-Path (Join-Path $root '.runner')) -and "
+        "((Get-Content (Join-Path $root '.runner') | ConvertFrom-Json).agentName -eq $expected)) { "
+        "$paths=@((Join-Path $root 'bin\\Runner.Listener.exe'),(Join-Path $root 'bin\\Runner.Worker.exe')); "
+        "$owned={ Get-Process -ErrorAction Stop | "
+        "Where-Object { $_.ProcessName -in @('Runner.Listener','Runner.Worker') } | "
+        "ForEach-Object { if (-not $_.Path) { throw 'Cannot establish runner process identity' }; "
+        "if ($_.Path -in $paths) { $_ } } }; "
+        "$attempts=0; $targets=@(& $owned); while ($targets.Count -gt 0 -and $attempts -lt 5) { "
+        "$target=$targets | Sort-Object ProcessName | Select-Object -First 1; "
+        "if ($target.Path -notin $paths) { throw 'Runner process identity changed' }; "
+        "if (-not $target.HasExited) { $target.Kill($true); "
+        "if (-not $target.WaitForExit(5000)) { throw 'Local runner did not exit' } }; "
+        "$attempts++; $targets=@(& $owned) }; "
+        "if (& $owned) { throw 'Local runner process remains after shutdown' }; }")
+
+
+def windows_powershell(script):
+    # UTF-16LE is PowerShell's documented EncodedCommand format. No shell quoting
+    # or stdin token channel is involved; these scripts contain no credentials.
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    return (f"$ErrorActionPreference='Stop'; & '{WINDOWS_PWSH}' -NoLogo -NoProfile "
+            f"-NonInteractive -EncodedCommand {encoded}; "
+            "if ($LASTEXITCODE -ne 0) { throw 'Windows local CI command failed' }")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--publish-dev', action='store_true')
@@ -73,6 +107,11 @@ def main():
     import fcntl
     lock = (HOME / 'controller.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # Fail before dispatch if safe shutdown cannot run on the Windows host.
+    command(['ssh', 'win', windows_powershell(
+        "if (-not [System.Diagnostics.Process].GetMethod('Kill',[type[]]@([bool]))) "
+        "{ throw 'Process-tree shutdown API unavailable' }; Get-Process -Id $PID | Out-Null")],
+        capture_output=True, timeout=30)
     started = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     gh('workflow', 'run', 'launcher-update.yml', '--repo', REPO, '--ref', branch,
@@ -189,17 +228,7 @@ def main():
                 except ProcessLookupError:
                     pass
         try:
-            script = (
-                "$root='C:\\Users\\agent\\.local\\share\\cobblify-ci\\runner-windows'; "
-                f"$expected='cobblify-windows-{run}'; "
-                "if ((Test-Path (Join-Path $root '.runner')) -and "
-                "((Get-Content (Join-Path $root '.runner') | ConvertFrom-Json).agentName -eq $expected)) { "
-                "$paths=@((Join-Path $root 'bin\\Runner.Listener.exe'),(Join-Path $root 'bin\\Runner.Worker.exe')); "
-                "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -in $paths } | "
-                "ForEach-Object { & taskkill /PID $_.ProcessId /T /F | Out-Null }; "
-                "if (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -in $paths }) "
-                "{ throw 'Local runner process remains after shutdown' }; }")
-            command(['ssh', 'win', script], capture_output=True, timeout=30)
+            command(['ssh', 'win', windows_powershell(windows_cleanup_script(run))], capture_output=True, timeout=30)
         except Exception as error:
             cleanup_errors.append(type(error).__name__ + ': Windows process cleanup failed')
         for proc in processes:

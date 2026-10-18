@@ -38,6 +38,12 @@ installers/images cannot become this candidate's artifacts.
 The Mac needs Node/Rust, both Apple Rust targets, JDK 21, Zulu JDK 8 at
 `/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home`, and CLT SDK 26.5.
 Windows needs Rust/MSVC, Node and Git Bash. setup-java provisions its JDKs.
+It also needs portable PowerShell 7 at
+`C:\Users\agent\.local\share\cobblify-ci\pwsh\pwsh.exe` for
+the [.NET process-tree shutdown API](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.kill).
+The controller checks that API before dispatch, then verifies owned runner processes
+are gone after shutdown. Tested on this Standard account with a temporary
+Listener/Worker/grandchild tree and an unrelated process with the same name.
 No persistent GitHub CLI credentials are copied to Windows; a short-lived runner
 registration token goes through SSH stdin and is cleared before running jobs.
 
@@ -63,3 +69,15 @@ left enabled. Private runner logs and a non-secret `timing.json` are kept under
 the small hosted icon job, both platform builds and optional dev publication;
 first builds include dependency downloads and must be reported separately from
 warm builds. Both machines must remain awake and reachable until completion.
+
+Provisioned portable [PowerShell 7.6.7](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.7):
+`PowerShell-7.6.7-win-x64.zip`, SHA-256
+`d2f952ebdbf24386cb8923553aa58e41a846db35a6155ea04c58142a4b16dbb7`.
+Unpack under the private `pwsh` directory above. It runs alongside Windows
+PowerShell 5.1; no global PATH, execution policy or service changes are needed.
+
+Controller fault and identity tests:
+
+```sh
+python3 -m unittest discover -s tools/local-ci -p 'test_*.py'
+```
