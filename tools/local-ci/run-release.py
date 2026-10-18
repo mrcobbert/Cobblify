@@ -113,6 +113,9 @@ def main():
         jobs = api(f'repos/{REPO}/actions/runs/{run}/jobs')['jobs']
         if {j['name'] for j in jobs} - {'local-assets', 'macos', 'windows'}:
             raise RuntimeError('Unexpected job in local release')
+        runner = HOME / 'runner-macos'
+        if (runner / '.runner').exists():
+            raise RuntimeError('Mac runner already configured; inspect before reuse')
         env = os.environ.copy()
         env.update(COBBLIFY_LOCAL_CI='1', COBBLIFY_CI_CACHE=str(HOME / 'cache'))
         hook = HOME / 'job-started.sh'
@@ -121,11 +124,8 @@ def main():
         hook.write_text('#!/bin/bash\nset -eu\n' + ''.join(f'test "${{{key}:-}}" = "{value}" || exit 1\n' for key, value in expected.items()))
         hook.chmod(0o700)
         env['ACTIONS_RUNNER_HOOK_JOB_STARTED'] = str(hook)
-        runner = HOME / 'runner-macos'
-        if (runner / '.runner').exists():
-            raise RuntimeError('Mac runner already configured; inspect before reuse')
         token = api(f'repos/{REPO}/actions/runners/registration-token', '--method', 'POST')['token']
-        config_env = dict(env, RUNNER_INPUT_TOKEN=token)
+        config_env = dict(env, ACTIONS_RUNNER_INPUT_TOKEN=token)
         command([str(runner / 'config.sh'), '--unattended', '--ephemeral', '--no-default-labels',
                  '--url', f'https://github.com/{REPO}', '--name', f'cobblify-macos-{run}',
                  '--labels', f'cobblify-{nonce}-macos', '--work', str(HOME / 'work')],
