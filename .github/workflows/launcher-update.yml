@@ -93,7 +93,8 @@ jobs:
         shell: bash
         run: |
           test -n "$COBBLIFY_CI_CACHE"
-          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo" "$COBBLIFY_CI_CACHE/npm"
+          echo "NPM_CONFIG_CACHE=$COBBLIFY_CI_CACHE/npm" >> "$GITHUB_ENV"
           echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = macOS ]; then
@@ -108,7 +109,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ !inputs.local_build && 'npm' || '' }}
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
         if: ${{ !inputs.local_build || runner.os != 'macOS' }}
@@ -279,7 +280,8 @@ jobs:
         shell: bash
         run: |
           test -n "$COBBLIFY_CI_CACHE"
-          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo" "$COBBLIFY_CI_CACHE/npm"
+          echo "NPM_CONFIG_CACHE=$COBBLIFY_CI_CACHE/npm" >> "$GITHUB_ENV"
           echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = macOS ]; then
@@ -294,7 +296,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ !inputs.local_build && 'npm' || '' }}
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
         if: ${{ !inputs.local_build || runner.os != 'macOS' }}
