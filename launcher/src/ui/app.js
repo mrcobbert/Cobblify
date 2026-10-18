@@ -1,6 +1,6 @@
 /**
  * The 0.18 launcher's home window, ported from the prototype (proto/servers.js): the bare header with the wordmark
- * and the gear, one left column with the Launch split key and its client menu, the 3D island free on the right,
+ * and Dev builds tag, one left column with Launch, Settings and the client menu, the 3D island free on the right,
  * the settings sheet, What's New and the release-notes history.
  *
  * It owns the DOM and the layout passes that keep every edge on whole device pixels; main.js owns the backend and
@@ -36,7 +36,7 @@ export function createApp(app, actions) {
   let S = null; // sheet model
   let version = "", devTag = false;
   let view = "home";
-  let menuOpen = false, sheetOpen = false, modal = null, histSel = NOTES[0]?.version ?? null;
+  let menuOpen = false, sheetOpen = false, historyFromSheet = false, modal = null, histSel = NOTES[0]?.version ?? null;
   let active = true;
 
   app.innerHTML = `<div id="main"></div><aside class="sheet" id="sheet" role="dialog" aria-label="Settings"></aside><div id="layer"></div><div id="istage" aria-hidden="true"></div>`;
@@ -51,8 +51,8 @@ export function createApp(app, actions) {
     }
     const k = Math.max(1, Math.round(suPx() * dpr()));
     return `<header class="hdr bare" data-tauri-drag-region="deep">
-      <div class="brand"><span class="wm">${wordmark(k, { font: isMC() ? "minecraft" : "modern" }, dpr())}</span><button class="ver${devTag ? " dev" : ""}" data-act="history" title="Release notes">${esc(version)}</button>${devTag ? `<span class="tag dev">${T("Dev builds")}</span>` : ""}</div>
-      <span class="grow"></span>${gearKey()}
+      <div class="brand"><span class="wm">${wordmark(k, { font: isMC() ? "minecraft" : "modern" }, dpr())}</span>${devTag ? `<span class="tag dev">${T("Dev builds")}</span>` : ""}</div>
+      <span class="grow"></span>
     </header>`;
   }
 
@@ -130,7 +130,7 @@ export function createApp(app, actions) {
     const side = (H.keys || []).map((x, i) => `<button class="key" data-act="${x.act}" data-k="${i}">${T(x.label, "sh")}</button>`).join("");
     return `<div class="body home${H.solo ? " solo" : ""}">
       <section class="col" aria-label="Play"><div class="grp${lead ? " lit" : ""}"><p class="sr" role="status" aria-live="polite">${esc(H.said || "")}</p>${lead ? `<div class="lead">${lead}</div>` : ""}
-        <div class="go"><div class="heros">${heroHTML(H.hero)}${underHTML(H.under)}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
+        <div class="go"><div class="launch-row"><div class="heros">${heroHTML(H.hero)}${underHTML(H.under)}</div>${gearKey()}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
       <div class="art" id="art"><img id="isl" alt="" src="${fallbackSrc}"></div>
     </div>`;
   }
@@ -252,7 +252,7 @@ export function createApp(app, actions) {
   function sheetRows() {
     const s = S;
     const why = s.reason ? `<p class="t ml lo reason">${esc(s.reason)}</p>` : "";
-    const verRow = row("version", s.version.label, s.version.key ? keyBtn(s.version.key) : "", `<span class="t mid st">${esc(s.version.word)}</span>`);
+    const verRow = `<div class="srow" data-row="version"><div class="lbl"><button class="t sh version-link" data-act="history" title="Release notes">${esc(s.version.label)}</button><span class="t mid st">${esc(s.version.word)}</span></div><div class="ctl">${s.version.key ? keyBtn(s.version.key) : ""}</div></div>`;
     const clients = [
       s.lunar ? row("lunar", "Lunar Client", keyBtn(s.lunar)) : "",
       s.prism ? row("prism", "Prism Launcher", keyBtn(s.prism)) : "",
@@ -298,7 +298,7 @@ export function createApp(app, actions) {
   function openSheet() {
     sheetOpen = true;
     toggleMenu(false);
-    $(".hdr .gear")?.setAttribute("aria-expanded", "true");
+    $(".gear")?.setAttribute("aria-expanded", "true");
     const sh = $("#sheet");
     sh.innerHTML = sheetHTML();
     void sh.offsetWidth;
@@ -311,11 +311,18 @@ export function createApp(app, actions) {
   function closeSheet({ quiet = false } = {}) {
     if (!sheetOpen) return;
     sheetOpen = false;
-    $(".hdr .gear")?.setAttribute("aria-expanded", "false");
+    $(".gear")?.setAttribute("aria-expanded", "false");
     $("#sheet").classList.remove("open");
     if (quiet) return;
-    $('.hdr [data-act="settings"]')?.focus({ preventScroll: true });
+    $('[data-act="settings"]')?.focus({ preventScroll: true });
     actions.idle?.();
+  }
+
+  function backFromHistory() {
+    view = "home";
+    render();
+    if (historyFromSheet) { historyFromSheet = false; openSheet(); }
+    else $('[data-act="settings"]')?.focus({ preventScroll: true });
   }
 
   /* ---------- What's New: Ore's update pop-up ---------- */
@@ -341,7 +348,7 @@ export function createApp(app, actions) {
   function closeModal() {
     modal = null;
     $("#layer").querySelectorAll(".scrim,.modal").forEach((x) => x.remove());
-    ($("button.hero:not([aria-disabled])") || $('.hdr [data-act="settings"]'))?.focus({ preventScroll: true });
+    ($("button.hero:not([aria-disabled])") || $('[data-act="settings"]'))?.focus({ preventScroll: true });
     actions.idle?.();
   }
 
@@ -581,8 +588,8 @@ export function createApp(app, actions) {
     else if (a === "update") actions.update(b.dataset.action || H.hero.action);
     else if (a === "settings") (sheetOpen ? closeSheet : openSheet)();
     else if (a === "close") closeSheet();
-    else if (a === "history") { modal = null; sheetOpen = false; $("#sheet").classList.remove("open"); view = "history"; render(); $('.hdr [data-act="back"]')?.focus({ preventScroll: true }); }
-    else if (a === "back") { view = "home"; render(); $(".ver")?.focus({ preventScroll: true }); }
+    else if (a === "history") { historyFromSheet = sheetOpen; modal = null; sheetOpen = false; $("#sheet").classList.remove("open"); view = "history"; render(); $('.hdr [data-act="back"]')?.focus({ preventScroll: true }); }
+    else if (a === "back") backFromHistory();
     else if (a === "jump") {
       histSel = b.dataset.v;
       app.querySelectorAll(".hist-list .row").forEach((r) => r.classList.toggle("sel", r.dataset.v === histSel));
@@ -606,7 +613,7 @@ export function createApp(app, actions) {
       if (menuOpen) { toggleMenu(false); menuKey()?.focus({ preventScroll: true }); }
       else if (modal) closeModal();
       else if (sheetOpen) closeSheet();
-      else if (view === "history") { view = "home"; render(); }
+      else if (view === "history") backFromHistory();
     } else if (e.key === "Enter" && !sheetOpen && !modal && view === "home" && !e.target.closest?.("button")) {
       $(".hero:not(.prog):not([aria-disabled])")?.click();
     }

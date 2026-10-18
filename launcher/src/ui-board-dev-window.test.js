@@ -6,7 +6,7 @@ import { bootWindow } from "./test-support/window-harness.js";
 
 /**
  * The board's header carries the Dev builds tag as home's does. On macOS the window keeps a native title bar, made
- * transparent so the window's black shows: macOS places the buttons and hides the bar in full screen, so neither
+ * transparent so the window's ground color shows: macOS places the buttons and hides the bar in full screen, so neither
  * header leaves room for them. One boot per file.
  */
 
@@ -29,10 +29,10 @@ test("the board's header shows the Dev builds tag on the dev channel, as home do
   assert.ok(el("app").querySelector(".brand .tag.dev"), "home shows it too");
 });
 
-test("macOS keeps a native black title bar and no header makes room for the window buttons", () => {
+test("macOS keeps a native ground-color title bar and no header makes room for the window buttons", () => {
   const mac = JSON.parse(readFileSync(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8")).app.windows[0];
   assert.equal(mac.titleBarStyle, "Transparent");
-  assert.equal(mac.backgroundColor, "#000000");
+  assert.equal(mac.backgroundColor, "#1A1A1A");
   assert.equal(mac.trafficLightPosition, undefined, "macOS places the buttons");
   for (const css of ["./ui/app.css", "./dash.css"]) {
     assert.doesNotMatch(readFileSync(new URL(css, import.meta.url), "utf8"), /data-platform/, css);

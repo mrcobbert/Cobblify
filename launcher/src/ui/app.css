@@ -387,7 +387,7 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 /* an update waiting for a restart: a dot on the gear's corner, as Ore UI marks a header icon that has something new
    (the inbox's unread dot), in the accent so it reads as news, not an error; the update row is in Settings */
-.hdr .key.gear .gdot{position:absolute;top:calc(-2*var(--su));right:calc(-2*var(--su));width:calc(5*var(--su));height:calc(5*var(--su));
+.key.gear .gdot{position:absolute;top:calc(-2*var(--su));right:calc(-2*var(--su));width:calc(5*var(--su));height:calc(5*var(--su));
   background:var(--acc);border:var(--su) solid #000;box-shadow:inset 0 var(--su) 0 var(--acc-hl);pointer-events:none}
 /* the island (and the intro's falling blocks) draws above the bare header row: the header never covers a block (the user,
    2026-10-04). The header makes no stacking layer of its own; the gear and Play's column still sit above the island so
@@ -454,7 +454,7 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 /* Every hero key in every face (Launch and its arrow, Choose Your Setup, Try again, Repair, Update, the setup and update
    bars), the client menu's tick and the gear's update dot wear the game's White (kit.js KEY_WHITE, --key*), whatever
    accent is set. The island's wool and the settings sheet keep the accent. */
-.hero,.caret,.mrow .ck,.hdr .key.gear .gdot{--acc:var(--key);--acc-hl:var(--key-hl);--acc-ln:var(--key-ln);--acc-dp:var(--key-dp);
+.hero,.caret,.mrow .ck,.key.gear .gdot{--acc:var(--key);--acc-hl:var(--key-hl);--acc-ln:var(--key-ln);--acc-dp:var(--key-dp);
   --acc-rim:var(--key-rim);--acc-sh:var(--key-sh);--acc-sh2:var(--key-sh2);--acc-on:var(--key-on);--acc-tsh:transparent}
 
 /* ---------- home in two halves (the user, 2026-10-13) ---------- */
@@ -462,3 +462,17 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
    right half (placeHome) */
 .col{width:50%;align-items:center;padding-left:calc(12*var(--su))}
 .col>.grp{width:calc(157*var(--su));max-width:100%}
+
+
+/* Home G: Settings shares Launch's 24 su row, separated from the white split key by 6 su. The group stays
+   centred across the left half; Settings remains reachable through setup, progress and error states. */
+.home .col{padding-right:0}
+.home .col>.grp{width:calc(187*var(--su))}
+.launch-row{display:flex;align-items:flex-start;gap:calc(6*var(--su));height:calc(24*var(--su))}
+.launch-row>.heros{flex:1 1 auto;min-width:0}
+.launch-row>.key.gear{width:calc(24*var(--su));height:calc(24*var(--su));padding:calc(5*var(--su)) 0 0;justify-content:center}
+.launch-row>.key.gear:active:not(:disabled),.launch-row>.key.gear[aria-expanded=true]{height:calc(22*var(--su));margin-top:calc(2*var(--su));padding-top:calc(5*var(--su));
+  box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2)}
+.version-link{align-self:flex-start;text-align:left}
+.version-link:hover{text-decoration:underline;text-underline-offset:var(--su)}
+.version-link:focus-visible{outline:var(--su) solid var(--hi);outline-offset:var(--su)}

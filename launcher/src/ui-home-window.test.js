@@ -105,7 +105,11 @@ test("choosing Lunar in the menu switches Launch to it and remembers it", async 
   await waitFor(() => root.style.getPropertyValue("--acc").toLowerCase() === "#fdc6e5", { label: "Lunar's accent" });
 });
 
-test("the settings sheet: its rows, a switch that saves, Esc closes", async () => {
+test("the settings sheet: its rows, a switch that saves, Esc returns to Settings beside Launch", async () => {
+  assert.equal($(".hdr [data-act='settings']"), null);
+  assert.equal($(".hdr .ver"), null, "version belongs in the side sheet");
+  assert.ok($(".launch-row .heros"));
+  assert.ok($(".launch-row [data-act='settings']"), "Settings is alongside the launch action");
   $('[data-act="settings"]').click();
   const sheet = el("sheet");
   await waitFor(() => sheet.classList.contains("open"), { label: "the sheet" });
@@ -122,6 +126,7 @@ test("the settings sheet: its rows, a switch that saves, Esc closes", async () =
 
   document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(sheet.classList.contains("open"), false);
+  assert.equal(document.activeElement, $('[data-act="settings"]'));
 });
 
 test("while launching, Launch is the progress and the sheet's launch settings are locked", async () => {
@@ -146,13 +151,20 @@ test("while launching, Launch is the progress and the sheet's launch settings ar
   replies.lobby_state = () => ({ kind: "unavailable" });
 });
 
-test("the version opens the release notes; Back returns home", async () => {
-  $(".ver").click();
+test("the version in Settings opens release notes; Back and Escape return to Settings", async () => {
+  $('[data-act="settings"]').click();
+  $('#sheet [data-act="history"]').click();
   await waitFor(() => $(".hist-list") != null, { label: "the history" });
   assert.ok(home.querySelectorAll(".hist-list .row").length >= 2);
   assert.ok($("#rel-0_18_0"));
   $('[data-act="back"]').click();
   assert.ok($('#main [data-act="play"]'));
+  assert.equal(el("sheet").classList.contains("open"), true);
+  $('#sheet [data-act="history"]').click();
+  await waitFor(() => $(".hist-list") != null, { label: "history again" });
+  document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(el("sheet").classList.contains("open"), true);
+  $('#sheet [data-act="close"]').click();
 });
 
 // ── a launch that ends with an outcome (progress.rs `outcome`) ─────────────────────────────
