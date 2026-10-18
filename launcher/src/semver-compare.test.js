@@ -43,11 +43,13 @@ test("malformed versions are rejected rather than ordered", () => {
 // The dev and stable channel guards call this tool by path from a workflow step and read
 // its stdout: an ordering that prints nothing reads as "not newer" and refuses a perfectly
 // good release. A symlinked or space-containing invocation must still print.
-test("the CLI prints an ordering through a symlink and from a path containing a space", async () => {
+test("the CLI prints an ordering through a platform path alias and from a path containing a space", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cobblify-semver-cli-"));
   try {
-    const link = path.join(dir, "compare-through-link.mjs");
-    await symlink(TOOL, link);
+    // Windows exercises a case-insensitive path alias without requiring symlink privileges.
+    // Unix retains the file-symlink regression; both must reach the real CLI entry point.
+    const link = process.platform === "win32" ? path.join(path.dirname(TOOL).toUpperCase(), path.basename(TOOL)) : path.join(dir, "compare-through-link.mjs");
+    if (process.platform !== "win32") await symlink(TOOL, link);
     const run = (tool, a, b) => spawnSync(process.execPath, [tool, a, b], { encoding: "utf8" });
 
     const newer = run(link, "0.16.0", "0.15.1");

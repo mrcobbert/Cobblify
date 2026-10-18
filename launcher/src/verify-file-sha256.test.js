@@ -38,14 +38,16 @@ test("rejects changed bytes and malformed expected hashes", async () => {
 // indistinguishable from success from the outside: exit 0, nothing printed, nothing
 // verified. A release step that calls the tool through a symlink or from a path with a
 // space in it must still verify.
-test("the CLI verifies through a symlink and from a path containing a space", async () => {
+test("the CLI verifies through a platform path alias and from a path containing a space", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cobblify-sha-cli-"));
   try {
     const file = path.join(dir, "agent.jar");
     await writeFile(file, "");
 
-    const link = path.join(dir, "verify-through-link.mjs");
-    await symlink(TOOL, link);
+    // Windows exercises a case-insensitive path alias without requiring symlink privileges.
+    // Unix retains the file-symlink regression; both must reach the real CLI entry point.
+    const link = process.platform === "win32" ? path.join(path.dirname(TOOL).toUpperCase(), path.basename(TOOL)) : path.join(dir, "verify-through-link.mjs");
+    if (process.platform !== "win32") await symlink(TOOL, link);
     const mismatch = spawnSync(process.execPath, [link, file, "0".repeat(64)], { encoding: "utf8" });
     assert.equal(mismatch.status, 1);
     assert.match(mismatch.stderr, /SHA-256 mismatch/);
