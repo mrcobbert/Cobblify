@@ -29,6 +29,7 @@ pub const CLOSE_LAUNCHER: &str = "lunarclient://close-launcher";
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOutcome {
     pub use_external_overlay: bool,
+    pub quit_lunar_after_launch: bool,
     pub action: LaunchAction,
 }
 
@@ -66,6 +67,7 @@ pub enum LaunchReply {
 pub struct LaunchAttempt {
     pub reply: LaunchReply,
     pub baseline: Option<SystemTime>,
+    pub lunar_quit: Option<std::sync::Arc<crate::post_launch_quit::Session>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +85,10 @@ pub fn dispatch(
     home: &Path,
     kind: LaunchKind,
     use_external_overlay: bool,
+    cleanup: Option<&crate::post_launch_quit::Session>,
 ) -> Result<DispatchResult, String> {
     match kind {
-        LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay),
+        LaunchKind::Lunar => launch_lunar_no_join(use_external_overlay, cleanup),
         LaunchKind::Forge => dispatch_forge(home, use_external_overlay),
     }
 }
@@ -178,13 +181,23 @@ pub fn lunar_version_ready(home: &Path) -> VersionWait {
 }
 
 /// One warmed bare-link fire; see `nojoin` for the confirmation contract.
-fn launch_lunar_no_join(use_external_overlay: bool) -> Result<DispatchResult, String> {
-    let mut ensure_open = ensure_lunar_launcher_open;
-    let mut warm_up = || std::thread::sleep(crate::nojoin::WARM_UP);
+fn launch_lunar_no_join(use_external_overlay: bool, cleanup: Option<&crate::post_launch_quit::Session>) -> Result<DispatchResult, String> {
+    let mut ensure_open = || {
+        ensure_lunar_launcher_open()?;
+        if let Some(cleanup) = cleanup { cleanup.observe_launcher(); }
+        Ok(())
+    };
+    let mut warm_up = || {
+        std::thread::sleep(crate::nojoin::WARM_UP);
+        if let Some(cleanup) = cleanup { cleanup.observe_launcher(); }
+    };
     let mut open_log = open_launcher_log_tail;
     let mut fire_link = open_bare_play_link;
     let mut represent = open_lunar_app_only;
-    let mut poll_wait = || std::thread::sleep(crate::nojoin::POLL_INTERVAL);
+    let mut poll_wait = || {
+        std::thread::sleep(crate::nojoin::POLL_INTERVAL);
+        if let Some(cleanup) = cleanup { cleanup.observe_launcher(); }
+    };
     // Baseline at fire time: the progress pipeline watches for the game on
     // confirmed AND unconfirmed outcomes alike.
     let baseline = SystemTime::now();
@@ -205,6 +218,7 @@ fn launch_lunar_no_join(use_external_overlay: bool) -> Result<DispatchResult, St
         baseline,
         outcome: LaunchOutcome {
             use_external_overlay,
+            quit_lunar_after_launch: cleanup.is_some(),
             action,
         },
     })
@@ -311,6 +325,7 @@ fn dispatch_forge(home: &Path, use_external_overlay: bool) -> Result<DispatchRes
         baseline,
         outcome: LaunchOutcome {
             use_external_overlay,
+            quit_lunar_after_launch: false,
             action: LaunchAction::GameLaunchRequested,
         },
     })
@@ -338,6 +353,7 @@ pub fn launch_with_preflight(
                     message: Some(format!("{e:?}")),
                 },
                 baseline: None,
+                lunar_quit: None,
             };
         }
     };
@@ -352,6 +368,7 @@ pub fn launch_with_preflight(
                     message: Some(msg),
                 },
                 baseline: None,
+                lunar_quit: None,
             };
         }
     };
@@ -363,12 +380,14 @@ pub fn launch_with_preflight(
                 message: None,
             },
             baseline: None,
+                lunar_quit: None,
         };
     }
     if preexisting_writer(home) {
         return LaunchAttempt {
             reply: LaunchReply::PreexistingGame { preferences: prefs },
             baseline: None,
+                lunar_quit: None,
         };
     }
     if kind == LaunchKind::Lunar {
@@ -381,6 +400,7 @@ pub fn launch_with_preflight(
                     message: Some(message),
                 },
                 baseline: None,
+                lunar_quit: None,
             };
         }
         select_1_8_9_if_lunar_is_quit(home);
@@ -392,16 +412,20 @@ pub fn launch_with_preflight(
                     message: None,
                 },
                 baseline: None,
+                lunar_quit: None,
             };
         }
     }
-    match dispatch(home, kind, strict_overlay) {
+    let lunar_quit = (kind == LaunchKind::Lunar && locked.read_quit_lunar_strict().unwrap_or(false))
+        .then(|| std::sync::Arc::new(crate::post_launch_quit::Session::prepare(home, generation, true)));
+    match dispatch(home, kind, strict_overlay, lunar_quit.as_deref()) {
         Ok(result) => LaunchAttempt {
             reply: LaunchReply::Launched {
                 outcome: result.outcome,
                 generation,
             },
             baseline: Some(result.baseline),
+            lunar_quit,
         },
         Err(message) => LaunchAttempt {
             reply: LaunchReply::Rejected {
@@ -410,6 +434,7 @@ pub fn launch_with_preflight(
                 message: Some(message),
             },
             baseline: None,
+                lunar_quit: None,
         },
     }
 }
@@ -491,6 +516,7 @@ mod tests {
         let pre = serde_json::to_value(LaunchReply::PreexistingGame {
             preferences: LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },

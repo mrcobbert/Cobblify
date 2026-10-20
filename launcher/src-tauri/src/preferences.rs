@@ -23,6 +23,7 @@ pub enum PreferenceHealth {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchPreferencesView {
     pub use_external_overlay: bool,
+    pub quit_lunar_after_launch: bool,
     pub health: PreferenceHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
@@ -78,10 +79,14 @@ pub enum PreferenceSaveReply {
     Saved {
         #[serde(rename = "useExternalOverlay")]
         use_external_overlay: bool,
+        #[serde(rename = "quitLunarAfterLaunch")]
+        quit_lunar_after_launch: bool,
     },
     Reconciled {
         #[serde(rename = "useExternalOverlay")]
         use_external_overlay: bool,
+        #[serde(rename = "quitLunarAfterLaunch")]
+        quit_lunar_after_launch: bool,
     },
     NotSaved { diagnostic: String },
     Indeterminate,
@@ -130,6 +135,8 @@ struct PreferenceDoc {
     auto_join_hypixel: bool,
     #[serde(default = "default_true")]
     use_external_overlay: bool,
+    #[serde(default)]
+    quit_lunar_after_launch: bool,
     #[serde(default)]
     auto_update_enabled: bool,
     #[serde(default)]
@@ -223,16 +230,19 @@ impl LockedPrefs {
         match read_doc(&pref_path(&self.home)) {
             Ok(doc) => LaunchPreferencesView {
                 use_external_overlay: doc.use_external_overlay,
+                quit_lunar_after_launch: doc.quit_lunar_after_launch,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },
             Err(ReadOutcome::Missing) => LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Missing,
                 diagnostic: None,
             },
             Err(ReadOutcome::Invalid(msg)) => LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Invalid,
                 diagnostic: Some(msg),
             },
@@ -275,22 +285,40 @@ impl LockedPrefs {
         }
     }
 
+    pub(crate) fn read_quit_lunar_strict(&self) -> Result<bool, String> {
+        match read_doc(&pref_path(&self.home)) {
+            Ok(doc) => Ok(doc.quit_lunar_after_launch),
+            Err(ReadOutcome::Missing) => Ok(false),
+            Err(ReadOutcome::Invalid(msg)) => Err(msg),
+        }
+    }
+
     /// Save the External Overlay choice, preserving every other key. The
     /// others come from a lenient per-field read so a valid value survives
     /// even when another field (or the document's health) is invalid; only a
     /// file that is not a JSON object at all falls back to the defaults.
     fn write_overlay(&self, enabled: bool) -> PreferenceSaveReply {
+        self.write_launch_choice(enabled, false)
+    }
+
+    fn write_launch_choice(&self, enabled: bool, lunar_quit: bool) -> PreferenceSaveReply {
         let path = pref_path(&self.home);
         let mut doc = read_fields_lenient(&path);
-        doc.use_external_overlay = enabled;
+        if lunar_quit {
+            doc.quit_lunar_after_launch = enabled;
+        } else {
+            doc.use_external_overlay = enabled;
+        }
         match write_doc(&path, &doc) {
             Ok(()) => PreferenceSaveReply::Saved {
                 use_external_overlay: doc.use_external_overlay,
+                quit_lunar_after_launch: doc.quit_lunar_after_launch,
             },
             Err(SaveOutcome::NotSaved(msg)) => PreferenceSaveReply::NotSaved { diagnostic: msg },
             Err(SaveOutcome::Indeterminate) => PreferenceSaveReply::Indeterminate,
             Err(SaveOutcome::Reconciled(current)) => PreferenceSaveReply::Reconciled {
                 use_external_overlay: current.use_external_overlay,
+                quit_lunar_after_launch: current.quit_lunar_after_launch,
             },
         }
     }
@@ -335,6 +363,7 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
     let defaults = || PreferenceDoc {
         auto_join_hypixel: true,
         use_external_overlay: true,
+        quit_lunar_after_launch: false,
         auto_update_enabled: false,
         auto_update_prompted: false,
         update_channel: String::new(),
@@ -353,6 +382,7 @@ fn read_fields_lenient(path: &Path) -> PreferenceDoc {
     PreferenceDoc {
         auto_join_hypixel: field("auto_join_hypixel", true),
         use_external_overlay: field("use_external_overlay", true),
+        quit_lunar_after_launch: field("quit_lunar_after_launch", false),
         auto_update_enabled: field("auto_update_enabled", false),
         auto_update_prompted: field("auto_update_prompted", false),
         update_channel: map
@@ -439,6 +469,13 @@ pub fn set_use_external_overlay(
     Ok(locked.write_overlay(enabled))
 }
 
+pub fn set_quit_lunar_after_launch(
+    home: &Path,
+    enabled: bool,
+) -> Result<PreferenceSaveReply, PreferenceReadError> {
+    Ok(LockedPrefs::acquire(home)?.write_launch_choice(enabled, true))
+}
+
 pub fn set_auto_update(
     home: &Path,
     enabled: bool,
@@ -467,6 +504,34 @@ pub fn update_channel(home: &Path) -> UpdateChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lunar_quit_defaults_off_and_survives_every_other_save() {
+        let home = temp_home();
+        assert!(!launch_preferences(&home).unwrap().quit_lunar_after_launch);
+        write_raw(&home, r#"{"auto_join_hypixel":false,"use_external_overlay":false}"#);
+        assert!(!launch_preferences(&home).unwrap().quit_lunar_after_launch);
+        set_quit_lunar_after_launch(&home, true).unwrap();
+        set_use_external_overlay(&home, true).unwrap();
+        set_auto_update(&home, false).unwrap();
+        set_update_channel(&home, UpdateChannel::Dev).unwrap();
+        assert!(launch_preferences(&home).unwrap().quit_lunar_after_launch);
+        assert_eq!(raw(&home)["auto_join_hypixel"], false);
+        assert_eq!(raw(&home)["update_channel"], "dev");
+        set_quit_lunar_after_launch(&home, false).unwrap();
+        assert!(!launch_preferences(&home).unwrap().quit_lunar_after_launch);
+        assert!(launch_preferences(&home).unwrap().use_external_overlay);
+        assert!(!update_preferences(&home).unwrap().auto_update_enabled);
+        assert_eq!(update_preferences(&home).unwrap().update_channel, UpdateChannel::Dev);
+    }
+
+    #[test]
+    fn repairing_an_unrelated_field_preserves_the_lunar_quit_choice() {
+        let home = temp_home();
+        write_raw(&home, r#"{"use_external_overlay":"bad","quit_lunar_after_launch":true}"#);
+        set_use_external_overlay(&home, false).unwrap();
+        assert!(launch_preferences(&home).unwrap().quit_lunar_after_launch);
+    }
 
     fn temp_home() -> PathBuf {
         tempfile::tempdir()
@@ -565,6 +630,7 @@ mod tests {
             reply,
             PreferenceSaveReply::Saved {
                 use_external_overlay: false,
+                ..
             }
         ));
         let view = launch_preferences(&home).unwrap();
@@ -717,6 +783,7 @@ mod tests {
             reply,
             PreferenceSaveReply::Saved {
                 use_external_overlay: true,
+                ..
             }
         ));
         let view = launch_preferences(&home).unwrap();
@@ -733,6 +800,7 @@ mod tests {
             reply,
             PreferenceSaveReply::Saved {
                 use_external_overlay: false,
+                ..
             }
         ));
         assert_eq!(raw(&home)["auto_join_hypixel"], true);
@@ -816,10 +884,12 @@ mod tests {
     fn save_reply_serializes_snake_case_tags() {
         let saved = serde_json::to_value(PreferenceSaveReply::Saved {
             use_external_overlay: false,
+            quit_lunar_after_launch: false,
         })
         .unwrap();
         assert_eq!(saved["status"], "saved");
         assert_eq!(saved["useExternalOverlay"], false);
+        assert_eq!(saved["quitLunarAfterLaunch"], false);
         assert!(saved.get("autoJoinHypixel").is_none(), "no auto-join on the wire");
         let not_saved = serde_json::to_value(PreferenceSaveReply::NotSaved {
             diagnostic: "disk".into(),

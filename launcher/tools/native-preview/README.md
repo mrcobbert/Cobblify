@@ -6,7 +6,9 @@ Its identifier is `club.cobblify.gui-test`; it can coexist with the installed
 launcher. It shares the production native window-chrome module and embeds the unchanged
 production frontend. The production backend, credentials, installers and updater
 are absent. The two ready clients and all dashboard rosters are fixtures.
-Settings work in memory and reset when the app quits. Launch on Home is rejected;
+Settings work in memory and reset when the app quits. The **Quit Lunar after launch**
+switch also works only in memory here; this fixture never requests a real Lunar quit
+and cannot verify game survival or quit timing. Launch on Home is rejected;
 selecting a dashboard test view explicitly simulates a successful launch, progress
 and acknowledged lobby snapshots through the real frontend controllers. No game
 process starts, no real files/settings are read, and no update can be installed.

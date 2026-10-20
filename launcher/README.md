@@ -4,6 +4,22 @@ A small desktop app (macOS and Windows) that installs Cobblify for Lunar
 Client and for a regular Forge 1.8.9 setup, and registers it so the mod loads
 however the game is started.
 
+**Quit Lunar after launch** in Settings is off by default. When enabled, Cobblify
+requests a normal Lunar launcher quit after this launch's Minecraft process has
+reported that the Cobblify mod loaded. It does not wait for joining a server.
+The setting applies to the next Lunar launch and is locked while launching or
+playing. Prism is unaffected.
+
+Cleanup targets the original launcher instance and skips uncertain identities,
+other running games, or missing/false/unreadable `settings.detachGameProcess`.
+It never changes Lunar's settings or force-kills Lunar or Minecraft. Windows uses
+Lunar's quit URL; replacement between the final identity check and URL dispatch
+remains a small best-effort race. With External Overlay off, Cobblify waits for
+bounded cleanup before exiting; refusal or timeout does not fail a loaded game.
+
+Game survival, launcher-backed services and actual shutdown timing must be
+verified in live Mac and Windows sessions before publishing this feature.
+
 The two targets are set up **independently**. Either can be absent, blocked or
 broken without taking the other down - a friend with Forge and no Lunar reaches
 a working app, which is exactly what the previous Lunar-only version could not

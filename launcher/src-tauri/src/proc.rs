@@ -18,6 +18,92 @@ use std::path::{Path, PathBuf};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
+/// A launcher main process, never a game JVM or an Electron renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LunarIdentity {
+    pub pid: u32,
+    pub birth_ns: crate::process_liveness::EpochNs,
+    pub exe: PathBuf,
+}
+
+/// Launcher-specific completeness: unlike game scans, an unreadable non-Java process
+/// cannot be ignored. Err means ambiguity, not absence. No command lines are requested.
+pub fn lunar_main_identity() -> Result<Option<LunarIdentity>, ()> {
+    let raw = raw_pid_list();
+    let system = scan_snapshot();
+    #[cfg(target_os = "macos")]
+    let wanted = lunar_exes();
+    #[cfg(windows)]
+    let root = lunar_programs_root(std::env::var_os("LOCALAPPDATA").as_deref()).map_err(|_| ())?;
+    let matches = |exe: &Path| {
+        #[cfg(target_os = "macos")]
+        { wanted.iter().any(|p| p == exe) }
+        #[cfg(windows)]
+        { is_lunar_launcher_exe(exe, &root) }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { let _ = exe; false }
+    };
+    lunar_main_in(&system, raw, matches)
+}
+
+fn lunar_main_in(system: &System, raw: Option<Vec<u32>>, matches: impl Fn(&Path) -> bool) -> Result<Option<LunarIdentity>, ()> {
+    use crate::process_liveness::{check_identity, process_birth_ns, process_exists, IdentityCheck};
+    let raw = raw.ok_or(())?;
+    let own = system.process(sysinfo::Pid::from_u32(std::process::id())).ok_or(())?;
+    let uid = own.user_id().ok_or(())?;
+    for pid in raw {
+        #[cfg(windows)]
+        if is_windows_system_pid(pid) { continue; }
+        if system.process(sysinfo::Pid::from_u32(pid)).is_none()
+            && process_exists(pid) != IdentityCheck::DefinitelyGone && !other_account(pid)
+        { return Err(()); }
+    }
+    let mut candidates = Vec::new();
+    for (pid, p) in system.processes() {
+        let pid = pid.as_u32();
+        #[cfg(windows)]
+        if is_windows_system_pid(pid) { continue; }
+        if p.user_id().is_some_and(|other| other != uid) || other_account(pid) { continue; }
+        let Some(exe) = p.exe().filter(|e| !e.as_os_str().is_empty()) else {
+            if process_exists(pid) != IdentityCheck::DefinitelyGone { return Err(()); }
+            continue;
+        };
+        if !matches(exe) { continue; }
+        if p.user_id() != Some(uid) { return Err(()); }
+        let birth_ns = process_birth_ns(pid).ok_or(())?;
+        if check_identity(pid, birth_ns) != IdentityCheck::AliveSameIdentity { return Err(()); }
+        let parent = p.parent().map(|p| p.as_u32()).ok_or(())?;
+        // A live parent born after its child means a reused parent PID: ancestry is unknown.
+        if process_birth_ns(parent).is_some_and(|birth| birth > birth_ns) { return Err(()); }
+        if process_birth_ns(parent).is_none()
+            && process_exists(parent) != IdentityCheck::DefinitelyGone { return Err(()); }
+        #[cfg(windows)]
+        if process_exists(parent) != IdentityCheck::AliveSameIdentity {
+            // An orphan renderer can otherwise masquerade as the only main root.
+            return Err(());
+        }
+        candidates.push((LunarIdentity { pid, birth_ns, exe: exe.to_path_buf() }, parent));
+    }
+    unique_lunar_root(&candidates)
+}
+
+fn unique_lunar_root(candidates: &[(LunarIdentity, u32)]) -> Result<Option<LunarIdentity>, ()> {
+    let ids: std::collections::HashMap<_, _> = candidates.iter().map(|(id, parent)| (id.pid, *parent)).collect();
+    let roots: Vec<_> = candidates.iter().filter(|(_, parent)| !ids.contains_key(parent)).collect();
+    if candidates.is_empty() { return Ok(None); }
+    if roots.len() != 1 { return Err(()); }
+    let root = &roots[0].0;
+    for (candidate, _) in candidates {
+        let mut pid = candidate.pid;
+        let mut seen = std::collections::HashSet::new();
+        while pid != root.pid {
+            if !seen.insert(pid) { return Err(()); }
+            pid = *ids.get(&pid).ok_or(())?;
+        }
+    }
+    Ok(Some(root.clone()))
+}
+
 /// Verified 2026-08-04: `pgrep -f` on the `/Applications` path returned one PID. Loose
 /// substring matching hits 4+ Electron helper processes (GPU, renderer, network,
 /// crashpad), so the comparison below is exact equality - against the main executable of
@@ -615,6 +701,16 @@ fn caseless_ends_with(path: &Path, tail: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn launcher_roots_exclude_helpers_and_reject_ambiguous_trees() {
+        let id = |pid| LunarIdentity { pid, birth_ns: pid as i128, exe: "Lunar".into() };
+        assert_eq!(unique_lunar_root(&[]), Ok(None));
+        assert_eq!(unique_lunar_root(&[(id(10), 1), (id(11), 10), (id(12), 11)]), Ok(Some(id(10))));
+        assert_eq!(unique_lunar_root(&[(id(10), 1), (id(20), 1)]), Err(()));
+        assert_eq!(unique_lunar_root(&[(id(10), 11), (id(11), 10)]), Err(()));
+        assert_eq!(unique_lunar_root(&[(id(10), 1), (id(11), 12), (id(12), 11)]), Err(()));
+    }
+
+    #[test]
     fn an_unreadable_non_java_process_does_not_make_a_scan_uncertain() {
         use std::ffi::OsStr;
         assert!(!super::could_be_java(OsStr::new("claude")));
@@ -910,6 +1006,19 @@ mod tests {
         let child = spawn_canary();
         assert!(!scan_is_complete(&system, Some(vec![own.as_u32(), child.child.id()])),
             "a live process omitted by the snapshot makes it uncertain");
+    }
+
+    #[test]
+    fn launcher_specific_completeness_rejects_missing_non_java_processes() {
+        let own = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[own]), true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always).with_user(UpdateKind::Always));
+        assert_eq!(lunar_main_in(&system, Some(vec![own.as_u32()]), |_| false), Ok(None));
+        assert_eq!(lunar_main_in(&system, None, |_| false), Err(()));
+        assert_eq!(lunar_main_in(&System::new(), Some(vec![own.as_u32()]), |_| false), Err(()));
+        let child = spawn_canary();
+        assert_eq!(lunar_main_in(&system, Some(vec![own.as_u32(), child.child.id()]), |_| false), Err(()));
     }
 
     /// The reconciliation source must be a real, independent enumeration:

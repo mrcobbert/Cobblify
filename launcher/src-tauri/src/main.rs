@@ -13,6 +13,7 @@ mod launch_watch;
 mod lifecycle;
 mod lobby;
 mod preferences;
+mod post_launch_quit;
 mod process_liveness;
 mod install;
 mod nojoin;
@@ -1252,6 +1253,7 @@ struct ProgressState {
     steady_polls: u32,
     /// Whether Cobblify loaded in this launch's game, or the launch ended without it.
     watch: launch_watch::Watch,
+    lunar_quit: Option<Arc<post_launch_quit::Session>>,
 }
 
 /// Split mutexes so stalled lobby polling cannot block lifecycle admission.
@@ -1436,6 +1438,7 @@ async fn set_preference(
     };
     let reply = match tauri::async_runtime::spawn_blocking(move || match key {
         lifecycle::PrefKey::Overlay => preferences::set_use_external_overlay(&home, enabled),
+        lifecycle::PrefKey::QuitLunar => preferences::set_quit_lunar_after_launch(&home, enabled),
     })
     .await
     {
@@ -1485,6 +1488,14 @@ async fn set_use_external_overlay(
     session: tauri::State<'_, SessionParts>,
 ) -> Result<PreferenceSaveReply, String> {
     set_preference(lifecycle::PrefKey::Overlay, enabled, session).await
+}
+
+#[tauri::command]
+async fn set_quit_lunar_after_launch(
+    enabled: bool,
+    session: tauri::State<'_, SessionParts>,
+) -> Result<PreferenceSaveReply, String> {
+    set_preference(lifecycle::PrefKey::QuitLunar, enabled, session).await
 }
 
 #[tauri::command]
@@ -1544,6 +1555,7 @@ fn prefs_view_or_fallback(home: &Path) -> LaunchPreferencesView {
         Ok(view) => view,
         Err(e) => LaunchPreferencesView {
             use_external_overlay: true,
+            quit_lunar_after_launch: false,
             health: preferences::PreferenceHealth::Invalid,
             diagnostic: Some(format!("{e:?}")),
         },
@@ -1599,6 +1611,12 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
                 .abort_reset();
             return ResetReply::NotTerminal;
         }
+        drop(lobby);
+    }
+    let cleanup = parts.progress.lock().unwrap_or_else(|e| e.into_inner()).lunar_quit.clone();
+    if let Some(cleanup) = cleanup { cleanup.cancel_and_drain(); }
+    {
+        let mut lobby = parts.lobby.lock().unwrap_or_else(|e| e.into_inner());
         match mode {
             ResetMode::Terminal => lobby.clear_for_reset(),
             ResetMode::Abort => lobby.clear_for_abort(forge_session, home),
@@ -1611,6 +1629,7 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
         progress.last_mtime = None;
         progress.steady_polls = 0;
         progress.watch = launch_watch::Watch::default();
+        progress.lunar_quit = None;
     }
     parts
         .coordinator
@@ -1625,8 +1644,13 @@ fn reset_session_end_inner(parts: &SessionParts, home: &Path, mode: ResetMode) -
 /// Overlay-off exit. The game, Lunar, and Prism are separate processes and
 /// survive.
 #[tauri::command]
-fn quit_app(app_handle: tauri::AppHandle) {
+async fn quit_app(app_handle: tauri::AppHandle, session: tauri::State<'_, SessionParts>) -> Result<(), String> {
+    let cleanup = session.progress.lock().unwrap_or_else(|e| e.into_inner()).lunar_quit.clone();
+    if let Some(cleanup) = cleanup {
+        let _ = tauri::async_runtime::spawn_blocking(move || cleanup.cancel_and_drain()).await;
+    }
     app_handle.exit(0);
+    Ok(())
 }
 
 async fn run_reset(session: &tauri::State<'_, SessionParts>, mode: ResetMode) -> Result<ResetReply, String> {
@@ -1902,6 +1926,7 @@ async fn launch_target(
                 progress.forge_session = matches!(kind, LaunchKind::Forge);
                 progress.last_mtime = None;
                 progress.steady_polls = 0;
+                progress.lunar_quit = attempt.lunar_quit.clone();
                 progress.watch = match kind {
                     LaunchKind::Lunar => launch_watch::Watch::lunar(&watch_home),
                     LaunchKind::Forge => launch_watch::Watch::prism(&watch_home),
@@ -2018,6 +2043,9 @@ fn compute_launch_progress_in(
         return fired_progress(forge_session, false);
     };
     let now = env.now();
+    if !progress.watch.is_loaded() {
+        if let Some(cleanup) = &progress.lunar_quit { cleanup.observe_launcher(); }
+    }
     // The game JVM first, then the log: lines the game wrote before an exit are on disk
     // when they are read below.
     let jvm = progress.watch.observe_game(env, baseline, now);
@@ -2119,6 +2147,34 @@ async fn launch_progress(
         Ok(progress) => Ok(progress),
         Err(_) => Ok(progress::progress_for(progress::Milestone::Fired, false)),
     }
+}
+
+#[tauri::command]
+async fn finish_lunar_launch(
+    generation: u64,
+    session: tauri::State<'_, SessionParts>,
+) -> Result<post_launch_quit::Outcome, String> {
+    let parts = session.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let coordinator = parts.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            if coordinator.generation() != generation || coordinator.state() != lifecycle::Lifecycle::Active {
+                return post_launch_quit::Outcome::Skipped;
+            }
+        }
+        let (cleanup, game) = {
+            let mut progress = parts.progress.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(cleanup) = progress.lunar_quit.clone().filter(|c| c.generation == generation) else {
+                return post_launch_quit::Outcome::Skipped;
+            };
+            let game = if compute_launch_progress(&mut progress).loaded { progress.watch.game_id() } else { None };
+            (cleanup, game)
+        };
+        let game = game.or_else(|| parts.lobby.lock().unwrap_or_else(|e| e.into_inner())
+            .acknowledged_writer(generation).map(|writer| launch_watch::GameId { pid: writer.pid, birth_ns: writer.os_birth_ns }));
+        // Reset owns cancellation/drain. No shared polling/lifecycle lock crosses OS work.
+        game.map_or(post_launch_quit::Outcome::NotReady, |game| cleanup.finish(game))
+    }).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -3664,6 +3720,10 @@ fn show_window_safety_net(app: tauri::AppHandle) {
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == post_launch_quit::HELPER_ARG) {
+        std::process::exit(post_launch_quit::helper(&args));
+    }
     // R3: the NSIS pre-uninstall hook runs this exe with one argument and
     // acts on its exit code. It must never reach `tauri::Builder` - there is
     // no window, no event loop and nobody to see a dialog.
@@ -3743,6 +3803,7 @@ fn main() {
             launch_preferences,
             update_preferences,
             set_use_external_overlay,
+            set_quit_lunar_after_launch,
             set_auto_update,
             set_update_channel,
             updater::update_status,
@@ -3760,6 +3821,7 @@ fn main() {
             launch_lunar,
             launch_forge,
             launch_progress,
+            finish_lunar_launch,
             lunar_version_ready,
             choose_forge_target,
             open_info,
@@ -3768,6 +3830,21 @@ fn main() {
             resume_setup,
             setup_state
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start the Cobblify launcher");
+        .build(tauri::generate_context!())
+        .expect("failed to build the Cobblify launcher")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if let Some(parts) = app.try_state::<SessionParts>() {
+                    let cleanup = parts.progress.lock().unwrap_or_else(|e| e.into_inner()).lunar_quit.clone();
+                    if let Some(cleanup) = cleanup.filter(|cleanup| !cleanup.is_drained()) {
+                        api.prevent_exit();
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = tauri::async_runtime::spawn_blocking(move || cleanup.cancel_and_drain()).await;
+                            app.exit(0);
+                        });
+                    }
+                }
+            }
+        });
 }

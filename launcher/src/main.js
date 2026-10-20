@@ -21,6 +21,7 @@ import {
   abortLaunchSession,
   beginSetup,
   gameTheme,
+  finishLunarLaunch,
   lunarVersionReady,
   openInfo,
   quitApp,
@@ -66,6 +67,8 @@ const chromeReady = window.__TAURI__ ? installWindowChrome(window, invoke) : Pro
 let previewLaunchAt = null;
 let previewLaunchForge = false;
 let previewUpdateKey = "consent";
+let previewOverlayOn = true;
+let previewQuitLunar = false;
 /** Preview: clients whose download page was opened (installed 2.4 s later), and clients set up meanwhile. */
 const previewInstalled = new Set();
 const previewDone = new Set();
@@ -175,17 +178,26 @@ function previewInvoke(command, args) {
 
   if (command === "launch_preferences") {
     return Promise.resolve({
-      useExternalOverlay: true,
+      useExternalOverlay: previewOverlayOn,
+      quitLunarAfterLaunch: previewQuitLunar,
       health: "missing",
     });
   }
 
   if (command === "set_use_external_overlay") {
+    previewOverlayOn = args?.enabled ?? true;
     return Promise.resolve({
       status: "saved",
-      useExternalOverlay: args?.enabled ?? true,
+      useExternalOverlay: previewOverlayOn,
+      quitLunarAfterLaunch: previewQuitLunar,
     });
   }
+
+  if (command === "set_quit_lunar_after_launch") {
+    previewQuitLunar = args?.enabled === true;
+    return Promise.resolve({ status: "saved", useExternalOverlay: previewOverlayOn, quitLunarAfterLaunch: previewQuitLunar });
+  }
+  if (command === "finish_lunar_launch") return Promise.resolve("skipped");
 
   if (command === "update_preferences") {
     const snap = resolvePreviewUpdate(previewUpdateKey);
@@ -449,10 +461,12 @@ const ui = createApp(el("app"), {
     // Any save rewrites a valid document (the backend salvages every valid key, and writes
     // back the key the 0.17 launcher needs); an uncertain save repairs with its own value.
     const st = launchController.getState();
-    launchController.setOverlay(st.optimisticOverlay, { repair: true });
+    if (st.prefUncertainKey === "lunarQuit") launchController.setQuitLunar(st.optimisticQuitLunar, { repair: true });
+    else launchController.setOverlay(st.optimisticOverlay, { repair: true });
   },
   update: (action) => updateController.action(action),
   setOverlay: (on) => launchController.setOverlay(on),
+  setQuitLunar: (on) => launchController.setQuitLunar(on),
   setAutoUpdate: (on) => updateController.action(on ? "enable" : "disable"),
   setDev: (on) => {
     devPending = on;
@@ -726,6 +740,7 @@ function refreshUi() {
     launch,
     update,
     overlayOn: st.optimisticOverlay,
+    quitLunarOn: st.optimisticQuitLunar,
     overlaySaving: st.prefSaving,
     version,
     devPending,
@@ -942,6 +957,7 @@ function stopLobbyPolling() {
 // Overlay-off quit coordination (dependency-injected module; see
 // overlay-exit.js for the exhaustive route table).
 const overlayExit = createOverlayExit({
+  finishLunar: (generation) => finishLunarLaunch(invoke, generation),
   quit: () => quitApp(invoke),
   // Double quit rejection: enter the overlay flow instead of stranding an
   // Active app - lobby polling gives it a live loop that can reach the
@@ -977,6 +993,7 @@ const sessionReset = createSessionReset({
     stopLobbyPolling();
   },
   invalidate: () => {
+    overlayExit.resetSession();
     launchController.invalidateSession();
     // The reset owns the surface from here: the launch key gives way
     // before its own command has even answered.
@@ -1095,7 +1112,7 @@ const launchHooks = {
     connection.beginLaunchSession({ now: Date.now() });
     firstLiveSeen = false;
     launchController.bumpPollGen();
-    const exitRoute = overlayExit.routeFor(reply.outcome);
+    const exitRoute = overlayExit.routeFor({ ...reply.outcome, generation: reply.generation });
     noDashboard = exitRoute === "no_dashboard";
     gameUp = false;
     if (exitRoute === "quit_now") {
@@ -1106,7 +1123,7 @@ const launchHooks = {
       return;
     }
     const view = launchViewRoute(reply.outcome);
-    homeUntilLive = view.stayHome;
+    homeUntilLive = view.stayHome || noDashboard;
     // A null subtitle tells the poll handler no manual screen exists.
     manualRouteSubtitle = view.subtitleKind
       ? manualRouteSubtitleFor(view.subtitleKind, lastLaunchKind)
@@ -1116,7 +1133,7 @@ const launchHooks = {
     // session_ended poll can still reset the app to a launchable home; it
     // quits once Cobblify is known to have loaded (overlay-exit.js).
     startLobbyPolling();
-    if (!view.stayHome) {
+    if (!view.stayHome && !noDashboard) {
       // Open-only / unconfirmed: the manual screen IS the guidance.
       connectionShell.show(view.shellMode, { subtitle: manualRouteSubtitle });
       stage.dataset.view = "dash";

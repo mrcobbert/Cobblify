@@ -22,6 +22,48 @@ const baseHandlers = {
   [CMD.lobbyState]: () => ({ kind: "unavailable" }),
 };
 
+test("Lunar quit defaults off, saves independently, and preserves overlay", async () => {
+  const ctrl = createLaunchController(fakeInvoke({
+    ...baseHandlers,
+    [CMD.setQuitLunarAfterLaunch]: ({ enabled }) => ({ status: "saved", useExternalOverlay: true, quitLunarAfterLaunch: enabled }),
+    [CMD.setUseExternalOverlay]: ({ enabled }) => ({ status: "saved", useExternalOverlay: enabled, quitLunarAfterLaunch: true }),
+  }));
+  await ctrl.refreshPreferences();
+  assert.equal(ctrl.getState().optimisticQuitLunar, false);
+  await ctrl.setQuitLunar(true);
+  assert.equal(ctrl.getState().confirmedQuitLunar, true);
+  assert.equal(ctrl.getState().confirmedOverlay, true);
+  await ctrl.setOverlay(false);
+  assert.equal(ctrl.getState().confirmedQuitLunar, true);
+  assert.equal(ctrl.getState().confirmedOverlay, false);
+});
+
+test("Lunar quit save failure rolls back only that switch", async () => {
+  const ctrl = createLaunchController(fakeInvoke({ ...baseHandlers,
+    [CMD.setQuitLunarAfterLaunch]: () => ({ status: "not_saved", diagnostic: "disk full" }),
+  }));
+  await ctrl.refreshPreferences();
+  await ctrl.setQuitLunar(true);
+  assert.equal(ctrl.getState().optimisticQuitLunar, false);
+  assert.equal(ctrl.getState().confirmedOverlay, true);
+  assert.match(ctrl.getState().prefError, /disk full/);
+});
+
+test("uncertain Lunar quit saves must be repaired through the same key", async () => {
+  let attempts = 0;
+  const ctrl = createLaunchController(fakeInvoke({ ...baseHandlers,
+    [CMD.setQuitLunarAfterLaunch]: ({ enabled }) => ++attempts === 1 ? { status: "indeterminate" }
+      : { status: "saved", useExternalOverlay: true, quitLunarAfterLaunch: enabled },
+  }));
+  await ctrl.refreshPreferences(); await ctrl.setQuitLunar(true);
+  assert.equal(ctrl.getState().prefUncertainKey, "lunarQuit");
+  await ctrl.setOverlay(false, { repair: true });
+  assert.equal(attempts, 1); assert.equal(ctrl.getState().prefUncertain, true);
+  await ctrl.setQuitLunar(true, { repair: true });
+  assert.equal(ctrl.getState().prefUncertain, false);
+  assert.equal(ctrl.getState().confirmedQuitLunar, true);
+});
+
 test("optimistic toggle rolls back on not_saved", async () => {
   const changes = [];
   const invoke = fakeInvoke({
@@ -568,7 +610,7 @@ test("an uncertain overlay save is repaired only with the same value", async () 
 
 test("the controller has no auto-join surface", () => {
   const ctrl = createLaunchController(fakeInvoke(baseHandlers));
-  assert.deepEqual(Object.keys(ctrl).filter((k) => /^set[A-Z]/.test(k)), ["setOverlay"]);
+  assert.deepEqual(Object.keys(ctrl).filter((k) => /^set[A-Z]/.test(k)), ["setOverlay", "setQuitLunar"]);
   const st = ctrl.getState();
   for (const key of Object.keys(st)) assert.doesNotMatch(key, /auto.?join/i);
 });

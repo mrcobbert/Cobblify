@@ -19,6 +19,61 @@ function harness({ quitFails = 0 } = {}) {
 
 const outcome = (action, useExternalOverlay) => ({ action, useExternalOverlay });
 
+test("Lunar cleanup is shared by loaded/live and completes before overlay-off exit", async () => {
+  const events = [];
+  let finish;
+  const exit = createOverlayExit({
+    finishLunar: (gen) => { events.push(`finish:${gen}`); return new Promise((r) => { finish = r; }); },
+    quit: async () => events.push("quit"),
+    fallbackToOverlayFlow: () => events.push("fallback"),
+  });
+  assert.equal(exit.routeFor({ action: "launcher_opened", useExternalOverlay: false, quitLunarAfterLaunch: true, generation: 7 }), "no_dashboard");
+  const loaded = exit.onConfirmationSignal("loaded");
+  const live = exit.onConfirmationSignal("live");
+  await Promise.resolve();
+  assert.deepEqual(events, ["finish:7"]);
+  finish("exited"); await Promise.all([loaded, live]);
+  assert.deepEqual(events, ["finish:7", "quit"]);
+});
+
+test("reset during optional cleanup prevents a later app exit", async () => {
+  const events = [];
+  let finish;
+  const exit = createOverlayExit({
+    finishLunar: () => new Promise((r) => { finish = r; }),
+    quit: async () => events.push("quit"), fallbackToOverlayFlow: () => events.push("fallback"),
+  });
+  exit.routeFor({ action: "game_launch_requested", useExternalOverlay: false, quitLunarAfterLaunch: true, generation: 7 });
+  const pending = exit.onConfirmationSignal("loaded"); await Promise.resolve();
+  exit.resetSession();
+  exit.routeFor({ action: "game_launch_requested", useExternalOverlay: true, generation: 8 });
+  finish("cancelled"); await pending;
+  assert.deepEqual(events, []);
+});
+
+test("overlay-on also finalizes optional Lunar cleanup without quitting Cobblify", async () => {
+  const events = [];
+  const exit = createOverlayExit({ finishLunar: async (gen) => events.push(gen), quit: async () => events.push("quit") });
+  exit.routeFor({ action: "game_launch_requested", useExternalOverlay: true, quitLunarAfterLaunch: true, generation: 3 });
+  await exit.onConfirmationSignal("live");
+  await exit.onConfirmationSignal("loaded");
+  assert.deepEqual(events, [3]);
+});
+
+test("not-ready is retried on confirmation and never permits overlay-off exit", async () => {
+  const events = [];
+  let attempts = 0;
+  const exit = createOverlayExit({
+    finishLunar: async () => ++attempts === 1 ? "not_ready" : "exited",
+    quit: async () => events.push("quit"),
+  });
+  exit.routeFor({ action: "game_launch_requested", useExternalOverlay: false, quitLunarAfterLaunch: true, generation: 3 });
+  await exit.onConfirmationSignal("live");
+  assert.deepEqual(events, []);
+  await exit.onConfirmationSignal("loaded");
+  assert.equal(attempts, 2); assert.deepEqual(events, ["quit"]);
+});
+
 test("route table is exhaustive over action and overlay", () => {
   const { exit } = harness();
   assert.equal(exit.routeFor(outcome("game_launch_requested", true)), "overlay");

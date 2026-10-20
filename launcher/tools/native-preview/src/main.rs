@@ -22,6 +22,7 @@ struct Fixtures {
 const SCENES: &[&str] = &["home", "join", "lobby", "queueFours", "gameSolo", "gameDoubles", "unsupported"];
 struct Preferences {
     overlay: bool,
+    quit_lunar: bool,
     auto: bool,
     channel: String,
 }
@@ -52,13 +53,23 @@ fn open_info(options: tauri::State<Options>, fixtures: tauri::State<Mutex<Fixtur
 }
 #[tauri::command]
 fn launch_preferences(prefs: tauri::State<Mutex<Preferences>>) -> Value {
-    json!({"useExternalOverlay":prefs.lock().unwrap().overlay,"health":"valid"})
+    let prefs = prefs.lock().unwrap();
+    json!({"useExternalOverlay":prefs.overlay,"quitLunarAfterLaunch":prefs.quit_lunar,"health":"valid"})
 }
 #[tauri::command]
 fn set_use_external_overlay(enabled: bool, prefs: tauri::State<Mutex<Preferences>>) -> Value {
-    prefs.lock().unwrap().overlay = enabled;
-    json!({"status":"saved","useExternalOverlay":enabled})
+    let mut prefs = prefs.lock().unwrap();
+    prefs.overlay = enabled;
+    json!({"status":"saved","useExternalOverlay":enabled,"quitLunarAfterLaunch":prefs.quit_lunar})
 }
+#[tauri::command]
+fn set_quit_lunar_after_launch(enabled: bool, prefs: tauri::State<Mutex<Preferences>>) -> Value {
+    let mut prefs = prefs.lock().unwrap();
+    prefs.quit_lunar = enabled;
+    json!({"status":"saved","useExternalOverlay":prefs.overlay,"quitLunarAfterLaunch":enabled})
+}
+#[tauri::command]
+fn finish_lunar_launch() -> &'static str { "skipped" }
 fn update_prefs(prefs: &Preferences) -> Value {
     json!({"autoUpdateEnabled":prefs.auto,"autoUpdatePrompted":true,"updateChannel":prefs.channel,"health":"valid"})
 }
@@ -139,7 +150,7 @@ fn preview_scene(scene: Option<String>, fixtures: tauri::State<Mutex<Fixtures>>,
 }
 #[tauri::command]
 fn reset_session_end(prefs: tauri::State<Mutex<Preferences>>) -> Value {
-    json!({"status":"ok","preferences":{"useExternalOverlay":prefs.lock().unwrap().overlay,"health":"valid"}})
+    json!({"status":"ok","preferences":launch_preferences(prefs)})
 }
 #[tauri::command]
 fn abort_launch_session(prefs: tauri::State<Mutex<Preferences>>) -> Value { reset_session_end(prefs) }
@@ -218,7 +229,7 @@ fn main() {
     tauri::Builder::default()
         .manage(options)
         .manage(Mutex::new(fixtures))
-        .manage(Mutex::new(Preferences { overlay: true, auto: false, channel: "dev".into() }))
+        .manage(Mutex::new(Preferences { overlay: true, quit_lunar: false, auto: false, channel: "dev".into() }))
         .setup(|app| {
             let window = app.get_webview_window("main").ok_or("missing main window")?;
             // Match the shipping Mac native-window setup; frontend assets stay byte-identical.
@@ -254,7 +265,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             window_top_inset, status, refresh_setup, setup_state, game_theme, open_info,
-            launch_preferences, set_use_external_overlay, update_preferences, set_auto_update,
+            launch_preferences, set_use_external_overlay, set_quit_lunar_after_launch, finish_lunar_launch, update_preferences, set_auto_update,
             set_update_channel, update_status, check_for_update, lunar_version_ready,
             launch_lunar, launch_forge, launch_progress, lobby_state, acknowledge_lobby_snapshot,
             preview_scene, reset_session_end, abort_launch_session,

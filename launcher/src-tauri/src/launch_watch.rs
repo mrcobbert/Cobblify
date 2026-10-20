@@ -144,6 +144,7 @@ fn ns_to_time(ns: EpochNs) -> SystemTime {
 }
 
 impl Watch {
+    pub fn game_id(&self) -> Option<GameId> { self.game }
     pub fn lunar(home: &Path) -> Self {
         Watch {
             place: Some(Place::Lunar(home.to_path_buf())),

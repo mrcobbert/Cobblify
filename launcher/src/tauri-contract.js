@@ -5,6 +5,8 @@
 export const CMD = {
   launchPreferences: "launch_preferences",
   setUseExternalOverlay: "set_use_external_overlay",
+  setQuitLunarAfterLaunch: "set_quit_lunar_after_launch",
+  finishLunarLaunch: "finish_lunar_launch",
   launchLunar: "launch_lunar",
   launchForge: "launch_forge",
   lobbyState: "lobby_state",
@@ -86,6 +88,14 @@ export function setUseExternalOverlay(invoke, enabled) {
   return invoke(CMD.setUseExternalOverlay, { enabled });
 }
 
+export function setQuitLunarAfterLaunch(invoke, enabled) {
+  return invoke(CMD.setQuitLunarAfterLaunch, { enabled });
+}
+
+export function finishLunarLaunch(invoke, generation) {
+  return invoke(CMD.finishLunarLaunch, { generation });
+}
+
 export function updatePreferences(invoke) {
   return invoke(CMD.updatePreferences);
 }
@@ -165,7 +175,7 @@ export function lunarVersionReady(invoke) {
   return invoke(CMD.lunarVersionReady);
 }
 
-/** @typedef {{ useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
+/** @typedef {{ useExternalOverlay: boolean, quitLunarAfterLaunch: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
 /** @typedef {{ autoUpdateEnabled: boolean, autoUpdatePrompted: boolean, health: string, diagnostic?: string }} UpdatePreferencesView */
 /** @typedef {'idle'|'checking'|'current'|'available'|'downloading'|'paused'|'ready'|'installing'|'error'|'critical_required'} UpdateState */
 /** @typedef {{ status: 'saved', useExternalOverlay: boolean } | { status: 'reconciled', useExternalOverlay: boolean } | { status: 'not_saved', diagnostic: string } | { status: 'indeterminate' }} PreferenceSaveReply */

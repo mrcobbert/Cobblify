@@ -346,6 +346,13 @@ impl LobbySession {
         self.terminal_reason
     }
 
+    /// Already acknowledged backend proof survives a transient missing snapshot file.
+    /// Consumers still revalidate OS liveness immediately before acting.
+    pub fn acknowledged_writer(&self, generation: u64) -> Option<WriterProof> {
+        if self.generation != generation || self.terminal_reason.is_some() { return None; }
+        self.bound_writer.clone()
+    }
+
     pub fn now(&self) -> Instant {
         self.clock.now()
     }
@@ -1417,7 +1424,12 @@ mod tests {
         let LobbyPoll::Snapshot { snapshot, token } = poll else {
             panic!("expected snapshot for live writer");
         };
+        assert!(session.acknowledged_writer(1).is_none(), "unacknowledged snapshots cannot authorize cleanup");
         session.acknowledge(token, 1, &snapshot).expect("first ack");
+        assert_eq!(session.acknowledged_writer(1).unwrap().pid, pid);
+        assert!(session.acknowledged_writer(2).is_none(), "proof belongs to its generation");
+        std::fs::remove_file(dir.path().join(".cobblify/lobby.json")).unwrap();
+        assert_eq!(session.acknowledged_writer(1).unwrap().pid, pid, "proof survives transient file loss");
         assert!(session.acknowledge(token, 1, &snapshot).is_err());
         let _ = child.kill();
     }

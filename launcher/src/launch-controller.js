@@ -6,6 +6,7 @@ import {
   acknowledgeLobbySnapshot,
   launchProgress,
   setUseExternalOverlay,
+  setQuitLunarAfterLaunch,
 } from "./tauri-contract.js";
 import { classifyLive } from "./lobby-validator.js";
 
@@ -56,10 +57,12 @@ export function createLaunchController(invoke, { onChange } = {}) {
   let launchGen = 0;
   let optimisticOverlay = true;
   let confirmedOverlay = true;
+  let optimisticQuitLunar = false;
+  let confirmedQuitLunar = false;
   let prefHealth = "missing";
   let prefDiagnostic = null;
   let prefUncertain = false;
-  /** @type {'overlay' | null} Which key the uncertainty belongs to (the only one 0.18 saves). */
+  /** @type {'overlay' | 'lunarQuit' | null} Which key owns an uncertain save. */
   let prefUncertainKey = null;
   let prefError = null;
   let prefSaving = false;
@@ -84,6 +87,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
   function syncFromView(view) {
     optimisticOverlay = view.useExternalOverlay;
     confirmedOverlay = view.useExternalOverlay;
+    optimisticQuitLunar = confirmedQuitLunar = view.quitLunarAfterLaunch === true;
     prefHealth = view.health;
     prefDiagnostic = view.diagnostic ?? null;
     prefUncertain = false;
@@ -106,19 +110,20 @@ export function createLaunchController(invoke, { onChange } = {}) {
   }
 
   /**
-   * The External Overlay save path (0.18's only launch preference). An
+   * Launch preference saves. An
    * uncertain save can only be repaired with the same value. Saves are
    * rejected outright during a launch or an active session, matching the DOM
    * disable so a programmatic or stale change event cannot mutate a
    * preference mid-launch.
    *
-   * @param {'overlay'} key
+   * @param {'overlay' | 'lunarQuit'} key
    * @param {boolean} enabled
    * @param {{ repair?: boolean }} [opts]
    */
   async function setPreference(key, enabled, { repair = false } = {}) {
     if (prefSaving || launchBusy || activeOutcome != null) return;
-    if (prefUncertain && !repair && (key !== prefUncertainKey || enabled !== optimisticOverlay)) {
+    const current = key === "lunarQuit" ? optimisticQuitLunar : optimisticOverlay;
+    if (prefUncertain && !repair && (key !== prefUncertainKey || enabled !== current)) {
       prefError = "Repair the settings before changing them.";
       notify();
       return;
@@ -131,22 +136,26 @@ export function createLaunchController(invoke, { onChange } = {}) {
     const gen = ++prefOpGen;
     refreshGen += 1;
     const prevOverlay = optimisticOverlay;
+    const prevQuitLunar = optimisticQuitLunar;
     prefSaving = true;
-    optimisticOverlay = enabled;
+    if (key === "lunarQuit") optimisticQuitLunar = enabled;
+    else optimisticOverlay = enabled;
     prefError = null;
     notify();
     try {
-      const reply = await setUseExternalOverlay(invoke, enabled);
+      const reply = await (key === "lunarQuit" ? setQuitLunarAfterLaunch : setUseExternalOverlay)(invoke, enabled);
       if (gen !== prefOpGen) return;
       if (reply.status === "saved" || reply.status === "reconciled") {
         confirmedOverlay = reply.useExternalOverlay;
         optimisticOverlay = reply.useExternalOverlay;
+        optimisticQuitLunar = confirmedQuitLunar = reply.quitLunarAfterLaunch === true;
         prefUncertain = false;
         prefUncertainKey = null;
         prefHealth = "valid";
         prefDiagnostic = null;
       } else if (reply.status === "not_saved") {
         optimisticOverlay = prevOverlay;
+        optimisticQuitLunar = prevQuitLunar;
         prefError = reply.diagnostic;
       } else if (reply.status === "indeterminate") {
         prefUncertain = true;
@@ -157,6 +166,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
     } catch (e) {
       if (gen !== prefOpGen) return;
       optimisticOverlay = prevOverlay;
+      optimisticQuitLunar = prevQuitLunar;
       prefError = String(e);
       notify();
     } finally {
@@ -169,6 +179,10 @@ export function createLaunchController(invoke, { onChange } = {}) {
 
   async function setOverlay(enabled, opts) {
     return setPreference("overlay", enabled, opts);
+  }
+
+  async function setQuitLunar(enabled, opts) {
+    return setPreference("lunarQuit", enabled, opts);
   }
 
   function lunarLabel(phase) {
@@ -247,7 +261,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
         hooks.onLaunchReply(reply);
         if (
           reply.outcome.action === "game_launch_requested" ||
-          reply.outcome.action === "launch_unconfirmed"
+          reply.outcome.action === "launch_unconfirmed" || reply.outcome.quitLunarAfterLaunch === true
         ) {
           hooks.onProgressStart();
         }
@@ -266,6 +280,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
         if (reply.code === "stale_preference" && reply.preferences) {
           optimisticOverlay = reply.preferences.useExternalOverlay;
           confirmedOverlay = reply.preferences.useExternalOverlay;
+          optimisticQuitLunar = confirmedQuitLunar = reply.preferences.quitLunarAfterLaunch === true;
         }
         // The backend's cooldown message carries the remaining seconds; the
         // fallback stays truthful without inventing a number.
@@ -320,6 +335,7 @@ export function createLaunchController(invoke, { onChange } = {}) {
   return {
     refreshPreferences,
     setOverlay,
+    setQuitLunar,
     launch,
     tryAgainLaunch,
     pollLobbyOnce,
@@ -329,6 +345,8 @@ export function createLaunchController(invoke, { onChange } = {}) {
       return {
         optimisticOverlay,
         confirmedOverlay,
+        optimisticQuitLunar,
+        confirmedQuitLunar,
         prefHealth,
         prefDiagnostic,
         prefUncertain,

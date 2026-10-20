@@ -2,11 +2,11 @@
 
 use std::sync::Mutex;
 
-/// The preference a save is for. 0.18 saves only the External Overlay choice (0.17's
-/// auto-join key is preserved in the file, never set).
+/// Launch preference being saved. The legacy auto-join key is preserved, never set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefKey {
     Overlay,
+    QuitLunar,
 }
 
 /// The client a setup run is for. Wire names "lunar" | "forge".

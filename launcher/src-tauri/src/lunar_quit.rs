@@ -1,7 +1,8 @@
 //! Politely quitting Lunar's launcher, for setup's "Closing Lunar": Lunar must be quit before
 //! Cobblify writes its `launcher.json`.
 //!
-//! Cobblify never hides, minimises or quits a Lunar window anywhere else.
+//! Optional post-launch cleanup also uses the PID-bound request, in a bounded helper.
+//! Cobblify never hides or minimises Lunar windows.
 //!
 //! Identity is verified twice before anything is asked to quit: the pid comes from
 //! `proc::lunar_launcher_pid()` (exact executable-path match) and the JXA snippet re-checks
@@ -28,6 +29,10 @@ pub fn request_lunar_quit() -> Result<(), String> {
     let Some(birth) = crate::process_liveness::process_birth_ns(pid) else {
         return Err("Cobblify cannot identify the running Lunar.".to_string());
     };
+    request_identity(pid, birth)
+}
+
+pub(crate) fn request_identity(pid: u32, birth: crate::process_liveness::EpochNs) -> Result<(), String> {
     match crate::process_liveness::check_identity(pid, birth) {
         crate::process_liveness::IdentityCheck::AliveSameIdentity => {}
         crate::process_liveness::IdentityCheck::DefinitelyGone => return Ok(()),
@@ -64,7 +69,7 @@ fn terminate_pass(pid: u32) -> Option<u32> {
 /// EVERY process via this bridge - measured against a live Lunar pid and against Finder.)
 fn terminate_snippet(pid: u32) -> String {
     format!(
-        r#"ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.moonsworth.client"); let n = 0; for (let i = 0; i < a.count; i++) {{ const p = a.objectAtIndex(i); if (p.processIdentifier === {pid}) {{ p.terminate; n = 1; }} }} n"#
+        r#"ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.moonsworth.client"); let n = 0; for (let i = 0; i < a.count; i++) {{ const p = a.objectAtIndex(i); if (p.processIdentifier === {pid}) {{ n = p.terminate ? 1 : 0; }} }} n"#
     )
 }
 
