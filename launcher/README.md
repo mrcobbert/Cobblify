@@ -39,6 +39,17 @@ separate manually started `Promote Launcher Update` workflow publishes those
 exact stored files without rebuilding them. Provisioning, key backup, required
 secrets, and promotion details are in [UPDATE_RELEASE.md](UPDATE_RELEASE.md).
 
+### Native GUI preview without touching the installed launcher
+
+For macOS window/fullscreen testing, [the native GUI fixture app](tools/native-preview/README.md)
+runs the current frontend with real Tauri window events and in-memory fixture
+settings. It has a distinct app name and identifier, and cannot launch games,
+install anything or download updates. Build it with
+`python3 launcher/tools/native-preview/build.py` from the repository root; open
+`/Users/Shared/Cobblify-GUI-Test/Cobblify GUI Test.app` in your normal GUI account.
+The fixture app stays open for manual testing; automated fullscreen checks run
+only when explicitly started with `--check`.
+
 ## How it works
 
 The launcher writes `-javaagent:<weave agent>` into Lunar's own JVM arguments in

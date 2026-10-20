@@ -31,6 +31,7 @@ mod setup;
 mod theme;
 mod updater;
 mod vanilla;
+mod window_chrome;
 #[cfg(windows)]
 mod win_reg;
 #[cfg(windows)]
@@ -53,13 +54,9 @@ use preferences::{
 };
 use resources::ForgeJar;
 
-/// Measured from the hidden native frame before enabling full-size content.
-/// Keep the chosen two-row layout for main content; sheets can cover the entire frame.
-struct WindowTopInset(f64);
-
 #[tauri::command]
-fn window_top_inset(window: tauri::WebviewWindow, inset: tauri::State<WindowTopInset>) -> Result<f64, String> {
-    window.is_fullscreen().map(|full| if full { 0.0 } else { inset.inner().0 }).map_err(|e| e.to_string())
+fn window_top_inset(chrome: tauri::State<window_chrome::WindowChrome>) -> window_chrome::Snapshot {
+    chrome.snapshot()
 }
 
 /// Stable issue codes the frontend maps to setup UI. Never infer state from message text.
@@ -3709,7 +3706,7 @@ fn main() {
                 window.set_size(frame)?;
                 inset
             };
-            app.manage(WindowTopInset(top_inset));
+            app.manage(window_chrome::install(&app.get_webview_window("main").ok_or("missing main window")?, top_inset)?);
             let (status, forge_state, ctx) = start_up(app.handle());
             app.manage(Mutex::new(status));
             app.manage(Mutex::new(forge_state));

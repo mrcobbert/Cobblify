@@ -114,7 +114,7 @@ test("the settings sheet: its rows, a switch that saves, Esc returns to Settings
   const sheet = el("sheet");
   await waitFor(() => sheet.classList.contains("open"), { label: "the sheet" });
   const labels = [...sheet.querySelectorAll(".srow .lbl > .t:first-child")].map((t) => t.textContent);
-  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Dev builds", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
+  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Preview updates", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
   assert.equal(sheet.querySelector('[data-row="lunar"] .key').textContent.trim(), "Repair");
   assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Change", "Prism is set up: Change re-picks its instance");
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");

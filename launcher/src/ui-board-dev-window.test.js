@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { bootWindow } from "./test-support/window-harness.js";
 
 /**
- * The board's header carries the Dev builds tag as home's does. On macOS the window keeps a native title bar, made
+ * The board's header carries the Preview tag as home's does. On macOS the window keeps a native title bar, made
  * transparent while measuring its height, then overlays it so the sheet reaches the top. Main content alone
  * reserves the measured height. macOS places the buttons and removes the inset in full screen. One boot per file.
  */
@@ -19,13 +19,15 @@ const replies = {
   update_preferences: () => ({ autoUpdateEnabled: true, autoUpdatePrompted: true, updateChannel: "dev", health: "valid" }),
   update_status: () => ({ state: "current", currentVersion: "0.18.1" }),
   check_for_update: () => ({ state: "current", currentVersion: "0.18.1" }),
+  set_update_channel: ({ channel }) => ({ status: "saved", autoUpdateEnabled: true,
+    autoUpdatePrompted: true, updateChannel: channel, health: "valid" }),
 };
 
 const { el, waitFor } = await bootWindow({ replies });
 
-test("the board's header shows the Dev builds tag on the dev channel, as home does", async () => {
+test("the board's header shows the Preview tag on the dev channel, as home does", async () => {
   await waitFor(() => !el("dash-dev").hidden, { label: "the board's dev tag" });
-  assert.equal(el("dash-dev").textContent, "Dev builds");
+  assert.equal(el("dash-dev").textContent, "Preview");
   assert.ok(el("app").querySelector(".brand .tag.dev"), "home shows it too");
 });
 
@@ -39,4 +41,17 @@ test("macOS lets the sheet reach the window top, reserving the native bar only f
   const css = readFileSync(new URL("./ui/app.css", import.meta.url), "utf8");
   assert.match(css, /#main\s*\{[^}]*margin-top:\s*var\(--window-top-inset/);
   assert.match(css, /\.sheet\{[^}]*top:0/);
+});
+
+
+test("Preview updates keeps home and dashboard badges synchronized with the selected channel", async () => {
+  el("app").querySelector(".gear").click();
+  const toggle = el("sheet").querySelector('[data-key="dev"]');
+  assert.equal(toggle.getAttribute("aria-label"), "Preview updates");
+  toggle.click();
+  await waitFor(() => el("dash-dev").hidden && !toggle.disabled, { label: "stable channel badges" });
+  assert.equal(el("app").querySelector(".brand .tag.dev"), null);
+  toggle.click();
+  await waitFor(() => !el("dash-dev").hidden && !toggle.disabled, { label: "preview channel badges" });
+  assert.equal(el("app").querySelector(".brand .tag.dev").textContent, "Preview");
 });

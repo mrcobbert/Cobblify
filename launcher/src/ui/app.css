@@ -63,7 +63,8 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 :root[data-font=modern] .key.acc .t{text-shadow:none}
 .key:disabled,.off{opacity:.4;filter:saturate(.15);pointer-events:none}
 .key.wide{display:flex;width:100%}
-.key:focus-visible,.row:focus-visible,.choice:focus-visible,.ver:focus-visible,.tog:focus-visible,.trow:focus-visible{outline:var(--su) solid var(--hi);outline-offset:var(--su)}
+/* Keyboard focus uses the control's own face, without a separate white frame. */
+button:focus-visible,a:focus-visible,.key:focus-visible,.row:focus-visible,.choice:focus-visible,.ver:focus-visible,.tog:focus-visible,.trow:focus-visible{outline:0;filter:brightness(1.12)}
 .key .glyph{display:block;margin-top:var(--su)}
 
 /* the hero (Play): Ore's hero proportions; the one accent action on screen */
@@ -347,14 +348,6 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 /* (.key.caret:active... beats the generic .key:active:not(:disabled):not(.static), which would fold a held ▾ to 14 su) */
 .caret.dn,.key.caret:active:not(:disabled):not(.static),.caret[aria-expanded=true]{height:calc(22*var(--su));margin-top:calc(2*var(--su));padding-top:calc(9*var(--su))}
 
-/* focus on a joined pair: the white ring (1 su, 1 su clear, Ore and the sheet) closes on the shared edge instead of
-   cutting into the other key, and it stays round the raised outline while the key is held, as the game draws it */
-.split>.key:focus-visible{outline:0;z-index:1}
-.split>.key:focus-visible::after{content:"";position:absolute;pointer-events:none;border:var(--su) solid var(--hi);
-  top:calc(-3*var(--su));bottom:calc(-3*var(--su));left:calc(-3*var(--su));right:calc(-1*var(--su))}
-.split>.caret:focus-visible::after{left:calc(-1*var(--su));right:calc(-3*var(--su))}
-.split>.key.dn:focus-visible::after,.split>.key:active:focus-visible::after,.split>.caret[aria-expanded=true]:focus-visible::after{top:calc(-5*var(--su))}
-
 /* the menu: the toast's panel (band, black border, groove top line); rows on the su grid: 5 + 12 + 5. If it ever has
    to scroll (placeMenu), it scrolls with the sheet's 4 su scrollbar; if it is ever capped at the window's width, the
    names clip rather than push it out of the window */
@@ -365,11 +358,10 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
 .menu.capped .mrow .grow{min-width:0;overflow:hidden}
 .mrow{flex:none}
 .mrow svg,.split svg{overflow:visible}
-/* one current row: the pointer lights it in the face colour (as the sheet's rows light on hover); keyboard focus adds
-   the white ring inside the row, the sheet's ring for a full-width target (offset -1) */
+/* One current row: pointer and keyboard focus light the row's face. */
 .mrow:hover,.mrow:focus-visible{background:var(--face)}
 .menu.kb .mrow:hover:not(:focus-visible){background:transparent}
-.mrow:focus-visible{outline:var(--su) solid var(--hi);outline-offset:calc(-1*var(--su))}
+.mrow:focus-visible{outline:0}
 .madd:hover,.madd:focus-visible{color:var(--hi)}
 .menu.kb .madd:hover:not(:focus-visible){color:var(--mid)}
 /* Minecraft's font: the art, the tick and "Add" take vanilla's quarter-colour shadow like the text beside them */
@@ -475,4 +467,4 @@ html, body { height: 100%; margin: 0; background: var(--ground); }
   box-shadow:inset 0 var(--su) 0 var(--sh),inset 0 calc(2*var(--su)) 0 var(--sh2),inset var(--su) 0 0 var(--sh2)}
 .version-link{align-self:flex-start;text-align:left}
 .version-link:hover{text-decoration:underline;text-underline-offset:var(--su)}
-.version-link:focus-visible{outline:var(--su) solid var(--hi);outline-offset:var(--su)}
+.version-link:focus-visible{outline:0;filter:brightness(1.12)}

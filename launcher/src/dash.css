@@ -88,9 +88,11 @@ body {
   border: 0;
 }
 
-/* the header: home's (wordmark at 11 su, fixed home size, the Dev builds tag in home's text); the view's name at the
+/* the header: home's (wordmark at 11 su, fixed home size, the Preview tag in home's text); the view's name at the
    right on the same line */
 .stage .dhdr {
+  /* Match home's transparent lower rule so title and badge share the same baseline. */
+  border-bottom: var(--su) solid transparent;
   position: absolute;
   left: 0;
   right: 0;

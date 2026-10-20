@@ -779,20 +779,23 @@ function applyTheme(sel) {
 }
 
 /**
- * Every open: the island's build replay, then What's New after an update. Once per session. An open without an update
- * replays only when its first settled home is ready to play: a first run or a setup has just built the island part by
- * part, and a build arriving later in the session is no longer the open. After an update the first READY home plays
- * it: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is marked
- * played only when ui.open actually played it.
+ * Every open: the island's build replay, then What's New after an update. Once per session, on its first ready home.
+ * A temporary startup check or blocked client must not consume the replay. A new player with no island instead
+ * sees the normal setup build; after an update, keep waiting for a ready home so What's New is not lost.
  */
 function maybeOpen(home) {
-  if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
-  if (!openInfoReply.updated && home.hero?.kind !== "play") {
+  if (openPlayed || !openInfoReply || document.hidden || lastStatus.state === "loading" || home.launching) return;
+  if (!openInfoReply.updated && home.solo && home.hero?.kind === "setup") {
     openPlayed = true;
     return;
   }
   openPlayed = ui.open(openInfoReply) === true;
 }
+// A native window starts hidden. Keep the replay pending until it is visible
+// AND ready; startup checks may change eligibility before the reveal.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && lastHome) maybeOpen(lastHome);
+});
 
 /** The highest backend status revision applied (main.rs `Status.rev`); -1 before any. */
 let lastStatusRev = -1;

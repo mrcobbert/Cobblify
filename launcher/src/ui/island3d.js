@@ -278,7 +278,7 @@ export function mount(host, opts = {}) {
   function makeRenderer() {
     const smooth = O.edges === "smooth";
     if (renderer && renderer._smooth === smooth) return;
-    if (renderer) { renderer.dispose(); canvas.remove(); ro.disconnect(); }
+    if (renderer) { canvas.removeEventListener("webglcontextrestored", onContextRestored); renderer.dispose(); canvas.remove(); ro.disconnect(); }
     // throws when there is no WebGL2 context (three 0.181 has no WebGL1 path)
     renderer = new THREE.WebGLRenderer({ antialias: smooth, alpha: true, premultipliedAlpha: true, powerPreference: "low-power" });
     renderer._smooth = smooth;
@@ -287,6 +287,9 @@ export function mount(host, opts = {}) {
     renderer.setPixelRatio(1);
     renderer.setClearColor(0x000000, 0);
     canvas = renderer.domElement;
+    // Three restores its GL resources first. Our renderer sleeps while idle,
+    // so explicitly request a frame once those resources are ready again.
+    canvas.addEventListener("webglcontextrestored", onContextRestored);
     canvas.style.display = "block";
     canvas.style.touchAction = "none";
     if (!ro) ro = new ResizeObserver(onResize);
@@ -298,6 +301,11 @@ export function mount(host, opts = {}) {
   }
   // the backing store equals the canvas's device-pixel box, so whole art pixels stay whole
   let devW = 1, devH = 1;
+  function onContextRestored() {
+    if (destroyed) return;
+    dirty = true;
+    kick();
+  }
   function onResize(entries) {
     for (const e of entries) {
       const b = e.devicePixelContentBoxSize && e.devicePixelContentBoxSize[0];
@@ -805,6 +813,7 @@ export function mount(host, opts = {}) {
       const rq = reduceMq();
       rq.removeEventListener && rq.removeEventListener("change", onReduce);
       if (dprMq) dprMq.removeEventListener("change", onDpr);
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
       ro.disconnect(); geo.dispose(); mat.dispose(); blitGeo.dispose(); blitMat.dispose(); if (rt) rt.dispose(); if (rtMS) rtMS.dispose(); renderer.dispose(); canvas.remove();
     },
   };
@@ -816,7 +825,7 @@ export function mount(host, opts = {}) {
     console.warn("island3d: cannot render (no WebGL2?); mount() returns null", e);
     if (ro) ro.disconnect();
     if (renderer) renderer.dispose();
-    if (canvas) canvas.remove();
+    if (canvas) { canvas.removeEventListener("webglcontextrestored", onContextRestored); canvas.remove(); }
     geo.dispose(); mat.dispose(); blitGeo.dispose(); blitMat.dispose();
     return null;
   }

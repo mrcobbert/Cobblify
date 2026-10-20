@@ -266,7 +266,9 @@ export function createBoard({ stage, board, title, joining, win = window }) {
 
   const dpr = () => win.devicePixelRatio || 1;
   const su = () => parseFloat(win.getComputedStyle(doc.documentElement).getPropertyValue("--su")) || 2;
-  const frameNow = () => frame(win.innerWidth, win.innerHeight, su());
+  // The stage excludes native title-bar space. Hidden stages have no client box;
+  // keep the viewport fallback for initialization and measure again when shown.
+  const frameNow = () => frame(stage.clientWidth || win.innerWidth, stage.clientHeight || win.innerHeight, su());
   const font = () => doc.documentElement.dataset.font || "minecraft";
 
   /** Width and height in GUI px, at the tight spacing unless `vars`; `core` leaves the notes out. */
@@ -323,11 +325,30 @@ export function createBoard({ stage, board, title, joining, win = window }) {
     for (const k of FILLVARS) board.style.setProperty("--" + k, String(vars[k] || 0));
   }
 
+  let observedMessage = null;
+  let observedHost = null;
+  let observedOffset = 0;
+  const messageObserver = win.ResizeObserver ? new win.ResizeObserver(() => {
+    // Text can settle to a different height after its GUI scale/font changes.
+    // Observe the actual message so centering uses the final box before paint.
+    if (observedMessage?.isConnected && stage.clientHeight > 0) placeMsg(observedHost, observedOffset);
+  }) : null;
+  function stopObservingMessage() {
+    messageObserver?.disconnect();
+    observedMessage = observedHost = null;
+  }
   function placeMsg(host, offsetTop) {
     const msg = host.querySelector(".msg");
     if (!msg) return;
+    if (observedMessage !== msg) {
+      stopObservingMessage();
+      observedMessage = msg;
+      observedHost = host;
+      messageObserver?.observe(msg);
+    }
+    observedOffset = offsetTop;
     const s = su();
-    const y = Math.round(win.innerHeight / 2 - offsetTop - msg.offsetHeight / 2);
+    const y = snapPx(frameNow().H / 2 - offsetTop - msg.getBoundingClientRect().height / 2, dpr());
     msg.style.top = Math.max(2 * s, y) + "px";
   }
 
@@ -392,6 +413,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
   }
 
   function drawRoster(v) {
+    stopObservingMessage();
     const html = rosterHTML(v);
     const R = refs();
     const f = frameNow();
@@ -471,6 +493,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
 
   /** A roster render failed: the note, centred in the board's area. */
   function fail(message) {
+    stopObservingMessage();
     const f = frameNow();
     current = null;
     last = null;
@@ -484,6 +507,7 @@ export function createBoard({ stage, board, title, joining, win = window }) {
   }
 
   function clear() {
+    stopObservingMessage();
     current = null;
     last = null;
     title.innerHTML = "";
