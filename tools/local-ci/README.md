@@ -81,3 +81,27 @@ Controller fault and identity tests:
 ```sh
 python3 -m unittest discover -s tools/local-ci -p 'test_*.py'
 ```
+
+## Publish an already built preview
+
+If a successful candidate built both signed platform artifacts but its metadata
+or dev publication jobs were skipped, reuse that exact build instead of rebuilding:
+
+```sh
+gh auth switch --user mrcobbert
+gh workflow run launcher-update.yml --ref <reviewed-release-branch> \
+  -f version=<base-version> -f publish_dev=true \
+  -f existing_run=<successful-candidate-run-id> \
+  -f existing_commit=<exact-40-character-source-commit>
+```
+
+Leave `local_build` false. Only the repository owner can use this dev-only path.
+The publisher checks the source repository, manual workflow, owner, completed
+run, exact commit and both successful platform jobs across all attempts. It
+checks out that source commit and verifies its version pins. Installer filename
+and Mac bundle version must already carry the source run's exact dev version;
+a stable candidate cannot be relabeled. Candidate metadata retains the source
+run/commit, and existing metadata is validated rather than overwritten. The
+same manifest signing, forward-only channel and dev retention steps then run.
+Stable promotion is unchanged. Normal hosted releases explicitly allow their
+local-only prerequisite to be skipped without skipping metadata/publication.
