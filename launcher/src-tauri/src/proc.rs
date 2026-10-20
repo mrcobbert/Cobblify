@@ -74,11 +74,12 @@ fn lunar_main_in(system: &System, raw: Option<Vec<u32>>, matches: impl Fn(&Path)
         if check_identity(pid, birth_ns) != IdentityCheck::AliveSameIdentity { return Err(()); }
         let parent = p.parent().map(|p| p.as_u32()).ok_or(())?;
         // A live parent born after its child means a reused parent PID: ancestry is unknown.
-        if process_birth_ns(parent).is_some_and(|birth| birth > birth_ns) { return Err(()); }
-        if process_birth_ns(parent).is_none()
+        let parent_birth = process_birth_ns(parent);
+        if parent_birth.is_some_and(|birth| birth > birth_ns) { return Err(()); }
+        if parent_birth.is_none()
             && process_exists(parent) != IdentityCheck::DefinitelyGone { return Err(()); }
         #[cfg(windows)]
-        if process_exists(parent) != IdentityCheck::AliveSameIdentity {
+        if parent_birth.is_none_or(|birth| check_identity(parent, birth) != IdentityCheck::AliveSameIdentity) {
             // An orphan renderer can otherwise masquerade as the only main root.
             return Err(());
         }

@@ -686,13 +686,14 @@ mod tests {
         for cancelled in [false, true] {
             let owned = sleeper();
             let pid = owned.id();
+            let birth = process_liveness::process_birth_ns(pid).unwrap();
             assert!(!wait_helper(
                 owned,
                 &AtomicBool::new(cancelled),
                 Duration::from_millis(50)
             ));
             assert_eq!(
-                process_liveness::process_exists(pid),
+                process_liveness::check_identity(pid, birth),
                 IdentityCheck::DefinitelyGone
             );
             assert!(
