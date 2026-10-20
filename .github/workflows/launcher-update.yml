@@ -228,7 +228,8 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
           else
-            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/release/bundle/nsis" >> "$GITHUB_ENV"
+            # upload-artifact runs in Node on Windows, so it cannot use MSYS /d/... paths.
+            node --input-type=module -e 'import { resolve } from "node:path"; import { existsSync } from "node:fs"; const dir = resolve(process.env.CARGO_TARGET_DIR || "src-tauri/target", "release/bundle/nsis"); if (!existsSync(dir)) throw new Error("Missing NSIS bundle directory"); console.log("RELEASE_BUNDLE_DIR=" + dir);' >> "$GITHUB_ENV"
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -365,7 +366,8 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
           else
-            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/release/bundle/nsis" >> "$GITHUB_ENV"
+            # upload-artifact runs in Node on Windows, so it cannot use MSYS /d/... paths.
+            node --input-type=module -e 'import { resolve } from "node:path"; import { existsSync } from "node:fs"; const dir = resolve(process.env.CARGO_TARGET_DIR || "src-tauri/target", "release/bundle/nsis"); if (!existsSync(dir)) throw new Error("Missing NSIS bundle directory"); console.log("RELEASE_BUNDLE_DIR=" + dir);' >> "$GITHUB_ENV"
           fi
       - uses: actions/upload-artifact@v4
         with:
