@@ -2,11 +2,11 @@
  * Cross-identity isolation and per-requester settlement (plan D4), at two levels:
  *
  *  - module level: handleKeySet touches ONLY the caller's KV slot; lookups send the
- *    caller's own key upstream; the URCHIN_KEY/SERAPH_KEY secrets cover the OWNER only.
+ *    caller's own key upstream; the URCHIN_KEY secret covers the OWNER only.
  *  - ROUTE level over the streaming /bedwars/batch path (the real scrape.js -> provider
  *    identity handoff): identities A and B concurrent for the same UUID share ONE upstream
- *    call; when A's key fails (401 / 429 / transient, both providers) A gets its usual
- *    failure shape, B gets the stale fallback (urchin, flagless) or full omission - never
+ *    call; when A's key fails (401 / 429 / transient) A gets its usual
+ *    failure shape, B gets the stale fallback (flagless) or full omission - never
  *    someone else's terminal flag - and only A's backoff/disabled state arms.
  *
  * Every scenario uses fresh tokens (=> fresh identities and per-identity isolate state) and
@@ -17,7 +17,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import worker from "../src/worker.js";
 import { tagsForUuids as urchinTagsForUuids, handleKeySet as urchinKeySet } from "../src/urchin.js";
-import { tagsForUuids as seraphTagsForUuids, handleKeySet as seraphKeySet } from "../src/seraph.js";
 
 const idOf = (t) => createHash("sha256").update(t).digest("hex").slice(0, 16);
 const authOf = (t, isOwner = false) => ({ identity: idOf(t), isOwner });
@@ -94,8 +93,8 @@ test.beforeEach(() => {
   globalThis.fetch = async () => { throw new Error("unexpected fetch"); };
 });
 
-test("urchin/seraph handleKeySet mutate ONLY the caller's slot (owner slot byte-identical)", async () => {
-  for (const [keySet, prefix] of [[urchinKeySet, "urchin"], [seraphKeySet, "seraph"]]) {
+test("urchin handleKeySet mutates ONLY the caller's slot (owner slot byte-identical)", async () => {
+  for (const [keySet, prefix] of [[urchinKeySet, "urchin"]]) {
     const OWNER_T = `Owner_${prefix}_0123456789ab`;
     const FRIEND_T = `Friend_${prefix}_0123456789a`;
     const ownerSlot = `${prefix}:cfg:key:${idOf(OWNER_T)}`;
@@ -128,18 +127,9 @@ test("lookups send the CALLER's key upstream (headers captured per provider)", a
   await urchinTagsForUuids(["a".repeat(32)], { STATS_KV: uKv }, ctx, friendAuth);
   assert.equal(captured.length, 1);
   assert.equal(captured[0].headers["X-API-Key"], "FRIEND-URCHIN-KEY-01");
-
-  globalThis.fetch = async (url, init) => {
-    captured.push({ url: String(url), headers: (init && init.headers) || {} });
-    return new Response(JSON.stringify({ data: {} }), { headers: { "content-type": "application/json" } });
-  };
-  const sKv = makeKv({ [`seraph:cfg:key:${friendAuth.identity}`]: "FRIEND-SERAPH-KEY-01" });
-  await seraphTagsForUuids(["b".repeat(32)], { STATS_KV: sKv }, ctx, friendAuth);
-  assert.equal(captured.length, 2);
-  assert.equal(captured[1].headers.key, "FRIEND-SERAPH-KEY-01");
 });
 
-test("URCHIN_KEY/SERAPH_KEY secrets cover the OWNER identity only; 409 only for the owner", async () => {
+test("the URCHIN_KEY secret covers the OWNER identity only; 409 only for the owner", async () => {
   const OWNER_T = "Owner_secret_0123456789a";
   const FRIEND_T = "Friend_secret_0123456789";
   const post = (key) => new Request("https://x/key", { method: "POST", body: JSON.stringify({ key }) });
@@ -148,9 +138,6 @@ test("URCHIN_KEY/SERAPH_KEY secrets cover the OWNER identity only; 409 only for 
   const env = { STATS_KV: makeKv(), URCHIN_KEY: "owner-secret-key-0001" };
   assert.equal((await urchinKeySet(post("any-key-0123456789"), env, ctx, authOf(OWNER_T, true))).status, 409);
   assert.equal((await urchinKeySet(post("friend-key-0123456789"), env, ctx, authOf(FRIEND_T))).status, 200);
-  const sEnv = { STATS_KV: makeKv(), SERAPH_KEY: "owner-secret-key-0002" };
-  assert.equal((await seraphKeySet(post("any-key-0123456789"), sEnv, ctx, authOf(OWNER_T, true))).status, 409);
-  assert.equal((await seraphKeySet(post("friend-key-0123456789"), sEnv, ctx, authOf(FRIEND_T))).status, 200);
 
   // Key selection: the owner's lookup uses the secret; the (slotless) friend has NO key.
   const captured = [];
@@ -189,14 +176,13 @@ async function concurrentBatch({ provider, seedKv = {}, upstream }) {
     STATS_KV: kv,
     HYPIXEL_BASE: "https://hy.test",
     URCHIN_BASE: "https://coral.test",
-    SERAPH_BASE: "https://seraph.test",
   };
   let release;
   const gate = new Promise((r) => { release = r; });
   const calls = [];
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u.startsWith("https://coral.test") || u.startsWith("https://seraph.test")) {
+    if (u.startsWith("https://coral.test")) {
       const h = (init && init.headers) || {};
       const call = { url: u, key: h["X-API-Key"] || h.key };
       calls.push(call);
@@ -206,7 +192,7 @@ async function concurrentBatch({ provider, seedKv = {}, upstream }) {
     return new Response("<html>fixture</html>", { headers: { "content-type": "text/html" } });
   };
 
-  const optHeader = provider === "urchin" ? "X-BWQOL-Urchin" : "X-BWQOL-Seraph";
+  const optHeader = "X-BWQOL-Urchin";
   const batchReq = (token) =>
     new Request(`https://w.test/bedwars/batch?names=${s.name}&uuids=${s.uuid}`, {
       headers: { "X-BedwarsQol-Token": token, [optHeader]: "1" },
@@ -238,17 +224,17 @@ async function concurrentBatch({ provider, seedKv = {}, upstream }) {
 
 /** After a scenario: B's own single lookup must still go upstream, with B's key. */
 async function assertBProceeds({ s, env, calls }, provider) {
-  const okBody = provider === "urchin" ? { players: {} } : { data: {} };
+  const okBody = { players: {} };
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u.startsWith("https://coral.test") || u.startsWith("https://seraph.test")) {
+    if (u.startsWith("https://coral.test")) {
       const h = (init && init.headers) || {};
       calls.push({ url: u, key: h["X-API-Key"] || h.key });
       return new Response(JSON.stringify(okBody), { headers: { "content-type": "application/json" } });
     }
     return new Response("<html>fixture</html>", { headers: { "content-type": "text/html" } });
   };
-  const optHeader = provider === "urchin" ? "X-BWQOL-Urchin" : "X-BWQOL-Seraph";
+  const optHeader = "X-BWQOL-Urchin";
   const w = makeCtx();
   const res = await worker.fetch(
     new Request(`https://w.test/bedwars/${s.name2}?uuid=${s.uuid2}`, {
@@ -265,7 +251,6 @@ async function assertBProceeds({ s, env, calls }, provider) {
 }
 
 const URCHIN_ABSENT = ["urchin", "urchinChecked", "urchinUnavailable", "urchinNotFound"];
-const SERAPH_ABSENT = ["seraph", "seraphChecked", "seraphUnavailable", "seraphNotFound"];
 
 test("urchin batch, A's key 401s: both omit (no stale), disable arms for A only, B unaffected", async () => {
   const r = await concurrentBatch({ provider: "urchin", upstream: () => new Response("", { status: 401 }) });
@@ -330,48 +315,6 @@ test("urchin batch, upstream 5xx under A: both omit, no backoff/disabled state f
     assert.ok(!k.includes(":cfg:backoff:") && !k.includes(":cfg:disabled:"), `unexpected state key ${k}`);
   }
   await assertBProceeds(r, "urchin");
-});
-
-test("seraph batch, A's key 401s: A gets its usual unavailable, B omits ALL seraph fields", async () => {
-  const r = await concurrentBatch({ provider: "seraph", upstream: () => new Response("", { status: 401 }) });
-  assert.equal(r.a.seraphUnavailable, true, "the executing identity keeps today's shape");
-  for (const f of SERAPH_ABSENT) assert.ok(!(f in r.b), `B (piggybacking) must omit ${f}`);
-  assert.ok(r.kv.store.has(`seraph:cfg:disabled:${r.idA}`), "A's rejection must disable A");
-  assert.equal(r.kv.store.has(`seraph:cfg:disabled:${r.idB}`), false, "B's slot must stay untouched");
-  await assertBProceeds(r, "seraph");
-});
-
-test("seraph batch, A's key 429s: A unavailable, B omits, backoff arms for A only", async () => {
-  const r = await concurrentBatch({ provider: "seraph", upstream: () => new Response("", { status: 429 }) });
-  assert.equal(r.a.seraphUnavailable, true);
-  for (const f of SERAPH_ABSENT) assert.ok(!(f in r.b), `B must omit ${f}`);
-  assert.ok(r.kv.store.has(`seraph:cfg:backoff:${r.idA}`));
-  assert.equal(r.kv.store.has(`seraph:cfg:backoff:${r.idB}`), false);
-  await assertBProceeds(r, "seraph");
-});
-
-test("seraph batch, transient error under A: both omit (Seraph has no stale fallback)", async () => {
-  const r = await concurrentBatch({ provider: "seraph", upstream: () => { throw new Error("boom"); } });
-  for (const f of SERAPH_ABSENT) {
-    assert.ok(!(f in r.a), `A must omit ${f} (transient errors are retryable even executing)`);
-    assert.ok(!(f in r.b), `B must omit ${f}`);
-  }
-  for (const k of r.kv.store.keys()) {
-    assert.ok(!k.includes(":cfg:backoff:") && !k.includes(":cfg:disabled:"), `unexpected state key ${k}`);
-  }
-  await assertBProceeds(r, "seraph");
-});
-
-test("seraph batch, upstream 5xx under A: both omit, no backoff/disabled state for anyone", async () => {
-  const r = await concurrentBatch({ provider: "seraph", upstream: () => new Response("{}", { status: 502 }) });
-  for (const f of SERAPH_ABSENT) {
-    assert.ok(!(f in r.a), `A must omit ${f} (5xx is transient even executing)`);
-    assert.ok(!(f in r.b), `B must omit ${f}`);
-  }
-  for (const k of r.kv.store.keys()) {
-    assert.ok(!k.includes(":cfg:backoff:") && !k.includes(":cfg:disabled:"), `unexpected state key ${k}`);
-  }
-  await assertBProceeds(r, "seraph");
 });
 
 test("route-level success sharing: one upstream call, BOTH identities get the result", async () => {

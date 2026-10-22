@@ -221,7 +221,6 @@ public class GameRosterTest {
         ok.finalKills = 17700;
         ok.kd = 3.6;
         ok.rank = "[MVP+]";
-        ok.seraphThreat = 2;
         ok.fkdrTier = 2;
         ok.cheater = true;
         ok.badge = new PlayerCard.Chip("BC", "§6", "Blatant Cheater", false);
@@ -236,7 +235,7 @@ public class GameRosterTest {
         assertEquals(6.8, served.fkdr, 0.0);
         assertEquals(17700, served.finalKills);
         assertEquals("[MVP+]", served.rank);
-        assertEquals(2, served.seraphThreat);
+        assertEquals("the retired Seraph field stays pinned", -1, served.seraphThreat);
         assertEquals(2, served.fkdrTier);
         assertTrue(served.cheater);
         assertEquals("BC", served.badge.code);

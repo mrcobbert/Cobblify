@@ -9,12 +9,12 @@ import { classifyLive, isValidLobbySnapshot } from "./lobby-validator.js";
  *   connectionShell: ReturnType<typeof import('./connection-shell.js').createConnectionShell>,
  *   launchController: { acknowledgeSnapshot: Function, getState: Function },
  *   manualRouteSubtitle: string | null,
- *   homeUntilLive?: boolean,
  *   firstLiveSeen: boolean,
  *   applyLobbySnapshot: (snapshot: object, opts?: object) => void,
  *   resetToHome: (reason: string) => void | Promise<void>,
  *   stopLobbyPolling: () => void,
  *   setStageDash: () => void,
+ *   enterGame?: () => void,
  *   now?: number,
  * }} deps
  */
@@ -28,20 +28,11 @@ export async function handleLobbyPoll(poll, deps) {
   }
   if (poll.kind === "unavailable") {
     const { mode } = deps.connection.stateAt(now);
-    if ((mode === "joining" || mode === "waiting") && deps.homeUntilLive) {
-      // Launch in flight with the home view held: the launch button narrates
-      // progress until a live snapshot opens the dashboard. The 60s waiting
-      // escape hatch is opened ONLY by its explicit deadline (armed solely
-      // for overlay-on sessions) - this poll path must never open a dash on
-      // the headless overlay-off route.
-      return;
-    }
-    if (mode === "waiting" || mode === "joining") {
-      deps.connectionShell.show(mode);
-      deps.setStageDash();
-    } else if (mode === "manual" && deps.manualRouteSubtitle != null) {
+    if (mode === "manual" && deps.manualRouteSubtitle != null) {
       // A null subtitle means the direct-launch route: stay on the home
-      // page (button progress) until a live snapshot opens the dashboard.
+      // page (the key narrates progress) until a live snapshot opens the
+      // dashboard. Launches never join a server, so there is no joining or
+      // waiting screen: the player joins Hypixel themselves.
       deps.connectionShell.show("manual", {
         subtitle: deps.manualRouteSubtitle,
       });
@@ -55,7 +46,7 @@ export async function handleLobbyPoll(poll, deps) {
   const kind = classifyLive(snapshot);
   if (kind === "invalid" || kind === "other") return;
   // The generation the ack is for. A session reset invalidates it before any
-  // UI change, so an ack that resolves after Cancel/Back-to-Home committed is
+  // UI change, so an ack that resolves after a reset committed is
   // recognised here and dropped instead of reviving a dead dashboard (J2).
   const generation = deps.launchController.getState().launchGen;
   try {
@@ -76,14 +67,7 @@ export async function handleLobbyPoll(poll, deps) {
     deps.setStageDash();
     return;
   }
-  if ((mode === "joining" || mode === "waiting") && deps.homeUntilLive) return;
-  if (mode === "waiting" || mode === "joining") {
-    deps.connectionShell.show(mode);
-    deps.setStageDash();
-  } else if (mode === "manual" && deps.manualRouteSubtitle != null) {
-    deps.connectionShell.show("manual", {
-      subtitle: deps.manualRouteSubtitle,
-    });
-    deps.setStageDash();
-  }
+  // Before the first live snapshot, an acknowledged snapshot of this game is proof Cobblify loaded (the mod writes
+  // lobby.json from the title screen on): the dashboard's Join Hypixel message (TEST-NOTES 2).
+  if (mode === "manual") deps.enterGame?.();
 }

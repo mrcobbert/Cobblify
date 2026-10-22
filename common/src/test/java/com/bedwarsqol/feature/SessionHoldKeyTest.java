@@ -10,43 +10,37 @@ public class SessionHoldKeyTest {
 
     private static final int TAB = 15; // LWJGL Keyboard.KEY_TAB
 
-    private static boolean visible(boolean enabled, boolean example, boolean onHypixel, boolean hold,
-                                   int key, boolean screenOpen, boolean keyDown) {
-        return SessionHoldKey.hudVisible(enabled, example, onHypixel, hold, key, screenOpen, keyDown);
+    private static boolean visible(boolean enabled, boolean example, boolean hold, int key, boolean screenOpen,
+                                   boolean keyDown) {
+        return SessionHoldKey.hudVisible(enabled, example, hold, key, screenOpen, keyDown);
     }
 
     @Test
     public void sessionStatsOffNeverDraws() {
-        assertFalse(visible(false, false, true, false, 0, false, false));
-        assertFalse(visible(false, true, true, false, 0, false, false));   // not even in the HUD editor
-        assertFalse(visible(false, false, true, true, TAB, false, true));
+        assertFalse(visible(false, false, false, 0, false, false));
+        assertFalse(visible(false, true, false, 0, false, false));   // not even in the HUD editor
+        assertFalse(visible(false, false, true, TAB, false, true));
     }
 
     @Test
     public void theHudEditorAlwaysShowsTheBox() {
-        assertTrue(visible(true, true, false, false, 0, true, false));
-        assertTrue(visible(true, true, false, true, 0, true, false));       // hold mode, unbound, a screen open
+        assertTrue(visible(true, true, false, 0, true, false));
+        assertTrue(visible(true, true, true, 0, true, false));       // hold mode, unbound, a screen open
     }
 
     @Test
-    public void neverOffHypixel() {
-        assertFalse(visible(true, false, false, false, 0, false, false));
-        assertFalse(visible(true, false, false, true, TAB, false, true));
-    }
-
-    @Test
-    public void withoutHoldModeItShowsAnywhereOnHypixel() {
-        assertTrue(visible(true, false, true, false, 0, false, false));
-        assertTrue(visible(true, false, true, false, 0, true, false));      // as before: under open screens too
+    public void withoutHoldModeItShowsOnAnyServer() {
+        assertTrue(visible(true, false, false, 0, false, false));
+        assertTrue(visible(true, false, false, 0, true, false));      // as before: under open screens too
     }
 
     @Test
     public void holdModeShowsOnlyWhileTheBoundKeyIsHeldWithNoScreenOpen() {
-        assertTrue(visible(true, false, true, true, TAB, false, true));
-        assertFalse(visible(true, false, true, true, TAB, false, false));   // released
-        assertFalse(visible(true, false, true, true, TAB, true, true));     // chat or a menu is open
-        assertFalse(visible(true, false, true, true, 0, false, true));      // unbound: hidden
-        assertTrue(visible(true, false, true, true, -97, false, true));     // a mouse side button
+        assertTrue(visible(true, false, true, TAB, false, true));
+        assertFalse(visible(true, false, true, TAB, false, false));   // released
+        assertFalse(visible(true, false, true, TAB, true, true));     // chat or a menu is open
+        assertFalse(visible(true, false, true, 0, false, true));      // unbound: hidden
+        assertTrue(visible(true, false, true, -97, false, true));     // a mouse side button
     }
 
     @Test

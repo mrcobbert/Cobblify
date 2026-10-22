@@ -222,11 +222,11 @@ public final class SheetSchema {
                         inGame("genTimersInGame", "Hide them in lobbies")),
                 module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
                         inGame("keystrokesInGame", "Hide it in lobbies")),
+                module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
+                        inGame("mapInfoInGame", "Hide it in lobbies")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
                         toggle("sessionHold", "Hold Key to Show", "Show the stats only while a key is held"),
-                        sessionKey, sessionReset),
-                module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
-                        inGame("mapInfoInGame", "Hide it in lobbies"))));
+                        sessionKey, sessionReset)));
         cats.add(category("combat", "Combat",
                 module("handPos", "Hand Position", "Move and resize held item", "item sword viewmodel",
                         slider("handX", "X", "Left and right", -1, 1, 0.01, 2, ""),
@@ -270,9 +270,8 @@ public final class SheetSchema {
                 module("nickUtils", "Nick Utils", "Detect and denick nicked players", "nick denick",
                         toggle("nickNotify", "Nick Notify", "Tell you when a nicked player is found"),
                         toggle("autoDenick", "Auto Denick", "Look up nicked players' real names")),
-                module("tagUtils", "Tag Utils", "Urchin and Seraph cheater tags", "cheater hacker blacklist",
+                module("tagUtils", "Tag Utils", "Urchin cheater tags", "cheater hacker blacklist",
                         toggle("tagUrchin", "Urchin", "Tags from the Urchin list"),
-                        toggle("tagSeraph", "Seraph", "Tags from the Seraph list"),
                         toggle("tagTab", "Tab Badge", "Next to names in the tab list"),
                         toggle("tagNametag", "Nametag Badge", "Above players' heads"),
                         toggle("tagChat", "Chat Alert", "A chat line when a tagged player joins"),
@@ -286,7 +285,7 @@ public final class SheetSchema {
                         seg("sbSize", "Scoreboard Size", "Size of the sidebar scoreboard", "sidebar", "Small", "Medium", "Large"),
                         seg("tabSize", "Tab List Size", "Size of the player list", "players", "Small", "Medium", "Large"),
                         seg("guiSize", "GUI Size", "Size of this menu", "menu scale", "Small", "Medium", "Large"),
-                        seg("font", "Font", "Text in this menu and the HUD", "minecraft typeface text", "Modern", "Minecraft"),
+                        seg("font", "Font", "Text in this menu and the HUD", "minecraft typeface text", "Minecraft", "Modern"),
                         swatch("accent", "Accent", "Colour for on, selected and highlights", "colour color theme",
                                 accentNames(), accentColors()))}));
         CATS = Collections.unmodifiableList(cats);

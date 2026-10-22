@@ -85,8 +85,7 @@ public class StarFieldTest {
     @Test
     public void starSurvivesProviderMerges() {
         BedwarsStats s = ok().withLevel(29)
-                .withUrchinTags(Collections.<UrchinTag>emptyList())
-                .withSeraph(Collections.<SeraphTag>emptyList(), 2, 7);
+                .withUrchinTags(Collections.<UrchinTag>emptyList());
         assertEquals(29, s.bedwarsLevel);
         assertEquals(4.0, s.fkdr, 0.001);
     }

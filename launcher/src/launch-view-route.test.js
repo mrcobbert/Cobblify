@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   launchViewRoute,
   keepsStageNarration,
-  showsCancelLaunch,
 } from "./launch-view-route.js";
 
 const ACTIONS = ["game_launch_requested", "launcher_opened", "launch_unconfirmed"];
@@ -13,21 +12,19 @@ const BOOLS = [true, false];
 function rows() {
   const out = [];
   for (const action of ACTIONS) {
-    for (const autoJoinHypixel of BOOLS) {
-      for (const useExternalOverlay of BOOLS) {
-        out.push({ action, autoJoinHypixel, useExternalOverlay });
-      }
+    for (const useExternalOverlay of BOOLS) {
+      out.push({ action, useExternalOverlay });
     }
   }
   return out;
 }
 
-test("the full action x auto-join x overlay table routes exactly one way", () => {
+test("the full action x overlay table routes exactly one way", () => {
   const seen = rows().map((outcome) => [
-    `${outcome.action}/${outcome.autoJoinHypixel}/${outcome.useExternalOverlay}`,
+    `${outcome.action}/${outcome.useExternalOverlay}`,
     launchViewRoute(outcome),
   ]);
-  assert.equal(seen.length, 12);
+  assert.equal(seen.length, 6);
   for (const [label, route] of seen) {
     const action = label.split("/")[0];
     if (action === "game_launch_requested") {
@@ -46,31 +43,20 @@ test("the full action x auto-join x overlay table routes exactly one way", () =>
   }
 });
 
-test("every confirmed dispatch stays home, auto-join on included", () => {
+test("every confirmed dispatch stays home, whatever the overlay", () => {
   for (const useExternalOverlay of BOOLS) {
-    const on = launchViewRoute({
-      action: "game_launch_requested",
-      autoJoinHypixel: true,
-      useExternalOverlay,
-    });
-    const off = launchViewRoute({
-      action: "game_launch_requested",
-      autoJoinHypixel: false,
-      useExternalOverlay,
-    });
-    assert.equal(on.stayHome, true);
-    // Auto-join ON is standardized onto the auto-join OFF pattern.
-    assert.deepEqual(on, off);
+    const route = launchViewRoute({ action: "game_launch_requested", useExternalOverlay });
+    assert.equal(route.stayHome, true);
   }
 });
 
 test("manual recovery routes carry their own subtitle kind", () => {
   assert.equal(
-    launchViewRoute({ action: "launcher_opened", autoJoinHypixel: false }).subtitleKind,
+    launchViewRoute({ action: "launcher_opened" }).subtitleKind,
     "launcher_opened",
   );
   assert.equal(
-    launchViewRoute({ action: "launch_unconfirmed", autoJoinHypixel: false }).subtitleKind,
+    launchViewRoute({ action: "launch_unconfirmed" }).subtitleKind,
     "launch_unconfirmed",
   );
 });
@@ -82,31 +68,6 @@ test("unknown and missing actions take the safe home route", () => {
     subtitleKind: null,
   });
   assert.equal(launchViewRoute(undefined).stayHome, true);
-});
-
-test("cancel launch is offered only in the dispatched-but-not-live window", () => {
-  const live = { action: "game_launch_requested" };
-  const base = {
-    activeOutcome: live,
-    launchPhase: "loading",
-    homeUntilLive: true,
-    resetActive: false,
-  };
-  // The window itself: dispatched, held on home, no reset running.
-  assert.equal(showsCancelLaunch(base), true);
-  // Settled but still pre-live is the same window - the quit that wedged
-  // the app happens here too.
-  assert.equal(showsCancelLaunch({ ...base, launchPhase: "done" }), true);
-  // Idle home: nothing to cancel.
-  assert.equal(
-    showsCancelLaunch({ ...base, activeOutcome: null, launchPhase: "idle" }),
-    false,
-  );
-  assert.equal(showsCancelLaunch({ ...base, launchPhase: "idle" }), false);
-  // Post-live: the marker is cleared when the dashboard opens.
-  assert.equal(showsCancelLaunch({ ...base, homeUntilLive: false }), false);
-  // A reset already in flight owns the surface.
-  assert.equal(showsCancelLaunch({ ...base, resetActive: true }), false);
 });
 
 test("stage narration is preserved only for the loading kind that owns it", () => {

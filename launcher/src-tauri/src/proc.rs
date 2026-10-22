@@ -18,11 +18,17 @@ use std::path::{Path, PathBuf};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-/// Verified 2026-08-04: `pgrep -f` on this exact path returned one PID. Loose substring
-/// matching hits 4+ Electron helper processes (GPU, renderer, network, crashpad), so the
-/// comparison below is exact equality.
+/// Verified 2026-08-04: `pgrep -f` on the `/Applications` path returned one PID. Loose
+/// substring matching hits 4+ Electron helper processes (GPU, renderer, network,
+/// crashpad), so the comparison below is exact equality - against the main executable of
+/// every bundle location `lunar_detect` knows (`/Applications` and `~/Applications`), so a
+/// Lunar installed in the user's own Applications folder is not mistaken for "not
+/// running" (which would let the `launcher.json` write be clobbered on its exit).
 #[cfg(target_os = "macos")]
-pub const LUNAR_EXE: &str = "/Applications/Lunar Client.app/Contents/MacOS/Lunar Client";
+fn lunar_exes() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    crate::lunar_detect::launcher_exes(home.as_deref())
+}
 
 /// The default process snapshot shape: executable path only. The scan path
 /// additionally refreshes the owning user (`scan_snapshot`) - and nothing
@@ -88,16 +94,21 @@ pub fn is_lunar_running() -> bool {
 }
 
 /// The launcher's PID when it is running, by the same exact executable-path
-/// match. Consumed by the post-launch hide worker, which re-verifies the
-/// pid's bundle identity before acting on it. The game JVM can never be
-/// returned here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
+/// match. Consumed by setup's polite quit, which re-verifies the pid's
+/// bundle identity before acting on it. The game JVM can never be returned
+/// here: it runs from `~/.lunarclient/jre/<...>/bin/java`.
 #[cfg(target_os = "macos")]
 pub fn lunar_launcher_pid() -> Option<u32> {
-    let wanted = Path::new(LUNAR_EXE);
+    lunar_launcher_pid_among(&lunar_exes())
+}
+
+/// The first running process whose executable is EXACTLY one of `exes`.
+#[cfg(target_os = "macos")]
+fn lunar_launcher_pid_among(exes: &[PathBuf]) -> Option<u32> {
     exe_snapshot()
         .processes()
         .iter()
-        .find(|(_, process)| process.exe() == Some(wanted))
+        .find(|(_, process)| process.exe().is_some_and(|exe| exes.iter().any(|w| w == exe)))
         .map(|(pid, _)| pid.as_u32())
 }
 
@@ -117,10 +128,69 @@ pub fn lunar_running_checked() -> Result<bool, String> {
     Ok(!lunar_launcher_pids()?.is_empty())
 }
 
+/// Whether Prism Launcher's own app is running (its bundle's main executable, by the same exact
+/// path match as Lunar's), or `Err` when that cannot be told. The launch watch waits as long
+/// as it runs and no game has appeared (TEST-NOTES 2).
+#[cfg(target_os = "macos")]
+pub fn prism_running_checked() -> Result<bool, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("no home folder")?;
+    let mut apps = crate::prism::app_candidates(&home);
+    if crate::prism::find_app_in(&apps).is_none() {
+        apps.extend(crate::prism::find_app(&home));
+    }
+    let exes: Vec<PathBuf> = apps.iter().map(|a| a.join(crate::prism::BUNDLE_EXE)).collect();
+    Ok(lunar_launcher_pid_among(&exes).is_some())
+}
+
+/// Windows: any process of THIS account whose executable is named `prismlauncher.exe`
+/// (caseless), wherever it was installed: an installed, Scoop or portable Prism alike.
+/// `Err` when this process's own account can't be read (the launch watch then keeps waiting).
+#[cfg(windows)]
+pub fn prism_running_checked() -> Result<bool, String> {
+    own_prism_exe().map(|exe| exe.is_some())
+}
+
+/// The executable of a running Prism of this account (see `prism_running_checked`), for
+/// finding a portable Prism that is open. None when there is none or it can't be told.
+#[cfg(windows)]
+pub fn running_prism_exe() -> Option<PathBuf> {
+    own_prism_exe().ok().flatten()
+}
+
+/// One exe + owner snapshot; only processes whose owner is provably this process's own
+/// account count (another signed-in player's Prism is not this player's, even when an
+/// elevated Cobblify could read its path).
+#[cfg(windows)]
+fn own_prism_exe() -> Result<Option<PathBuf>, String> {
+    let system = scan_snapshot();
+    let own = system
+        .process(sysinfo::Pid::from_u32(std::process::id()))
+        .and_then(|p| p.user_id().cloned())
+        .ok_or("Cannot tell whether Prism is running.")?;
+    Ok(system
+        .processes()
+        .values()
+        .filter(|p| p.user_id() == Some(&own))
+        .filter_map(|p| p.exe())
+        .find(|exe| is_prism_exe(exe))
+        .map(Path::to_path_buf))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_prism_exe(exe: &Path) -> bool {
+    exe.file_name()
+        .is_some_and(|name| caseless_component_eq(name, OsStr::new(crate::prism::WIN_EXE)))
+}
+
+/// Not told elsewhere: the launch watch keeps waiting while no game has appeared.
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn prism_running_checked() -> Result<bool, String> {
+    Err("Cannot tell whether Prism is running.".to_string())
+}
+
 /// Every Lunar launcher pid: the Electron main process AND its helpers, which
 /// on Windows all run from the SAME executable path (unlike macOS, where the
-/// helpers have their own binaries). The hide worker wants all of them - any
-/// one of them can own a top-level window.
+/// helpers have their own binaries).
 ///
 /// `Err` means "cannot determine", never "not running": `lunar_config::register`
 /// refuses to touch `launcher.json` on `Err`, because an undeterminable state
@@ -131,15 +201,6 @@ pub fn lunar_launcher_pids() -> Result<Vec<u32>, String> {
     let root = lunar_programs_root(std::env::var_os("LOCALAPPDATA").as_deref())
         .map_err(|e| format!("Cannot tell whether Lunar is running: {e}"))?;
     Ok(pids_where(|exe| is_lunar_launcher_exe(exe, &root)))
-}
-
-#[cfg(windows)]
-pub fn prism_launcher_pids() -> Vec<u32> {
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-        return Vec::new();
-    };
-    let wanted = PathBuf::from(local).join("Programs/PrismLauncher/prismlauncher.exe");
-    pids_where(|exe| caseless_ends_with(exe, &wanted))
 }
 
 /// `%LOCALAPPDATA%\Programs`, rejecting every UNUSABLE value rather than only
@@ -194,10 +255,7 @@ pub fn game_jvm_running(home: &Path) -> bool {
     !game_jvm_pids(home).is_empty()
 }
 
-/// The game JVM's pids, by the identity `game_jvm_running` describes. The
-/// Windows hide worker uses them to recognise a CONSOLE window that belongs to
-/// the game - and, just as importantly, to leave every OTHER window of that
-/// same process (the Minecraft window itself) alone.
+/// The game JVM's pids, by the identity `game_jvm_running` describes.
 pub fn game_jvm_pids(home: &Path) -> Vec<u32> {
     game_jvm_scan(home).pids
 }
@@ -262,6 +320,90 @@ fn scan_snapshot() -> System {
     system
 }
 
+/// A Prism game for one instance: a Java process (exe `.../bin/java`) whose WORKING
+/// DIRECTORY is inside `game_dir`. Prism starts the game JVM in the instance's game folder.
+/// Read from an exe + cwd + user snapshot - never the command line, which carries the
+/// game's live access token (`no_production_snapshot_holds_any_command_line` covers this
+/// shape too).
+///
+/// `complete` is the game scan's proof (raw-list reconciliation, readable same-user exes),
+/// plus: a same-user Java process whose working directory cannot be read could be this
+/// game, so unless it is provably dead "none found" is not trusted.
+pub fn java_in_dir_scan(game_dir: &Path) -> GameJvmScan {
+    scan_cwd_in(game_dir, is_game_java_tail)
+}
+
+fn scan_cwd_in(dir: &Path, is_candidate: impl Fn(&Path) -> bool) -> GameJvmScan {
+    use crate::process_liveness::{process_exists, IdentityCheck};
+    let raw = raw_pid_list();
+    let system = cwd_snapshot();
+    let mut wanted = vec![dir.to_path_buf()];
+    if let Ok(real) = std::fs::canonicalize(dir) {
+        if real != dir {
+            wanted.push(real);
+        }
+    }
+    let inside = |cwd: &Path| wanted.iter().any(|w| path_has_prefix(cwd, w));
+    let own_uid = system
+        .process(sysinfo::Pid::from_u32(std::process::id()))
+        .and_then(|p| p.user_id().cloned());
+    let mut pids = Vec::new();
+    let mut unreadable_cwd = false;
+    for (pid, process) in system.processes() {
+        if !process.exe().is_some_and(&is_candidate) {
+            continue;
+        }
+        match process.cwd() {
+            Some(cwd) if !cwd.as_os_str().is_empty() => {
+                if inside(cwd) {
+                    pids.push(pid.as_u32());
+                }
+            }
+            _ => {
+                let other_user = match (process.user_id(), own_uid.as_ref()) {
+                    (Some(uid), Some(own)) => uid != own,
+                    _ => false,
+                } || other_account(pid.as_u32());
+                if !other_user && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone {
+                    unreadable_cwd = true;
+                }
+            }
+        }
+    }
+    GameJvmScan {
+        complete: !unreadable_cwd && scan_is_complete(&system, raw),
+        pids,
+    }
+}
+
+/// Snapshot for `java_in_dir_scan`: executable path, working directory and owning user.
+/// Never argv.
+fn cwd_snapshot() -> System {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_user(UpdateKind::Always),
+    );
+    system
+}
+
+/// An own-user process whose executable path cannot be read only makes a scan
+/// uncertain if it could be a game JVM. macOS cannot read the path of a process
+/// whose binary was replaced after it started (an app that updated itself while
+/// running - a browser, Discord, Lunar's own launcher), and such a process would
+/// otherwise keep every scan "incomplete" for as long as it lives, leaving
+/// setup's game gate waiting forever. The kernel's short process name (p_comm,
+/// not argv) of a JVM is `java`; anything else cannot be the game. An empty or
+/// unreadable name still fails closed.
+fn could_be_java(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    name.is_empty() || name.contains("java")
+}
+
 fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
     use crate::process_liveness::{process_exists, IdentityCheck};
     let own_pid = sysinfo::Pid::from_u32(std::process::id());
@@ -294,6 +436,8 @@ fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
         }
         if process.exe().is_none_or(|e| e.as_os_str().is_empty())
             && process_exists(pid.as_u32()) != IdentityCheck::DefinitelyGone
+            && could_be_java(process.name())
+            && !other_account(pid.as_u32())
         {
             return false;
         }
@@ -304,7 +448,35 @@ fn scan_is_complete(system: &System, raw: Option<Vec<u32>>) -> bool {
     raw.into_iter().all(|pid| {
         system.process(sysinfo::Pid::from_u32(pid)).is_some()
             || process_exists(pid) == IdentityCheck::DefinitelyGone
+            || other_account(pid)
     })
+}
+
+/// Whether the OS refuses to let this process even signal `pid` (`kill(pid, 0)` failing
+/// with EPERM): it belongs to another account, so it cannot be this player's game. macOS
+/// hides some of another logged-in account's processes from the snapshot entirely, and
+/// without this every scan on a Mac with two accounts in use stays incomplete and setup's
+/// game gate fails with Try again. Root may signal anything, so this never fires as root.
+#[cfg(unix)]
+fn other_account(pid: u32) -> bool {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const EPERM: i32 = 1;
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // Signal 0 only checks that the process exists and may be signalled; nothing is sent.
+    let refused = unsafe { kill(pid, 0) } == -1;
+    refused && std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
+}
+
+#[cfg(not(unix))]
+fn other_account(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -442,6 +614,16 @@ fn caseless_ends_with(path: &Path, tail: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unreadable_non_java_process_does_not_make_a_scan_uncertain() {
+        use std::ffi::OsStr;
+        assert!(!super::could_be_java(OsStr::new("claude")));
+        assert!(!super::could_be_java(OsStr::new("Google Chrome Helper")));
+        assert!(super::could_be_java(OsStr::new("java")));
+        assert!(super::could_be_java(OsStr::new("JavaAppLauncher")));
+        assert!(super::could_be_java(OsStr::new("")), "an unreadable name fails closed");
+    }
+
     use super::*;
     use std::process::Command;
     use sysinfo::Pid;
@@ -633,6 +815,22 @@ mod tests {
         ));
     }
 
+    /// Windows' Prism running check matches the exe name only, caseless, in any folder.
+    #[cfg(windows)]
+    #[test]
+    fn a_prism_exe_is_known_by_its_name_in_any_folder() {
+        for exe in [
+            "C:\\Users\\J\\AppData\\Local\\Programs\\PrismLauncher\\prismlauncher.exe",
+            "D:\\Games\\Prism\\PrismLauncher.EXE",
+            "/x/prismlauncher.exe",
+        ] {
+            assert!(is_prism_exe(Path::new(exe)), "{exe}");
+        }
+        for exe in ["C:\\P\\prismlauncher_updater.exe", "C:\\P\\prismlauncher.exe.bak", "C:\\prismlauncher\\java.exe"] {
+            assert!(!is_prism_exe(Path::new(exe)), "{exe}");
+        }
+    }
+
     #[test]
     fn caseless_predicates_ignore_component_case_only() {
         assert!(caseless_component_eq(
@@ -701,6 +899,19 @@ mod tests {
 
     /// The reconciliation source must be a real, independent enumeration:
     /// it has to contain this very process.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_process_this_account_may_not_signal_is_another_accounts() {
+        assert!(!other_account(std::process::id()), "this process is our own");
+        assert!(!other_account(0), "pid 0 is never a candidate");
+        // pid 1 runs as root: refused to an ordinary account, signallable as root.
+        extern "C" {
+            fn geteuid() -> u32;
+        }
+        let root = unsafe { geteuid() } == 0;
+        assert_eq!(other_account(1), !root);
+    }
+
     #[test]
     fn the_raw_pid_list_sees_this_process() {
         let raw = raw_pid_list().expect("raw enumeration available");
@@ -719,6 +930,123 @@ mod tests {
             raw * 2 > snapshot,
             "raw enumeration ({raw}) is a divided prefix of the snapshot ({snapshot})"
         );
+    }
+
+    /// Every production snapshot shape, checked against EVERY process it saw, not only
+    /// the canary: `cmd()` must be empty across the whole snapshot. This is the
+    /// launcher-wide form of the rule (PLAN round 1 B1) - any new refresh kind that
+    /// starts populating argv fails here. The positive control in
+    /// `exe_only_snapshot_leaves_argv_empty` proves the OS would hand argv out.
+    #[test]
+    fn no_production_snapshot_holds_any_command_line() {
+        let guard = spawn_canary();
+        let pid = Pid::from_u32(guard.child.id());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        for (shape, system) in [
+            ("exe", exe_snapshot()),
+            ("exe+user", scan_snapshot()),
+            ("exe+cwd+user", cwd_snapshot()),
+        ] {
+            assert!(
+                system.process(pid).is_some(),
+                "{shape}: the canary child must be visible"
+            );
+            for (seen, process) in system.processes() {
+                assert!(
+                    process.cmd().is_empty(),
+                    "{shape} snapshot leaked argv for pid {seen}"
+                );
+            }
+        }
+    }
+
+    /// The running check follows the bundle-derived exe list: a process whose exe is not
+    /// one of them (this test binary) never matches, and an empty list matches nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_launcher_pid_matches_only_the_listed_bundle_exes() {
+        assert_eq!(lunar_launcher_pid_among(&[]), None);
+        let own = std::env::current_exe().unwrap();
+        let own = std::fs::canonicalize(&own).unwrap_or(own);
+        assert_eq!(
+            lunar_launcher_pid_among(&[own]),
+            Some(std::process::id()),
+            "an exact exe match is found"
+        );
+        assert_eq!(
+            lunar_launcher_pid_among(&[PathBuf::from("/nonexistent/Lunar Client.app/Contents/MacOS/Lunar Client")]),
+            None
+        );
+    }
+
+    /// Code review round 2 I2, end to end: a Lunar bundle found only through the bundle-id
+    /// lookup (no standard install) is watched by its own executable. A real process runs
+    /// from `<bundle>/Contents/MacOS/Lunar Client` (a copy of `/bin/sleep`) and the running
+    /// check finds exactly it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_running_lunar_found_only_by_bundle_id_is_detected() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let home = root.join("home");
+        let app = home.join("Games/Lunar Client.app");
+        let exe = app.join("Contents/MacOS/Lunar Client");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        let found = app.clone();
+        let lookup = move || vec![found.clone()];
+        let exes = crate::lunar_detect::launcher_exes_with(Some(&home), &lookup);
+
+        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        let pid = child.id();
+        let mut seen = None;
+        for _ in 0..50 {
+            seen = lunar_launcher_pid_among(&exes);
+            if seen.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(seen, Some(pid), "the bundle-id Lunar's own exe is matched: {exes:?}");
+        // Without the lookup's bundle the same process is invisible to the check.
+        assert!(!crate::lunar_detect::launcher_exes_with(Some(&home), &Vec::new).contains(&exe));
+    }
+
+    /// The cwd scan reads working directories (the canary runs in a folder of ours and is
+    /// found there, and nowhere else) while argv stays empty in that same snapshot.
+    #[cfg(unix)]
+    #[test]
+    fn the_cwd_scan_finds_a_process_by_its_working_directory_without_argv() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("minecraft");
+        std::fs::create_dir_all(&game).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{CANARY}=1; read _l"))
+            .current_dir(&game)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn canary child");
+        let stdin = child.stdin.take();
+        let guard = KillOnDrop { child, _stdin: stdin };
+        let pid = guard.child.id();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        let system = cwd_snapshot();
+        let seen = system.process(Pid::from_u32(pid)).expect("canary visible");
+        assert!(seen.cmd().is_empty(), "exe+cwd refresh must never populate argv");
+        assert!(seen.cwd().is_some(), "the cwd is readable for our own child");
+
+        // macOS's /bin/sh may exec bash or dash: match any shell.
+        let shell = |exe: &Path| exe.file_name().is_some_and(|n| n.to_string_lossy().ends_with("sh"));
+        let found = scan_cwd_in(&game, shell);
+        assert!(found.pids.contains(&pid), "found by its working directory");
+        let elsewhere = scan_cwd_in(&dir.path().join("other"), shell);
+        assert!(!elsewhere.pids.contains(&pid));
+        // A game folder no Java runs in: nothing found (sh is not a java).
+        assert!(!java_in_dir_scan(&game).pids.contains(&pid));
     }
 
     /// The argv ban holds for the scan snapshot's exe+user refresh shape

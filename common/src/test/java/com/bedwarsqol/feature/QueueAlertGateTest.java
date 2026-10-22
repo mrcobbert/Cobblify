@@ -10,16 +10,14 @@ import static org.junit.Assert.assertTrue;
 public class QueueAlertGateTest {
 
     @Test
-    public void tagLinesFollowTagUtilsChatAlertForTheSourcesThatAreOn() {
+    public void tagLinesFollowTagUtilsChatAlertWhileUrchinIsOn() {
         ClientSettings cfg = new ClientSettings();
         assertTrue(QueueAlertGate.wantsTags(cfg));
         cfg.tagChatAlert = false;
         assertFalse("Chat Alert off silences the queue too", QueueAlertGate.wantsTags(cfg));
         cfg.tagChatAlert = true;
         cfg.urchinTags = false;
-        assertTrue("Seraph alone still counts", QueueAlertGate.wantsTags(cfg));
-        cfg.seraphTags = false;
-        assertFalse("no source on, nothing to ask", QueueAlertGate.wantsTags(cfg));
+        assertFalse("Urchin off, nothing to ask", QueueAlertGate.wantsTags(cfg));
         cfg.urchinTags = true;
         cfg.tagUtils = false;
         assertFalse("Tag Utils off silences it", QueueAlertGate.wantsTags(cfg));

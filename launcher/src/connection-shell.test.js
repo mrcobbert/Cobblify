@@ -30,7 +30,6 @@ function makeShell(overrides = {}) {
   let rosterCleared = 0;
   let progressStopped = 0;
   const fired = [];
-  const timers = [];
   const shell = createConnectionShell({
     titleEl,
     subEl,
@@ -42,13 +41,6 @@ function makeShell(overrides = {}) {
         onAction: () => {
           fired.push("try_again");
           overrides.onTryAgain?.();
-        },
-      },
-      waiting: {
-        label: "Back to Home",
-        onAction: () => {
-          fired.push("back_home");
-          overrides.onBackHome?.();
         },
       },
     },
@@ -65,13 +57,6 @@ function makeShell(overrides = {}) {
     hideDash: () => {
       dashView = null;
     },
-    clock: () => 0,
-    schedule: (fn, ms) => {
-      const id = timers.length + 1;
-      timers.push({ id, fn, ms });
-      return id;
-    },
-    cancel: () => {},
   });
   return {
     shell,
@@ -81,7 +66,6 @@ function makeShell(overrides = {}) {
     actionEl,
     announceEl,
     fired,
-    timers,
     get dashView() {
       return dashView;
     },
@@ -96,7 +80,7 @@ function makeShell(overrides = {}) {
 
 test("connected announcement precedes hiding the shell", () => {
   const ctx = makeShell();
-  ctx.shell.show("joining");
+  ctx.shell.show("manual");
   assert.equal(ctx.shell.getVisible(), true);
   ctx.shell.enterConnected({ firstLive: true });
   assert.equal(ctx.announceEl.textContent, "Connected to Hypixel");
@@ -133,13 +117,11 @@ test("preexisting_game shows try again and clears roster", () => {
   assert.equal(ctx.progressStopped, 1);
 });
 
-test("the action slot is per-mode: try again, back to home, or nothing", () => {
+test("the action slot is per-mode: try again or nothing", () => {
   const ctx = makeShell();
   const seen = [];
   for (const mode of [
-    "joining",
     "manual",
-    "waiting",
     "disconnected",
     "preexisting_game",
     "session_ended",
@@ -151,9 +133,7 @@ test("the action slot is per-mode: try again, back to home, or nothing", () => {
     seen.push([mode, ctx.actionEl.hidden ? null : ctx.actionEl.textContent]);
   }
   assert.deepEqual(seen, [
-    ["joining", null],
     ["manual", null],
-    ["waiting", "Back to Home"],
     ["disconnected", null],
     ["preexisting_game", "Try Again"],
     ["session_ended", null],
@@ -165,14 +145,14 @@ test("the action slot is per-mode: try again, back to home, or nothing", () => {
 
 test("the action slot dispatches to the action of the mode on screen", () => {
   const ctx = makeShell();
-  ctx.shell.show("waiting");
+  ctx.shell.show("manual");
   ctx.actionEl.click();
   ctx.shell.enterTerminal("preexisting_game", { showTryAgain: true });
   ctx.actionEl.click();
   // A mode with no action swallows the click instead of firing a stale one.
   ctx.shell.enterTerminal("session_ended");
   ctx.actionEl.click();
-  assert.deepEqual(ctx.fired, ["back_home", "try_again"]);
+  assert.deepEqual(ctx.fired, ["try_again"]);
 });
 
 test("terminal reset modes never offer an escape button", () => {
@@ -195,24 +175,17 @@ test("terminal session modes use approved copy", () => {
   assert.equal(ctx.titleEl.textContent, "Game Session Changed");
 });
 
-test("waiting deadline fires once with manual guidance copy", () => {
-  let fired = 0;
+test("no joining or waiting screen exists: an unknown mode falls back to manual", () => {
   const ctx = makeShell();
-  ctx.shell.scheduleWaitingDeadline(1000, () => {
-    fired += 1;
-  });
-  assert.equal(ctx.timers.length, 1);
-  ctx.timers[0].fn();
-  assert.equal(fired, 1);
-  ctx.shell.show("waiting");
-  assert.equal(ctx.titleEl.textContent, "Still Waiting for Hypixel");
-  assert.match(ctx.subEl.textContent, /Join Hypixel manually/i);
+  ctx.shell.show("joining");
+  assert.equal(ctx.titleEl.textContent, "Ready");
+  assert.equal(ctx.shell.scheduleWaitingDeadline, undefined);
 });
 
 test("disconnected clears roster before showing shell", () => {
   const ctx = makeShell();
   ctx.shell.enterDisconnected();
   assert.equal(ctx.rosterCleared, 1);
-  assert.equal(ctx.titleEl.textContent, "Disconnected from Hypixel");
+  assert.equal(ctx.titleEl.textContent, "Join Hypixel", "left Hypixel: the Join Hypixel message again");
   assert.equal(ctx.shell.getVisible(), true);
 });

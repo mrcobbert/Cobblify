@@ -37,7 +37,6 @@ divergent main com/bedwarsqol/feature/NametagStats.java
 divergent main com/bedwarsqol/feature/NickUtils.java
 divergent main com/bedwarsqol/feature/PartyJoinAlert.java
 divergent main com/bedwarsqol/feature/QueueAlert.java
-divergent main com/bedwarsqol/feature/SeraphAlert.java
 divergent main com/bedwarsqol/feature/SessionStatsWatch.java
 divergent main com/bedwarsqol/feature/SweatReport.java
 divergent main com/bedwarsqol/feature/UrchinAlert.java

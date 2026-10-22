@@ -959,6 +959,13 @@ fn parse_writer_fields(value: &Value) -> Option<WriterFields> {
     })
 }
 
+/// The writer fields `jvmPid` / `jvmStartTimeMs` exactly as the binding path validates
+/// them, without touching the process. The launch watch matches them against the game JVM
+/// it identified.
+pub fn writer_pid_and_start(value: &Value) -> Option<(u32, i64)> {
+    parse_writer_fields(value).map(|f| (f.pid, f.jvm_start_ms))
+}
+
 pub fn parse_writer_identity(value: &Value) -> Option<WriterProof> {
     verified_writer_from_snapshot(value, SystemTime::now())
 }
@@ -1047,9 +1054,15 @@ fn valid_common_player(obj: &serde_json::Map<String, Value>) -> bool {
         }
     }
     let fk = obj.get("finalKills").and_then(|v| v.as_i64());
-    let threat = obj.get("seraphThreat").and_then(|v| v.as_i64());
-    if !fk.is_some_and(is_safe_int) || !threat.is_some_and(is_safe_int) {
+    if !fk.is_some_and(is_safe_int) {
         return false;
+    }
+    // seraphThreat is retired with Seraph (its API shut down, October 2026): mod jars up to 0.18
+    // write it, newer ones may not. Optional now; a present value must still be a safe integer.
+    if let Some(threat) = obj.get("seraphThreat") {
+        if !threat.as_i64().is_some_and(is_safe_int) {
+            return false;
+        }
     }
     if let Some(presence) = obj.get("presence") {
         let Some(p) = presence.as_str() else {

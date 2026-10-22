@@ -444,3 +444,6 @@ launcher/src-tauri/resources/*.jar
 # Parked pre-existing resource artifacts (see .ai/PLAN.md rev 3, blank-build
 # isolation) - holds a presumed-token-baked jar; never committable.
 launcher/src-tauri/resources.aside/
+
+# The launcher embeds this one (reproducible from launcher/guard/src; launcher/guard/build.sh).
+!launcher/guard/Cobblify-Guard.jar

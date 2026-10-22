@@ -79,25 +79,12 @@ public final class BedwarsStats {
     /** Community-reported Urchin tags (in-memory only, never persisted); unmodifiable, never null. */
     public final List<UrchinTag> urchinTags;
 
-    /** Seraph list tags (in-memory only, never persisted); unmodifiable, never null. */
-    public final List<SeraphTag> seraphTags;
-
-    /** Seraph statistics (in-memory only, never persisted); {@code -1} when absent. */
-    public final int seraphThreat;
-    public final int seraphEncounters;
-
     private BedwarsStats(State state, String displayName, int bedwarsLevel,
                          String rankPrefix, String rankCode, ModeStats overall, ModeStats solo,
-                         ModeStats doubles, ModeStats threes, ModeStats fours, List<UrchinTag> urchinTags,
-                         List<SeraphTag> seraphTags, int seraphThreat, int seraphEncounters) {
+                         ModeStats doubles, ModeStats threes, ModeStats fours, List<UrchinTag> urchinTags) {
         this.urchinTags = urchinTags == null
                 ? Collections.<UrchinTag>emptyList()
                 : Collections.unmodifiableList(new java.util.ArrayList<UrchinTag>(urchinTags));
-        this.seraphTags = seraphTags == null
-                ? Collections.<SeraphTag>emptyList()
-                : Collections.unmodifiableList(new java.util.ArrayList<SeraphTag>(seraphTags));
-        this.seraphThreat = seraphThreat < 0 ? -1 : seraphThreat;
-        this.seraphEncounters = seraphEncounters < 0 ? -1 : seraphEncounters;
         this.state = state;
         this.displayName = displayName;
         this.bedwarsLevel = Math.max(0, bedwarsLevel);
@@ -121,22 +108,22 @@ public final class BedwarsStats {
     }
 
     public static BedwarsStats nicked() {
-        return new BedwarsStats(State.NICKED, null, 0, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.NICKED, null, 0, "", null, null, null, null, null, null, null);
     }
 
     public static BedwarsStats error() {
-        return new BedwarsStats(State.ERROR, null, 0, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.ERROR, null, 0, "", null, null, null, null, null, null, null);
     }
 
     public static BedwarsStats neverPlayed(String displayName) {
-        return new BedwarsStats(State.NEVER_PLAYED, displayName, 0, "", null, null, null, null, null, null, null, null, -1, -1);
+        return new BedwarsStats(State.NEVER_PLAYED, displayName, 0, "", null, null, null, null, null, null, null);
     }
 
     public static BedwarsStats ok(String displayName, String rankPrefix,
                                   String rankCode, ModeStats overall, ModeStats solo, ModeStats doubles,
                                   ModeStats threes, ModeStats fours) {
         return new BedwarsStats(State.OK, displayName, 0, rankPrefix, rankCode,
-                overall, solo, doubles, threes, fours, null, null, -1, -1);
+                overall, solo, doubles, threes, fours, null);
     }
 
     /**
@@ -155,14 +142,7 @@ public final class BedwarsStats {
     /** A copy carrying {@code tags} (Urchin resolution merge). Preserves all stats fields. */
     public BedwarsStats withUrchinTags(List<UrchinTag> tags) {
         return new BedwarsStats(state, displayName, bedwarsLevel, rankPrefix, rankCode,
-                overall, solo, doubles, threes, fours, tags, seraphTags, seraphThreat, seraphEncounters);
-    }
-
-    /** A copy carrying Seraph {@code tags} + statistics (Seraph resolution merge). {@code threat} /
-     *  {@code encounters} are {@code -1} when absent. Preserves all stats fields. */
-    public BedwarsStats withSeraph(List<SeraphTag> tags, int threat, int encounters) {
-        return new BedwarsStats(state, displayName, bedwarsLevel, rankPrefix, rankCode,
-                overall, solo, doubles, threes, fours, urchinTags, tags, threat, encounters);
+                overall, solo, doubles, threes, fours, tags);
     }
 
     /**
@@ -173,17 +153,12 @@ public final class BedwarsStats {
     public BedwarsStats withLevel(int level) {
         if (state != State.OK || level <= 0 || level == bedwarsLevel) return this;
         return new BedwarsStats(state, displayName, level, rankPrefix, rankCode,
-                overall, solo, doubles, threes, fours, urchinTags, seraphTags, seraphThreat, seraphEncounters);
+                overall, solo, doubles, threes, fours, urchinTags);
     }
 
     /** The highest-severity active Urchin tag at {@code nowMs}, or null when there is none. */
     public UrchinTag priorityUrchinTag(long nowMs) {
         return UrchinTag.priority(urchinTags, nowMs);
-    }
-
-    /** The highest-severity Seraph tag, or null when there is none. */
-    public SeraphTag prioritySeraphTag() {
-        return SeraphTag.priority(seraphTags);
     }
 
     /** The stats for {@code mode}, falling back to overall when that mode has no games. */

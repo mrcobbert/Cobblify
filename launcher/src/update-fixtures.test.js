@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { updateView } from "./update-view.js";
+import { blocksLaunch, sheetModel } from "./ui/model.js";
+
+/** The settings sheet's version row for an updater snapshot (the 0.18 home has no updater strip). */
+const row = (u) => sheetModel({ status: { state: "ready", targets: [] }, update: u }).version;
 import {
   PREVIEW_UPDATE,
   PREVIEW_UPDATE_KEYS,
@@ -27,36 +30,23 @@ test("unknown update keys fall back to first-run consent", () => {
   assert.equal(resolvePreviewUpdate(undefined), PREVIEW_UPDATE.consent);
 });
 
-test("preview update fixtures cover every distinct updater row", () => {
-  const kinds = PREVIEW_UPDATE_KEYS.map((key) => updateView(PREVIEW_UPDATE[key]).kind);
-  for (const kind of [
-    "consent",
-    "checking",
-    "current",
-    "available",
-    "critical_required",
-    "downloading",
-    "paused",
-    "ready",
-    "installing",
-    "error",
-  ]) {
-    assert.ok(kinds.includes(kind), `missing updater row kind: ${kind}`);
+test("preview update fixtures cover every distinct updater state", () => {
+  const states = PREVIEW_UPDATE_KEYS.map((key) => PREVIEW_UPDATE[key].state);
+  for (const state of ["checking", "current", "available", "critical_required", "downloading", "paused", "ready", "installing", "error"]) {
+    assert.ok(states.includes(state), `missing updater state: ${state}`);
   }
 
-  assert.equal(updateView(PREVIEW_UPDATE.current).secondaryAction, "enable");
-  assert.equal(updateView(PREVIEW_UPDATE.currentAuto).secondaryAction, "disable");
-  assert.equal(updateView(PREVIEW_UPDATE.paused).detail, "Progress saved.");
-  assert.equal(updateView(PREVIEW_UPDATE.pausedGame).detail, "Resumes after game.");
-  assert.equal(updateView(PREVIEW_UPDATE.critical).blocksLaunch, true);
-  assert.equal(updateView(PREVIEW_UPDATE.updateReadyCritical).blocksLaunch, true);
-  assert.equal(updateView(PREVIEW_UPDATE.installing).blocksLaunch, false);
-  assert.equal(updateView(PREVIEW_UPDATE.updateError).title, "Unavailable");
-  assert.equal(updateView(PREVIEW_UPDATE.updateErrorManual).title, "Check failed");
-  assert.equal(updateView(PREVIEW_UPDATE.currentDev).detail, "0.10.0-dev.41 · dev build");
-  assert.equal(updateView(PREVIEW_UPDATE.availableDev).title, "0.10.0-dev.41 available");
-  assert.equal(updateView(PREVIEW_UPDATE.availableDev).detail, "dev build");
-  assert.equal(updateView(PREVIEW_UPDATE.available).detail, "");
+  assert.equal(row(PREVIEW_UPDATE.current).word, "Up to date");
+  assert.equal(row(PREVIEW_UPDATE.current).key.action, "check");
+  assert.equal(row(PREVIEW_UPDATE.paused).word, "Paused");
+  assert.equal(row(PREVIEW_UPDATE.paused).key.action, "resume");
+  assert.equal(blocksLaunch(PREVIEW_UPDATE.critical), true);
+  assert.equal(blocksLaunch(PREVIEW_UPDATE.updateReadyCritical), true);
+  assert.equal(blocksLaunch(PREVIEW_UPDATE.installing), false);
+  assert.equal(row(PREVIEW_UPDATE.updateErrorManual).word, "Check failed");
+  assert.equal(row(PREVIEW_UPDATE.availableDev).word, "0.10.0-dev.41");
+  assert.equal(row(PREVIEW_UPDATE.availableDev).key.action, "download");
+  assert.equal(row(PREVIEW_UPDATE.updateReady).key.action, "install");
 });
 
 test("a demo fixture and a live backend snapshot of the same state project identically", () => {
@@ -78,6 +68,7 @@ test("a demo fixture and a live backend snapshot of the same state project ident
     if (fixture.availableVersion) live.availableVersion = fixture.availableVersion;
     if (fixture.pauseReason) live.pauseReason = fixture.pauseReason;
     if (fixture.diagnosticCode) live.diagnosticCode = fixture.diagnosticCode;
-    assert.deepEqual(updateView(fixture), updateView(live), key);
+    assert.deepEqual(row(fixture), row(live), key);
+    assert.equal(blocksLaunch(fixture), blocksLaunch(live), key);
   }
 });

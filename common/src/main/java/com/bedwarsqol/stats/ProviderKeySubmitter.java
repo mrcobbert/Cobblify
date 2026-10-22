@@ -5,7 +5,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * The one submit path for the server-side Urchin/Seraph provider keys, shared by the chat commands
+ * The one submit path for the server-side provider key (Urchin), shared by the chat commands
  * and the settings GUI so the semantics exist once: length validation, the escaped
  * {@code {"key":"..."}} / {@code {"key":null}} body, the background {@link
  * ScraperBackendClient#postSecret} POST, and the client-thread result marshal. Sequencing contract:
@@ -19,8 +19,7 @@ public final class ProviderKeySubmitter {
 
     /** Which provider a submission targets; carries the Worker key route it POSTs to. */
     public enum Provider {
-        URCHIN("/urchin/key"),
-        SERAPH("/seraph/key");
+        URCHIN("/urchin/key");
 
         public final String path;
 
