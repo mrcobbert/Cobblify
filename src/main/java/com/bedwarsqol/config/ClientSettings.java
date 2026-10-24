@@ -267,6 +267,16 @@ public class ClientSettings {
     public boolean tntFuseEnabled = false;
     public int tntFuseRadius = 10;
 
+    /**
+     * Clutch Practice (Forge, singleplayer only): throwable fire charges, unlimited pearls / fire
+     * charges / wool, and a void reset to the last solid ground. Inert on any multiplayer server.
+     */
+    public boolean clutchPractice = false;
+    /** Sub of Clutch Practice: fireballs break wool, planks and clay (never on when off). */
+    public boolean clutchBlockDamage = false;
+    /** Sub of Clutch Practice: constant fireball speed in blocks per tick. */
+    public float clutchFireballSpeed = 2.5f;
+
     /** First-person held-item position offset (X/Y/Z, eye space) + size scale, gated by the master toggle. */
     public boolean handPositionEnabled = false;
     public float handPosX = 0f;
@@ -376,6 +386,7 @@ public class ClientSettings {
         blockOverlayStyle = clamp(blockOverlayStyle, 0, 2);
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
         tntFuseRadius = clamp(tntFuseRadius, 1, 64);
+        clutchFireballSpeed = clampf(clutchFireballSpeed, 1.0f, 4.0f);
         chatStackWindowSec = clampf(chatStackWindowSec, 1.0f, 30.0f);
 
         handPosX = clampf(handPosX, -1.0f, 1.0f);

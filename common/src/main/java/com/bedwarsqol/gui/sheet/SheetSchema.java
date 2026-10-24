@@ -235,7 +235,10 @@ public final class SheetSchema {
                         slider("handScale", "Scale", "Size of the held item", 0.5, 2, 0.01, 2, "")),
                 module("tnt", "TNT Countdown", "Fuse timer for nearby TNT", "fuse explode",
                         seg("tntRadius", "Radius", "How far away TNT is tracked, in blocks", null, "5", "10", "15", "20", "30")),
-                module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape")));
+                module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape"),
+                module("clutch", "Clutch Practice", "Pearl and fireball drill in singleplayer", "void fireball pearl",
+                        toggle("clutchBlocks", "Block Damage", "Fireballs break wool, wood and clay"),
+                        slider("clutchSpeed", "Fireball Speed", "Blocks per tick", 1, 4, 0.1, 1, ""))));
         cats.add(category("visuals", "Visuals",
                 module("blockOverlay", "Block Overlay", "Highlight targeted block", "outline selection highlight",
                         toggle("boSee", "See-Through", "Show it through other blocks"),

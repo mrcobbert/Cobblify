@@ -101,6 +101,11 @@ one-sided main forge com/bedwarsqol/mixin/MinecraftChatClearMixin.java
 one-sided main forge com/bedwarsqol/feature/ChatLengthLimit.java
 one-sided main forge com/bedwarsqol/mixin/C01PacketChatMessageMixin.java
 
+# Clutch Practice: singleplayer pearl + fireball drill, Forge-only by request
+# 2026-10-23 (integrated-server gameplay; the rules live in common/ClutchRules).
+one-sided main forge com/bedwarsqol/feature/ClutchFireball.java
+one-sided main forge com/bedwarsqol/feature/ClutchPractice.java
+
 # Weave-only shims with no Forge equivalent.
 one-sided main lunar com/bedwarsqol/feature/KeybindRegistry.java
 one-sided main lunar com/bedwarsqol/gui/render/ClasspathTexture.java

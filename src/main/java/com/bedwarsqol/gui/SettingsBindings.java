@@ -76,6 +76,8 @@ final class SettingsBindings implements SheetValues {
             case "handPos": return c.handPositionEnabled;
             case "tnt": return c.tntFuseEnabled;
             case "noEsc": return c.suppressEscMenu;
+            case "clutch": return c.clutchPractice;
+            case "clutchBlocks": return c.clutchBlockDamage;
             case "blockOverlay": return c.blockOverlayEnabled;
             case "boSee": return c.blockOverlaySeeThrough;
             case "boWhite": return c.blockOverlayWhite;
@@ -134,6 +136,8 @@ final class SettingsBindings implements SheetValues {
             case "handPos": c.handPositionEnabled = v; break;
             case "tnt": c.tntFuseEnabled = v; break;
             case "noEsc": c.suppressEscMenu = v; break;
+            case "clutch": c.clutchPractice = v; break;
+            case "clutchBlocks": c.clutchBlockDamage = v; break;
             case "blockOverlay": c.blockOverlayEnabled = v; break;
             case "boSee": c.blockOverlaySeeThrough = v; break;
             case "boWhite": c.blockOverlayWhite = v; break;
@@ -223,6 +227,7 @@ final class SettingsBindings implements SheetValues {
             case "handZ": return c.handPosZ;
             case "handScale": return c.handScale;
             case "stackWindow": return c.chatStackWindowSec;
+            case "clutchSpeed": return c.clutchFireballSpeed;
             default: return 0;
         }
     }
@@ -237,6 +242,7 @@ final class SettingsBindings implements SheetValues {
             case "handZ": c.handPosZ = f; break;
             case "handScale": c.handScale = f; break;
             case "stackWindow": c.chatStackWindowSec = f; break;
+            case "clutchSpeed": c.clutchFireballSpeed = f; break;
             default: break;
         }
     }
