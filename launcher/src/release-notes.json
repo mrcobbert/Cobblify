@@ -1,5 +1,11 @@
 [
   {
+    "version": "0.18.2",
+    "channel": "stable",
+    "date": "2026-10-24",
+    "sections": [["New", ["Clutch Practice (Forge, singleplayer): throwable fireballs for pearl and fireball clutches, with unlimited items and a void reset."]]]
+  },
+  {
     "version": "0.18.1",
     "channel": "stable",
     "date": "2026-10-15",
