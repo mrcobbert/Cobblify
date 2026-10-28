@@ -12,10 +12,11 @@ import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * Chat Notifications: sound alerts driven by incoming typed chat. Two sub-alerts under one master:
+ * Chat Notifications: sound alerts driven by incoming typed chat. Sub-alerts under one master:
  *
  * <p><b>Mention</b>: a pling when another player's message body contains your username as a whole
  * word, case-insensitive, on any server. Only typed lines ({@code sender: message}) count — the
@@ -26,20 +27,21 @@ import java.util.regex.Pattern;
  * team color match, the same signal {@link SweatReport} uses) or any {@code Party >} line says
  * "inc"/"incoming" as a word. Pairs with {@link IncSender}, whose keybind sends {@code /pc INC}.
  *
+ * <p><b>Bed</b> and <b>BG</b>: the same scope as Inc for the words "bed" and "bg", each with its own
+ * sound. A line plays at most one of the three, the first enabled one of Inc, Bed, BG
+ * ({@link TeamCall}).
+ *
  * <p>Your own messages and the mod's own {@link ModChat}-marked output never alert, and each alert
  * type is debounced so a spam wall can't chain sounds.
  */
 public class ChatNotifications {
 
-    /** Minimum gap between two sounds of the same alert type. */
+    /** Minimum gap between two mention sounds. */
     private static final long DEBOUNCE_MS = 1500L;
-    /** "inc" or "incoming" as a word: letters on either side disqualify (since, include, ...). */
-    private static final Pattern INC_WORD = Pattern.compile("(?i)(?<![a-z])inc(?:oming)?(?![a-z])");
 
     private long lastMentionMs;
-    private long lastIncMs;
-    /** Countdown to the second pling of the inc double, in client ticks (0 = idle). */
-    private int secondPlingTicks;
+    /** Debounce and note timing for the Inc, Bed and BG calls. */
+    private final TeamCallAlerts calls = new TeamCallAlerts();
 
     /** Whole-word matcher for the local player's name, rebuilt if the profile name changes. */
     private Pattern mentionWord;
@@ -72,23 +74,25 @@ public class ChatNotifications {
             lastMentionMs = now;
             mc.thePlayer.playSound("note.pling", 1.0f, 1.0f);
         }
-        if (cfg.chatNotifyInc && now - lastIncMs > DEBOUNCE_MS
-                && INC_WORD.matcher(body).find()
+        TeamCall call = TeamCall.match(body, cfg.chatNotifyInc, cfg.chatNotifyBed, cfg.chatNotifyBg);
+        if (call != null
                 && HypixelContext.isInActiveBedwarsGame()
                 && (raw.startsWith("Party >") || isTeammate(mc, sender, me))) {
-            lastIncMs = now;
-            mc.thePlayer.playSound("note.pling", 1.0f, 1.6f);
-            secondPlingTicks = 3;
+            play(calls.start(call, now));
         }
     }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || secondPlingTicks <= 0) return;
-        if (--secondPlingTicks == 0) {
-            Minecraft mc = Minecraft.getMinecraft();
-            if (mc != null && mc.thePlayer != null) mc.thePlayer.playSound("note.pling", 1.0f, 2.0f);
-        }
+        if (event.phase != TickEvent.Phase.END) return;
+        play(calls.tick());
+    }
+
+    private static void play(List<TeamCall.Note> notes) {
+        if (notes.isEmpty()) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.thePlayer == null) return;
+        for (TeamCall.Note n : notes) mc.thePlayer.playSound(n.sound, 1.0f, n.pitch);
     }
 
     private boolean mentions(String body, String me) {

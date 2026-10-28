@@ -296,9 +296,11 @@ public class SheetLayoutTest {
     public void searchShowsPathsMatchedRowsAndShowAll() {
         state.query = "sound";
         Frame f = layout();
-        assertEquals("3 matches for \"sound\"", f.body.get(0).text);
+        assertEquals("5 matches for \"sound\"", f.body.get(0).text);
         assertNotNull(find(f, T.TOGGLE, "notifyMention"));
         assertNotNull(find(f, T.TOGGLE, "notifyInc"));
+        assertNotNull(find(f, T.TOGGLE, "notifyBed"));
+        assertNotNull(find(f, T.TOGGLE, "notifyBg"));
         assertNotNull(find(f, T.TOGGLE, "tagSound"));
         assertNull(find(f, T.TOGGLE, "tagUrchin"));
         Node more = find(f, T.MORE, "tagUtils");
@@ -312,11 +314,15 @@ public class SheetLayoutTest {
     public void lunarListsOnlyItsModules() {
         values.missing.clear();
         for (String id : new String[]{"chatStack", "chatNotify", "chatUnlimited", "chatKeep", "chatCopy", "chatLong",
-                "stackTime", "stackBlanks", "stackWindow", "notifyMention", "notifyInc"}) values.missing.add(id);
+                "stackTime", "stackBlanks", "stackWindow", "notifyMention", "notifyInc", "notifyBed", "notifyBg"}) {
+            values.missing.add(id);
+        }
         state.category = "chat";
         Frame f = layout();
         assertEquals(12f, find(f, T.MODULE_TOGGLE, "incAlert").y, 0f);
-        assertEquals(12f + 39f, find(f, T.MODULE_TOGGLE, "incKey").y, 0f);
+        assertEquals(12f + 39f, find(f, T.MODULE_TOGGLE, "bedAlert").y, 0f);
+        assertEquals(12f + 2 * 39f, find(f, T.MODULE_TOGGLE, "bgAlert").y, 0f);
+        assertEquals(12f + 3 * 39f, find(f, T.MODULE_TOGGLE, "incKey").y, 0f);
         assertNull(find(f, T.OPEN, "chatStack"));
     }
 

@@ -441,6 +441,24 @@ test("settings rows follow the state", () => {
   assert.equal(sheetModel({ status: { state: "loading", targets: [] } }).prism, null);
 });
 
+test("Quit Lunar after launch: always shown, off by default, locked during a launch or a game like the overlay", () => {
+  const off = sheetModel({ status: lunarReady });
+  assert.deepEqual(off.quitLunar, { on: false, disabled: false });
+  assert.equal(sheetModel({ status: lunarReady, quitLunarOn: true }).quitLunar.on, true);
+  // Shown whatever is set up: it only ever acts on a Lunar launch.
+  const prismOnly = sheetModel({ status: { state: "ready", targets: [LUNAR_MISSING, FORGE_READY] } });
+  assert.deepEqual(prismOnly.quitLunar, { on: false, disabled: false });
+  for (const launch of [{ busy: true }, { active: true }, { active: true, inGame: true }]) {
+    const s = sheetModel({ status: lunarReady, launch, quitLunarOn: true });
+    assert.deepEqual(s.quitLunar, { on: true, disabled: true }, JSON.stringify(launch));
+    assert.equal(s.overlay.disabled, true);
+  }
+  assert.equal(sheetModel({ status: lunarReady, quitLunarSaving: true }).quitLunar.disabled, true, "one save at a time");
+  // Not the overlay's save or its uncertainty, and not a client row.
+  const others = sheetModel({ status: lunarReady, overlaySaving: true, launch: { prefUncertain: true }, setupActive: true });
+  assert.equal(others.quitLunar.disabled, false);
+});
+
 test("the dev switch keeps the click while the save is in flight", () => {
   const s = sheetModel({ status: lunarReady, update: { updateChannel: "stable", channelSaving: true }, devPending: true });
   assert.equal(s.dev.on, true);

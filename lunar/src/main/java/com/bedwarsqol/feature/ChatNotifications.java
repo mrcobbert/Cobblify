@@ -12,35 +12,32 @@ import net.weavemc.api.event.ChatEvent;
 import net.weavemc.api.event.SubscribeEvent;
 import net.weavemc.api.event.TickEvent;
 
-import java.util.regex.Pattern;
+import java.util.List;
 
 /**
  * Inc Alert: a double pling when, during an active Bedwars game, a teammate (scoreboard team color
  * match, the same signal {@link SweatReport} uses) or any {@code Party >} line says "inc"/"incoming"
- * as a word. Pairs with {@link IncSender}, whose keybind sends {@code /pc INC}.
+ * as a word. Pairs with {@link IncSender}, whose keybind sends {@code /pc INC}. Bed Alert and BG Alert
+ * do the same for "bed" and "bg", each with its own sound; a line plays at most one of the three, the
+ * first enabled one of Inc, Bed, BG ({@link TeamCall}).
  *
  * <p>Lunar tree divergence: the Forge tree's ChatNotifications also carries a name-mention alert
  * under a Chat Notifications master; Lunar Client covers the generic chat QOL natively, so here the
- * inc alert stands alone on {@code chatNotifyInc}. Weave routes the mod's own {@code addChatMessage}
- * lines through the same {@code ChatEvent.Received} hook as server chat, so the {@link ModChat} mark
- * check is load-bearing, not belt-and-braces.
+ * three call alerts stand alone on {@code chatNotifyInc}, {@code chatNotifyBed} and
+ * {@code chatNotifyBg}. Weave routes the mod's own {@code addChatMessage} lines through the same
+ * {@code ChatEvent.Received} hook as server chat, so the {@link ModChat} mark check is load-bearing,
+ * not belt-and-braces.
  */
 public class ChatNotifications {
 
-    /** Minimum gap between two alerts. */
-    private static final long DEBOUNCE_MS = 1500L;
-    /** "inc" or "incoming" as a word: letters on either side disqualify (since, include, ...). */
-    private static final Pattern INC_WORD = Pattern.compile("(?i)(?<![a-z])inc(?:oming)?(?![a-z])");
-
-    private long lastIncMs;
-    /** Countdown to the second pling of the double, in client ticks (0 = idle). */
-    private int secondPlingTicks;
+    /** Debounce and note timing for the Inc, Bed and BG calls. */
+    private final TeamCallAlerts calls = new TeamCallAlerts();
 
     @SubscribeEvent
     public void onChat(ChatEvent.Received event) {
         if (event == null || event.getMessage() == null) return;
         ClientSettings cfg = BedwarsQol.config;
-        if (cfg == null || !cfg.chatNotifyInc) return;
+        if (cfg == null || !(cfg.chatNotifyInc || cfg.chatNotifyBed || cfg.chatNotifyBg)) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null || mc.thePlayer.getGameProfile() == null) return;
         IChatComponent msg = event.getMessage();
@@ -58,24 +55,24 @@ public class ChatNotifications {
         if (colon < 0 || colon + 1 >= raw.length()) return;
         String body = raw.substring(colon + 1);
 
-        long now = System.currentTimeMillis();
-        if (now - lastIncMs > DEBOUNCE_MS
-                && INC_WORD.matcher(body).find()
+        TeamCall call = TeamCall.match(body, cfg.chatNotifyInc, cfg.chatNotifyBed, cfg.chatNotifyBg);
+        if (call != null
                 && HypixelContext.isInActiveBedwarsGame()
                 && (raw.startsWith("Party >") || isTeammate(mc, sender, me))) {
-            lastIncMs = now;
-            mc.thePlayer.playSound("note.pling", 1.0f, 1.6f);
-            secondPlingTicks = 3;
+            play(calls.start(call, System.currentTimeMillis()));
         }
     }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.Post event) {
-        if (secondPlingTicks <= 0) return;
-        if (--secondPlingTicks == 0) {
-            Minecraft mc = Minecraft.getMinecraft();
-            if (mc != null && mc.thePlayer != null) mc.thePlayer.playSound("note.pling", 1.0f, 2.0f);
-        }
+        play(calls.tick());
+    }
+
+    private static void play(List<TeamCall.Note> notes) {
+        if (notes.isEmpty()) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc == null || mc.thePlayer == null) return;
+        for (TeamCall.Note n : notes) mc.thePlayer.playSound(n.sound, 1.0f, n.pitch);
     }
 
     /** Same-scoreboard-team check via nametag color, the shared team signal on Hypixel. */

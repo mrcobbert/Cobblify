@@ -264,7 +264,8 @@ export function createApp(app, actions) {
       s.lunar ? row("lunar", "Lunar Client", keyBtn(s.lunar)) : "",
       s.prism ? row("prism", "Prism Launcher", keyBtn(s.prism)) : "",
     ].join("");
-    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}</section>
+    const quit = row("quit", "Quit Lunar after launch", tog("quit", "Quit Lunar after launch", s.quitLunar));
+    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}${quit}</section>
       <section class="sec">${row("auto", "Auto-update", tog("auto", "Auto-update", s.autoUpdate))}${row("dev", "Preview updates", tog("dev", "Preview updates", s.dev))}${verRow}</section>
       ${clients ? `<section class="sec">${clients}</section>` : ""}
       <p class="read disclaim">Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.</p>`;
@@ -669,7 +670,7 @@ export function createApp(app, actions) {
     else if (a === "tog") {
       const on = b.getAttribute("aria-checked") !== "true";
       b.setAttribute("aria-checked", String(on));
-      ({ overlay: actions.setOverlay, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
+      ({ overlay: actions.setOverlay, quit: actions.setQuitLunar, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
     }
     else if (a === "repair-lunar") { closeSheet({ quiet: true }); actions.repairLunar(); }
     else if (a === "sheet-add") { closeSheet({ quiet: true }); if (S?.prism?.add) actions.add(S.prism.add); }

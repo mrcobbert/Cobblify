@@ -13,7 +13,7 @@ import org.lwjgl.input.Keyboard;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
- * The Forge tree has every module in {@link SheetSchema} except Lunar's top-level Inc Alert.
+ * The Forge tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -52,7 +52,8 @@ final class SettingsBindings implements SheetValues {
 
     @Override
     public boolean has(String id) {
-        return !"incAlert".equals(id) && (SheetSchema.module(id) != null || SheetSchema.row(id) != null);
+        return !"incAlert".equals(id) && !"bedAlert".equals(id) && !"bgAlert".equals(id)
+                && (SheetSchema.module(id) != null || SheetSchema.row(id) != null);
     }
 
     @Override
@@ -88,6 +89,8 @@ final class SettingsBindings implements SheetValues {
             case "chatNotify": return c.chatNotifications;
             case "notifyMention": return c.chatNotifyMention;
             case "notifyInc": return c.chatNotifyInc;
+            case "notifyBed": return c.chatNotifyBed;
+            case "notifyBg": return c.chatNotifyBg;
             case "chatUnlimited": return c.chatUnlimited;
             case "chatKeep": return c.chatKeepHistory;
             case "chatCopy": return c.chatCopy;
@@ -148,6 +151,8 @@ final class SettingsBindings implements SheetValues {
             case "chatNotify": c.chatNotifications = v; break;
             case "notifyMention": c.chatNotifyMention = v; break;
             case "notifyInc": c.chatNotifyInc = v; break;
+            case "notifyBed": c.chatNotifyBed = v; break;
+            case "notifyBg": c.chatNotifyBg = v; break;
             case "chatUnlimited": c.chatUnlimited = v; break;
             case "chatKeep": c.chatKeepHistory = v; break;
             case "chatCopy": c.chatCopy = v; break;

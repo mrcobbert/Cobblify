@@ -176,7 +176,16 @@ function previewInvoke(command, args) {
   if (command === "launch_preferences") {
     return Promise.resolve({
       useExternalOverlay: true,
+      quitLunarAfterLaunch: false,
       health: "missing",
+    });
+  }
+
+  if (command === "set_quit_lunar_after_launch") {
+    return Promise.resolve({
+      useExternalOverlay: true,
+      quitLunarAfterLaunch: args?.enabled ?? false,
+      health: "valid",
     });
   }
 
@@ -230,7 +239,7 @@ function previewInvoke(command, args) {
   if (command === "reset_session_end" || command === "abort_launch_session") {
     return Promise.resolve({
       status: "ok",
-      preferences: { useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, quitLunarAfterLaunch: false, health: "valid" },
     });
   }
 
@@ -453,6 +462,7 @@ const ui = createApp(el("app"), {
   },
   update: (action) => updateController.action(action),
   setOverlay: (on) => launchController.setOverlay(on),
+  setQuitLunar: (on) => launchController.setQuitLunar(on),
   setAutoUpdate: (on) => updateController.action(on ? "enable" : "disable"),
   setDev: (on) => {
     devPending = on;
@@ -727,6 +737,8 @@ function refreshUi() {
     update,
     overlayOn: st.optimisticOverlay,
     overlaySaving: st.prefSaving,
+    quitLunarOn: st.quitLunar,
+    quitLunarSaving: st.quitLunarSaving,
     version,
     devPending,
     setupActive: setupShown() || setupRequest || !!pick,

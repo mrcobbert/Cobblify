@@ -2,8 +2,12 @@
   {
     "version": "0.18.2",
     "channel": "stable",
-    "date": "2026-10-24",
-    "sections": [["New", ["Clutch Practice (Forge, singleplayer): throwable fireballs for pearl and fireball clutches, with unlimited items and a void reset."]]]
+    "date": "2026-10-27",
+    "sections": [["New", [
+      "Clutch Practice (Forge, singleplayer): throwable fireballs for pearl and fireball clutches, with unlimited items and a void reset.",
+      "Bed Alert and BG Alert: a sound when a teammate or your party calls bed or bg in a Bed Wars game, each with its own sound.",
+      "Quit Lunar after launch: a launcher setting that closes Lunar's launcher once Cobblify loads in game. Off by default."
+    ]]]
   },
   {
     "version": "0.18.1",

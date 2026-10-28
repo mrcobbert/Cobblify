@@ -37,6 +37,7 @@ const replies = {
   update_status: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
   check_for_update: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
   set_use_external_overlay: ({ enabled }) => ({ status: "saved", useExternalOverlay: enabled }),
+  set_quit_lunar_after_launch: ({ enabled }) => ({ ...PREFS, quitLunarAfterLaunch: enabled }),
   launch_lunar: () => new Promise((resolve) => (pendingLaunch = resolve)),
   launch_forge: () => new Promise((resolve) => (pendingLaunch = resolve)),
   launch_progress: () => progressReply(),
@@ -114,7 +115,7 @@ test("the settings sheet: its rows, a switch that saves, Esc returns to Settings
   const sheet = el("sheet");
   await waitFor(() => sheet.classList.contains("open"), { label: "the sheet" });
   const labels = [...sheet.querySelectorAll(".srow .lbl > .t:first-child")].map((t) => t.textContent);
-  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Preview updates", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
+  assert.deepEqual(labels, ["External Overlay", "Quit Lunar after launch", "Auto-update", "Preview updates", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
   assert.equal(sheet.querySelector('[data-row="lunar"] .key').textContent.trim(), "Repair");
   assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Change", "Prism is set up: Change re-picks its instance");
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");
@@ -134,6 +135,16 @@ test("the settings sheet: its rows, a switch that saves, Esc returns to Settings
   await waitFor(() => calls.some((c) => c.command === "set_use_external_overlay" && c.args.enabled === false), { label: "the overlay save" });
   await waitFor(() => sheet.querySelector('.tog[data-key="overlay"]').getAttribute("aria-checked") === "false", { label: "the switch off" });
 
+  // Quit Lunar after launch: beside External Overlay, off by default, one line like the rest; it saves through its own command.
+  const quit = () => sheet.querySelector('[data-row="quit"] .tog[data-key="quit"]');
+  assert.equal(quit().closest(".sec"), sheet.querySelector('[data-row="overlay"]').closest(".sec"), "beside External Overlay");
+  assert.equal(quit().getAttribute("aria-checked"), "false");
+  assert.equal(sheet.querySelector('[data-row="quit"] .d'), null, "no sub-text");
+  quit().click();
+  await waitFor(() => calls.some((c) => c.command === "set_quit_lunar_after_launch" && c.args.enabled === true), { label: "the quit save" });
+  await waitFor(() => quit().getAttribute("aria-checked") === "true", { label: "the quit switch on" });
+  assert.equal(calls.filter((c) => c.command === "set_use_external_overlay").length, 1, "not an overlay save");
+
   document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(sheet.classList.contains("open"), false);
   assert.equal(document.activeElement, $('[data-act="settings"]'));
@@ -149,6 +160,7 @@ test("while launching, Launch is the progress and the sheet's launch settings ar
   const sheet = el("sheet");
   await waitFor(() => sheet.querySelector(".reason") != null, { label: "the locked reason" });
   assert.equal(sheet.querySelector('.tog[data-key="overlay"]').disabled, true);
+  assert.equal(sheet.querySelector('.tog[data-key="quit"]').disabled, true);
   assert.equal(sheet.querySelector('.tog[data-key="dev"]').disabled, true);
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').disabled, false);
   sheet.querySelector('[data-act="close"]').click();

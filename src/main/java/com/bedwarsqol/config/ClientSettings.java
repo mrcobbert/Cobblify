@@ -154,6 +154,10 @@ public class ClientSettings {
     public boolean chatNotifyMention = true;
     /** Sub: double pling when a teammate or party member says "inc"/"incoming" in an active Bedwars game. */
     public boolean chatNotifyInc = true;
+    /** Sub: quick triple pling when a teammate or party member says "bed" in an active Bedwars game. */
+    public boolean chatNotifyBed = true;
+    /** Sub: low bass note when a teammate or party member says "bg" in an active Bedwars game. */
+    public boolean chatNotifyBg = true;
     /** Copy Chat: right-click a chat line while chat is open to copy the full message to the clipboard. */
     public boolean chatCopy = true;
     /**

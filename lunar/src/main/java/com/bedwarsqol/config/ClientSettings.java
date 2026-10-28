@@ -102,14 +102,18 @@ public class ClientSettings {
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
     public boolean partyJoinAlert = true;
 
-    // --- Chat module (Lunar keeps only the two inc pieces; Lunar Client ships the generic chat QOL
-    // natively, so Unlimited/Keep History/Stack Spam/Copy Chat/mention sound live in the Forge tree only) ---
+    // --- Chat module (Lunar keeps only the call alerts and the inc key; Lunar Client ships the generic chat
+    // QOL natively, so Unlimited/Keep History/Stack Spam/Copy Chat/mention sound live in the Forge tree only) ---
 
     /**
      * Inc Alert: double pling when a teammate or party member says "inc"/"incoming" in an active
      * Bedwars game. Standalone master here; the Forge tree nests it under Chat Notifications.
      */
     public boolean chatNotifyInc = true;
+    /** Bed Alert: quick triple pling when a teammate or party member says "bed" in an active Bedwars game. */
+    public boolean chatNotifyBed = true;
+    /** BG Alert: low bass note when a teammate or party member says "bg" in an active Bedwars game. */
+    public boolean chatNotifyBg = true;
     /** Send INC keybind: the "Send /pc INC" key (Controls menu) sends /pc INC with a 2s cooldown. */
     public boolean pcIncKey = true;
     /** Key code for the Send /pc INC key, echoed from the Controls menu rebind. Default unbound. */

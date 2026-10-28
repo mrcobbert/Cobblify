@@ -310,7 +310,7 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
  * The settings sheet's rows. The client rows (Lunar Repair, Prism Add / Change) are disabled while launching, in
  * game, and while a setup is up (defaults 15: no interleaving).
  */
-export function sheetModel({ status, launch = {}, update = {}, overlayOn = true, overlaySaving = false, version = "", devPending = null, setupActive = false }) {
+export function sheetModel({ status, launch = {}, update = {}, overlayOn = true, overlaySaving = false, quitLunarOn = false, quitLunarSaving = false, version = "", devPending = null, setupActive = false }) {
   const locked = !!launch.active || !!launch.busy;
   const rowsOff = locked || !!setupActive;
   const u = update;
@@ -332,6 +332,8 @@ export function sheetModel({ status, launch = {}, update = {}, overlayOn = true,
     locked,
     reason: locked ? (launch.inGame ? "Locked during the game" : "Locked while launching") : null,
     overlay: { on: !!overlayOn, disabled: locked || overlaySaving || !!launch.prefUncertain },
+    // Always shown (a Prism-only player sees it too); it only ever acts on a Lunar launch.
+    quitLunar: { on: !!quitLunarOn, disabled: locked || quitLunarSaving },
     autoUpdate: { on: !!u.autoUpdateEnabled, disabled: false },
     // While the channel save is in flight the snapshot still carries the OLD channel: the switch keeps the
     // player's click (devPending) instead of visibly undoing it.
