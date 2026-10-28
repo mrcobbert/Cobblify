@@ -227,7 +227,6 @@ final class SettingsBindings implements SheetValues {
             case "handZ": return c.handPosZ;
             case "handScale": return c.handScale;
             case "stackWindow": return c.chatStackWindowSec;
-            case "clutchSpeed": return c.clutchFireballSpeed;
             default: return 0;
         }
     }
@@ -242,7 +241,6 @@ final class SettingsBindings implements SheetValues {
             case "handZ": c.handPosZ = f; break;
             case "handScale": c.handScale = f; break;
             case "stackWindow": c.chatStackWindowSec = f; break;
-            case "clutchSpeed": c.clutchFireballSpeed = f; break;
             default: break;
         }
     }

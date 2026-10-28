@@ -7,27 +7,39 @@ import java.util.Set;
 
 /**
  * Pure rules behind Clutch Practice (singleplayer pearl + fireball drill): throw cooldown, which
- * blocks a fireball may break, when a fall counts as a void reset, the explosion's knockback and
- * self-damage, and the acceleration that keeps a vanilla fireball flying at a constant speed.
+ * blocks a fireball may break, when a fall counts as a void reset, and the fireball flight, blast
+ * knockback and self-damage measured on Hypixel (recording 2026-10-27, see
+ * {@code .ai/research/hypixel-fireball-measured.md}).
  */
 public final class ClutchRules {
 
     /** Hypixel's fire charge cooldown: 0.5 s. */
     public static final int COOLDOWN_TICKS = 10;
-    /** A thrown fireball that has hit nothing is removed after 10 s. */
-    public static final int FIREBALL_LIFETIME_TICKS = 200;
+    /** A thrown fireball that has hit nothing is removed after this long (Hypixel: 55 ticks). */
+    public static final int FIREBALL_LIFETIME_TICKS = 55;
     /** Ray-cast power used to pick blocks when Block Damage is on (Bedwars plugins use ~3). */
     public static final float EXPLOSION_POWER = 3.0f;
-    /** Entities further than this from the blast centre take no knockback or damage. */
+    /** Explosion strength Hypixel sends in its S27 packet (visuals only). */
+    public static final float EXPLOSION_STRENGTH = 2.0f;
+    /**
+     * Entities further than this (feet to blast) take no knockback or damage. Not measured (the
+     * furthest recorded hit was 2.85 blocks); 4 is vanilla's reach for strength 2.
+     */
     public static final double BLAST_RADIUS = 4.0;
-    /** Knockback at the blast centre, blocks per tick, falling off linearly to zero at the radius. */
-    public static final double KNOCKBACK = 1.6;
-    /** Extra upward push at the blast centre, so a fireball under your feet lifts you. */
-    public static final double LIFT = 0.3;
-    /** Damage (half-hearts) at the blast centre: a small self-hit, as on Hypixel. */
-    public static final float MAX_DAMAGE = 3.0f;
+    /** Knockback speed at zero distance, blocks per tick (fitted, Hypixel). */
+    public static final double KNOCKBACK = 1.80;
+    /** Knockback lost per block of feet-to-blast distance (fitted, Hypixel). */
+    public static final double KNOCKBACK_FALLOFF = 0.254;
+    /** The push aims from the blast at this point above the feet (fitted, Hypixel; between body and eye). */
+    public static final double AIM_HEIGHT = 1.234;
+    /** Self-damage per blast in health points: Hypixel takes a flat heart at any range. */
+    public static final float MAX_DAMAGE = 2.0f;
     /** Fall this far below the last solid ground and you are reset onto it. */
     public static final double VOID_DROP = 40.0;
+    /** Fireball speed when thrown, blocks per tick, along the look (Hypixel and vanilla). */
+    public static final double FIREBALL_START_SPEED = 1.0;
+    /** Fireball acceleration per tick along the look (vanilla {@code EntityFireball}, 0.1). */
+    public static final double FIREBALL_ACCEL = 0.1;
     /** Vanilla fireball drag per tick out of water ({@code EntityFireball.getMotionFactor}). */
     public static final double FIREBALL_DRAG = 0.95;
 
@@ -58,42 +70,34 @@ public final class ClutchRules {
         return hasSafe && (y < 0 || y < safeY - VOID_DROP);
     }
 
-    /** 1 at the blast centre, falling linearly to 0 at {@link #BLAST_RADIUS}; 0 beyond it. */
-    public static double falloff(double distance) {
-        if (distance >= BLAST_RADIUS) return 0;
-        return 1 - Math.max(0, distance) / BLAST_RADIUS;
-    }
-
     /**
-     * Velocity added to an entity whose body centre is offset ({@code dx, dy, dz}) from the blast, or
-     * {@code null} when out of range. Pushes straight away from the blast, plus a small lift.
+     * Velocity Hypixel sets on an entity whose feet are offset ({@code dx, dy, dz}) from the blast,
+     * or {@code null} when out of range. It points from the blast at {@link #AIM_HEIGHT} above the
+     * feet and its speed falls linearly with the feet distance. It replaces the old motion.
      */
     public static double[] knockback(double dx, double dy, double dz) {
         double d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        double f = falloff(d);
-        if (f <= 0) return null;
-        double nx = 0, ny = 1, nz = 0;
-        if (d > 1.0E-4) {
-            nx = dx / d;
-            ny = dy / d;
-            nz = dz / d;
-        }
-        double k = KNOCKBACK * f;
-        return new double[]{nx * k, ny * k + LIFT * f, nz * k};
+        if (d >= BLAST_RADIUS) return null;
+        double ay = dy + AIM_HEIGHT;
+        double n = Math.sqrt(dx * dx + ay * ay + dz * dz);
+        double speed = Math.max(0, KNOCKBACK - KNOCKBACK_FALLOFF * d);
+        if (n < 1.0E-6) return new double[]{0, speed, 0};
+        return new double[]{dx / n * speed, ay / n * speed, dz / n * speed};
     }
 
-    /** Explosion damage at this distance from the blast. */
+    /** Explosion damage at this distance from the blast: flat inside the radius. */
     public static float damage(double distance) {
-        return (float) (MAX_DAMAGE * falloff(distance));
+        return distance < BLAST_RADIUS ? MAX_DAMAGE : 0f;
     }
 
     /**
-     * Per-tick acceleration that holds a vanilla fireball at {@code speed} along unit direction
-     * ({@code x, y, z}). Vanilla does {@code motion = (motion + accel) * drag}, whose fixed point is
-     * {@code accel = speed * (1 - drag) / drag}.
+     * Launch state for a fireball thrown along unit look ({@code x, y, z}): motion
+     * {@code [0..2]} and per-tick acceleration {@code [3..5]}. Vanilla then flies it with
+     * {@code motion = (motion + accel) * drag}: 1.0, 1.045, 1.088 ... toward 1.9 blocks per tick.
      */
-    public static double[] steadyAcceleration(double x, double y, double z, double speed) {
-        double a = speed * (1 - FIREBALL_DRAG) / FIREBALL_DRAG;
-        return new double[]{x * a, y * a, z * a};
+    public static double[] launch(double x, double y, double z) {
+        return new double[]{
+                x * FIREBALL_START_SPEED, y * FIREBALL_START_SPEED, z * FIREBALL_START_SPEED,
+                x * FIREBALL_ACCEL, y * FIREBALL_ACCEL, z * FIREBALL_ACCEL};
     }
 }

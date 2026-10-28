@@ -59,11 +59,6 @@ public class ClutchPractice {
     private int safeDim;
     private double safeX, safeY, safeZ;
 
-    static double fireballSpeed() {
-        ClientSettings c = BedwarsQol.config;
-        return c == null ? 2.5 : c.clutchFireballSpeed;
-    }
-
     /** True only for the owner of a running singleplayer world with Clutch Practice on. */
     private static boolean active(EntityPlayer player) {
         ClientSettings c = BedwarsQol.config;
@@ -87,14 +82,18 @@ public class ClutchPractice {
         long now = event.world.getTotalWorldTime();
         if (!ClutchRules.cooldownReady(now, lastThrowTick)) return;
         lastThrowTick = now;
-        event.world.spawnEntityInWorld(new ClutchFireball(event.world, player, fireballSpeed()));
+        event.world.spawnEntityInWorld(new ClutchFireball(event.world, player));
         event.world.playAuxSFXAtEntity(null, 1008, new BlockPos(player), 0);
         if (!player.capabilities.isCreativeMode && --held.stackSize <= 0) {
             player.inventory.setInventorySlotContents(player.inventory.currentItem, null);
         }
     }
 
-    /** Blast at the fireball: Hypixel-style push and small damage, no fire, whitelisted blocks only. */
+    /**
+     * Blast at the fireball, the way Hypixel delivers it: a flat heart of damage, then the knockback
+     * replaces the victim's motion and reaches the client as exactly one S12 (set). The S27 carries
+     * no player motion, so the client never adds a second push on top.
+     */
     static void explode(ClutchFireball fireball) {
         World world = fireball.worldObj;
         ClientSettings c = BedwarsQol.config;
@@ -114,29 +113,31 @@ public class ClutchPractice {
                 new AxisAlignedBB(x - r, y - r, z - r, x + r, y + r, z + r));
         for (Entity entity : near) {
             if (!(entity instanceof EntityLivingBase)) continue;
-            double dx = entity.posX - x, dy = entity.posY + entity.height / 2 - y, dz = entity.posZ - z;
+            double dx = entity.posX - x, dy = entity.posY - y, dz = entity.posZ - z;
             double[] push = ClutchRules.knockback(dx, dy, dz);
             if (push == null) continue;
-            entity.attackEntityFrom(DamageSource.setExplosionSource(explosion),
+            // Damage first: its own velocity bookkeeping must not outlive the push set below. A plain
+            // explosion source, not difficulty scaled: Hypixel takes a flat heart.
+            entity.attackEntityFrom(new DamageSource("explosion").setExplosion(),
                     ClutchRules.damage(Math.sqrt(dx * dx + dy * dy + dz * dz)));
-            entity.motionX += push[0];
-            entity.motionY += push[1];
-            entity.motionZ += push[2];
-            if (entity instanceof EntityPlayer) {
-                explosion.getPlayerKnockbackMap().put((EntityPlayer) entity, new Vec3(push[0], push[1], push[2]));
+            entity.motionX = push[0];
+            entity.motionY = push[1];
+            entity.motionZ = push[2];
+            if (entity instanceof EntityPlayerMP) {
+                entity.velocityChanged = false;
+                ((EntityPlayerMP) entity).playerNetServerHandler.sendPacket(new S12PacketEntityVelocity(entity));
             } else {
                 entity.velocityChanged = true;
             }
         }
 
-        // What WorldServer.newExplosion would send: the client draws the blast and applies its push.
+        // Visuals only, as on Hypixel: blast position and strength, no player motion.
         Vec3 none = new Vec3(0, 0, 0);
         List<BlockPos> blocks = blockDamage ? explosion.getAffectedBlockPositions() : Collections.<BlockPos>emptyList();
         for (EntityPlayer player : world.playerEntities) {
             if (!(player instanceof EntityPlayerMP) || player.getDistanceSq(x, y, z) > VISUAL_RANGE_SQ) continue;
-            Vec3 push = explosion.getPlayerKnockbackMap().get(player);
             ((EntityPlayerMP) player).playerNetServerHandler.sendPacket(
-                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_POWER, blocks, push != null ? push : none));
+                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_STRENGTH, blocks, none));
         }
     }
 

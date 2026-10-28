@@ -9,57 +9,45 @@ import net.minecraft.world.World;
 
 /**
  * Clutch Practice fireball: a vanilla large fireball (1x1 hitbox, collidable, so a thrown ender
- * pearl hits it and teleports its thrower) that flies straight at a constant speed, ignores
- * projectile hits, explodes through {@link ClutchPractice#explode} and expires after a while.
+ * pearl hits it and teleports its thrower) launched like Hypixel's: from the eye at 1 block per
+ * tick, speeding up the vanilla way toward 1.9. It ignores projectile hits, explodes through
+ * {@link ClutchPractice#explode} at its own position (as Hypixel does) and expires after 55 ticks.
  * Server side only; it is never registered, so clients see a plain large fireball and worlds never
  * save it.
  */
 class ClutchFireball extends EntityLargeFireball {
 
-    ClutchFireball(World world, EntityLivingBase shooter, double speed) {
+    ClutchFireball(World world, EntityLivingBase shooter) {
         super(world);
         shootingEntity = shooter;
         Vec3 look = shooter.getLookVec();
+        // Hypixel spawns it at the eye itself; the thrower is ignored by the entity ray-trace anyway.
         setLocationAndAngles(shooter.posX, shooter.posY + shooter.getEyeHeight(), shooter.posZ,
                 shooter.rotationYaw, shooter.rotationPitch);
-        // Start one step out of the eye so the first tick never collides with the thrower's face.
-        setPosition(posX + look.xCoord * 0.5, posY + look.yCoord * 0.5 - height / 2, posZ + look.zCoord * 0.5);
-        motionX = look.xCoord * speed;
-        motionY = look.yCoord * speed;
-        motionZ = look.zCoord * speed;
-        double[] a = ClutchRules.steadyAcceleration(look.xCoord, look.yCoord, look.zCoord, speed);
-        accelerationX = a[0];
-        accelerationY = a[1];
-        accelerationZ = a[2];
+        double[] l = ClutchRules.launch(look.xCoord, look.yCoord, look.zCoord);
+        motionX = l[0];
+        motionY = l[1];
+        motionZ = l[2];
+        accelerationX = l[3];
+        accelerationY = l[4];
+        accelerationZ = l[5];
     }
 
     @Override
     public void onUpdate() {
         super.onUpdate();
-        if (!worldObj.isRemote && ticksExisted > ClutchRules.FIREBALL_LIFETIME_TICKS) setDead();
+        if (!worldObj.isRemote && ticksExisted >= ClutchRules.FIREBALL_LIFETIME_TICKS) setDead();
     }
 
     /**
      * A pearl hitting the fireball calls this with a thrown-projectile source; vanilla would redirect
-     * the fireball along the thrower's look. Keep it flying straight instead. Melee deflects as usual.
+     * the fireball along the thrower's look. Keep it flying instead. Melee deflects the vanilla way
+     * (1 block per tick along the hitter's look, same 0.1 acceleration), as on Hypixel.
      */
     @Override
     public boolean attackEntityFrom(DamageSource source, float amount) {
         if (source.isProjectile()) return false;
-        boolean hit = super.attackEntityFrom(source, amount);
-        if (hit && source.getEntity() != null) {
-            // Vanilla pointed it along the attacker's look at speed 1; restore the practice speed.
-            Vec3 look = source.getEntity().getLookVec();
-            double speed = ClutchPractice.fireballSpeed();
-            motionX = look.xCoord * speed;
-            motionY = look.yCoord * speed;
-            motionZ = look.zCoord * speed;
-            double[] a = ClutchRules.steadyAcceleration(look.xCoord, look.yCoord, look.zCoord, speed);
-            accelerationX = a[0];
-            accelerationY = a[1];
-            accelerationZ = a[2];
-        }
-        return hit;
+        return super.attackEntityFrom(source, amount);
     }
 
     @Override
