@@ -54,6 +54,16 @@
 - This is for iteration and manual verification. Release exes still come from
   the `Launcher Update Candidate` workflow.
 
+## Releases
+
+- Every launcher release build runs on the owner's machines, never GitHub-hosted runners:
+  `python3 tools/local-ci/run-release.py` (add `--publish-dev` for a dev build). It needs this
+  Mac and the Windows box (`ssh win`) up. Do not dispatch `Launcher Update Candidate` with
+  `local_build=false`; hosted Mac minutes count 10x against the account's free allowance.
+- If a local build cannot run (machine down, runner fails), stop and tell the user; do not fall
+  back to hosted runners without their explicit say-so.
+- `Promote Launcher Update` runs on hosted Linux and stays as is.
+
 ## Safety
 
 - Read `git status --short` before editing.
