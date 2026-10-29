@@ -235,7 +235,9 @@ public final class SheetSchema {
                         slider("handScale", "Scale", "Size of the held item", 0.5, 2, 0.01, 2, "")),
                 module("tnt", "TNT Countdown", "Fuse timer for nearby TNT", "fuse explode",
                         seg("tntRadius", "Radius", "How far away TNT is tracked, in blocks", null, "5", "10", "15", "20", "30")),
-                module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape")));
+                module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape"),
+                module("clutch", "Clutch Practice", "Pearl and fireball drill in singleplayer", "void fireball pearl",
+                        toggle("clutchBlocks", "Block Damage", "Fireballs break wool, wood and clay"))));
         cats.add(category("visuals", "Visuals",
                 module("blockOverlay", "Block Overlay", "Highlight targeted block", "outline selection highlight",
                         toggle("boSee", "See-Through", "Show it through other blocks"),
@@ -251,13 +253,17 @@ public final class SheetSchema {
                                 "stackTime", "Turn on Time-Based Stacking")),
                 module("chatNotify", "Chat Notifications", "Sound alerts from chat lines", "sound alert ping",
                         toggle("notifyMention", "Mention Sound", "Play a sound when someone says your name", "sound ping"),
-                        toggle("notifyInc", "Inc Alert", "Play a sound when a teammate calls INC", "sound incoming")),
+                        toggle("notifyInc", "Inc Alert", "Play a sound when a teammate calls INC", "sound incoming"),
+                        toggle("notifyBed", "Bed Alert", "Play a sound when a teammate calls bed", "sound ping"),
+                        toggle("notifyBg", "BG Alert", "Play a sound when a teammate calls bg", "sound ping")),
                 module("chatUnlimited", "Unlimited Chat", "Raise message history to 32k lines", "history lines scroll"),
                 module("chatKeep", "Keep Chat History", "Keep chat across server switches", "history"),
                 module("chatCopy", "Copy Chat", "Right-click a message to copy it", "clipboard"),
                 module("chatLong", "Longer Messages", "256-character chat on Hypixel", "length limit"),
-                // Lunar has no Chat Notifications module, so there Inc Alert is a module of its own.
+                // Lunar has no Chat Notifications module, so there Inc, Bed and BG Alert are modules of their own.
                 module("incAlert", "Inc Alert", "Sound when a teammate says inc", "sound incoming"),
+                module("bedAlert", "Bed Alert", "Sound when a teammate says bed", "sound ping"),
+                module("bgAlert", "BG Alert", "Sound when a teammate says bg", "sound ping"),
                 module("incKey", "Send INC Keybind", "Sends /pc INC; bind in Controls", "incoming party")));
         cats.add(category("hypixel", "Hypixel",
                 module("stats", "Hypixel Stats", "BedWars stats on screen", "fkdr stars level wlr",

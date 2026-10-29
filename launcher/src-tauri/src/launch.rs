@@ -491,6 +491,7 @@ mod tests {
         let pre = serde_json::to_value(LaunchReply::PreexistingGame {
             preferences: LaunchPreferencesView {
                 use_external_overlay: true,
+                quit_lunar_after_launch: false,
                 health: PreferenceHealth::Valid,
                 diagnostic: None,
             },

@@ -46,7 +46,7 @@ test("the Launch key's colour is the game's White, with White's own shades and i
 
 test("the hero keys, their bars, the menu's tick and the gear's dot take --key*; the wool and the sheet keep --acc", () => {
   const css = readFileSync(fileURLToPath(new URL("./ui/app.css", import.meta.url)), "utf8");
-  const rule = css.match(/\n(\.hero,\.caret,\.mrow \.ck,\.hdr \.key\.gear \.gdot)\{([^}]*)\}/);
+  const rule = css.match(/\n(\.hero,\.caret,\.mrow \.ck,\.key\.gear \.gdot)\{([^}]*)\}/);
   assert.ok(rule, "the White rule");
   for (const v of ["", "-hl", "-ln", "-dp", "-rim", "-sh", "-sh2", "-on"]) {
     assert.match(rule[2], new RegExp(`--acc${v}:var\\(--key${v}\\)`), v);

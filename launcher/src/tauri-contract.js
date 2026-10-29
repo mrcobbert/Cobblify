@@ -5,6 +5,7 @@
 export const CMD = {
   launchPreferences: "launch_preferences",
   setUseExternalOverlay: "set_use_external_overlay",
+  setQuitLunarAfterLaunch: "set_quit_lunar_after_launch",
   launchLunar: "launch_lunar",
   launchForge: "launch_forge",
   lobbyState: "lobby_state",
@@ -86,6 +87,15 @@ export function setUseExternalOverlay(invoke, enabled) {
   return invoke(CMD.setUseExternalOverlay, { enabled });
 }
 
+/**
+ * "Quit Lunar after launch". Replies with the `LaunchPreferencesView` the file holds after the
+ * save, so a save that failed shows the old value. The backend sends the quit itself.
+ * @returns {Promise<LaunchPreferencesView>}
+ */
+export function setQuitLunarAfterLaunch(invoke, enabled) {
+  return invoke(CMD.setQuitLunarAfterLaunch, { enabled });
+}
+
 export function updatePreferences(invoke) {
   return invoke(CMD.updatePreferences);
 }
@@ -165,7 +175,7 @@ export function lunarVersionReady(invoke) {
   return invoke(CMD.lunarVersionReady);
 }
 
-/** @typedef {{ useExternalOverlay: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
+/** @typedef {{ useExternalOverlay: boolean, quitLunarAfterLaunch: boolean, health: string, diagnostic?: string }} LaunchPreferencesView */
 /** @typedef {{ autoUpdateEnabled: boolean, autoUpdatePrompted: boolean, health: string, diagnostic?: string }} UpdatePreferencesView */
 /** @typedef {'idle'|'checking'|'current'|'available'|'downloading'|'paused'|'ready'|'installing'|'error'|'critical_required'} UpdateState */
 /** @typedef {{ status: 'saved', useExternalOverlay: boolean } | { status: 'reconciled', useExternalOverlay: boolean } | { status: 'not_saved', diagnostic: string } | { status: 'indeterminate' }} PreferenceSaveReply */

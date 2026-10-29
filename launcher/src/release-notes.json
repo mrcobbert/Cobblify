@@ -1,5 +1,34 @@
 [
   {
+    "version": "0.18.2",
+    "channel": "stable",
+    "date": "2026-10-27",
+    "sections": [["New", [
+      "Clutch Practice (Forge, singleplayer): throwable fireballs for pearl and fireball clutches, with unlimited items and a void reset.",
+      "Bed Alert and BG Alert: a sound when a teammate or your party calls bed or bg in a Bed Wars game, each with its own sound.",
+      "Quit Lunar after launch: a launcher setting that closes Lunar's launcher once Cobblify loads in game. Off by default."
+    ]]]
+  },
+  {
+    "version": "0.18.1",
+    "channel": "stable",
+    "date": "2026-10-15",
+    "sections": [
+      ["New", ["A new app icon: a Bed Wars island with a red bed. On macOS 26 it follows light and dark mode."]],
+      ["Changes", [
+        "On macOS the native title bar matches the window, and hides in full screen.",
+        "Settings sits beside Launch at the same height. The version and release notes are in Settings.",
+        "The stats board shows the Dev builds tag too."
+      ]],
+      ["Fixes", [
+        "On macOS, Settings extends to the top of the window while the home title stays below the window buttons.",
+        "On macOS, the home title returns below the window buttons after leaving full screen.",
+        "On macOS 26 the window and its buttons look like every other app's.",
+        "Windows shows the new icon in the taskbar and Start menu right after updating."
+      ]]
+    ]
+  },
+  {
     "version": "0.18.0",
     "channel": "stable",
     "date": "2026-10-11",

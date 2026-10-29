@@ -1,6 +1,6 @@
 /**
  * The 0.18 launcher's home window, ported from the prototype (proto/servers.js): the bare header with the wordmark
- * and the gear, one left column with the Launch split key and its client menu, the 3D island free on the right,
+ * and Preview tag, one left column with Launch, Settings and the client menu, the 3D island free on the right,
  * the settings sheet, What's New and the release-notes history.
  *
  * It owns the DOM and the layout passes that keep every edge on whole device pixels; main.js owns the backend and
@@ -31,14 +31,15 @@ export function createApp(app, actions) {
   const suPx = () => parseFloat(win.getComputedStyle(root).getPropertyValue("--su")) || 2;
   const isMC = () => root.dataset.font !== "modern";
   const reduced = () => !!win.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  app.dataset.platform = /Mac/i.test(win.navigator.platform || win.navigator.userAgent || "") ? "mac" : "win";
 
   let H = null; // home model
   let S = null; // sheet model
   let version = "", devTag = false;
   let view = "home";
-  let menuOpen = false, sheetOpen = false, modal = null, histSel = NOTES[0]?.version ?? null;
+  let menuOpen = false, sheetOpen = false, historyFromSheet = false, modal = null, histSel = NOTES[0]?.version ?? null;
   let active = true;
+  let sheetFocus = null; // action to restore after a focused sheet key is temporarily disabled
+  let sheetFocusTimer = null;
 
   app.innerHTML = `<div id="main"></div><aside class="sheet" id="sheet" role="dialog" aria-label="Settings"></aside><div id="layer"></div><div id="istage" aria-hidden="true"></div>`;
 
@@ -52,8 +53,8 @@ export function createApp(app, actions) {
     }
     const k = Math.max(1, Math.round(suPx() * dpr()));
     return `<header class="hdr bare" data-tauri-drag-region="deep">
-      <div class="brand"><span class="wm">${wordmark(k, { font: isMC() ? "minecraft" : "modern" }, dpr())}</span><button class="ver${devTag ? " dev" : ""}" data-act="history" title="Release notes">${esc(version)}</button>${devTag ? `<span class="tag dev">${T("Dev builds")}</span>` : ""}</div>
-      <span class="grow"></span>${gearKey()}
+      <div class="brand"><span class="wm">${wordmark(k, { font: isMC() ? "minecraft" : "modern" }, dpr())}</span>${devTag ? `<span class="tag dev">${T("Preview")}</span>` : ""}</div>
+      <span class="grow"></span>
     </header>`;
   }
 
@@ -131,7 +132,7 @@ export function createApp(app, actions) {
     const side = (H.keys || []).map((x, i) => `<button class="key" data-act="${x.act}" data-k="${i}">${T(x.label, "sh")}</button>`).join("");
     return `<div class="body home${H.solo ? " solo" : ""}">
       <section class="col" aria-label="Play"><div class="grp${lead ? " lit" : ""}"><p class="sr" role="status" aria-live="polite">${esc(H.said || "")}</p>${lead ? `<div class="lead">${lead}</div>` : ""}
-        <div class="go"><div class="heros">${heroHTML(H.hero)}${underHTML(H.under)}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
+        <div class="go"><div class="launch-row"><div class="heros">${heroHTML(H.hero)}${underHTML(H.under)}</div>${gearKey()}</div>${side ? `<div class="keys2">${side}</div>` : ""}</div></div></section>
       <div class="art" id="art"><img id="isl" alt="" src="${fallbackSrc}"></div>
     </div>`;
   }
@@ -193,7 +194,7 @@ export function createApp(app, actions) {
    * jump, a letter jumps to the next client starting with it, Enter/Space choose, Tab closes. Esc is the global
    * handler's first step. */
   function menuKeys(e) {
-    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || !H || view !== "home") return;
+    if (!active || modal || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || !H || view !== "home") return;
     const onCaret = !!e.target.closest?.(".caret,.hero.setup");
     if (!menuOpen) {
       if (onCaret && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); toggleMenu(true, e.key === "ArrowUp" ? "last" : "first"); }
@@ -227,6 +228,11 @@ export function createApp(app, actions) {
     const r = e.target.closest(".mrow");
     if (r && doc.activeElement !== r) r.focus({ preventScroll: true });
   });
+  // Keep menu focus until the opener's click toggles it. A browser may blur
+  // the menu on press without focusing the button, closing it before click.
+  app.addEventListener("pointerdown", (e) => {
+    if (menuOpen && e.button === 0 && e.target.closest?.(".caret,.hero.setup")) e.preventDefault();
+  });
   /* focus leaving the menu (and not for the ▾, whose click toggles it) closes it */
   app.addEventListener("focusout", (e) => {
     if (!menuOpen || !e.target.closest?.("#layer .menu")) return;
@@ -240,7 +246,7 @@ export function createApp(app, actions) {
   function historyHTML() {
     const rows = NOTES.map((n) => `<button class="row${n.version === histSel ? " sel" : ""}" data-act="jump" data-v="${esc(n.version)}"><span class="txt">${T(n.version, "sh")}${T(fmtDate(n.date, true), "mid")}</span></button>`).join("");
     const rels = NOTES.map((n) => `<article class="rel" id="rel-${n.version.replace(/\./g, "_")}">
-      <div class="rel-h">${T(n.version, "sh nm")}<span class="tag${n.channel === "dev" ? " dev" : ""}">${T(n.channel === "dev" ? "Dev build" : "Stable")}</span>${T(fmtDate(n.date), "mid")}</div>
+      <div class="rel-h">${T(n.version, "sh nm")}<span class="tag${n.channel === "dev" ? " dev" : ""}">${T(n.channel === "dev" ? "Preview" : "Stable")}</span>${T(fmtDate(n.date), "mid")}</div>
       ${n.sections.map(([h, items]) => `<h4>${T(h)}</h4><ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`).join("")}</article>`).join("");
     return `<div class="body"><aside class="master hist-list" aria-label="Releases"><div class="mh">${T(`Releases (${NOTES.length})`, "sh")}</div><div class="div"></div>${rows}</aside>
       <div class="reading" id="reading"><div class="rcol">${rels}</div></div></div>`;
@@ -253,13 +259,14 @@ export function createApp(app, actions) {
   function sheetRows() {
     const s = S;
     const why = s.reason ? `<p class="t ml lo reason">${esc(s.reason)}</p>` : "";
-    const verRow = row("version", s.version.label, s.version.key ? keyBtn(s.version.key) : "", `<span class="t mid st">${esc(s.version.word)}</span>`);
+    const verRow = `<div class="srow" data-row="version"><div class="lbl"><button class="t sh version-link" data-act="history" title="Release notes">${esc(s.version.label)}</button><span class="t mid st">${esc(s.version.word)}</span></div><div class="ctl">${s.version.key ? keyBtn(s.version.key) : ""}</div></div>`;
     const clients = [
       s.lunar ? row("lunar", "Lunar Client", keyBtn(s.lunar)) : "",
       s.prism ? row("prism", "Prism Launcher", keyBtn(s.prism)) : "",
     ].join("");
-    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}</section>
-      <section class="sec">${row("auto", "Auto-update", tog("auto", "Auto-update", s.autoUpdate))}${row("dev", "Dev builds", tog("dev", "Dev builds", s.dev))}${verRow}</section>
+    const quit = row("quit", "Quit Lunar after launch", tog("quit", "Quit Lunar after launch", s.quitLunar));
+    return `<section class="sec">${why}${row("overlay", "External Overlay", tog("overlay", "External Overlay", s.overlay))}${quit}</section>
+      <section class="sec">${row("auto", "Auto-update", tog("auto", "Auto-update", s.autoUpdate))}${row("dev", "Preview updates", tog("dev", "Preview updates", s.dev))}${verRow}</section>
       ${clients ? `<section class="sec">${clients}</section>` : ""}
       <p class="read disclaim">Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.</p>`;
   }
@@ -272,6 +279,7 @@ export function createApp(app, actions) {
     if (!body) { sh.innerHTML = sheetHTML(); nudge(sh); return; }
     const tmp = doc.createElement("div");
     tmp.innerHTML = sheetRows();
+    if (sheetFocus && doc.activeElement !== doc.body) sheetFocus = null;
     const same = tmp.querySelectorAll("[data-row]").length === body.querySelectorAll("[data-row]").length
       && [...tmp.querySelectorAll("[data-row]")].every((r, i) => r.dataset.row === body.querySelectorAll("[data-row]")[i].dataset.row);
     if (!same) {
@@ -286,9 +294,14 @@ export function createApp(app, actions) {
           ot.setAttribute("aria-checked", nt.getAttribute("aria-checked"));
           ot.disabled = nt.disabled;
         } else if (old.innerHTML !== r.innerHTML) {
-          const hadFocus = old.contains(doc.activeElement);
+          const focusedAction = old.contains(doc.activeElement) ? doc.activeElement.dataset.act
+            : sheetFocus?.row === r.dataset.row ? sheetFocus.act : null;
           old.innerHTML = r.innerHTML;
-          if (hadFocus) old.querySelector("button")?.focus({ preventScroll: true });
+          if (focusedAction) {
+            const key = old.querySelector(`[data-act="${focusedAction}"]`) || old.querySelector("button");
+            sheetFocus = key?.disabled ? { row: r.dataset.row, act: focusedAction } : null;
+            key?.focus({ preventScroll: true });
+          }
         }
       });
       const oldWhy = body.querySelector(".reason"), newWhy = tmp.querySelector(".reason");
@@ -296,27 +309,54 @@ export function createApp(app, actions) {
     }
     nudge(sh);
   }
+  function cancelSheetFocus() {
+    win.clearTimeout(sheetFocusTimer);
+    sheetFocusTimer = null;
+  }
+  // Record interaction when it happens. A setting can disable its focused
+  // switch while saving, leaving body focused before the opening timer runs.
+  for (const event of ["focusin", "pointerdown", "click"]) {
+    $("#sheet").addEventListener(event, cancelSheetFocus);
+  }
   function openSheet() {
+    cancelSheetFocus();
+    const opener = doc.activeElement;
+    sheetFocus = null;
     sheetOpen = true;
     toggleMenu(false);
-    $(".hdr .gear")?.setAttribute("aria-expanded", "true");
+    $(".gear")?.setAttribute("aria-expanded", "true");
     const sh = $("#sheet");
     sh.innerHTML = sheetHTML();
     void sh.offsetWidth;
     sh.classList.add("open");
     nudge(sh);
-    win.setTimeout(() => $("#sheet .xkey")?.focus({ preventScroll: true }), 150);
+    sheetFocusTimer = win.setTimeout(() => {
+      sheetFocusTimer = null;
+      if (active && sheetOpen && !modal && view === "home"
+        && (doc.activeElement === opener || doc.activeElement === doc.body)) {
+        $("#sheet .xkey")?.focus({ preventScroll: true });
+      }
+    }, 150);
   }
   /* quiet: the sheet closes for one of its own actions (Repair, Add, Change), which then runs; nothing else may
    * start first (the add-wait's follow-through runs only when the player just closed it) */
   function closeSheet({ quiet = false } = {}) {
+    cancelSheetFocus();
     if (!sheetOpen) return;
     sheetOpen = false;
-    $(".hdr .gear")?.setAttribute("aria-expanded", "false");
+    sheetFocus = null;
+    $(".gear")?.setAttribute("aria-expanded", "false");
     $("#sheet").classList.remove("open");
     if (quiet) return;
-    $('.hdr [data-act="settings"]')?.focus({ preventScroll: true });
+    $('[data-act="settings"]')?.focus({ preventScroll: true });
     actions.idle?.();
+  }
+
+  function backFromHistory() {
+    view = "home";
+    render();
+    if (historyFromSheet) { historyFromSheet = false; openSheet(); }
+    else $('[data-act="settings"]')?.focus({ preventScroll: true });
   }
 
   /* ---------- What's New: Ore's update pop-up ---------- */
@@ -335,25 +375,43 @@ export function createApp(app, actions) {
   }
   function openWhatsNew() {
     if (!noteFor(NOTES, version)) return;
+    toggleMenu(false);
+    closeSheet({ quiet: true });
     modal = "whatsnew";
     render();
-    win.setTimeout(() => $(".modal .mfoot-band .key")?.focus({ preventScroll: true }), 0);
   }
   function closeModal() {
     modal = null;
     $("#layer").querySelectorAll(".scrim,.modal").forEach((x) => x.remove());
-    ($("button.hero:not([aria-disabled])") || $('.hdr [data-act="settings"]'))?.focus({ preventScroll: true });
+    syncModalBackground();
+    ($("button.hero:not([aria-disabled])") || $('[data-act="settings"]'))?.focus({ preventScroll: true });
     actions.idle?.();
   }
 
   /* ---------- render ---------- */
+  const modalButtons = () => [...app.querySelectorAll(".modal button:not(:disabled)")];
+  function syncModalBackground() {
+    for (const el of app.querySelectorAll("#main,#sheet,#istage,#layer .menu")) {
+      el.toggleAttribute("inert", !!modal);
+    }
+  }
+  function ensureModalFocus() {
+    if (active && modal && !$(".modal")?.contains(doc.activeElement)) {
+      $(".modal .mfoot-band .key")?.focus({ preventScroll: true });
+    }
+  }
+  doc.addEventListener("focusin", ensureModalFocus);
   function focusSig() {
     const f = doc.activeElement;
     if (!f || f === doc.body || !app.contains(f) || $("#sheet").contains(f)) return null;
-    return { act: f.dataset.act, id: f.dataset.id, v: f.dataset.v, hero: f.classList.contains("hero") };
+    return { act: f.dataset.act, id: f.dataset.id, v: f.dataset.v, hero: f.classList.contains("hero"), modalIndex: modalButtons().indexOf(f) };
   }
   function restoreFocus(sig) {
     if (!sig) return;
+    if (modal && sig.modalIndex >= 0) {
+      modalButtons()[sig.modalIndex]?.focus({ preventScroll: true });
+      return;
+    }
     let el = null;
     if (sig.act) el = [...app.querySelectorAll(`#main [data-act="${sig.act}"], #layer [data-act="${sig.act}"]`)].find((e) => (sig.id == null || e.dataset.id === sig.id) && (sig.v == null || e.dataset.v === sig.v));
     if (!el && (sig.hero || ["cancel", "play", "sel", "setup"].includes(sig.act))) el = $(".hero");
@@ -362,15 +420,25 @@ export function createApp(app, actions) {
   function render() {
     if (!H) return;
     const sig = focusSig();
+    const reading = $("#reading"), releases = $(".hist-list");
+    const historyPosition = view === "history" && reading
+      ? { selected: $(".hist-list .row.sel")?.dataset.v, top: reading.scrollTop, listTop: releases.scrollTop }
+      : null;
     const was = $(".body.home.solo .col .heros"), from = was && was.getBoundingClientRect().left;
     $("#main").innerHTML = headerHTML() + (view === "history" ? historyHTML() : homeHTML());
     const keepMenu = menuOpen && view === "home" && hasMenu();
     menuOpen = keepMenu;
     $("#layer").innerHTML = modalHTML() + menuHTML();
+    syncModalBackground();
     if (sheetOpen && S) patchSheet();
     after();
     if (was && !H.solo) slideCol(from);
     restoreFocus(sig);
+    if (historyPosition && view === "history" && historyPosition.selected === histSel) {
+      $("#reading").scrollTop = historyPosition.top;
+      $(".hist-list").scrollTop = historyPosition.listTop;
+    }
+    ensureModalFocus();
   }
   /* the column leaves the middle for the left (FLIP: drawn at its new place, moved back, eased home) */
   function slideCol(from) {
@@ -501,26 +569,31 @@ export function createApp(app, actions) {
     const left = snap((3 * W) / 4 - visW / 2 - offX), top = snap(g - offY);
     art.style.top = -hh + "px";
     const key = ["home", k, d].join("|");
-    if (!fitCache || fitCache.key !== key) { interruptIntro(); fitCache = { key, r: i3.fit((bx.w * k + 0.5) / d, (bx.h * k + 0.5) / d) }; }
+    if (!fitCache || fitCache.key !== key) { fitCache = { key, r: i3.fit((bx.w * k + 0.5) / d, (bx.h * k + 0.5) / d) }; }
     if (islHost.parentNode !== art) art.appendChild(islHost);
     Object.assign(islHost.style, { left: left + "px", top: top + "px", width: cw + "px", height: ch + "px", paddingLeft: "0px", paddingTop: "0px" });
     $(".body.home")?.classList.toggle("under", left < colR);
     islHost.style.visibility = H.solo ? "hidden" : "";
     i3.set(islandTarget());
   }
-  /* no WebGL: the still island at a whole pixel scale, centred in the slot and capped at 55% of the window height
+  /* no WebGL: the still island at a whole pixel scale, centred in the right half and capped at 55% of the window height
    * (prototype fitIsland); when it can't fit whole at 1x the slot collapses rather than show it cut off */
   function fitIsland(art) {
     const img = $("#isl");
     if (!img) return;
     art.classList.remove("collapsed");
     if (H.solo) { img.style.display = "none"; return; }
-    const nw = 204, nh = 207, d = dpr(), W = art.clientWidth, Hh = art.clientHeight, pad = 3 * suPx();
-    const fit = Math.min(Math.floor(((Hh - 2 * pad) * d) / nh), Math.floor(((W - 2 * pad) * d) / nw));
+    const nw = 204, nh = 207, d = dpr(), W = app.clientWidth, Hh = app.clientHeight, pad = 3 * suPx();
+    const ar = app.getBoundingClientRect(), hdr = $(".hdr"), col = $(".col");
+    const hh = hdr ? hdr.getBoundingClientRect().bottom - ar.top : 0;
+    // Match the WebGL slot, including its compensation for the native bar/header.
+    art.style.top = -hh + "px";
+    const slotLeft = Math.max(W / 2, col ? col.getBoundingClientRect().right - ar.left : 0);
+    const fit = Math.min(Math.floor(((Hh - 2 * pad) * d) / nh), Math.floor(((W - slotLeft - 2 * pad) * d) / nw));
     const k = Math.min(fit, Math.max(1, Math.round((0.55 * app.clientHeight * d) / nh)));
     if (k < 1) { art.classList.add("collapsed"); return; }
     const w = (nw * k) / d, h = (nh * k) / d;
-    Object.assign(img.style, { display: "", width: w + "px", height: h + "px", left: Math.round(((W - w) / 2) * d) / d + "px", top: Math.round(((Hh - h) / 2) * d) / d + "px" });
+    Object.assign(img.style, { display: "", width: w + "px", height: h + "px", left: Math.round(((slotLeft + W - w) / 2) * d) / d + "px", top: Math.round(((Hh - h) / 2) * d) / d + "px" });
     img.classList.toggle("grey", islandTarget().grey);
   }
 
@@ -532,7 +605,7 @@ export function createApp(app, actions) {
   const wait = (ms) => new Promise((r) => win.setTimeout(r, ms));
   async function playIntro() {
     const tok = ++introTok;
-    if (!isl3 || !H || H.solo || view !== "home" || reduced()) return;
+    if (!isl3 || !H || H.solo || !active || view !== "home" || doc.hidden || reduced()) return;
     app.style.visibility = "hidden"; /* never show the whole island for a frame before it builds */
     openBuild = { k: 0 };
     isl3.pace(0.7);
@@ -561,9 +634,11 @@ export function createApp(app, actions) {
 
   /* ---------- interactions ---------- */
   app.addEventListener("click", (e) => {
+    if (!active) return;
     if (menuOpen && !e.target.closest('.menu,.caret,.hero[data-act="menu"]')) toggleMenu(false);
     const b = e.target.closest("[data-act]");
     if (!b || !app.contains(b) || b.disabled || b.getAttribute("aria-disabled") === "true") return;
+    if (modal && !b.closest(".modal,.scrim")) return;
     const a = b.dataset.act;
     if (a === "menu") toggleMenu();
     else if (a === "play") actions.play(H.sel);
@@ -582,8 +657,8 @@ export function createApp(app, actions) {
     else if (a === "update") actions.update(b.dataset.action || H.hero.action);
     else if (a === "settings") (sheetOpen ? closeSheet : openSheet)();
     else if (a === "close") closeSheet();
-    else if (a === "history") { modal = null; sheetOpen = false; $("#sheet").classList.remove("open"); view = "history"; render(); $('.hdr [data-act="back"]')?.focus({ preventScroll: true }); }
-    else if (a === "back") { view = "home"; render(); $(".ver")?.focus({ preventScroll: true }); }
+    else if (a === "history") { historyFromSheet = sheetOpen; modal = null; closeSheet({ quiet: true }); view = "history"; render(); $('.hdr [data-act="back"]')?.focus({ preventScroll: true }); }
+    else if (a === "back") backFromHistory();
     else if (a === "jump") {
       histSel = b.dataset.v;
       app.querySelectorAll(".hist-list .row").forEach((r) => r.classList.toggle("sel", r.dataset.v === histSel));
@@ -595,7 +670,7 @@ export function createApp(app, actions) {
     else if (a === "tog") {
       const on = b.getAttribute("aria-checked") !== "true";
       b.setAttribute("aria-checked", String(on));
-      ({ overlay: actions.setOverlay, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
+      ({ overlay: actions.setOverlay, quit: actions.setQuitLunar, auto: actions.setAutoUpdate, dev: actions.setDev })[b.dataset.key]?.(on);
     }
     else if (a === "repair-lunar") { closeSheet({ quiet: true }); actions.repairLunar(); }
     else if (a === "sheet-add") { closeSheet({ quiet: true }); if (S?.prism?.add) actions.add(S.prism.add); }
@@ -603,16 +678,31 @@ export function createApp(app, actions) {
   });
   doc.addEventListener("keydown", (e) => {
     if (!active) return;
+    if (modal && e.key === "Tab") {
+      const buttons = modalButtons(), index = buttons.indexOf(doc.activeElement);
+      e.preventDefault();
+      const next = index < 0 ? (e.shiftKey ? buttons.length - 1 : 0)
+        : (index + (e.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next]?.focus({ preventScroll: true });
+      return;
+    }
     if (e.key === "Escape") {
       if (menuOpen) { toggleMenu(false); menuKey()?.focus({ preventScroll: true }); }
       else if (modal) closeModal();
       else if (sheetOpen) closeSheet();
-      else if (view === "history") { view = "home"; render(); }
+      else if (view === "history") backFromHistory();
     } else if (e.key === "Enter" && !sheetOpen && !modal && view === "home" && !e.target.closest?.("button")) {
       $(".hero:not(.prog):not([aria-disabled])")?.click();
     }
   });
-  if (typeof win.ResizeObserver === "function") new win.ResizeObserver(() => { if (active && H) after(); }).observe(app);
+  const relayout = () => { if (active && H) after(); };
+  doc.addEventListener("cobblify:window-chrome", relayout);
+  if (typeof win.ResizeObserver === "function") {
+    const observer = new win.ResizeObserver(relayout);
+    observer.observe(app);
+    // Content height also changes when only the reserved native bar changes.
+    observer.observe($("#main"));
+  }
   /* a layout measured on the fallback font is off once the real one lands: lay out again then (prototype) */
   win.addEventListener("load", () => { if (active && H) after(); });
   if (doc.fonts?.load) {
@@ -651,6 +741,7 @@ export function createApp(app, actions) {
     /** The home window is hidden while the post-launch dashboard is up (stage 5 replaces that view). */
     setActive(on) {
       active = !!on;
+      if (!active) cancelSheetFocus();
       app.hidden = !active;
       if (isl3) isl3.setActive(active && !!H && !H.solo && view === "home");
       if (active && H) render();
@@ -659,7 +750,7 @@ export function createApp(app, actions) {
      * Answers whether it played: only a ready home plays it, never first run, setup, the pick, a stop or a blocked
      * client (spec 1.10), so the caller offers it again on the next home until one is ready. */
     open(info) {
-      if (H?.hero?.kind !== "play") return false;
+      if (H?.hero?.kind !== "play" || !active || view !== "home" || doc.hidden) return false;
       const after = info?.updated ? openWhatsNew : () => {};
       playIntro().then(after, after);
       return true;

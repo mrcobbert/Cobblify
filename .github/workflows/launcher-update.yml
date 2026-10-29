@@ -1,4 +1,5 @@
 name: Launcher Update Candidate
+run-name: Launcher ${{ inputs.version }}${{ inputs.local_build && format(' local {0}', inputs.local_id) || '' }}
 
 on:
   workflow_dispatch:
@@ -6,10 +7,23 @@ on:
       version:
         description: Exact repo version to build
         required: true
+      local_build:
+        description: Build on the owner's on-demand Mac and Windows runners (start with tools/local-ci/run-release.py)
+        type: boolean
+        default: false
+      local_id:
+        description: Controller-generated random label; required only for local builds
+        default: ''
       publish_dev:
         description: Also publish this build to the opt-in dev channel as <version>-dev.<run number>
         type: boolean
         default: false
+      existing_run:
+        description: Optional successful candidate run to publish without rebuilding (dev only)
+        default: ''
+      existing_commit:
+        description: Exact source commit of existing_run; required for recovery
+        default: ''
 
 permissions:
   contents: read
@@ -24,29 +38,103 @@ env:
   BUILD_VERSION: ${{ inputs.publish_dev && format('{0}-dev.{1}', inputs.version, github.run_number) || inputs.version }}
 
 jobs:
+  local-assets:
+    if: ${{ inputs.local_build && !inputs.existing_run }}
+    runs-on: macos-15-intel
+    steps:
+      - name: Authorize local release
+        env:
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          LOCAL_ID: ${{ inputs.local_id }}
+        run: |
+          test "$ACTOR" = mrcobbert
+          test "$REPOSITORY" = mrcobbert/Cobblify
+          [[ "$LOCAL_ID" =~ ^[a-f0-9]{32}$ ]]
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: Compile the current Mac icon with Xcode
+        run: |
+          xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          test -n "$xcode26"
+          export DEVELOPER_DIR="$xcode26/Contents/Developer"
+          mkdir -p "$RUNNER_TEMP/icon-source" macos-icon
+          cp -R launcher/src-tauri/icons/Cobblify.icon "$RUNNER_TEMP/icon-source/Icon.icon"
+          xcrun actool "$RUNNER_TEMP/icon-source/Icon.icon" --compile macos-icon \
+            --output-format human-readable-text --notices --warnings \
+            --output-partial-info-plist macos-icon/assetcatalog_generated_info.plist \
+            --app-icon Icon --include-all-app-icons --accent-color AccentColor \
+            --enable-on-demand-resources NO --development-region en --target-device mac \
+            --minimum-deployment-target 26.0 --platform macosx < /dev/null
+          test -s macos-icon/Assets.car
+          python3 tools/local-ci/icon-assets.py record launcher/src-tauri/icons/Cobblify.icon macos-icon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-macos-icon
+          path: macos-icon/
+          retention-days: 7
+          if-no-files-found: error
+
   macos:
+    needs: [local-assets]
+    if: ${{ !cancelled() && !inputs.existing_run && (needs.local-assets.result == 'success' || (!inputs.local_build && needs.local-assets.result == 'skipped')) }}
     # Java 8 is unavailable on GitHub's ARM macOS image. The Intel image can
     # install it and still cross-compile the universal Apple bundle.
-    runs-on: macos-15-intel
+    runs-on: ${{ inputs.local_build && fromJSON(format('["cobblify-{0}-macos"]', inputs.local_id)) || 'macos-15-intel' }}
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ inputs.local_build && 'local-macos-build' || format('hosted-macos-{0}', github.run_id) }}
+      cancel-in-progress: false
     environment: launcher-stable
+    env:
+      # Keep checkout bytes identical to the index without changing either user's git settings.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - name: Configure private local caches
+        if: ${{ inputs.local_build }}
+        shell: bash
+        run: |
+          test -n "$COBBLIFY_CI_CACHE"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo" "$COBBLIFY_CI_CACHE/npm"
+          echo "NPM_CONFIG_CACHE=$COBBLIFY_CI_CACHE/npm" >> "$GITHUB_ENV"
+          echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = macOS ]; then
+            jdk21=$(/usr/libexec/java_home -v 21)
+            jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
+            test -x "$jdk8/bin/java"
+            echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
+            echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "$jdk21/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ !inputs.local_build && 'npm' || '' }}
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
+        if: ${{ !inputs.local_build || runner.os != 'macOS' }}
         with:
           distribution: temurin
           java-version: |
             8
             21
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.local_build && runner.os == 'macOS' }}
+        with:
+          name: local-macos-icon
+          path: ${{ runner.temp }}/macos-icon
       - name: Verify version
         env: { RELEASE_VERSION: "${{ inputs.version }}" }
         run: |
           ./tools/check-release-version.sh
+          bash tools/check-tree-drift.sh
+          if [ "$RUNNER_OS" != Windows ]; then bash launcher/tools/test-release-workflows.sh; fi
           test "$(sed -n 's/^mod_version=//p' gradle.properties)" = "$RELEASE_VERSION"
       - name: Build private mod resources
         env:
@@ -55,10 +143,11 @@ jobs:
           WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
           WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
-          mkdir -p "$RUNNER_TEMP/gradle-home"
-          printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
-          GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew :1.8.9-forge:assemble --no-daemon
-          (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
+          export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
+          export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
+          ./gradlew :1.8.9-forge:assemble --no-daemon
+          (cd lunar && ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
             launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
@@ -80,13 +169,46 @@ jobs:
         run: |
           npm ci
           npm test
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            npm run build
+            cargo test --locked --manifest-path src-tauri/Cargo.toml
+            node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
+          fi
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          # The whole build uses the newest Xcode 26. Linked against an older SDK, the app runs in macOS 26's
+          # compatibility mode: the pre-26 window frame and window buttons, unlike every other app. Only
+          # Xcode 26's actool compiles icons/Cobblify.icon (the light and dark app icon) into Assets.car; an
+          # older one makes Tauri skip it silently.
+          # actool's stdin is /dev/null: under Tauri's inherited stdin it prints "Bad file descriptor", exits 0
+          # and writes nothing (tauri-apps/tauri#15315, fix pending in #15991).
+          mkdir -p "$RUNNER_TEMP/xcode26-bin"
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+            test -d "$SDKROOT"
+            python3 ../tools/local-ci/icon-assets.py verify src-tauri/icons/Cobblify.icon "$RUNNER_TEMP/macos-icon"
+            export COBBLIFY_ICON_ASSETS="$RUNNER_TEMP/macos-icon"
+            cp ../tools/local-ci/actool.py "$RUNNER_TEMP/xcode26-bin/actool"
+          else
+            xcode26=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+            test -n "$xcode26"
+            export DEVELOPER_DIR="$xcode26/Contents/Developer"
+            printf '#!/bin/sh\nDEVELOPER_DIR="%s/Contents/Developer" exec /usr/bin/xcrun actool "$@" < /dev/null\n' "$xcode26" > "$RUNNER_TEMP/xcode26-bin/actool"
+          fi
+          chmod +x "$RUNNER_TEMP/xcode26-bin/actool"
+          export PATH="$RUNNER_TEMP/xcode26-bin:$PATH"
+          actool --version --output-format human-readable-text
           config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
           npx tauri build --target universal-apple-darwin --bundles app --ci --config "$config"
-          bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          bundle_dir="${CARGO_TARGET_DIR:-src-tauri/target}/universal-apple-darwin/release/bundle/macos"
           app_count=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d | wc -l | tr -d '[:space:]')
           test "$app_count" = 1
           app=$(find "$bundle_dir" -maxdepth 1 -name '*.app' -type d -print -quit)
+          test -f "$app/Contents/Resources/Assets.car"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$app/Contents/Info.plist"
+          exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          for arch in arm64 x86_64; do
+            otool -arch "$arch" -l "$exe" | grep -E '^ *sdk 26\.'
+          done
           codesign --verify --deep --strict "$app"
           # The install image is a plain hdiutil disk image, not Tauri's dmg bundle: that
           # one lays the window out through Finder AppleScript, which needs automation
@@ -105,28 +227,86 @@ jobs:
           test -f "$verify_dir/MAC INSTALL.txt"
           test "$(readlink "$verify_dir/Applications")" = /Applications
           hdiutil detach "$verify_dir"
+      - name: Locate release artifacts
+        shell: bash
+        working-directory: launcher
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
+          else
+            # upload-artifact runs in Node on Windows, so it cannot use MSYS /d/... paths.
+            node --input-type=module -e 'import { resolve } from "node:path"; import { existsSync } from "node:fs"; const dir = resolve(process.env.CARGO_TARGET_DIR || "src-tauri/target", "release/bundle/nsis"); if (!existsSync(dir)) throw new Error("Missing NSIS bundle directory"); console.log("RELEASE_BUNDLE_DIR=" + dir);' >> "$GITHUB_ENV"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-macos-${{ inputs.version }}
           path: |
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/macos/Cobblify-Launcher-*.dmg
+            ${{ env.RELEASE_BUNDLE_DIR }}/*.app.tar.gz
+            ${{ env.RELEASE_BUNDLE_DIR }}/*.app.tar.gz.sig
+            ${{ env.RELEASE_BUNDLE_DIR }}/Cobblify-Launcher-*.dmg
           retention-days: 30
           if-no-files-found: error
 
+      - name: Remove private intermediate resources
+        if: ${{ always() && inputs.local_build }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS_CLEAN'
+          import { lstatSync, readdirSync, rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.GITHUB_WORKSPACE;
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+            const folder = join(root, relative);
+            let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+            if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');
+            if (relative.endsWith('resources')) {
+              for (const name of readdirSync(folder)) if (name.endsWith('.jar') || name === 'manifest.json') rmSync(join(folder, name));
+            } else rmSync(folder, { recursive: true });
+          }
+          JS_CLEAN
+
   windows:
-    runs-on: windows-latest
+    needs: [local-assets]
+    if: ${{ !cancelled() && !inputs.existing_run && (needs.local-assets.result == 'success' || (!inputs.local_build && needs.local-assets.result == 'skipped')) }}
+    runs-on: ${{ inputs.local_build && fromJSON(format('["cobblify-{0}-windows"]', inputs.local_id)) || 'windows-latest' }}
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ inputs.local_build && 'local-windows-build' || format('hosted-windows-{0}', github.run_id) }}
+      cancel-in-progress: false
     environment: launcher-stable
+    env:
+      # Keep checkout bytes identical to the index without changing either user's git settings.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - name: Configure private local caches
+        if: ${{ inputs.local_build }}
+        shell: bash
+        run: |
+          test -n "$COBBLIFY_CI_CACHE"
+          mkdir -p "$COBBLIFY_CI_CACHE/gradle" "$COBBLIFY_CI_CACHE/cargo" "$COBBLIFY_CI_CACHE/npm"
+          echo "NPM_CONFIG_CACHE=$COBBLIFY_CI_CACHE/npm" >> "$GITHUB_ENV"
+          echo "GRADLE_USER_HOME=$COBBLIFY_CI_CACHE/gradle" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = macOS ]; then
+            jdk21=$(/usr/libexec/java_home -v 21)
+            jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
+            test -x "$jdk8/bin/java"
+            echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
+            echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "$jdk21/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ !inputs.local_build && 'npm' || '' }}
           cache-dependency-path: launcher/package-lock.json
       - uses: actions/setup-java@v4
+        if: ${{ !inputs.local_build || runner.os != 'macOS' }}
         with:
           distribution: temurin
           java-version: |
@@ -137,6 +317,8 @@ jobs:
         env: { RELEASE_VERSION: "${{ inputs.version }}" }
         run: |
           ./tools/check-release-version.sh
+          bash tools/check-tree-drift.sh
+          if [ "$RUNNER_OS" != Windows ]; then bash launcher/tools/test-release-workflows.sh; fi
           test "$(sed -n 's/^mod_version=//p' gradle.properties)" = "$RELEASE_VERSION"
       - name: Build private mod resources
         shell: bash
@@ -146,10 +328,11 @@ jobs:
           WEAVE_AGENT_PASSPHRASE: ${{ secrets.WEAVE_AGENT_PASSPHRASE }}
           WEAVE_AGENT_SHA256: e63da5ed3cc85868088527cd7d49ebd708785b6567da389fe89a89913ef4afd2
         run: |
-          mkdir -p "$RUNNER_TEMP/gradle-home"
-          printf 'cobblifyBackendUrl=%s\ncobblifyBackendToken=%s\n' "$BACKEND_URL" "$BACKEND_TOKEN" > "$RUNNER_TEMP/gradle-home/gradle.properties"
-          GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat :1.8.9-forge:assemble --no-daemon
-          (cd lunar && GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home" ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
+          export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
+          export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
+          ./gradlew.bat :1.8.9-forge:assemble --no-daemon
+          (cd lunar && ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
             launcher/vendor/Weave-Loader-Agent-1.3.3.jar.enc \
@@ -172,21 +355,55 @@ jobs:
         run: |
           npm ci
           npm test
+          if [ "${COBBLIFY_LOCAL_CI:-}" = 1 ]; then
+            npm run build
+            cargo test --locked --manifest-path src-tauri/Cargo.toml
+            node --input-type=module -e 'import {rmSync} from "node:fs"; import {join} from "node:path"; const root=process.env.COBBLIFY_CI_CACHE; if (!root) throw new Error("missing private cache root"); const target=process.env.RUNNER_OS === "macOS" ? "universal-apple-darwin/release/bundle" : "release/bundle"; rmSync(join(root,"cargo",target),{recursive:true,force:true});'
+          fi
           config=$(printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$BUILD_VERSION")
           npx tauri build --bundles nsis --ci --config "$config"
-          bundle_dir="src-tauri/target/release/bundle/nsis"
+          bundle_dir="${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/nsis"
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find "$bundle_dir" -maxdepth 1 -name '*-setup.exe.sig' -type f | wc -l | tr -d '[:space:]')" = 1
+      - name: Locate release artifacts
+        shell: bash
+        working-directory: launcher
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "RELEASE_BUNDLE_DIR=${CARGO_TARGET_DIR:-$PWD/src-tauri/target}/universal-apple-darwin/release/bundle/macos" >> "$GITHUB_ENV"
+          else
+            # upload-artifact runs in Node on Windows, so it cannot use MSYS /d/... paths.
+            node --input-type=module -e 'import { resolve } from "node:path"; import { existsSync } from "node:fs"; const dir = resolve(process.env.CARGO_TARGET_DIR || "src-tauri/target", "release/bundle/nsis"); if (!existsSync(dir)) throw new Error("Missing NSIS bundle directory"); console.log("RELEASE_BUNDLE_DIR=" + dir);' >> "$GITHUB_ENV"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-update-windows-${{ inputs.version }}
           path: |
-            launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
-            launcher/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            ${{ env.RELEASE_BUNDLE_DIR }}/*-setup.exe
+            ${{ env.RELEASE_BUNDLE_DIR }}/*-setup.exe.sig
           retention-days: 30
           if-no-files-found: error
 
+      - name: Remove private intermediate resources
+        if: ${{ always() && inputs.local_build }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS_CLEAN'
+          import { lstatSync, readdirSync, rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.GITHUB_WORKSPACE;
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+            const folder = join(root, relative);
+            let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+            if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');
+            if (relative.endsWith('resources')) {
+              for (const name of readdirSync(folder)) if (name.endsWith('.jar') || name === 'manifest.json') rmSync(join(folder, name));
+            } else rmSync(folder, { recursive: true });
+          }
+          JS_CLEAN
+
   ready:
+    if: ${{ !cancelled() && !inputs.existing_run && needs.macos.result == 'success' && needs.windows.result == 'success' }}
     needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
@@ -226,8 +443,11 @@ jobs:
   # Launchers with "Test dev builds" ticked ask for the dev channel and get whichever of
   # stable/dev is newer, so a dev build reaches only launchers older than this branch's pins.
   publish-dev:
-    if: ${{ inputs.publish_dev }}
+    if: ${{ !cancelled() && inputs.publish_dev && github.repository == 'mrcobbert/Cobblify' && github.actor == 'mrcobbert' && (inputs.existing_run || (needs.macos.result == 'success' && needs.windows.result == 'success' && needs.ready.result == 'success')) }}
     needs: [macos, windows, ready]
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     environment: launcher-stable
     concurrency:
@@ -236,20 +456,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - name: Authorize preview source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXISTING_RUN: ${{ inputs.existing_run }}
+          EXISTING_COMMIT: ${{ inputs.existing_commit }}
+          LOCAL_BUILD: ${{ inputs.local_build }}
+        run: python3 tools/local-ci/preview-source.py
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+      - name: Check source version
+        env: { RELEASE_VERSION: "${{ inputs.version }}" }
+        run: |
+          ./tools/check-release-version.sh
+          test "$(sed -n 's/^mod_version=//p' gradle.properties)" = "$RELEASE_VERSION"
       - uses: actions/download-artifact@v4
         with:
+          run-id: ${{ env.SOURCE_RUN }}
+          github-token: ${{ github.token }}
           pattern: launcher-update-*-${{ inputs.version }}
           path: candidate
           merge-multiple: true
+      - name: Restore missing candidate identity for a verified existing build
+        if: ${{ inputs.existing_run }}
+        env: { RELEASE_VERSION: "${{ inputs.version }}" }
+        run: |
+          if [ ! -f candidate/candidate.json ]; then
+            jq -n --arg version "$RELEASE_VERSION" --arg buildVersion "$BUILD_VERSION" \
+              --arg commit "$SOURCE_COMMIT" --arg runId "$SOURCE_RUN" \
+              '{version:$version,buildVersion:$buildVersion,commit:$commit,runId:$runId}' > candidate/candidate.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.existing_run }}
+        with:
+          name: launcher-update-metadata-${{ inputs.version }}
+          path: candidate/candidate.json
+          if-no-files-found: error
       - name: Validate the build this run produced
+        env: { RELEASE_VERSION: "${{ inputs.version }}" }
         run: |
           test "$(jq -r .buildVersion candidate/candidate.json)" = "$BUILD_VERSION"
-          test "$(jq -r .runId candidate/candidate.json)" = "$GITHUB_RUN_ID"
+          test "$(jq -r .runId candidate/candidate.json)" = "$SOURCE_RUN"
+          test "$(jq -r .commit candidate/candidate.json)" = "$SOURCE_COMMIT"
+          test "$(jq -r .version candidate/candidate.json)" = "$RELEASE_VERSION"
           case "$BUILD_VERSION" in *-dev.*) ;; *) echo "not a dev version: $BUILD_VERSION" >&2; exit 1 ;; esac
           test "$(find candidate -maxdepth 1 -name '*.app.tar.gz' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find candidate -maxdepth 1 -name '*.app.tar.gz.sig' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find candidate -maxdepth 1 -name '*-setup.exe' -type f | wc -l | tr -d '[:space:]')" = 1
           test "$(find candidate -maxdepth 1 -name '*-setup.exe.sig' -type f | wc -l | tr -d '[:space:]')" = 1
+          python3 - <<'PY_VERSION'
+          import os, plistlib, tarfile
+          from pathlib import Path
+          version = os.environ['BUILD_VERSION']
+          exe = next(Path('candidate').glob('*-setup.exe'))
+          assert exe.name.endswith('_' + version + '_x64-setup.exe'), 'Installer build version mismatch'
+          with tarfile.open(next(Path('candidate').glob('*.app.tar.gz'))) as archive:
+              files = [m for m in archive.getmembers() if m.name.endswith('.app/Contents/Info.plist')]
+              assert len(files) == 1, 'Expected one Mac app'
+              info = plistlib.load(archive.extractfile(files[0]))
+              assert info['CFBundleShortVersionString'] == version, 'Mac build version mismatch'
+          PY_VERSION
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Build and sign the dev manifest
@@ -267,7 +536,7 @@ jobs:
           win=$(find ../candidate -maxdepth 1 -name '*-setup.exe' -type f -print -quit)
           node tools/build-update-manifest.mjs ../candidate/dev.json \
             "$BUILD_VERSION" 0.0.0 "Dev build from $GITHUB_REF_NAME" \
-            "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "https://github.com/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" \
             "$mac" "$mac.sig" "$win" "$win.sig" ../candidate/policy.json.sig
       - name: Refuse to move the dev channel backwards
         working-directory: server/stats-worker

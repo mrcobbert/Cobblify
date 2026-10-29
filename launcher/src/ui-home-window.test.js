@@ -37,6 +37,7 @@ const replies = {
   update_status: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
   check_for_update: () => ({ state: "current", currentVersion: "0.18.0-next.2" }),
   set_use_external_overlay: ({ enabled }) => ({ status: "saved", useExternalOverlay: enabled }),
+  set_quit_lunar_after_launch: ({ enabled }) => ({ ...PREFS, quitLunarAfterLaunch: enabled }),
   launch_lunar: () => new Promise((resolve) => (pendingLaunch = resolve)),
   launch_forge: () => new Promise((resolve) => (pendingLaunch = resolve)),
   launch_progress: () => progressReply(),
@@ -105,23 +106,48 @@ test("choosing Lunar in the menu switches Launch to it and remembers it", async 
   await waitFor(() => root.style.getPropertyValue("--acc").toLowerCase() === "#fdc6e5", { label: "Lunar's accent" });
 });
 
-test("the settings sheet: its rows, a switch that saves, Esc closes", async () => {
+test("the settings sheet: its rows, a switch that saves, Esc returns to Settings beside Launch", async () => {
+  assert.equal($(".hdr [data-act='settings']"), null);
+  assert.equal($(".hdr .ver"), null, "version belongs in the side sheet");
+  assert.ok($(".launch-row .heros"));
+  assert.ok($(".launch-row [data-act='settings']"), "Settings is alongside the launch action");
   $('[data-act="settings"]').click();
   const sheet = el("sheet");
   await waitFor(() => sheet.classList.contains("open"), { label: "the sheet" });
   const labels = [...sheet.querySelectorAll(".srow .lbl > .t:first-child")].map((t) => t.textContent);
-  assert.deepEqual(labels, ["External Overlay", "Auto-update", "Dev builds", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
+  assert.deepEqual(labels, ["External Overlay", "Quit Lunar after launch", "Auto-update", "Preview updates", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
   assert.equal(sheet.querySelector('[data-row="lunar"] .key').textContent.trim(), "Repair");
   assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Change", "Prism is set up: Change re-picks its instance");
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");
   assert.match(sheet.textContent, /Not an official Minecraft product/);
 
+  // The version label is now a separate history button in the same row. An updater refresh must keep focus on Check.
+  await tick(170); // let the sheet's opening focus settle
+  const checks = calls.filter((c) => c.command === "check_for_update").length;
+  const check = sheet.querySelector('[data-row="version"] [data-act="update"]');
+  check.focus();
+  check.click();
+  await waitFor(() => calls.filter((c) => c.command === "check_for_update").length > checks, { label: "the manual update check" });
+  await tick();
+  assert.equal(document.activeElement, sheet.querySelector('[data-row="version"] [data-act="update"]'));
+
   sheet.querySelector('.tog[data-key="overlay"]').click();
   await waitFor(() => calls.some((c) => c.command === "set_use_external_overlay" && c.args.enabled === false), { label: "the overlay save" });
   await waitFor(() => sheet.querySelector('.tog[data-key="overlay"]').getAttribute("aria-checked") === "false", { label: "the switch off" });
 
+  // Quit Lunar after launch: beside External Overlay, off by default, one line like the rest; it saves through its own command.
+  const quit = () => sheet.querySelector('[data-row="quit"] .tog[data-key="quit"]');
+  assert.equal(quit().closest(".sec"), sheet.querySelector('[data-row="overlay"]').closest(".sec"), "beside External Overlay");
+  assert.equal(quit().getAttribute("aria-checked"), "false");
+  assert.equal(sheet.querySelector('[data-row="quit"] .d'), null, "no sub-text");
+  quit().click();
+  await waitFor(() => calls.some((c) => c.command === "set_quit_lunar_after_launch" && c.args.enabled === true), { label: "the quit save" });
+  await waitFor(() => quit().getAttribute("aria-checked") === "true", { label: "the quit switch on" });
+  assert.equal(calls.filter((c) => c.command === "set_use_external_overlay").length, 1, "not an overlay save");
+
   document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(sheet.classList.contains("open"), false);
+  assert.equal(document.activeElement, $('[data-act="settings"]'));
 });
 
 test("while launching, Launch is the progress and the sheet's launch settings are locked", async () => {
@@ -134,6 +160,7 @@ test("while launching, Launch is the progress and the sheet's launch settings ar
   const sheet = el("sheet");
   await waitFor(() => sheet.querySelector(".reason") != null, { label: "the locked reason" });
   assert.equal(sheet.querySelector('.tog[data-key="overlay"]').disabled, true);
+  assert.equal(sheet.querySelector('.tog[data-key="quit"]').disabled, true);
   assert.equal(sheet.querySelector('.tog[data-key="dev"]').disabled, true);
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').disabled, false);
   sheet.querySelector('[data-act="close"]').click();
@@ -146,13 +173,20 @@ test("while launching, Launch is the progress and the sheet's launch settings ar
   replies.lobby_state = () => ({ kind: "unavailable" });
 });
 
-test("the version opens the release notes; Back returns home", async () => {
-  $(".ver").click();
+test("the version in Settings opens release notes; Back and Escape return to Settings", async () => {
+  $('[data-act="settings"]').click();
+  $('#sheet [data-act="history"]').click();
   await waitFor(() => $(".hist-list") != null, { label: "the history" });
   assert.ok(home.querySelectorAll(".hist-list .row").length >= 2);
   assert.ok($("#rel-0_18_0"));
   $('[data-act="back"]').click();
   assert.ok($('#main [data-act="play"]'));
+  assert.equal(el("sheet").classList.contains("open"), true);
+  $('#sheet [data-act="history"]').click();
+  await waitFor(() => $(".hist-list") != null, { label: "history again" });
+  document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(el("sheet").classList.contains("open"), true);
+  $('#sheet [data-act="close"]').click();
 });
 
 // ── a launch that ends with an outcome (progress.rs `outcome`) ─────────────────────────────

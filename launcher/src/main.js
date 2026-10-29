@@ -29,6 +29,7 @@ import {
   setupState,
 } from "./tauri-contract.js";
 import { LOBBY_POLL_MS } from "./poll-config.js";
+import { installWindowChrome } from "./window-chrome.js";
 import { manualRouteSubtitleFor } from "./connection-view.js";
 import { launchViewRoute } from "./launch-view-route.js";
 import { createApp } from "./ui/app.js";
@@ -60,6 +61,7 @@ const connAnnounce = el("conn-announce");
  *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
 const invoke = window.__TAURI__?.core?.invoke ?? previewInvoke;
+const chromeReady = window.__TAURI__ ? installWindowChrome(window, invoke) : Promise.resolve();
 
 let previewLaunchAt = null;
 let previewLaunchForge = false;
@@ -174,7 +176,16 @@ function previewInvoke(command, args) {
   if (command === "launch_preferences") {
     return Promise.resolve({
       useExternalOverlay: true,
+      quitLunarAfterLaunch: false,
       health: "missing",
+    });
+  }
+
+  if (command === "set_quit_lunar_after_launch") {
+    return Promise.resolve({
+      useExternalOverlay: true,
+      quitLunarAfterLaunch: args?.enabled ?? false,
+      health: "valid",
     });
   }
 
@@ -228,7 +239,7 @@ function previewInvoke(command, args) {
   if (command === "reset_session_end" || command === "abort_launch_session") {
     return Promise.resolve({
       status: "ok",
-      preferences: { useExternalOverlay: true, health: "valid" },
+      preferences: { useExternalOverlay: true, quitLunarAfterLaunch: false, health: "valid" },
     });
   }
 
@@ -451,6 +462,7 @@ const ui = createApp(el("app"), {
   },
   update: (action) => updateController.action(action),
   setOverlay: (on) => launchController.setOverlay(on),
+  setQuitLunar: (on) => launchController.setQuitLunar(on),
   setAutoUpdate: (on) => updateController.action(on ? "enable" : "disable"),
   setDev: (on) => {
     devPending = on;
@@ -676,7 +688,6 @@ new window.MutationObserver(() => ui.setActive(stage.dataset.view !== "dash")).o
   attributes: true,
   attributeFilter: ["data-view"],
 });
-stage.dataset.platform = el("app").dataset.platform;
 function drawDashMark() {
   const k = Math.max(1, Math.round((parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--su")) || 2) * (window.devicePixelRatio || 1)));
   el("dash-wm").innerHTML = wordmark(k, { font: document.documentElement.dataset.font }, window.devicePixelRatio || 1);
@@ -726,11 +737,14 @@ function refreshUi() {
     update,
     overlayOn: st.optimisticOverlay,
     overlaySaving: st.prefSaving,
+    quitLunarOn: st.quitLunar,
+    quitLunarSaving: st.quitLunarSaving,
     version,
     devPending,
     setupActive: setupShown() || setupRequest || !!pick,
   });
   ui.update({ home, sheet, version, dev: update.updateChannel === "dev" });
+  el("dash-dev").hidden = update.updateChannel !== "dev";
   applyTheme(home.sel);
   maybeOpen(home);
   maybeShowWindow();
@@ -743,9 +757,10 @@ function refreshUi() {
 const SHOW_WINDOW_MAX_MS = 1500;
 let windowShown = false;
 let windowAsked = false;
-function showWindow() {
+async function showWindow() {
   if (windowShown) return;
   windowShown = true;
+  await chromeReady;
   try {
     const w = window.__TAURI__?.window?.getCurrentWindow?.();
     Promise.resolve(w?.show?.()).catch(() => {});
@@ -776,20 +791,23 @@ function applyTheme(sel) {
 }
 
 /**
- * Every open: the island's build replay, then What's New after an update. Once per session. An open without an update
- * replays only when its first settled home is ready to play: a first run or a setup has just built the island part by
- * part, and a build arriving later in the session is no longer the open. After an update the first READY home plays
- * it: a first home that is blocked, setting up or picking does not use it up (code review round 1, I1); it is marked
- * played only when ui.open actually played it.
+ * Every open: the island's build replay, then What's New after an update. Once per session, on its first ready home.
+ * A temporary startup check or blocked client must not consume the replay. A new player with no island instead
+ * sees the normal setup build; after an update, keep waiting for a ready home so What's New is not lost.
  */
 function maybeOpen(home) {
-  if (openPlayed || !openInfoReply || lastStatus.state === "loading" || home.launching) return;
-  if (!openInfoReply.updated && home.hero?.kind !== "play") {
+  if (openPlayed || !openInfoReply || document.hidden || lastStatus.state === "loading" || home.launching) return;
+  if (!openInfoReply.updated && home.solo && home.hero?.kind === "setup") {
     openPlayed = true;
     return;
   }
   openPlayed = ui.open(openInfoReply) === true;
 }
+// A native window starts hidden. Keep the replay pending until it is visible
+// AND ready; startup checks may change eligibility before the reveal.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && lastHome) maybeOpen(lastHome);
+});
 
 /** The highest backend status revision applied (main.rs `Status.rev`); -1 before any. */
 let lastStatusRev = -1;

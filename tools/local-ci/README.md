@@ -1,0 +1,107 @@
+# On-demand local release CI
+
+Run from a clean, pushed release branch on the Mac:
+
+```sh
+python3 tools/local-ci/run-release.py --publish-dev
+```
+
+Omit `--publish-dev` to build and store a candidate without changing any channel.
+Stable promotion is still a separate workflow, with the same identity, version,
+signature, immutable-artifact and forward-only checks. The default candidate
+workflow (`local_build=false`) still uses GitHub-hosted machines.
+
+The controller dispatches the exact commit, waits for authorization/icon preparation,
+then starts one ephemeral Mac runner and one Windows runner. They have no default
+runner labels, use random per-run labels, and run a controller-owned pre-job hook
+that checks repository, event, actor, run, commit and platform job. No service is
+installed. The controller stops processes and removes registrations even on failure.
+Do not interrupt it with SIGKILL; SIGINT/SIGTERM run cleanup. If the controller host
+loses power, cancel the run and inspect both machines before starting another run.
+
+**These are trusted-code builds, not sandboxed builds.** The public repository
+must never route pull requests or arbitrary workflows to these machines. The
+owner and code being released are trusted with the `agent` account's access.
+Runner labels and hooks reduce accidental scheduling; they do not isolate a host
+from malicious trusted code. Keep the hosted fallback for untrusted changes.
+GitHub documents this risk in its [runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
+
+Persistent Gradle, npm and Cargo caches live in private
+`~/.local/share/cobblify-ci/cache` directories on both machines. They can contain
+private compiled resources, so do not share or upload them. Local jobs never
+upload the workstation's caches to GitHub. Backend credentials
+are passed as Gradle project environment variables, never saved to persistent
+Gradle properties. Job cleanup removes staged jars and mod build directories.
+The previous platform bundle directory is cleared before each build so old
+installers/images cannot become this candidate's artifacts.
+
+The Mac needs Node/Rust, both Apple Rust targets, JDK 21, Zulu JDK 8 at
+`/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home`, and CLT SDK 26.5.
+Windows needs Rust/MSVC, Node and Git Bash. setup-java provisions its JDKs.
+It also needs portable PowerShell 7 at
+`C:\Users\agent\.local\share\cobblify-ci\pwsh\pwsh.exe` for
+the [.NET process-tree shutdown API](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.kill).
+The controller checks that API before dispatch, then verifies owned runner processes
+are gone after shutdown. Tested on this Standard account with a temporary
+Listener/Worker/grandchild tree and an unrelated process with the same name.
+No persistent GitHub CLI credentials are copied to Windows; a short-lived runner
+registration token goes through SSH stdin and is cleared before running jobs.
+
+This Mac has no Xcode `actool`. A small hosted Mac prerequisite compiles the
+current `.icon`; the local adapter checks the exact source tree, output hashes
+and commit before giving those files to Tauri. Rust, Gradle, universal linking,
+native Rust tests, packaging and signing happen on the local machines. Light/dark icon presence,
+SDK version and code signature checks remain mandatory.
+
+Runner binaries must be installed before first use (no admin/service install).
+At implementation, verified GitHub `actions/runner` v2.338.0 packages are used:
+
+| Platform | Package | SHA-256 |
+|---|---|---|
+| Mac ARM64 | `actions-runner-osx-arm64-2.338.0.tar.gz` | `df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2` |
+| Windows x64 | `actions-runner-win-x64-2.338.0.zip` | `f48e0750a21812bca5f82de5f7f5aeae71abee647fab5a582f1742d07eba455f` |
+
+Download only from the official [runner release](https://github.com/actions/runner/releases/tag/v2.338.0),
+verify hashes, and unpack under `~/.local/share/cobblify-ci/runner-macos` and
+`C:\Users\agent\.local\share\cobblify-ci\runner-windows`. Runner auto-update is
+left enabled. Private runner logs and a non-secret `timing.json` are kept under
+`~/.local/share/cobblify-ci/runs/<run-id>/` on the Mac. Timings include dispatch,
+the small hosted icon job, both platform builds and optional dev publication;
+first builds include dependency downloads and must be reported separately from
+warm builds. Both machines must remain awake and reachable until completion.
+
+Provisioned portable [PowerShell 7.6.7](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.7):
+`PowerShell-7.6.7-win-x64.zip`, SHA-256
+`d2f952ebdbf24386cb8923553aa58e41a846db35a6155ea04c58142a4b16dbb7`.
+Unpack under the private `pwsh` directory above. It runs alongside Windows
+PowerShell 5.1; no global PATH, execution policy or service changes are needed.
+
+Controller fault and identity tests:
+
+```sh
+python3 -m unittest discover -s tools/local-ci -p 'test_*.py'
+```
+
+## Publish an already built preview
+
+If a successful candidate built both signed platform artifacts but its metadata
+or dev publication jobs were skipped, reuse that exact build instead of rebuilding:
+
+```sh
+gh auth switch --user mrcobbert
+gh workflow run launcher-update.yml --ref <reviewed-release-branch> \
+  -f version=<base-version> -f publish_dev=true \
+  -f existing_run=<successful-candidate-run-id> \
+  -f existing_commit=<exact-40-character-source-commit>
+```
+
+Leave `local_build` false. Only the repository owner can use this dev-only path.
+The publisher checks the source repository, manual workflow, owner, completed
+run, exact commit and both successful platform jobs across all attempts. It
+checks out that source commit and verifies its version pins. Installer filename
+and Mac bundle version must already carry the source run's exact dev version;
+a stable candidate cannot be relabeled. Candidate metadata retains the source
+run/commit, and existing metadata is validated rather than overwritten. The
+same manifest signing, forward-only channel and dev retention steps then run.
+Stable promotion is unchanged. Normal hosted releases explicitly allow their
+local-only prerequisite to be skipped without skipping metadata/publication.

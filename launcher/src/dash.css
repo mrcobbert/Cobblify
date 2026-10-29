@@ -56,7 +56,7 @@ body {
   --t8: #838383; --t9: #6a72ff; --ta: #55ff55; --tb: #55ffff; --tc: #ff5555; --td: #ff55ff; --te: #ffff55; --tf: #ffffff;
   --out: #7a7a7a; /* one quiet level for players who are out */
   position: fixed;
-  inset: 0;
+  inset: var(--window-top-inset, 0px) 0 0;
   margin: 0;
   background: var(--ground);
   color: var(--tf);
@@ -88,8 +88,11 @@ body {
   border: 0;
 }
 
-/* the header: home's (wordmark at 11 su, fixed home size); the view's name at the right on the same line */
+/* the header: home's (wordmark at 11 su, fixed home size, the Preview tag in home's text); the view's name at the
+   right on the same line */
 .stage .dhdr {
+  /* Match home's transparent lower rule so title and badge share the same baseline. */
+  border-bottom: var(--su) solid transparent;
   position: absolute;
   left: 0;
   right: 0;
@@ -99,8 +102,12 @@ body {
   display: flex;
   align-items: center;
   padding: 0 calc(5 * var(--su)) 0 calc(11 * var(--su));
+  --row-line: calc(9 * var(--fpx));
+  font-size: calc(9 * var(--fpx));
+  line-height: calc(9 * var(--fpx));
 }
-.stage[data-platform="mac"] .dhdr { padding-left: calc(40 * var(--su)); }
+:root[data-font="minecraft"] .stage .dhdr { letter-spacing: calc(-0.5 * var(--fpx)); word-spacing: calc(0.5 * var(--fpx)); }
+:root[data-font="modern"] .stage .dhdr { --row-line: calc(10 * var(--su)); }
 .stage .dhdr svg { display: block; margin-top: var(--su); }
 .stage .htitle {
   margin-left: auto;

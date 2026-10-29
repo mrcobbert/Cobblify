@@ -12,13 +12,16 @@
         "theme": "Dark",
         "backgroundColor": "#1A1A1A",
         "visible": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
-        "trafficLightPosition": {
-          "x": 14,
-          "y": 17
-        }
+        "titleBarStyle": "Transparent",
+        "hiddenTitle": true
       }
+    ]
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/Cobblify.icon"
     ]
   }
 }

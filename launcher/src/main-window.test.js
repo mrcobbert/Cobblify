@@ -203,7 +203,7 @@ test("a launch that throws re-arms the background refresh (J5)", async () => {
   assert.ok(countCalls("refresh_setup") > before, "focus refreshed the setup again");
 });
 
-test("the Dev builds switch keeps the user's click while the save is in flight (J6)", async () => {
+test("the Preview updates switch keeps the user's click while the save is in flight (J6)", async () => {
   home.querySelector('[data-act="settings"]').click();
   const devSwitch = () => el("sheet").querySelector('.tog[data-key="dev"]');
   await waitFor(() => devSwitch() != null, { label: "the settings sheet" });

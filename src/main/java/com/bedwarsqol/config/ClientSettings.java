@@ -154,6 +154,10 @@ public class ClientSettings {
     public boolean chatNotifyMention = true;
     /** Sub: double pling when a teammate or party member says "inc"/"incoming" in an active Bedwars game. */
     public boolean chatNotifyInc = true;
+    /** Sub: quick triple pling when a teammate or party member says "bed" in an active Bedwars game. */
+    public boolean chatNotifyBed = true;
+    /** Sub: low bass note when a teammate or party member says "bg" in an active Bedwars game. */
+    public boolean chatNotifyBg = true;
     /** Copy Chat: right-click a chat line while chat is open to copy the full message to the clipboard. */
     public boolean chatCopy = true;
     /**
@@ -266,6 +270,14 @@ public class ClientSettings {
     /** Center-screen countdown for nearby primed TNT. */
     public boolean tntFuseEnabled = false;
     public int tntFuseRadius = 10;
+
+    /**
+     * Clutch Practice (Forge, singleplayer only): throwable fire charges, unlimited pearls / fire
+     * charges / wool, and a void reset to the last solid ground. Inert on any multiplayer server.
+     */
+    public boolean clutchPractice = false;
+    /** Sub of Clutch Practice: fireballs break wool, planks and clay (never on when off). */
+    public boolean clutchBlockDamage = false;
 
     /** First-person held-item position offset (X/Y/Z, eye space) + size scale, gated by the master toggle. */
     public boolean handPositionEnabled = false;

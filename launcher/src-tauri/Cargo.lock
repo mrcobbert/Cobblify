@@ -537,13 +537,17 @@ dependencies = [
 
 [[package]]
 name = "cobblify-launcher"
-version = "0.18.0"
+version = "0.18.2"
 dependencies = [
  "atomic-write-file",
  "base64 0.22.1",
+ "block2",
  "fs2",
  "futures-util",
  "minisign-verify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "reqwest",
  "semver",
  "serde",
