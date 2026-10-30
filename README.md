@@ -9,10 +9,7 @@ policy — no automation of player actions, no unfair advantages.
 ## Install
 
 Official builds have the maintainer's stats backend built in and are distributed
-privately by the maintainer - ask for the latest build. The public
-**[Releases](../../releases)** contain blank jars with no backend baked in; stats
-on those require self-hosting - see
-[Advanced: self-hosting the stats backend](#advanced-self-hosting-the-stats-backend).
+privately by the maintainer - ask for the latest build.
 
 ### Forge
 
@@ -28,23 +25,6 @@ on those require self-hosting - see
 2. Run the installer once (`Install BedwarsQOL (Lunar).command` on Mac, `.bat` on Windows). It copies the Weave loader + mod into place and creates a **Launch Lunar (Cobblify)** launcher next to it and on your Desktop.
 3. From then on, always start the game with **Launch Lunar (Cobblify)** (fully quit Lunar first if it is already open). No Lunar settings need changing.
 4. Remaining manual steps: log into Lunar, pick **1.8.9**, and turn **Waypoints OFF** inside your active Lunar settings profile. Press **Right Shift** (or run `/cobblify`) in-game to open the settings.
-
-## Advanced: self-hosting the stats backend
-
-Only for people running their own Worker - that is, using a blank public
-Release jar or a from-source build instead of an official build. Hypixel stats
-are served by a tiny **Cloudflare Worker you self-host** (free, private). Use
-the installer.
-
-1. Run the installer for your OS (clone/download this repo, or get it from **[Releases](../../releases/latest)**):
-  - **Windows:** double-click `[installers/setup-windows.bat](installers/setup-windows.bat)`
-  - **Mac:** double-click `[installers/setup-mac.command](installers/setup-mac.command)`
-2. Follow the prompts. A browser opens to log in or sign up for Cloudflare (free). If Cloudflare asks you to register a `workers.dev` name, type anything (e.g. your Minecraft name). The script deploys the Worker, locks it with a private token, and prints two chat commands (the first is copied to your clipboard).
-3. In Minecraft, paste both commands into chat (`/cobblify statsurl ...` and `/cobblify statstoken ...`), then enable **Hypixel Stats** in the mod GUI (Right Shift).
-
-`/cobblify statsurl` and `/cobblify statstoken` point the mod at your own
-Worker; on official builds they are unnecessary (leave them unset to use the
-built-in backend). See `server/stats-worker/README.md` for Worker details.
 
 ## Features: Cobblify — Features
 
