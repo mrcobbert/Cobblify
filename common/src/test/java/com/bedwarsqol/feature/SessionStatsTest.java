@@ -632,13 +632,28 @@ public class SessionStatsTest {
     @Test
     public void lateVictoryAfterAResetNeverMakesLossesNegative() {
         SessionStats s = new SessionStats();
+        s.onTick(true, 1_000L);
+        s.seedWinstreak(7);
         play(s, 1);
         feed(s, "You have been eliminated!", "1st Killer - Alex - 9");
         assertEquals(1, s.losses());
+        assertEquals(0, s.winstreak());
         s.reset();
+        assertEquals(0, s.games());
+        assertEquals(0, s.winstreak());
         s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
         assertEquals(0, s.losses());
         assertEquals(0, s.wins());
+        assertEquals(0, s.games());
+        assertEquals(8, s.winstreak());
+        s.onEvent(SessionChatLine.parseTitle("VICTORY!"));
+        assertEquals(0, s.losses());
+        assertEquals(0, s.wins());
+        assertEquals(0, s.games());
+        assertEquals(8, s.winstreak());
+        s.onTick(false, 2_000L);
+        assertEquals(0, s.winstreak());
+        assertEquals(0, s.games());
     }
 
     @Test

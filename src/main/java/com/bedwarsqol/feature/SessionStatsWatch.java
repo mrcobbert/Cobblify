@@ -9,6 +9,7 @@ import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityArmorStand;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.NetworkManager;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.fml.common.eventhandler.EventPriority;
@@ -42,6 +43,8 @@ public final class SessionStatsWatch {
     /** The world object last sampled and its serial; the serial changes whenever the world does. */
     private static Object sampledWorld;
     private static int worldSerial;
+    /** Retained while the player/world are temporarily absent; only an open connection owns a session. */
+    private static volatile NetworkManager sessionConnection;
 
     /** The live tally; read on the client thread by the HUD and the command. */
     public static SessionStats core() {
@@ -68,8 +71,9 @@ public final class SessionStatsWatch {
     public static void onTitle(String title) {
         if (title == null) return;
         try {
-            if (!HypixelContext.isOnHypixel()) return;
-            CORE.onTick(true, System.currentTimeMillis()); // on Hypixel now, before any state lands
+            Minecraft mc = Minecraft.getMinecraft();
+            if (!updateConnection(mc, System.currentTimeMillis())) return;
+            if (mc.theWorld == null || mc.thePlayer == null) return;
             SessionStats.Sample sample = sample();
             logStart(CORE.onGameTick(sample), sample);
             if (!acceptingEvents()) return;
@@ -96,10 +100,10 @@ public final class SessionStatsWatch {
 
     /** One colour-stripped chat line, from either platform's chat hook. */
     private static void onLine(String plain) {
-        if (plain == null || !HypixelContext.isOnHypixel()) return;
-        // Mark the session as on Hypixel before any state lands, so leaving Hypixel clears it even if
-        // no periodic tick ran in between.
-        CORE.onTick(true, System.currentTimeMillis());
+        if (plain == null) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (!updateConnection(mc, System.currentTimeMillis())) return;
+        if (mc.theWorld == null || mc.thePlayer == null) return;
         CORE.onNickChange(SessionChatLine.parseNickChange(plain));
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
@@ -170,14 +174,10 @@ public final class SessionStatsWatch {
         ticks = 0;
 
         Minecraft mc = Minecraft.getMinecraft();
-        boolean onHypixel = mc != null && mc.theWorld != null && HypixelContext.isOnHypixel();
-        if (CORE.onTick(onHypixel, System.currentTimeMillis())) {
-            DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
-        }
-        if (!onHypixel) {
-            sampledWorld = null; // never keep a world alive after leaving Hypixel
-            return;
-        }
+        if (!updateConnection(mc, System.currentTimeMillis())) return;
+        // getNetHandler() also disappears with the player during a transfer. Keep the session on
+        // its retained open connection, but wait for a real world/player before identifying games.
+        if (mc.theWorld == null || mc.thePlayer == null) return;
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
         if (HypixelContext.isInBedwars() && !sample.active) {
@@ -185,6 +185,36 @@ public final class SessionStatsWatch {
             int seed = lobbyWinstreak(mc);
             if (seed >= 0) CORE.seedWinstreak(seed);
         }
+    }
+
+    private static NetworkManager currentConnection(Minecraft mc) {
+        NetHandlerPlayClient net = mc == null ? null : mc.getNetHandler();
+        return net == null ? null : net.getNetworkManager();
+    }
+
+    /** Client-thread session lifetime: world availability is independent of the server connection. */
+    private static boolean updateConnection(Minecraft mc, long now) {
+        NetworkManager current = currentConnection(mc);
+        if (current == null) current = sessionConnection;
+        boolean channelOpen = current != null && current.isChannelOpen();
+        boolean connected = channelOpen && HypixelContext.isOnHypixel();
+        if (sessionConnection != null && (!connected || current != sessionConnection)) {
+            String reason = !channelOpen ? "closed" : !connected ? "offhost" : "replaced";
+            DiagLog.log("session: reset reason=" + reason);
+        }
+        if (connected && sessionConnection != null && current != sessionConnection) {
+            // A reconnect may replace the manager between two sampled ticks, without a false tick.
+            if (CORE.onTick(false, now)) {
+                DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (connection changed)");
+            }
+            sampledWorld = null;
+        }
+        if (CORE.onTick(connected, now)) {
+            DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
+        }
+        sessionConnection = connected ? current : null;
+        if (!connected) sampledWorld = null;
+        return connected;
     }
 
     /**
