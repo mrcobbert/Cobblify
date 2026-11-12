@@ -34,7 +34,7 @@ public final class ClutchRules {
     public static final double AIM_HEIGHT = 1.234;
     /** Self-damage per blast in health points: Hypixel takes a flat heart at any range. */
     public static final float MAX_DAMAGE = 2.0f;
-    /** Fall this far below the last solid ground and you are reset onto it. */
+    /** Fall this far below the last solid ground, over open void, and you are reset onto it. */
     public static final double VOID_DROP = 40.0;
     /** Fireball speed when thrown, blocks per tick, along the look (Hypixel and vanilla). */
     public static final double FIREBALL_START_SPEED = 1.0;
@@ -65,7 +65,11 @@ public final class ClutchRules {
         return blockId != null && BREAKABLE.contains(blockId);
     }
 
-    /** True when the player at {@code y} has fallen into the void and should go back to safe ground. */
+    /**
+     * True when the player at {@code y} is past the void line: under the world, or {@link #VOID_DROP}
+     * below their last solid ground. The caller resets them only when nothing solid is beneath; over
+     * ground they land and take vanilla fall damage, which can kill.
+     */
     public static boolean shouldVoidReset(double y, boolean hasSafe, double safeY) {
         return hasSafe && (y < 0 || y < safeY - VOID_DROP);
     }

@@ -18,10 +18,10 @@ import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.DamageSource;
+import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.Explosion;
 import net.minecraft.world.World;
-import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.world.ExplosionEvent;
 import net.minecraftforge.fml.common.eventhandler.Event;
@@ -43,8 +43,9 @@ import java.util.List;
  *       cooldown, consumed outside creative.</li>
  *   <li>Its blast pushes and lightly hurts nearby entities, never sets fire, and with Block Damage
  *       on breaks only {@link ClutchRules#breaks wool, planks and clay}.</li>
- *   <li>Pearls, fire charges and wool stay topped up, damage never kills, and falling
- *       {@link ClutchRules#shouldVoidReset into the void} puts you back on your last solid ground.</li>
+ *   <li>Pearls, fire charges and wool stay topped up. Damage is vanilla: falls, pearls and blasts
+ *       can kill. Falling {@link ClutchRules#shouldVoidReset into the void}, with nothing solid
+ *       beneath you, puts you back on your last solid ground at full health.</li>
  * </ul>
  */
 public class ClutchPractice {
@@ -174,7 +175,7 @@ public class ClutchPractice {
             safeX = player.posX;
             safeY = player.posY;
             safeZ = player.posZ;
-        } else if (ClutchRules.shouldVoidReset(player.posY, safeFor != null, safeY)) {
+        } else if (ClutchRules.shouldVoidReset(player.posY, safeFor != null, safeY) && !groundBelow(player)) {
             player.motionX = player.motionY = player.motionZ = 0;
             player.fallDistance = 0;
             player.setPositionAndUpdate(safeX, safeY, safeZ);
@@ -183,12 +184,16 @@ public class ClutchPractice {
         }
     }
 
-    /** Practice damage never kills: the hit is capped to leave half a heart. */
-    @SubscribeEvent
-    public void onHurt(LivingHurtEvent event) {
-        if (!(event.entityLiving instanceof EntityPlayer) || !active((EntityPlayer) event.entityLiving)) return;
-        float health = event.entityLiving.getHealth();
-        if (event.ammount >= health) event.ammount = Math.max(0f, health - 1f);
+    /** True when any block lies under the player's column: they will land, not fall into the void. */
+    private static boolean groundBelow(EntityPlayer player) {
+        World world = player.worldObj;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        int x = MathHelper.floor_double(player.posX), z = MathHelper.floor_double(player.posZ);
+        for (int y = MathHelper.floor_double(player.posY); y >= 0; y--) {
+            pos.set(x, y, z);
+            if (!world.isAirBlock(pos)) return true;
+        }
+        return false;
     }
 
     private static boolean standsOnSolid(EntityPlayer player) {
