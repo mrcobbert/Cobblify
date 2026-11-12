@@ -1,10 +1,14 @@
 package com.bedwarsqol.feature;
 
+import net.minecraft.block.Block;
+import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.projectile.EntityLargeFireball;
+import net.minecraft.util.BlockPos;
 import net.minecraft.util.DamageSource;
 import net.minecraft.util.MovingObjectPosition;
 import net.minecraft.util.Vec3;
+import net.minecraft.world.Explosion;
 import net.minecraft.world.World;
 
 /**
@@ -48,6 +52,14 @@ class ClutchFireball extends EntityLargeFireball {
     public boolean attackEntityFrom(DamageSource source, float amount) {
         if (source.isProjectile()) return false;
         return super.attackEntityFrom(source, amount);
+    }
+
+    /** Glass stops the blast's block rays, so blast-proof glass shields what is behind it. */
+    @Override
+    public float getExplosionResistance(Explosion explosion, World world, BlockPos pos, IBlockState state) {
+        Object id = Block.blockRegistry.getNameForObject(state.getBlock());
+        if (ClutchRules.shieldsBlast(id == null ? null : id.toString())) return ClutchRules.SHIELD_RESISTANCE;
+        return super.getExplosionResistance(explosion, world, pos, state);
     }
 
     @Override

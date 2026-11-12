@@ -42,7 +42,7 @@ import java.util.List;
  *   <li>Right-clicking a fire charge throws a {@link ClutchFireball} (no vanilla ignite), 0.5 s
  *       cooldown, consumed outside creative.</li>
  *   <li>Its blast pushes and lightly hurts nearby entities, never sets fire, and with Block Damage
- *       on breaks only {@link ClutchRules#breaks wool, planks and clay}.</li>
+ *       on breaks only {@link ClutchRules#breaks wool, planks, clay and ladders}; glass stops it.</li>
  *   <li>Pearls, fire charges and wool stay topped up. Damage is vanilla: falls, pearls and blasts
  *       can kill. Falling {@link ClutchRules#shouldVoidReset into the void}, with nothing solid
  *       beneath you, puts you back on your last solid ground at full health.</li>
@@ -138,7 +138,7 @@ public class ClutchPractice {
         for (EntityPlayer player : world.playerEntities) {
             if (!(player instanceof EntityPlayerMP) || player.getDistanceSq(x, y, z) > VISUAL_RANGE_SQ) continue;
             ((EntityPlayerMP) player).playerNetServerHandler.sendPacket(
-                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_STRENGTH, blocks, none));
+                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_POWER, blocks, none));
         }
     }
 

@@ -34,6 +34,17 @@ public class ClutchRulesTest {
     }
 
     @Test
+    public void glassShieldsTheBlast() {
+        assertTrue(ClutchRules.shieldsBlast("minecraft:glass"));
+        assertTrue(ClutchRules.shieldsBlast("minecraft:stained_glass"));
+        assertTrue(ClutchRules.shieldsBlast("minecraft:stained_glass_pane"));
+        assertFalse(ClutchRules.shieldsBlast("minecraft:wool"));
+        assertFalse(ClutchRules.shieldsBlast(null));
+        // One ray step into a shield drains more than the strongest ray (power x 1.3) carries.
+        assertTrue((ClutchRules.SHIELD_RESISTANCE + 0.3f) * 0.3f > ClutchRules.EXPLOSION_POWER * 1.3f);
+    }
+
+    @Test
     public void voidResetNeedsSafeGroundAndARealFall() {
         assertFalse(ClutchRules.shouldVoidReset(-10, false, 0));
         assertFalse(ClutchRules.shouldVoidReset(60, true, 70));

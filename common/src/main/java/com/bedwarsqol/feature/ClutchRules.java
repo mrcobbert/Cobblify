@@ -17,10 +17,15 @@ public final class ClutchRules {
     public static final int COOLDOWN_TICKS = 10;
     /** A thrown fireball that has hit nothing is removed after this long (Hypixel: 55 ticks). */
     public static final int FIREBALL_LIFETIME_TICKS = 55;
-    /** Ray-cast power used to pick blocks when Block Damage is on (Bedwars plugins use ~3). */
-    public static final float EXPLOSION_POWER = 3.0f;
-    /** Explosion strength Hypixel sends in its S27 packet (visuals only). */
-    public static final float EXPLOSION_STRENGTH = 2.0f;
+    /**
+     * Blast power: the strength Hypixel sends in its S27 packet, also used for the vanilla block
+     * ray-cast. Nothing more exact is published. With vanilla resistances it reproduces what players
+     * report: wool always breaks, planks and clay only sometimes, end stone never (see
+     * {@code .ai/research/hypixel-fireball-blocks.md}).
+     */
+    public static final float EXPLOSION_POWER = 2.0f;
+    /** Resistance that stops a blast ray dead: blast-proof glass shields the blocks behind it. */
+    public static final float SHIELD_RESISTANCE = 1200f;
     /**
      * Entities further than this (feet to blast) take no knockback or damage. Not measured (the
      * furthest recorded hit was 2.85 blocks); 4 is vanilla's reach for strength 2.
@@ -43,7 +48,7 @@ public final class ClutchRules {
     /** Vanilla fireball drag per tick out of water ({@code EntityFireball.getMotionFactor}). */
     public static final double FIREBALL_DRAG = 0.95;
 
-    /** Registry names a fireball breaks with Block Damage on: the cheap Bedwars defence blocks. */
+    /** Registry names a fireball breaks with Block Damage on: Hypixel's wool, wood, clay and ladders. */
     private static final Set<String> BREAKABLE = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
             "minecraft:wool",
             "minecraft:carpet",
@@ -51,6 +56,13 @@ public final class ClutchRules {
             "minecraft:ladder",
             "minecraft:hardened_clay",
             "minecraft:stained_hardened_clay")));
+
+    /** Registry names that stop a blast ray: all glass counts as Hypixel's blast-proof glass. */
+    private static final Set<String> SHIELDS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
+            "minecraft:glass",
+            "minecraft:stained_glass",
+            "minecraft:glass_pane",
+            "minecraft:stained_glass_pane")));
 
     private ClutchRules() {
     }
@@ -63,6 +75,11 @@ public final class ClutchRules {
     /** True when a fireball may break the block with this registry name (end stone, obsidian, glass resist). */
     public static boolean breaks(String blockId) {
         return blockId != null && BREAKABLE.contains(blockId);
+    }
+
+    /** True when the block with this registry name stops a blast ray (glass), so nothing behind it breaks. */
+    public static boolean shieldsBlast(String blockId) {
+        return blockId != null && SHIELDS.contains(blockId);
     }
 
     /**
