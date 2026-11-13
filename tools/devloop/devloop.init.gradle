@@ -1,23 +1,77 @@
-// Applied with --init-script by tools/devloop/cobdev; the build files stay untouched.
-// Adds :1.8.9-forge:cobdevDump, which compiles the mod and writes the dev client's launch
-// configuration (classpath, main class, JVM args, program args) as JSON to -PcobdevOut.
+// Applied with --init-script by tools/devloop/cobdev to the ornithe/ project; no build file is edited,
+// so nothing here can reach the release jar (build/libs/Cobblify-1.8.9-ornithe-<ver>.jar is built by
+// a separate plain `./gradlew remapJar`, and cobdev checks it for bridge classes).
+//
+// Adds, only while this script is applied:
+//  - source set `cobdevBridge` (tools/devloop/bridge, -PcobdevBridgeDir): the dev-only bridge mod,
+//    compiled against the project's own MCP-named Minecraft classpath, jarred and remapped to
+//    intermediary (build/cobdev/cobdev-bridge.jar) so the same jar loads in dev (Fabric remaps it at
+//    runtime) and in the production layout;
+//  - the pinned runtime mods (-PcobdevDevMods=jar,jar,...) as modLocalRuntime, so Loom remaps them to
+//    the dev names for the dev client only;
+//  - task cobdevDump, which writes the dev client's launch configuration as JSON to -PcobdevOut.
 allprojects { p ->
+    p.pluginManager.withPlugin('net.fabricmc.fabric-loom-remap') {
+        def devMods = (p.findProperty('cobdevDevMods') ?: '').toString().split(',').findAll { it }
+        if (!devMods.isEmpty()) {
+            p.dependencies.add('modLocalRuntime', p.files(devMods))
+        }
+
+        def bridgeDir = p.findProperty('cobdevBridgeDir')
+        if (bridgeDir == null) return
+        def main = p.sourceSets.main
+        def bridge = p.sourceSets.create('cobdevBridge') { s ->
+            s.java.srcDirs = [new File(bridgeDir.toString(), 'src')]
+            s.resources.srcDirs = [new File(bridgeDir.toString(), 'resources')]
+            s.compileClasspath = main.compileClasspath
+        }
+        def outDir = p.layout.buildDirectory.dir('cobdev')
+        def bridgeJar = p.tasks.register('cobdevBridgeJar', org.gradle.jvm.tasks.Jar) {
+            from bridge.output
+            archiveFileName = 'cobdev-bridge-named.jar'
+            destinationDirectory = outDir
+        }
+        // Loom's classes are not on this script's classpath; reach them through the applied plugin.
+        def remapJarType = p.plugins.findPlugin('net.fabricmc.fabric-loom-remap').getClass().classLoader
+                .loadClass('net.fabricmc.loom.task.RemapJarTask')
+        p.tasks.register('cobdevBridgeRemapJar', remapJarType) {
+            dependsOn bridgeJar
+            inputFile = bridgeJar.flatMap { it.archiveFile }
+            classpath.from(bridge.compileClasspath)
+            archiveFileName = 'cobdev-bridge.jar'
+            destinationDirectory = outDir
+        }
+    }
+
     p.afterEvaluate {
         def run = p.tasks.findByName('runClient')
-        if (run == null) return
+        if (run == null || p.findProperty('cobdevOut') == null) return
         p.tasks.register('cobdevDump') {
             dependsOn p.tasks.named('classes')
             dependsOn run.dependsOn
+            dependsOn 'cobdevBridgeRemapJar'
             doLast {
+                def conf = { String n -> p.configurations.getByName(n).files.collect { it.absolutePath } }
+                def intermediary = p.configurations.detachedConfiguration(
+                        p.dependencies.create('net.ornithemc:calamus-intermediary-gen2:1.8.9:v2')).singleFile
                 def out = new File(p.property('cobdevOut') as String)
                 out.parentFile.mkdirs()
                 out.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
-                        mainClass : run.mainClass.get(),
-                        classpath : run.classpath.files.collect { it.absolutePath },
-                        jvmArgs   : run.allJvmArgs,
-                        args      : run.args,
-                        projectDir: p.projectDir.absolutePath,
-                        classesDir: p.sourceSets.main.java.classesDirectory.get().asFile.absolutePath,
+                        mainClass       : run.mainClass.get(),
+                        // Loom 1.19 keeps the real classpath here and only hands it to JavaExec at exec time.
+                        classpath       : run.internalClasspath.files.collect { it.absolutePath },
+                        // The @argfile entry is written at exec time only; the launch needs none of it.
+                        jvmArgs         : run.allJvmArgs.findAll { !it.startsWith('@') },
+                        args            : run.args,
+                        projectDir      : p.projectDir.absolutePath,
+                        classesDir      : p.sourceSets.main.java.classesDirectory.get().asFile.absolutePath,
+                        resourcesDir    : p.sourceSets.main.output.resourcesDir.absolutePath,
+                        bridgeJar       : p.layout.buildDirectory.file('cobdev/cobdev-bridge.jar').get().asFile.absolutePath,
+                        releaseJar      : p.tasks.named('remapJar').get().archiveFile.get().asFile.absolutePath,
+                        // Production layout inputs (cobdev stage --prod).
+                        mcLibraries     : conf('minecraftClientRuntimeLibraries'),
+                        loaderLibraries : conf('loaderLibraries'),
+                        intermediaryJar : intermediary.absolutePath,
                 ]))
             }
         }

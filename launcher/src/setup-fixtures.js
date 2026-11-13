@@ -17,11 +17,6 @@ const tgt = (kind, state, message, extra = {}) =>
     extra,
   );
 
-const PRISM_CANDIDATES = [
-  { id: "d0", name: "Hypixel-1.8.9" },
-  { id: "d1", name: "Skyblock-1.8.9" },
-];
-
 const LUNAR_READY = tgt("lunar", "ready", "Lunar Client");
 const LUNAR_ABSENT = tgt("lunar", "absent", "Lunar Client is not installed.", {
   issue: ISSUE.MISSING_LAUNCHER,
@@ -40,7 +35,7 @@ const LUNAR_ERROR = tgt("lunar", "error", "Setup failed.", {
   detail: "The bundled Lunar jar is corrupt.",
 });
 
-const FORGE_READY = tgt("forge", "ready", "Prism Forge 1.8.9");
+const FORGE_READY = tgt("forge", "ready", "Prism 1.8.9");
 const FORGE_BLOCKED = tgt("forge", "blocked", "Conflicting jars.", {
   issue: ISSUE.CONFLICTS,
   has_setup_folder: true,
@@ -49,17 +44,17 @@ const FORGE_ERROR = tgt("forge", "error", "Setup failed.", {
   issue: ISSUE.SETUP_ERROR,
   detail: "Cannot create mods: permission denied.",
 });
-const FORGE_CHOOSE = tgt("forge", "absent", "Choose a Prism instance.", {
-  action: "choose",
-  candidates: PRISM_CANDIDATES,
-});
-const FORGE_NO_COMPAT = tgt("forge", "absent", "No compatible Prism instance was found.", {
-  issue: ISSUE.NO_COMPATIBLE_PRISM,
+// Not set up: Prism is offered as is (Cobblify makes its own instance; no pick).
+const FORGE_SETUP = tgt("forge", "absent", "Set up Prism.");
+// Set up with Forge (or other pins) before: the visible new setup.
+const FORGE_NEW_SETUP = tgt("forge", "absent", "Prism needs a new setup.", {
+  issue: ISSUE.PRISM_NEW_SETUP,
+  set_up: true,
 });
 const FORGE_NO_PRISM = tgt("forge", "absent", "Prism Launcher is not installed.", {
   issue: ISSUE.MISSING_LAUNCHER,
 });
-const FORGE_NO_JAR = tgt("forge", "absent", "This copy does not include Forge.", {
+const FORGE_NO_JAR = tgt("forge", "absent", "This copy does not include Prism support.", {
   issue: ISSUE.MISSING_BUNDLED_FORGE,
 });
 
@@ -69,12 +64,12 @@ export const PREVIEW_STATUS = {
     message:
       "Cobblify v0.9.0 ready for Lunar Client - Right Shift for settings in game",
     mod_version: "0.9.0",
-    targets: [LUNAR_READY, FORGE_CHOOSE],
+    targets: [LUNAR_READY, FORGE_SETUP],
   },
   bothReady: {
     state: "ready",
     message:
-      "Cobblify v0.9.0 ready for Lunar Client and Prism Forge 1.8.9 - Right Shift for settings in game",
+      "Cobblify v0.9.0 ready for Lunar Client and Prism 1.8.9 - Right Shift for settings in game",
     mod_version: "0.9.0",
     targets: [LUNAR_READY, FORGE_READY],
   },
@@ -88,19 +83,19 @@ export const PREVIEW_STATUS = {
     state: "blocked",
     message: "Run Lunar once, then reopen Cobblify.",
     mod_version: "0.9.0",
-    targets: [LUNAR_UNINITIALIZED, FORGE_CHOOSE],
+    targets: [LUNAR_UNINITIALIZED, FORGE_SETUP],
   },
   lunarAbsent: {
     state: "blocked",
-    message: "Choose a Prism instance.",
+    message: "Setup needed.",
     mod_version: "0.9.0",
-    targets: [LUNAR_ABSENT, FORGE_CHOOSE],
+    targets: [LUNAR_ABSENT, FORGE_SETUP],
   },
   lunarError: {
     state: "error",
     message: "Setup failed.",
     mod_version: "0.9.0",
-    targets: [LUNAR_ERROR, FORGE_CHOOSE],
+    targets: [LUNAR_ERROR, FORGE_SETUP],
   },
   lunarJars: {
     state: "blocked",
@@ -114,28 +109,28 @@ export const PREVIEW_STATUS = {
       FORGE_NO_JAR,
     ],
   },
-  prismChoose: {
+  prismSetup: {
     state: "blocked",
-    message: "Choose a Prism instance.",
+    message: "Setup needed.",
     mod_version: "0.9.0",
-    targets: [LUNAR_ABSENT, FORGE_CHOOSE],
+    targets: [LUNAR_ABSENT, FORGE_SETUP],
   },
   prismNoInstances: {
     state: "blocked",
-    message: "Install Prism Launcher to set up Forge.",
+    message: "Install Prism Launcher to set up Prism.",
     mod_version: "0.9.0",
     targets: [LUNAR_ABSENT, FORGE_NO_PRISM],
   },
-  prismNoCompatible: {
+  prismNewSetup: {
     state: "blocked",
-    message: "No compatible Prism instance was found.",
+    message: "Prism needs a new setup.",
     mod_version: "0.9.0",
-    targets: [LUNAR_ABSENT, FORGE_NO_COMPAT],
+    targets: [LUNAR_ABSENT, FORGE_NEW_SETUP],
   },
   forgeReady: {
     state: "ready",
     message:
-      "Cobblify v0.9.0 ready for Prism Forge 1.8.9 - Right Shift for settings in game",
+      "Cobblify v0.9.0 ready for Prism 1.8.9 - Right Shift for settings in game",
     mod_version: "0.9.0",
     targets: [LUNAR_ABSENT, FORGE_READY],
   },
@@ -171,11 +166,11 @@ export const PREVIEW_STATUS = {
     message:
       "Cobblify v0.9.0 ready for Lunar Client - Right Shift for settings in game",
     mod_version: "0.9.0",
-    targets: [LUNAR_READY, FORGE_CHOOSE],
+    targets: [LUNAR_READY, FORGE_SETUP],
   },
-  noForgeJar: {
+  noPrismBuild: {
     state: "blocked",
-    message: "This copy does not include Forge.",
+    message: "This copy does not include Prism support.",
     mod_version: "0.8.0",
     targets: [LUNAR_ABSENT, FORGE_NO_JAR],
   },
@@ -194,16 +189,16 @@ export const PREVIEW_SETUP_KEYS = [
   "lunarAbsent",
   "lunarError",
   "lunarJars",
-  "prismChoose",
+  "prismSetup",
   "prismNoInstances",
-  "prismNoCompatible",
+  "prismNewSetup",
   "forgeReady",
   "forgeBlocked",
   "forgeError",
   "dualConflict",
   "mixedReady",
   "bothReady",
-  "noForgeJar",
+  "noPrismBuild",
   "bundleError",
 ];
 
@@ -214,16 +209,16 @@ export const PREVIEW_SETUP_LABELS = {
   lunarAbsent: "No Lunar",
   lunarError: "Lunar error",
   lunarJars: "Jar conflict",
-  prismChoose: "Choose Prism",
+  prismSetup: "Set up Prism",
   prismNoInstances: "No Prism",
-  prismNoCompatible: "Bad Prism",
+  prismNewSetup: "Prism new setup",
   forgeReady: "Prism ready",
   forgeBlocked: "Prism blocked",
   forgeError: "Prism error",
   dualConflict: "Both conflict",
   mixedReady: "Mixed ready",
   bothReady: "Both ready",
-  noForgeJar: "No Forge",
+  noPrismBuild: "No Prism build",
   bundleError: "Bundle error",
 };
 
@@ -231,11 +226,11 @@ export const PREVIEW_STATUS_ALIASES = {
   ready: "lunarReady",
   lunar: "lunarBlocked",
   jars: "lunarJars",
-  forge: "prismChoose",
+  forge: "prismSetup",
   both: "bothReady",
-  oldbundle: "noForgeJar",
+  oldbundle: "noPrismBuild",
   error: "bundleError",
-  prismIncompatible: "prismNoCompatible",
+  prismIncompatible: "prismNewSetup",
 };
 
 export function resolvePreviewStatus(key) {
@@ -330,12 +325,10 @@ export function aggregateStatus(modVersion, targets) {
 
   const forge = targets.find((t) => t.kind === "forge");
   let message = "Setup needed.";
-  if (forge?.issue === ISSUE.MISSING_LAUNCHER) message = "Install Prism Launcher to set up Forge.";
-  else if (forge?.issue === ISSUE.NO_COMPATIBLE_PRISM) {
-    message = "No compatible Prism instance was found.";
-  } else if (forge?.action === "choose") message = "Choose a Prism instance.";
+  if (forge?.issue === ISSUE.MISSING_LAUNCHER) message = "Install Prism Launcher to set up Prism.";
+  else if (forge?.issue === ISSUE.PRISM_NEW_SETUP) message = "Prism needs a new setup.";
   else if (forge?.issue === ISSUE.MISSING_BUNDLED_FORGE) {
-    message = "This copy does not include Forge.";
+    message = "This copy does not include Prism support.";
   }
 
   return {

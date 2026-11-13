@@ -64,14 +64,14 @@ test("the new-player theme: Pale Blue and the Minecraft font", () => {
   assert.equal(document.documentElement.dataset.font, "minecraft");
 });
 
-test("its menu: Lunar Client and Forge (Prism), each with the download mark when it isn't installed", async () => {
+test("its menu: Lunar Client and Prism, each with the download mark when it isn't installed", async () => {
   hero().click();
   const menu = () => home.querySelector("#layer .menu");
   await waitFor(() => menu() != null, { label: "the menu" });
   assert.equal(menu().getAttribute("aria-label"), "Set up");
   assert.equal(hero().getAttribute("aria-expanded"), "true");
   const rows = [...menu().querySelectorAll(".mrow")];
-  assert.deepEqual(rows.map((r) => r.textContent.trim()), ["Lunar Client", "Forge (Prism)"]);
+  assert.deepEqual(rows.map((r) => r.textContent.trim()), ["Lunar Client", "Prism"]);
   assert.deepEqual(rows.map((r) => r.dataset.act), ["get", "get"]);
   assert.deepEqual(rows.map((r) => r.getAttribute("aria-label")), ["Lunar Client, download", "Prism Launcher, download"]);
   assert.ok(rows.every((r) => r.querySelector(".ck svg")), "the download mark");

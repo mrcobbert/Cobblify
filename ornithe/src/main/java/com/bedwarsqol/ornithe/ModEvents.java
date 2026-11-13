@@ -1,0 +1,35 @@
+package com.bedwarsqol.ornithe;
+
+import com.bedwarsqol.event.EventDispatcher;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.WorldClient;
+
+/**
+ * The Ornithe build's replacement for {@code MinecraftForge.EVENT_BUS}: one dispatcher per event the
+ * features listen to. OSL feeds {@link #CLIENT_TICK}; Cobblify's own mixins feed the rest, at the
+ * vanilla positions Forge posts its events from.
+ */
+public final class ModEvents {
+
+    /** End of {@code Minecraft.runTick} (Forge {@code ClientTickEvent}, phase END). */
+    public static final EventDispatcher<Minecraft> CLIENT_TICK = new EventDispatcher<>();
+    /** Server chat packets, client thread (Forge {@code ClientChatReceivedEvent}). */
+    public static final EventDispatcher<ChatReceivedEvent> CHAT = new EventDispatcher<>();
+    /** A new client world (Forge {@code WorldEvent.Load} from {@code WorldClient}). */
+    public static final EventDispatcher<WorldClient> WORLD_LOAD = new EventDispatcher<>();
+    /** HUD text layer, at vanilla's debug-overlay position (Forge {@code RenderGameOverlayEvent.Text}). */
+    public static final EventDispatcher<Float> HUD_TEXT = new EventDispatcher<>();
+    /** End of the in-game HUD frame (Forge {@code RenderGameOverlayEvent.Post}, type ALL). */
+    public static final EventDispatcher<Float> HUD_POST = new EventDispatcher<>();
+    /** In-game mouse loop (Forge {@code MouseEvent}). */
+    public static final EventDispatcher<MouseButtonEvent> MOUSE = new EventDispatcher<>();
+    /** After a living entity's name tag pass (Forge {@code RenderLivingEvent.Specials.Post}). */
+    public static final EventDispatcher<NametagRenderEvent> NAMETAG_POST = new EventDispatcher<>();
+    /** Before vanilla's block outline (Forge {@code DrawBlockHighlightEvent}). */
+    public static final EventDispatcher<BlockHighlightEvent> BLOCK_HIGHLIGHT = new EventDispatcher<>();
+    /** Login finished, netty thread (FML {@code ClientConnectedToServerEvent}). */
+    public static final EventDispatcher<ServerConnectEvent> SERVER_CONNECT = new EventDispatcher<>();
+
+    private ModEvents() {
+    }
+}

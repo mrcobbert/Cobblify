@@ -1,0 +1,37 @@
+{
+  "compatibilityLevel": "JAVA_8",
+  "minVersion": "0.8",
+  "package": "com.bedwarsqol.mixin",
+  "injectors": {
+    "maxShiftBy": 5
+  },
+  "mixins": [
+    "EntityPlayerMixin",
+    "ExplosionMixin",
+    "ItemInWorldManagerMixin"
+  ],
+  "client": [
+    "GuiIngameMixin",
+    "GuiNewChatMixin",
+    "MinecraftChatClearMixin",
+    "MinecraftEscMixin",
+    "GuiPlayerTabOverlayMixin",
+    "GuiChatMixin",
+    "GuiScreenMixin",
+    "EntityPlayerSPMixin",
+    "C01PacketChatMessageMixin",
+    "ItemRendererMixin",
+    "EntityRendererCameraMixin",
+    "EntityRendererMixin",
+    "GuiChatCompletionMixin",
+    "GuiIngameHudMixin",
+    "GuiScreenCommandMixin",
+    "MinecraftMouseMixin",
+    "NetHandlerLoginClientMixin",
+    "NetHandlerPlayClientMixin",
+    "NetworkManagerAccessor",
+    "RendererLivingEntityMixin",
+    "WorldClientMixin"
+  ],
+  "verbose": true
+}

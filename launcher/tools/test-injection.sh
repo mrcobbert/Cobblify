@@ -92,10 +92,10 @@ Build it first: cd \"$repo_root/launcher\" && npm run tauri build -- --bundles a
 version="9.9.9-test"
 mod_jar="$tmpd/Cobblify-Lunar-$version.jar"
 agent_jar="$tmpd/Weave-Loader-Agent-1.3.3.jar"
-forge_jar="$tmpd/Cobblify-1.8.9-forge-$version.jar"
+ornithe_jar="$tmpd/Cobblify-1.8.9-ornithe-$version.jar"
 printf 'fake mod jar, not a real build\n'   > "$mod_jar"
 printf 'fake weave agent, not a real one\n' > "$agent_jar"
-printf 'fake forge jar, not a real build\n' > "$forge_jar"
+printf 'fake ornithe jar, not a real build\n' > "$ornithe_jar"
 
 echo "== 1. the build output is blank =="
 cobblify_assert_blank_app "$app_src"
@@ -106,21 +106,20 @@ stage="$tmpd/stage"
 mkdir "$stage"
 staged_app="$stage/$COBBLIFY_APP_NAME"
 cp -R "$app_src" "$stage/"
-cobblify_inject_app "$staged_app" "$mod_jar" "$agent_jar" "$version" "$forge_jar"
+cobblify_inject_app "$staged_app" "$mod_jar" "$agent_jar" "$version" "$ornithe_jar"
 ok "injection wrote all three jars and manifest.json"
 
 res="$staged_app/$COBBLIFY_APP_RESOURCES"
 manifest=$(cat "$res/manifest.json")
-for key in mod_jar agent_jar mod_version mod_sha256 agent_sha256 forge_jar forge_sha256; do
+for key in mod_jar agent_jar mod_version mod_sha256 agent_sha256 ornithe_jar ornithe_sha256; do
   case "$manifest" in
     *"\"$key\":"*) ;;
     *) fail "manifest.json has no $key" ;;
   esac
 done
 # deny_unknown_fields on the Rust side: an extra key is a hard failure there, so
-# the count must be exactly seven. forge_jar/forge_sha256 are optional there ONLY
-# so a bundle built before Forge support still runs; the writer always emits both,
-# and half a pair is a hard failure on both sides.
+# the count must be exactly seven. ornithe_jar/ornithe_sha256 are a pair: the
+# writer always emits both, and half a pair is a hard failure on both sides.
 keys=$(printf '%s' "$manifest" | tr ',' '\n' | grep -c '":' || true)
 [ "$keys" = "7" ] || fail "manifest.json has $keys keys, expected exactly 7"
 ok "manifest.json has exactly the 7 fields resources.rs deserialises"
@@ -175,7 +174,7 @@ want_entries() {
       "Install BedwarsQOL (Lunar).command" \
       "Install BedwarsQOL (Lunar).bat"
     cobblify_app_zip_entries "$COBBLIFY_APP_NAME" \
-      "$(basename "$mod_jar")" "$(basename "$agent_jar")" "$(basename "$forge_jar")"
+      "$(basename "$mod_jar")" "$(basename "$agent_jar")" "$(basename "$ornithe_jar")"
   } | LC_ALL=C sort
 }
 
@@ -259,13 +258,13 @@ cmp -s "$installed_mod" "$mod_jar" || fail "the installed mod jar differs from t
 cmp -s "$installed_agent" "$agent_jar" || fail "the installed agent jar differs from the injected one"
 ok "the running .app found, verified and installed both Lunar jars"
 
-# The Forge jar must verify (a bad one would have aborted startup and taken the
+# The Ornithe jar must verify (a bad one would have aborted startup and taken the
 # Lunar install with it) but must NOT be installed: nothing was chosen, and the
 # launcher never installs into a Prism instance on the user's behalf.
-stray=$(find "$fake_home" -type f -name "$(basename "$forge_jar")" -print)
-[ -z "$stray" ] || fail "the launcher installed the Forge jar without a choice being made:
+stray=$(find "$fake_home" -type f -name "$(basename "$ornithe_jar")" -print)
+[ -z "$stray" ] || fail "the launcher installed the Ornithe jar without a choice being made:
 $stray"
-ok "the Forge jar was verified but NOT installed speculatively"
+ok "the Ornithe jar was verified but NOT installed speculatively"
 
 echo "== 9. test-drive.command uses local build outputs before Desktop staging =="
 test_drive="$repo_root/launcher/tools/test-drive.command"
@@ -275,8 +274,8 @@ grep -q 'lunar/build.gradle.kts' "$test_drive" \
   || fail "test-drive.command does not read version from lunar/build.gradle.kts"
 grep -q 'lunar/build/libs/Cobblify-Lunar-' "$test_drive" \
   || fail "test-drive.command does not derive mod_src from lunar/build/libs"
-grep -q 'versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-' "$test_drive" \
-  || fail "test-drive.command does not derive forge_src from versions/1.8.9-forge/build/libs"
+grep -q 'ornithe/build/libs/Cobblify-1.8.9-ornithe-' "$test_drive" \
+  || fail "test-drive.command does not derive ornithe_src from ornithe/build/libs"
 grep -q 'Weave-Loader-Agent-' "$test_drive" \
   || fail "test-drive.command does not locate the installed Weave agent"
 if grep -q '\.weave/mods' "$test_drive"; then
@@ -286,7 +285,7 @@ fi
 inject_line=$(grep -n 'cobblify_inject_app ' "$test_drive" | head -1)
 [ -n "$inject_line" ] || fail "test-drive.command has no cobblify_inject_app call"
 inject_body=${inject_line#*:}
-for arg in '"$mod_src"' '"$agent_src"' '"$version"' '"$forge_src"'; do
+for arg in '"$mod_src"' '"$agent_src"' '"$version"' '"$ornithe_src"'; do
   case "$inject_body" in
     *"$arg"*) ;;
     *) fail "test-drive.command cobblify_inject_app omits argument $arg" ;;
@@ -307,12 +306,12 @@ must_precede_desktop() { # <description> <grep pattern>
 
 must_precede_desktop 'version read' 'could not read version from lunar/build.gradle.kts'
 must_precede_desktop 'mod_src assignment' 'mod_src="\$repo_root/lunar/build/libs/Cobblify-Lunar-\$version.jar"'
-must_precede_desktop 'forge_src assignment' 'forge_src="\$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-\$version.jar"'
+must_precede_desktop 'ornithe_src assignment' 'ornithe_src="\$repo_root/ornithe/build/libs/Cobblify-1.8.9-ornithe-\$version.jar"'
 must_precede_desktop 'agent check' '\[ -n "\$agent_src" \]'
 must_precede_desktop 'Lunar jar check' '\[ -f "\$mod_src" \]'
-must_precede_desktop 'Forge jar check' '\[ -f "\$forge_src" \]'
+must_precede_desktop 'Ornithe jar check' '\[ -f "\$ornithe_src" \]'
 
-ok "test-drive.command selects local Lunar/Forge build outputs, verifies all inputs, and passes forge to cobblify_inject_app before Desktop staging"
+ok "test-drive.command selects local Lunar/Ornithe build outputs, verifies all inputs, and passes ornithe to cobblify_inject_app before Desktop staging"
 
 echo
 echo "all $pass checks passed - injection, manifest, signing, verification and"

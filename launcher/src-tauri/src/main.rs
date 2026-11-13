@@ -22,6 +22,7 @@ mod lunar_profile;
 #[cfg(target_os = "macos")]
 mod lunar_quit;
 mod open_info;
+mod ornithe;
 mod prism;
 mod prism_java;
 mod proc;
@@ -45,14 +46,14 @@ use std::time::SystemTime;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
-use forge::{Candidate, CandidateView, Compat, InstanceView};
+use forge::{Candidate, CandidateView, InstanceView};
 use launch::{LaunchKind, LaunchReply};
 use lifecycle::{Coordinator, LifecycleError};
 use lobby::{LobbyPoll, LobbySession};
 use preferences::{
     LaunchPreferencesView, PreferenceSaveReply, UpdatePreferenceSaveReply, UpdatePreferencesView,
 };
-use resources::ForgeJar;
+use resources::OrnitheJar;
 
 #[tauri::command]
 fn window_top_inset(chrome: tauri::State<window_chrome::WindowChrome>) -> window_chrome::Snapshot {
@@ -75,6 +76,9 @@ mod issue {
     pub const GAME_UNKNOWN: &str = "game_unknown";
     /// Set up and not current, during a setup run (refresh is read-only then).
     pub const NOT_CURRENT: &str = "not_current";
+    /// Prism was set up (with Forge, or with other pins) and needs Cobblify's new instance:
+    /// a visible setup, never a silent download.
+    pub const PRISM_NEW_SETUP: &str = "prism_new_setup";
 }
 
 /// One install target's own outcome. The two targets are reported independently and on
@@ -180,7 +184,7 @@ impl Status {
 /// keyed by an opaque id: the frontend never sends us a filesystem path.
 #[derive(Default)]
 struct ForgeState {
-    jar: Option<ForgeJar>,
+    jar: Option<OrnitheJar>,
     candidates: HashMap<String, Candidate>,
 }
 
@@ -448,72 +452,85 @@ pub(crate) fn uninstall_lunar_integration_with(
     0
 }
 
-// ── Forge ───────────────────────────────────────────────────────────────────────
+// ── Prism (the Ornithe instance) ────────────────────────────────────────────────
 
-/// Turns a completed Forge install into a target status.
-fn forge_ready(out: forge::Outcome, game_dir: &Path) -> TargetStatus {
-    let mut t = if out.blocked {
-        TargetStatus::new("forge", "blocked", "Conflicting jars.").with_issue(issue::CONFLICTS)
-    } else {
-        TargetStatus::new("forge", "ready", "Prism Forge 1.8.9")
-    };
-    if out.blocked {
-        t.has_setup_folder = true;
-        t.conflict_dir = Some(game_dir.join("mods"));
-    } else if let Some(path) = out.path {
-        t.install_path = Some(PathBuf::from(path));
-    }
+/// The machine facts Prism's status needs, injected so tests never see the real machine.
+struct PrismProbe<'a> {
+    installed: bool,
+    os: ornithe::Os,
+    pins: &'a [ornithe::Pin],
+    /// A scan for a game working in an instance folder.
+    game: &'a dyn Fn(&Path) -> setup::GameScan,
+}
+
+/// Prism set up before (with Forge, or with other pins): shown as set up, with its new setup
+/// to run. Nothing is written for it.
+fn prism_new_setup() -> TargetStatus {
+    let mut t = TargetStatus::new("forge", "absent", "Prism needs a new setup.")
+        .with_issue(issue::PRISM_NEW_SETUP);
+    t.set_up = true;
     t
 }
 
-fn forge_failed(e: String) -> TargetStatus {
-    TargetStatus::new("forge", "error", "Setup failed.")
-        .with_issue(issue::SETUP_ERROR)
-        .with_detail(e)
-}
-
-fn forge_choose_with_prism(candidates: &[Candidate], prism_installed: bool) -> TargetStatus {
-    let confirmed: Vec<&Candidate> = candidates
-        .iter()
-        .filter(|c| c.compat == Compat::Confirmed)
-        .collect();
-
-    if !prism_installed {
-        return TargetStatus::new("forge", "absent", "Prism Launcher is not installed.")
-            .with_issue(issue::MISSING_LAUNCHER);
-    }
-
-    if confirmed.is_empty() {
-        return TargetStatus::new("forge", "absent", "No compatible Prism instance was found.")
-            .with_issue(issue::NO_COMPATIBLE_PRISM);
-    }
-
-    let mut t = TargetStatus::new("forge", "absent", "Choose a Prism instance.");
-    t.action = "choose";
-    t.candidates = confirmed.iter().map(|c| c.view()).collect();
-    t
-}
-
-fn forge_choose(candidates: &[Candidate]) -> TargetStatus {
-    forge_choose_with_prism(candidates, forge::prism_installed())
-}
-
-/// Installs into a candidate and remembers it, but only once the install succeeded.
-fn adopt(jar: &ForgeJar, c: &Candidate, home: &Path) -> TargetStatus {
-    let out = match forge::install(jar, &c.game_dir) {
-        Ok(o) => o,
-        Err(e) => return forge_failed(e),
+/// Prism's target status. A valid Ornithe target with this launcher's pins all in place is
+/// set up; on a writing refresh with its game closed, the bundled Cobblify jar replaces the
+/// old one (startup refresh: Cobblify's own files only, nothing downloaded). Other pins, a
+/// pin gone missing, or a saved Forge target and no Ornithe one: "Prism needs a new setup".
+fn prism_status(
+    jar: Option<&Result<OrnitheJar, String>>,
+    home: &Path,
+    mode: Refresh,
+    probe: &PrismProbe,
+) -> TargetStatus {
+    let saved = ornithe::load_target(home);
+    let Some((target, root)) = saved
+        .as_ref()
+        .and_then(|t| ornithe::revalidate(t).map(|r| (t, r)))
+    else {
+        if forge::load_target(home).is_some() {
+            return prism_new_setup();
+        }
+        return match jar {
+            _ if !probe.installed => {
+                TargetStatus::new("forge", "absent", "Prism Launcher is not installed.")
+                    .with_issue(issue::MISSING_LAUNCHER)
+            }
+            None => TargetStatus::new("forge", "absent", "This copy does not include Prism support.")
+                .with_issue(issue::MISSING_BUNDLED_FORGE),
+            Some(Err(e)) => TargetStatus::new("forge", "error", "Setup failed.")
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e.clone()),
+            Some(Ok(_)) => TargetStatus::new("forge", "absent", "Set up Prism."),
+        };
     };
-    if out.blocked {
-        return forge_ready(out, &c.game_dir);
+    let jar = match jar {
+        Some(Ok(jar)) => jar,
+        Some(Err(e)) => {
+            let mut t = TargetStatus::new("forge", "error", "Setup failed.")
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e.clone());
+            t.set_up = true;
+            return t;
+        }
+        None => return prism_new_setup(),
+    };
+    let game = ornithe::game_dir(&root);
+    let pins = ornithe::pins_for(probe.pins, probe.os);
+    if target.pins != ornithe::pins_id(probe.pins, probe.os) || !ornithe::pins_in_place(&game, &pins) {
+        return prism_new_setup();
     }
-    let mut t = forge_ready(out, &c.game_dir);
-    // Keeps a made instance's flags (the silent refresh re-adopts it at every startup).
-    if let Err(e) = forge::save_adopted(home, c) {
-        t.message = format!(
-            "{} (could not remember this Prism instance: {e})",
-            t.message
-        );
+    let mut t = TargetStatus::new("forge", "ready", "Prism 1.8.9");
+    t.install_path = Some(game.join("mods").join(&jar.name));
+    t.set_up = true;
+    let scan = (probe.game)(&root);
+    if mode == Refresh::Write && !scan.running && scan.complete {
+        if let Err(e) = ornithe::place(&root, &game, &pins, jar) {
+            let mut failed = TargetStatus::new("forge", "error", "Setup failed.")
+                .with_issue(issue::SETUP_ERROR)
+                .with_detail(e);
+            failed.set_up = true;
+            return failed;
+        }
     }
     t
 }
@@ -564,23 +581,13 @@ fn aggregate(version: Option<String>, targets: Vec<TargetStatus>) -> Status {
     }
 
     let forge = targets.iter().find(|t| t.kind == "forge");
-    let message = if forge
-        .and_then(|t| t.issue)
-        .is_some_and(|i| i == issue::MISSING_LAUNCHER)
-    {
-        "Install Prism Launcher to set up Forge.".to_string()
-    } else if forge
-        .and_then(|t| t.issue)
-        .is_some_and(|i| i == issue::NO_COMPATIBLE_PRISM)
-    {
-        "No compatible Prism instance was found.".to_string()
-    } else if forge.map(|t| t.action == "choose").unwrap_or(false) {
-        "Choose a Prism instance.".to_string()
-    } else if forge
-        .and_then(|t| t.issue)
-        .is_some_and(|i| i == issue::MISSING_BUNDLED_FORGE)
-    {
-        "This copy does not include Forge.".to_string()
+    let forge_issue = forge.and_then(|t| t.issue);
+    let message = if forge_issue == Some(issue::MISSING_LAUNCHER) {
+        "Install Prism Launcher to set up Prism.".to_string()
+    } else if forge_issue == Some(issue::PRISM_NEW_SETUP) {
+        "Prism needs a new setup.".to_string()
+    } else if forge_issue == Some(issue::MISSING_BUNDLED_FORGE) {
+        "This copy does not include Prism support.".to_string()
     } else {
         "Setup needed.".to_string()
     };
@@ -612,51 +619,25 @@ fn rebuild_setup(home: &Path, ctx: &SetupContext, mode: Refresh) -> (Status, For
 
     let mut state = ForgeState::default();
     let prism_installed = forge::prism_installed();
-    // Detection is read-only and always runs: the pick (first run, or Change in
-    // settings) needs the compatible instances whether or not Prism is set up.
-    let candidates = forge::Env::from_process()
-        .map(|env| forge::detect(&env))
-        .unwrap_or_default();
-    let instances = forge::instance_views(&candidates);
-    let mut forge_target = match &verified.forge {
-        None => TargetStatus::new("forge", "absent", "This copy does not include Forge.")
-            .with_issue(issue::MISSING_BUNDLED_FORGE),
-        Some(Err(e)) => TargetStatus::new("forge", "error", "Setup failed.")
-            .with_issue(issue::SETUP_ERROR)
-            .with_detail(e.clone()),
-        Some(Ok(jar)) => {
-            state.jar = Some(jar.clone());
-            match forge::load_target(home)
-                .as_ref()
-                .and_then(forge::revalidate)
-            {
-                // A valid saved target = set up: keep its existing adopt/refresh, except
-                // while a setup run owns the coordinator.
-                Some(c) => {
-                    let mut t = match mode {
-                        Refresh::Write => adopt(jar, &c, home),
-                        Refresh::ReadOnly => {
-                            let mut t = TargetStatus::new("forge", "ready", "Prism Forge 1.8.9");
-                            t.install_path = Some(c.game_dir.join("mods").join(&jar.name));
-                            t
-                        }
-                    };
-                    t.set_up = true;
-                    t
-                }
-                // Not set up: detection only.
-                None => forge_choose(&candidates),
-            }
+    if let Some(Ok(jar)) = &verified.ornithe {
+        state.jar = Some(jar.clone());
+    }
+    let game = |root: &Path| {
+        let scan = crate::proc::java_in_dir_scan(root);
+        setup::GameScan {
+            running: !scan.pids.is_empty(),
+            complete: scan.complete,
         }
     };
-    for c in candidates
-        .into_iter()
-        .filter(|c| c.compat == Compat::Confirmed)
-    {
-        state.candidates.insert(c.id.clone(), c);
-    }
+    let pins = ornithe::PINS;
+    let probe = PrismProbe {
+        installed: prism_installed,
+        os: ornithe::Os::host(),
+        pins: &pins,
+        game: &game,
+    };
+    let mut forge_target = prism_status(verified.ornithe.as_ref(), home, mode, &probe);
     forge_target.installed = prism_installed;
-    forge_target.instances = Some(instances);
 
     (
         aggregate(ctx.mod_version.clone(), vec![lunar, forge_target]),
@@ -729,7 +710,7 @@ fn open_info(state: tauri::State<'_, open_info::OpenInfo>) -> open_info::OpenInf
 fn game_theme(kind: String) -> Result<theme::GameTheme, String> {
     let home = home()?;
     let forge_dir = if kind == "forge" {
-        forge::saved_game_dir(&home).map(|d| d.display().to_string())
+        ornithe::saved_game_dir(&home).map(|d| d.display().to_string())
     } else {
         None
     };
@@ -875,11 +856,10 @@ fn prism_data() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Starts setting up `kind` ("lunar" | "forge") from check 1. `instanceId` (Prism only)
-/// names an instance from the status's `instances`. Without one, Prism's instance is
-/// decided now: the saved one, else the only compatible one, else none (Cobblify makes
-/// "Cobblify 1.8.9"); several compatible and no pick is refused with `choose_instance`
-/// (the UI shows the pick first). Replies with the first snapshot; progress follows on
+/// Starts setting up `kind` ("lunar" | "forge") from check 1. Prism always gets Cobblify's
+/// own Ornithe instance (the saved one, else the one Cobblify made, else a new one -
+/// `setup::choose_instance`); `instanceId` is accepted for older frontends and ignored.
+/// Replies with the first snapshot; progress follows on
 /// `setup://progress`. Refused with "busy" (etc.) while anything else holds the lifecycle -
 /// another setup included, even a stopped one.
 #[tauri::command(rename_all = "camelCase")]
@@ -887,7 +867,6 @@ async fn begin_setup(
     app: tauri::AppHandle,
     kind: String,
     instance_id: Option<String>,
-    forge: tauri::State<'_, Mutex<ForgeState>>,
     ctx: tauri::State<'_, SetupContext>,
     svc: tauri::State<'_, Arc<setup::Service>>,
 ) -> Result<setup::Snapshot, String> {
@@ -895,24 +874,14 @@ async fn begin_setup(
     let home = home()?;
     let prism = prism_data();
     let instance = match (kind, instance_id) {
-        (setup::Kind::Forge, Some(id)) => {
-            let picked = forge
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .candidates
-                .get(&id)
-                .cloned()
-                .ok_or("That Prism instance is no longer available.")?;
-            Some(setup::choose_instance(&home, &prism, Some(picked))?)
-        }
-        (setup::Kind::Forge, None) => {
+        // Prism always uses Cobblify's own Ornithe instance; a listed instance is no longer
+        // installed into.
+        (setup::Kind::Forge, _) => {
             let (home, prism) = (home.clone(), prism.clone());
             Some(
-                tauri::async_runtime::spawn_blocking(move || {
-                    setup::choose_instance(&home, &prism, None)
-                })
-                .await
-                .map_err(|e| e.to_string())??,
+                tauri::async_runtime::spawn_blocking(move || setup::choose_instance(&home, &prism))
+                    .await
+                    .map_err(|e| e.to_string())?,
             )
         }
         (setup::Kind::Lunar, Some(_)) => {
@@ -1152,73 +1121,19 @@ fn open_setup_location(
     result
 }
 
-/// Rebuilds the whole status after a Forge choice, so the UI re-renders from one shape.
-fn republish(status: &tauri::State<'_, Mutex<Status>>, forge_target: TargetStatus) -> Status {
-    let mut guard = status.lock().unwrap_or_else(|e| e.into_inner());
-    let lunar = guard
-        .targets
-        .iter()
-        .find(|t| t.kind == "lunar")
-        .cloned()
-        .unwrap_or_else(|| TargetStatus::new("lunar", "absent", "Lunar Client is not installed."));
-    let mut next = aggregate(guard.mod_version.clone(), vec![lunar, forge_target]);
-    next.rev = guard.rev + 1;
-    *guard = next.clone();
-    next
-}
-
-/// Installs into a Prism candidate the backend already detected.
+/// Prism no longer installs into a player's own instance: Cobblify sets up its own Ornithe
+/// instance (`begin_setup`). A listed instance id is spent and refused.
 fn install_into(
     id: &str,
-    status: tauri::State<'_, Mutex<Status>>,
+    _status: tauri::State<'_, Mutex<Status>>,
     forge: tauri::State<'_, Mutex<ForgeState>>,
 ) -> Result<Status, String> {
-    let (jar, candidate) = {
-        let guard = forge.lock().unwrap_or_else(|e| e.into_inner());
-        let jar = guard
-            .jar
-            .clone()
-            .ok_or("This copy of Cobblify does not include Forge.")?;
-        let c =
-            guard.candidates.get(id).cloned().ok_or(
-                "That Prism instance is no longer available - reopen Cobblify and try again.",
-            )?;
-        (jar, c)
-    };
-
-    match &candidate.compat {
-        Compat::Incompatible(why) => return Err(why.clone()),
-        Compat::Unknown => {
-            return Err(
-                "That Prism instance could not be verified - fix or recreate it in Prism Launcher first."
-                    .to_string(),
-            )
-        }
-        Compat::Confirmed => {}
-    }
-
-    // Re-validate NOW: the instance may have changed between being listed and being clicked.
-    let fresh = forge::classify_picked(&candidate.game_dir)?;
-    if fresh.compat != Compat::Confirmed || fresh.marker != candidate.marker {
-        return Err(
-            "That Prism instance changed since it was listed - reopen Cobblify and try again."
-                .to_string(),
-        );
-    }
-
-    let home = home()?;
-    let mut target = adopt(&jar, &fresh, &home);
-    target.installed = forge::prism_installed();
-    target.set_up = target.state == "ready";
-
-    // The id is spent either way; a second click must re-detect rather than re-run.
     forge
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .candidates
         .remove(id);
-
-    Ok(republish(&status, target))
+    Err("Cobblify now sets up its own Prism instance. Set up Prism again.".to_string())
 }
 
 #[tauri::command]
@@ -1771,7 +1686,7 @@ fn fml_log_active(
 }
 
 fn fml_log_mtime(home: &Path) -> Option<SystemTime> {
-    let path = forge::saved_game_dir(home)?.join("logs/fml-client-latest.log");
+    let path = ornithe::saved_game_dir(home)?.join("logs/latest.log");
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
@@ -2058,8 +1973,8 @@ fn compute_launch_progress_in(
     // when they are read below.
     let jvm = progress.watch.observe_game(env, baseline, now);
     let path = if forge_session {
-        // The game folder by Prism's rule, which is where the game writes its logs.
-        forge::saved_game_dir(home).map(|game_dir| game_dir.join("logs/fml-client-latest.log"))
+        // The Ornithe instance's game folder, where Fabric writes `logs/latest.log`.
+        ornithe::saved_game_dir(home).map(|game_dir| game_dir.join("logs/latest.log"))
     } else {
         Some(home.join(".weave/logs/latest.log"))
     };
@@ -2097,7 +2012,7 @@ fn compute_launch_progress_in(
     // "Downloading Minecraft" is over for good.
     if forge_session && log.is_some() && progress.watch.first_launch_pending {
         progress.watch.first_launch_pending = false;
-        let _ = forge::clear_first_launch_pending(home);
+        let _ = ornithe::clear_first_launch_pending(home);
     }
     let mut bar = match log {
         None => {
@@ -2107,24 +2022,19 @@ fn compute_launch_progress_in(
         }
         Some(log) => {
             let milestone = if forge_session {
-                progress::milestone_from_forge_log(&log)
+                progress::milestone_from_fabric_log(&log)
             } else {
                 progress::milestone_from_log(&log)
             };
-            // "Settled" = mixins began AND the log mtime held steady two polls running,
-            // i.e. Cobblify's log activity stopped. Honest, not a timer.
+            // "Settled" = mixins began (Prism: Cobblify's ready line) AND the log mtime held
+            // steady two polls running, i.e. the log went quiet. Honest, not a timer.
             let steady = match (progress.last_mtime, mtime) {
                 (Some(prev), Some(now)) if prev == now => progress.steady_polls + 1,
                 _ => 0,
             };
             progress.steady_polls = steady;
             progress.last_mtime = mtime;
-            let settled = milestone == progress::Milestone::Mixing
-                && if forge_session {
-                    progress::forge_loaded(&log)
-                } else {
-                    steady >= 2
-                };
+            let settled = milestone == progress::Milestone::Mixing && steady >= 2;
             if forge_session {
                 progress::progress_for_forge(milestone, settled)
             } else {
@@ -2678,16 +2588,6 @@ mod tests {
         TargetStatus::new(kind, state, format!("{kind}-{state}"))
     }
 
-    fn choosable() -> TargetStatus {
-        let mut t = TargetStatus::new("forge", "absent", "Choose a Prism instance.");
-        t.action = "choose";
-        t.candidates.push(CandidateView {
-            id: "d0".to_string(),
-            name: "Hypixel".to_string(),
-        });
-        t
-    }
-
     fn agg(lunar: TargetStatus, forge: TargetStatus) -> Status {
         aggregate(Some("0.9.0".into()), vec![lunar, forge])
     }
@@ -2712,7 +2612,7 @@ mod tests {
                 launcher: "Prism Launcher".into(),
                 name: id.into(),
                 game_dir: PathBuf::from("/tmp").join(id),
-                compat: Compat::Confirmed,
+                compat: forge::Compat::Confirmed,
                 marker: Some("mmc-pack.json".into()),
                 detail: String::new(),
                 last_launch_ms: 0,
@@ -2825,28 +2725,26 @@ mod tests {
         assert!(s.message.contains("forge-ready"), "{}", s.message);
     }
 
-    /// Both absent, but a Forge jar shipped: offer the picker.
+    /// Round-2 I2: a bundle without the Prism build on a Lunar-less machine offers nothing,
+    /// and its message no longer speaks of Forge.
     #[test]
-    fn all_absent_with_a_forge_jar_offers_a_choice() {
-        let s = agg(t("lunar", "absent"), choosable());
-        assert_eq!(s.state, "blocked");
-        assert!(s.message.contains("Choose a Prism"), "{}", s.message);
-    }
-
-    /// Round-2 I2: an old five-key bundle on a Lunar-less machine must not show a picker
-    /// that cannot succeed.
-    #[test]
-    fn all_absent_without_a_forge_jar_offers_nothing() {
+    fn all_absent_without_the_prism_build_offers_nothing() {
         let mut forge = t("forge", "absent");
         forge.issue = Some(issue::MISSING_BUNDLED_FORGE);
         let s = agg(t("lunar", "absent"), forge);
         assert_eq!(s.state, "blocked");
-        assert!(
-            s.message.contains("does not include Forge"),
-            "{}",
-            s.message
-        );
+        assert_eq!(s.message, "This copy does not include Prism support.");
         assert!(s.targets.iter().all(|t| t.action == "none"));
+    }
+
+    /// A Forge user after the update, Lunar not set up: the app says Prism needs a new setup.
+    #[test]
+    fn the_new_setup_state_is_the_apps_message() {
+        let mut forge = t("forge", "absent");
+        forge.issue = Some(issue::PRISM_NEW_SETUP);
+        let s = agg(t("lunar", "absent"), forge);
+        assert_eq!(s.state, "blocked");
+        assert_eq!(s.message, "Prism needs a new setup.");
     }
 
     /// `absent` is a target-level state only. The frontend coerces any unknown top-level
@@ -2886,60 +2784,147 @@ mod tests {
         assert!(parse_launcher_kind("../etc").is_err());
     }
 
-    #[test]
-    fn forge_choose_reports_missing_prism() {
-        let missing = forge_choose_with_prism(&[], false);
-        assert_eq!(missing.issue, Some(issue::MISSING_LAUNCHER));
-        assert!(missing.candidates.is_empty());
+    // ── Prism's status: the Ornithe instance, the migration, the startup refresh ──
+
+    struct PrismRig {
+        home: tempfile::TempDir,
+        bundle: tempfile::TempDir,
+        pins: Vec<ornithe::Pin>,
     }
 
+    impl PrismRig {
+        fn new() -> Self {
+            let bundle = tempfile::tempdir().unwrap();
+            resources::tests::write_bundle(bundle.path(), b"mod", b"agent", b"ornithe");
+            PrismRig {
+                home: tempfile::tempdir().unwrap(),
+                bundle,
+                pins: vec![ornithe::tests::fake_pin("perf-1.0.jar", b"perf", ornithe::Only::All)],
+            }
+        }
+        fn jar(&self) -> Option<Result<OrnitheJar, String>> {
+            resources::verify(self.bundle.path()).unwrap().ornithe
+        }
+        fn status_with(&self, mode: Refresh, installed: bool, running: bool) -> TargetStatus {
+            let game = move |_: &Path| setup::GameScan { running, complete: true };
+            let probe = PrismProbe { installed, os: ornithe::Os::Mac, pins: &self.pins, game: &game };
+            prism_status(self.jar().as_ref(), self.home.path(), mode, &probe)
+        }
+        fn status(&self, mode: Refresh) -> TargetStatus {
+            self.status_with(mode, true, false)
+        }
+        /// A set-up Ornithe instance: its pin in place, an older Cobblify jar recorded.
+        fn set_up(&self, pins_id: Option<String>) -> PathBuf {
+            let root = ornithe::make_instance(&self.home.path().join("prism/instances")).unwrap();
+            let game = ornithe::game_dir(&root);
+            let log = std::sync::Mutex::new(Vec::new());
+            let fetch = |url: &str| {
+                log.lock().unwrap().push(url.to_string());
+                Ok(b"perf".to_vec())
+            };
+            let pins: Vec<&ornithe::Pin> = self.pins.iter().collect();
+            ornithe::download(&root, &pins, &fetch).unwrap();
+            let old = ornithe::tests::fake_jar(self.bundle.path().parent().unwrap(), "Cobblify-1.8.9-ornithe-0.8.0.jar", b"old");
+            ornithe::place(&root, &game, &pins, &old).unwrap();
+            let t = ornithe::Target {
+                instance: root.display().to_string(),
+                pins: pins_id.unwrap_or_else(|| ornithe::pins_id(&self.pins, ornithe::Os::Mac)),
+                first_launch_pending: false,
+            };
+            ornithe::save_target(self.home.path(), &t).unwrap();
+            root
+        }
+    }
+
+    fn tree_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        ornithe::tests::tree(dir)
+    }
+
+    /// A player who had Prism set up with Forge: a visible "Prism needs a new setup" (set up,
+    /// so Prism stays on the home), never the old "does not include Forge" - and nothing is
+    /// written anywhere, the Forge instance least of all.
     #[test]
-    fn forge_choose_reports_no_compatible_instance() {
-        let incompatible = forge_choose_with_prism(
-            &[Candidate {
-                id: "d0".into(),
-                launcher: "Prism Launcher".into(),
-                name: "Wrong".into(),
-                game_dir: PathBuf::from("/tmp/wrong"),
-                compat: Compat::Incompatible("nope".into()),
-                marker: Some("mmc-pack.json".into()),
-                detail: String::new(),
-                last_launch_ms: 0,
-            }],
-            true,
+    fn a_saved_forge_target_without_an_ornithe_one_needs_a_new_setup() {
+        let rig = PrismRig::new();
+        let forge_root = rig.home.path().join("prism/instances/Hypixel");
+        forge::tests::write_instance(
+            &forge_root,
+            br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#,
+            0,
         );
-        assert_eq!(incompatible.issue, Some(issue::NO_COMPATIBLE_PRISM));
-        assert!(incompatible.candidates.is_empty());
+        ornithe::tests::forge_game_fixture(&forge_root.join("minecraft"));
+        forge::save_target(rig.home.path(), &forge::SavedTarget::prism(&forge_root.join("minecraft"))).unwrap();
+        let before = tree_of(rig.home.path());
+
+        let t = rig.status(Refresh::Write);
+        assert_eq!((t.state, t.message.as_str()), ("absent", "Prism needs a new setup."));
+        assert_eq!(t.issue, Some(issue::PRISM_NEW_SETUP));
+        assert!(t.set_up, "Prism stays a set-up client on the home");
+        assert!(t.candidates.is_empty() && t.action == "none", "no instance pick");
+        // Even a bundle without the Prism build says so, not "does not include Forge".
+        let none = PrismProbe { installed: true, os: ornithe::Os::Mac, pins: &rig.pins, game: &|_: &Path| setup::GameScan { running: false, complete: true } };
+        let t = prism_status(None, rig.home.path(), Refresh::Write, &none);
+        assert_eq!(t.issue, Some(issue::PRISM_NEW_SETUP));
+        assert_eq!(tree_of(rig.home.path()), before, "nothing written");
     }
 
+    /// Nothing set up: Prism is offered for setup as is - no pick, no "no compatible instance".
     #[test]
-    fn forge_choose_publishes_confirmed_candidates_only() {
-        let candidates = vec![
-            Candidate {
-                id: "d0".into(),
-                launcher: "Prism Launcher".into(),
-                name: "Right".into(),
-                game_dir: PathBuf::from("/tmp/right"),
-                compat: Compat::Confirmed,
-                marker: Some("mmc-pack.json".into()),
-                detail: String::new(),
-                last_launch_ms: 0,
-            },
-            Candidate {
-                id: "d1".into(),
-                launcher: "Prism Launcher".into(),
-                name: "Unreadable".into(),
-                game_dir: PathBuf::from("/tmp/unreadable"),
-                compat: Compat::Unknown,
-                marker: Some("mmc-pack.json".into()),
-                detail: String::new(),
-                last_launch_ms: 0,
-            },
-        ];
-        let t = forge_choose_with_prism(&candidates, true);
-        assert_eq!(t.action, "choose");
-        assert_eq!(t.candidates.len(), 1);
-        assert_eq!(t.candidates[0].name, "Right");
+    fn nothing_set_up_offers_prism_without_a_pick() {
+        let rig = PrismRig::new();
+        let t = rig.status(Refresh::Write);
+        assert_eq!(t.state, "absent");
+        assert!(!t.set_up);
+        assert_eq!(t.issue, None);
+        assert!(t.candidates.is_empty() && t.action == "none");
+        let t = rig.status_with(Refresh::Write, false, false);
+        assert_eq!(t.issue, Some(issue::MISSING_LAUNCHER));
+    }
+
+    /// A valid Ornithe target with its pins in place: at startup the bundled Cobblify jar
+    /// replaces the old one (only Cobblify's files change); read-only, or with its game
+    /// open, nothing is written and it is still ready.
+    #[test]
+    fn a_valid_ornithe_target_gets_the_current_jar_at_startup() {
+        let rig = PrismRig::new();
+        let root = rig.set_up(None);
+        let mods = ornithe::game_dir(&root).join("mods");
+        std::fs::write(mods.join("my-mod.jar"), b"mine").unwrap();
+
+        let before = tree_of(&root);
+        let t = rig.status(Refresh::ReadOnly);
+        assert_eq!((t.state, t.message.as_str()), ("ready", "Prism 1.8.9"));
+        assert!(t.set_up);
+        let t = rig.status_with(Refresh::Write, true, true);
+        assert_eq!(t.state, "ready", "a running game is not written to");
+        assert_eq!(tree_of(&root), before);
+
+        let t = rig.status(Refresh::Write);
+        assert_eq!(t.state, "ready");
+        assert_eq!(t.install_path, Some(mods.join("Cobblify-1.8.9-ornithe-0.8.1.jar")));
+        assert_eq!(std::fs::read(mods.join("Cobblify-1.8.9-ornithe-0.8.1.jar")).unwrap(), b"ornithe");
+        assert!(!mods.join("Cobblify-1.8.9-ornithe-0.8.0.jar").exists());
+        assert_eq!(std::fs::read(mods.join("my-mod.jar")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(mods.join("perf-1.0.jar")).unwrap(), b"perf");
+    }
+
+    /// A pin change (a launcher with other pins) is never downloaded at startup: the visible
+    /// new setup instead, nothing written. A pinned mod gone missing is the same.
+    #[test]
+    fn a_pin_change_or_a_missing_pin_needs_a_new_setup_and_downloads_nothing() {
+        let rig = PrismRig::new();
+        let root = rig.set_up(Some("other-pins".into()));
+        let before = tree_of(&root);
+        let t = rig.status(Refresh::Write);
+        assert_eq!(t.issue, Some(issue::PRISM_NEW_SETUP));
+        assert!(t.set_up);
+        assert_eq!(tree_of(&root), before);
+
+        let rig = PrismRig::new();
+        let root = rig.set_up(None);
+        std::fs::remove_file(ornithe::game_dir(&root).join("mods/perf-1.0.jar")).unwrap();
+        let t = rig.status(Refresh::Write);
+        assert_eq!(t.issue, Some(issue::PRISM_NEW_SETUP));
     }
 
     fn temp_home() -> PathBuf {
@@ -2967,24 +2952,20 @@ mod tests {
             }
         }
 
-        /// A saved, made Prism instance whose first launch is pending; returns its game dir.
+        /// The saved Ornithe instance, its first launch pending; returns its game dir.
         fn made_prism(home: &Path) -> PathBuf {
-            let inst = home.join("prism/instances/Cobblify 1.8.9");
-            std::fs::create_dir_all(&inst).unwrap();
-            std::fs::write(inst.join(prism::INSTANCE_CFG), "[General]\nConfigVersion=1.3\n").unwrap();
-            std::fs::write(inst.join(prism::PACK_FILE), "{}").unwrap();
-            let game = inst.join("minecraft");
-            let target = forge::SavedTarget {
-                made: true,
+            let inst = ornithe::make_instance(&home.join("prism/instances")).unwrap();
+            let target = ornithe::Target {
+                instance: inst.display().to_string(),
+                pins: "p".into(),
                 first_launch_pending: true,
-                ..forge::SavedTarget::prism(&game)
             };
-            forge::save_target(home, &target).unwrap();
-            game
+            ornithe::save_target(home, &target).unwrap();
+            ornithe::game_dir(&inst)
         }
 
         #[test]
-        fn a_made_instances_first_launch_reports_downloading_until_its_fml_log_appears() {
+        fn a_made_instances_first_launch_reports_downloading_until_its_fabric_log_appears() {
             let home = tempfile::tempdir().unwrap();
             let game = made_prism(home.path());
             let baseline = SystemTime::now() - Duration::from_secs(5);
@@ -3002,18 +2983,18 @@ mod tests {
             let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
             assert_eq!(p.stage, "forge_downloading", "downloads take as long as they take");
             assert!(p.outcome.is_none(), "no verdict while nothing has started");
-            assert!(forge::load_target(home.path()).unwrap().first_launch_pending);
+            assert!(ornithe::load_target(home.path()).unwrap().first_launch_pending);
 
             std::fs::create_dir_all(game.join("logs")).unwrap();
             std::fs::write(
-                game.join("logs/fml-client-latest.log"),
-                "Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n",
+                game.join("logs/latest.log"),
+                "[12:00:00] [main/INFO]: Loading Minecraft 1.8.9 with Fabric Loader 0.20.1\n",
             )
             .unwrap();
             let p = compute_launch_progress_in(&mut st, home.path(), &mut env);
             assert_eq!(p.stage, "forge_attached");
             assert!(
-                !forge::load_target(home.path()).unwrap().first_launch_pending,
+                !ornithe::load_target(home.path()).unwrap().first_launch_pending,
                 "cleared once the game started loading"
             );
             // A later launch of the same instance is an ordinary one.

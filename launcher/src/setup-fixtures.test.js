@@ -26,15 +26,9 @@ test("preview aliases resolve to backend-shaped fixtures", () => {
   }
 });
 
-test("preview candidates are id/name only", () => {
-  const seen = new Set();
-  for (const c of collectPreviewCandidates()) {
-    assertPrismCandidate(c);
-    seen.add(c.id);
-  }
-  assert.ok(seen.has("d0"));
-  assert.ok(seen.has("d1"));
-  assert.equal(Object.keys(collectPreviewCandidates()[0]).sort().join(","), "id,name");
+test("preview fixtures carry no Prism candidates (no instance pick)", () => {
+  for (const c of collectPreviewCandidates()) assertPrismCandidate(c);
+  assert.equal(collectPreviewCandidates().length, 0);
 });
 
 test("preview fixtures never reference removed launcher paths", () => {
@@ -55,20 +49,26 @@ test("every preview-bar setup key has a human label", () => {
   }
 });
 
-test("forge choose only ships eligible candidates", () => {
-  const choose = PREVIEW_STATUS.prismChoose.targets.find((t) => t.kind === "forge");
-  assert.equal(choose.action, "choose");
-  assert.equal(choose.candidates.length, 2);
-  assert.equal(choose.issue, null);
+test("prism setup ships no instance pick: Cobblify makes its own instance", () => {
+  const setup = PREVIEW_STATUS.prismSetup.targets.find((t) => t.kind === "forge");
+  assert.equal(setup.action, "none");
+  assert.equal(setup.candidates.length, 0);
+  assert.equal(setup.issue, null);
 });
 
-test("prism missing vs no-compatible use distinct issue codes", () => {
+test("prism missing vs needing a new setup use distinct issue codes", () => {
   const missing = PREVIEW_STATUS.prismNoInstances.targets.find((t) => t.kind === "forge");
-  const incompatible = PREVIEW_STATUS.prismNoCompatible.targets.find((t) => t.kind === "forge");
+  const renew = PREVIEW_STATUS.prismNewSetup.targets.find((t) => t.kind === "forge");
   assert.equal(missing.issue, ISSUE.MISSING_LAUNCHER);
-  assert.equal(incompatible.issue, ISSUE.NO_COMPATIBLE_PRISM);
+  assert.equal(renew.issue, ISSUE.PRISM_NEW_SETUP);
+  assert.equal(renew.set_up, true);
+  assert.equal(renew.message, "Prism needs a new setup.");
   assert.equal(missing.candidates.length, 0);
-  assert.equal(incompatible.candidates.length, 0);
+  assert.equal(renew.candidates.length, 0);
+});
+
+test("no fixture speaks of Forge any more", () => {
+  assert.doesNotMatch(JSON.stringify(PREVIEW_STATUS), /Forge/);
 });
 
 test("aggregated fixtures match backend aggregation semantics", () => {

@@ -1,0 +1,213 @@
+# Declared differences between the Ornithe tree and the Lunar tree: the
+# long-term pair, which outlives the Forge tree.
+#
+# Checked by tools/check-tree-drift.sh, but only while the Ornithe tree exists
+# (ornithe/src on disk or in the index). Until then this file must hold no
+# entries. Once it exists, anything NOT declared here must be byte-identical in
+# both trees, or the check fails; an empty manifest is refused.
+#
+# Format (whitespace separated, `#` starts a comment):
+#
+#   divergent <tree> <path>          - present in both trees, allowed to differ
+#   one-sided <tree> <side> <path>   - present on <side> only
+#
+#   <tree> = main | test | res  <side> = ornithe | lunar
+#   main = ornithe/src/main/java       vs lunar/src/main/java
+#   test = ornithe/src/test/java       vs lunar/src/test/java
+#   res  = ornithe/src/main/resources  vs lunar/src/main/resources
+#   <path> is package-relative for main and test, e.g.
+#     com/bedwarsqol/gui/SettingsGui.java, and relative to the resources root
+#     for res, e.g. fabric.mod.json
+#
+# Entries are validated in both directions, exactly as in
+# tools/tree-divergence.txt: a `divergent` entry whose copies are identical, or
+# (java) differ only in comments or whitespace, fails; a `one-sided` entry that
+# is in both trees, on the wrong side, or in neither fails. Stale entries are
+# errors, not noise.
+#
+# Give each group of entries a comment saying WHY the trees differ.
+
+# ---------------------------------------------------------------------------
+# divergent: same path in both trees, contents legitimately differ
+# ---------------------------------------------------------------------------
+
+# Loader entry point: OSL client-init entrypoint + ModEvents vs Weave ModInitializer + EventBus.
+divergent main com/bedwarsqol/BedwarsQol.java
+
+# Event API shape: methods registered on ModEvents (ChatReceivedEvent, NametagRenderEvent;
+# tick and world-load handlers take no event) vs Weave @SubscribeEvent ChatEvent.Received,
+# TickEvent.Post, WorldEvent.Load and RenderLivingEvent.Post.
+divergent main com/bedwarsqol/bedwars/GeneratorTracker.java
+divergent main com/bedwarsqol/feature/ChatNameTags.java
+divergent main com/bedwarsqol/feature/GameRosterChat.java
+divergent main com/bedwarsqol/feature/LobbyChatWatch.java
+divergent main com/bedwarsqol/feature/NametagStats.java
+divergent main com/bedwarsqol/feature/NickUtils.java
+divergent main com/bedwarsqol/feature/PartyJoinAlert.java
+divergent main com/bedwarsqol/feature/QueueAlert.java
+divergent main com/bedwarsqol/feature/SessionStatsWatch.java
+divergent main com/bedwarsqol/feature/SweatReport.java
+divergent main com/bedwarsqol/feature/UrchinAlert.java
+divergent main com/bedwarsqol/stats/BedwarsModeDetector.java
+divergent main com/bedwarsqol/stats/GameSessionTracker.java
+
+# Packet access: a netty handler added to the pipeline at ServerConnectEvent (through
+# NetworkManagerAccessor) vs Weave's PacketEvent.Send/Receive.
+divergent main com/bedwarsqol/feature/HeightLimitWatch.java
+
+# Command API: vanilla CommandBase run by ClientCommands vs Weave's Command (no ICommandSender).
+divergent main com/bedwarsqol/command/BedwarsQolCommand.java
+
+# Config directory: ConfigDir.get() (Fabric's <gameDir>/config, as Forge) vs ~/.cobblify on Lunar.
+divergent main com/bedwarsqol/config/SettingsManager.java
+divergent main com/bedwarsqol/stats/StatsCache.java
+
+# Intentional feature removal: Lunar ships these natively, so the rows, config
+# fields and HUD elements are absent there. See .ai/TASK.md. ClientSettings and
+# SettingsBindings also carry the Ornithe-only Zoom and No Hurt Cam (P4).
+divergent main com/bedwarsqol/config/ClientSettings.java
+divergent main com/bedwarsqol/feature/ChatNotifications.java
+divergent main com/bedwarsqol/feature/OutgoingChat.java
+divergent main com/bedwarsqol/gui/SettingsBindings.java
+divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
+# Lunar has no Potion, Armor or Keystrokes module.
+divergent main com/bedwarsqol/hud/HudModules.java
+
+# Keybinds: Weave has no vanilla KeyBinding or options.txt persistence; Ornithe
+# registers vanilla KeyBindings (OSL keybinds) and polls them each client tick.
+divergent main com/bedwarsqol/feature/IncSender.java
+divergent main com/bedwarsqol/feature/PauseKeyHandler.java
+divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
+
+# Resource loading: Weave never registers the mod's assets/ domain. Ornithe loads the
+# atlases through the resource manager, relying on the OSL resource loader (declared
+# in fabric.mod.json) to serve the mod's assets/.
+divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
+divergent main com/bedwarsqol/gui/render/Icons.java
+
+# Mixins: the Lunar copies spell out require = 0 on their injectors, and GuiChatMixin
+# lacks the Copy Chat and Longer Messages hooks (features Lunar does not carry).
+# require = 0 is already Mixin's default (defaultRequire 0; neither mixins JSON
+# sets it), so a mapping miss silently no-ops in BOTH trees; the explicit value
+# documents that, it does not add safety.
+divergent main com/bedwarsqol/mixin/GuiChatMixin.java
+divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
+divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
+divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
+
+# ---------------------------------------------------------------------------
+# one-sided: exists in one tree only
+# ---------------------------------------------------------------------------
+
+# Lunar ships these features natively, so the mod does not provide them there.
+one-sided main ornithe com/bedwarsqol/feature/AutoGg.java
+one-sided main ornithe com/bedwarsqol/feature/BlockOverlayRenderer.java
+one-sided main ornithe com/bedwarsqol/feature/TntFuseDisplay.java
+
+# Generic chat QOL is not on Lunar; Lunar ships it natively.
+one-sided main ornithe com/bedwarsqol/feature/ChatCopyAccess.java
+one-sided main ornithe com/bedwarsqol/feature/ChatStack.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftChatClearMixin.java
+
+# Longer Messages: not on Lunar by explicit decision 2026-07-28 (Forge-only then;
+# the Ornithe port carried it over). NOT because Lunar ships it - it does not. The
+# Weave port is real mixin work nobody has done. Do not "restore parity" here
+# assuming it was an oversight.
+one-sided main ornithe com/bedwarsqol/feature/ChatLengthLimit.java
+one-sided main ornithe com/bedwarsqol/mixin/C01PacketChatMessageMixin.java
+
+# Clutch Practice: singleplayer pearl + fireball drill, not on Lunar by request
+# 2026-10-23 (integrated-server gameplay; Forge-only then, ported to Ornithe; the
+# rules live in common/ClutchRules). The three server-side mixins call its hooks
+# where Forge fired PlayerInteractEvent, ExplosionEvent.Detonate, PlayerTickEvent
+# and LivingHurtEvent.
+one-sided main ornithe com/bedwarsqol/feature/ClutchFireball.java
+one-sided main ornithe com/bedwarsqol/feature/ClutchPractice.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ExplosionMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ItemInWorldManagerMixin.java
+
+# Zoom and No Hurt Cam: Ornithe-only features (P4), with their sheet-row test.
+one-sided main ornithe com/bedwarsqol/feature/CameraOptions.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererCameraMixin.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsCameraTest.java
+
+# Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
+one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
+one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java
+
+# Event bus: ModEvents (one dispatcher per event) and the event types it carries;
+# Weave brings its own EventBus and event classes.
+one-sided main ornithe com/bedwarsqol/ornithe/BlockHighlightEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ChatReceivedEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ModEvents.java
+one-sided main ornithe com/bedwarsqol/ornithe/MouseButtonEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/NametagRenderEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ServerConnectEvent.java
+
+# Mixins that post ModEvents at the vanilla positions Forge posted its events from
+# (Weave's own hooks cover these on Lunar), plus an accessor for NetworkManager's
+# private netty channel.
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameHudMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftMouseMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetHandlerLoginClientMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetHandlerPlayClientMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetworkManagerAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/RendererLivingEntityMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/WorldClientMixin.java
+
+# Client commands: a vanilla CommandHandler fed by two mixins (chat submit, tab
+# completion) vs Weave's CommandBus.
+one-sided main ornithe com/bedwarsqol/ornithe/ClientCommands.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiChatCompletionMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiScreenCommandMixin.java
+
+# Weave-only shims with no Ornithe equivalent: Ornithe registers vanilla KeyBindings
+# through OSL keybinds and relies on the OSL resource loader for its assets/ domain.
+one-sided main lunar com/bedwarsqol/feature/KeybindRegistry.java
+one-sided main lunar com/bedwarsqol/gui/render/ClasspathTexture.java
+
+# Tests for features Lunar does not carry, or whose subject imports net.minecraft.*
+# and so was not shared. Extending Lunar coverage is tracked separately.
+one-sided test ornithe com/bedwarsqol/config/ClientSettingsConfigTest.java
+one-sided test ornithe com/bedwarsqol/config/ForgeHudLayoutMigrationTest.java
+one-sided test ornithe com/bedwarsqol/feature/AlertCopyReasonTest.java
+one-sided test ornithe com/bedwarsqol/feature/ChatLengthLimitTest.java
+one-sided test ornithe com/bedwarsqol/feature/ChatSenderTest.java
+one-sided test ornithe com/bedwarsqol/feature/ChatSpliceTest.java
+one-sided test ornithe com/bedwarsqol/feature/ChatStackTest.java
+one-sided test ornithe com/bedwarsqol/feature/ModChatTest.java
+one-sided test ornithe com/bedwarsqol/feature/QueueAlertTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsLayoutTest.java
+
+# Benchmark harness: LaneContrastHarness loads /lobby-arrivals.txt from
+# ornithe/src/test/resources, which Lunar does not have; FakeStatsBackend exists to
+# support it.
+one-sided test ornithe com/bedwarsqol/harness/FakeStatsBackend.java
+one-sided test ornithe com/bedwarsqol/harness/LaneContrastHarness.java
+one-sided test ornithe com/bedwarsqol/harness/LaneContrastTest.java
+
+# Pins the Gson stale-key path for configs written by builds that had the
+# removed anticheat module. Platform-independent; could be shared later.
+one-sided test lunar com/bedwarsqol/config/ClientSettingsStaleKeysTest.java
+
+# Lunar's sanitize keeps mouse-button key codes for the Weave KeybindRegistry;
+# Ornithe persists its KeyBindings in options.txt and never syncs them back.
+one-sided test lunar com/bedwarsqol/config/ClientSettingsMouseBindTest.java
+
+# ---------------------------------------------------------------------------
+# res: ornithe/src/main/resources vs lunar/src/main/resources
+# ---------------------------------------------------------------------------
+
+# Fabric mod descriptor, and the version file BedwarsQol reads at runtime (filled
+# by processResources); Weave reads the jar manifest and Lunar hard-codes VERSION.
+one-sided res ornithe fabric.mod.json
+one-sided res ornithe com/bedwarsqol/version.properties
+
+# Both configs have no refmap and ask for minVersion 0.8. Ornithe also lists the chat
+# mixins Lunar lacks (GuiNewChatMixin, MinecraftChatClearMixin,
+# C01PacketChatMessageMixin), the server-side Clutch mixins, and the event, command
+# and camera mixins above.
+divergent res mixins.bedwarsqol.json

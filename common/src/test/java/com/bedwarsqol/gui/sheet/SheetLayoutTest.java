@@ -180,7 +180,7 @@ public class SheetLayoutTest {
             for (SheetSchema.Module m : c.modules) state.open.add(m.id);
             Frame f = layout();
             for (SheetSchema.Module m : c.modules) {
-                if (!values.has(m.id)) continue;
+                if (!SheetSchema.shows(values, m.id)) continue;
                 int lines = 0;
                 for (Node n : f.body) if (n.type == T.DESC && n.text.equals(m.desc)) lines++;
                 assertEquals(m.name, 1, lines);

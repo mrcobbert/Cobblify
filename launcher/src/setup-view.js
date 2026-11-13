@@ -5,7 +5,7 @@ export const ISSUE = {
   UNINITIALIZED_LUNAR: "uninitialized_lunar",
   RUNNING_LUNAR: "running_lunar",
   CONFLICTS: "conflicts",
-  NO_COMPATIBLE_PRISM: "no_compatible_prism_instance",
+  PRISM_NEW_SETUP: "prism_new_setup",
   MISSING_BUNDLED_FORGE: "missing_bundled_forge_jar",
   SETUP_ERROR: "setup_error",
 };
@@ -54,10 +54,10 @@ export function setupHeading(target, status) {
       return "Run Lunar Once";
     case ISSUE.MISSING_LAUNCHER:
       return target.kind === KIND.forge ? "Get Prism" : "Get Lunar";
-    case ISSUE.NO_COMPATIBLE_PRISM:
-      return "No Compatible Prism Instance";
+    case ISSUE.PRISM_NEW_SETUP:
+      return "Prism Needs a New Setup";
     case ISSUE.MISSING_BUNDLED_FORGE:
-      return "Forge Unavailable";
+      return "Prism Unavailable";
     case ISSUE.SETUP_ERROR:
       return "Setup Failed";
     default:
@@ -87,8 +87,8 @@ export function setupActions(target, status) {
       break;
     case ISSUE.RUNNING_LUNAR:
       break;
-    case ISSUE.NO_COMPATIBLE_PRISM:
-      actions.push({ id: "open", label: "Open Prism", kind: "open_launcher", launcher: KIND.forge });
+    case ISSUE.PRISM_NEW_SETUP:
+      actions.push({ id: "setup", label: "Set Up", kind: "setup_prism" });
       break;
     case ISSUE.CONFLICTS:
       if (target.has_setup_folder) {
@@ -157,10 +157,7 @@ export function setupBlocks(status) {
             action: { id: `setup-${c.id}`, label: "Set Up", kind: "setup_prism", candidateId: c.id },
           }))
         : [];
-    const compatibilityDetail =
-      target.issue === ISSUE.NO_COMPATIBLE_PRISM
-        ? "Prism instances must use Minecraft 1.8.9 with Forge."
-        : null;
+    const compatibilityDetail = null;
     const actions = candidateRows.length ? [] : setupActions(target, status);
     blocks.push({
       id: `${target.kind}-${target.issue ?? target.state}`,

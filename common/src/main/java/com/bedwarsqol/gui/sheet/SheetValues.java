@@ -10,6 +10,14 @@ public interface SheetValues {
     /** Whether this platform has the module or row. */
     boolean has(String id);
 
+    /**
+     * Whether this platform lists a {@link SheetSchema#platformOnly platform-only} module or row. Off unless a tree
+     * overrides it, so a tree that accepts every schema id in {@link #has} still hides another platform's modules.
+     */
+    default boolean hasPlatformOnly(String id) {
+        return false;
+    }
+
     /** A module's on/off, or a toggle row's value. */
     boolean on(String id);
 
