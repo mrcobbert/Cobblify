@@ -42,6 +42,28 @@ public final class PolicyTest {
         refused(Policy.command("/a\n/b"));
         refused(Policy.command(null));
 
+        // keyhold: holding needs a local world, releasing is always allowed (review I2)
+        refused(Policy.keyhold("on", true, false));
+        allowed(Policy.keyhold("off", true, false));
+        allowed(Policy.keyhold("off", false, false));
+        allowed(Policy.keyhold("on", true, true));
+        allowed(Policy.keyhold(null, false, false));
+        checks++;
+        if (Policy.keepHolding(true, false)) fail("a hold must end on a multiplayer server");
+        checks++;
+        if (!Policy.keepHolding(true, true) || !Policy.keepHolding(false, false)) fail("a local hold must continue");
+
+        // block targets: relative to the feet, or absolute with "at" (review I3)
+        same("4,5,6", join(Policy.blockTarget(java.util.Arrays.asList("3", "1", "-1"), 1, 4, 7)));
+        same("10,4,-2", join(Policy.blockTarget(java.util.Arrays.asList("at", "10", "4", "-2", "minecraft:wool"), 1, 4, 7)));
+        same("minecraft:wool", Policy.blockId(java.util.Arrays.asList("at", "10", "4", "-2", "minecraft:wool")));
+        same("minecraft:stone", Policy.blockId(java.util.Arrays.asList("3", "0", "1", "minecraft:stone")));
+        checks++;
+        if (Policy.blockId(java.util.Arrays.asList("at", "1", "2", "3")) != null) fail("a read has no block id");
+        refusedCall(() -> Policy.blockTarget(java.util.Arrays.asList("at", "40", "4", "7"), 1, 4, 7));
+        refusedCall(() -> Policy.blockTarget(java.util.Arrays.asList("17", "0", "0"), 1, 4, 7));
+        refusedCall(() -> Policy.blockTarget(java.util.Arrays.asList("1", "2"), 1, 4, 7));
+
         // probe reach and names
         allowed(Policy.near(3, 0, -16));
         refused(Policy.near(17, 0, 0));
@@ -56,6 +78,20 @@ public final class PolicyTest {
 
     /** A class outside com.bedwarsqol: modObject only looks at the name. */
     private static final class FakeMod {
+    }
+
+    private static String join(int[] p) {
+        return p[0] + "," + p[1] + "," + p[2];
+    }
+
+    private static void refusedCall(Runnable r) {
+        checks++;
+        try {
+            r.run();
+        } catch (Refused e) {
+            return;
+        }
+        fail("expected a Refused");
     }
 
     private static void allowed(String result) {

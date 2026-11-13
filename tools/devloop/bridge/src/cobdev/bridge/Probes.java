@@ -100,19 +100,18 @@ final class Probes {
         return out;
     }
 
-    /** {@code block dx dy dz [id]}: read, or place {@code id} (e.g. minecraft:wool), relative to the player's feet. */
+    /**
+     * {@code block dx dy dz [id]} relative to the player's feet, or {@code block at x y z [id]} absolute:
+     * read, or place {@code id} (e.g. minecraft:wool). The reply's {@code pos} is always absolute.
+     */
     private static Map<String, Object> block(List<String> args) throws Exception {
-        if (args.size() != 3 && args.size() != 4) throw new Refused("probe block DX DY DZ [BLOCK_ID]");
-        int dx = Integer.parseInt(args.get(0));
-        int dy = Integer.parseInt(args.get(1));
-        int dz = Integer.parseInt(args.get(2));
-        Refused.check(Policy.near(dx, dy, dz));
-        String id = args.size() == 4 ? args.get(3) : null;
+        String id = Policy.blockId(args);
         return onServer(() -> {
             EntityPlayerMP p = serverPlayer();
             World w = p.worldObj;
-            BlockPos pos = new BlockPos(MathHelper.floor_double(p.posX) + dx, MathHelper.floor_double(p.posY) + dy,
-                    MathHelper.floor_double(p.posZ) + dz);
+            int[] t = Policy.blockTarget(args, MathHelper.floor_double(p.posX), MathHelper.floor_double(p.posY),
+                    MathHelper.floor_double(p.posZ));
+            BlockPos pos = new BlockPos(t[0], t[1], t[2]);
             Map<String, Object> out = Bridge.ok();
             out.put("pos", Arrays.asList(pos.getX(), pos.getY(), pos.getZ()));
             out.put("before", blockId(w, pos));

@@ -51,6 +51,47 @@ final class Policy {
                 : "only key bindings Cobblify registers (category " + KEY_CATEGORY + ") can be held";
     }
 
+    /** Holding a key needs a local world; releasing ("off") is always allowed, wherever the client is. */
+    static String keyhold(String state, boolean inWorld, boolean singleplayer) {
+        return "off".equals(state) ? null : local(inWorld, singleplayer);
+    }
+
+    /** Checked on every tick of a hold: once the client is on a multiplayer server, every hold ends. */
+    static boolean keepHolding(boolean inWorld, boolean singleplayer) {
+        return local(inWorld, singleplayer) == null;
+    }
+
+    /**
+     * {@code block DX DY DZ [ID]} (relative to the player's feet) or {@code block at X Y Z [ID]}
+     * (absolute, so a check after a blast reads the block it placed before, wherever the player went).
+     * Either way the target must be within {@link #PROBE_REACH} of the feet.
+     */
+    static int[] blockTarget(java.util.List<String> args, int feetX, int feetY, int feetZ) {
+        boolean at = !args.isEmpty() && "at".equals(args.get(0));
+        int base = at ? 1 : 0;
+        int n = args.size() - base;
+        if (n != 3 && n != 4) throw new Refused("probe block DX DY DZ [BLOCK_ID] or block at X Y Z [BLOCK_ID]");
+        int[] p = new int[3];
+        try {
+            for (int i = 0; i < 3; i++) p[i] = Integer.parseInt(args.get(base + i));
+        } catch (NumberFormatException e) {
+            throw new Refused("block coordinates are integers");
+        }
+        if (!at) {
+            p[0] += feetX;
+            p[1] += feetY;
+            p[2] += feetZ;
+        }
+        Refused.check(near(p[0] - feetX, p[1] - feetY, p[2] - feetZ));
+        return p;
+    }
+
+    /** The block id to place, or null for a read. */
+    static String blockId(java.util.List<String> args) {
+        int base = !args.isEmpty() && "at".equals(args.get(0)) ? 1 : 0;
+        return args.size() - base == 4 ? args.get(args.size() - 1) : null;
+    }
+
     static String command(String command) {
         if (command == null || !command.startsWith("/")) return "a command starts with /";
         if (command.indexOf('\n') >= 0 || command.indexOf('\r') >= 0) return "one command per call";

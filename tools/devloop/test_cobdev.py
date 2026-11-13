@@ -45,7 +45,16 @@ class Analysis(unittest.TestCase):
 
     def test_rolled_horizon_tilts(self):
         t = cobdev.tilt(scene(200, 120, lambda x: 40 + x // 5))
-        self.assertLess(t, -20)  # left side higher than the right
+        self.assertLess(t, -15)  # left side higher; medians sit 45% of the width apart
+
+    def test_hud_box_over_one_column_does_not_fake_a_tilt(self):
+        # Cobblify's HUD (Map / Height Limit box) sits at the left edge just above the horizon.
+        w, h, rows = scene(200, 120, lambda x: 60)
+        rows = [bytearray(r) for r in rows]
+        for y in range(48, 64):
+            for x in range(0, 24):
+                rows[y][3 * x:3 * x + 3] = b"\x30\x30\x30"
+        self.assertEqual(cobdev.tilt((w, h, [bytes(r) for r in rows])), 0)
 
     def test_no_sky_means_no_answer(self):
         img = (10, 10, [bytes(GRASS * 10)] * 10)
@@ -74,12 +83,15 @@ class ModList(unittest.TestCase):
                "\t- bedwarsqol 0.18.2",
                "\t- osl 0.23.1",
                "\t   |-- osl-core 0.12.0+mc14w27a-mc1.14.4",
+               "\t   |    |-- net_ornithemc_conditional-mixin 1.0.0",
+               "\t   |    \\-- org_quiltmc_parsers_json 0.2.1",
                "\t   \\-- osl-entrypoints 0.6.1",
                "\t- pylon 0.2.8",
                "[20:00:01] [main/INFO] (FabricLoader) next"]
         header, ids = cobdev.parse_mod_list(log)
         self.assertIn("Loading 4 mods", header)
-        self.assertEqual(ids, ["bedwarsqol", "osl", "osl-core", "osl-entrypoints", "pylon"])
+        self.assertEqual(ids, ["bedwarsqol", "osl", "osl-core", "net_ornithemc_conditional-mixin",
+                               "org_quiltmc_parsers_json", "osl-entrypoints", "pylon"])
 
     def test_missing_block(self):
         self.assertEqual(cobdev.parse_mod_list(["nothing"]), (None, []))
