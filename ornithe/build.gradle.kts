@@ -50,6 +50,8 @@ dependencies {
 
 loom {
     runConfigs.remove(runConfigs["server"])
+    // No mixin refmap: Loom 1.19 remaps mixin annotation targets straight into the release jar
+    // (tiny-remapper's mixin extension), so mixins.bedwarsqol.json names no refmap.
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -82,16 +84,26 @@ val generateBackendProperties by tasks.registering {
     }
 }
 
+// fabric.mod.json and com/bedwarsqol/version.properties carry the version (replaces Forge's
+// Blossom @VER@ token; BedwarsQol.VERSION reads the properties file).
 tasks.processResources {
     dependsOn(generateBackendProperties)
     inputs.property("version", modVersion)
-    filesMatching("fabric.mod.json") {
+    filesMatching(listOf("fabric.mod.json", "com/bedwarsqol/version.properties")) {
         expand("version" to modVersion)
     }
 }
 
+// Code that is byte-identical between the platform trees and imports nothing platform-specific
+// lives once in `common/` (repo root, one level up from this build) and is compiled by every
+// build, exactly as lunar/build.gradle.kts does it.
 sourceSets {
     main {
+        java.srcDir(rootDir.parentFile.resolve("common/src/main/java"))
         resources.srcDir(backendPropsDir)
+    }
+    test {
+        java.srcDir(rootDir.parentFile.resolve("common/src/test/java"))
+        resources.srcDir(rootDir.parentFile.resolve("common/src/test/resources"))
     }
 }

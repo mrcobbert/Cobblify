@@ -8,9 +8,12 @@
   "environment": "client",
   "entrypoints": {
     "client-init": [
-      "com.bedwarsqol.CobblifyOrnithe"
+      "com.bedwarsqol.BedwarsQol"
     ]
   },
+  "mixins": [
+    "mixins.bedwarsqol.json"
+  ],
   "depends": {
     "fabricloader": ">=0.20.1",
     "minecraft": "1.8.9",
