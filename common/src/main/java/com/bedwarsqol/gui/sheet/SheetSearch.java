@@ -46,11 +46,11 @@ public final class SheetSearch {
         if (q.isEmpty()) return out;
         for (Category c : SheetSchema.CATS) {
             for (Module m : c.modules) {
-                if (!values.has(m.id)) continue;
+                if (!SheetSchema.shows(values, m.id)) continue;
                 boolean modHit = match(m.name, q) || match(m.desc, q) || match(m.kw, q);
                 Hit h = new Hit(m, null, modHit, match(m.name, q) ? 0 : 1);
                 for (Row r : m.rows) {
-                    if (!values.has(r.id)) continue;
+                    if (!SheetSchema.shows(values, r.id)) continue;
                     boolean hit = match(r.name, q) || match(r.desc, q) || match(r.kw, q);
                     for (String o : r.options()) hit |= match(o, q);
                     if (hit) h.rows.add(r);
@@ -60,7 +60,7 @@ public final class SheetSearch {
             for (Section s : c.sections) {
                 Hit h = new Hit(null, s, false, 1);
                 for (Row r : s.rows) {
-                    if (!values.has(r.id)) continue;
+                    if (!SheetSchema.shows(values, r.id)) continue;
                     if (match(r.name, q) || match(r.desc, q) || match(r.kw, q)) h.rows.add(r);
                 }
                 if (!h.rows.isEmpty()) out.add(h);

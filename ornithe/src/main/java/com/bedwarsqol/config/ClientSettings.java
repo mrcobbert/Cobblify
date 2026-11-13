@@ -279,6 +279,14 @@ public class ClientSettings {
     /** Sub of Clutch Practice: fireballs break wool, planks and clay (never on when off). */
     public boolean clutchBlockDamage = false;
 
+    /**
+     * Zoom (Ornithe build): holding the "Zoom" key (default C, rebindable in Controls) divides the FOV by
+     * {@link com.bedwarsqol.feature.CameraRules#ZOOM_FACTOR}; this turns the key on or off.
+     */
+    public boolean zoomEnabled = com.bedwarsqol.feature.CameraRules.DEFAULT_ZOOM_ENABLED;
+    /** No Hurt Cam (Ornithe build): skip the camera tilt when you take damage. */
+    public boolean noHurtCam = com.bedwarsqol.feature.CameraRules.DEFAULT_NO_HURT_CAM;
+
     /** First-person held-item position offset (X/Y/Z, eye space) + size scale, gated by the master toggle. */
     public boolean handPositionEnabled = false;
     public float handPosX = 0f;

@@ -21,6 +21,7 @@
     "EntityPlayerSPMixin",
     "C01PacketChatMessageMixin",
     "ItemRendererMixin",
+    "EntityRendererCameraMixin",
     "EntityRendererMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHudMixin",

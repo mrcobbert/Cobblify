@@ -6,6 +6,7 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.config.SettingsManager;
 import com.bedwarsqol.event.EventPriority;
 import com.bedwarsqol.feature.AutoGg;
+import com.bedwarsqol.feature.CameraRules;
 import com.bedwarsqol.feature.BlockOverlayRenderer;
 import com.bedwarsqol.feature.ChatNameTags;
 import com.bedwarsqol.feature.ChatNotifications;
@@ -72,6 +73,8 @@ public class BedwarsQol implements ClientModInitializer {
     public static KeyBinding pauseKeyBinding;
     /** Rebindable key (default unbound) that sends /pc INC — see {@link com.bedwarsqol.feature.IncSender}. */
     public static KeyBinding incKeyBinding;
+    /** Hold to zoom (default C; options.txt {@code key_Zoom}) — see {@link com.bedwarsqol.feature.CameraOptions}. */
+    public static KeyBinding zoomKeyBinding;
 
     @Override
     public void initClient() {
@@ -92,6 +95,8 @@ public class BedwarsQol implements ClientModInitializer {
                 new KeyBinding("Open Cobblify Settings", config.settingsKeyCode, "Cobblify"));
         pauseKeyBinding = KeybindRegistry.register(new KeyBinding("Open Game Menu", Keyboard.KEY_NONE, "Cobblify"));
         incKeyBinding = KeybindRegistry.register(new KeyBinding("Send /pc INC", Keyboard.KEY_NONE, "Cobblify"));
+        zoomKeyBinding = KeybindRegistry.register(
+                new KeyBinding(CameraRules.ZOOM_KEY_NAME, CameraRules.DEFAULT_ZOOM_KEY, "Cobblify"));
     }
 
     private static void onReady() {

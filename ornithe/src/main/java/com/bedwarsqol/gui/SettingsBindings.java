@@ -13,7 +13,8 @@ import org.lwjgl.input.Keyboard;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
- * The Forge tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert.
+ * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
+ * the platform that lists the platform-only Zoom and No Hurt Cam.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -57,6 +58,11 @@ final class SettingsBindings implements SheetValues {
     }
 
     @Override
+    public boolean hasPlatformOnly(String id) {
+        return "zoom".equals(id) || "noHurtCam".equals(id);
+    }
+
+    @Override
     public boolean on(String id) {
         ClientSettings c = settings();
         switch (id) {
@@ -79,6 +85,8 @@ final class SettingsBindings implements SheetValues {
             case "noEsc": return c.suppressEscMenu;
             case "clutch": return c.clutchPractice;
             case "clutchBlocks": return c.clutchBlockDamage;
+            case "zoom": return c.zoomEnabled;
+            case "noHurtCam": return c.noHurtCam;
             case "blockOverlay": return c.blockOverlayEnabled;
             case "boSee": return c.blockOverlaySeeThrough;
             case "boWhite": return c.blockOverlayWhite;
@@ -141,6 +149,8 @@ final class SettingsBindings implements SheetValues {
             case "noEsc": c.suppressEscMenu = v; break;
             case "clutch": c.clutchPractice = v; break;
             case "clutchBlocks": c.clutchBlockDamage = v; break;
+            case "zoom": c.zoomEnabled = v; break;
+            case "noHurtCam": c.noHurtCam = v; break;
             case "blockOverlay": c.blockOverlayEnabled = v; break;
             case "boSee": c.blockOverlaySeeThrough = v; break;
             case "boWhite": c.blockOverlayWhite = v; break;
