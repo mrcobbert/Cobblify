@@ -1111,9 +1111,24 @@ def smoke_screen(s, sid, title, key):
     s.call("/close")
 
 
+SMOKE_SAVE = "cobdev"  # the bridge's /world creates and opens this save
+
+
+class ForeignSave(Exception):
+    """The open singleplayer world is not the smoke's own save: the smoke must not touch it."""
+
+
+def require_smoke_save(result):
+    save = (result or {}).get("save")
+    if save != SMOKE_SAVE:
+        raise ForeignSave("the open world is save %r, not %r: the smoke clears entities and terrain, so it "
+                          "stops here. Leave that world (or let a fresh boot open %r) and rerun"
+                          % (save, SMOKE_SAVE, SMOKE_SAVE))
+
+
 def smoke_world(s):
     s.begin("A4-world", "flat creative world (normal, non-demo), stable frames")
-    s.call("/world", timeout=120)
+    require_smoke_save(s.call("/world", timeout=120))
     for _ in range(90):
         st = api_quiet("/status") or {}
         if st.get("inWorld") and st.get("responsive"):
@@ -1395,6 +1410,9 @@ def cmd_smoke(args):
     for step in steps:
         try:
             step()
+        except ForeignSave as e:
+            s.error(e)  # every later step edits the world: stop the run
+            break
         except (ApiError, KeyError, TypeError, ValueError) as e:
             if s.step is None:
                 raise

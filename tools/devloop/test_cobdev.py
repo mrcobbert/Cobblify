@@ -166,6 +166,37 @@ class ReleaseJar(unittest.TestCase):
         self.assertTrue(cobdev.check_release_jar(path))
 
 
+class SmokeSave(unittest.TestCase):
+    """The smoke clears entities and terrain, so it must only ever touch its own save."""
+
+    def test_only_the_smoke_save_is_accepted(self):
+        cobdev.require_smoke_save({"ok": True, "save": "cobdev"})
+        for result in ({"ok": True, "save": "My Build World"}, {"ok": True}, None):
+            with self.assertRaises(cobdev.ForeignSave):
+                cobdev.require_smoke_save(result)
+
+    def test_world_step_sends_nothing_into_another_save(self):
+        sent = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                if path == "/command":
+                    sent.append(post["command"])
+                return {"ok": True, "save": "My Build World"} if path == "/world" else {"ok": True}
+
+            def status(self):
+                return {"inWorld": True, "onServer": False, "responsive": True}
+
+        real = cobdev.api_quiet
+        cobdev.api_quiet = lambda *a, **k: {"inWorld": True, "responsive": True}
+        try:
+            with self.assertRaises(cobdev.ForeignSave):
+                cobdev.smoke_world(Fake("dev", "test"))
+        finally:
+            cobdev.api_quiet = real
+        self.assertEqual(sent, [])
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:

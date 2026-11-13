@@ -8,6 +8,7 @@ import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.shader.Framebuffer;
+import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.world.WorldSettings;
 import net.minecraft.world.WorldType;
 import net.minecraft.world.storage.ISaveFormat;
@@ -347,7 +348,13 @@ public final class Bridge {
             // Stable frames for screenshot diffs: no moving clouds, no view bobbing.
             m.gameSettings.clouds = 0; // 0 = off in 1.8.9
             m.gameSettings.viewBobbing = false;
-            if (m.theWorld != null) return ok();
+            if (m.theWorld != null) {
+                // Report which save is open: the smoke refuses to edit any save but its own.
+                Map<String, Object> open = ok();
+                IntegratedServer server = m.getIntegratedServer();
+                open.put("save", server == null ? null : server.getFolderName());
+                return open;
+            }
             ISaveFormat saves = m.getSaveLoader();
             WorldSettings settings = null;
             if (!saves.canLoadWorld("cobdev")) {
@@ -355,7 +362,9 @@ public final class Bridge {
                 settings.enableCommands();
             }
             m.launchIntegratedServer("cobdev", "Cobblify Dev", settings);
-            return ok();
+            Map<String, Object> opened = ok();
+            opened.put("save", "cobdev");
+            return opened;
         }, 90_000);
     }
 
