@@ -421,6 +421,9 @@ public final class Bridge {
             if (on) heldKeys.add(match.getKeyCode());
             else heldKeys.remove(match.getKeyCode());
             KeyBinding.setKeyBindState(match.getKeyCode(), on);
+            // A real key-down also counts one press (vanilla runTick: setKeyBindState, then onTick), which
+            // isPressed() consumes: Toggle Sprint reacts to presses, Zoom to the held state.
+            if (on) KeyBinding.onTick(match.getKeyCode());
             out.put("held", on);
             out.put("down", match.isKeyDown());
             return out;

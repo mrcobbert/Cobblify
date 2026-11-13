@@ -286,6 +286,12 @@ public class ClientSettings {
     public boolean zoomEnabled = com.bedwarsqol.feature.CameraRules.DEFAULT_ZOOM_ENABLED;
     /** No Hurt Cam (Ornithe build): skip the camera tilt when you take damage. */
     public boolean noHurtCam = com.bedwarsqol.feature.CameraRules.DEFAULT_NO_HURT_CAM;
+    /**
+     * Toggle Sprint (Ornithe build): the "Toggle Sprint" key (default G, rebindable in Controls) toggles
+     * sprint; this turns the key on or off. {@link #toggleSprintOn} is the toggle itself, kept across restarts.
+     */
+    public boolean toggleSprintEnabled = com.bedwarsqol.feature.SprintRules.DEFAULT_TOGGLE_SPRINT_ENABLED;
+    public boolean toggleSprintOn = false;
 
     /** First-person held-item position offset (X/Y/Z, eye space) + size scale, gated by the master toggle. */
     public boolean handPositionEnabled = false;
