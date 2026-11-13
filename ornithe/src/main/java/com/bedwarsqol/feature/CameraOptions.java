@@ -19,6 +19,12 @@ public final class CameraOptions {
         return CameraRules.fov(fov, useFovSetting, zooming());
     }
 
+    /** The player's FOV modifier: vanilla's, or a steady 1 with Dynamic FOV off. */
+    public static float fovModifier(float vanilla) {
+        ClientSettings c = BedwarsQol.config;
+        return c == null ? vanilla : CameraRules.fovModifier(vanilla, c.dynamicFov);
+    }
+
     /** Whether to skip {@code EntityRenderer.hurtCameraEffect}. */
     public static boolean cancelHurtCam() {
         ClientSettings c = BedwarsQol.config;

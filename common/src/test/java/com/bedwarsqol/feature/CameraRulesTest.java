@@ -57,4 +57,13 @@ public class CameraRulesTest {
         assertTrue(CameraRules.cancelHurtCam(true));
         assertFalse(CameraRules.cancelHurtCam(false));
     }
+
+    @Test
+    public void dynamicFovIsOnByDefaultAndOffHoldsTheModifierAtOne() {
+        assertTrue(CameraRules.DEFAULT_DYNAMIC_FOV);
+        assertEquals(1.3f, CameraRules.fovModifier(1.3f, true), EPS);  // sprinting: vanilla widens
+        assertEquals(0.85f, CameraRules.fovModifier(0.85f, true), EPS); // bow/slowness: vanilla narrows
+        assertEquals(1.0f, CameraRules.fovModifier(1.3f, false), EPS);
+        assertEquals(1.0f, CameraRules.fovModifier(0.85f, false), EPS);
+    }
 }
