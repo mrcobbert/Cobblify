@@ -1208,6 +1208,43 @@ def smoke_hurt(s, cfg):
     s.field(nhc, False)
 
 
+TOGGLE_SPRINT_KEY = "Toggle Sprint"
+
+
+def smoke_sprint(s, cfg):
+    s.begin("A5-sprint", "Toggle Sprint: its key toggles, the sprint key is held while on")
+    if not s.has("com.bedwarsqol.feature.ToggleSprint") or not cfg:
+        return s.unavailable("Toggle Sprint is not in this build")
+    en, on = cfg + ".toggleSprintEnabled", cfg + ".toggleSprintOn"
+    s.field(en, True)
+    s.field(on, False)
+    bindings = (s.call("/keyhold") or {}).get("bindings", [])
+    key = [k for k in bindings if k["name"] == TOGGLE_SPRINT_KEY]
+    if not s.check("Toggle Sprint is listed in Controls (category Cobblify)", bool(key), [k["name"] for k in bindings]):
+        return
+    s.check("Toggle Sprint key is G by default", key[0]["code"] == 34, "code %s" % key[0]["code"])
+
+    def press():
+        s.call("/keyhold", {"name": TOGGLE_SPRINT_KEY, "state": "on"})
+        time.sleep(0.3)
+        s.call("/keyhold", {"name": TOGGLE_SPRINT_KEY, "state": "off"})
+        time.sleep(0.3)
+        return s.field(on).get("value") in (True, "true"), s.probe("player")["client"]["sprintKeyDown"]
+
+    toggled, held = press()
+    s.check("one press toggles on and holds the sprint key", toggled and held, "on=%s held=%s" % (toggled, held))
+    toggled, held = press()
+    s.check("a second press toggles off and releases it", not toggled and not held, "on=%s held=%s" % (toggled, held))
+    press()
+    s.field(en, False)
+    time.sleep(0.3)
+    toggled = s.field(on).get("value") in (True, "true")
+    held = s.probe("player")["client"]["sprintKeyDown"]
+    s.check("turning Toggle Sprint off clears the toggle and releases the key", not toggled and not held,
+            "on=%s held=%s" % (toggled, held))
+    s.field(en, True)
+
+
 def smoke_zoom(s, cfg):
     s.begin("A5", "Zoom: held lowers FOV, release restores it")
     keys, err = s.try_call("/keyhold")
@@ -1423,6 +1460,7 @@ def cmd_smoke(args):
                   lambda: cfg_box.setdefault("cfg", find_config(s)),
                   lambda: smoke_hurt(s, cfg_box.get("cfg")),
                   lambda: smoke_zoom(s, cfg_box.get("cfg")),
+                  lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
                   lambda: smoke_clutch(s, cfg_box.get("cfg"))]
     for step in steps:

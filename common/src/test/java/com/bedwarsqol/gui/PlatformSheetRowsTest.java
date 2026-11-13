@@ -29,7 +29,7 @@ public class PlatformSheetRowsTest {
         String platform = ornithe ? "ornithe" : lunar ? "lunar" : "forge";
 
         SettingsBindings values = new SettingsBindings();
-        for (String id : new String[] {"zoom", "noHurtCam"}) {
+        for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }

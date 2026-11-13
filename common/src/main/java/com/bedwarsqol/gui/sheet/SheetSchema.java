@@ -207,9 +207,9 @@ public final class SheetSchema {
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
-     * still lists these only if it opts in. Zoom and No Hurt Cam are the Ornithe build's; Lunar has its own.
+     * still lists these only if it opts in. Zoom, No Hurt Cam and Toggle Sprint are the Ornithe build's; Lunar has its own.
      */
-    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam"));
+    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -247,6 +247,7 @@ public final class SheetSchema {
                 module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape"),
                 module("zoom", "Zoom", "Zoom in while held; bind in Controls", "fov optifine magnify"),
                 module("noHurtCam", "No Hurt Cam", "No screen tilt when you take damage", "damage shake tilt"),
+                module("toggleSprint", "Toggle Sprint", "Press once to keep sprinting; bind in Controls", "auto sprint run"),
                 module("clutch", "Clutch Practice", "Pearl and fireball drill in singleplayer", "void fireball pearl",
                         toggle("clutchBlocks", "Block Damage", "Fireballs break wool, wood and clay"))));
         cats.add(category("visuals", "Visuals",

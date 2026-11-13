@@ -93,7 +93,11 @@ final class Probes {
     private static Map<String, Object> player() throws Exception {
         Map<String, Object> out = Bridge.onMain(() -> {
             Map<String, Object> o = Bridge.ok();
-            o.put("client", describe(Bridge.mc().thePlayer));
+            Minecraft mc = Bridge.mc();
+            Map<String, Object> client = describe(mc.thePlayer);
+            client.put("sprinting", mc.thePlayer.isSprinting());
+            client.put("sprintKeyDown", mc.gameSettings.keyBindSprint.isKeyDown());
+            o.put("client", client);
             return o;
         });
         out.put("server", onServer(() -> describe(serverPlayer())));

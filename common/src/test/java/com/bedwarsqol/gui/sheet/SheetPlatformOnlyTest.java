@@ -22,7 +22,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class SheetPlatformOnlyTest {
 
-    private static final List<String> ORNITHE_ONLY = Arrays.asList("zoom", "noHurtCam");
+    private static final List<String> ORNITHE_ONLY = Arrays.asList("zoom", "noHurtCam", "toggleSprint");
 
     /** Forge's rule: every schema id (the fixture's has() accepts everything but Lunar's alert modules), no opt-in. */
     private final Tree acceptsEverything = new Tree(null, false);

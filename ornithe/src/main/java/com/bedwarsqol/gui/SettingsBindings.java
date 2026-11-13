@@ -59,7 +59,7 @@ final class SettingsBindings implements SheetValues {
 
     @Override
     public boolean hasPlatformOnly(String id) {
-        return "zoom".equals(id) || "noHurtCam".equals(id);
+        return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id);
     }
 
     @Override
@@ -87,6 +87,7 @@ final class SettingsBindings implements SheetValues {
             case "clutchBlocks": return c.clutchBlockDamage;
             case "zoom": return c.zoomEnabled;
             case "noHurtCam": return c.noHurtCam;
+            case "toggleSprint": return c.toggleSprintEnabled;
             case "blockOverlay": return c.blockOverlayEnabled;
             case "boSee": return c.blockOverlaySeeThrough;
             case "boWhite": return c.blockOverlayWhite;
@@ -151,6 +152,7 @@ final class SettingsBindings implements SheetValues {
             case "clutchBlocks": c.clutchBlockDamage = v; break;
             case "zoom": c.zoomEnabled = v; break;
             case "noHurtCam": c.noHurtCam = v; break;
+            case "toggleSprint": c.toggleSprintEnabled = v; break;
             case "blockOverlay": c.blockOverlayEnabled = v; break;
             case "boSee": c.blockOverlaySeeThrough = v; break;
             case "boWhite": c.blockOverlayWhite = v; break;
