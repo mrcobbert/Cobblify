@@ -1124,7 +1124,10 @@ def smoke_world(s):
     # Static scenes for frame diffs: no mobs wandering in (the world persists between runs).
     for c in ("/gamerule doDaylightCycle false", "/gamerule doMobSpawning false", "/kill @e[type=!Player]",
               "/time set 6000", "/weather clear", "/gamemode 1",
-              # A fixed spot near spawn (always loaded): Clutch knockback moves the player each run.
+              # Repair the test area (earlier runs' TNT craters), then a fixed spot near spawn (always
+              # loaded): Clutch knockback moves the player each run. Default flat layers: dirt 1-2, grass 3.
+              "/fill -24 1 -24 24 2 24 minecraft:dirt", "/fill -24 3 -24 24 3 24 minecraft:grass",
+              "/fill -24 4 -24 24 9 24 minecraft:air",
               "/effect @p clear", "/tp @p 0.5 4 0.5 0 0"):
         s.cmd(c)
     s.call("/close")
