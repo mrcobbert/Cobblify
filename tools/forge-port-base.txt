@@ -1,0 +1,127 @@
+# Forge port base: the git blob id of every file under src/main and src/test at
+# the commit the Ornithe port was taken from (5f05bc5).
+#
+# Checked by tools/check-tree-drift.sh whenever this file exists. Any Forge file
+# whose indexed blob differs from its line here, and any Forge file added or
+# removed, fails the check with "port this change to ornithe/, then update its
+# line in tools/forge-port-base.txt". That catches a Forge fix landing inside a
+# file declared divergent, which no pair check can see.
+#
+# Format: "<blob id> <path>", one file per line, sorted by path. <path> is
+# repo-relative and runs verbatim from after the first space to the end of the
+# line. Only lines starting with `#` are comments.
+#
+# Do not hand-edit lines. After porting a Forge change to ornithe/ and staging
+# both, run:   tools/forge-port-base.sh update <path>...
+# (a removed file's path drops its line). Commit the port and the line together.
+#
+# Transitional: this file and the guard are deleted with the Forge tree (P10).
+6d01e3079851837080c27da1a8ef324f91951df6 src/main/java/com/bedwarsqol/BedwarsQol.java
+deb60e3e2341cf695db5e5fee85f0e7f71699c0d src/main/java/com/bedwarsqol/bedwars/GeneratorTracker.java
+a773fbd21bc14945bccc2b2d661455589f70fffb src/main/java/com/bedwarsqol/command/BedwarsQolCommand.java
+00be83b8f7a908f25cffabdb349990d2c97f0551 src/main/java/com/bedwarsqol/command/BedwarsStatsCommand.java
+f5740653387981155729e0a1c4957dc3e94903b2 src/main/java/com/bedwarsqol/config/ClientSettings.java
+b7b6bcc644b9b9b03657010971bafa3913a6b80e src/main/java/com/bedwarsqol/config/SettingsManager.java
+673c10ce4f9400ab3d3dbc8577e7502a6b640da8 src/main/java/com/bedwarsqol/feature/AlertCopyReason.java
+556100c83832aff5cb2cc91628d643330d5e4520 src/main/java/com/bedwarsqol/feature/AutoGg.java
+e5cbe59325b540d790c52bdac1352b4656b59766 src/main/java/com/bedwarsqol/feature/BlockOverlayRenderer.java
+cb6d3359de409830f294af72a7752e6a7c884147 src/main/java/com/bedwarsqol/feature/ChatCopyAccess.java
+748401dc264babf4d0f90fb3d33e07f94660f0d5 src/main/java/com/bedwarsqol/feature/ChatHoverStats.java
+e8e99abff9dd9ea0840d0fdc5182be2b19523830 src/main/java/com/bedwarsqol/feature/ChatLengthLimit.java
+18ad2d65f44cf394c00d213afa86884854d52df4 src/main/java/com/bedwarsqol/feature/ChatNameTags.java
+3e7dd7ceffecfddc0cfbe9bb9328d3dd09c2ebaa src/main/java/com/bedwarsqol/feature/ChatNotifications.java
+b7a05dec7fc8ed143b7010b7802a3e8579a4703e src/main/java/com/bedwarsqol/feature/ChatSender.java
+966ceb2afbfa20fc4db52b20b8004f7ed65648da src/main/java/com/bedwarsqol/feature/ChatSplice.java
+c256cb1e6ab72c029f7b2c8bcbbbe49339c1fd6d src/main/java/com/bedwarsqol/feature/ChatStack.java
+6ae32b487816fbd3fddae6aeb79b18c03c79c6a2 src/main/java/com/bedwarsqol/feature/ClutchFireball.java
+f5fe4e931bd2a07fc412c333690d92be85b9538c src/main/java/com/bedwarsqol/feature/ClutchPractice.java
+72af9bb439ae04cf107d22c229864f316e569a9a src/main/java/com/bedwarsqol/feature/GameRosterChat.java
+0932138fa0bd1468cb27f4c9dfcfc5999eccaf94 src/main/java/com/bedwarsqol/feature/HeightLimitWatch.java
+ea8decb7fa87d6f7a841e482455497a34dad802b src/main/java/com/bedwarsqol/feature/IncSender.java
+bd4194377594d27efeb049146dd7ef285816faba src/main/java/com/bedwarsqol/feature/LobbyChatWatch.java
+0a7d52c24a8a96fbf09918efd7428b8dbbd07d5e src/main/java/com/bedwarsqol/feature/LobbySnapshot.java
+a56787079a20b5e3329854426bcacc08fd038b12 src/main/java/com/bedwarsqol/feature/ModChat.java
+6322b4614722ebfe13bc1612a403228c9720fe35 src/main/java/com/bedwarsqol/feature/NametagStats.java
+01ed7f0a73ee34c7e8992fc43334e431d6b75d4e src/main/java/com/bedwarsqol/feature/NickUtils.java
+006392c9916022b1a2b63d55ab6f3454f3f61e6c src/main/java/com/bedwarsqol/feature/OutgoingChat.java
+f303aa4d2cb938d3ce9cae819cace1fab7cf026f src/main/java/com/bedwarsqol/feature/PartyJoinAlert.java
+ad5f7bbdcf033269bbd0c1ac6f4b37cbe6a55561 src/main/java/com/bedwarsqol/feature/PauseKeyHandler.java
+5c986449e9e382e2c94af2d0cb36ac71524a28ef src/main/java/com/bedwarsqol/feature/QueueAlert.java
+4fe00d75a9f9a6b45898fc70b819620699b6f3c9 src/main/java/com/bedwarsqol/feature/SessionStatsWatch.java
+0ffd64b66477aae153f75b2109c60230bf087242 src/main/java/com/bedwarsqol/feature/SettingsKeyHandler.java
+5b40afd6e5ab2bbb2bbc171be3fe7683c55f415e src/main/java/com/bedwarsqol/feature/SweatReport.java
+3b3bd2a5dff6223e1e4092aa8b3a9789e2791540 src/main/java/com/bedwarsqol/feature/TeamColors.java
+55298778a645b9ab4203fc3158eff8eaadcd419e src/main/java/com/bedwarsqol/feature/TntFuseDisplay.java
+269a5cd600556fe80a6aa8d6d631488b8df0a9ef src/main/java/com/bedwarsqol/feature/UrchinAlert.java
+35df43a88bfa4d31f3ee2bf0363883fb32c5b7c0 src/main/java/com/bedwarsqol/gui/EditHudGui.java
+4091109a6568738f98dd8abc05e9ee8535f1dac6 src/main/java/com/bedwarsqol/gui/SettingsBindings.java
+cd823a54bbc1416514a3700a133ce1a13fe42a00 src/main/java/com/bedwarsqol/gui/SettingsGui.java
+55d3aa2586f8152a9026f1bb07367a6fc34d7989 src/main/java/com/bedwarsqol/gui/render/BedwarsQolFont.java
+ee497b712307dcc29d6727ee34e9aa1e2d789122 src/main/java/com/bedwarsqol/gui/render/GuiRender.java
+aa2100ca88533944243367206bb18b3f6ab5e925 src/main/java/com/bedwarsqol/gui/render/Icons.java
+28592361f8e27b41edae35d487640d1b406a7734 src/main/java/com/bedwarsqol/gui/sheet/McCanvas.java
+4f5b34ed27ea0000d8c6bfde764ac789d2c04bac src/main/java/com/bedwarsqol/gui/sheet/SheetGlyphs.java
+1b75a1df3755ae6e0632bc0db07e2095e9baf1c9 src/main/java/com/bedwarsqol/hud/BedwarsHudRenderer.java
+8bbf758bd05b08a9483ab1fb5e443457d94ee45b src/main/java/com/bedwarsqol/hud/HudModules.java
+a5e74eb652321169b41e3a028db5dd2f7d3ca3e0 src/main/java/com/bedwarsqol/mixin/C01PacketChatMessageMixin.java
+0aa36c7302e1d233d77059268ec7cbf4776490d2 src/main/java/com/bedwarsqol/mixin/EntityPlayerSPMixin.java
+13dbf777cd89f63a4d983a5e18558478f986d953 src/main/java/com/bedwarsqol/mixin/GuiChatMixin.java
+dabd957fd74b7b1f0190413529ef9638e893ca1b src/main/java/com/bedwarsqol/mixin/GuiIngameMixin.java
+c9c2785d9e273fc108f93ca1502faf865a2bea48 src/main/java/com/bedwarsqol/mixin/GuiNewChatMixin.java
+ff3ce65abbc6578e7c4c1edc24205463f84d6a11 src/main/java/com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
+afa7d17240409806d764aba25dd8bd2269a6f0f0 src/main/java/com/bedwarsqol/mixin/GuiScreenMixin.java
+f63c6e3c59d16ec3e09eb46210f69df53e9e59c3 src/main/java/com/bedwarsqol/mixin/ItemRendererMixin.java
+0a652838aec4972f7a8248aee1e04447d42f650e src/main/java/com/bedwarsqol/mixin/MinecraftChatClearMixin.java
+5d1c57051b92392ceba705b736f0b2afcd00dcbc src/main/java/com/bedwarsqol/mixin/MinecraftEscMixin.java
+f535f324dc388f6545cd3a5c0391ca83b1bb04e2 src/main/java/com/bedwarsqol/stats/BedwarsModeDetector.java
+2aeb30e881a377656f7e4957782c5e3a601ab310 src/main/java/com/bedwarsqol/stats/GameSessionTracker.java
+2afdd0edd3df27454480fc4f4777a37b710cb157 src/main/java/com/bedwarsqol/stats/HypixelContext.java
+22cb52016a9fd505b6ac4d05d9bd0e1d53e65815 src/main/java/com/bedwarsqol/stats/PlayerNames.java
+c37bd12acfbcc5d72a24b64d71be7af4762a7fdb src/main/java/com/bedwarsqol/stats/StatsCache.java
+0edbf0697052111bd17d0b68c402c3fe110eec1b src/main/java/com/bedwarsqol/stats/TabListLookup.java
+44c4e2b17a62c92334c9600545b393860812c87e src/main/resources/assets/bedwarsqol/font/inter.fnt
+cb722064716617652b403915a853577f90ba57fd src/main/resources/assets/bedwarsqol/font/inter.png
+8c1fb4e9b6e07841c6a75918109cb0f4135bb497 src/main/resources/assets/bedwarsqol/font/inter_medium.fnt
+1412062078fff1ad62af475ec0adb56e5c967643 src/main/resources/assets/bedwarsqol/font/inter_medium.png
+21adf9444bf3f22e15aa85d8539f9415e49609bd src/main/resources/assets/bedwarsqol/font/inter_semibold.fnt
+c44dfda23a708cebb658cc097895798d941ee027 src/main/resources/assets/bedwarsqol/font/inter_semibold.png
+279dc5c0d9ff15f3191ef03e17cdfaa39721dfee src/main/resources/assets/bedwarsqol/font/sheet/LICENSE-inter.txt
+80cd7f914e1a102769e1f09618b0ed411052cdc7 src/main/resources/assets/bedwarsqol/font/sheet/inter-400-m24.png
+826eb9839738c47108dd5223b21d7afadb7fcd97 src/main/resources/assets/bedwarsqol/font/sheet/inter-400-m24.txt
+594a282d98677ccb3d9d9568701c408edcd92452 src/main/resources/assets/bedwarsqol/font/sheet/inter-400-m48.png
+4be974e704fc4664842c52eca0bb5b014d903e58 src/main/resources/assets/bedwarsqol/font/sheet/inter-400-m48.txt
+a310e7b4604da9adabee3a5bc1f0a3bc6ec993f7 src/main/resources/assets/bedwarsqol/font/sheet/inter-400.metrics
+d9d722ab057a2561328bef0ceb4c3ffedfe90419 src/main/resources/assets/bedwarsqol/font/sheet/inter-400.outlines
+da1c29ae01dd0709778afcec08cbc8f39c45e857 src/main/resources/assets/bedwarsqol/font/sheet/inter-500-m24.png
+6f814b84661b7b7e7a6110280b5ac5d1fc98b29e src/main/resources/assets/bedwarsqol/font/sheet/inter-500-m24.txt
+ca8863d2902d387f26c3b4d4537120ccc5308766 src/main/resources/assets/bedwarsqol/font/sheet/inter-500-m48.png
+00c67a81665a2f42c92886ee2eb08fd14ca86e9c src/main/resources/assets/bedwarsqol/font/sheet/inter-500-m48.txt
+92e2e4fbba0dd968db387051b07f55b370246baf src/main/resources/assets/bedwarsqol/font/sheet/inter-500.metrics
+fbefa84e0b0f6025aff6100cefcc5f5978c57e91 src/main/resources/assets/bedwarsqol/font/sheet/inter-500.outlines
+48c7aed256d27633b8857c2a4a0595b42d68a544 src/main/resources/assets/bedwarsqol/font/sheet/inter-600-m24.png
+d923c2872e4cd7eef728f48fa11515b51d2c5a53 src/main/resources/assets/bedwarsqol/font/sheet/inter-600-m24.txt
+23c8801a651b69343650696842c4c466650a9c6e src/main/resources/assets/bedwarsqol/font/sheet/inter-600-m48.png
+a9c20964630aa878d05994f89769ca7e39a8776e src/main/resources/assets/bedwarsqol/font/sheet/inter-600-m48.txt
+753392d9e09c9ce8dc6fcdec27f3987db010c5f3 src/main/resources/assets/bedwarsqol/font/sheet/inter-600.metrics
+3b3e85e3824554ca6457282fdd1d0734b9c828b8 src/main/resources/assets/bedwarsqol/font/sheet/inter-600.outlines
+aedad59066bdc9bd37744c9ee4c60587ff61b122 src/main/resources/assets/bedwarsqol/icons/LICENSE-tabler.txt
+eba87e20f2f804351095b2f19225573921b4c941 src/main/resources/assets/bedwarsqol/icons/nav.png
+b43ba2439637da3b29f2e74f17450c8236280afc src/main/resources/assets/bedwarsqol/nick-skins.txt
+8eb7586386a5c14d12b5d019f02c3d8d9e5c6aee src/main/resources/bedwarsqol/cacerts
+8a122786f6f8ca34f138eab2fece41107b962b5c src/main/resources/mcmod.info
+530b96349005df076295820774bbe93ba90b2b9c src/main/resources/mixins.bedwarsqol.json
+069b1eb432bccd9a897d78255ef12c21a2f93611 src/test/java/com/bedwarsqol/config/ClientSettingsConfigTest.java
+2c5704d7d1eae3a89405c755d5c3f26d7b230429 src/test/java/com/bedwarsqol/config/ForgeHudLayoutMigrationTest.java
+7c3d691fdbfe239457a433ed80a2e6ba83f522a8 src/test/java/com/bedwarsqol/feature/AlertCopyReasonTest.java
+e28f5e98fffc73d4a0672e14537a7a2e167cb83a src/test/java/com/bedwarsqol/feature/ChatLengthLimitTest.java
+2d6b40ab2ee26d5032d8cc1387a478541d75e863 src/test/java/com/bedwarsqol/feature/ChatSenderTest.java
+2f8051bf7bd1d7745964211cf3c34031cda98a09 src/test/java/com/bedwarsqol/feature/ChatSpliceTest.java
+7d1eb92f6b953bb4a887c4e04ed2bc05025f08d7 src/test/java/com/bedwarsqol/feature/ChatStackTest.java
+b14479f8e7867dd6b7325fb850fc5bb6af4d5e05 src/test/java/com/bedwarsqol/feature/ModChatTest.java
+e89360a2662e66918334d2d00dbebbfa0284d1f5 src/test/java/com/bedwarsqol/feature/QueueAlertTest.java
+4baedc3e3b6f1aa38aa3f236e8413c102eee71f9 src/test/java/com/bedwarsqol/gui/SettingsLayoutTest.java
+0af0ba36939dd05f8ef90e74c0d601a3fa67dc07 src/test/java/com/bedwarsqol/harness/FakeStatsBackend.java
+f1d1af977a37bc9d00e22d5ec163b0d47af1bbf4 src/test/java/com/bedwarsqol/harness/LaneContrastHarness.java
+84021ca87e8ad75354d374838368d5b9cf02ddbd src/test/java/com/bedwarsqol/harness/LaneContrastTest.java
+d5d36e6e2e8a89b6ae4c725a78ec67860fd4e4d2 src/test/java/net/minecraftforge/fml/common/Loader.java
+924ef47eeb8089445a75197098e2ca7dfe929a63 src/test/resources/lobby-arrivals.txt
