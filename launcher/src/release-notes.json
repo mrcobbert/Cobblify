@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.19.0",
+    "channel": "stable",
+    "date": "2026-11-12",
+    "sections": [
+      ["New", [
+        "Prism runs Cobblify on Ornithe with Java 25 and the Pylon, Argentum and Sarcio performance mods (plus Slipstream on macOS), in a new instance that copies your Forge instance's settings, packs and servers.",
+        "Zoom (hold C) and No Hurt Cam on Prism.",
+        "Clutch Practice works on Prism too."
+      ]],
+      ["Fixes", ["Session Stats no longer reset when Hypixel moves you between servers."]]
+    ]
+  },
+  {
     "version": "0.18.2",
     "channel": "stable",
     "date": "2026-10-27",
