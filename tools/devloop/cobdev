@@ -911,22 +911,29 @@ def diff(a, b, step=4, thresh=24, box=None):
 def horizon_row(img, x):
     """Sky-to-ground boundary in column x: first row (from the top) whose blueness drops below half the sky's."""
     w, h, _ = img
-    top = px(img, x, int(h * 0.05))
+    top = px(img, x, int(h * 0.15))
     sky = top[2] - top[1]
     if sky < 20:
         return None
-    for y in range(int(h * 0.05), int(h * 0.9)):
+    for y in range(int(h * 0.15), int(h * 0.9)):
         p = px(img, x, y)
         if p[2] - p[1] < sky / 2:
             return y
     return None
 
 
+def _median(vals):
+    vals = sorted(v for v in vals if v is not None)
+    return vals[len(vals) // 2] if vals else None
+
+
 def tilt(img):
-    """Horizon row at x=10% minus x=90%; 0 when the camera is level."""
+    """Horizon height on the left (x 15-40%) minus the right (x 60-85%), each a median over six
+    columns so a HUD element over one column cannot fake a tilt; 0 when the camera is level."""
     w, _, _ = img
-    a, b = horizon_row(img, int(w * 0.1)), horizon_row(img, int(w * 0.9))
-    return None if a is None or b is None else a - b
+    left = _median(horizon_row(img, int(w * f / 100)) for f in range(15, 41, 5))
+    right = _median(horizon_row(img, int(w * f / 100)) for f in range(60, 86, 5))
+    return None if left is None or right is None else left - right
 
 
 # ----------------------------------------------------------------------------------- smoke
@@ -1043,7 +1050,7 @@ def parse_mod_list(lines):
         if re.search(r"Loading \d+ mods:", line):
             ids = []
             for entry in lines[i + 1:]:
-                m = re.match(r"^\s+(?:[|\\]--|-) (\S+) ", entry)
+                m = re.match(r"^\t[\s|]*(?:[|\\]--|-) (\S+) ", entry)
                 if not m:
                     break
                 ids.append(m.group(1))
@@ -1055,11 +1062,16 @@ def close_enough(a, b, tol):
     return a is not None and b is not None and abs(a - b) <= tol
 
 
-def smoke_boot(s, mode):
+def smoke_boot(s, mode, fresh):
     s.begin("A3", "boot to title (%s mode): mods, ready line, no mixin errors" % mode)
     st = s.status()
     s.check("ready and responsive", st.get("ready") and st.get("responsive"), st.get("reason"))
-    s.check("title screen reached", st.get("title") is True, st.get("screen"))
+    if fresh or not st.get("inWorld"):
+        s.check("title screen reached", st.get("title") is True, st.get("screen"))
+    else:  # --no-stage on a game an earlier run left in the world: the title check needs a fresh boot
+        s.step["checks"].append({"check": "title screen reached", "ok": None,
+                                 "detail": "not checked: the running game is already in a world (no restart)"})
+        print("   n/a  title screen reached: game already in a world (rerun without --no-stage)")
     s.check("running mode is " + mode, st.get("mode") == mode, st.get("mode"))
     log = s.call("/log", {"lines": 4000})["lines"]
     text = "\n".join(log)
@@ -1109,8 +1121,14 @@ def smoke_world(s):
         time.sleep(1)
     st = s.status()
     s.check("in a singleplayer world", st.get("inWorld") and not st.get("onServer"), st)
-    for c in ("/gamerule doDaylightCycle false", "/time set 6000", "/weather clear", "/gamemode 1",
-              "/effect @p clear", "/tp @p ~ ~ ~ 0 0"):
+    # Static scenes for frame diffs: no mobs wandering in (the world persists between runs).
+    for c in ("/gamerule doDaylightCycle false", "/gamerule doMobSpawning false", "/kill @e[type=!Player]",
+              "/time set 6000", "/weather clear", "/gamemode 1",
+              # Repair the test area (earlier runs' TNT craters), then a fixed spot near spawn (always
+              # loaded): Clutch knockback moves the player each run. Default flat layers: dirt 1-2, grass 3.
+              "/fill -24 1 -24 24 2 24 minecraft:dirt", "/fill -24 3 -24 24 3 24 minecraft:grass",
+              "/fill -24 4 -24 24 9 24 minecraft:air",
+              "/effect @p clear", "/tp @p 0.5 4 0.5 0 0"):
         s.cmd(c)
     s.call("/close")
     time.sleep(3)  # chunks render
@@ -1123,37 +1141,55 @@ def smoke_hurt(s, cfg):
     _, level = s.shot("level", wait=200)
     t0 = tilt(level)
     s.check("level frame has a horizon", t0 is not None and abs(t0) <= 3, "tilt %s px" % t0)
+    if t0 is None:
+        return
     nhc = find_field(s, cfg, NO_HURT_CAM_FIELDS)
 
-    def hurt_tilt(tag):
+    def rolled(t):  # against the level frame, not 0, so any fixed offset cancels out
+        return t is not None and abs(t - t0) > 6
+
+    def probe_tilt(tag):
         s.probe("hurt")
         _, img = s.shot(tag, wait=0)
         return tilt(img)
+
+    def real_damage_tilt(tag):
+        """Instant Damage I in survival; shoot as soon as the client sees the hit (hurtTime > 0)."""
+        s.cmd("/effect @p 6 1 5")
+        time.sleep(1.2)
+        s.call("/command", post={"command": "/effect @p 7 1 0"})
+        hurt = 0
+        for _ in range(40):
+            hurt = s.probe("player")["client"]["hurtTime"]
+            if hurt > 0:
+                break
+            time.sleep(0.02)
+        _, img = s.shot(tag, wait=0)
+        return tilt(img), hurt
+
     if nhc:
         s.field(nhc, False)
-    t_off = hurt_tilt("hurt-cam-on")
-    s.check("hurt camera tilts (No Hurt Cam off%s)" % ("" if nhc else "; vanilla"), t_off is not None and abs(t_off) > 6,
-            "tilt %s px" % t_off)
-    time.sleep(1)
+    t_off = probe_tilt("hurt-cam-on")
+    s.check("probe hurt tilts the camera (No Hurt Cam off%s)" % ("" if nhc else "; vanilla"), rolled(t_off),
+            "tilt %s px, level %s" % (t_off, t0))
     s.cmd("/gamemode 0")
-    s.cmd("/effect @p 6 1 5")
-    time.sleep(1)
-    s.call("/command", post={"command": "/effect @p 7 1 0"})
-    shots = []
-    for i in range(3):
-        _, img = s.shot("real-damage-%d" % i, wait=0)
-        shots.append(tilt(img))
-    s.check("real damage tilts too (cross-check)", any(t is not None and abs(t) > 6 for t in shots), "tilts %s" % shots)
+    t_real, hurt = real_damage_tilt("real-damage-cam-on")
+    s.check("real damage tilts too (cross-check)", hurt > 0 and rolled(t_real),
+            "tilt %s px, level %s, hurtTime %s" % (t_real, t0, hurt))
+    if not nhc:
+        s.cmd("/effect @p 6 1 5")
+        s.cmd("/gamemode 1")
+        return s.unavailable("No Hurt Cam setting not found (%s); vanilla tilt checked above" % "/".join(NO_HURT_CAM_FIELDS))
+    s.field(nhc, True)
+    t_real_on, hurt_on = real_damage_tilt("real-damage-cam-off")
+    s.check("No Hurt Cam on: real damage, no tilt", hurt_on > 0 and t_real_on is not None and abs(t_real_on - t0) <= 3,
+            "tilt %s px, level %s, hurtTime %s" % (t_real_on, t0, hurt_on))
     s.cmd("/effect @p 6 1 5")
     s.cmd("/gamemode 1")
-    if not nhc:
-        s.unavailable("No Hurt Cam setting not found (%s) - Track A Phase 4; vanilla tilt checked above"
-                      % "/".join(NO_HURT_CAM_FIELDS))
-        return
     time.sleep(1)
-    s.field(nhc, True)
-    t_on = hurt_tilt("hurt-cam-off")
-    s.check("No Hurt Cam on: no tilt", t_on is not None and abs(t_on) <= 3, "tilt %s px" % t_on)
+    t_on = probe_tilt("hurt-cam-off")
+    s.check("No Hurt Cam on: probe hurt, no tilt", t_on is not None and abs(t_on - t0) <= 3,
+            "tilt %s px, level %s" % (t_on, t0))
     s.field(nhc, False)
 
 
@@ -1194,7 +1230,11 @@ def smoke_zoom(s, cfg):
         s.check("held FOV well below baseline (ZOOM_FACTOR unreadable)", held < base * 0.75, "%.2f -> %.2f" % (base, held))
     s.check("frame differs while held", diff(img0, img1)[0] > 0.05, "%.3f" % diff(img0, img1)[0])
     s.check("release restores FOV (not latched)", close_enough(after, base, 0.5), "%.2f vs %.2f" % (after, base))
-    s.check("released frame matches baseline", diff(img0, img2)[0] < 0.02, "%.3f" % diff(img0, img2)[0])
+    # Chat (bottom-left) fades and scrolls on its own; compare the rest of the frame.
+    w, h, _ = img0
+    rest = max(diff(img0, img2, box=(0, 0, w, int(h * 0.7)))[0], diff(img0, img2, box=(w // 2, int(h * 0.7), w, h))[0])
+    s.check("released frame matches baseline (outside chat)", rest < 0.02, "%.3f (whole frame %.3f)"
+            % (rest, diff(img0, img2)[0]))
     if zf:
         s.field(zf, False)
         s.call("/keyhold", {"name": ZOOM_KEY, "state": "on"})
@@ -1255,6 +1295,16 @@ def smoke_clutch(s, cfg):
     def heal():
         s.cmd("/effect @p 6 1 5")
         time.sleep(1.2)  # outlast hurtResistantTime
+
+    def place(dx, dy, dz, block):
+        """Places relative to the feet now; returns the absolute position for reads after the blast."""
+        return s.probe("block", dx, dy, dz, block)["pos"]
+
+    def read(pos):
+        return s.probe("block", "at", *pos)["block"]
+
+    # Health must only change through the checks below (no natural regeneration in between).
+    s.cmd("/gamerule naturalRegeneration false")
     s.field(cp, True)
     s.field(bd, False)
     s.cmd("/gamemode 0")
@@ -1269,44 +1319,51 @@ def smoke_clutch(s, cfg):
             "motion %s, expected %s" % (r["after"]["motion"], exp))
     time.sleep(0.5)
     later = s.probe("player")["server"]["health"]
-    s.check("no extra (vanilla) explosion damage afterwards", close_enough(later, r["after"]["health"], 0.01),
+    s.check("no extra (vanilla) explosion damage afterwards", later >= r["after"]["health"] - 0.01,
             "%.3f then %.3f" % (r["after"]["health"], later))
     for on in (True, False):
         heal()
         s.field(bd, on)
-        s.probe("block", 3, 0, 1, "minecraft:wool")
-        s.probe("block", 3, 0, -1, "minecraft:stone")
+        # Absolute positions, captured before the blast moves the player (review I3).
+        wool_at = place(3, 0, 1, "minecraft:wool")
+        stone_at = place(3, 0, -1, "minecraft:stone")
         time.sleep(0.2)
         s.probe("clutch-blast", 3, 0, 0)
         time.sleep(0.2)
-        wool = s.probe("block", 3, 0, 1)["block"]
-        stone = s.probe("block", 3, 0, -1)["block"]
+        wool, stone = read(wool_at), read(stone_at)
+        label = "on" if on else "off"
         if on:
-            s.check("Block Damage on: wool breaks", wool == "minecraft:air", wool)
+            s.check("Block Damage on: wool breaks", wool == "minecraft:air", "%s at %s" % (wool, wool_at))
         else:
-            s.check("Block Damage off: wool stays", wool == "minecraft:wool", wool)
-        s.check("Block Damage %s: stone stays" % ("on" if on else "off"), stone == "minecraft:stone", stone)
+            s.check("Block Damage off: wool stays", wool == "minecraft:wool", "%s at %s" % (wool, wool_at))
+        s.check("Block Damage %s: stone stays" % label, stone == "minecraft:stone", "%s at %s" % (stone, stone_at))
     s.field(bd, False)
+    # Low health (review I4): Instant Damage I (6) three times takes 20 -> 2, so an uncapped 2-point
+    # blast would kill. (Duration 0 would remove the effect instead of applying it.)
     heal()
     for _ in range(3):
-        s.cmd("/effect @p 7 0 0")
+        s.cmd("/effect @p 7 1 0")
         time.sleep(1.2)
     low = s.probe("clutch-blast", 3, 0, 0)
-    s.check("low health: the hit leaves >= half a heart", low["after"]["health"] >= 1.0 - 1e-6,
-            "%.2f -> %.2f" % (low["before"]["health"], low["after"]["health"]))
+    before, after = low["before"]["health"], low["after"]["health"]
+    dmg = low.get("expectedDamage") or 0
+    s.check("health is low enough that an uncapped blast would kill", 0 < before <= dmg,
+            "health %.2f, blast damage %s" % (before, dmg))
+    s.check("low health: the hit leaves >= half a heart", after >= 1.0 - 1e-6, "%.2f -> %.2f" % (before, after))
     heal()
     s.field(cp, False)
-    s.probe("block", 4, 0, 0, "minecraft:stone")
+    tnt_stone = place(4, 0, 0, "minecraft:stone")
     s.cmd("/summon PrimedTnt ~5 ~ ~ {Fuse:0}")
     time.sleep(0.6)
-    stone = s.probe("block", 4, 0, 0)["block"]
-    s.check("ordinary explosion still breaks stone", stone == "minecraft:air", stone)
+    stone = read(tnt_stone)
+    s.check("ordinary explosion still breaks stone", stone == "minecraft:air", "%s at %s" % (stone, tnt_stone))
     s.field(cp, True)
     heal()
     u = s.probe("use-item", "minecraft:fire_charge")
     s.check("use-item with a fire charge spawns a Clutch fireball",
             any(c.endswith("ClutchFireball") for c in u.get("spawned", [])), u.get("spawned"))
     s.field(cp, False)
+    s.cmd("/gamerule naturalRegeneration true")
     s.cmd("/gamemode 1")
     heal()
 
@@ -1318,12 +1375,13 @@ def cmd_smoke(args):
     st = api_quiet("/status")
     if not st:
         die(NOT_RUNNING)
-    if st.get("mode") != mode or not args.no_stage:
+    fresh = st.get("mode") != mode or not args.no_stage
+    if fresh:
         print("staging %s mode and restarting the game..." % mode)
         args.prod = mode == "prod"
         restart(wt, args, stage=True)
     s = Smoke(mode, source_of(os.path.realpath(os.path.join(SHARED, "current"))))
-    steps = [lambda: smoke_boot(s, mode)]
+    steps = [lambda: smoke_boot(s, mode, fresh)]
     cfg_box = {}
     if not args.boot_only:
         steps += [lambda: smoke_screen(s, "A4-settings", "settings screen", "settings"),

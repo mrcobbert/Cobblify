@@ -385,7 +385,9 @@ public final class Bridge {
     /** Holds (or releases) a key binding Cobblify registered, re-applied every few ms until released. */
     private static Map<String, Object> keyhold(String name, String state) throws Exception {
         return onMain(() -> {
-            requireLocal();
+            Minecraft m = mc();
+            // Releasing is always allowed: a hold must be endable from anywhere (review I2).
+            Refused.check(Policy.keyhold(state, m.theWorld != null, m.isSingleplayer()));
             List<Object> listed = new ArrayList<>();
             KeyBinding match = null;
             for (KeyBinding kb : mc().gameSettings.keyBindings) {
@@ -459,6 +461,10 @@ public final class Bridge {
                     if (m != null && (holdCursor || !heldKeys.isEmpty())) {
                         m.addScheduledTask(() -> {
                             try {
+                                if (!Policy.keepHolding(m.theWorld != null, m.isSingleplayer())) {
+                                    releaseAll();
+                                    return;
+                                }
                                 int[] c = cursor;
                                 if (c != null && System.currentTimeMillis() < cursorUntil) Input.pointer(c[0], c[1]);
                                 for (int code : heldKeys) KeyBinding.setKeyBindState(code, true);
@@ -479,6 +485,13 @@ public final class Bridge {
         }, "cobdev-hold");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** Ends every hold (keys and cursor): runs on the game thread when the client reaches a server. */
+    private static void releaseAll() {
+        for (Integer code : heldKeys) KeyBinding.setKeyBindState(code, false);
+        heldKeys.clear();
+        cursor = null;
     }
 
     private static void holdCursor(int[] display) throws Exception {
