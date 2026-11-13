@@ -47,7 +47,7 @@ a56787079a20b5e3329854426bcacc08fd038b12 src/main/java/com/bedwarsqol/feature/Mo
 f303aa4d2cb938d3ce9cae819cace1fab7cf026f src/main/java/com/bedwarsqol/feature/PartyJoinAlert.java
 ad5f7bbdcf033269bbd0c1ac6f4b37cbe6a55561 src/main/java/com/bedwarsqol/feature/PauseKeyHandler.java
 5c986449e9e382e2c94af2d0cb36ac71524a28ef src/main/java/com/bedwarsqol/feature/QueueAlert.java
-4fe00d75a9f9a6b45898fc70b819620699b6f3c9 src/main/java/com/bedwarsqol/feature/SessionStatsWatch.java
+56349cc63bc26e0ed24e5c4e61601c1c5f0d37d8 src/main/java/com/bedwarsqol/feature/SessionStatsWatch.java
 0ffd64b66477aae153f75b2109c60230bf087242 src/main/java/com/bedwarsqol/feature/SettingsKeyHandler.java
 5b40afd6e5ab2bbb2bbc171be3fe7683c55f415e src/main/java/com/bedwarsqol/feature/SweatReport.java
 3b3bd2a5dff6223e1e4092aa8b3a9789e2791540 src/main/java/com/bedwarsqol/feature/TeamColors.java
