@@ -37,15 +37,35 @@ listing() { git ls-files "$1" | sed "s|^$1/||" | LC_ALL=C sort; }
 
 # --- derive fixtures from the current tree ----------------------------------
 
+# Whether the committed tree (what each clone holds) has the Ornithe tree. Once
+# it does, the real tree and its real manifests are the Ornithe fixture, and a
+# fixture file must hold its shape in the Ornithe pairs too.
+ORNITHE_REAL=0
+[ -z "$(git ls-tree -r --name-only HEAD -- ornithe/src | head -1)" ] || ORNITHE_REAL=1
+OL_MANIFEST=tools/tree-divergence-ornithe-lunar.txt
+FO_MANIFEST=tools/tree-divergence-forge-ornithe.txt
+
 # A live mirrored pair that is byte-identical and NOT declared: perturbing it
 # must be reported as undeclared drift.
 MIRROR=$(comm -12 <(listing src/main/java) <(listing lunar/src/main/java) | while read -r f; do
   cmp -s "src/main/java/$f" "lunar/src/main/java/$f" || continue
   grep -Fq " $f" "$MANIFEST" && continue
+  if [ "$ORNITHE_REAL" -eq 1 ]; then
+    cmp -s "src/main/java/$f" "ornithe/src/main/java/$f" || continue
+    grep -Fq " $f" "$OL_MANIFEST" && continue
+    grep -Fq " $f" "$FO_MANIFEST" && continue
+  fi
   echo "$f"; break
 done)
-# A declared-divergent pair, and a declared Forge-only file.
-DIVERGENT=$(awk '$1=="divergent" && $2=="main" { print $3; exit }' "$MANIFEST")
+# A declared-divergent pair (declared in every active manifest), and a declared
+# Forge-only file.
+DIVERGENT=$(awk '$1=="divergent" && $2=="main" { print $3 }' "$MANIFEST" | while read -r f; do
+  if [ "$ORNITHE_REAL" -eq 1 ]; then
+    grep -Fqx "divergent main $f" "$OL_MANIFEST" || continue
+    grep -Fqx "divergent main $f" "$FO_MANIFEST" || continue
+  fi
+  echo "$f"; break
+done)
 ONESIDED=$(awk '$1=="one-sided" && $2=="main" && $3=="forge" { print $4; exit }' "$MANIFEST")
 
 # The same two shapes under the mirrored resource trees, which are compared too.
@@ -98,7 +118,9 @@ run() { # <label> <expected exit> <expected message substring>; setup on stdin
   if [ "$rc" -ne "$want" ]; then
     printf '  [BAD ] %-44s expected exit %s, got %s\n' "$label" "$want" "$rc"
     printf '%s\n' "$out" | head -3 | sed 's/^/           /'; fail=$((fail+1))
-  elif [ -n "$msg" ] && ! printf '%s' "$out" | grep -qF "$msg"; then
+  # A here-string, not `printf | grep -q`: grep -q exits at the first match, and
+  # under pipefail the writer's SIGPIPE on a long report would read as "missing".
+  elif [ -n "$msg" ] && ! grep -qF -- "$msg" <<<"$out"; then
     printf '  [BAD ] %-44s missing: %s\n' "$label" "$msg"
     printf '%s\n' "$out" | head -3 | sed 's/^/           /'; fail=$((fail+1))
   else
@@ -113,7 +135,7 @@ shimmed() { # <label> <expected exit> <msg> <tool> <shim body>; no stdin setup
   c="$d/c"; mkdir -p "$c/.shim"
   printf '%s\n' "$body" > "$c/.shim/$tool"; chmod +x "$c/.shim/$tool"
   out=$(cd "$c" && PATH="$c/.shim:$PATH" ./$CHECK 2>&1); rc=$?
-  if [ "$rc" -eq "$want" ] && printf '%s' "$out" | grep -qF "$msg"; then
+  if [ "$rc" -eq "$want" ] && grep -qF -- "$msg" <<<"$out"; then
     printf '  [ OK ] %-44s exit=%s\n' "$label" "$rc"; pass=$((pass+1))
   else
     printf '  [BAD ] %-44s expected exit %s, got %s\n' "$label" "$want" "$rc"
@@ -211,6 +233,10 @@ F=$(printf 'src/main/java/com/bedwarsqol/Tab\tName.java')
 L=$(printf 'lunar/src/main/java/com/bedwarsqol/Tab\tName.java')
 printf 'class X{}\n' > "$F"; printf 'class X{}\n' > "$L"
 git add -- "$F" "$L"
+if [ -d ornithe/src ]; then
+  O=$(printf 'ornithe/src/main/java/com/bedwarsqol/Tab\tName.java')
+  printf 'class X{}\n' > "$O"; git add -- "$O"
+fi
 tools/forge-port-base.sh update "$F"
 CMD
 
@@ -291,14 +317,19 @@ CMD
 
 # --- the Ornithe pairs ------------------------------------------------------
 #
-# The Ornithe tree is not on this branch's history at the time these were
-# written, so a fixture builds one in the clone: a copy of the Forge roots, with
-# the Forge/Lunar declarations re-sided for ornithe/lunar and one real
-# divergence ($DIVERGENT) declared for forge/ornithe.
+# Once the Ornithe tree is committed, it and its real manifests are the fixture
+# (ORNITHE_FIXTURE does nothing). Before that, a fixture builds one in the clone:
+# a copy of the Forge roots, with the Forge/Lunar declarations re-sided for
+# ornithe/lunar and one real divergence ($DIVERGENT) declared for forge/ornithe.
+# ORNITHE_ABSENT removes the tree and empties both Ornithe manifests of entries,
+# the state before the tree existed.
 
 echo "ornithe pairs:"
 
-ORNITHE_FIXTURE="
+if [ "$ORNITHE_REAL" -eq 1 ]; then
+  ORNITHE_FIXTURE="true"
+else
+  ORNITHE_FIXTURE="
 mkdir -p ornithe/src/main ornithe/src/test
 cp -R src/main/java ornithe/src/main/java
 cp -R src/main/resources ornithe/src/main/resources
@@ -308,16 +339,24 @@ git add ornithe/src
 sed 's/^\(one-sided [a-z]*\) forge /\1 ornithe /' tools/tree-divergence.txt > tools/tree-divergence-ornithe-lunar.txt
 printf 'divergent main %s\n' '$DIVERGENT' >> tools/tree-divergence-forge-ornithe.txt
 "
+fi
+ORNITHE_ABSENT='
+git rm -r -q --ignore-unmatch ornithe/src
+for m in tools/tree-divergence-ornithe-lunar.txt tools/tree-divergence-forge-ornithe.txt; do
+  sed -e "/^divergent /d" -e "/^one-sided /d" "$m" > "$m.t" && mv "$m.t" "$m"
+done
+'
 
-run "ornithe pairs skipped when the tree is absent" 0 "ornithe/lunar: skipped" <<'CMD'
-true
+run "ornithe pairs skipped when the tree is absent" 0 "ornithe/lunar: skipped" <<CMD
+$ORNITHE_ABSENT
 CMD
 
 run "ornithe manifest entries without the tree" 1 "does not exist. Remove the stale entries" <<CMD
+$ORNITHE_ABSENT
 printf 'divergent main %s\n' "$DIVERGENT" >> tools/tree-divergence-forge-ornithe.txt
 CMD
 
-run "ornithe fixture checks three pairs" 0 "OK (3 tree pair(s) checked)" <<CMD
+run "ornithe tree checks three pairs" 0 "OK (3 tree pair(s) checked)" <<CMD
 $ORNITHE_FIXTURE
 CMD
 
@@ -374,25 +413,41 @@ git add -- "src/main/java/$DIVERGENT"
 tools/forge-port-base.sh update "src/main/java/$DIVERGENT"
 CMD
 
-run "added Forge file fails" 1 "forge port base: src/main/java/com/bedwarsqol/Added.java was added to the Forge tree; $BASE_MSG" <<'CMD'
+# The added/removed file goes in (or out of) every tree, Ornithe's too when it
+# exists, so the only thing left to catch is the guard.
+ORNITHE_ADDED='
+if [ -d ornithe/src ]; then
+  cp src/main/java/com/bedwarsqol/Added.java ornithe/src/main/java/com/bedwarsqol/Added.java
+  git add -- ornithe/src/main/java/com/bedwarsqol/Added.java
+fi
+'
+ORNITHE_REMOVED="
+if [ -e 'ornithe/src/main/java/$MIRROR' ]; then git rm -q -- 'ornithe/src/main/java/$MIRROR'; fi
+"
+
+run "added Forge file fails" 1 "forge port base: src/main/java/com/bedwarsqol/Added.java was added to the Forge tree; $BASE_MSG" <<CMD
 printf 'class Added {}\n' > src/main/java/com/bedwarsqol/Added.java
 cp src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
 git add -- src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+$ORNITHE_ADDED
 CMD
 
-run "added Forge file acknowledged passes" 0 "tree drift check: OK" <<'CMD'
+run "added Forge file acknowledged passes" 0 "tree drift check: OK" <<CMD
 printf 'class Added {}\n' > src/main/java/com/bedwarsqol/Added.java
 cp src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
 git add -- src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+$ORNITHE_ADDED
 tools/forge-port-base.sh update src/main/java/com/bedwarsqol/Added.java
 CMD
 
 run "removed Forge file fails" 1 "forge port base: src/main/java/$MIRROR was removed from the Forge tree; $BASE_MSG" <<CMD
 git rm -q -- "src/main/java/$MIRROR" "lunar/src/main/java/$MIRROR"
+$ORNITHE_REMOVED
 CMD
 
 run "removed Forge file acknowledged passes" 0 "tree drift check: OK" <<CMD
 git rm -q -- "src/main/java/$MIRROR" "lunar/src/main/java/$MIRROR"
+$ORNITHE_REMOVED
 tools/forge-port-base.sh update "src/main/java/$MIRROR"
 CMD
 
