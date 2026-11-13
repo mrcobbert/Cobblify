@@ -552,6 +552,13 @@ fn is_cobblify_name(name: &str) -> bool {
     (lower.starts_with("cobblify") || lower.starts_with("bedwarsqol")) && lower.ends_with(".jar")
 }
 
+/// `mods/<name>` is recorded and still has the bytes Cobblify placed.
+fn still_placed(record: &[Managed], mods: &Path, name: &str) -> bool {
+    record.iter().any(|m| {
+        m.name == name && sha512_file(&mods.join(name)).is_some_and(|h| h.eq_ignore_ascii_case(&m.sha512))
+    })
+}
+
 /// Check 5's scan: nothing in `mods/` that Cobblify would have to overwrite without having
 /// placed it, and no Cobblify jar it did not place (Fabric refuses two `bedwarsqol` mods).
 /// Reads only.
@@ -573,7 +580,9 @@ pub fn check_mods(root: &Path, game_dir: &Path, pins: &[&Pin], jar: &OrnitheJar)
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_cobblify_name(&name) && name != jar.name && !recorded(&name) {
+        // A recorded name is Cobblify's only while it still has the recorded bytes: `place`
+        // removes nothing else, so a changed one would stay beside the new jar.
+        if is_cobblify_name(&name) && name != jar.name && !still_placed(&record, &mods, &name) {
             return Err(format!(
                 "The instance's mods folder has a Cobblify file Cobblify may not replace: {name}."
             ));
@@ -614,21 +623,25 @@ pub fn place(root: &Path, game_dir: &Path, pins: &[&Pin], jar: &OrnitheJar) -> R
         staged.push(s);
     }
 
+    let mut record = wanted.clone();
     for old in managed(root) {
         if wanted.iter().any(|w| w.name == old.name) {
             continue;
         }
         let path = mods.join(&old.name);
-        // Only the very file Cobblify placed; a file the player changed is left alone.
+        // Only the very file Cobblify placed; a file the player changed is left alone, and
+        // while it is there its name stays recorded.
         if sha512_file(&path).is_some_and(|h| h.eq_ignore_ascii_case(&old.sha512)) {
             fs::remove_file(&path)
                 .map_err(|e| format!("Cannot remove the old {}: {e}", old.name))?;
+        } else if fs::symlink_metadata(&path).is_ok() {
+            record.push(old);
         }
     }
     for s in staged {
         commit(s)?;
     }
-    write_managed(root, &wanted)?;
+    write_managed(root, &record)?;
     let _ = fs::remove_dir_all(&downloads);
     Ok(())
 }
@@ -1021,6 +1034,63 @@ pub(crate) mod tests {
         let err = place(&root, &game, &[&a], &jar).unwrap_err();
         assert!(err.contains("Cobblify-1.8.9-ornithe-0.18.0.jar"), "{err}");
         assert!(!mods.join(&jar.name).exists(), "nothing placed on a block");
+    }
+
+    /// A Cobblify jar Cobblify placed but whose bytes changed since (another `bedwarsqol`
+    /// build at the same name) is no longer Cobblify's to remove, so it blocks an update like
+    /// any stray Cobblify jar: no new jar beside it, its bytes kept, its name still recorded.
+    #[test]
+    fn a_modified_managed_cobblify_jar_blocks_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("inst");
+        let game = root.join("minecraft");
+        fs::create_dir_all(&root).unwrap();
+        let a = fake_pin("a-1.jar", b"a1", Only::All);
+        let jar1 = fake_jar(dir.path(), "Cobblify-1.8.9-ornithe-0.19.0.jar", b"cob1");
+        let log = std::sync::Mutex::new(Vec::new());
+        download(&root, &[&a], &fetcher(net(&[(&a, b"a1")]), &log)).unwrap();
+        place(&root, &game, &[&a], &jar1).unwrap();
+        let mods = game.join("mods");
+        fs::write(mods.join(&jar1.name), b"another bedwarsqol build").unwrap();
+
+        let jar2 = fake_jar(dir.path(), "Cobblify-1.8.9-ornithe-0.19.1.jar", b"cob2");
+        let err = check_mods(&root, &game, &[&a], &jar2).unwrap_err();
+        assert!(err.contains(&jar1.name), "{err}");
+        let err = place(&root, &game, &[&a], &jar2).unwrap_err();
+        assert!(err.contains(&jar1.name), "{err}");
+        assert!(!mods.join(&jar2.name).exists(), "no second bedwarsqol jar");
+        assert_eq!(fs::read(mods.join(&jar1.name)).unwrap(), b"another bedwarsqol build");
+        assert!(managed(&root).iter().any(|m| m.name == jar1.name), "its name stays recorded");
+
+        // Unchanged bytes are still Cobblify's: the same update then goes through.
+        fs::write(mods.join(&jar1.name), b"cob1").unwrap();
+        place(&root, &game, &[&a], &jar2).unwrap();
+        assert!(!mods.join(&jar1.name).exists());
+        assert_eq!(fs::read(mods.join(&jar2.name)).unwrap(), b"cob2");
+    }
+
+    /// An old pin the player changed is left alone on an update, and since its file is still
+    /// there its name stays in the record.
+    #[test]
+    fn a_modified_old_pin_is_kept_and_stays_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("inst");
+        let game = root.join("minecraft");
+        fs::create_dir_all(&root).unwrap();
+        let a1 = fake_pin("a-1.jar", b"a1", Only::All);
+        let jar = fake_jar(dir.path(), "Cobblify-1.8.9-ornithe-0.19.0.jar", b"cob");
+        let log = std::sync::Mutex::new(Vec::new());
+        download(&root, &[&a1], &fetcher(net(&[(&a1, b"a1")]), &log)).unwrap();
+        place(&root, &game, &[&a1], &jar).unwrap();
+        let mods = game.join("mods");
+        fs::write(mods.join("a-1.jar"), b"changed").unwrap();
+
+        let a2 = fake_pin("a-2.jar", b"a2", Only::All);
+        download(&root, &[&a2], &fetcher(net(&[(&a2, b"a2")]), &log)).unwrap();
+        place(&root, &game, &[&a2], &jar).unwrap();
+        assert_eq!(fs::read(mods.join("a-1.jar")).unwrap(), b"changed");
+        assert_eq!(fs::read(mods.join("a-2.jar")).unwrap(), b"a2");
+        assert!(managed(&root).iter().any(|m| m.name == "a-1.jar"), "a present file stays recorded");
     }
 
     // ── settings copy ───────────────────────────────────────────────────────────
