@@ -1,0 +1,28 @@
+# Declared differences between the Ornithe tree and the Lunar tree: the
+# long-term pair, which outlives the Forge tree.
+#
+# Checked by tools/check-tree-drift.sh, but only while the Ornithe tree exists
+# (ornithe/src on disk or in the index). Until then this file must hold no
+# entries. Once it exists, anything NOT declared here must be byte-identical in
+# both trees, or the check fails; an empty manifest is refused.
+#
+# Format (whitespace separated, `#` starts a comment):
+#
+#   divergent <tree> <path>          - present in both trees, allowed to differ
+#   one-sided <tree> <side> <path>   - present on <side> only
+#
+#   <tree> = main | test | res  <side> = ornithe | lunar
+#   main = ornithe/src/main/java       vs lunar/src/main/java
+#   test = ornithe/src/test/java       vs lunar/src/test/java
+#   res  = ornithe/src/main/resources  vs lunar/src/main/resources
+#   <path> is package-relative for main and test, e.g.
+#     com/bedwarsqol/gui/SettingsGui.java, and relative to the resources root
+#     for res, e.g. fabric.mod.json
+#
+# Entries are validated in both directions, exactly as in
+# tools/tree-divergence.txt: a `divergent` entry whose copies are identical, or
+# (java) differ only in comments or whitespace, fails; a `one-sided` entry that
+# is in both trees, on the wrong side, or in neither fails. Stale entries are
+# errors, not noise.
+#
+# Give each group of entries a comment saying WHY the trees differ.
