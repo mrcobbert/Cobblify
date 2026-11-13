@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "bedwarsqol",
+  "version": "${version}",
+  "name": "Cobblify",
+  "description": "Hypixel BedWars quality-of-life mod for Ornithe 1.8.9: HUD, settings GUI, numeric tab ping, and opt-in Hypixel stats.",
+  "authors": ["MrCobbert"],
+  "environment": "client",
+  "entrypoints": {
+    "client-init": [
+      "com.bedwarsqol.CobblifyOrnithe"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "1.8.9",
+    "osl-entrypoints": "*",
+    "osl-lifecycle-events": "*",
+    "osl-keybinds": "*",
+    "osl-resource-loader": "*",
+    "osl-networking": "*"
+  }
+}
