@@ -146,9 +146,10 @@ one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/ExplosionMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/ItemInWorldManagerMixin.java
 
-# Zoom and No Hurt Cam: Ornithe-only features (P4), with their sheet-row test.
+# Zoom, No Hurt Cam and Dynamic FOV: Ornithe-only features (P4), with their sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/CameraOptions.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererCameraMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/AbstractClientPlayerFovMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsCameraTest.java
 
 # Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.

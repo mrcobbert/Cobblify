@@ -286,6 +286,8 @@ public class ClientSettings {
     public boolean zoomEnabled = com.bedwarsqol.feature.CameraRules.DEFAULT_ZOOM_ENABLED;
     /** No Hurt Cam (Ornithe build): skip the camera tilt when you take damage. */
     public boolean noHurtCam = com.bedwarsqol.feature.CameraRules.DEFAULT_NO_HURT_CAM;
+    /** Dynamic FOV (Ornithe build): off keeps the field of view fixed while sprinting, with Speed and with bows. */
+    public boolean dynamicFov = com.bedwarsqol.feature.CameraRules.DEFAULT_DYNAMIC_FOV;
     /**
      * Toggle Sprint (Ornithe build): the "Toggle Sprint" key (default G, rebindable in Controls) toggles
      * sprint; this turns the key on or off. {@link #toggleSprintOn} is the toggle itself, kept across restarts.

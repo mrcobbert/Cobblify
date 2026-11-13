@@ -86,4 +86,16 @@ public class SettingsBindingsCameraTest {
         assertEquals(Keyboard.KEY_C, CameraRules.DEFAULT_ZOOM_KEY);
         assertEquals("Zoom", CameraRules.ZOOM_KEY_NAME); // options.txt key_Zoom (CONTRACT)
     }
+
+    @Test
+    public void dynamicFovIsListedOnByDefaultAndWritesTheSetting() {
+        SettingsBindings values = new SettingsBindings();
+        assertTrue(SheetSchema.shows(values, "dynamicFov"));
+        assertTrue(new ClientSettings().dynamicFov);
+        assertTrue(new Gson().fromJson("{\"suppressEscMenu\":true}", ClientSettings.class).dynamicFov);
+        assertTrue(values.on("dynamicFov"));
+        values.setOn("dynamicFov", false);
+        assertFalse(BedwarsQol.config.dynamicFov);
+        assertFalse(values.on("dynamicFov"));
+    }
 }
