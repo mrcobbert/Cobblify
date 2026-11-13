@@ -41,7 +41,7 @@ export function createApp(app, actions) {
   let sheetFocus = null; // action to restore after a focused sheet key is temporarily disabled
   let sheetFocusTimer = null;
 
-  app.innerHTML = `<div id="main"></div><aside class="sheet" id="sheet" role="dialog" aria-label="Settings"></aside><div id="layer"></div><div id="istage" aria-hidden="true"></div>`;
+  app.innerHTML = `<div id="main"></div><aside class="sheet" id="sheet" role="dialog" aria-label="Settings"></aside><div id="layer"></div><div id="istage" aria-hidden="true"></div><div class="tbar" data-tauri-drag-region aria-hidden="true"></div>`;
 
   /* ---------- header ---------- */
   const updReady = () => !!H?.updReady;
@@ -271,7 +271,7 @@ export function createApp(app, actions) {
       <p class="read disclaim">Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.</p>`;
   }
   function sheetHTML() {
-    return `<div class="sh-hdr">${T("Settings", "sh nm")}<span class="grow"></span><button class="key xkey" data-act="close" aria-label="Close settings">${pix(ART.x, "var(--hi)")}</button></div><div class="sh-body">${sheetRows()}</div>`;
+    return `<div class="sh-hdr" data-tauri-drag-region="deep">${T("Settings", "sh nm")}<span class="grow"></span><button class="key xkey" data-act="close" aria-label="Close settings">${pix(ART.x, "var(--hi)")}</button></div><div class="sh-body">${sheetRows()}</div>`;
   }
   /* settings change in place: a switch keeps its element (and its 90 ms motion) when only its state changed */
   function patchSheet() {
