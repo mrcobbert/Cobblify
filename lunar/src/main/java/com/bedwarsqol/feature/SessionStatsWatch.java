@@ -9,8 +9,12 @@ import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityArmorStand;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.NetworkManager;
+import net.minecraft.network.Packet;
+import net.minecraft.network.play.server.S02PacketChat;
+import net.minecraft.network.play.server.S45PacketTitle;
 import net.minecraft.util.EnumChatFormatting;
-import net.weavemc.api.event.ChatEvent;
+import net.weavemc.api.event.PacketEvent;
 import net.weavemc.api.event.SubscribeEvent;
 import net.weavemc.api.event.TickEvent;
 import org.lwjgl.input.Keyboard;
@@ -26,10 +30,10 @@ import org.lwjgl.input.Mouse;
  * Observe-only: no chat event is cancelled or edited, nothing is sent. Always running (the toggle
  * only hides the HUD) so a session that started before the box was enabled is not lost.
  *
- * <p>Weave hands a cancelled {@link ChatEvent.Received} to every subscriber and never posts
- * action-bar messages, so the chat hook needs no priority or filter. Weave does not catch a
- * subscriber's exception, though, so both entry points catch their own errors: the tally never
- * breaks chat or titles.
+ * <p>Observe raw server chat/title packets before Lunar's presentation mods can hide, timestamp,
+ * stack or rewrite them. Weave's GUI chat event also sees locally printed/replayed lines, so it is
+ * deliberately not an input here. Packet receipt only snapshots text and the connection; all game
+ * state reads and tally changes happen on the client thread in packet arrival order.
  */
 public final class SessionStatsWatch {
 
@@ -40,6 +44,8 @@ public final class SessionStatsWatch {
     /** The world object last sampled and its serial; the serial changes whenever the world does. */
     private static Object sampledWorld;
     private static int worldSerial;
+    /** Retained while the player/world are temporarily absent; only an open connection owns a session. */
+    private static volatile NetworkManager sessionConnection;
 
     /** The live tally; read on the client thread by the HUD and the command. */
     public static SessionStats core() {
@@ -62,12 +68,13 @@ public final class SessionStatsWatch {
         return HypixelContext.isInBedwars() || GameSessionTracker.currentSessionId() == CORE.gameSessionId();
     }
 
-    /** Called from the GuiIngame title inject with the raw (possibly formatted) title text. */
-    public static void onTitle(String title) {
+    /** Raw TITLE packet text, already marshalled onto the client thread. */
+    private static void onTitle(String title) {
         if (title == null) return;
         try {
-            if (!HypixelContext.isOnHypixel()) return;
-            CORE.onTick(true, System.currentTimeMillis()); // on Hypixel now, before any state lands
+            Minecraft mc = Minecraft.getMinecraft();
+            if (!updateConnection(mc, System.currentTimeMillis())) return;
+            if (mc.theWorld == null || mc.thePlayer == null) return;
             SessionStats.Sample sample = sample();
             logStart(CORE.onGameTick(sample), sample);
             if (!acceptingEvents()) return;
@@ -81,22 +88,52 @@ public final class SessionStatsWatch {
     }
 
     @SubscribeEvent
-    public void onChat(ChatEvent.Received event) {
-        if (event == null || event.getMessage() == null) return;
+    public void onPacketReceive(PacketEvent.Receive event) {
+        Packet<?> packet = event == null ? null : event.getPacket();
+        if (!(packet instanceof S02PacketChat) && !(packet instanceof S45PacketTitle)) return;
         try {
-            if (ModChat.isMarked(event.getMessage())) return;
-            onLine(EnumChatFormatting.getTextWithoutFormattingCodes(event.getMessage().getUnformattedText()));
+            final boolean title = packet instanceof S45PacketTitle;
+            final String plain;
+            if (title) {
+                S45PacketTitle p = (S45PacketTitle) packet;
+                if (p.getType() != S45PacketTitle.Type.TITLE || p.getMessage() == null) return;
+                plain = EnumChatFormatting.getTextWithoutFormattingCodes(p.getMessage().getUnformattedText());
+            } else {
+                S02PacketChat p = (S02PacketChat) packet;
+                if (p.getType() == 2 || p.getChatComponent() == null) return; // action bar
+                plain = EnumChatFormatting.getTextWithoutFormattingCodes(p.getChatComponent().getUnformattedText());
+            }
+            final Minecraft mc = Minecraft.getMinecraft();
+            if (mc == null) return;
+            NetworkManager observed = currentConnection(mc);
+            if (observed == null) observed = sessionConnection;
+            final NetworkManager connection = observed != null && observed.isChannelOpen() ? observed : null;
+            // JoinGame may still be queued when the next chat/title packet arrives. With no live
+            // manager yet, defer eligibility until that earlier initialization task has run.
+            // No world, scoreboard or tally access on Netty. Copy the text now: presentation hooks
+            // may mutate the packet's component before this queued client-thread task runs.
+            mc.addScheduledTask(() -> {
+                try {
+                    NetworkManager current = currentConnection(mc);
+                    if (current == null) current = sessionConnection;
+                    if (connection != null && (current != connection || !connection.isChannelOpen())) return;
+                    if (title) onTitle(plain);
+                    else onLine(plain);
+                } catch (RuntimeException e) {
+                    DiagLog.log("session: packet handler failed " + e);
+                }
+            });
         } catch (RuntimeException e) {
-            DiagLog.log("session: chat handler failed " + e);
+            DiagLog.log("session: packet snapshot failed " + e);
         }
     }
 
-    /** One colour-stripped chat line, from either platform's chat hook. */
+    /** One colour-stripped server chat line on the client thread. */
     private static void onLine(String plain) {
-        if (plain == null || !HypixelContext.isOnHypixel()) return;
-        // Mark the session as on Hypixel before any state lands, so leaving Hypixel clears it even if
-        // no periodic tick ran in between.
-        CORE.onTick(true, System.currentTimeMillis());
+        if (plain == null) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (!updateConnection(mc, System.currentTimeMillis())) return;
+        if (mc.theWorld == null || mc.thePlayer == null) return;
         CORE.onNickChange(SessionChatLine.parseNickChange(plain));
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
@@ -166,14 +203,10 @@ public final class SessionStatsWatch {
         ticks = 0;
 
         Minecraft mc = Minecraft.getMinecraft();
-        boolean onHypixel = mc != null && mc.theWorld != null && HypixelContext.isOnHypixel();
-        if (CORE.onTick(onHypixel, System.currentTimeMillis())) {
-            DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
-        }
-        if (!onHypixel) {
-            sampledWorld = null; // never keep a world alive after leaving Hypixel
-            return;
-        }
+        if (!updateConnection(mc, System.currentTimeMillis())) return;
+        // getNetHandler() also disappears with the player during a transfer. Keep the session on
+        // its retained open connection, but wait for a real world/player before identifying games.
+        if (mc.theWorld == null || mc.thePlayer == null) return;
         SessionStats.Sample sample = sample();
         logStart(CORE.onGameTick(sample), sample);
         if (HypixelContext.isInBedwars() && !sample.active) {
@@ -181,6 +214,36 @@ public final class SessionStatsWatch {
             int seed = lobbyWinstreak(mc);
             if (seed >= 0) CORE.seedWinstreak(seed);
         }
+    }
+
+    private static NetworkManager currentConnection(Minecraft mc) {
+        NetHandlerPlayClient net = mc == null ? null : mc.getNetHandler();
+        return net == null ? null : net.getNetworkManager();
+    }
+
+    /** Client-thread session lifetime: world availability is independent of the server connection. */
+    private static boolean updateConnection(Minecraft mc, long now) {
+        NetworkManager current = currentConnection(mc);
+        if (current == null) current = sessionConnection;
+        boolean channelOpen = current != null && current.isChannelOpen();
+        boolean connected = channelOpen && HypixelContext.isOnHypixel();
+        if (sessionConnection != null && (!connected || current != sessionConnection)) {
+            String reason = !channelOpen ? "closed" : !connected ? "offhost" : "replaced";
+            DiagLog.log("session: reset reason=" + reason);
+        }
+        if (connected && sessionConnection != null && current != sessionConnection) {
+            // A reconnect may replace the manager between two sampled ticks, without a false tick.
+            if (CORE.onTick(false, now)) {
+                DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (connection changed)");
+            }
+            sampledWorld = null;
+        }
+        if (CORE.onTick(connected, now)) {
+            DiagLog.log("session: unresolved game end sid=" + CORE.gameSessionId() + " (left Hypixel)");
+        }
+        sessionConnection = connected ? current : null;
+        if (!connected) sampledWorld = null;
+        return connected;
     }
 
     /**

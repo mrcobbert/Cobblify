@@ -37,6 +37,7 @@ divergent main com/bedwarsqol/feature/NametagStats.java
 divergent main com/bedwarsqol/feature/NickUtils.java
 divergent main com/bedwarsqol/feature/PartyJoinAlert.java
 divergent main com/bedwarsqol/feature/QueueAlert.java
+# Session intake: Forge server-chat event/title mixin vs Lunar raw server chat/title packets.
 divergent main com/bedwarsqol/feature/SessionStatsWatch.java
 divergent main com/bedwarsqol/feature/SweatReport.java
 divergent main com/bedwarsqol/feature/UrchinAlert.java
@@ -70,8 +71,9 @@ divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
 divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
 divergent main com/bedwarsqol/gui/render/Icons.java
 
-# Mixins: the Lunar copies spell out require = 0 on their injectors, and GuiChatMixin
-# lacks the Forge-only chat hooks.
+# Mixins: platform-specific chat/input/HUD hooks. GuiChatMixin lacks the Forge-only
+# chat hooks; GuiIngameMixin observes titles only on Forge (Lunar consumes raw packets).
+# Some Lunar injectors spell out require = 0.
 # require = 0 is already Mixin's default (defaultRequire 0; neither mixins JSON
 # sets it), so a mapping miss silently no-ops in BOTH trees; the explicit value
 # documents that, it does not add safety.
