@@ -1,11 +1,11 @@
 # Cobblify Launcher
 
 A small desktop app (macOS and Windows) that installs Cobblify for Lunar
-Client and for a regular Forge 1.8.9 setup, and registers it so the mod loads
-however the game is started.
+Client and for Prism Launcher (a Minecraft 1.8.9 Ornithe instance the launcher
+builds itself), and registers it so the mod loads however the game is started.
 
 The two targets are set up **independently**. Either can be absent, blocked or
-broken without taking the other down - a friend with Forge and no Lunar reaches
+broken without taking the other down - a friend with Prism and no Lunar reaches
 a working app, which is exactly what the previous Lunar-only version could not
 do (it called `lunar_config::register` unconditionally and a missing
 `launcher.json` was an app-wide error).
@@ -137,12 +137,12 @@ place - it is the user's pristine pre-Cobblify copy.
 
 Startup only reads: it never writes into a client the player has not set up. A
 client is **set up** once Cobblify is registered in it (Lunar: our javaagent in
-`launcher.json` and the jar in `~/.weave/mods`; Prism: a valid saved instance in
-`~/.cobblify/launcher-targets.json`). A set-up client still gets current jars
+`launcher.json` and the jar in `~/.weave/mods`; Prism: a valid saved Ornithe instance
+in the `ornithe` key of `~/.cobblify/launcher-targets.json`). A set-up client still gets current jars
 silently after an update.
 
 - **Nothing set up:** the window shows "Choose Your Setup" alone, with no island.
-  Its menu lists Lunar Client and Forge (Prism); a client that is not installed
+  Its menu lists Lunar Client and Prism; a client that is not installed
   carries a download mark. Picking it opens its download page and shows
   "Install Lunar/Prism" + Download; detection is polled every 2 s and setup
   starts by itself once it is installed.
@@ -153,66 +153,87 @@ silently after an update.
   adding Cobblify. It stops at "Sign in to Lunar/Prism" + Open until an account
   exists, at "Close Minecraft" while that client's game runs, and fails with
   "Try again" (which resumes at the failed check). Launch arrives with the bed.
-- **Prism:** one compatible 1.8.9 Forge instance is used; several bring up a
-  pick with the most recently played preselected; none makes "Cobblify 1.8.9",
-  with Java 8 for that instance only when Prism will not fetch it itself.
+- **Prism:** there is no instance pick. Setup uses the saved Ornithe target, else
+  finds Cobblify's instance by its marker, else makes "Cobblify 1.8.9 Ornithe"
+  (see "Prism (Ornithe)" below). Check 5 pins Java 25 and downloads the pinned
+  mods ("Downloading Java 25" / "Downloading mods" appear only when something
+  downloads); check 6 places the mods and the Cobblify jar and saves the target.
 - **From home**, the client menu's "Add Prism/Lunar" sets the other client up the
   same way (download + "Install …" wait first when it is missing; it follows
   through only on an idle home). Settings: Lunar **Repair** re-runs Lunar's
-  setup; Prism **Add** is the same add flow, **Change** re-picks the instance.
+  setup; Prism **Add** is the same add flow, and **Repair** (once Prism is set up)
+  re-runs Prism's setup.
 - **The window** is created hidden and shown once the island's first frame is
   drawn (at once without one, 1.5 s at most); the backend shows it after 3 s if
   it is somehow still hidden.
 
-## Forge
+## Prism (Ornithe)
 
-The Forge build is a **pure drop-in**: Mixin is shaded into the jar and its
-manifest carries `TweakClass` + `ForceLoadAsMod`, which FML auto-registers. No
-JVM argument, no coremod, no bootstrap, no config edit. The launcher deliberately
-supports Prism only: Prism provides a documented instance-id CLI, so Forge can match
+The Prism build is Cobblify's own **Ornithe instance**: Minecraft 1.8.9 on Ornithe's
+Fabric Loader, built by the launcher (`ornithe.rs`) with no runtime call to Ornithe's
+meta. The Cobblify jar is `Cobblify-1.8.9-ornithe-<x.y.z>.jar`. Prism is the only
+supported target, because it has a documented instance-id CLI, so Prism can match
 Lunar's one-click launch, progress text and external lobby/queue/game dashboard.
 
-`forge.rs` scans Prism's default instances directory and reads `mmc-pack.json`:
+**The instance.** It is named `Cobblify 1.8.9 Ornithe` (`(1)`, `(2)`... if the folder
+exists), staged and renamed into Prism's instances directory in one step. Its pack
+is Ornithe's 1.8.9 Gen2 Fabric layout minus Flap: the LWJGL 2 placeholder, a local
+`net.minecraft` patch (embedded in the launcher, `src/profile/ornithe-net.minecraft.json`;
+it declares Java 25 only), the calamus gen2 intermediary patch, Fabric Loader 0.20.1
+and Ornithe's nine library upgrades. Prism downloads Minecraft and the loader on the
+first launch, which the UI shows as "Downloading Minecraft".
 
-- **Confirmed** - the metadata says Minecraft 1.8.9 *and* Forge.
-- **Incompatible** - the metadata positively says another version, another
-  loader, or that Forge is not installed. **Never offered**.
+**The marker.** `.cobblify-ornithe.json` in the instance folder says Cobblify made it
+and records every file Cobblify placed in `mods/` (name + sha512). A re-run finds the
+instance by it instead of making another, and an instance only counts as ours while
+it has the marker, Minecraft 1.8.9 and Fabric Loader, and no Forge component.
 
-**Nothing is ever installed speculatively.** Startup lists candidates; a user
-choice installs. The choice is remembered in `~/.cobblify/launcher-targets.json`
-and its Prism marker is revalidated before every install or launch. Cobblify does not
-support CurseForge, the vanilla `.minecraft` folder, or a hand-picked directory.
+**Java 25.** The instance is always pinned to Prism's `java-runtime-epsilon`
+(`OverrideJavaLocation` + `JavaPath` + `IgnoreJavaCompatibility` in the instance's
+`instance.cfg`; Prism's global settings are never written). An existing Prism copy is
+reused; otherwise Java 25 is downloaded from Prism's meta (`java25`) through the same
+hash-checked chain as before. Prism's automatic Java is never used, because an
+installed 8, 17 or 21 cannot load Argentum or Sarcio.
+
+**What is downloaded.** Each mod is a pin in `ornithe.rs` (URL, size, sha512, platform):
+Pylon, Argentum, Sarcio, Ornithe Standard Libraries, and Slipstream on macOS only. Every
+download goes to `.cobblify-downloads/` over HTTPS and is checked by size and sha512
+before it is kept; the first mismatch fails setup and names the mod. Argentum and Sarcio
+come only from their upstream GitHub releases and are **never bundled**; a missing
+asset is a failure, not a mirror. A pin change is never fetched silently: the saved
+target carries a fingerprint of the profile, Java 25 and the pins, and a different one
+shows "Prism needs a new setup."
+
+**Settings copy.** A new instance arrives with the player's `options.txt`,
+`resourcepacks/`, `servers.dat` and Cobblify config (`config/cobblify.json`, and the
+legacy `config/bedwarsqol.json`) copied from their Forge instance: the saved Forge
+target, else the most recently played compatible Forge 1.8.9 instance. The Forge
+instance is **left untouched** (read only, and setup waits while its game is running).
+A file the new instance already has is never replaced, a missing item is skipped, and
+OptiFine's zoom key becomes Cobblify's. Nothing is copied again on a later run.
+
+**Old Forge instances are left alone.** Cobblify no longer offers Forge, installs
+nothing into a Forge instance and never deletes one. A player whose saved target is
+Forge only sees "Prism needs a new setup." The Forge key stays in
+`launcher-targets.json` as it was (every other key is kept when the `ornithe` key is
+written). `forge.rs` remains only for finding that Forge instance and its saved target;
+its install code is dead and slated for removal.
 
 ### The install transaction
 
-Forge raises `DuplicateModsFoundException` and refuses to boot with two jars
-declaring mod id `bedwarsqol`, so a stale Cobblify jar is fatal rather than
-untidy. Order is the whole safety argument:
+Fabric refuses two mods with id `bedwarsqol`, so a stray Cobblify jar is fatal. Order:
 
-1. **always** scan both `mods/` and `mods/1.8.9/` (FML loads the version-specific
-   directory too), and finish the scan before changing anything - including when
-   our jar is already current, which is the likeliest real upgrade and the case
-   an early return would break;
-2. install nothing if any Cobblify jar we may not touch is present: anything
-   Cobblify-ish that is *not* a `Cobblify-1.8.9-forge-<x.y.z>.jar` up to our
-   version (a newer release, a `-dev` build, a hand-renamed file, a symlink) is
-   reported and blocks;
-3. stage and hash the new jar - a failure here deletes nothing;
-4. **delete** every superseded release. If one cannot be deleted (Windows
-   refuses while the game holds it open), stop before the commit: our jar beside
-   it would be the two-jar state;
-5. commit, replacing whatever build sits at our own name (usually the dev build
-   of the same version);
-6. delete the `<release>.cobblify-disabled` copies that launchers before 0.16.3
-   set aside instead of deleting. This step is best-effort, since FML never loads
-   those files.
+1. scan the instance's `mods/` and install nothing if a pin file Cobblify did not place
+   is there with other bytes, or any Cobblify-named jar (`cobblify*` / `bedwarsqol*`)
+   other than the one being installed is present that the marker does not record;
+2. stage and hash every file (a failure here deletes nothing);
+3. remove the recorded files that are no longer wanted (an old Cobblify jar, a
+   superseded pin), only when the file still has the recorded sha512, so a mod
+   the player changed or added is never touched;
+4. commit the staged files, write the record, clear `.cobblify-downloads/`.
 
-Classification is **caseless on both platforms**: Forge loads a jar however its
-name is cased, so an exact match would miss a lower-cased stale jar on a
-case-sensitive volume. The one exempt file is our own destination, identified as
-a directory entry (same folder, same name under the platform's casing, plus an
-inode check for a case-folding volume's single entry), so a symlink or hard link
-under another name still counts as a second jar.
+When the instance is closed, a launcher refresh at startup also replaces the Cobblify
+jar with the current one (only Cobblify's own files) while the pins are in place.
 
 ## Build
 
@@ -269,7 +290,7 @@ loop, never for a friend.
 ## Test it without packaging
 
 `launcher/tools/test-drive.command` builds a runnable launcher using the
-current locally built Lunar and Forge jars plus the Weave agent already installed
+current locally built Lunar and Ornithe jars plus the Weave agent already installed
 in `~/.weave`. It runs no Gradle build itself and touches no token. It drops
 the app on the Desktop.
 
@@ -450,7 +471,7 @@ bypass, so the instructions name the System Settings path specifically.
 **`status()` is computed once at startup and cached.** There is deliberately no
 Retry button - it would report stale state. Blocked and error states tell the
 user to quit and reopen. It now lives behind a `Mutex` because an *explicit* user
-action - choosing a Forge instance - produces a new one; it is still never
+action - setting up Prism - produces a new one; it is still never
 recomputed behind the user's back, which is the invariant that mattered.
 
 **No auto-join (0.18).** Lunar always opens through the bare `lunarclient://play` link
@@ -492,10 +513,10 @@ roster.
 `-1` because launchers built before the removal require the key, while the launcher accepts a player without it
 (fixture `valid/no-seraph-threat.json`) and never draws it.
 
-**The Forge dashboard uses the same writer binding as Lunar.** A launch stamps a
+**The Prism dashboard uses the same writer binding as Lunar.** A launch stamps a
 per-launch baseline; only snapshots from a JVM born after that baseline and still alive
-at poll time can connect. Forge cosmetic progress still comes from the remembered
-instance's FML log.
+at poll time can connect. Prism cosmetic progress still comes from the saved Ornithe
+instance's `logs/latest.log` (Fabric Loader's lines).
 
 **`proc.rs` is the only file allowed to use `sysinfo`.** Lunar's game JVM
 carries a live Minecraft access token in its command line, so process inspection
@@ -538,7 +559,8 @@ launcher/
     src/proc.rs         the only sysinfo call site
     src/resources.rs    manifest verification: global fail-closed, per-target isolated
     src/install.rs      stage_verified + commit, the atomic jar primitive
-    src/forge.rs        instance detection, compatibility, stale-jar cleanup, persistence
+    src/ornithe.rs      the Ornithe instance, pinned mods, settings copy, marker, saved target
+    src/forge.rs        Forge instance detection and saved target (legacy; install code slated for removal)
     src/lunar_config.rs the launcher.json edit
     resources/          empty in git; THREE jars + manifest injected at package time
   tools/          test-drive, check-state, test-injection, app-inject-lib
