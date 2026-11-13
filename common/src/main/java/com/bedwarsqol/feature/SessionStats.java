@@ -292,11 +292,13 @@ public final class SessionStats {
                 bedsLost++;
                 break;
             case WIN:
-                if (settled && outcome == Outcome.LOSS && countedInTally) {
-                    // A loss was settled before the victory title arrived: move it. A loss counted
-                    // before a manual reset is no longer in this tally and stays as it is.
-                    losses--;
-                    wins++;
+                if (settled && outcome == Outcome.LOSS) {
+                    // A late victory corrects the live streak even after a manual reset. Only
+                    // move the loss to the wins if that game is still in the current tally.
+                    if (countedInTally) {
+                        losses--;
+                        wins++;
+                    }
                     winstreak = streakBeforeLoss + 1;
                 }
                 outcome = Outcome.WIN;
