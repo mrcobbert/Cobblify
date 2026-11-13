@@ -137,4 +137,6 @@ Output: `lunar/build/libs/Cobblify-Lunar-<version>.jar`.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+[PolyForm Noncommercial 1.0.0](./LICENSE). Free to use, read, build and modify; selling it or using it commercially is not allowed.
+
+Releases before this change were published under the MIT license, and those copies remain under MIT.
