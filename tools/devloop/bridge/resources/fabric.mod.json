@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "cobdev-bridge",
+  "version": "1.0.0",
+  "name": "cobdev bridge (dev only)",
+  "description": "Minecraft-facing half of the cobdev UI dev loop. Loaded only by tools/devloop (fabric.addMods); never shipped.",
+  "environment": "client",
+  "entrypoints": {
+    "client-init": [
+      "cobdev.bridge.BridgeInit"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "1.8.9",
+    "osl-entrypoints": "*"
+  }
+}
