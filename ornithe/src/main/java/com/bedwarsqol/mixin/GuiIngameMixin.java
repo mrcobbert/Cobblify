@@ -1,7 +1,7 @@
 package com.bedwarsqol.mixin;
 
-import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.feature.SessionStatsWatch;
+import com.bedwarsqol.hud.OverlayScale;
 import net.minecraft.client.gui.GuiIngame;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
@@ -27,32 +27,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(GuiIngame.class)
 public class GuiIngameMixin {
 
-    /** Scoreboard scale from the Size setting (Large = 1.0, the vanilla full size). */
-    private static float bedwarsqol$scoreboardScale() {
-        int size = BedwarsQol.config == null ? 2 : BedwarsQol.config.scoreboardSize;
-        switch (size) {
-            case 0: return 0.7f;
-            case 1: return 0.85f;
-            default: return 1.0f;
-        }
-    }
-
+    // The scale is normally applied around the call (GuiIngameOverlayScaleMixin, for Argentum's Font
+    // Batching); these two only scale when that wrapper is not active, e.g. another caller.
     @Inject(method = "renderScoreboard", at = @At("HEAD"))
     private void bedwarsqol$scaleScoreboardStart(ScoreObjective objective, ScaledResolution sr, CallbackInfo ci) {
+        if (OverlayScale.scoreboardWrapped()) return;
         GlStateManager.pushMatrix();
-        float s = bedwarsqol$scoreboardScale();
-        if (s != 1.0f) {
-            // Anchor at the right edge / vertical centre so the sidebar stays put as it scales.
-            float ax = sr.getScaledWidth();
-            float ay = sr.getScaledHeight() / 2f;
-            GlStateManager.translate(ax, ay, 0f);
-            GlStateManager.scale(s, s, 1f);
-            GlStateManager.translate(-ax, -ay, 0f);
-        }
+        OverlayScale.applyScoreboardTransform(sr);
     }
 
     @Inject(method = "renderScoreboard", at = @At("RETURN"))
     private void bedwarsqol$scaleScoreboardEnd(ScoreObjective objective, ScaledResolution sr, CallbackInfo ci) {
+        if (OverlayScale.scoreboardWrapped()) return;
         GlStateManager.popMatrix();
     }
 

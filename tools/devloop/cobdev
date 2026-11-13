@@ -1209,6 +1209,67 @@ def smoke_hurt(s, cfg):
 
 
 TOGGLE_SPRINT_KEY = "Toggle Sprint"
+PLAYER_LIST_KEY = "key.playerlist"
+
+
+def box_width(b):
+    return (b[2] - b[0]) if b else 0
+
+
+def smoke_overlays(s, cfg):
+    """Scoreboard Size and Tab List Size change the drawn size. In prod, Argentum's Font Batching draws both
+    overlays after their methods return (the 2026-11-13 regression: neither size applied)."""
+    s.begin("A4-overlays", "Scoreboard Size and Tab List Size shrink the drawn overlay")
+    if not cfg:
+        return s.unavailable("Cobblify config not found")
+    sb, tab = cfg + ".scoreboardSize", cfg + ".styledTabListSize"
+    sb0, tab0 = s.field(sb).get("value"), s.field(tab).get("value")
+    for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
+              "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
+              "/scoreboard players set Finals cobsb 12", "/scoreboard objectives setdisplay sidebar",
+              "/scoreboard objectives setdisplay list cobsb", "/tp @p 0.5 4 0.5 0 0"):
+        s.cmd(c)
+    s.call("/close")
+    time.sleep(6)  # command chat fades
+    try:
+        _, base = s.shot("overlay-none")
+        w, h, _ = base
+        right = (w // 2, int(h * 0.1), w, int(h * 0.7))  # the sidebar; clear of chat, hotbar and top HUD
+        s.cmd("/scoreboard objectives setdisplay sidebar cobsb")
+        s.call("/close")
+        widths = {}
+        for size in (2, 0):
+            s.field(sb, size)
+            time.sleep(0.4)
+            _, img = s.shot("scoreboard-size%d" % size)
+            widths[size] = box_width(diff(base, img, box=right)[1])
+        s.step["scoreboardWidths"] = widths
+        s.check("the sidebar scoreboard is drawn", widths[2] > 0, widths)
+        s.check("Scoreboard Size Small draws it ~0.7x as wide as Large",
+                0 < widths[0] <= widths[2] * 0.8, "%s px vs %s px" % (widths[0], widths[2]))
+        s.cmd("/scoreboard objectives setdisplay sidebar")
+        s.call("/close")
+        time.sleep(0.4)
+        top = (0, 0, w, int(h * 0.6))
+        _, base2 = s.shot("overlay-notab")
+        widths = {}
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            for size in (2, 0):
+                s.field(tab, size)
+                time.sleep(0.4)
+                _, img = s.shot("tab-size%d" % size)
+                widths[size] = box_width(diff(base2, img, box=top)[1])
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+        s.step["tabWidths"] = widths
+        s.check("the tab list is drawn while Tab is held", widths[2] > 0, widths)
+        s.check("Tab List Size Small draws it narrower than Large",
+                0 < widths[0] <= widths[2] * 0.85, "%s px vs %s px" % (widths[0], widths[2]))
+    finally:
+        s.field(sb, sb0)
+        s.field(tab, tab0)
+        s.cmd("/scoreboard objectives remove cobsb")
 
 
 def smoke_sprint(s, cfg):
@@ -1462,6 +1523,7 @@ def cmd_smoke(args):
                   lambda: smoke_zoom(s, cfg_box.get("cfg")),
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
+                  lambda: smoke_overlays(s, cfg_box.get("cfg")),
                   lambda: smoke_clutch(s, cfg_box.get("cfg"))]
     for step in steps:
         try:
