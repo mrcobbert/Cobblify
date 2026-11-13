@@ -7,7 +7,8 @@
     <link rel="icon" href="data:," />
     <title>Cobblify</title>
   </head>
-  <body>
+  <!-- bare drag region: a press straight on the body (the band above the board, under macOS's window buttons) moves the window -->
+  <body data-tauri-drag-region>
     <!-- ── the 0.18 home (src/ui/app.js renders into it) ── -->
     <div class="app" id="app"></div>
 

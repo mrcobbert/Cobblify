@@ -23,7 +23,7 @@ const replies = {
     autoUpdatePrompted: true, updateChannel: channel, health: "valid" }),
 };
 
-const { el, waitFor } = await bootWindow({ replies });
+const { el, waitFor, document } = await bootWindow({ replies });
 
 test("the board's header shows the Preview tag on the dev channel, as home does", async () => {
   await waitFor(() => !el("dash-dev").hidden, { label: "the board's dev tag" });
@@ -54,4 +54,23 @@ test("Preview updates keeps home and dashboard badges synchronized with the sele
   toggle.click();
   await waitFor(() => !el("dash-dev").hidden && !toggle.disabled, { label: "preview channel badges" });
   assert.equal(el("app").querySelector(".brand .tag.dev").textContent, "Preview");
+});
+
+test("the top of the window moves it: the title-bar band on home, the band above the board, the settings header", async () => {
+  // macOS overlays the native bar with the webview, so only data-tauri-drag-region areas move the window.
+  assert.equal(document.body.getAttribute("data-tauri-drag-region"), "", "a press straight on the body, the band above the board");
+  const strip = el("app").querySelector(":scope > .tbar");
+  assert.ok(strip, "home's band has an invisible strip");
+  assert.equal(strip.getAttribute("data-tauri-drag-region"), "", "the strip itself is the drag region");
+  const css = readFileSync(new URL("./ui/app.css", import.meta.url), "utf8");
+  assert.match(css, /\.tbar\{[^}]*height:var\(--window-top-inset/, "as high as the band #main leaves");
+  const z = (rule) => Number(css.match(new RegExp(`${rule}\\{[^}]*z-index:(\\d+)`))[1]);
+  assert.ok(z("\\.tbar") > z("\\.col") && z("\\.tbar") > z("\\.home \\.art"), "above the island and Launch's column");
+  assert.ok(z("\\.tbar") < z("\\.sheet"), "under the settings sheet, so its close key still clicks");
+
+  el("app").querySelector(".gear").click();
+  await waitFor(() => el("sheet").querySelector(".sh-hdr"), { label: "the settings header" });
+  const hdr = el("sheet").querySelector(".sh-hdr");
+  assert.equal(hdr.getAttribute("data-tauri-drag-region"), "deep", "the sheet's header moves the window too");
+  assert.equal(hdr.querySelector(".xkey").getAttribute("data-tauri-drag-region"), null, "its close key stays a button");
 });
