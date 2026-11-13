@@ -38,7 +38,9 @@
 //!   3. Signed in - Prism's `accounts.json` (an active, owning, non-Offline account).
 //!      Otherwise STOP `signin`, then the same hand-off as Lunar (default 23).
 //!   4. The instance is closed - a Java process working inside the instance is STOP
-//!      `game_open`. With none yet: label `making_instance`, write "Cobblify 1.8.9 Ornithe".
+//!      `game_open`. With none yet: label `making_instance`, write "Cobblify 1.8.9 Ornithe"
+//!      with the player's settings copied in from their Forge instance ([`settings_source`];
+//!      read-only, and only while that game is closed - else STOP `game_open`).
 //!   5. Java 25 and the mods - Java 25 is always pinned (`prism_java::plan_pinned`, label
 //!      `java` only when it downloads); the mods folder is checked for files Cobblify may not
 //!      replace (`ornithe::check_mods`); the pinned mods not yet there are downloaded and
@@ -225,6 +227,20 @@ pub fn choose_instance(home: &Path, prism_data: &Path) -> Instance {
         Some(root) => Instance::Made(root),
         None => Instance::Make,
     }
+}
+
+/// Where a new Ornithe instance takes the player's settings from (a Forge game folder): the
+/// saved Forge target, else the most recently played compatible Forge 1.8.9 instance, else
+/// none. Read-only.
+pub fn settings_source(home: &Path, prism_data: &Path) -> Option<PathBuf> {
+    if let Some(c) = forge::load_target(home).as_ref().and_then(forge::revalidate) {
+        return Some(c.game_dir);
+    }
+    // `detect_in` lists compatible instances first, most recently played first.
+    forge::detect_in(prism_data)
+        .into_iter()
+        .find(|c| c.compat == forge::Compat::Confirmed)
+        .map(|c| c.game_dir)
 }
 
 /// A claimed run, ready to go.
@@ -539,10 +555,15 @@ impl Runner<'_> {
     /// `Ok(true)` if it had to wait. A running game shows the `game_open` stop; an
     /// incomplete scan waits and rescans without one.
     fn game_gate(&mut self) -> Result<bool, Halt> {
+        let instance = self.instance_root();
+        self.game_gate_in(instance)
+    }
+
+    /// The game gate for a game working in `instance` (Prism: an instance folder).
+    fn game_gate_in(&mut self, instance: Option<PathBuf>) -> Result<bool, Halt> {
         let mut waited = false;
         let mut shown = false;
         let mut uncertain = 0u32;
-        let instance = self.instance_root();
         loop {
             self.alive()?;
             let scan = self.world.game_scan(self.kind, instance.as_deref());
@@ -831,9 +852,17 @@ impl Runner<'_> {
                 // Nothing can run in an instance that does not exist yet; the gate still
                 // runs before the write, as everywhere.
                 self.game_gate()?;
+                // The player's Forge settings come along, read only while that game is
+                // closed (the game rewrites options.txt when it exits).
+                let source = settings_source(&self.paths.home, &self.paths.prism);
+                if let Some(src) = &source {
+                    let src_root = forge::instance_root(src).unwrap_or_else(|| src.clone());
+                    self.game_gate_in(Some(src_root))?;
+                }
                 self.show(None, Some(Label::MakingInstance))?;
                 let instances = prism::instances_dir(&self.paths.prism);
-                let root = ornithe::make_instance(&instances).map_err(fail)?;
+                let root = ornithe::make_instance_copying(&instances, source.as_deref())
+                    .map_err(fail)?;
                 // From here a Try again (or a later run, by the marker) goes on with this
                 // instance instead of making another.
                 self.forge = Some(Instance::Made(root));
@@ -1063,6 +1092,8 @@ pub(crate) mod tests {
         pub vanilla_missing: bool,
         pub vanilla_offline: bool,
         pub vanilla_downloads: u32,
+        /// When set, the game runs only in this instance folder (else everywhere scanned).
+        pub running_in: Option<PathBuf>,
         /// The platform and pinned mods the Prism path uses.
         pub os: ornithe::Os,
         pub pins: Vec<ornithe::Pin>,
@@ -1091,6 +1122,7 @@ pub(crate) mod tests {
                 vanilla_offline: false,
                 vanilla_downloads: 0,
                 forwards: 0,
+                running_in: None,
                 os: ornithe::Os::Mac,
                 pins: Vec::new(),
             }
@@ -1157,8 +1189,9 @@ pub(crate) mod tests {
             let mut st = self.state();
             st.scans += 1;
             st.scanned = instance.map(Path::to_path_buf);
+            let here = st.running_in.as_deref().is_none_or(|dir| instance == Some(dir));
             GameScan {
-                running: st.game_running,
+                running: st.game_running && here,
                 complete: st.scan_complete,
             }
         }
@@ -2175,4 +2208,91 @@ pub(crate) mod tests {
         assert!(mods.join(ORNITHE_JAR).is_file());
         assert_eq!(world.state().scanned, Some(root));
     }
+
+    // ── settings from the player's Forge instance ───────────────────────────────
+
+    /// The saved Forge target is the source even when another Forge instance was played more
+    /// recently; it is only read (byte-identical after), and its record in
+    /// launcher-targets.json is kept. A second setup copies nothing again.
+    #[test]
+    fn a_new_instance_copies_settings_from_the_saved_forge_target_and_leaves_it_unchanged() {
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        let recent = add_forge_instance(&rig, "Recent", 200);
+        ornithe::tests::forge_game_fixture(&recent.join("minecraft"));
+        let saved = add_forge_instance(&rig, "Saved", 100);
+        ornithe::tests::forge_game_fixture(&saved.join("minecraft"));
+        fs::write(saved.join("minecraft/options.txt"), "fromSaved:1\nkey_of.key.zoom:29\n").unwrap();
+        forge::save_target(rig.home.path(), &forge::SavedTarget::prism(&saved.join("minecraft"))).unwrap();
+        let forge_record = forge::load_target(rig.home.path()).unwrap();
+        let before = ornithe::tests::tree(&saved);
+
+        let world = ornithe_world(ornithe::Os::Mac);
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        let game = made_root(&rig).join("minecraft");
+        assert_eq!(fs::read_to_string(game.join("options.txt")).unwrap(), "fromSaved:1\nkey_Zoom:29\n");
+        assert!(game.join("resourcepacks/Pack.zip").is_file());
+        assert!(game.join("servers.dat").is_file());
+        assert!(game.join("config/cobblify.json").is_file());
+        assert_eq!(ornithe::tests::tree(&saved), before, "the Forge instance is unchanged");
+        let after = forge::load_target(rig.home.path()).unwrap();
+        assert_eq!(after.game_dir, forge_record.game_dir, "the Forge target is kept");
+
+        // Later changes in the Forge instance are not copied over the Ornithe ones.
+        fs::write(saved.join("minecraft/options.txt"), "changed:1\n").unwrap();
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(fs::read_to_string(game.join("options.txt")).unwrap(), "fromSaved:1\nkey_Zoom:29\n");
+    }
+
+    /// With no saved Forge target, the most recently played compatible Forge instance is the
+    /// source; with none at all, nothing is copied and setup still finishes.
+    #[test]
+    fn without_a_saved_forge_target_the_most_recently_played_one_is_the_source() {
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        let old = add_forge_instance(&rig, "Old", 100);
+        ornithe::tests::forge_game_fixture(&old.join("minecraft"));
+        let recent = add_forge_instance(&rig, "Recent", 200);
+        ornithe::tests::forge_game_fixture(&recent.join("minecraft"));
+        fs::write(recent.join("minecraft/options.txt"), "fromRecent:1\n").unwrap();
+        assert_eq!(settings_source(rig.home.path(), &rig.prism()), Some(recent.join("minecraft")));
+        assert_eq!(rig.run(&ornithe_world(ornithe::Os::Mac), Kind::Forge), Outcome::Done);
+        let game = made_root(&rig).join("minecraft");
+        assert_eq!(fs::read_to_string(game.join("options.txt")).unwrap(), "fromRecent:1\n");
+
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        assert_eq!(settings_source(rig.home.path(), &rig.prism()), None);
+        assert_eq!(rig.run(&ornithe_world(ornithe::Os::Mac), Kind::Forge), Outcome::Done);
+        assert!(!made_root(&rig).join("minecraft/options.txt").exists());
+    }
+
+    /// The source is copied only while its game is closed: `game_open` at check 4, nothing
+    /// made while it runs.
+    #[test]
+    fn a_running_forge_source_is_waited_for_before_anything_is_copied() {
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        let src = add_forge_instance(&rig, "Hypixel", 100);
+        ornithe::tests::forge_game_fixture(&src.join("minecraft"));
+        let made = Arc::new(Mutex::new(None));
+        let probe = Arc::clone(&made);
+        let root = made_root(&rig);
+        let world = ornithe_world(ornithe::Os::Mac)
+            .with(|st| {
+                st.game_running = true;
+                st.running_in = Some(src.clone());
+            })
+            .on_sleep(move |st| {
+                if st.sleeps == 2 {
+                    *probe.lock().unwrap() = Some(root.exists());
+                    st.game_running = false;
+                }
+            });
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(stops(&rig.events()), vec![(3, Stop::GameOpen)]);
+        assert_eq!(*made.lock().unwrap(), Some(false), "nothing made while the source runs");
+        assert!(made_root(&rig).join("minecraft/options.txt").is_file());
+    }
+
 }

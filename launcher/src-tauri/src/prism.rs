@@ -201,11 +201,12 @@ pub fn remember_exe(home: &Path, exe: &Path) -> Result<(), String> {
 }
 
 /// The installed Prism. Windows: its `prismlauncher.exe` - the one holding the saved Cobblify
-/// instance when there is one (so its data folder, sign-in and launch all agree, review code-1
-/// I3), else see `find_exe_among`.
+/// instance when there is one (the Ornithe one, else the old Forge one; so its data folder,
+/// sign-in and launch all agree, review code-1 I3), else see `find_exe_among`.
 #[cfg(windows)]
 pub fn find_app(home: &Path) -> Option<PathBuf> {
-    if let Some(exe) = crate::forge::saved_instance_root(home).and_then(|root| exe_owning(home, &root)) {
+    let saved = || crate::ornithe::saved_root(home).or_else(|| crate::forge::saved_instance_root(home));
+    if let Some(exe) = saved().and_then(|root| exe_owning(home, &root)) {
         return Some(exe);
     }
     let install = crate::win_reg::string(
@@ -215,7 +216,7 @@ pub fn find_app(home: &Path) -> Option<PathBuf> {
     )
     .map(PathBuf::from);
     let standard = windows_candidates(&|k| std::env::var_os(k), install);
-    let owner = crate::forge::saved_instance_root(home).and_then(|r| owner_of_instance(&r));
+    let owner = saved().and_then(|r| owner_of_instance(&r));
     let (exe, remember) = find_exe_among(&standard, remembered_exe(home), owner, &crate::proc::running_prism_exe)?;
     if remember {
         let _ = remember_exe(home, &exe);
@@ -732,18 +733,20 @@ pub fn make_instance(instances: &Path) -> Result<PathBuf, String> {
             (INSTANCE_CFG.to_string(), made_instance_cfg().into_bytes()),
             (PACK_FILE.to_string(), made_mmc_pack().into_bytes()),
         ],
+        &|_| Ok(()),
     )
 }
 
 /// Makes an instance named `name` in `instances`: every file (a relative path with `/`
-/// separators, and its bytes) is written into a staging folder, which is then renamed ONCE
-/// into `<name>`, `<name>(1)`, ... - never over anything that exists. Returns the new
-/// instance folder. On failure nothing is left in the instances folder (the staging folder
-/// is removed).
+/// separators, and its bytes) is written into a staging folder, `fill` adds whatever else
+/// belongs in it (it gets the staging folder), and the folder is then renamed ONCE into
+/// `<name>`, `<name>(1)`, ... - never over anything that exists. Returns the new instance
+/// folder. On failure nothing is left in the instances folder (the staging folder is removed).
 pub fn make_instance_from(
     instances: &Path,
     name: &str,
     files: &[(String, Vec<u8>)],
+    fill: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(instances)
         .map_err(|e| format!("Cannot create {}: {e}", instances.display()))?;
@@ -760,6 +763,7 @@ pub fn make_instance_from(
             }
             fs::write(&path, bytes).map_err(|e| format!("Cannot write the instance: {e}"))?;
         }
+        fill(&staged)?;
         // Prism's own naming: the name with path separators replaced, then (1), (2), ...
         let base = name.replace(['/', '\\'], "-");
         for n in 0..1000u32 {

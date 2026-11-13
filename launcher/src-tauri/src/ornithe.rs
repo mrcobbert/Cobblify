@@ -17,6 +17,9 @@
 //! * Mods: [`PINS`] - URL, sha512, size, platform. Downloaded into [`DOWNLOADS`] (checked by
 //!   size and sha512), then placed with `install::stage_verified`/`commit`. Argentum comes only
 //!   from its GitHub release: a missing asset is a failure, never a mirror.
+//! * Settings: a new instance arrives with the player's `options.txt`, `resourcepacks/`,
+//!   `servers.dat` and Cobblify config copied from their Forge instance ([`copy_settings`]),
+//!   read-only, never over a file that exists; OptiFine's zoom key becomes Cobblify's.
 //! * Target: the `ornithe` key of `~/.cobblify/launcher-targets.json`; every other key (the
 //!   Forge target included) is kept as it is.
 
@@ -169,7 +172,111 @@ pub fn instance_files() -> Vec<(String, Vec<u8>)> {
 
 /// Makes the instance in `instances`, staged and renamed in once (`NAME`, `NAME(1)`, ...).
 pub fn make_instance(instances: &Path) -> Result<PathBuf, String> {
-    prism::make_instance_from(instances, NAME, &instance_files())
+    make_instance_copying(instances, None)
+}
+
+/// [`make_instance`], with the settings of the Forge game folder `source` copied into the
+/// staged instance's `minecraft/` before the rename.
+pub fn make_instance_copying(instances: &Path, source: Option<&Path>) -> Result<PathBuf, String> {
+    prism::make_instance_from(instances, NAME, &instance_files(), &|staged| match source {
+        Some(src) => copy_settings(src, &staged.join("minecraft")),
+        None => Ok(()),
+    })
+}
+
+// ── settings copy ───────────────────────────────────────────────────────────────
+
+/// What a new instance takes from the player's Forge instance (game-folder relative): video
+/// settings and keybinds, resource packs, the server list, Cobblify's config (and its legacy
+/// name). OptiFine's files, Forge's config, mods, logs and `servers.dat_old` stay behind.
+pub const SETTINGS: [&str; 5] = [
+    "options.txt",
+    "resourcepacks",
+    "servers.dat",
+    "config/cobblify.json",
+    "config/bedwarsqol.json",
+];
+
+/// OptiFine's zoom binding (`key_of.key.zoom:<code>`) becomes Cobblify's Zoom key
+/// (`key_Zoom:<code>`, CONTRACT "Zoom keybind"), unless the options already bind it. Line
+/// endings are kept as they are.
+pub fn map_zoom_key(options: &str) -> String {
+    const OPTIFINE: &str = "key_of.key.zoom:";
+    const ZOOM: &str = "key_Zoom:";
+    if options.split('\n').any(|l| l.starts_with(ZOOM)) {
+        return options.to_string();
+    }
+    options
+        .split('\n')
+        .map(|l| match l.strip_prefix(OPTIFINE) {
+            Some(code) => format!("{ZOOM}{code}"),
+            None => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Copies [`SETTINGS`] from the Forge game folder `src` into `dst`. `src` is only read;
+/// a file `dst` already has is never replaced; links are not followed; a missing item (a
+/// Forge instance never launched has no options.txt) is simply skipped.
+pub fn copy_settings(src: &Path, dst: &Path) -> Result<(), String> {
+    for item in SETTINGS {
+        let from = item.split('/').fold(src.to_path_buf(), |p, part| p.join(part));
+        let to = item.split('/').fold(dst.to_path_buf(), |p, part| p.join(part));
+        let Ok(meta) = fs::symlink_metadata(&from) else {
+            continue;
+        };
+        if meta.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if meta.is_file() {
+            if item == "options.txt" {
+                let text = fs::read(&from).map_err(|e| format!("Cannot read {item}: {e}"))?;
+                let mapped = map_zoom_key(&String::from_utf8_lossy(&text));
+                write_new(&to, mapped.as_bytes())?;
+            } else {
+                copy_new(&from, &to)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("Cannot create {}: {e}", to.display()))?;
+    let entries = fs::read_dir(from).map_err(|e| format!("Cannot read {}: {e}", from.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let dest = to.join(entry.file_name());
+        match fs::symlink_metadata(&path) {
+            Ok(m) if m.is_dir() => copy_tree(&path, &dest)?,
+            Ok(m) if m.is_file() => copy_new(&path, &dest)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Never over an existing file.
+fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(to).is_ok() {
+        return Ok(());
+    }
+    let bytes = fs::read(from).map_err(|e| format!("Cannot read {}: {e}", from.display()))?;
+    write_new(to, &bytes)
+}
+
+fn write_new(to: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+    }
+    match fs::OpenOptions::new().write(true).create_new(true).open(to) {
+        Ok(mut f) => f
+            .write_all(bytes)
+            .map_err(|e| format!("Cannot write {}: {e}", to.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(format!("Cannot write {}: {e}", to.display())),
+    }
 }
 
 /// The game folder of a made instance (Prism's rule).
@@ -387,6 +494,11 @@ fn sha512_file(path: &Path) -> Option<String> {
 fn is_pin_file(path: &Path, pin: &Pin) -> bool {
     fs::metadata(path).is_ok_and(|m| m.len() == pin.size)
         && sha512_file(path).is_some_and(|h| h.eq_ignore_ascii_case(pin.sha512))
+}
+
+/// Every pin is in `mods/` with its pinned bytes.
+pub fn pins_in_place(game_dir: &Path, pins: &[&Pin]) -> bool {
+    pins.iter().all(|p| is_pin_file(&game_dir.join("mods").join(p.file), p))
 }
 
 /// The pins not yet in `mods/` or in the download folder with the right bytes.
@@ -909,6 +1021,122 @@ pub(crate) mod tests {
         let err = place(&root, &game, &[&a], &jar).unwrap_err();
         assert!(err.contains("Cobblify-1.8.9-ornithe-0.18.0.jar"), "{err}");
         assert!(!mods.join(&jar.name).exists(), "nothing placed on a block");
+    }
+
+    // ── settings copy ───────────────────────────────────────────────────────────
+
+    /// A Forge game folder with everything a player has, Windows line endings in options.txt.
+    pub(crate) fn forge_game_fixture(game: &Path) {
+        fs::create_dir_all(game.join("resourcepacks/Folder Pack/assets")).unwrap();
+        fs::create_dir_all(game.join("config")).unwrap();
+        fs::create_dir_all(game.join("mods")).unwrap();
+        fs::write(
+            game.join("options.txt"),
+            "guiScale:2\r\nkey_key.attack:-100\r\nkey_of.key.zoom:46\r\nkey_Open Cobblify Settings:54\r\nresourcePacks:[\"Pack.zip\",\"Folder Pack\"]\r\n",
+        )
+        .unwrap();
+        fs::write(game.join("optionsof.txt"), "ofFastRender:true\n").unwrap();
+        fs::write(game.join("resourcepacks/Pack.zip"), b"zip bytes").unwrap();
+        fs::write(game.join("resourcepacks/Folder Pack/pack.mcmeta"), b"{}").unwrap();
+        fs::write(game.join("resourcepacks/Folder Pack/assets/a.png"), b"png").unwrap();
+        fs::write(game.join("servers.dat"), b"\x0a\x00\x00nbt").unwrap();
+        fs::write(game.join("servers.dat_old"), b"old").unwrap();
+        fs::write(game.join("config/cobblify.json"), b"{\"hud\":true}").unwrap();
+        fs::write(game.join("config/bedwarsqol.json"), b"{\"legacy\":true}").unwrap();
+        fs::write(game.join("config/forge.cfg"), b"forge").unwrap();
+        fs::write(game.join("mods/Cobblify-1.8.9-forge-0.18.2.jar"), b"forge jar").unwrap();
+    }
+
+    pub(crate) fn tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let Ok(rd) = fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, root, out);
+                } else {
+                    out.push((p.strip_prefix(root).unwrap().display().to_string(), fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// The four kinds of settings are copied, the source is only read (byte-identical after),
+    /// OptiFine's zoom key becomes Cobblify's, and nothing else comes along.
+    #[test]
+    fn settings_are_copied_read_only_with_the_zoom_key_mapped() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("forge/minecraft");
+        forge_game_fixture(&src);
+        let before = tree(&dir.path().join("forge"));
+        let dst = dir.path().join("ornithe/minecraft");
+        copy_settings(&src, &dst).unwrap();
+        assert_eq!(tree(&dir.path().join("forge")), before, "the Forge instance is unchanged");
+
+        let options = fs::read_to_string(dst.join("options.txt")).unwrap();
+        assert_eq!(
+            options,
+            "guiScale:2\r\nkey_key.attack:-100\r\nkey_Zoom:46\r\nkey_Open Cobblify Settings:54\r\nresourcePacks:[\"Pack.zip\",\"Folder Pack\"]\r\n"
+        );
+        let mut copied: Vec<String> = tree(&dst).into_iter().map(|(n, _)| n.replace('\\', "/")).collect();
+        copied.sort();
+        assert_eq!(
+            copied,
+            vec![
+                "config/bedwarsqol.json",
+                "config/cobblify.json",
+                "options.txt",
+                "resourcepacks/Folder Pack/assets/a.png",
+                "resourcepacks/Folder Pack/pack.mcmeta",
+                "resourcepacks/Pack.zip",
+                "servers.dat",
+            ]
+        );
+        assert_eq!(fs::read(dst.join("servers.dat")).unwrap(), b"\x0a\x00\x00nbt");
+        assert_eq!(fs::read(dst.join("config/cobblify.json")).unwrap(), b"{\"hud\":true}");
+    }
+
+    /// A zoom key the options already have wins over OptiFine's; files the destination
+    /// already has are never overwritten; an empty source copies nothing and is fine.
+    #[test]
+    fn settings_never_overwrite_and_nothing_to_copy_is_fine() {
+        assert_eq!(map_zoom_key("key_of.key.zoom:46\nkey_Zoom:20\n"), "key_of.key.zoom:46\nkey_Zoom:20\n");
+        assert_eq!(map_zoom_key("a:1\nkey_of.key.zoom:29"), "a:1\nkey_Zoom:29");
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("forge/minecraft");
+        forge_game_fixture(&src);
+        let dst = dir.path().join("ornithe/minecraft");
+        fs::create_dir_all(dst.join("config")).unwrap();
+        fs::write(dst.join("options.txt"), "mine\n").unwrap();
+        fs::write(dst.join("config/cobblify.json"), "mine").unwrap();
+        copy_settings(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("options.txt")).unwrap(), "mine\n");
+        assert_eq!(fs::read_to_string(dst.join("config/cobblify.json")).unwrap(), "mine");
+        assert!(dst.join("servers.dat").is_file(), "what was missing is still copied");
+
+        let empty = dir.path().join("never-launched/minecraft");
+        let dst2 = dir.path().join("o2/minecraft");
+        copy_settings(&empty, &dst2).unwrap();
+        assert!(tree(&dst2).is_empty());
+    }
+
+    /// The copy happens inside the staged instance, before the one rename.
+    #[test]
+    fn a_new_instance_arrives_with_the_copied_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("forge/minecraft");
+        forge_game_fixture(&src);
+        let root = make_instance_copying(&dir.path().join("instances"), Some(&src)).unwrap();
+        assert!(is_ornithe_instance(&root));
+        assert!(fs::read_to_string(root.join("minecraft/options.txt")).unwrap().contains("key_Zoom:46"));
+        assert!(root.join("minecraft/resourcepacks/Pack.zip").is_file());
+        let plain = make_instance_copying(&dir.path().join("instances2"), None).unwrap();
+        assert!(!plain.join("minecraft").exists());
     }
 
     // ── the saved target ────────────────────────────────────────────────────────

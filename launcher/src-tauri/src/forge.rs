@@ -1,3 +1,8 @@
+// The Prism path is Cobblify's own Ornithe instance now: from this module only detection
+// (the Forge instance a new one copies settings from) and the saved Forge target are used.
+// The Forge install code stays until the Forge removal phase.
+#![allow(dead_code)]
+
 //! Forge support: finding a Minecraft instance, judging whether Cobblify belongs in it,
 //! and installing the jar there, deleting only the older releases it replaces.
 //!

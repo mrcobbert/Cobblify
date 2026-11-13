@@ -4,15 +4,15 @@ import assert from "node:assert/strict";
 import { bootWindow } from "./test-support/window-harness.js";
 
 /**
- * A first run with both clients installed and Prism holding several 1.8.9 Forge instances, in the real window:
- * Choose Your Setup's rows are plain; Forge (Prism) brings up the instance pick alone in the middle, the most
- * recently played preselected; Set up Prism sets that instance up and the column slides to its place. Prism's own
- * sign-in stop opens Prism. One boot per file; the tests run in order.
+ * A first run with both clients installed, in the real window: Choose Your Setup's rows are plain; Prism starts its
+ * setup at once - Cobblify makes its own Ornithe instance, so there is no instance pick (an older backend's
+ * `instances` are ignored) - and the column slides to its place. Prism's own sign-in stop opens Prism. One boot per
+ * file; the tests run in order.
  */
 
 const INSTANCES = [
-  { id: "pvp", name: "PvP Pack", detail: "Forge 11.15.1.2318", last_launch_ms: 300 },
-  { id: "hyp", name: "Hypixel 1.8.9", detail: "Forge 11.15.1.2318", last_launch_ms: 200 },
+  { id: "pvp", name: "PvP Pack", detail: "1.8.9", last_launch_ms: 300 },
+  { id: "hyp", name: "Hypixel 1.8.9", detail: "1.8.9", last_launch_ms: 200 },
 ];
 const STATUS = {
   state: "blocked",
@@ -20,7 +20,7 @@ const STATUS = {
   mod_version: "0.17.0",
   targets: [
     { kind: "lunar", state: "absent", issue: "not_set_up", message: "", action: "none", candidates: [], has_setup_folder: false, installed: true, set_up: false, opened_once: false },
-    { kind: "forge", state: "absent", message: "", action: "choose", candidates: [], has_setup_folder: false, installed: true, set_up: false, instances: INSTANCES },
+    { kind: "forge", state: "absent", message: "Set up Prism.", action: "none", candidates: [], has_setup_folder: false, installed: true, set_up: false, instances: INSTANCES },
   ],
 };
 
@@ -59,23 +59,11 @@ test("both installed: plain rows, and no What's New on a first run after an upda
   assert.equal($(".modal"), null);
 });
 
-test("Forge (Prism) with several instances: the pick, alone in the middle", async () => {
+test("Prism: setup begins at once, with no instance pick, and the column leaves the middle", async () => {
   home.querySelector('#layer .mrow[data-id="prism"]').click();
-  await waitFor(() => $('#main [role="radiogroup"]') != null, { label: "the pick" });
-  assert.equal(callsOf("begin_setup").length, 0, "the pick comes first");
-  assert.ok($(".body.home.solo"), "first run: alone");
-  assert.equal($("#isl").style.display, "none", "no island");
-  assert.equal($(".caret"), null);
-  assert.equal(home.querySelector('#main .choice[aria-checked="true"]').dataset.id, "pvp", "the most recently played");
-  assert.equal(said(), "Choose an instance. Prism has 2 instances that can run Cobblify.");
-});
-
-test("Set up Prism sets the picked instance up, and the column leaves the middle", async () => {
-  home.querySelector('#main .choice[data-id="hyp"]').click();
-  await waitFor(() => home.querySelector('#main .choice[aria-checked="true"]')?.dataset.id === "hyp", { label: "the pick moves" });
-  hero().click();
   await waitFor(() => callsOf("begin_setup").length === 1, { label: "Prism's setup" });
-  assert.deepEqual(callsOf("begin_setup")[0].args, { kind: "forge", instanceId: "hyp" });
+  assert.deepEqual(callsOf("begin_setup")[0].args, { kind: "forge" });
+  assert.equal($('#main [role="radiogroup"]'), null, "no pick");
   await waitFor(() => $("#main .hero.slim") != null, { label: "the slim bar" });
   assert.equal($(".body.home.solo"), null);
   assert.equal($("#main .hero.slim").getAttribute("aria-label"), "Setting up Prism");
