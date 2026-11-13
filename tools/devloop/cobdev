@@ -1245,9 +1245,13 @@ def smoke_zoom(s, cfg):
         s.check("held FOV well below baseline (ZOOM_FACTOR unreadable)", held < base * 0.75, "%.2f -> %.2f" % (base, held))
     s.check("frame differs while held", diff(img0, img1)[0] > 0.05, "%.3f" % diff(img0, img1)[0])
     s.check("release restores FOV (not latched)", close_enough(after, base, 0.5), "%.2f vs %.2f" % (after, base))
-    # Chat (bottom-left) fades and scrolls on its own; compare the rest of the frame.
+    # Chat (bottom-left) fades and scrolls on its own; compare the rest of the frame. Chat is 320 GUI
+    # px wide at the default chat width/scale, so on a narrow window it reaches past the middle.
     w, h, _ = img0
-    rest = max(diff(img0, img2, box=(0, 0, w, int(h * 0.7)))[0], diff(img0, img2, box=(w // 2, int(h * 0.7), w, h))[0])
+    sf = (s.status() or {}).get("scaleFactor") or 2
+    chat_right = min(w, int((320 + 8) * sf))
+    boxes = [(0, 0, w, int(h * 0.7))] + ([(chat_right, int(h * 0.7), w, h)] if chat_right < w - 8 else [])
+    rest = max(diff(img0, img2, box=b)[0] for b in boxes)
     s.check("released frame matches baseline (outside chat)", rest < 0.02, "%.3f (whole frame %.3f)"
             % (rest, diff(img0, img2)[0]))
     if zf:
@@ -1366,13 +1370,27 @@ def smoke_clutch(s, cfg):
             "health %.2f, blast damage %s" % (before, dmg))
     s.check("low health: the hit leaves >= half a heart", after >= 1.0 - 1e-6, "%.2f -> %.2f" % (before, after))
     heal()
-    s.field(cp, False)
+    # Isolation (plan R1-I3): with Clutch Practice on and Block Damage off, an ordinary TNT blast
+    # stays vanilla: it still breaks blocks and still deals its own damage.
+    s.field(cp, True)
+    s.field(bd, False)
     tnt_stone = place(4, 0, 0, "minecraft:stone")
     s.cmd("/summon PrimedTnt ~5 ~ ~ {Fuse:0}")
     time.sleep(0.6)
     stone = read(tnt_stone)
-    s.check("ordinary explosion still breaks stone", stone == "minecraft:air", "%s at %s" % (stone, tnt_stone))
-    s.field(cp, True)
+    s.check("Clutch on, Block Damage off: an ordinary explosion still breaks stone", stone == "minecraft:air",
+            "%s at %s" % (stone, tnt_stone))
+    # Damage needs a clear line (the stone above shields the player: exposure is computed before blocks
+    # break) and a non-peaceful world (explosions are difficulty-scaled; peaceful deals 0). At 6 blocks
+    # with full exposure vanilla TNT deals ~9.8 on Normal, far above Clutch's fixed blast.
+    s.cmd("/difficulty 2")
+    heal()
+    hp = s.probe("player")["server"]["health"]
+    s.cmd("/summon PrimedTnt ~ ~ ~6 {Fuse:0}")
+    time.sleep(0.6)
+    hit = s.probe("player")["server"]["health"]
+    s.check("Clutch on: an ordinary explosion deals vanilla damage, not Clutch's", hp - hit > 2.0 + 1e-6,
+            "%.2f -> %.2f" % (hp, hit))
     heal()
     u = s.probe("use-item", "minecraft:fire_charge")
     s.check("use-item with a fire charge spawns a Clutch fireball",
