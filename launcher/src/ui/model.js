@@ -26,7 +26,7 @@ export const PRISM_CHECKS = ["Checking Cobblify's own files", "Looking for Lunar
 const N = CHECKS.length;
 
 /** The setup labels a long check shows instead of "Setting up …" (snapshot `label`). */
-const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 8", vanilla: "Downloading Minecraft 1.8.9" };
+const LONG = { making_instance: "Making a 1.8.9 instance", java: "Downloading Java 25", mods: "Downloading mods", vanilla: "Downloading Minecraft 1.8.9" };
 
 /**
  * The launch key while launching. Home holds it until Cobblify reports in (`loaded`), then the window is the
@@ -290,6 +290,11 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
   // Cobblify's files in Lunar are out of date (an update) while Lunar is open, so they can't be written yet. Nothing
   // failed: Repair runs setup, whose "Closing Lunar" quits Lunar politely, writes them and goes on.
   const issue = targetFor(status, sel)?.issue;
+  // Prism was set up with Forge (or with other pinned mods): Cobblify's own instance needs its setup, never a
+  // silent download. The player starts it.
+  if (issue === "prism_new_setup") {
+    return { ...base, hero: { kind: "act", label: "Set up", act: "repair-setup" }, said: "Prism needs a new setup." };
+  }
   if (issue === "running_lunar" || issue === "not_current") {
     return { ...base, hero: { kind: "act", label: "Repair", act: "repair-setup" }, said: "Cobblify's files in Lunar need updating." };
   }
@@ -307,7 +312,7 @@ export function homeModel({ status, selected = null, launch = {}, update = {}, s
 }
 
 /**
- * The settings sheet's rows. The client rows (Lunar Repair, Prism Add / Change) are disabled while launching, in
+ * The settings sheet's rows. The client rows (Lunar Repair, Prism Add / Repair) are disabled while launching, in
  * game, and while a setup is up (defaults 15: no interleaving).
  */
 export function sheetModel({ status, launch = {}, update = {}, overlayOn = true, overlaySaving = false, quitLunarOn = false, quitLunarSaving = false, version = "", devPending = null, setupActive = false }) {
@@ -341,7 +346,7 @@ export function sheetModel({ status, launch = {}, update = {}, overlayOn = true,
     version: { label, word, key },
     lunar: loaded && isSetUp(status, "lunar") ? { label: "Repair", act: "repair-lunar", disabled: rowsOff } : null,
     prism: !loaded ? null
-      : prismSet ? { label: "Change", act: "sheet-change", disabled: rowsOff }
+      : prismSet ? { label: "Repair", act: "sheet-change", disabled: rowsOff }
       : { label: "Add", act: "sheet-add", disabled: rowsOff, add: addFor(status, "prism") },
   };
 }

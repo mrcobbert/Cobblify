@@ -22,7 +22,7 @@ const STAGE_LABELS = {
   mixing: "Loading Cobblify",
   forge_fired: "Preparing Prism...",
   forge_downloading: "Downloading Minecraft",
-  forge_attached: "Forge started",
+  forge_attached: "Minecraft started",
   forge_discovered: "Mods found",
   forge_mixing: "Loading Cobblify",
   forge_settled: "Prism Started",

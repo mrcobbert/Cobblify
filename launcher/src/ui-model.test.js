@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { CHECKS, PRISM_CHECKS, addFor, blocksLaunch, homeModel, launchHero, pickSelected, setupPct, sheetModel, stuckAfter } from "./ui/model.js";
+import { CL } from "./ui/art.js";
 
 /* status targets shaped like main.rs TargetStatus (installed / set_up / opened_once / instances) */
 const lunarT = (o = {}) => ({ kind: "lunar", state: "absent", issue: "not_set_up", installed: true, set_up: false, opened_once: true, ...o });
@@ -268,8 +269,10 @@ test("setup: the long checks name themselves", () => {
   assert.equal(make.said, "Making a 1.8.9 instance.");
   assert.deepEqual(make.island, { built: 3 / 6, stuck: false });
   const java = homeModel({ status: nothing, setup: setupOf(snap("forge", 4, { label: "java" })) });
-  assert.deepEqual(java.hero, { kind: "slim", label: "Downloading Java 8", pct: 67 });
-  assert.equal(java.said, "Downloading Java 8.");
+  assert.deepEqual(java.hero, { kind: "slim", label: "Downloading Java 25", pct: 67 });
+  assert.equal(java.said, "Downloading Java 25.");
+  const mods = homeModel({ status: nothing, setup: { snap: { kind: "forge", check: 4, phase: "running", label: "mods" } } });
+  assert.deepEqual(mods.hero, { kind: "slim", label: "Downloading mods", pct: 67 });
   const vanilla = homeModel({ status: nothing, setup: setupOf(snap("lunar", 4, { label: "vanilla" })) });
   assert.deepEqual(vanilla.hero, { kind: "slim", label: "Downloading Minecraft 1.8.9", pct: 67 });
   assert.equal(vanilla.said, "Downloading Minecraft 1.8.9.");
@@ -415,12 +418,12 @@ test("settings rows follow the state", () => {
   assert.deepEqual(s.prism, { label: "Add", act: "sheet-add", disabled: false, add: { id: "prism", installed: false } });
 
   const both = sheetModel({ status: bothReady, update: { state: "ready", availableVersion: "0.18.1" } });
-  assert.deepEqual(both.prism, { label: "Change", act: "sheet-change", disabled: false });
+  assert.deepEqual(both.prism, { label: "Repair", act: "sheet-change", disabled: false });
   assert.deepEqual(both.version, { label: "Cobblify 0.18.1", word: "ready", key: { label: "Restart", act: "update", action: "install" } });
 
   const prismOnly = sheetModel({ status: { state: "ready", targets: [LUNAR_MISSING, FORGE_READY] } });
   assert.equal(prismOnly.lunar, null, "Repair only for a set-up Lunar");
-  assert.equal(prismOnly.prism.label, "Change");
+  assert.equal(prismOnly.prism.label, "Repair");
 
   const locked = sheetModel({ status: lunarReady, launch: { active: true } });
   assert.equal(locked.locked, true);
@@ -463,4 +466,20 @@ test("the dev switch keeps the click while the save is in flight", () => {
   const s = sheetModel({ status: lunarReady, update: { updateChannel: "stable", channelSaving: true }, devPending: true });
   assert.equal(s.dev.on, true);
   assert.equal(s.dev.disabled, true);
+});
+
+/* ---------- Prism after the Ornithe update ---------- */
+
+test("Prism set up with Forge before: home shows Set up with the new-setup line, never Launch", () => {
+  const renew = forgeT({ state: "absent", issue: "prism_new_setup", installed: true, set_up: true });
+  const m = homeModel({ status: st(LUNAR_MISSING, renew) });
+  assert.deepEqual(m.clients, ["prism"], "Prism stays on the home");
+  assert.deepEqual(m.hero, { kind: "act", label: "Set up", act: "repair-setup" });
+  assert.equal(m.said, "Prism needs a new setup.");
+});
+
+test("Choose Your Setup's menu names Prism, not Forge", () => {
+  const m = homeModel({ status: nothing });
+  assert.deepEqual(m.setupMenu.map((r) => r.id), ["lunar", "prism"]);
+  assert.equal(CL.prism.pick, "Prism");
 });

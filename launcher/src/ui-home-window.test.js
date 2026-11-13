@@ -117,7 +117,7 @@ test("the settings sheet: its rows, a switch that saves, Esc returns to Settings
   const labels = [...sheet.querySelectorAll(".srow .lbl > .t:first-child")].map((t) => t.textContent);
   assert.deepEqual(labels, ["External Overlay", "Quit Lunar after launch", "Auto-update", "Preview updates", "Cobblify 0.18.0-next.2", "Lunar Client", "Prism Launcher"]);
   assert.equal(sheet.querySelector('[data-row="lunar"] .key').textContent.trim(), "Repair");
-  assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Change", "Prism is set up: Change re-picks its instance");
+  assert.equal(sheet.querySelector('[data-row="prism"] .key').textContent.trim(), "Repair", "Prism is set up: Repair runs its setup again");
   assert.equal(sheet.querySelector('.tog[data-key="auto"]').getAttribute("aria-checked"), "true", "auto-update is on until chosen");
   assert.match(sheet.textContent, /Not an official Minecraft product/);
 

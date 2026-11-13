@@ -18,6 +18,11 @@
 //!      under `<JavaDir>/.cobblify-jre-<random>/` and renamed into place once, never over an
 //!      existing folder; any failure removes the staging folder.
 //!
+//! The Ornithe instance (`ornithe.rs`) uses the same download for Java 25 ([`JAVA25`]: Prism
+//! meta's `java25`, runtime `java-runtime-epsilon`) and is ALWAYS pinned ([`plan_pinned`],
+//! [`pin_strict`]): Prism's automatic Java could otherwise pick an installed 8, 17 or 21,
+//! which cannot load Argentum or Sarcio (class files for Java 25). No host search for it.
+//!
 //! "Pin" = `OverrideJavaLocation=true` + `JavaPath=<java>` in the INSTANCE's `instance.cfg`.
 //! Prism's global settings are never written. The java pinned is `bin/java`, on Windows
 //! `bin\javaw.exe` (what Prism itself runs there, `JAVA_BIN`).
@@ -34,6 +39,35 @@ pub const INDEX_URL: &str = "https://meta.prismlauncher.org/v1/net.minecraft.jav
 pub const JAVA8_URL: &str = "https://meta.prismlauncher.org/v1/net.minecraft.java/java8.json";
 /// The runtime name Minecraft 1.8.9 asks for (`compatibleJavaName`), and Prism's folder name.
 pub const JRE_NAME: &str = "jre-legacy";
+pub const JAVA25_URL: &str = "https://meta.prismlauncher.org/v1/net.minecraft.java/java25.json";
+
+/// One of Prism meta's Java runtimes: its list (`version` in index.json, at `list_url`), the
+/// runtime `name` inside it (also Prism's folder name under `JavaDir`), and how it is named
+/// in messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Runtime {
+    pub version: &'static str,
+    pub list_url: &'static str,
+    pub name: &'static str,
+    pub label: &'static str,
+}
+
+/// Minecraft 1.8.9's own Java (the Forge instance).
+pub const JAVA8: Runtime = Runtime {
+    version: "java8",
+    list_url: JAVA8_URL,
+    name: JRE_NAME,
+    label: "Java 8",
+};
+
+/// The Ornithe instance's Java (`compatibleJavaName` of its Minecraft patch).
+pub const JAVA25: Runtime = Runtime {
+    version: "java25",
+    list_url: JAVA25_URL,
+    name: "java-runtime-epsilon",
+    label: "Java 25",
+};
+
 /// The largest single download accepted (the Mojang x64 runtime is ~171 MB in files).
 pub const MAX_DOWNLOAD: usize = 512 * 1024 * 1024;
 /// The java Prism runs, inside a Java home: `bin/java`; Windows `bin/javaw.exe` (no console).
@@ -153,6 +187,60 @@ pub fn pin(instance_root: &Path, java: &Path) -> Result<(), String> {
     prism::set_ini_keys(&cfg, &[("OverrideJavaLocation", "true"), ("JavaPath", &java)])
 }
 
+/// The java of an existing `<JavaDir>/<rt.name>`, as Cobblify lays it out (`JAVA_BIN` at the
+/// root) or as Prism does on macOS (the manifest's `jre.bundle/Contents/Home`, or any
+/// `<x>/Contents/Home` one folder down).
+pub fn existing_runtime_java(data: &Path, rt: &Runtime) -> Option<PathBuf> {
+    let dir = prism::java_dir(data).join(rt.name);
+    let flat = dir.join(JAVA_BIN);
+    if flat.is_file() {
+        return Some(flat);
+    }
+    if cfg!(windows) {
+        return None;
+    }
+    let mut subs: Vec<PathBuf> = fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    subs.sort();
+    subs.into_iter()
+        .map(|s| s.join("Contents/Home").join(JAVA_BIN))
+        .find(|java| java.is_file())
+}
+
+/// The always-pinned order: an existing `<JavaDir>/<rt.name>` (Prism's own, or one Cobblify
+/// downloaded before) -> pin it; otherwise download it. Never `PrismDownloads`.
+pub fn plan_pinned(data: &Path, rt: &Runtime) -> Plan {
+    match existing_runtime_java(data, rt) {
+        Some(java) => Plan::Pin(java),
+        None => Plan::Download,
+    }
+}
+
+/// `pin`, plus `IgnoreJavaCompatibility=true` (Prism reads it only with the override on):
+/// Prism's launch gate then never refuses the pinned Java, whatever its profile says.
+pub fn pin_strict(instance_root: &Path, java: &Path) -> Result<(), String> {
+    let cfg = instance_root.join(prism::INSTANCE_CFG);
+    let current = prism::read_ini(&cfg).ok_or("Cannot read the instance's settings.")?;
+    let java = java.to_string_lossy();
+    if current.get("OverrideJavaLocation").is_some_and(|v| qt_bool(v))
+        && current.get("JavaPath").map(String::as_str) == Some(java.as_ref())
+        && current.get("IgnoreJavaCompatibility").is_some_and(|v| qt_bool(v))
+    {
+        return Ok(());
+    }
+    prism::set_ini_keys(
+        &cfg,
+        &[
+            ("OverrideJavaLocation", "true"),
+            ("JavaPath", &java),
+            ("IgnoreJavaCompatibility", "true"),
+        ],
+    )
+}
+
 // ── the download ────────────────────────────────────────────────────────────────
 
 fn hex(bytes: &[u8]) -> String {
@@ -189,7 +277,7 @@ fn fetch(env: &dyn JavaEnv, url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The runtime entry of java8.json for this machine.
-fn pick_runtime(java8: &Value, env: &dyn JavaEnv) -> Result<Value, String> {
+fn pick_runtime(java8: &Value, env: &dyn JavaEnv, rt: &Runtime) -> Result<Value, String> {
     let runtimes = java8
         .get("runtimes")
         .and_then(Value::as_array)
@@ -199,7 +287,7 @@ fn pick_runtime(java8: &Value, env: &dyn JavaEnv) -> Result<Value, String> {
             .iter()
             .find(|r| {
                 r.get("runtimeOS").and_then(Value::as_str) == Some(os)
-                    && r.get("name").and_then(Value::as_str) == Some(JRE_NAME)
+                    && r.get("name").and_then(Value::as_str) == Some(rt.name)
             })
             .cloned()
     };
@@ -212,15 +300,23 @@ fn pick_runtime(java8: &Value, env: &dyn JavaEnv) -> Result<Value, String> {
         }
     }
     Err(if cfg!(windows) {
-        "Prism has no Java 8 for this PC.".to_string()
+        format!("Prism has no {} for this PC.", rt.label)
     } else {
-        "Prism has no Java 8 for this Mac.".to_string()
+        format!("Prism has no {} for this Mac.", rt.label)
     })
 }
 
 /// Downloads and installs `jre-legacy`; returns its `bin/java`. Leaves nothing behind on
 /// failure, and never replaces an existing `jre-legacy`.
 pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, String> {
+    install_runtime(env, data, &JAVA8)
+}
+
+/// Downloads and installs the runtime `rt` into `<JavaDir>/<rt.name>` (the folder Prism itself
+/// would use) through the same integrity chain; returns its java. Leaves nothing behind on
+/// failure, and never replaces an existing folder of that name.
+pub fn install_runtime(env: &dyn JavaEnv, data: &Path, rt: &Runtime) -> Result<PathBuf, String> {
+    let what = rt.label;
     // 1. index.json -> java8.json's sha256.
     let index: Value = serde_json::from_slice(&fetch(env, INDEX_URL)?)
         .map_err(|_| "Prism's Java index is malformed.".to_string())?;
@@ -229,32 +325,35 @@ pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, Str
         .and_then(Value::as_array)
         .and_then(|vs| {
             vs.iter()
-                .find(|v| v.get("version").and_then(Value::as_str) == Some("java8"))
+                .find(|v| v.get("version").and_then(Value::as_str) == Some(rt.version))
         })
         .and_then(|v| v.get("sha256"))
         .and_then(Value::as_str)
-        .ok_or("Prism's Java index has no Java 8.")?
+        .ok_or_else(|| format!("Prism's Java index has no {what}."))?
         .to_string();
-    let java8_bytes = fetch(env, JAVA8_URL)?;
-    verify(&java8_bytes, "sha256", &expected, "Prism's Java 8 list")?;
+    let java8_bytes = fetch(env, rt.list_url)?;
+    verify(&java8_bytes, "sha256", &expected, &format!("Prism's {what} list"))?;
     let java8: Value = serde_json::from_slice(&java8_bytes)
-        .map_err(|_| "Prism's Java 8 list is malformed.".to_string())?;
-    let runtime = pick_runtime(&java8, env)?;
+        .map_err(|_| format!("Prism's {what} list is malformed."))?;
+    let runtime = pick_runtime(&java8, env, rt)?;
     let url = runtime
         .get("url")
         .and_then(Value::as_str)
-        .ok_or("Prism's Java 8 entry has no URL.")?;
-    let sum = runtime.get("checksum").ok_or("Prism's Java 8 entry has no checksum.")?;
+        .ok_or_else(|| format!("Prism's {what} entry has no URL."))?;
+    let sum = runtime.get("checksum").ok_or_else(|| format!("Prism's {what} entry has no checksum."))?;
     let sum_type = sum.get("type").and_then(Value::as_str).unwrap_or("");
     let sum_hash = sum.get("hash").and_then(Value::as_str).unwrap_or("");
     if sum_hash.is_empty() {
-        return Err("Prism's Java 8 entry has no checksum.".to_string());
+        return Err(format!("Prism's {what} entry has no checksum."));
     }
 
     let java_dir = prism::java_dir(data);
-    let dest = java_dir.join(JRE_NAME);
+    let dest = java_dir.join(rt.name);
     if fs::symlink_metadata(&dest).is_ok() {
-        return Err("Prism's Java folder already has a jre-legacy that Cobblify can't use.".into());
+        return Err(format!(
+            "Prism's Java folder already has a {} that Cobblify can't use.",
+            rt.name
+        ));
     }
     fs::create_dir_all(&java_dir)
         .map_err(|e| format!("Cannot create {}: {e}", java_dir.display()))?;
@@ -264,25 +363,25 @@ pub fn install_jre_legacy(env: &dyn JavaEnv, data: &Path) -> Result<PathBuf, Str
         let root = match runtime.get("downloadType").and_then(Value::as_str) {
             Some("archive") => {
                 let archive = fetch(env, url)?;
-                verify(&archive, sum_type, sum_hash, "The Java 8 download")?;
-                unpack_archive(env, &archive, &work)?
+                verify(&archive, sum_type, sum_hash, &format!("The {what} download"))?;
+                unpack_archive(env, &archive, &work, what)?
             }
             Some("manifest") => {
                 let manifest = fetch(env, url)?;
-                verify(&manifest, sum_type, sum_hash, "The Java 8 file list")?;
+                verify(&manifest, sum_type, sum_hash, &format!("The {what} file list"))?;
                 let root = work.join("jre");
-                install_manifest(env, &manifest, &root)?;
+                install_manifest(env, &manifest, &root, what)?;
                 root
             }
-            _ => return Err("Prism's Java 8 entry has an unknown download type.".to_string()),
+            _ => return Err(format!("Prism's {what} entry has an unknown download type.")),
         };
-        link_home(&root)?;
+        link_home(&root, what)?;
         set_exec_bits(&root)?;
         if !root.join(JAVA_BIN).is_file() {
-            return Err("The Java 8 download has no java.".to_string());
+            return Err(format!("The {what} download has no java."));
         }
         rename_settling(&root, &dest)
-            .map_err(|e| format!("Cannot put Java 8 in Prism's Java folder: {e}"))
+            .map_err(|e| format!("Cannot put {what} in Prism's Java folder: {e}"))
     })();
     remove_settling(&work);
     result?;
@@ -322,22 +421,22 @@ fn remove_settling(dir: &Path) {
 
 /// Writes the archive, extracts it, and strips its single top folder (as Prism's
 /// `ArchiveDownloadTask` does). Returns the stripped root, inside `work`.
-fn unpack_archive(env: &dyn JavaEnv, archive: &[u8], work: &Path) -> Result<PathBuf, String> {
+fn unpack_archive(env: &dyn JavaEnv, archive: &[u8], work: &Path, what: &str) -> Result<PathBuf, String> {
     let zip = work.join("archive.zip");
-    fs::write(&zip, archive).map_err(|e| format!("Cannot save the Java 8 download: {e}"))?;
+    fs::write(&zip, archive).map_err(|e| format!("Cannot save the {what} download: {e}"))?;
     let out = work.join("x");
-    fs::create_dir_all(&out).map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+    fs::create_dir_all(&out).map_err(|e| format!("Cannot unpack {what}: {e}"))?;
     env.unzip(&zip, &out)?;
     let _ = fs::remove_file(&zip);
     let tops: Vec<PathBuf> = fs::read_dir(&out)
-        .map_err(|e| format!("Cannot unpack Java 8: {e}"))?
+        .map_err(|e| format!("Cannot unpack {what}: {e}"))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.file_name().is_some_and(|n| n != "__MACOSX"))
         .collect();
     match tops.as_slice() {
         [single] if single.is_dir() => Ok(single.clone()),
-        _ => Err("The Java 8 download is not laid out as expected.".to_string()),
+        _ => Err(format!("The {what} download is not laid out as expected.")),
     }
 }
 
@@ -359,13 +458,13 @@ fn safe_relative(rel: &str) -> Option<PathBuf> {
 
 /// Mojang's runtime manifest: directories, files (raw download, size + sha1 checked), and
 /// links. Mirrors Prism's `ManifestDownloadTask`.
-fn install_manifest(env: &dyn JavaEnv, manifest: &[u8], root: &Path) -> Result<(), String> {
+fn install_manifest(env: &dyn JavaEnv, manifest: &[u8], root: &Path, what: &str) -> Result<(), String> {
     let manifest: Value =
-        serde_json::from_slice(manifest).map_err(|_| "The Java 8 file list is malformed.")?;
+        serde_json::from_slice(manifest).map_err(|_| format!("The {what} file list is malformed."))?;
     let files = manifest
         .get("files")
         .and_then(Value::as_object)
-        .ok_or("The Java 8 file list is malformed.")?;
+        .ok_or_else(|| format!("The {what} file list is malformed."))?;
     fs::create_dir_all(root).map_err(|e| format!("Cannot create {}: {e}", root.display()))?;
     let mut entries: Vec<(&String, &Value)> = files.iter().collect();
     // Directories first, then files, then links; each in path order.
@@ -376,32 +475,32 @@ fn install_manifest(env: &dyn JavaEnv, manifest: &[u8], root: &Path) -> Result<(
     };
     entries.sort_by(|a, b| rank(a.1).cmp(&rank(b.1)).then(a.0.cmp(b.0)));
     for (rel, entry) in entries {
-        let rel_path = safe_relative(rel).ok_or("The Java 8 file list has an unsafe path.")?;
+        let rel_path = safe_relative(rel).ok_or_else(|| format!("The {what} file list has an unsafe path."))?;
         let path = root.join(&rel_path);
         match entry.get("type").and_then(Value::as_str) {
             Some("directory") => {
-                fs::create_dir_all(&path).map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+                fs::create_dir_all(&path).map_err(|e| format!("Cannot unpack {what}: {e}"))?;
             }
             Some("file") => {
                 let raw = entry
                     .get("downloads")
                     .and_then(|d| d.get("raw"))
-                    .ok_or("The Java 8 file list is malformed.")?;
+                    .ok_or_else(|| format!("The {what} file list is malformed."))?;
                 let url = raw.get("url").and_then(Value::as_str).unwrap_or("");
                 let sha1 = raw.get("sha1").and_then(Value::as_str).unwrap_or("");
                 let size = raw.get("size").and_then(Value::as_u64);
                 if sha1.is_empty() {
-                    return Err("The Java 8 file list is malformed.".to_string());
+                    return Err(format!("The {what} file list is malformed."));
                 }
                 let bytes = fetch(env, url)?;
                 if size.is_some_and(|s| s != bytes.len() as u64) {
-                    return Err("A Java 8 file has the wrong size.".to_string());
+                    return Err(format!("A {what} file has the wrong size."));
                 }
-                verify(&bytes, "sha1", sha1, "A Java 8 file")?;
+                verify(&bytes, "sha1", sha1, &format!("A {what} file"))?;
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+                    fs::create_dir_all(parent).map_err(|e| format!("Cannot unpack {what}: {e}"))?;
                 }
-                fs::write(&path, &bytes).map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+                fs::write(&path, &bytes).map_err(|e| format!("Cannot unpack {what}: {e}"))?;
                 let exec = entry.get("executable").and_then(Value::as_bool) == Some(true);
                 set_mode(&path, if exec { 0o755 } else { 0o644 })?;
             }
@@ -413,14 +512,14 @@ fn install_manifest(env: &dyn JavaEnv, manifest: &[u8], root: &Path) -> Result<(
                     .unwrap_or(Path::new(""))
                     .join(target);
                 if target.is_empty() || Path::new(target).is_absolute() || !stays_inside(&resolved) {
-                    return Err("The Java 8 file list has an unsafe link.".to_string());
+                    return Err(format!("The {what} file list has an unsafe link."));
                 }
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+                    fs::create_dir_all(parent).map_err(|e| format!("Cannot unpack {what}: {e}"))?;
                 }
                 symlink(Path::new(target), &path)?;
             }
-            _ => return Err("The Java 8 file list has an unknown entry.".to_string()),
+            _ => return Err(format!("The {what} file list has an unknown entry.")),
         }
     }
     Ok(())
@@ -449,7 +548,7 @@ fn stays_inside(path: &Path) -> bool {
 /// runtime's `Contents/Home` (at the root or one folder down) into the root. Relative
 /// targets, because the folder is renamed into place afterwards. (Windows runtimes are flat:
 /// `bin\javaw.exe` is already there.)
-fn link_home(root: &Path) -> Result<(), String> {
+fn link_home(root: &Path, what: &str) -> Result<(), String> {
     if root.join(JAVA_BIN).exists() {
         return Ok(());
     }
@@ -458,7 +557,7 @@ fn link_home(root: &Path) -> Result<(), String> {
         home_rel = Some(PathBuf::from("Contents/Home"));
     } else {
         let mut subs: Vec<PathBuf> = fs::read_dir(root)
-            .map_err(|e| format!("Cannot read the Java 8 folder: {e}"))?
+            .map_err(|e| format!("Cannot read the {what} folder: {e}"))?
             .flatten()
             .map(|e| e.path())
             .collect();
@@ -471,9 +570,9 @@ fn link_home(root: &Path) -> Result<(), String> {
             }
         }
     }
-    let home_rel = home_rel.ok_or("The Java 8 download has no java.")?;
+    let home_rel = home_rel.ok_or_else(|| format!("The {what} download has no java."))?;
     let mut items: Vec<_> = fs::read_dir(root.join(&home_rel))
-        .map_err(|e| format!("Cannot read the Java 8 folder: {e}"))?
+        .map_err(|e| format!("Cannot read the {what} folder: {e}"))?
         .flatten()
         .map(|e| e.file_name())
         .collect();
@@ -542,7 +641,7 @@ fn symlink(target: &Path, link: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn symlink(_target: &Path, _link: &Path) -> Result<(), String> {
-    Err("Java 8 links are not supported on this platform.".to_string())
+    Err("Java links are not supported on this platform.".to_string())
 }
 
 /// macOS's own unzip: keeps unix modes, adds no quarantine attribute.
@@ -558,17 +657,17 @@ pub fn ditto_unzip(zip: &Path, dest: &Path) -> Result<(), String> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map_err(|e| format!("Cannot unpack Java 8: {e}"))?;
+            .map_err(|e| format!("Cannot unpack Java: {e}"))?;
         if status.success() {
             Ok(())
         } else {
-            Err("Cannot unpack Java 8.".to_string())
+            Err("Cannot unpack Java.".to_string())
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (zip, dest);
-        Err("Unpacking Java 8 is only supported on macOS.".to_string())
+        Err("Unpacking Java is only supported on macOS.".to_string())
     }
 }
 
@@ -723,13 +822,13 @@ pub fn host_fetch(url: &str) -> Result<Vec<u8>, String> {
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(60))
             .build()
-            .map_err(|e| format!("Cannot download Java 8: {e}"))?;
+            .map_err(|e| format!("Download failed: {e}"))?;
         let response = client
             .get(&url)
             .send()
             .await
             .and_then(|r| r.error_for_status())
-            .map_err(|e| format!("Cannot download Java 8: {e}"))?;
+            .map_err(|e| format!("Download failed: {e}"))?;
         if response
             .content_length()
             .is_some_and(|n| n > MAX_DOWNLOAD as u64)
@@ -739,7 +838,7 @@ pub fn host_fetch(url: &str) -> Result<Vec<u8>, String> {
         let body = response
             .bytes()
             .await
-            .map_err(|e| format!("Cannot download Java 8: {e}"))?;
+            .map_err(|e| format!("Download failed: {e}"))?;
         Ok(body.to_vec())
     })
 }
@@ -1091,6 +1190,82 @@ pub(crate) mod tests {
         assert!(install_jre_legacy(&env, data.path()).is_err());
         let left: Vec<_> = fs::read_dir(data.path().join("java")).unwrap().flatten().collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// Java 25 for the Ornithe instance: Prism meta's `java25` list (sha256 from index.json)
+    /// -> `java-runtime-epsilon` for this platform -> the Mojang manifest (sha1 per file),
+    /// installed where Prism keeps it: `<JavaDir>/java-runtime-epsilon`.
+    #[test]
+    fn java_25_installs_java_runtime_epsilon_through_the_same_chain() {
+        let data = tempfile::tempdir().unwrap();
+        let mut env = Stub::new(Arch::X64);
+        let java_bytes = b"java 25".to_vec();
+        let manifest = serde_json::to_vec(&serde_json::json!({"files": {
+            "bin": {"type": "directory"},
+            JAVA_BIN: {"type": "file", "executable": true, "downloads": {"raw": {
+                "url": "https://fixture.invalid/java25", "sha1": sha1_hex(&java_bytes),
+                "size": java_bytes.len()}}}
+        }})).unwrap();
+        let list = serde_json::to_vec(&serde_json::json!({"runtimes": [
+            {"name": "jre-legacy", "runtimeOS": Arch::X64.runtime_os(), "downloadType": "manifest",
+             "url": "https://fixture.invalid/wrong.json", "checksum": {"type": "sha1", "hash": "00"}},
+            {"name": "java-runtime-epsilon", "runtimeOS": Arch::X64.runtime_os(), "downloadType": "manifest",
+             "url": "https://fixture.invalid/m25.json",
+             "checksum": {"type": "sha1", "hash": sha1_hex(&manifest)}}]})).unwrap();
+        let index = serde_json::to_vec(&serde_json::json!({"versions": [
+            {"version": "java8", "sha256": "ffff"},
+            {"version": "java25", "sha256": sha256_hex(&list)}]})).unwrap();
+        env.net.insert(INDEX_URL.into(), index);
+        env.net.insert(JAVA25_URL.into(), list.clone());
+        env.net.insert("https://fixture.invalid/m25.json".into(), manifest);
+        env.net.insert("https://fixture.invalid/java25".into(), java_bytes.clone());
+
+        assert_eq!(plan_pinned(data.path(), &JAVA25), Plan::Download);
+        let java = install_runtime(&env, data.path(), &JAVA25).unwrap();
+        assert_eq!(java, data.path().join("java/java-runtime-epsilon").join(JAVA_BIN));
+        assert_eq!(fs::read(&java).unwrap(), java_bytes);
+        assert!(!data.path().join("java/jre-legacy").exists());
+        assert_eq!(plan_pinned(data.path(), &JAVA25), Plan::Pin(java), "reused next time");
+
+        // A tampered java25 list is refused before anything is downloaded.
+        let data = tempfile::tempdir().unwrap();
+        let mut tampered = list;
+        tampered.push(b' ');
+        env.net.insert(JAVA25_URL.into(), tampered);
+        let err = install_runtime(&env, data.path(), &JAVA25).unwrap_err();
+        assert!(err.contains("Java 25") && err.contains("checksum"), "{err}");
+        assert!(!data.path().join("java/java-runtime-epsilon").exists());
+    }
+
+    /// Always pinned: Prism's own automatic download never stands in, and an epsilon Prism
+    /// made itself (macOS: `jre.bundle/Contents/Home`) is reused.
+    #[test]
+    fn java_25_is_always_pinned_and_reuses_prisms_own_epsilon() {
+        let data = tempfile::tempdir().unwrap();
+        assert!(prism_downloads_java(data.path()), "Prism would download by default");
+        assert_eq!(plan_pinned(data.path(), &JAVA25), Plan::Download, "but Cobblify pins anyway");
+        let home = if cfg!(windows) {
+            data.path().join("java/java-runtime-epsilon")
+        } else {
+            data.path().join("java/java-runtime-epsilon/jre.bundle/Contents/Home")
+        };
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::write(home.join(JAVA_BIN), b"").unwrap();
+        assert_eq!(plan_pinned(data.path(), &JAVA25), Plan::Pin(home.join(JAVA_BIN)));
+    }
+
+    /// The strict pin adds `IgnoreJavaCompatibility=true` beside the override and path.
+    #[test]
+    fn the_strict_pin_also_ignores_prisms_java_gate() {
+        let data = tempfile::tempdir().unwrap();
+        let root = instance(data.path());
+        let java = data.path().join("java/java-runtime-epsilon/bin/java");
+        pin_strict(&root, &java).unwrap();
+        let cfg = prism::read_ini(&root.join("instance.cfg")).unwrap();
+        assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
+        assert_eq!(cfg.get("IgnoreJavaCompatibility").map(String::as_str), Some("true"));
+        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(java));
+        assert_eq!(cfg.get("name").map(String::as_str), Some(prism::MADE_NAME), "other keys kept");
     }
 
     /// Mojang's flat runtimes (Windows x64/x86, Linux): no links, `JAVA_BIN` already at the
