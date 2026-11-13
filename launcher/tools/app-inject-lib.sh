@@ -50,21 +50,21 @@ EOF
 
 # The same list after injection and ad-hoc signing: the four injected resource
 # files, plus the seal codesign writes.
-# Usage: cobblify_injected_app_files <mod jar name> <agent jar name> <forge jar name>
+# Usage: cobblify_injected_app_files <mod jar name> <agent jar name> <ornithe jar name>
 cobblify_injected_app_files() {
-  local mod_jar=$1 agent_jar=$2 forge_jar=$3
+  local mod_jar=$1 agent_jar=$2 ornithe_jar=$3
   cobblify_blank_app_files
   printf '%s\n' \
     "$COBBLIFY_APP_RESOURCES/manifest.json" \
     "$COBBLIFY_APP_RESOURCES/$mod_jar" \
     "$COBBLIFY_APP_RESOURCES/$agent_jar" \
-    "$COBBLIFY_APP_RESOURCES/$forge_jar" \
+    "$COBBLIFY_APP_RESOURCES/$ornithe_jar" \
     "Contents/_CodeSignature/CodeResources"
 }
 
 # The zip entry names those files get, i.e. each one prefixed with the .app
 # directory as it is stored in the archive.
-# Usage: cobblify_app_zip_entries <app dir name> <mod jar> <agent jar> <forge jar>
+# Usage: cobblify_app_zip_entries <app dir name> <mod jar> <agent jar> <ornithe jar>
 cobblify_app_zip_entries() {
   local app_name=$1
   cobblify_injected_app_files "$2" "$3" "$4" | sed "s|^|$app_name/|"
@@ -89,37 +89,36 @@ Delete launcher/src-tauri/resources/*.jar and rebuild."
 #
 # The manifest shape is fixed by the Rust side (launcher/src-tauri/src/resources.rs,
 # serde with deny_unknown_fields): exactly mod_jar, agent_jar, mod_version,
-# mod_sha256, agent_sha256, forge_jar, forge_sha256, all snake_case. An extra or
-# renamed key makes the launcher refuse to start, by design.
+# mod_sha256, agent_sha256, ornithe_jar, ornithe_sha256, all snake_case. An extra
+# or renamed key makes the launcher refuse to start, by design.
 #
-# forge_jar/forge_sha256 are optional on the Rust side ONLY so a bundle built
-# before Forge support still runs; they are all-or-nothing there, so this writer
-# always emits both. A name that is not a plain ASCII .jar leaf is refused here
+# ornithe_jar/ornithe_sha256 are a pair on the Rust side (all-or-nothing), so
+# this writer always emits both. A name that is not a plain ASCII .jar leaf is refused here
 # and again by the launcher, because those strings are joined onto the resource
 # directory and opened.
 #
-# Usage: cobblify_inject_app <staged app> <mod jar> <agent jar> <version> <forge jar>
+# Usage: cobblify_inject_app <staged app> <mod jar> <agent jar> <version> <ornithe jar>
 cobblify_inject_app() {
-  local app=$1 mod_src=$2 agent_src=$3 version=$4 forge_src=$5
+  local app=$1 mod_src=$2 agent_src=$3 version=$4 ornithe_src=$5
   local res="$app/$COBBLIFY_APP_RESOURCES"
-  local mod_name agent_name forge_name mod_sha agent_sha forge_sha
+  local mod_name agent_name ornithe_name mod_sha agent_sha ornithe_sha
 
   [ -d "$res" ] || die "$res does not exist in the staged bundle"
   [ -f "$mod_src" ] || die "mod jar not found: $mod_src"
   [ -f "$agent_src" ] || die "agent jar not found: $agent_src"
-  [ -n "$forge_src" ] || die "cobblify_inject_app now requires a forge jar argument"
-  [ -f "$forge_src" ] || die "forge jar not found: $forge_src"
+  [ -n "$ornithe_src" ] || die "cobblify_inject_app now requires an ornithe jar argument"
+  [ -f "$ornithe_src" ] || die "ornithe jar not found: $ornithe_src"
 
   mod_name=$(basename "$mod_src")
   agent_name=$(basename "$agent_src")
-  forge_name=$(basename "$forge_src")
+  ornithe_name=$(basename "$ornithe_src")
 
   # The names and version go into JSON unescaped, so refuse anything that would
   # need escaping instead of silently producing a broken manifest.
   printf '%s' "$version" | grep -Eq '^[0-9A-Za-z._+-]+$' \
     || die "version '$version' is not safe to write into manifest.json"
   local n
-  for n in "$mod_name" "$agent_name" "$forge_name"; do
+  for n in "$mod_name" "$agent_name" "$ornithe_name"; do
     printf '%s' "$n" | grep -Eq '^[0-9A-Za-z._+-]+\.jar$' \
       || die "jar name '$n' is not safe to write into manifest.json"
     # A reserved Windows device stays a device behind any extension (NUL.jar,
@@ -133,18 +132,18 @@ cobblify_inject_app() {
 
   cp "$mod_src" "$res/$mod_name" || die "could not stage $mod_name"
   cp "$agent_src" "$res/$agent_name" || die "could not stage $agent_name"
-  cp "$forge_src" "$res/$forge_name" || die "could not stage $forge_name"
+  cp "$ornithe_src" "$res/$ornithe_name" || die "could not stage $ornithe_name"
 
   # Hash the STAGED copies, not the sources: the manifest must describe the
   # bytes that ship, so a truncated copy is caught here rather than by a friend.
   mod_sha=$(shasum -a 256 "$res/$mod_name" | awk '{print $1}')
   agent_sha=$(shasum -a 256 "$res/$agent_name" | awk '{print $1}')
-  forge_sha=$(shasum -a 256 "$res/$forge_name" | awk '{print $1}')
-  [ -n "$mod_sha" ] && [ -n "$agent_sha" ] && [ -n "$forge_sha" ] \
+  ornithe_sha=$(shasum -a 256 "$res/$ornithe_name" | awk '{print $1}')
+  [ -n "$mod_sha" ] && [ -n "$agent_sha" ] && [ -n "$ornithe_sha" ] \
     || die "could not hash the staged jars"
 
-  printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s","forge_jar":"%s","forge_sha256":"%s"}\n' \
-    "$mod_name" "$agent_name" "$version" "$mod_sha" "$agent_sha" "$forge_name" "$forge_sha" \
+  printf '{"mod_jar":"%s","agent_jar":"%s","mod_version":"%s","mod_sha256":"%s","agent_sha256":"%s","ornithe_jar":"%s","ornithe_sha256":"%s"}\n' \
+    "$mod_name" "$agent_name" "$version" "$mod_sha" "$agent_sha" "$ornithe_name" "$ornithe_sha" \
     > "$res/manifest.json" \
     || die "could not write manifest.json"
 
@@ -157,8 +156,8 @@ cobblify_inject_app() {
     || die "manifest.json does not describe the staged mod jar"
   grep -q "\"agent_sha256\":\"$agent_sha\"" "$res/manifest.json" \
     || die "manifest.json does not describe the staged agent jar"
-  grep -q "\"forge_sha256\":\"$forge_sha\"" "$res/manifest.json" \
-    || die "manifest.json does not describe the staged forge jar"
+  grep -q "\"ornithe_sha256\":\"$ornithe_sha\"" "$res/manifest.json" \
+    || die "manifest.json does not describe the staged ornithe jar"
 }
 
 # Ad-hoc signs a staged bundle and then VALIDATES the signature.

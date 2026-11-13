@@ -74,7 +74,7 @@ if (-not (Test-Path -LiteralPath $vm)) { Die "$vm not found" }
 $manifest = Get-Content -LiteralPath $vm -Raw | ConvertFrom-Json
 $modVersion = Field $manifest 'mod_version'
 if ($modVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { Die "vendor mod_version '$modVersion' is not X.Y.Z; the launcher only accepts release-named jars" }
-$pairs = @(@('mod_jar', 'mod_sha256'), @('agent_jar', 'agent_sha256'), @('forge_jar', 'forge_sha256'))
+$pairs = @(@('mod_jar', 'mod_sha256'), @('agent_jar', 'agent_sha256'), @('ornithe_jar', 'ornithe_sha256'))
 foreach ($pair in $pairs) {
   $name = Field $manifest $pair[0]; $want = Field $manifest $pair[1]
   if ($name -notmatch '^[0-9A-Za-z._+-]+\.jar$') { Die "jar name '$name' is not a plain .jar name" }

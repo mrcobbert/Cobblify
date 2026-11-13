@@ -105,11 +105,13 @@ jobs:
           echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = macOS ]; then
             jdk21=$(/usr/libexec/java_home -v 21)
+            jdk25=$(/usr/libexec/java_home -v 25)
             jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
             test -x "$jdk8/bin/java"
             echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
             echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
             echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_25_X64=$jdk25" >> "$GITHUB_ENV"
             echo "$jdk21/bin" >> "$GITHUB_PATH"
           fi
       - uses: actions/setup-node@v4
@@ -123,6 +125,7 @@ jobs:
           distribution: temurin
           java-version: |
             8
+            25
             21
       - uses: actions/download-artifact@v4
         if: ${{ inputs.local_build && runner.os == 'macOS' }}
@@ -146,7 +149,8 @@ jobs:
           export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
           export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
           export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
-          ./gradlew :1.8.9-forge:assemble --no-daemon
+          test -n "$JAVA_HOME_25_X64"
+          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
           (cd lunar && ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
@@ -156,7 +160,7 @@ jobs:
           node launcher/tools/stage-update-resources.mjs launcher/src-tauri/resources \
             "lunar/build/libs/Cobblify-Lunar-${{ inputs.version }}.jar" \
             "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" \
-            "versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-${{ inputs.version }}.jar" \
+            "ornithe/build/libs/Cobblify-1.8.9-ornithe-${{ inputs.version }}.jar" \
             "${{ inputs.version }}"
       - name: Build universal signed updater artifact
         working-directory: launcher
@@ -255,7 +259,7 @@ jobs:
           import { lstatSync, readdirSync, rmSync } from 'node:fs';
           import { join } from 'node:path';
           const root = process.env.GITHUB_WORKSPACE;
-          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'ornithe/build']) {
             const folder = join(root, relative);
             let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
             if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');
@@ -293,11 +297,13 @@ jobs:
           echo "CARGO_TARGET_DIR=$COBBLIFY_CI_CACHE/cargo" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = macOS ]; then
             jdk21=$(/usr/libexec/java_home -v 21)
+            jdk25=$(/usr/libexec/java_home -v 25)
             jdk8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
             test -x "$jdk8/bin/java"
             echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" >> "$GITHUB_ENV"
             echo "JAVA_HOME=$jdk21" >> "$GITHUB_ENV"
             echo "JAVA_HOME_8_X64=$jdk8" >> "$GITHUB_ENV"
+            echo "JAVA_HOME_25_X64=$jdk25" >> "$GITHUB_ENV"
             echo "$jdk21/bin" >> "$GITHUB_PATH"
           fi
       - uses: actions/setup-node@v4
@@ -311,6 +317,7 @@ jobs:
           distribution: temurin
           java-version: |
             8
+            25
             21
       - name: Verify version
         shell: bash
@@ -331,7 +338,8 @@ jobs:
           export ORG_GRADLE_PROJECT_cobblifyBackendUrl="$BACKEND_URL"
           export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
           export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
-          ./gradlew.bat :1.8.9-forge:assemble --no-daemon
+          test -n "$JAVA_HOME_25_X64"
+          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
           (cd lunar && ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
@@ -341,7 +349,7 @@ jobs:
           node launcher/tools/stage-update-resources.mjs launcher/src-tauri/resources \
             "lunar/build/libs/Cobblify-Lunar-${{ inputs.version }}.jar" \
             "$RUNNER_TEMP/Weave-Loader-Agent-1.3.3.jar" \
-            "versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-${{ inputs.version }}.jar" \
+            "ornithe/build/libs/Cobblify-1.8.9-ornithe-${{ inputs.version }}.jar" \
             "${{ inputs.version }}"
       - name: Build NSIS signed updater artifact
         shell: bash
@@ -392,7 +400,7 @@ jobs:
           import { lstatSync, readdirSync, rmSync } from 'node:fs';
           import { join } from 'node:path';
           const root = process.env.GITHUB_WORKSPACE;
-          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'versions/1.8.9-forge/build']) {
+          for (const relative of ['launcher/src-tauri/resources', 'lunar/build', 'ornithe/build']) {
             const folder = join(root, relative);
             let stat; try { stat = lstatSync(folder); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
             if (stat.isSymbolicLink()) throw new Error('refusing symlink cleanup');

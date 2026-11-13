@@ -3,7 +3,7 @@
 # Builds and packages the owner-baked distribution bundles (plan D8).
 #
 # Owner-run, local, Mac. Produces dist-owner/ (gitignored) containing:
-#   * the baked Forge jar, copied as-is
+#   * the baked Ornithe jar, copied as-is
 #   * Cobblify-Lunar-<version>.zip: the Cobblify Launcher .app with the agent
 #     and Lunar jar injected into it, plus those two jars and both installers
 #     loose for anyone who prefers the manual route
@@ -53,21 +53,20 @@ inject_lib="$repo_root/launcher/tools/app-inject-lib.sh"
 # shellcheck source=../launcher/tools/app-inject-lib.sh
 . "$inject_lib"
 
-forge_build="$repo_root/versions/1.8.9-forge/build"
+ornithe_build="$repo_root/ornithe/build"
 lunar_build="$repo_root/lunar/build"
 
 # Delete every on-disk plaintext copy of the baked backend properties in both
 # build trees (jar-internal copies are the product and are untouched). Known
-# copies: build/generated/backendProps/ (both builds), the Forge
-# processed-resource copy under build/classes/java/main, and Lunar's
-# build/resources/{main,test}. Called from the happy path AND from the EXIT
+# copies: build/generated/backendProps/ (both builds) and the processed-resource
+# copies under build/resources/ (both builds). Called from the happy path AND from the EXIT
 # trap, so a run that fails after the builds generated resources still never
 # leaves the baked url/token behind. Best-effort by construction (must never
 # mask the script's real exit status).
 scrub_plaintext() {
-  find "$forge_build" "$lunar_build" -type f -name cobblify-backend.properties \
+  find "$ornithe_build" "$lunar_build" -type f -name cobblify-backend.properties \
     -exec rm -f {} + 2>/dev/null || true
-  rm -rf "$forge_build/generated/backendProps" "$lunar_build/generated/backendProps" 2>/dev/null || true
+  rm -rf "$ornithe_build/generated/backendProps" "$lunar_build/generated/backendProps" 2>/dev/null || true
 }
 
 # One temp directory for grep patterns and zip staging, trapped immediately so
@@ -154,20 +153,20 @@ echo "launcher build verified blank: $app_src"
 
 # --- version (read from the Gradle projects, so filenames cannot drift) ------
 
-forge_version=$(sed -n 's/^mod_version=//p' "$repo_root/gradle.properties" | head -1)
-[ -n "$forge_version" ] || die "could not read mod_version from gradle.properties"
+ornithe_version=$(sed -n 's/^mod_version=//p' "$repo_root/gradle.properties" | head -1)
+[ -n "$ornithe_version" ] || die "could not read mod_version from gradle.properties"
 lunar_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/lunar/build.gradle.kts" | head -1)
 [ -n "$lunar_version" ] || die "could not read version from lunar/build.gradle.kts"
-[ "$forge_version" = "$lunar_version" ] \
-  || die "version mismatch: Forge $forge_version vs Lunar $lunar_version - align them before packaging"
-version=$forge_version
+[ "$ornithe_version" = "$lunar_version" ] \
+  || die "version mismatch: Ornithe $ornithe_version vs Lunar $lunar_version - align them before packaging"
+version=$ornithe_version
 echo "packaging version $version"
 
 # --- build -------------------------------------------------------------------
 
-echo "building Forge (:1.8.9-forge:assemble)..."
-"$repo_root/gradlew" -p "$repo_root" :1.8.9-forge:assemble \
-  || die "Forge assemble failed"
+echo "building Ornithe (assemble)..."
+( cd "$repo_root/ornithe" && ./gradlew assemble ) \
+  || die "Ornithe assemble failed"
 
 echo "building Lunar (assemble)..."
 ( cd "$repo_root/lunar" && ./gradlew assemble ) \
@@ -178,9 +177,9 @@ echo "building Lunar (assemble)..."
 # Exact expected names only. Any classifier (-dev, -sources, or anything else)
 # produces a different filename and can never match; a missing jar aborts.
 
-forge_libs="$repo_root/versions/1.8.9-forge/build/libs"
+ornithe_libs="$repo_root/ornithe/build/libs"
 lunar_libs="$repo_root/lunar/build/libs"
-forge_jar="$forge_libs/Cobblify-1.8.9-forge-$version.jar"
+ornithe_jar="$ornithe_libs/Cobblify-1.8.9-ornithe-$version.jar"
 lunar_jar="$lunar_libs/Cobblify-Lunar-$version.jar"
 
 select_one() { # <exact path> <label>
@@ -188,7 +187,7 @@ select_one() { # <exact path> <label>
   matches=$(find "$(dirname "$1")" -maxdepth 1 -name "$(basename "$1")" -type f | wc -l | tr -d '[:space:]')
   [ "$matches" = "1" ] || die "$2 selector matched $matches file(s) for $(basename "$1") in $(dirname "$1") - expected exactly 1"
 }
-select_one "$forge_jar" "Forge jar"
+select_one "$ornithe_jar" "Ornithe jar"
 select_one "$lunar_jar" "Lunar jar"
 
 installer_cmd="$repo_root/lunar/dist/Install BedwarsQOL (Lunar).command"
@@ -210,7 +209,7 @@ dist="$repo_root/dist-owner"
 rm -rf "$dist"
 mkdir -p "$dist"
 
-cp "$forge_jar" "$dist/"
+cp "$ornithe_jar" "$dist/"
 
 bundle="$dist/Cobblify-Lunar-$version.zip"
 stage="$tmpd/stage"
@@ -226,7 +225,7 @@ cp "$WEAVE_AGENT_PATH" "$lunar_jar" "$installer_cmd" "$installer_bat" "$readme_t
 staged_app="$stage/$COBBLIFY_APP_NAME"
 cp -R "$app_src" "$stage/" || die "could not stage $COBBLIFY_APP_NAME"
 cobblify_assert_blank_app "$staged_app"
-cobblify_inject_app "$staged_app" "$lunar_jar" "$WEAVE_AGENT_PATH" "$version" "$forge_jar"
+cobblify_inject_app "$staged_app" "$lunar_jar" "$WEAVE_AGENT_PATH" "$version" "$ornithe_jar"
 # After injection, never before: adding files invalidates whatever signature the
 # build carried. cobblify_sign_app validates with --verify --deep --strict.
 cobblify_sign_app "$staged_app"
@@ -260,7 +259,7 @@ zipinfo -1 "$bundle" | LC_ALL=C sort > "$tmpd/got_entries" \
     "Install BedwarsQOL (Lunar).bat" \
     "READ ME FIRST.txt"
   cobblify_app_zip_entries "$COBBLIFY_APP_NAME" \
-    "$(basename "$lunar_jar")" "$(basename "$WEAVE_AGENT_PATH")" "$(basename "$forge_jar")"
+    "$(basename "$lunar_jar")" "$(basename "$WEAVE_AGENT_PATH")" "$(basename "$ornithe_jar")"
 } | LC_ALL=C sort > "$tmpd/want_entries"
 if ! cmp -s "$tmpd/got_entries" "$tmpd/want_entries"; then
   echo "error: the bundle does not hold exactly the expected paths" >&2
@@ -278,14 +277,14 @@ jar_prop() { # <jar> <key> -> value on stdout
   unzip -p "$1" cobblify-backend.properties 2>/dev/null \
     | sed -n "s/^$2=//p" | head -1
 }
-f_url=$(jar_prop "$forge_jar" url);     f_tok=$(jar_prop "$forge_jar" token)
+f_url=$(jar_prop "$ornithe_jar" url);   f_tok=$(jar_prop "$ornithe_jar" token)
 l_url=$(jar_prop "$lunar_jar" url);     l_tok=$(jar_prop "$lunar_jar" token)
-[ -n "$f_url" ] || die "Forge jar: baked url is empty or cobblify-backend.properties missing"
-[ -n "$f_tok" ] || die "Forge jar: baked token is empty"
+[ -n "$f_url" ] || die "Ornithe jar: baked url is empty or cobblify-backend.properties missing"
+[ -n "$f_tok" ] || die "Ornithe jar: baked token is empty"
 [ -n "$l_url" ] || die "Lunar jar: baked url is empty or cobblify-backend.properties missing"
 [ -n "$l_tok" ] || die "Lunar jar: baked token is empty"
-[ "$f_url" = "$l_url" ] || die "baked url differs between the Forge and Lunar jars"
-[ "$f_tok" = "$l_tok" ] || die "baked token differs between the Forge and Lunar jars"
+[ "$f_url" = "$l_url" ] || die "baked url differs between the Ornithe and Lunar jars"
+[ "$f_tok" = "$l_tok" ] || die "baked token differs between the Ornithe and Lunar jars"
 echo "baked backend properties verified (non-empty, identical across jars)"
 
 # --- hygiene (D9): real values in no tracked file, no staged diff ------------
@@ -355,7 +354,7 @@ echo "hygiene check passed (no tracked file, no staged diff, no jar under launch
 # best-effort.
 
 scrub_plaintext
-leftover=$(find "$forge_build" "$lunar_build" -type f -name cobblify-backend.properties | wc -l | tr -d '[:space:]')
+leftover=$(find "$ornithe_build" "$lunar_build" -type f -name cobblify-backend.properties | wc -l | tr -d '[:space:]')
 [ "$leftover" = "0" ] || die "plaintext cobblify-backend.properties still present under a build dir after scrub"
 echo "plaintext intermediates scrubbed"
 
@@ -363,7 +362,7 @@ echo "plaintext intermediates scrubbed"
 
 echo
 echo "owner bundle ready:"
-echo "  $dist/$(basename "$forge_jar")"
+echo "  $dist/$(basename "$ornithe_jar")"
 echo "  $bundle  (contains $COBBLIFY_APP_NAME, both jars, both installers)"
 echo
 echo "Distribute these PRIVATELY (DM). Never attach them to a public GitHub"
