@@ -22,8 +22,8 @@ import java.util.concurrent.Executors;
  * localhost-only control API that the agent-side {@code cobdev} CLI calls: hot-swap changed classes,
  * open Cobblify screens, inject mouse and keyboard input, and read back the framebuffer as a PNG.
  *
- * <p>Never part of the mod jar. Everything that touches Minecraft goes through {@link Game} by
- * reflection, and only once the game has loaded those classes itself.
+ * <p>Never part of the mod jar. Everything that touches Minecraft lives in the dev-only bridge mod
+ * ({@code tools/devloop/bridge}); {@link Game} forwards to it and keeps hot-swap, logs and restarts.
  */
 public final class DevAgent {
 
@@ -45,7 +45,6 @@ public final class DevAgent {
                 return t;
             }));
             server.start();
-            Game.startCursorThread();
             System.out.println("[cobdev] control API on http://127.0.0.1:" + port);
         } catch (IOException e) {
             System.err.println("[cobdev] control API failed to start on port " + port + ": " + e);
@@ -60,7 +59,7 @@ public final class DevAgent {
         try {
             String path = ex.getRequestURI().getPath();
             if (path.equals("/shot")) {
-                body = Game.shot(intParam(q, "wait", 300));
+                body = (byte[]) Game.call("/shot", q);
                 type = "image/png";
             } else {
                 body = Json.write(route(path, q)).getBytes(StandardCharsets.UTF_8);
@@ -85,43 +84,16 @@ public final class DevAgent {
                 return Game.status();
             case "/swap":
                 return Game.swap(Arrays.asList(required(q, "classes").split(",")), "1".equals(q.get("reinit")));
-            case "/reinit":
-                return Game.reinit();
-            case "/open":
-                return Game.open(required(q, "class"), q.containsKey("arg") ? Integer.valueOf(q.get("arg")) : null);
-            case "/close":
-                return Game.close();
-            case "/click":
-                return Game.click(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0));
-            case "/down":
-                return Game.mouseButton(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0), true);
-            case "/up":
-                return Game.mouseButton(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0), false);
-            case "/drag":
-                return Game.drag(intParam(q, "x", -1), intParam(q, "y", -1));
-            case "/scroll":
-                return Game.scroll(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "amount", 0));
-            case "/hover":
-                return "1".equals(q.get("off")) ? Game.hoverOff()
-                        : Game.hover(intParam(q, "x", -1), intParam(q, "y", -1));
-            case "/type":
-                return Game.type(required(q, "text"));
-            case "/key":
-                return Game.key(intParam(q, "code", 0), q.containsKey("char") ? q.get("char").charAt(0) : '\0');
-            case "/scale":
-                return Game.scale(intParam(q, "n", 0));
-            case "/size":
-                return Game.size(intParam(q, "w", 0), intParam(q, "h", 0));
-            case "/world":
-                return Game.world();
-            case "/refresh":
-                return Game.refresh();
             case "/restart":
                 return Game.restart();
             case "/log":
                 return Game.log(intParam(q, "lines", 100));
-            default:
+            case "/main":
+            case "/shutdown":
                 throw new Refused("unknown endpoint " + path);
+            default:
+                // Everything that touches the game lives in the bridge mod, which refuses what it does not know.
+                return Game.castMap(Game.call(path, q));
         }
     }
 
