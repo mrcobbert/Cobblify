@@ -3,6 +3,7 @@ package com.bedwarsqol.mixin;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.Denicks;
+import com.bedwarsqol.hud.TabOverlayScale;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.TabListLookup;
 import net.minecraft.client.Minecraft;
@@ -26,7 +27,9 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -52,7 +55,7 @@ import java.util.Map;
  * </ol>
  */
 @Mixin(GuiPlayerTabOverlay.class)
-public abstract class GuiPlayerTabOverlayMixin {
+public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
 
     private static final float STATS_SCALE = 0.75F;
 
@@ -231,6 +234,45 @@ public abstract class GuiPlayerTabOverlayMixin {
         return columns * i1 + (columns - 1) * COLUMN_GAP;
     }
 
+    /** True while GuiIngameOverlayScaleMixin has applied the scale around the call (see TabOverlayScale). */
+    private boolean bedwarsqol$wrapped;
+    /** Stats recorded during a wrapped list, drawn after it: {x, y, scale} with the text alongside. */
+    private final List<float[]> bedwarsqol$pendingStatsAt = new ArrayList<float[]>();
+    private final List<String> bedwarsqol$pendingStats = new ArrayList<String>();
+
+    @Override
+    public void bedwarsqol$beginWrappedTab(int width, Scoreboard scoreboard, ScoreObjective objective) {
+        bedwarsqol$pendingStatsAt.clear();
+        bedwarsqol$pendingStats.clear();
+        bedwarsqol$pushTabScale(width, scoreboard, objective);
+        bedwarsqol$wrapped = true;
+    }
+
+    @Override
+    public void bedwarsqol$drawPendingStats() {
+        FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+        for (int i = 0; i < bedwarsqol$pendingStats.size(); i++) {
+            float[] at = bedwarsqol$pendingStatsAt.get(i);
+            bedwarsqol$drawStats(fr, bedwarsqol$pendingStats.get(i), at[0], at[1], at[2]);
+        }
+    }
+
+    @Override
+    public void bedwarsqol$endWrappedTab() {
+        bedwarsqol$wrapped = false;
+        bedwarsqol$pendingStatsAt.clear();
+        bedwarsqol$pendingStats.clear();
+        GlStateManager.popMatrix();
+    }
+
+    private static void bedwarsqol$drawStats(FontRenderer fr, String stats, float drawX, float drawY, float statsScale) {
+        GlStateManager.pushMatrix();
+        GlStateManager.translate(drawX, drawY, 0F);
+        GlStateManager.scale(statsScale, statsScale, 1F);
+        fr.drawStringWithShadow(stats, 0F, 0F, 0xFFFFFFFF);
+        GlStateManager.popMatrix();
+    }
+
     @Inject(method = "renderPlayerlist", at = @At("HEAD"))
     private void bedwarsqol$tabStart(int width, Scoreboard scoreboard, ScoreObjective objective, CallbackInfo ci) {
         bedwarsqol$statsMemo.clear();
@@ -241,6 +283,11 @@ public abstract class GuiPlayerTabOverlayMixin {
             this.footer = null;
             bedwarsqol$restoreHeaderFooter = true;
         }
+        if (!bedwarsqol$wrapped) bedwarsqol$pushTabScale(width, scoreboard, objective);
+    }
+
+    /** Pushes the matrix and scales the list (Size setting, clamped to fit the screen) around the top centre. */
+    private void bedwarsqol$pushTabScale(int width, Scoreboard scoreboard, ScoreObjective objective) {
         GlStateManager.pushMatrix();
         float s = bedwarsqol$sizeScale();
         // With the column clamp removed, a long-named / many-player list can be wider than the screen.
@@ -262,7 +309,7 @@ public abstract class GuiPlayerTabOverlayMixin {
     @Inject(method = "renderPlayerlist", at = @At("RETURN"))
     private void bedwarsqol$tabEnd(int width, Scoreboard scoreboard, ScoreObjective objective, CallbackInfo ci) {
         bedwarsqol$statsMemo.clear(); // don't hold NetworkPlayerInfo refs between frames
-        GlStateManager.popMatrix();
+        if (!bedwarsqol$wrapped) GlStateManager.popMatrix();
         if (bedwarsqol$restoreHeaderFooter) {
             this.header = bedwarsqol$savedHeader;
             this.footer = bedwarsqol$savedFooter;
@@ -308,11 +355,14 @@ public abstract class GuiPlayerTabOverlayMixin {
             float drawX = rightEdge - scaledWidth;
             float drawY = y + (9F - 9F * statsScale) / 2F;
 
-            GlStateManager.pushMatrix();
-            GlStateManager.translate(drawX, drawY, 0F);
-            GlStateManager.scale(statsScale, statsScale, 1F);
-            fr.drawStringWithShadow(stats, 0F, 0F, 0xFFFFFFFF);
-            GlStateManager.popMatrix();
+            if (bedwarsqol$wrapped) {
+                // Drawn after the list (bedwarsqol$drawPendingStats): Argentum's Font Batching records the
+                // list's text and draws it after the method, without this translate.
+                bedwarsqol$pendingStatsAt.add(new float[] {drawX, drawY, statsScale});
+                bedwarsqol$pendingStats.add(stats);
+            } else {
+                bedwarsqol$drawStats(fr, stats, drawX, drawY, statsScale);
+            }
         }
 
         // Suppress vanilla's bars in-game, where we've hidden the ping entirely and taken over the slot.

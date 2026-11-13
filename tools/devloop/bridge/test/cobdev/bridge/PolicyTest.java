@@ -32,9 +32,12 @@ public final class PolicyTest {
         refused(Policy.modObject(FakeMod.class)); // cobdev.bridge.*, not com.bedwarsqol.*
 
         // key bindings
-        allowed(Policy.keyBinding("Cobblify"));
-        refused(Policy.keyBinding("key.categories.movement"));
-        refused(Policy.keyBinding(null));
+        allowed(Policy.keyBinding("Cobblify", "Zoom"));
+        allowed(Policy.keyBinding("key.categories.multiplayer", "key.playerlist")); // Tab, for the tab list checks
+        refused(Policy.keyBinding("key.categories.multiplayer", "key.chat"));
+        refused(Policy.keyBinding("key.categories.movement", "key.forward"));
+        refused(Policy.keyBinding("key.categories.movement", "key.playerlist"));
+        refused(Policy.keyBinding(null, null));
 
         // commands
         allowed(Policy.command("/time set 6000"));

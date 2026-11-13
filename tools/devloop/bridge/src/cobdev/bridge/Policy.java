@@ -46,9 +46,13 @@ final class Policy {
         return err == null ? null : "the path leaves Cobblify's classes at " + type.getName();
     }
 
-    static String keyBinding(String category) {
-        return KEY_CATEGORY.equals(category) ? null
-                : "only key bindings Cobblify registers (category " + KEY_CATEGORY + ") can be held";
+    /** The vanilla Tab key: holding it in a local world shows the tab list for the Tab List Size checks. */
+    static final String PLAYER_LIST_KEY = "key.playerlist";
+
+    static String keyBinding(String category, String description) {
+        if (KEY_CATEGORY.equals(category)) return null;
+        if ("key.categories.multiplayer".equals(category) && PLAYER_LIST_KEY.equals(description)) return null;
+        return "only key bindings Cobblify registers (category " + KEY_CATEGORY + ") and the Tab key can be held";
     }
 
     /** Holding a key needs a local world; releasing ("off") is always allowed, wherever the client is. */

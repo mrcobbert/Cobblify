@@ -27,6 +27,7 @@
     "EntityRendererMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHudMixin",
+    "GuiIngameOverlayScaleMixin",
     "GuiScreenCommandMixin",
     "MinecraftMouseMixin",
     "NetHandlerLoginClientMixin",

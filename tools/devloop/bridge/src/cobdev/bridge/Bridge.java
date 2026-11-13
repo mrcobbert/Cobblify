@@ -400,7 +400,7 @@ public final class Bridge {
             List<Object> listed = new ArrayList<>();
             KeyBinding match = null;
             for (KeyBinding kb : mc().gameSettings.keyBindings) {
-                if (Policy.keyBinding(kb.getKeyCategory()) != null) continue;
+                if (Policy.keyBinding(kb.getKeyCategory(), kb.getKeyDescription()) != null) continue;
                 Map<String, Object> k = new LinkedHashMap<>();
                 k.put("name", kb.getKeyDescription());
                 k.put("code", kb.getKeyCode());
