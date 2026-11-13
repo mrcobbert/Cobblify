@@ -128,8 +128,9 @@ final class Probes {
 
     /**
      * {@code clutch-blast dx dy dz}: Clutch Practice's own blast, run on the integrated server thread at
-     * the player's position + offset. Calls Cobblify's {@code ClutchPractice.explode(ClutchFireball)}
-     * (expected API, ported from the Forge tree) with a fireball that is never spawned.
+     * the player's position + offset. Calls Cobblify's package-private static
+     * {@code ClutchPractice.explode(ClutchFireball)} with a {@code ClutchFireball(World, EntityLivingBase)}
+     * that is never spawned (ornithe/src/main/java/com/bedwarsqol/feature).
      */
     private static Map<String, Object> clutchBlast(List<String> args) throws Exception {
         if (args.size() != 3) throw new Refused("probe clutch-blast DX DY DZ");
@@ -139,6 +140,7 @@ final class Probes {
         Refused.check(Policy.near((int) dx, (int) dy, (int) dz));
         Class<?> practice = cobblifyClass(CLUTCH, "clutch-blast");
         Class<?> fireballType = cobblifyClass(CLUTCH_FIREBALL, "clutch-blast");
+        requireClutchReady(practice);
         Method explode = null;
         for (Method m : practice.getDeclaredMethods()) {
             if (m.getName().equals("explode") && Modifier.isStatic(m.getModifiers()) && m.getParameterCount() == 1
@@ -173,9 +175,21 @@ final class Probes {
         });
     }
 
-    /** {@code use-item [item_id]}: the server-side right-click-air path with the held item (optionally set first). */
+    /**
+     * {@code use-item [item_id]}: the server-side right-click-air path with the held item (optionally set
+     * first). On Ornithe, Cobblify's ItemInWorldManagerMixin hooks {@code tryUseItem} and hands a fire
+     * charge to {@code ClutchPractice.onInteract}.
+     */
     private static Map<String, Object> useItem(List<String> args) throws Exception {
         String id = args.isEmpty() ? null : args.get(0);
+        Boolean clutchReady = null;
+        try {
+            Class<?> practice = Class.forName(CLUTCH, true, Probes.class.getClassLoader());
+            clutchReady = practice.getMethod("get").invoke(null) != null;
+        } catch (ReflectiveOperationException | LinkageError ignored) {
+            // no Clutch Practice in this build: the probe still reports the vanilla use
+        }
+        Boolean ready = clutchReady;
         return onServer(() -> {
             EntityPlayerMP p = serverPlayer();
             if (id != null) {
@@ -196,6 +210,7 @@ final class Probes {
             out.put("item", Item.itemRegistry.getNameForObject(held.getItem()) + "");
             out.put("used", used);
             out.put("spawned", spawned);
+            out.put("clutchReady", ready);
             return out;
         });
     }
@@ -224,6 +239,19 @@ final class Probes {
         } catch (ReflectiveOperationException | LinkageError e) {
             out.put("expectedDamage", null);
             out.put("expectedNote", CLUTCH_RULES + " unavailable: " + e);
+        }
+    }
+
+    /** {@code ClutchPractice.get()} stays null until Cobblify's READY hook enables it. */
+    private static void requireClutchReady(Class<?> practice) throws Exception {
+        Method get;
+        try {
+            get = practice.getMethod("get");
+        } catch (NoSuchMethodException e) {
+            return; // older shape without the instance accessor
+        }
+        if (get.invoke(null) == null) {
+            throw new Refused("Clutch Practice is not enabled yet (ClutchPractice.get() is null until READY)");
         }
     }
 

@@ -1005,10 +1005,17 @@ class Smoke:
         return bool(r and r.get("present"))
 
 
-CONFIG_HOLDERS = ["com.bedwarsqol.BedwarsQol", "com.bedwarsqol.CobblifyOrnithe"]
-ZOOM_FIELDS = ["zoomEnabled", "zoom"]
-NO_HURT_CAM_FIELDS = ["noHurtCam", "noHurtCamEnabled", "hurtCamDisabled"]
+# Real names in ornithe/src (Track A, tracks/mod.md): BedwarsQol.config (ClientSettings), fields
+# zoomEnabled / noHurtCam / clutchPractice / clutchBlockDamage / tntFuseEnabled, the "Zoom" binding in
+# category "Cobblify" (options.txt key_Zoom, default KEY_C = 46), CameraRules.ZOOM_FACTOR.
+CONFIG_HOLDERS = ["com.bedwarsqol.BedwarsQol"]
+ZOOM_FIELDS = ["zoomEnabled"]
+NO_HURT_CAM_FIELDS = ["noHurtCam"]
 HUD_FIELDS = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled"]
+ZOOM_FACTOR_FIELD = "com.bedwarsqol.feature.CameraRules.ZOOM_FACTOR"
+ZOOM_KEY = "Zoom"
+ZOOM_DEFAULT_CODE = 46  # Keyboard.KEY_C
+CLUTCH_GET = "com.bedwarsqol.feature.ClutchPractice.get"
 
 
 def find_config(s):
@@ -1153,11 +1160,16 @@ def smoke_hurt(s, cfg):
 def smoke_zoom(s, cfg):
     s.begin("A5", "Zoom: held lowers FOV, release restores it")
     keys, err = s.try_call("/keyhold")
-    names = [k["name"].lower() for k in (keys or {}).get("bindings", [])]
-    s.step["cobblifyBindings"] = names
-    if "zoom" not in names:
-        return s.unavailable("no Cobblify 'Zoom' key binding registered (Track A Phase 4)%s" % (" - " + err if err else ""))
-    s.check("Zoom is listed in Controls (Cobblify category)", True, names)
+    bindings = (keys or {}).get("bindings", [])
+    s.step["cobblifyBindings"] = bindings
+    zoom = [k for k in bindings if k["name"] == ZOOM_KEY]
+    if not s.check("Zoom is listed in Controls (category Cobblify)", bool(zoom),
+                   err or [k["name"] for k in bindings]):
+        return
+    s.check("Zoom key code (options key_Zoom)", zoom[0]["code"] != 0,
+            "code %s%s" % (zoom[0]["code"], " (default C)" if zoom[0]["code"] == ZOOM_DEFAULT_CODE else ""))
+    fr, _ = s.try_call("/field", post={"path": ZOOM_FACTOR_FIELD})
+    factor = float(fr["value"]) if fr else None
     zf = find_field(s, cfg, ZOOM_FIELDS)
     if zf:
         s.field(zf, True)
@@ -1165,25 +1177,30 @@ def smoke_zoom(s, cfg):
     time.sleep(0.5)
     base = s.probe("fov")["fov"]
     _, img0 = s.shot("zoom-base")
-    s.call("/keyhold", {"name": "Zoom", "state": "on"})
+    s.call("/keyhold", {"name": ZOOM_KEY, "state": "on"})
     time.sleep(0.6)
     held = s.probe("fov")["fov"]
     _, img1 = s.shot("zoom-held")
-    s.call("/keyhold", {"name": "Zoom", "state": "off"})
+    s.call("/keyhold", {"name": ZOOM_KEY, "state": "off"})
     time.sleep(0.6)
     after = s.probe("fov")["fov"]
     _, img2 = s.shot("zoom-released")
-    s.step["fov"] = {"baseline": base, "held": held, "released": after, "ratio": held / base if base else None}
-    s.check("held FOV well below baseline", held < base * 0.75, "%.2f -> %.2f" % (base, held))
+    s.step["fov"] = {"baseline": base, "held": held, "released": after, "factor": factor,
+                     "ratio": held / base if base else None}
+    if factor:
+        s.check("held FOV <= baseline / ZOOM_FACTOR", held <= base / factor + 0.05,
+                "%.2f -> %.2f, factor %s" % (base, held, factor))
+    else:
+        s.check("held FOV well below baseline (ZOOM_FACTOR unreadable)", held < base * 0.75, "%.2f -> %.2f" % (base, held))
     s.check("frame differs while held", diff(img0, img1)[0] > 0.05, "%.3f" % diff(img0, img1)[0])
     s.check("release restores FOV (not latched)", close_enough(after, base, 0.5), "%.2f vs %.2f" % (after, base))
     s.check("released frame matches baseline", diff(img0, img2)[0] < 0.02, "%.3f" % diff(img0, img2)[0])
     if zf:
         s.field(zf, False)
-        s.call("/keyhold", {"name": "Zoom", "state": "on"})
+        s.call("/keyhold", {"name": ZOOM_KEY, "state": "on"})
         time.sleep(0.6)
         off = s.probe("fov")["fov"]
-        s.call("/keyhold", {"name": "Zoom", "state": "off"})
+        s.call("/keyhold", {"name": ZOOM_KEY, "state": "off"})
         s.check("Zoom disabled: holding the key changes nothing", close_enough(off, base, 0.5), "%.2f" % off)
         s.field(zf, True)
     else:
@@ -1230,6 +1247,9 @@ def smoke_clutch(s, cfg):
     s.begin("A2-clutch", "Clutch Practice: blast damage/knockback, block filter, damage cap, isolation, fire charge")
     if not s.has("com.bedwarsqol.feature.ClutchPractice") or not cfg:
         return s.unavailable("Clutch Practice is not in this build (Track A port)")
+    ready = s.call("/invoke", post={"path": CLUTCH_GET, "args": ""}).get("value")
+    if not s.check("ClutchPractice.get() is set (READY reached)", ready is not None, ready):
+        return
     cp, bd = cfg + ".clutchPractice", cfg + ".clutchBlockDamage"
 
     def heal():
