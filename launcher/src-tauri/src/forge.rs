@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::install::{commit, release_version, stage_verified};
-use crate::resources::ForgeJar;
 
 /// Launchers before 0.16.3 renamed a superseded jar to `<name>.cobblify-disabled` (then
 /// `... (2)`, `... (3)` when taken) instead of deleting it. FML ignores those, since it only
@@ -49,6 +48,16 @@ const VERSIONED_MODS_DIR: &str = "1.8.9";
 /// Where the launcher's own memory of the chosen instance lives. Deliberately a separate
 /// file from the mod's `~/.cobblify/cobblify.json`.
 const TARGETS_FILE: &str = "launcher-targets.json";
+
+/// A Forge jar to install (its source, file name and SHA-256). The launcher no longer bundles
+/// one (the Prism path is Ornithe now); this stays with the Forge install code until the
+/// Forge removal phase.
+#[derive(Debug, Clone)]
+pub struct ForgeJar {
+    pub src: PathBuf,
+    pub name: String,
+    pub sha256: String,
+}
 
 // ── compatibility ───────────────────────────────────────────────────────────────
 
@@ -844,6 +853,10 @@ struct SavedTargets {
     /// when check 6 saves the target), so a later run still treats it as made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     made_pending: Option<String>,
+    /// Every other key (the Ornithe target, `ornithe.rs`), kept as it is when this file is
+    /// rewritten.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 fn targets_path(home: &Path) -> PathBuf {
@@ -1902,4 +1915,22 @@ pub(crate) mod tests {
         fs::write(mods.join("Cobblify-1.8.9-forge-0.9.0-dev.jar"), b"dev").unwrap();
         assert_eq!(scan_old_jars(&jar, game.path()).unwrap().conflicts.len(), 1);
     }
+
+    /// The Ornithe target is a key this module does not know: rewriting the file for the
+    /// Forge target keeps it.
+    #[test]
+    fn a_forge_rewrite_keeps_the_ornithe_target() {
+        let home = tempfile::tempdir().unwrap();
+        let t = crate::ornithe::Target {
+            instance: "/p/instances/Cobblify 1.8.9 Ornithe".into(),
+            pins: "abc".into(),
+            first_launch_pending: true,
+        };
+        crate::ornithe::save_target(home.path(), &t).unwrap();
+        save_target(home.path(), &SavedTarget::prism(Path::new("/p/instances/A/minecraft"))).unwrap();
+        clear_first_launch_pending(home.path()).unwrap();
+        assert_eq!(crate::ornithe::load_target(home.path()), Some(t));
+        assert!(load_target(home.path()).is_some());
+    }
+
 }

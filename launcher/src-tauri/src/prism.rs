@@ -709,7 +709,7 @@ pub fn made_mmc_pack() -> String {
 }
 
 /// serde_json keeps insertion order here (`preserve_order`); Prism writes keys sorted.
-fn sort_keys(v: serde_json::Value) -> serde_json::Value {
+pub(crate) fn sort_keys(v: serde_json::Value) -> serde_json::Value {
     match v {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.into_iter().collect();
@@ -723,11 +723,28 @@ fn sort_keys(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Makes "Cobblify 1.8.9" in `instances`: both files are written into a staging folder,
-/// which is then renamed ONCE into `Cobblify 1.8.9`, `Cobblify 1.8.9(1)`, ... - never over
-/// anything that exists. Returns the new instance folder. On failure nothing is left in
-/// the instances folder (the staging folder is removed).
+/// Makes "Cobblify 1.8.9" in `instances` (the Forge instance; see `make_instance_from`).
 pub fn make_instance(instances: &Path) -> Result<PathBuf, String> {
+    make_instance_from(
+        instances,
+        MADE_NAME,
+        &[
+            (INSTANCE_CFG.to_string(), made_instance_cfg().into_bytes()),
+            (PACK_FILE.to_string(), made_mmc_pack().into_bytes()),
+        ],
+    )
+}
+
+/// Makes an instance named `name` in `instances`: every file (a relative path with `/`
+/// separators, and its bytes) is written into a staging folder, which is then renamed ONCE
+/// into `<name>`, `<name>(1)`, ... - never over anything that exists. Returns the new
+/// instance folder. On failure nothing is left in the instances folder (the staging folder
+/// is removed).
+pub fn make_instance_from(
+    instances: &Path,
+    name: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<PathBuf, String> {
     fs::create_dir_all(instances)
         .map_err(|e| format!("Cannot create {}: {e}", instances.display()))?;
     let staging_root = instances.join(STAGING_DIR);
@@ -735,12 +752,16 @@ pub fn make_instance(instances: &Path) -> Result<PathBuf, String> {
     let result = (|| -> Result<PathBuf, String> {
         fs::create_dir_all(&staged)
             .map_err(|e| format!("Cannot create {}: {e}", staged.display()))?;
-        fs::write(staged.join(INSTANCE_CFG), made_instance_cfg())
-            .map_err(|e| format!("Cannot write the instance: {e}"))?;
-        fs::write(staged.join(PACK_FILE), made_mmc_pack())
-            .map_err(|e| format!("Cannot write the instance: {e}"))?;
+        for (rel, bytes) in files {
+            let path = rel.split('/').fold(staged.clone(), |p, part| p.join(part));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Cannot write the instance: {e}"))?;
+            }
+            fs::write(&path, bytes).map_err(|e| format!("Cannot write the instance: {e}"))?;
+        }
         // Prism's own naming: the name with path separators replaced, then (1), (2), ...
-        let base = MADE_NAME.replace(['/', '\\'], "-");
+        let base = name.replace(['/', '\\'], "-");
         for n in 0..1000u32 {
             let name = if n == 0 {
                 base.clone()

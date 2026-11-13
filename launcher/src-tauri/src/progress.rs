@@ -1,4 +1,5 @@
-//! Stepped launch progress read from the loader's log (Weave's for Lunar, FML's for Prism),
+//! Stepped launch progress read from the loader's log (Weave's for Lunar, Fabric's
+//! `latest.log` in the Ornithe instance for Prism),
 //! and the launch's two failure verdicts: Lunar on the wrong game version, and Cobblify
 //! not loading. The stages are cosmetic and fail-soft: every advance is tied to a real
 //! milestone line, and the IO layer (in `main.rs` / `launch_watch.rs`) swallows any error
@@ -48,14 +49,36 @@ pub fn milestone_from_log(log: &str) -> Milestone {
     best
 }
 
-pub fn milestone_from_forge_log(log: &str) -> Milestone {
+/// Fabric Loader 0.20.1's start line (`Knot.java:130`: "Loading %s %s with Fabric Loader %s").
+const FABRIC_START: &str = " with Fabric Loader ";
+/// Fabric Loader's mod list header (`FabricLoaderImpl.java:333`: "Loading %d mod%s:%n%s"),
+/// followed by one `\t- <id> <version>` line per top-level mod.
+const FABRIC_LIST: &str = "Loading ";
+/// The Ornithe build's line at OSL's `MinecraftClientEvents.READY` (CONTRACT "Ready log line").
+pub const COBBLIFY_READY: &str = "Cobblify ready (ornithe)";
+
+/// N from Fabric's `Loading <N> mod(s):` header line.
+fn fabric_list_count(line: &str) -> Option<u64> {
+    let (_, rest) = line.split_once(FABRIC_LIST)?;
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    let tail = &rest[digits..];
+    if digits == 0 || !(tail.starts_with(" mods:") || tail.starts_with(" mod:")) {
+        return None;
+    }
+    Some(rest[..digits].parse().unwrap_or(u64::MAX))
+}
+
+/// The Prism (Ornithe) game's `logs/latest.log`: Fabric started (Attached), Fabric listed a
+/// non-zero number of mods (Discovered), Cobblify's ready line (Mixing - Fabric does not
+/// log mixins at INFO, so the ready line stands in for "Cobblify is applying").
+pub fn milestone_from_fabric_log(log: &str) -> Milestone {
     let mut best = Milestone::Fired;
     for line in log.lines() {
-        let here = if is_bedwarsqol_mixin(line) {
+        let here = if line.contains(COBBLIFY_READY) {
             Milestone::Mixing
-        } else if line.contains("Forge Mod Loader has identified") && line.contains("mods to load") {
+        } else if fabric_list_count(line).is_some_and(|n| n > 0) {
             Milestone::Discovered
-        } else if line.contains("Forge Mod Loader version") && line.contains("loading") {
+        } else if line.contains("Loading Minecraft ") && line.contains(FABRIC_START) {
             Milestone::Attached
         } else {
             continue;
@@ -65,8 +88,29 @@ pub fn milestone_from_forge_log(log: &str) -> Milestone {
     best
 }
 
-pub fn forge_loaded(log: &str) -> bool {
-    log.contains("Forge Mod Loader has successfully loaded")
+/// Whether Fabric's finished mod list names Cobblify (`bedwarsqol`, top level). `None` until a
+/// list has been written whole - a line that is not part of it follows - so a list caught
+/// half-flushed is never read as "absent".
+pub fn fabric_lists_cobblify(log: &str) -> Option<bool> {
+    let mut lines = log.lines();
+    while let Some(line) = lines.next() {
+        if fabric_list_count(line).is_none() {
+            continue;
+        }
+        let mut listed = false;
+        for entry in lines.by_ref() {
+            if !(entry.starts_with('\t') || entry.starts_with(' ')) {
+                return Some(listed);
+            }
+            if entry.trim_start().strip_prefix("- ").is_some_and(|rest| {
+                rest.split_whitespace().next() == Some("bedwarsqol")
+            }) {
+                listed = true;
+            }
+        }
+        return None;
+    }
+    None
 }
 
 /// `Mixing <anything>bedwarsqol<anything>` - a mixin-applying line whose target
@@ -179,8 +223,8 @@ fn stage(stage: &'static str, percent: u8) -> Progress {
     }
 }
 
-/// A Cobblify-made Prism instance's first launch: Prism is downloading Minecraft and Forge
-/// (the phase after "fired", until the game's FML log appears).
+/// A Cobblify-made Prism instance's first launch: Prism is downloading Minecraft and the
+/// loader (the phase after "fired", until the game's log appears).
 pub fn progress_forge_downloading() -> Progress {
     stage("forge_downloading", 22)
 }
@@ -216,8 +260,6 @@ pub enum Outcome {
     NotStarted,
 }
 
-/// (a) Forge finished loading mods; Cobblify has this long to write `lobby.json`.
-pub const FORGE_LOADED_GRACE: Duration = Duration::from_secs(30);
 /// (b) Weave finished discovering mods and no Cobblify mixin followed within this.
 pub const WEAVE_DISCOVERED_GRACE: Duration = Duration::from_secs(60);
 /// (d) The game JVM has been alive this long with no fresh loader log.
@@ -246,7 +288,7 @@ pub struct LoaderLog<'a> {
 /// One poll's facts.
 #[derive(Clone, Copy, Debug)]
 pub struct Facts<'a> {
-    /// A Prism (Forge) launch; otherwise Lunar (Weave).
+    /// A Prism (Ornithe) launch; otherwise Lunar (Weave).
     pub forge: bool,
     pub log: Option<LoaderLog<'a>>,
     /// Lunar only: the version guard's fresh line says the game is another version, so it did
@@ -265,8 +307,6 @@ pub struct Facts<'a> {
 pub struct LoadWatch {
     loaded: bool,
     outcome: Option<Outcome>,
-    /// When the FML "successfully loaded" line was first seen.
-    forge_loaded_at: Option<SystemTime>,
     /// When Weave's "Discovered N mod files" line was first seen.
     discovered_at: Option<SystemTime>,
 }
@@ -333,13 +373,10 @@ impl LoadWatch {
         }
         if let Some(text) = text {
             if facts.forge {
-                // (a) Forge finished loading mods, so Cobblify was absent or broken, even if
-                // other mods loaded.
-                if forge_loaded(text) {
-                    let at = *self.forge_loaded_at.get_or_insert(now);
-                    if since(at, now) >= FORGE_LOADED_GRACE {
-                        return Some(Outcome::NotLoaded);
-                    }
+                // (a) Fabric's finished mod list has no Cobblify: it will not load, whatever
+                // else did. (Listed but broken ends at (e) or (f).)
+                if fabric_lists_cobblify(text) == Some(false) {
+                    return Some(Outcome::NotLoaded);
                 }
             } else if weave_discovered(text) {
                 // (b) Weave finished discovering mods (any N) and no Cobblify mixin followed.
@@ -356,7 +393,7 @@ impl LoadWatch {
             }
         }
         match (facts.log, facts.jvm) {
-            // (d) No loader output from a live game: the agent / Forge never started.
+            // (d) No loader output from a live game: the agent / Fabric never started.
             (None, GameJvm::Alive { birth }) if since(birth, now) >= NO_LOADER_LOG_LIMIT => {
                 Some(Outcome::NotLoaded)
             }
@@ -464,14 +501,38 @@ Attached Weave
         assert_eq!(progress_for(Milestone::Discovered, true).percent, 60);
     }
 
+    /// Fabric Loader 0.20.1's own lines (verified in its source: `Knot.java:130`
+    /// "Loading %s %s with Fabric Loader %s", `FabricLoaderImpl.java:333` "Loading %d mod%s:"
+    /// then one `\t- <id> <version>` line per top-level mod), then Cobblify's ready line.
+    const FABRIC_RUN: &str = "\
+[12:00:00] [main/INFO]: Loading Minecraft 1.8.9 with Fabric Loader 0.20.1
+[12:00:01] [main/INFO]: Loading 7 mods:
+\t- argentum 1.0.3-beta.8
+\t- bedwarsqol 0.19.0
+\t- fabricloader 0.20.1
+\t- java 25
+\t- minecraft 1.8.9
+\t- pylon 0.2.8
+\t- sarcio 1.2.0-beta.1
+[12:00:02] [main/INFO]: SpongePowered MIXIN Subsystem Version=0.8.7 Source=x Service=Knot/Fabric Env=CLIENT
+[12:00:20] [Render thread/INFO]: Cobblify ready (ornithe)
+";
+
     #[test]
-    fn real_forge_signatures_advance_and_settle() {
-        let log = "Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n\
-Forge Mod Loader has identified 4 mods to load\n\
-Mixing GuiIngameMixin from mixins.bedwarsqol.json into net.minecraft.client.gui.GuiIngame\n\
-Forge Mod Loader has successfully loaded 4 mods";
-        assert_eq!(milestone_from_forge_log(log), Milestone::Mixing);
-        assert!(forge_loaded(log));
+    fn fabric_signatures_advance_to_cobblifys_ready_line() {
+        let attached = "[12:00:00] [main/INFO]: Loading Minecraft 1.8.9 with Fabric Loader 0.20.1\n";
+        assert_eq!(milestone_from_fabric_log(""), Milestone::Fired);
+        assert_eq!(milestone_from_fabric_log(attached), Milestone::Attached);
+        let listed = &FABRIC_RUN[..FABRIC_RUN.find("[12:00:02]").unwrap()];
+        assert_eq!(milestone_from_fabric_log(listed), Milestone::Discovered);
+        assert_eq!(milestone_from_fabric_log(FABRIC_RUN), Milestone::Mixing);
+        assert_eq!(milestone_from_fabric_log("[x] [main/INFO]: Loading 0 mods:\n"), Milestone::Fired);
+        // FML's lines mean nothing on the Ornithe path.
+        assert_eq!(
+            milestone_from_fabric_log("Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n"),
+            Milestone::Fired
+        );
+        assert!(fabric_lists_cobblify(FABRIC_RUN) == Some(true));
         assert_eq!(progress_for_forge(Milestone::Mixing, true).stage, "forge_settled");
     }
 
@@ -588,27 +649,25 @@ java.lang.IllegalStateException: Could not find game version
         assert_eq!(w.observe(&later, at(1000)), None);
     }
 
-    /// (a), round 1's case: a fresh FML log that loaded OTHER mods, no Cobblify, the game
-    /// alive past the grace.
+    /// (a) for Prism: Fabric listed its mods - the list finished, a later line follows - and
+    /// Cobblify (`bedwarsqol`) is not among them. Decided at once; latched.
     #[test]
-    fn a_forge_game_that_loaded_other_mods_without_cobblify_did_not_load() {
-        let log = "\
-Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading
-Forge Mod Loader has identified 5 mods to load
-Forge Mod Loader has successfully loaded 5 mods
-";
+    fn a_fabric_game_whose_mod_list_lacks_cobblify_did_not_load() {
+        let without = FABRIC_RUN.replace("\t- bedwarsqol 0.19.0\n", "");
         let mut w = LoadWatch::default();
-        // The line is first seen at 40 s; the grace runs from there, not from the click.
-        assert_eq!(w.observe(&forge(Some(log), at(40), alive(10)), at(40)), None);
-        assert_eq!(w.observe(&forge(Some(log), at(40), alive(10)), at(69)), None);
-        assert_eq!(
-            w.observe(&forge(Some(log), at(40), alive(10)), at(70)),
-            Some(Outcome::NotLoaded)
-        );
-        // Latched.
-        let mut loaded = forge(Some(log), at(40), alive(10));
+        // A list still being written (no line after it yet) is not decided.
+        let cut = &without[..without.find("[12:00:02]").unwrap()];
+        assert_eq!(fabric_lists_cobblify(cut), None);
+        assert_eq!(w.observe(&forge(Some(cut), at(40), alive(10)), at(40)), None);
+        assert_eq!(fabric_lists_cobblify(&without), Some(false));
+        assert_eq!(w.observe(&forge(Some(&without), at(41), alive(10)), at(41)), Some(Outcome::NotLoaded));
+        let mut loaded = forge(Some(&without), at(41), alive(10));
         loaded.loaded = true;
-        assert_eq!(w.observe(&loaded, at(71)), Some(Outcome::NotLoaded));
+        assert_eq!(w.observe(&loaded, at(42)), Some(Outcome::NotLoaded));
+
+        // Listed: no verdict from the list; Cobblify's lobby.json decides.
+        let mut ok = LoadWatch::default();
+        assert_eq!(ok.observe(&forge(Some(FABRIC_RUN), at(40), alive(10)), at(100)), None);
     }
 
     /// (b): Weave discovered its mods (here, none of them Cobblify's) and no Cobblify mixin
@@ -708,7 +767,7 @@ Forge Mod Loader has successfully loaded 5 mods
     /// (f) runs from the log's LAST change: a log still being written holds it off.
     #[test]
     fn the_ceiling_restarts_while_the_log_changes() {
-        let log = "Forge Mod Loader version 11.15.1.2318 for Minecraft 1.8.9 loading\n";
+        let log = "[12:00:00] [main/INFO]: Loading Minecraft 1.8.9 with Fabric Loader 0.20.1\n";
         let mut w = LoadWatch::default();
         assert_eq!(w.observe(&forge(Some(log), at(100), alive(0)), at(200)), None);
         assert_eq!(w.observe(&forge(Some(log), at(200), alive(0)), at(319)), None);

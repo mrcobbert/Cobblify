@@ -29,19 +29,22 @@
 //!     are not re-run, but the game gate still runs before every write.
 //!   * Nothing here reads a process command line or keeps an account value.
 //!
-//! Prism's six checks (`kind: "forge"`). Which instance is decided when the run begins
-//! ([`choose_instance`], default 25): the picked one, else the saved one, else the only
-//! compatible one, else none -> make one; several with no pick is `choose_instance`.
-//!   1. Cobblify's own files - the bundled Forge jar.
+//! Prism's six checks (`kind: "forge"`, the wire name kept): Cobblify always uses its own
+//! Ornithe instance (`ornithe.rs`). Which one is decided when the run begins
+//! ([`choose_instance`]): the saved Ornithe target, else the instance Cobblify made (found by
+//! its marker), else none -> make one. A player's Forge instances are never written.
+//!   1. Cobblify's own files - the bundled Ornithe jar.
 //!   2. Find Prism - the app; the chosen instance is re-validated.
 //!   3. Signed in - Prism's `accounts.json` (an active, owning, non-Offline account).
 //!      Otherwise STOP `signin`, then the same hand-off as Lunar (default 23).
 //!   4. The instance is closed - a Java process working inside the instance is STOP
-//!      `game_open`. For a made instance: label `making_instance`, write "Cobblify 1.8.9".
-//!   5. Old Cobblify files - `forge::scan_old_jars` / `remove_old_jars`. For a made
-//!      instance first Java 8 (`prism_java`): label `java` only when it downloads.
-//!   6. Add Cobblify - `forge::install` into the instance, then save the target (a made
-//!      one is recorded `made` + `first_launch_pending`).
+//!      `game_open`. With none yet: label `making_instance`, write "Cobblify 1.8.9 Ornithe".
+//!   5. Java 25 and the mods - Java 25 is always pinned (`prism_java::plan_pinned`, label
+//!      `java` only when it downloads); the mods folder is checked for files Cobblify may not
+//!      replace (`ornithe::check_mods`); the pinned mods not yet there are downloaded and
+//!      verified (label `mods`).
+//!   6. Add Cobblify - `ornithe::place` the mods and the Cobblify jar, then save the
+//!      Ornithe target (`first_launch_pending` for a new one).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -49,14 +52,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::forge::{self, Candidate, Compat, SavedTarget};
+use crate::forge;
 use crate::install;
 use crate::lifecycle::{Coordinator, LifecycleError};
 use crate::lunar_config;
 use crate::lunar_detect;
+use crate::ornithe::{self, OrnitheJar};
 use crate::prism;
 use crate::prism_java::{self, JavaEnv};
-use crate::resources::{self, ForgeJar, LunarJars};
+use crate::resources::{self, LunarJars};
 
 pub use crate::lifecycle::SetupKind as Kind;
 
@@ -95,13 +99,15 @@ pub enum Stop {
     ClosingLunar,
 }
 
-/// The long-check labels. `MakingInstance` and `Java` are Prism's.
+/// The long-check labels. `MakingInstance`, `Java` and `Mods` are Prism's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Label {
     ClosingLunar,
     MakingInstance,
     Java,
+    /// The pinned mods of the Ornithe instance.
+    Mods,
     /// Mojang's 1.8.9 client jar, which Weave needs (`vanilla.rs`).
     Vanilla,
 }
@@ -164,8 +170,16 @@ pub trait World: Send + Sync {
     /// Unminimize, show and focus the Cobblify window, and bounce the Dock icon once.
     fn bring_forward(&self);
     fn prism_installed(&self) -> bool;
-    /// Java facts and the network, for a made instance's Java 8.
+    /// Java facts and the network, for the instance's Java 25 and its mods.
     fn java(&self) -> &dyn JavaEnv;
+    /// The platform the pinned mods are chosen for.
+    fn os(&self) -> ornithe::Os {
+        ornithe::Os::host()
+    }
+    /// The pinned mods (`ornithe::PINS`; tests serve their own).
+    fn pins(&self) -> Vec<ornithe::Pin> {
+        ornithe::PINS.to_vec()
+    }
     /// A monotonic clock.
     fn now(&self) -> Duration;
     fn sleep(&self, d: Duration);
@@ -192,54 +206,24 @@ pub struct Paths {
     pub prism: PathBuf,
 }
 
-/// The Prism instance a run sets up.
+/// The Prism instance a run sets up: always Cobblify's own Ornithe instance.
 #[derive(Debug, Clone)]
 pub enum Instance {
-    /// A compatible instance the player has: picked, saved, or the only one.
-    Existing(Candidate),
-    /// None was compatible: check 4 makes "Cobblify 1.8.9".
+    /// None yet: check 4 makes "Cobblify 1.8.9 Ornithe".
     Make,
-    /// Made by Cobblify - in this run, or in one that stopped before saving it.
-    Made(Candidate),
+    /// Made by Cobblify (its folder) - in this run, or in an earlier one.
+    Made(PathBuf),
 }
 
-impl Instance {
-    fn candidate(&self) -> Option<&Candidate> {
-        match self {
-            Instance::Existing(c) | Instance::Made(c) => Some(c),
-            Instance::Make => None,
-        }
+/// Which instance a Prism setup works on: the saved Ornithe target, else the made instance
+/// found by its marker, else make one.
+pub fn choose_instance(home: &Path, prism_data: &Path) -> Instance {
+    if let Some(root) = ornithe::saved_root(home) {
+        return Instance::Made(root);
     }
-}
-
-/// `begin_setup`'s refusal when Prism has several compatible instances and none was picked:
-/// the UI shows the pick first.
-pub const CHOOSE_INSTANCE: &str = "choose_instance";
-
-/// Which instance a Prism setup works on (default 25: decided when it begins).
-pub fn choose_instance(
-    home: &Path,
-    prism_data: &Path,
-    picked: Option<Candidate>,
-) -> Result<Instance, String> {
-    let wrap = |c: Candidate| match c.instance_root() {
-        Some(root) if forge::is_made(home, &root) => Instance::Made(c),
-        _ => Instance::Existing(c),
-    };
-    if let Some(c) = picked {
-        return Ok(wrap(c));
-    }
-    if let Some(saved) = forge::load_target(home).as_ref().and_then(forge::revalidate) {
-        return Ok(wrap(saved));
-    }
-    let mut confirmed: Vec<Candidate> = forge::detect_in(prism_data)
-        .into_iter()
-        .filter(|c| c.compat == Compat::Confirmed)
-        .collect();
-    match confirmed.len() {
-        0 => Ok(Instance::Make),
-        1 => Ok(wrap(confirmed.remove(0))),
-        _ => Err(CHOOSE_INSTANCE.to_string()),
+    match ornithe::find_made(&prism::instances_dir(prism_data)) {
+        Some(root) => Instance::Made(root),
+        None => Instance::Make,
     }
 }
 
@@ -413,7 +397,7 @@ pub fn run(service: &Service, world: &dyn World, paths: &Paths, run: Run) -> Out
         kind: run.kind,
         passed: run.from.saturating_sub(1),
         lunar_jars: None,
-        forge_jar: None,
+        ornithe_jar: None,
         forge: run.forge,
     };
     runner.go(run.from)
@@ -463,7 +447,7 @@ struct Runner<'a> {
     kind: Kind,
     passed: u8,
     lunar_jars: Option<LunarJars>,
-    forge_jar: Option<ForgeJar>,
+    ornithe_jar: Option<OrnitheJar>,
     forge: Option<Instance>,
 }
 
@@ -769,86 +753,78 @@ impl Runner<'_> {
     fn forge_check(&mut self, k: u8) -> Step {
         match k {
             1 => {
-                self.forge_jar = None;
-                self.forge_jar().map(|_| ())
+                self.ornithe_jar = None;
+                self.ornithe_jar().map(|_| ())
             }
             2 => self.find_instance(),
             3 => self.wait_signed_in(),
             4 => self.instance_closed_or_made(),
-            5 => self.java_and_old_files(),
+            5 => self.java_and_mods(),
             6 => self.add_to_instance(),
             _ => Ok(()),
         }
     }
 
-    fn forge_jar(&mut self) -> Result<ForgeJar, Halt> {
-        if let Some(jar) = &self.forge_jar {
+    fn ornithe_jar(&mut self) -> Result<OrnitheJar, Halt> {
+        if let Some(jar) = &self.ornithe_jar {
             return Ok(jar.clone());
         }
         let verified = resources::verify(&self.paths.resource_dir).map_err(fail)?;
-        let jar = match verified.forge {
+        let jar = match verified.ornithe {
             Some(Ok(jar)) => jar,
             Some(Err(e)) => return Err(fail(e)),
-            None => return Err(fail("This copy of Cobblify does not include Forge.")),
+            None => return Err(fail("This copy of Cobblify does not include its Prism build.")),
         };
-        self.forge_jar = Some(jar.clone());
+        self.ornithe_jar = Some(jar.clone());
         Ok(jar)
     }
 
     /// The instance folder a Prism game of the chosen instance would work in.
     fn instance_root(&self) -> Option<PathBuf> {
-        match self.kind {
-            Kind::Lunar => None,
-            Kind::Forge => self
-                .forge
-                .as_ref()
-                .and_then(Instance::candidate)
-                .and_then(Candidate::instance_root),
+        match (self.kind, &self.forge) {
+            (Kind::Forge, Some(Instance::Made(root))) => Some(root.clone()),
+            _ => None,
         }
     }
 
-    /// The chosen instance, re-read now: it must still be a compatible Prism instance.
-    fn recheck(c: &Candidate) -> Result<Candidate, Halt> {
-        let fresh = forge::classify_picked(&c.game_dir).map_err(fail)?;
-        if fresh.compat != Compat::Confirmed || fresh.marker != c.marker {
-            return Err(fail("That Prism instance changed since it was listed."));
+    /// The made instance, re-read now: it must still be Cobblify's Ornithe instance.
+    fn recheck(root: &Path) -> Result<PathBuf, Halt> {
+        if ornithe::is_ornithe_instance(root) {
+            Ok(root.to_path_buf())
+        } else {
+            Err(fail("Cobblify's Prism instance changed since setup began."))
         }
-        Ok(fresh)
     }
 
-    /// The instance checks 5 and 6 work on (made by now, or existing).
-    fn chosen(&self) -> Result<Candidate, Halt> {
-        self.forge
-            .as_ref()
-            .and_then(Instance::candidate)
-            .cloned()
-            .ok_or_else(|| fail("No Prism instance was chosen."))
+    /// The instance checks 5 and 6 work on (made by now).
+    fn chosen(&self) -> Result<PathBuf, Halt> {
+        match &self.forge {
+            Some(Instance::Made(root)) => Ok(root.clone()),
+            _ => Err(fail("No Prism instance was chosen.")),
+        }
+    }
+
+    /// The pinned mods for this platform, and their fingerprint.
+    fn pins(&self) -> (Vec<ornithe::Pin>, ornithe::Os) {
+        (self.world.pins(), self.world.os())
     }
 
     /// Check 2: Prism is installed, and the instance is still what was chosen (or, when the
-    /// run began with nothing decided, it is decided now).
+    /// run began with nothing decided - or with none made yet - it is decided now).
     fn find_instance(&mut self) -> Step {
         if !self.world.prism_installed() {
             return Err(fail("Prism Launcher is not installed."));
         }
         let next = match self.forge.clone() {
-            None => choose_instance(&self.paths.home, &self.paths.prism, None).map_err(|code| {
-                if code == CHOOSE_INSTANCE {
-                    fail("Choose a Prism instance.")
-                } else {
-                    fail(code)
-                }
-            })?,
-            Some(Instance::Make) => Instance::Make,
-            Some(Instance::Existing(c)) => Instance::Existing(Self::recheck(&c)?),
-            Some(Instance::Made(c)) => Instance::Made(Self::recheck(&c)?),
+            None | Some(Instance::Make) => choose_instance(&self.paths.home, &self.paths.prism),
+            Some(Instance::Made(root)) => Instance::Made(Self::recheck(&root)?),
         };
         self.forge = Some(next);
         Ok(())
     }
 
-    /// Check 4: the chosen instance's game is closed - or, with none to use, "Making a
-    /// 1.8.9 instance".
+    /// Check 4: the instance's game is closed - or, with none yet, "Making a 1.8.9
+    /// instance".
     fn instance_closed_or_made(&mut self) -> Step {
         match self.forge.clone() {
             Some(Instance::Make) => {
@@ -857,89 +833,78 @@ impl Runner<'_> {
                 self.game_gate()?;
                 self.show(None, Some(Label::MakingInstance))?;
                 let instances = prism::instances_dir(&self.paths.prism);
-                let root = prism::make_instance(&instances).map_err(fail)?;
-                let made = forge::classify_picked(&forge::prism_game_dir(&root)).map_err(fail)?;
-                // Remembered before anything else can fail: a Try again (or a later run)
-                // goes on with this instance instead of making another.
-                self.forge = Some(Instance::Made(made));
-                forge::set_made_pending(&self.paths.home, Some(&root)).map_err(fail)?;
+                let root = ornithe::make_instance(&instances).map_err(fail)?;
+                // From here a Try again (or a later run, by the marker) goes on with this
+                // instance instead of making another.
+                self.forge = Some(Instance::Made(root));
                 Ok(())
             }
-            Some(_) => self.game_gate().map(|_| ()),
+            Some(Instance::Made(_)) => self.game_gate().map(|_| ()),
             None => Err(fail("No Prism instance was chosen.")),
         }
     }
 
-    /// Check 5: Java 8 for a made instance ("Downloading Java 8" only when it downloads),
-    /// then the old Cobblify files in the instance's mods folders.
-    fn java_and_old_files(&mut self) -> Step {
-        let c = self.chosen()?;
-        if matches!(self.forge, Some(Instance::Made(_))) {
-            self.java_for_made(&c)?;
+    /// Check 5: Java 25 pinned ("Downloading Java 25" only when it downloads), the mods
+    /// folder checked, then the pinned mods not yet there ("Downloading mods").
+    fn java_and_mods(&mut self) -> Step {
+        let root = self.chosen()?;
+        self.java_25(&root)?;
+        let jar = self.ornithe_jar()?;
+        let (table, os) = self.pins();
+        let pins = ornithe::pins_for(&table, os);
+        let game = ornithe::game_dir(&root);
+        ornithe::check_mods(&root, &game, &pins, &jar).map_err(fail)?;
+        let need = ornithe::to_download(&root, &game, &pins);
+        if need.is_empty() {
+            return Ok(());
         }
         self.game_gate()?;
-        let jar = self.forge_jar()?;
-        let old = forge::scan_old_jars(&jar, &c.game_dir).map_err(fail)?;
-        if let Some(first) = old.conflicts.first() {
-            return Err(fail(format!(
-                "The instance's mods folder has a Cobblify file Cobblify may not replace: {}.",
-                Path::new(first).file_name().unwrap_or_default().to_string_lossy()
-            )));
-        }
-        forge::remove_old_jars(&old).map_err(fail)
+        self.show(None, Some(Label::Mods))?;
+        let world = self.world;
+        ornithe::download(&root, &need, &|url| world.java().fetch(url)).map_err(fail)?;
+        self.alive()
     }
 
-    fn java_for_made(&mut self, c: &Candidate) -> Step {
-        let root = c
-            .instance_root()
-            .ok_or_else(|| fail("The made instance is missing."))?;
+    fn java_25(&mut self, root: &Path) -> Step {
         let world = self.world;
         let env = world.java();
-        match prism_java::plan(env, &self.paths.prism) {
-            prism_java::Plan::PrismDownloads => Ok(()),
+        let rt = &prism_java::JAVA25;
+        match prism_java::plan_pinned(&self.paths.prism, rt) {
             prism_java::Plan::Pin(java) => {
                 self.game_gate()?;
-                prism_java::pin(&root, &java).map_err(fail)
+                prism_java::pin_strict(root, &java).map_err(fail)
             }
-            prism_java::Plan::Download => {
+            prism_java::Plan::Download | prism_java::Plan::PrismDownloads => {
                 self.show(None, Some(Label::Java))?;
-                let java = prism_java::install_jre_legacy(env, &self.paths.prism).map_err(fail)?;
+                let java = prism_java::install_runtime(env, &self.paths.prism, rt).map_err(fail)?;
                 self.alive()?;
                 self.game_gate()?;
-                prism_java::pin(&root, &java).map_err(fail)
+                prism_java::pin_strict(root, &java).map_err(fail)
             }
         }
     }
 
-    /// Check 6: the jar into the instance, then the saved target.
+    /// Check 6: the mods and the Cobblify jar into the instance, then the saved target.
     fn add_to_instance(&mut self) -> Step {
         self.game_gate()?;
-        let jar = self.forge_jar()?;
-        let target = Self::recheck(&self.chosen()?)?;
-        let out = forge::install(&jar, &target.game_dir).map_err(fail)?;
-        if out.blocked {
-            return Err(fail(
-                "The instance's mods folder has a Cobblify file Cobblify may not replace.",
-            ));
-        }
-        let mut saved = SavedTarget::prism(&target.game_dir);
-        if matches!(self.forge, Some(Instance::Made(_))) {
-            saved.made = true;
-            // A made instance set up again keeps its first-launch state; a new one has
-            // never been launched.
-            saved.first_launch_pending = forge::load_target(&self.paths.home)
-                .filter(|prev| {
-                    prev.made
-                        && forge::instance_root(Path::new(&prev.game_dir)) == target.instance_root()
-                })
-                .map(|prev| prev.first_launch_pending)
-                .unwrap_or(true);
-        }
-        forge::save_target(&self.paths.home, &saved).map_err(fail)?;
-        self.forge = Some(match self.forge.take() {
-            Some(Instance::Made(_)) => Instance::Made(target),
-            _ => Instance::Existing(target),
-        });
+        let jar = self.ornithe_jar()?;
+        let root = Self::recheck(&self.chosen()?)?;
+        let (table, os) = self.pins();
+        let pins = ornithe::pins_for(&table, os);
+        ornithe::place(&root, &ornithe::game_dir(&root), &pins, &jar).map_err(fail)?;
+        // Set up again, the instance keeps its first-launch state; a new one has never
+        // been launched.
+        let first_launch_pending = ornithe::load_target(&self.paths.home)
+            .filter(|prev| Path::new(&prev.instance) == root)
+            .map(|prev| prev.first_launch_pending)
+            .unwrap_or(true);
+        let target = ornithe::Target {
+            instance: root.display().to_string(),
+            pins: ornithe::pins_id(&table, os),
+            first_launch_pending,
+        };
+        ornithe::save_target(&self.paths.home, &target).map_err(fail)?;
+        self.forge = Some(Instance::Made(root));
         Ok(())
     }
 }
@@ -1098,6 +1063,9 @@ pub(crate) mod tests {
         pub vanilla_missing: bool,
         pub vanilla_offline: bool,
         pub vanilla_downloads: u32,
+        /// The platform and pinned mods the Prism path uses.
+        pub os: ornithe::Os,
+        pub pins: Vec<ornithe::Pin>,
     }
 
     impl Default for FakeState {
@@ -1123,6 +1091,8 @@ pub(crate) mod tests {
                 vanilla_offline: false,
                 vanilla_downloads: 0,
                 forwards: 0,
+                os: ornithe::Os::Mac,
+                pins: Vec::new(),
             }
         }
     }
@@ -1215,6 +1185,12 @@ pub(crate) mod tests {
         fn java(&self) -> &dyn JavaEnv {
             self
         }
+        fn os(&self) -> ornithe::Os {
+            self.state().os
+        }
+        fn pins(&self) -> Vec<ornithe::Pin> {
+            self.state().pins.clone()
+        }
         fn now(&self) -> Duration {
             self.state().now
         }
@@ -1297,7 +1273,7 @@ pub(crate) mod tests {
             crate::lunar_detect::tests::SIGNED_IN,
         );
         let bundle = tempfile::tempdir().unwrap();
-        resources::tests::write_bundle(bundle.path(), b"mod", b"agent", b"forge");
+        resources::tests::write_bundle(bundle.path(), b"mod", b"agent", b"ornithe");
         let coordinator = Arc::new(Mutex::new(Coordinator::default()));
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&events);
@@ -1763,7 +1739,7 @@ pub(crate) mod tests {
             kind: Kind::Lunar,
             passed: 0,
             lunar_jars: None,
-            forge_jar: None,
+            ornithe_jar: None,
             forge: None,
         };
         for k in 1..=5 {
@@ -1888,7 +1864,7 @@ pub(crate) mod tests {
     // ── Prism ───────────────────────────────────────────────────────────────────
 
     const CONFIRMED_PACK: &[u8] = br#"{"components":[{"uid":"net.minecraft","version":"1.8.9"},{"uid":"net.minecraftforge","version":"11.15.1.2318"}]}"#;
-    const FORGE_JAR: &str = "Cobblify-1.8.9-forge-0.8.1.jar";
+    const ORNITHE_JAR: &str = "Cobblify-1.8.9-ornithe-0.8.1.jar";
 
     /// The rig, plus Prism signed in.
     fn prism_rig() -> Rig {
@@ -1897,15 +1873,38 @@ pub(crate) mod tests {
         rig
     }
 
-    fn add_instance(rig: &Rig, name: &str, last_launch_ms: i64) -> Candidate {
+    /// A player's Forge instance (the settings source later; never written).
+    fn add_forge_instance(rig: &Rig, name: &str, last_launch_ms: i64) -> PathBuf {
         let root = rig.prism().join("instances").join(name);
         forge::tests::write_instance(&root, CONFIRMED_PACK, last_launch_ms);
-        forge::classify_picked(&root.join("minecraft")).unwrap()
+        root
     }
 
-    fn run_forge(rig: &Rig, world: &dyn World, forge: Option<Instance>) -> Outcome {
-        let r = rig.svc.begin(Kind::Forge, forge).expect("admitted");
-        run(&rig.svc, world, &rig.paths(), r)
+    /// Two fixture pins, one for every platform and one macOS-only, served by the fake
+    /// network.
+    fn fixture_pins() -> Vec<ornithe::Pin> {
+        vec![
+            ornithe::tests::fake_pin("perf-1.0.jar", b"perf", ornithe::Only::All),
+            ornithe::tests::fake_pin("maconly-1.0.jar", b"mac", ornithe::Only::Mac),
+        ]
+    }
+
+    /// A Fake with the fixture pins served, on `os`.
+    fn ornithe_world(os: ornithe::Os) -> Fake {
+        Fake::new().with(|st| {
+            st.os = os;
+            st.pins = fixture_pins();
+            st.net.insert(st.pins[0].url.to_string(), b"perf".to_vec());
+            st.net.insert(st.pins[1].url.to_string(), b"mac".to_vec());
+        })
+    }
+
+    /// Prism already has `java-runtime-epsilon` (flat, Cobblify's layout).
+    fn epsilon_installed(rig: &Rig) -> PathBuf {
+        let java = rig.prism().join("java/java-runtime-epsilon").join(prism_java::JAVA_BIN);
+        fs::create_dir_all(java.parent().unwrap()).unwrap();
+        fs::write(&java, b"").unwrap();
+        java
     }
 
     fn labels(events: &[Snapshot]) -> Vec<(u8, Label)> {
@@ -1918,172 +1917,179 @@ pub(crate) mod tests {
     }
 
     fn made_root(rig: &Rig) -> PathBuf {
-        rig.prism().join("instances").join(prism::MADE_NAME)
+        rig.prism().join("instances").join(ornithe::NAME)
     }
 
-    fn auto_java_off(rig: &Rig) {
-        fs::write(
-            rig.prism().join("prismlauncher.cfg"),
-            "[General]\nConfigVersion=1.3\nAutomaticJavaDownload=false\n",
-        )
-        .unwrap();
+    fn mods_of(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(root.join("minecraft/mods"))
+            .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
     }
 
+    /// The straight run on a Mac: check 4 makes "Cobblify 1.8.9 Ornithe", check 5 pins Java 25
+    /// (Prism's own epsilon here) and downloads the pins, check 6 places them with the
+    /// Cobblify jar and saves the Ornithe target. A player's Forge instance is not touched.
     #[test]
-    fn a_forge_setup_uses_the_only_compatible_instance() {
+    fn a_prism_setup_makes_the_ornithe_instance_with_java_25_and_the_pinned_mods() {
         let rig = prism_rig();
-        let candidate = add_instance(&rig, "Hypixel", 0);
-        let world = Fake::new();
+        let forge_root = add_forge_instance(&rig, "Hypixel", 0);
+        let forge_before = sorted_tree(&forge_root);
+        let java = epsilon_installed(&rig);
+        let world = ornithe_world(ornithe::Os::Mac);
         assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
-        assert_eq!(
-            fs::read(candidate.game_dir.join("mods").join(FORGE_JAR)).unwrap(),
-            b"forge"
-        );
-        assert_eq!(candidate.game_dir, rig.prism().join("instances/Hypixel/minecraft"));
-        let saved = forge::load_target(rig.home.path()).expect("target saved");
-        assert_eq!(PathBuf::from(&saved.game_dir), candidate.game_dir);
-        assert!(!saved.made && !saved.first_launch_pending);
-        assert!(!rig.home.path().join(".weave").exists(), "Lunar untouched");
-        assert_eq!(
-            world.state().scanned,
-            Some(rig.prism().join("instances/Hypixel")),
-            "the game gate looks inside the chosen instance"
-        );
-        assert!(labels(&rig.events()).is_empty(), "no long checks for an existing instance");
-    }
-
-    #[test]
-    fn the_instance_choice_is_picked_saved_lone_make_or_choose() {
-        let rig = prism_rig();
-        let home = rig.home.path();
-        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Make)));
-        let a = add_instance(&rig, "A", 10);
-        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Existing(c)) if c.id == "A"));
-        let b = add_instance(&rig, "B", 20);
-        assert_eq!(
-            choose_instance(home, &rig.prism(), None).err().as_deref(),
-            Some(CHOOSE_INSTANCE)
-        );
-        assert!(matches!(choose_instance(home, &rig.prism(), Some(a.clone())), Ok(Instance::Existing(c)) if c.id == "A"));
-        forge::save_target(home, &SavedTarget::prism(&b.game_dir)).unwrap();
-        assert!(matches!(choose_instance(home, &rig.prism(), None), Ok(Instance::Existing(c)) if c.id == "B"));
-        // An instance Cobblify made (setup still pending) stays "made".
-        forge::set_made_pending(home, a.instance_root().as_deref()).unwrap();
-        assert!(matches!(choose_instance(home, &rig.prism(), Some(a)), Ok(Instance::Made(_))));
-    }
-
-    #[test]
-    fn a_forge_setup_without_prism_or_with_several_unpicked_fails_at_check_2() {
-        let rig = prism_rig();
-        let world = Fake::new().with(|st| st.prism = false);
-        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
-        assert_eq!(rig.svc.latest().unwrap().failed_at, Some(2));
-
-        let a = add_instance(&rig, "A", 0);
-        add_instance(&rig, "B", 0);
-        let world = Fake::new();
-        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
-        let last = rig.svc.latest().unwrap();
-        assert_eq!((last.failed_at, last.message.as_deref()), (Some(2), Some("Choose a Prism instance.")));
-
-        assert_eq!(run_forge(&rig, &world, Some(Instance::Existing(a.clone()))), Outcome::Done);
-        assert_eq!(forge::saved_game_dir(rig.home.path()), Some(a.game_dir));
-    }
-
-    /// None compatible: check 4 makes "Cobblify 1.8.9" (golden files), Prism's own Java
-    /// download is on so check 5 leaves Java alone, and the target is saved as made with its
-    /// first launch pending.
-    #[test]
-    fn with_no_instance_setup_makes_cobblify_1_8_9() {
-        let rig = prism_rig();
-        // An incompatible instance is not used, and stays untouched.
-        let modern = rig.prism().join("instances/Modern");
-        forge::tests::write_instance(&modern, br#"{"components":[{"uid":"net.minecraft","version":"1.20.1"}]}"#, 0);
-        let world = Fake::new();
-        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Done);
 
         let root = made_root(&rig);
-        assert_eq!(fs::read_to_string(root.join("instance.cfg")).unwrap(), include_str!("golden/prism-instance.cfg"));
-        assert_eq!(fs::read_to_string(root.join("mmc-pack.json")).unwrap(), include_str!("golden/prism-mmc-pack.json"));
-        assert_eq!(fs::read(root.join("minecraft/mods").join(FORGE_JAR)).unwrap(), b"forge");
-        assert!(!rig.prism().join("instances/.cobblify-staging").exists());
-        assert!(!modern.join("minecraft").exists());
-
-        let saved = forge::load_target(rig.home.path()).unwrap();
-        assert_eq!(PathBuf::from(&saved.game_dir), root.join("minecraft"));
-        assert!(saved.made && saved.first_launch_pending);
-        assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance)]);
-        assert_eq!(world.state().fetches, 0, "Prism downloads Java itself");
-        assert!(!rig.prism().join("java").exists());
-        // Detection now finds it as Prism would (instance.cfg + a compatible pack).
-        let found = forge::detect_in(&rig.prism());
-        assert!(found.iter().any(|c| c.id == prism::MADE_NAME && c.compat == Compat::Confirmed));
-    }
-
-    /// Prism's auto download off, a Java 8 installed: it is pinned silently (no label).
-    #[test]
-    fn a_made_instance_pins_an_installed_java_8() {
-        let rig = prism_rig();
-        auto_java_off(&rig);
-        let global = fs::read(rig.prism().join("prismlauncher.cfg")).unwrap();
-        let jdk = rig.home.path().join("zulu-8.jdk/Contents/Home");
-        fs::create_dir_all(jdk.join("bin")).unwrap();
-        fs::write(jdk.join(prism_java::JAVA_BIN), b"").unwrap();
-        let world = Fake::new().with(|st| st.java_home = Some(jdk.clone()));
-        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Done);
-        let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
+        assert!(ornithe::is_ornithe_instance(&root));
+        let cfg = prism::read_ini(&root.join("instance.cfg")).unwrap();
         assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
-        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(jdk.join(prism_java::JAVA_BIN)));
-        assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance)]);
-        assert_eq!(world.state().fetches, 0);
-        assert_eq!(fs::read(rig.prism().join("prismlauncher.cfg")).unwrap(), global, "global settings untouched");
+        assert_eq!(cfg.get("IgnoreJavaCompatibility").map(String::as_str), Some("true"));
+        assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(java));
+        assert_eq!(
+            mods_of(&root),
+            vec![ORNITHE_JAR.to_string(), "maconly-1.0.jar".into(), "perf-1.0.jar".into()]
+        );
+        assert_eq!(fs::read(root.join("minecraft/mods").join(ORNITHE_JAR)).unwrap(), b"ornithe");
+        assert_eq!(fs::read(root.join("minecraft/mods/perf-1.0.jar")).unwrap(), b"perf");
+        assert_eq!(ornithe::managed(&root).len(), 3);
+        assert!(!root.join(ornithe::DOWNLOADS).exists());
+
+        let saved = ornithe::load_target(rig.home.path()).expect("target saved");
+        assert_eq!(PathBuf::from(&saved.instance), root);
+        assert!(saved.first_launch_pending);
+        assert_eq!(saved.pins, ornithe::pins_id(&fixture_pins(), ornithe::Os::Mac));
+        assert!(forge::load_target(rig.home.path()).is_none(), "no Forge target written");
+        assert_eq!(labels(&rig.events()), vec![(3, Label::MakingInstance), (4, Label::Mods)]);
+        assert_eq!(world.state().scanned, Some(root.clone()), "the gate looks inside the instance");
+        assert_eq!(sorted_tree(&forge_root), forge_before, "the Forge instance is untouched");
+        assert!(!rig.home.path().join(".weave").exists(), "Lunar untouched");
     }
 
-    /// Prism's auto download off and no Java 8: "Downloading Java 8" from the (local)
-    /// fixture, checksummed, then pinned. A bad checksum fails check 5 leaving nothing; Try
-    /// again resumes there, with the same instance.
-    #[cfg(target_os = "macos")]
+    /// Windows: the macOS-only pin is neither downloaded nor placed.
     #[test]
-    fn a_made_instance_downloads_java_8_and_a_bad_checksum_fails_cleanly() {
+    fn on_windows_the_macos_only_mod_is_left_out() {
         let rig = prism_rig();
-        auto_java_off(&rig);
-        let global = fs::read(rig.prism().join("prismlauncher.cfg")).unwrap();
-        let zip = prism_java::tests::fixture_zip();
-        let world = Fake::new().with(|st| {
-            prism_java::tests::serve_archive(&mut st.net, zip.clone(), Some(&"0".repeat(64)))
+        epsilon_installed(&rig);
+        let world = ornithe_world(ornithe::Os::Windows);
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(mods_of(&made_root(&rig)), vec![ORNITHE_JAR.to_string(), "perf-1.0.jar".into()]);
+        assert_eq!(world.state().fetches, 1, "only the all-platform pin");
+        let saved = ornithe::load_target(rig.home.path()).unwrap();
+        assert_eq!(saved.pins, ornithe::pins_id(&fixture_pins(), ornithe::Os::Windows));
+    }
+
+    /// No epsilon: "Downloading Java 25" (Prism meta's java25 chain). A tampered list fails
+    /// check 5 with nothing pinned or saved; Try again resumes there with the same instance.
+    #[test]
+    fn java_25_is_downloaded_when_prism_has_none_and_a_bad_list_fails_cleanly() {
+        let rig = prism_rig();
+        let java_bytes = b"java 25".to_vec();
+        let manifest = serde_json::to_vec(&serde_json::json!({"files": {
+            "bin": {"type": "directory"},
+            prism_java::JAVA_BIN: {"type": "file", "executable": true, "downloads": {"raw": {
+                "url": "https://fixture.invalid/java25", "sha1": prism_java::sha1_hex(&java_bytes),
+                "size": java_bytes.len()}}}}}))
+        .unwrap();
+        let list = serde_json::to_vec(&serde_json::json!({"runtimes": [
+            {"name": "java-runtime-epsilon", "runtimeOS": prism_java::Arch::Arm64.runtime_os(),
+             "downloadType": "manifest", "url": "https://fixture.invalid/m25.json",
+             "checksum": {"type": "sha1", "hash": prism_java::sha1_hex(&manifest)}}]}))
+        .unwrap();
+        let index = serde_json::to_vec(&serde_json::json!({"versions": [
+            {"version": "java25", "sha256": prism_java::sha256_hex(&list)}]}))
+        .unwrap();
+        let mut tampered = list.clone();
+        tampered.push(b' ');
+        let world = ornithe_world(ornithe::Os::Mac).with(|st| {
+            st.net.insert(prism_java::INDEX_URL.into(), index);
+            st.net.insert(prism_java::JAVA25_URL.into(), tampered);
+            st.net.insert("https://fixture.invalid/m25.json".into(), manifest);
+            st.net.insert("https://fixture.invalid/java25".into(), java_bytes);
         });
-        assert_eq!(run_forge(&rig, &world, Some(Instance::Make)), Outcome::Failed);
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
         let last = rig.svc.latest().unwrap();
         assert_eq!(last.failed_at, Some(5));
         assert!(last.message.as_deref().unwrap_or("").contains("checksum"));
-        let java_dir = rig.prism().join("java");
-        let left: Vec<_> = fs::read_dir(&java_dir).unwrap().flatten().collect();
-        assert!(left.is_empty(), "nothing left behind: {left:?}");
         let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
         assert!(cfg.get("JavaPath").is_none(), "nothing pinned");
-        assert!(forge::load_target(rig.home.path()).is_none(), "not set up");
+        assert!(ornithe::load_target(rig.home.path()).is_none(), "not set up");
 
-        // The right checksum; Try again resumes at check 5 with the instance already made.
-        {
-            let mut st = world.st.lock().unwrap();
-            st.net.clear();
-            prism_java::tests::serve_archive(&mut st.net, zip, None);
-        }
+        world.st.lock().unwrap().net.insert(prism_java::JAVA25_URL.into(), list);
         let seen = rig.events().len();
         assert_eq!(rig.resume(&world, Kind::Forge), Outcome::Done);
         let resumed = &rig.events()[seen..];
         assert_eq!(resumed[0].check, 4);
-        assert_eq!(labels(resumed), vec![(4, Label::Java)]);
-        let java = java_dir.join("jre-legacy/bin/java");
-        assert!(java.is_file());
+        assert_eq!(labels(resumed), vec![(4, Label::Java), (4, Label::Mods)]);
+        let java = rig.prism().join("java/java-runtime-epsilon").join(prism_java::JAVA_BIN);
         let cfg = prism::read_ini(&made_root(&rig).join("instance.cfg")).unwrap();
         assert_eq!(cfg.get("JavaPath").map(PathBuf::from), Some(java));
-        assert_eq!(cfg.get("OverrideJavaLocation").map(String::as_str), Some("true"));
         let instances: Vec<_> = fs::read_dir(rig.prism().join("instances")).unwrap().flatten().collect();
         assert_eq!(instances.len(), 1, "made once");
-        let saved = forge::load_target(rig.home.path()).unwrap();
-        assert!(saved.made && saved.first_launch_pending);
-        assert_eq!(fs::read(rig.prism().join("prismlauncher.cfg")).unwrap(), global);
+    }
+
+    /// A bad mod download fails check 5 naming the mod, places nothing; Try again finishes.
+    #[test]
+    fn a_bad_mod_download_fails_check_5_and_try_again_resumes() {
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        let world = ornithe_world(ornithe::Os::Mac).with(|st| {
+            let url = st.pins[0].url.to_string();
+            st.net.insert(url, b"tampered".to_vec());
+        });
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
+        let last = rig.svc.latest().unwrap();
+        assert_eq!(last.failed_at, Some(5));
+        assert!(last.message.as_deref().unwrap_or("").contains("perf-1.0.jar"), "{last:?}");
+        assert!(mods_of(&made_root(&rig)).is_empty(), "nothing placed");
+        {
+            let mut st = world.st.lock().unwrap();
+            let url = st.pins[0].url.to_string();
+            st.net.insert(url, b"perf".to_vec());
+        }
+        assert_eq!(rig.resume(&world, Kind::Forge), Outcome::Done);
+        assert_eq!(mods_of(&made_root(&rig)).len(), 3);
+    }
+
+    /// The saved target, else the made instance found by its marker (a re-run after the
+    /// target was lost never makes a second one), else make one.
+    #[test]
+    fn the_instance_is_the_saved_one_else_the_marked_one_else_made() {
+        let rig = prism_rig();
+        let home = rig.home.path();
+        let instances = rig.prism().join("instances");
+        add_forge_instance(&rig, "Hypixel", 0);
+        assert!(matches!(choose_instance(home, &rig.prism()), Instance::Make));
+        let a = ornithe::make_instance(&instances).unwrap();
+        assert!(matches!(choose_instance(home, &rig.prism()), Instance::Made(r) if r == a));
+        let b = ornithe::make_instance(&instances).unwrap();
+        let t = ornithe::Target { instance: b.display().to_string(), pins: "x".into(), first_launch_pending: false };
+        ornithe::save_target(home, &t).unwrap();
+        assert!(matches!(choose_instance(home, &rig.prism()), Instance::Made(r) if r == b));
+
+        // A whole re-run with the target file gone finds the made instance again.
+        let rig = prism_rig();
+        epsilon_installed(&rig);
+        let world = ornithe_world(ornithe::Os::Mac);
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        fs::remove_file(rig.home.path().join(".cobblify/launcher-targets.json")).unwrap();
+        let fetched = world.state().fetches;
+        let seen = rig.events().len();
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
+        assert!(labels(&rig.events()[seen..]).is_empty(), "nothing made or downloaded");
+        assert_eq!(world.state().fetches, fetched);
+        let instances: Vec<_> = fs::read_dir(rig.prism().join("instances")).unwrap().flatten().collect();
+        assert_eq!(instances.len(), 1);
+        assert!(ornithe::load_target(rig.home.path()).is_some());
+    }
+
+    #[test]
+    fn a_prism_setup_without_prism_fails_at_check_2() {
+        let rig = prism_rig();
+        let world = ornithe_world(ornithe::Os::Mac).with(|st| st.prism = false);
+        assert_eq!(rig.run(&world, Kind::Forge), Outcome::Failed);
+        assert_eq!(rig.svc.latest().unwrap().failed_at, Some(2));
+        assert!(!rig.prism().join("instances").exists(), "nothing made");
     }
 
     /// Prism sign-in stop: no owning account -> `signin` at check 3 until one appears, then
@@ -2091,10 +2097,10 @@ pub(crate) mod tests {
     #[test]
     fn the_prism_signin_stop_waits_for_an_account_then_hands_off() {
         let rig = rig();
-        add_instance(&rig, "Hypixel", 0);
+        epsilon_installed(&rig);
         let data = rig.prism();
         prism::tests::write_accounts(&data, r#"{"formatVersion":3,"accounts":[{"type":"Offline","active":true}]}"#);
-        let world = Fake::new().on_sleep(move |st| {
+        let world = ornithe_world(ornithe::Os::Mac).on_sleep(move |st| {
             if st.sleeps == 3 {
                 prism::tests::write_accounts(&data, prism::tests::SIGNED_IN);
             }
@@ -2104,19 +2110,20 @@ pub(crate) mod tests {
         let st = world.state();
         assert_eq!(st.forwards, 1, "Cobblify comes forward once");
         assert_eq!(st.now, STOP_POLL * 4 + HANDOFF_BEAT);
-        assert!(forge::load_target(rig.home.path()).is_some());
+        assert!(ornithe::load_target(rig.home.path()).is_some());
     }
 
-    /// The instance's game open: `game_open` at check 4, nothing written while it runs.
+    /// The made instance's game open: `game_open` at check 4, nothing written while it runs.
     #[test]
     fn the_prism_game_open_stop_waits_for_the_instance_to_close() {
         let rig = prism_rig();
-        let c = add_instance(&rig, "Hypixel", 0);
+        epsilon_installed(&rig);
+        let root = ornithe::make_instance(&rig.prism().join("instances")).unwrap();
         let before = home_tree(&rig);
         let during = Arc::new(Mutex::new(None));
         let probe = Arc::clone(&during);
         let home = rig.home.path().to_path_buf();
-        let world = Fake::new()
+        let world = ornithe_world(ornithe::Os::Mac)
             .with(|st| st.game_running = true)
             .on_sleep(move |st| {
                 if st.sleeps == 2 {
@@ -2127,7 +2134,7 @@ pub(crate) mod tests {
         assert_eq!(rig.run(&world, Kind::Forge), Outcome::Done);
         assert_eq!(stops(&rig.events()), vec![(3, Stop::GameOpen)]);
         assert_eq!(during.lock().unwrap().clone(), Some(before), "nothing written");
-        assert!(c.game_dir.join("mods").join(FORGE_JAR).is_file());
+        assert!(root.join("minecraft/mods").join(ORNITHE_JAR).is_file());
     }
 
     /// Round 2 I1 for Prism: check 5 fails (a Cobblify jar it may not touch), the instance
@@ -2136,22 +2143,22 @@ pub(crate) mod tests {
     #[test]
     fn a_prism_resume_meets_the_fresh_game_gate_before_any_write() {
         let rig = prism_rig();
-        let c = add_instance(&rig, "Hypixel", 0);
-        let mods = c.game_dir.join("mods");
+        epsilon_installed(&rig);
+        let root = ornithe::make_instance(&rig.prism().join("instances")).unwrap();
+        let mods = root.join("minecraft/mods");
         fs::create_dir_all(&mods).unwrap();
-        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.1-dev.jar"), b"dev").unwrap();
-        fs::write(mods.join("Cobblify-1.8.9-forge-0.8.0.jar"), b"old").unwrap();
+        fs::write(mods.join("Cobblify-1.8.9-ornithe-0.8.1-dev.jar"), b"dev").unwrap();
 
-        assert_eq!(rig.run(&Fake::new(), Kind::Forge), Outcome::Failed);
+        assert_eq!(rig.run(&ornithe_world(ornithe::Os::Mac), Kind::Forge), Outcome::Failed);
         assert_eq!(rig.svc.latest().unwrap().failed_at, Some(5));
-        assert!(mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(), "nothing removed on a block");
+        assert!(!mods.join(ORNITHE_JAR).exists(), "nothing added on a block");
 
-        fs::remove_file(mods.join("Cobblify-1.8.9-forge-0.8.1-dev.jar")).unwrap();
+        fs::remove_file(mods.join("Cobblify-1.8.9-ornithe-0.8.1-dev.jar")).unwrap();
         let before = home_tree(&rig);
         let during = Arc::new(Mutex::new(None));
         let probe = Arc::clone(&during);
         let home = rig.home.path().to_path_buf();
-        let world = Fake::new()
+        let world = ornithe_world(ornithe::Os::Mac)
             .with(|st| st.game_running = true)
             .on_sleep(move |st| {
                 if st.sleeps == 2 {
@@ -2165,8 +2172,7 @@ pub(crate) mod tests {
         assert_eq!(resumed[0].check, 4, "resumes at check 5");
         assert_eq!(stops(resumed), vec![(4, Stop::GameOpen)]);
         assert_eq!(during.lock().unwrap().clone(), Some(before), "nothing written while open");
-        assert!(!mods.join("Cobblify-1.8.9-forge-0.8.0.jar").exists(), "removed after the game");
-        assert!(mods.join(FORGE_JAR).is_file());
-        assert_eq!(world.state().scanned, c.instance_root());
+        assert!(mods.join(ORNITHE_JAR).is_file());
+        assert_eq!(world.state().scanned, Some(root));
     }
 }

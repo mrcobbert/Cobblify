@@ -151,12 +151,12 @@ impl Watch {
         }
     }
 
-    /// The saved Prism target's watch: its instance folder, and whether this is a made
-    /// instance's first launch.
+    /// The saved Prism (Ornithe) target's watch: its instance folder, and whether this is
+    /// the made instance's first launch.
     pub fn prism(home: &Path) -> Self {
         Watch {
-            place: Some(Place::Prism(crate::forge::saved_instance_root(home))),
-            first_launch_pending: crate::forge::load_target(home)
+            place: Some(Place::Prism(crate::ornithe::saved_root(home))),
+            first_launch_pending: crate::ornithe::load_target(home)
                 .is_some_and(|t| t.first_launch_pending),
             ..Watch::default()
         }
