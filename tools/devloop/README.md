@@ -102,6 +102,19 @@ first (`--no-stage` reuses a running game of that mode); `--prod` switches back 
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"
 instead of failing. Exit status is 1 if any check failed.
 
+The HUD look step (`HL`, cycle 2026-11-14-hud-look) follows the HUD check in `cobdev smoke`. In the `cobdev`
+world at GUI scale 2, Minecraft font, Pale Blue accent and HUD Size Medium, it turns on one module at a time and finds
+it by diffing frames. With its Background on, each module must draw Lunar's see-through panel: every pixel of a ring
+just inside the panel equals the backdrop darkened by alpha 0x6F (Keystrokes: one pixel in each cap). With it off,
+that ring equals the backdrop and the module's content is still drawn. Sub-checks: `HL-bg` (every module),
+`HL-persist` (an Off survives a restart), `HL-potion` (rows, blink), `HL-mapinfo` (accent labels), `HL-keys`
+(pressed cap in the editor), `HL-text` (FPS/CPS/Ping boxes, divider, bare text, Auto layout), `HL-edit` (drag, resize,
+Delete), `HL-scale` (module scale 0.3 at GUI 1, 0.75 at GUI 2), `HL-font` (Modern font shadows) and the modern
+potion icons, `HL-icons-cold` then `HL-icons-warm`. Those two restart the game and point
+`EffectIconTextures.cacheDirOverride` at a new `/private/tmp/cobblify-smoke-icons-*` directory before the loader
+exists, so the cold run makes one real fetch (NETWORK, 1 request, 23 icons) and the warm run none (CACHE). The real
+icon cache is never used for them. The step saves every setting it touches and restores it at the end.
+
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
 release-jar check.

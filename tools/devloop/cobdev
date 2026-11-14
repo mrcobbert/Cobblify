@@ -994,7 +994,7 @@ class Smoke:
         self.step["checks"].append({"check": name, "ok": bool(ok), "detail": detail})
         if not ok:
             self.step["status"] = "fail"
-        print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % detail if detail is not None else ""))
+        print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % (detail,) if detail is not None else ""))
         return ok
 
     def unavailable(self, why):
@@ -1499,6 +1499,710 @@ def smoke_clutch(s, cfg):
     heal()
 
 
+# ------------------------------------------------------------------- HUD look (HL, cycle 2026-11-14-hud-look)
+# Lunar see-through backgrounds with a per-item Background switch, potion rows with modern icons, Map Info labels in
+# the accent, Lunar Keystrokes caps, and the FPS / CPS / Ping modules. Boxes are found from frame diffs (no bridge
+# change); every box below is (x0, y0, x1, y1) in screenshot px, both ends inclusive, as diff() reports them.
+
+HL_FILL_ALPHA = 0x6F                       # HudBackground.FILL = 0x6F000000
+HL_SHADOW = (63, 63, 63)                   # vanilla shadow of white text
+HL_WHITE = (255, 255, 255)
+HL_GRAY = (170, 170, 170)                  # potion time, CPS divider
+HL_DIVIDER_SHADOW = (42, 42, 42)
+HL_PRESSED_TEXT = (18, 18, 18)             # KeyCapStyle: dark letter on a pale accent
+HL_ACCENT = "pale-blue"
+HL_ACCENT_RGB = (192, 220, 255)            # GuiTheme PALE_BLUE 0xFFC0DCFF
+HL_PAD = 3                                 # HudBackground.pad(1) = CONTENT_MARGIN, GUI px
+ICONS = "com.bedwarsqol.hud.EffectIconTextures"
+
+# Vanilla 1.8.9 font advances (glyph + 1 px column), as the unit tests use them.
+_NARROW = {" ": 4, "!": 2, "\"": 5, "'": 3, "(": 5, ")": 5, "*": 5, ",": 2, ".": 2, ":": 2, ";": 2, "<": 5,
+           ">": 5, "@": 7, "I": 4, "[": 4, "]": 4, "`": 3, "f": 5, "i": 2, "k": 5, "l": 3, "t": 4, "{": 5,
+           "|": 2, "}": 5, "~": 7}
+
+
+def vanilla_width(text):
+    return sum(_NARROW.get(c, 6) for c in text)
+
+
+def ring(box, inset):
+    """Points on the rectangle `inset` px inside box, each once; [] when the box is too small."""
+    x0, y0, x1, y1 = box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset
+    if x1 < x0 or y1 < y0:
+        return []
+    pts = [(x, y0) for x in range(x0, x1 + 1)]
+    if y1 > y0:
+        pts += [(x, y1) for x in range(x0, x1 + 1)]
+    pts += [(x0, y) for y in range(y0 + 1, y1)]
+    if x1 > x0:
+        pts += [(x1, y) for y in range(y0 + 1, y1)]
+    return pts
+
+
+def see_through_ok(on_px, off_px, alpha=HL_FILL_ALPHA, tol=2):
+    """Is on_px the backdrop off_px under black at `alpha`? (each channel round(c * (1 - alpha/255)) +- tol)"""
+    return all(abs(a - round(b * (1 - alpha / 255.0))) <= tol for a, b in zip(on_px, off_px))
+
+
+def count_exact(img, box, rgb):
+    x0, y0, x1, y1 = box
+    return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb))
+
+
+def count_near(img, box, rgb, tol):
+    x0, y0, x1, y1 = box
+    return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)
+               if max(abs(c - t) for c, t in zip(px(img, x, y), rgb)) <= tol)
+
+
+def xs_of(img, box, rgb):
+    """(min x, max x) of the pixels exactly rgb in box, or None."""
+    xs = [x for y in range(box[1], box[3] + 1) for x in range(box[0], box[2] + 1) if px(img, x, y) == tuple(rgb)]
+    return (min(xs), max(xs)) if xs else None
+
+
+def ys_of(img, box, rgb):
+    ys = [y for y in range(box[1], box[3] + 1) for x in range(box[0], box[2] + 1) if px(img, x, y) == tuple(rgb)]
+    return (min(ys), max(ys)) if ys else None
+
+
+def bbox_diff(a, b, box=None, thresh=6):
+    """Exact bounding box of the pixels that differ between two frames (every pixel, unlike diff())."""
+    w, h, _ = a
+    if (w, h) != b[:2]:
+        return None
+    x0, y0, x1, y1 = box or (0, 0, w - 1, h - 1)
+    bb = None
+    for y in range(max(0, y0), min(h - 1, y1) + 1):
+        for x in range(max(0, x0), min(w - 1, x1) + 1):
+            pa, pb = px(a, x, y), px(b, x, y)
+            if max(abs(pa[0] - pb[0]), abs(pa[1] - pb[1]), abs(pa[2] - pb[2])) > thresh:
+                bb = [x, y, x, y] if bb is None else [min(bb[0], x), min(bb[1], y), max(bb[2], x), max(bb[3], y)]
+    return tuple(bb) if bb else None
+
+
+def changed_runs(a, b, box, axis, thresh=6):
+    """Sub-boxes of box split at the columns (axis "x") or rows ("y") where nothing changed."""
+    x0, y0, x1, y1 = box
+    lines = range(x0, x1 + 1) if axis == "x" else range(y0, y1 + 1)
+
+    def hit(i):
+        cells = ((i, y) for y in range(y0, y1 + 1)) if axis == "x" else ((x, i) for x in range(x0, x1 + 1))
+        return any(max(abs(p - q) for p, q in zip(px(a, x, y), px(b, x, y))) > thresh for x, y in cells)
+    runs, start = [], None
+    for i in lines:
+        if hit(i):
+            start = i if start is None else start
+        elif start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, lines[-1]))
+    out = []
+    for lo, hi in runs:
+        sub = (lo, y0, hi, y1) if axis == "x" else (x0, lo, x1, hi)
+        tight = bbox_diff(a, b, sub, thresh)
+        if tight:
+            out.append(tight)
+    return out
+
+
+def inside(inner, outer):
+    return (inner is not None and outer is not None and inner[0] >= outer[0] and inner[1] >= outer[1]
+            and inner[2] <= outer[2] and inner[3] <= outer[3])
+
+
+def disjoint(boxes):
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            if a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]:
+                return False
+    return True
+
+
+def grow(box, d):
+    return (box[0] - d, box[1] - d, box[2] + d, box[3] + d)
+
+
+def box_size(box):
+    return (box[2] - box[0] + 1, box[3] - box[1] + 1) if box else (0, 0)
+
+
+def hl_text_box_width(segments, divider=False):
+    """TextModules.boxWidth with vanilla advances: text minus its trailing column, plus 4 px each side."""
+    return sum(vanilla_width(t) for t in segments) + (7 if divider else 0) - 1 + 8
+
+
+# Module groups for the per-item checks: name, enable field, Background ids it switches, content kind.
+HL_GROUPS = [
+    ("potion", "potionStatusEnabled", ["potion"], "text"),
+    ("armor", "armorTypeEnabled", ["armor"], "armor"),
+    ("inventory", "inventoryHudEnabled", ["inventory"], "inventory"),
+    ("timers", "genTimersEnabled", ["diamondtimer", "emeraldtimer"], "text"),
+    ("sessionstats", "sessionStatsEnabled", ["sessionstats"], "text"),
+    ("heightlimit", "heightLimitEnabled", ["heightlimit"], "text"),
+    ("fps", "fpsEnabled", ["fps"], "textbox"),
+    ("cps", "cpsEnabled", ["cps"], "textbox"),
+    ("ping", "pingEnabled", ["ping"], "textbox"),
+    ("keystrokes", "keystrokesEnabled", ["keystrokes"], "keys"),
+]
+HL_TEAM_UPGRADES = ("teamupgrades", "teamUpgradesEnabled", ["teamupgrades"], "text")
+HL_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
+             "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
+             "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud", "fps": "fpsHud", "cps": "cpsHud",
+             "ping": "pingHud", "teamupgrades": "teamUpgradesHud"}
+HL_OTHER_FIELDS = ["potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "genTimersInGameOnly",
+                   "keystrokesInGameOnly", "heightLimitInGameOnly", "sessionStatsHoldKey", "guiFont", "guiAccent",
+                   "defaultTextSize"]
+# Keystrokes caps (KeystrokesLayout.CAPS), GUI px from the module's top-left at scale 1.
+HL_CAPS = [(19, 0, 18, 18), (0, 19, 18, 18), (19, 19, 18, 18), (38, 19, 18, 18), (0, 57, 56, 10),
+           (0, 38, 27.5, 18), (28.5, 38, 27.5, 18)]
+
+
+class HudLook:
+    """State for the HL step: the config paths it touches, their values before it ran, the scale factor."""
+
+    def __init__(self, s, cfg, restart_game):
+        self.s, self.cfg, self.restart_game = s, cfg, restart_game
+        self.groups = list(HL_GROUPS)
+        if find_field(s, cfg, ["teamUpgradesEnabled"]):
+            self.groups.append(HL_TEAM_UPGRADES)
+        self.ids = [i for g in self.groups for i in g[2]]
+        self.fields = [g[1] for g in self.groups] + HL_OTHER_FIELDS
+        for i in self.ids:
+            self.fields += [HL_LAYOUT[i] + k for k in ("X", "Y", "Anchor", "Scale")]
+        self.saved, self.saved_bg, self.saved_gui = {}, {}, None
+        self.sf = 2
+
+    def f(self, name, value=None):
+        return self.s.field(self.cfg + "." + name, value)
+
+    def bg(self, item, on=None):
+        if on is None:
+            return self.s.call("/invoke", post={"path": self.cfg + ".hudBackground", "args": item}).get("value")
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudBackground", "args": ARG_SEP.join([item, str(on).lower()])})
+
+    def group_bg(self, group, on):
+        for item in group[2]:
+            self.bg(item, on)
+
+    def save_config(self):
+        self.s.try_call("/invoke", post={"path": self.cfg + ".save", "args": ""})
+
+    def snapshot(self):
+        for name in self.fields:
+            r, _ = self.s.try_call("/field", post={"path": self.cfg + "." + name})
+            if r is not None:
+                self.saved[name] = r.get("value")
+        for i in self.ids:
+            self.saved_bg[i] = self.bg(i)
+        self.saved_gui = (self.s.status() or {}).get("guiScaleSetting")
+
+    def restore(self):
+        for name, value in self.saved.items():
+            self.s.try_call("/field", post={"path": self.cfg + "." + name, "value": str(value).lower()
+                                            if isinstance(value, bool) else str(value)})
+        for i, on in self.saved_bg.items():
+            if on is not None:
+                self.bg(i, bool(on))
+        if self.saved_gui is not None:
+            self.s.try_call("/scale", {"n": self.saved_gui})
+        self.s.try_call("/field", post={"path": ICONS + ".cacheDirOverride", "value": ""})
+        self.save_config()
+        self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
+
+    def setup(self, gui_scale=2):
+        """The fixed scene: noon, clear, looking north from a known spot, one item stack each in main slots 9-10."""
+        for c in ("/gamerule sendCommandFeedback false", "/gamerule doDaylightCycle false", "/time set 6000",
+                  "/weather clear", "/tp @p 0.5 4 0.5 0 0", "/effect @p clear",
+                  "/replaceitem entity @p slot.armor.legs minecraft:diamond_leggings",
+                  "/replaceitem entity @p slot.inventory.0 minecraft:diamond 4",
+                  "/replaceitem entity @p slot.inventory.1 minecraft:arrow 8"):
+            self.s.cmd(c)
+        self.s.call("/scale", {"n": gui_scale})
+        self.f("guiFont", "minecraft")
+        self.f("guiAccent", HL_ACCENT)
+        for name in HL_OTHER_FIELDS[:7]:
+            self.f(name, False)
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudSize", "args": "1"})
+        for i in self.ids:
+            self.f(HL_LAYOUT[i] + "Anchor", -1)
+            self.f(HL_LAYOUT[i] + "Scale", 1.0)
+            self.bg(i, True)
+        self.all_off()
+        self.s.call("/close")
+        time.sleep(10.5)  # command lines in chat fade
+        self.sf = (self.s.status() or {}).get("scaleFactor") or gui_scale
+
+    def all_off(self):
+        for g in self.groups:
+            self.f(g[1], False)
+
+    def only(self, group):
+        self.all_off()
+        self.f(group[1], True)
+
+    def shot(self, tag):
+        time.sleep(0.35)
+        return self.s.shot("hl-" + tag)[1]
+
+    def enter_world(self):
+        require_smoke_save(self.s.call("/world", timeout=120))
+        for _ in range(90):
+            st = api_quiet("/status") or {}
+            if st.get("inWorld") and st.get("responsive"):
+                break
+            time.sleep(1)
+        self.s.call("/close")
+        time.sleep(2)
+
+
+def hl_ring_ok(on, none, box, inset=1):
+    pts = ring(box, inset)
+    bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
+    return pts and not bad, "%d/%d ring px off the 0x6F ratio" % (len(bad), len(pts))
+
+
+def hl_bare_ok(img, none, pts, tol=1):
+    bad = [p for p in pts if max(abs(a - b) for a, b in zip(px(img, *p), px(none, *p))) > tol]
+    return not bad, "%d/%d px differ from the backdrop" % (len(bad), len(pts))
+
+
+def hl_cap_points(box, sf):
+    """One pixel inside each Keystrokes cap's top-left corner (no letter there), kept only if inside box."""
+    pts = [(box[0] + int(round(c[0] * sf)) + 1, box[1] + int(round(c[1] * sf)) + 1) for c in HL_CAPS]
+    return [p for p in pts if inside((p[0], p[1], p[0], p[1]), box)]
+
+
+def hl_expected_panel(group, sf):
+    """Panel size in screenshot px for the modules whose content size is fixed here, else None."""
+    pad2 = 2 * HL_PAD
+    if group == "armor":
+        return ((16 + pad2) * sf, (16 + pad2) * sf)
+    if group == "inventory":
+        return ((9 * 22 + 2 + pad2) * sf, (3 * 22 + 2 + pad2) * sf)
+    if group == "potion":  # Speed II, 0:45
+        return ((18 + 3 + max(vanilla_width("Speed II"), vanilla_width("0:45")) - 1 + pad2) * sf, (18 + pad2) * sf)
+    if group == "keystrokes":
+        return (56 * sf, 67 * sf)
+    if group == "cps":  # no clicks
+        return (hl_text_box_width(["0", "0", " CPS"], True) * sf, 18 * sf)
+    if group == "ping":  # singleplayer
+        return (hl_text_box_width(["--", " ms"]) * sf, 18 * sf)
+    return None
+
+
+def hl_bg(h):
+    s = h.s
+    s.begin("HL-bg", "Background On: Lunar 0x6F panel; Off: no fill, content still drawn (per module)")
+    h.boxes = {}
+    for g in h.groups:
+        name, _, _, kind = g
+        h.all_off()
+        s.cmd("/effect @p clear")
+        if name == "potion":
+            s.cmd("/effect @p 1 45 1 true")
+        s.call("/close")
+        none = h.shot(name + "-none")
+        h.only(g)
+        on = h.shot(name + "-on")
+        h.group_bg(g, False)
+        off = h.shot(name + "-off")
+        h.group_bg(g, True)
+        on_box, off_box = bbox_diff(none, on), bbox_diff(none, off)
+        h.boxes[name] = on_box
+        if not s.check(name + ": drawn with its Background on", on_box is not None, on_box):
+            continue
+        panels = changed_runs(none, on, on_box, "x") if name == "timers" else [on_box]
+        if name == "timers":
+            if len(panels) < 2:
+                panels = changed_runs(none, on, on_box, "y")
+            s.check("timers: two panels", len(panels) == 2, panels)
+        want = hl_expected_panel(name, h.sf)
+        if want:
+            got = box_size(on_box)
+            s.check(name + ": panel/box %sx%s px (+-1)" % want,
+                    abs(got[0] - want[0]) <= 1 and abs(got[1] - want[1]) <= 1, got)
+        if kind == "keys":
+            pts = hl_cap_points(on_box, h.sf)
+            bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
+            s.check("keystrokes: every idle cap is 0x6F black", len(pts) == 7 and not bad, (len(pts), bad))
+            ok, why = hl_bare_ok(off, none, pts)
+            s.check("keystrokes Off: no cap fill", ok, why)
+            s.check("keystrokes On: letters have no shadow", count_exact(on, on_box, HL_SHADOW) == 0)
+            s.check("keystrokes Off: letters have a shadow", count_exact(off, on_box, HL_SHADOW) >= 10)
+            continue
+        for p in panels:
+            ok, why = hl_ring_ok(on, none, p)
+            s.check(name + ": panel ring is see-through black (not 0xD0121212)", ok, why)
+            if kind != "textbox":
+                ok, why = hl_bare_ok(off, none, ring(p, 1))
+                s.check(name + " Off: no fill on that ring", ok, why)
+        if kind != "textbox":
+            s.check(name + " Off: drawn inside the On panel only", inside(off_box, grow(on_box, 1)), off_box)
+            if off_box and name not in ("armor", "inventory"):
+                margins = (off_box[0] - on_box[0], off_box[1] - on_box[1], on_box[2] - off_box[2], on_box[3] - off_box[3])
+                s.check(name + ": the panel pads the content", min(margins) >= (HL_PAD - 1) * h.sf, margins)
+        content = (on_box[0] + HL_PAD * h.sf, on_box[1] + HL_PAD * h.sf, on_box[2] - HL_PAD * h.sf, on_box[3] - HL_PAD * h.sf)
+        if kind in ("text", "textbox"):
+            for tag, img, box in (("On", on, on_box), ("Off", off, off_box or on_box)):
+                n = count_exact(img, box, HL_SHADOW)
+                s.check("%s %s: white text with its shadow" % (name, tag), n >= 10, n)
+        elif kind == "armor":
+            icon = (content[0], content[1], content[0] + 16 * h.sf - 1, content[1] + 16 * h.sf - 1)
+            area = (16 * h.sf) ** 2
+            for tag, img in (("On", on), ("Off", off)):
+                frac, _ = diff(none, img, step=1, thresh=6, box=(icon[0], icon[1], icon[2] + 1, icon[3] + 1))
+                s.check("armor %s: leggings icon drawn" % tag, frac >= 0.5, "%.2f of %d px" % (frac, area))
+        elif kind == "inventory":
+            for slot, count in ((0, "4"), (1, "8")):
+                tile = (content[0] + (2 + 22 * slot) * h.sf, content[1] + 2 * h.sf,
+                        content[0] + (2 + 22 * slot + 20) * h.sf - 1, content[1] + 22 * h.sf - 1)
+                for tag, img in (("On", on), ("Off", off)):
+                    frac, _ = diff(none, img, step=1, thresh=6, box=(tile[0], tile[1], tile[2] + 1, tile[3] + 1))
+                    s.check("inventory %s: item in slot %d" % (tag, slot + 1), frac > 0.2, "%.2f" % frac)
+                    n = count_exact(img, tile, HL_SHADOW)
+                    s.check("inventory %s: stack count %s with its shadow" % (tag, count), n >= 4, n)
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def hl_persist(h):
+    s = h.s
+    s.begin("HL-persist", "a Background Off survives a restart")
+    h.bg("potion", False)
+    h.save_config()
+    h.restart_game()
+    h.enter_world()
+    after = h.bg("potion")
+    s.check("potion Background still Off after the restart", after is False, after)
+    h.bg("potion", True)
+    h.save_config()
+    h.setup()
+
+
+def hl_potion(h):
+    s = h.s
+    s.begin("HL-potion", "Lunar potion rows: 20 px pitch, white name, gray m:ss, under 10 s blinks")
+    g = HL_GROUPS[0]
+    h.all_off()
+    s.cmd("/effect @p clear")
+    s.call("/close")
+    none = h.shot("potion-none")
+    for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 9 0 true"):
+        s.cmd(c)
+    s.call("/close")
+    h.only(g)
+    frames = []
+    for i in range(4):
+        frames.append(h.shot("potion-rows-%d" % i))
+        time.sleep(0.25)
+    box = None
+    for f in frames:
+        b = bbox_diff(none, f)
+        if b is None:
+            continue
+        box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+    if not s.check("potion panel drawn", box is not None, box):
+        return
+    sf = h.sf
+    s.check("panel height (58 + 6) x sf", abs(box_size(box)[1] - 64 * sf) <= 1, box_size(box))
+    x0 = box[0] + (HL_PAD + 21) * sf
+    top = box[1] + HL_PAD * sf
+
+    def band(row, dy0, dy1):
+        return (x0, top + (row * 20 + dy0) * sf, box[2], top + (row * 20 + dy1) * sf - 1)
+    third = [count_exact(f, band(2, 1, 10), HL_WHITE) for f in frames]
+    s.check("row 3 (9 s left) blinks: present and absent across shots", max(third) > 0 and min(third) == 0, third)
+    for row in (0, 1):
+        names = [count_exact(f, band(row, 1, 10), HL_WHITE) for f in frames]
+        times = [count_exact(f, band(row, 10, 19), HL_GRAY) for f in frames]
+        s.check("row %d: white name in every shot" % (row + 1), min(names) > 0, names)
+        s.check("row %d: gray time in every shot" % (row + 1), min(times) > 0, times)
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def hl_mapinfo(h):
+    s = h.s
+    s.begin("HL-mapinfo", "Map Info: labels in the accent, values white")
+    box = h.boxes.get("heightlimit")
+    g = [x for x in h.groups if x[0] == "heightlimit"][0]
+    h.only(g)
+    img = h.shot("mapinfo")
+    if not s.check("Map Info box known from HL-bg", box is not None, box):
+        return
+    sf = h.sf
+    top = box[1] + HL_PAD * sf
+    for row, label in enumerate(("Map", "Height Limit", "Distance")):
+        band = (box[0], top + row * 11 * sf, box[2], top + (row * 11 + 9) * sf - 1)
+        accent, white = xs_of(img, band, HL_ACCENT_RGB), xs_of(img, band, HL_WHITE)
+        s.check("%s: label in the accent" % label, accent is not None, accent)
+        s.check("%s: value white, right of the label" % label,
+                white is not None and accent is not None and white[0] > accent[1], (accent, white))
+    h.all_off()
+
+
+def hl_keys(h):
+    s = h.s
+    s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (editor example holds W)")
+    g = [x for x in h.groups if x[0] == "keystrokes"][0]
+    h.all_off()
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    none = h.shot("keys-editor-none")
+    h.f(g[1], True)
+    on = h.shot("keys-editor-on")
+    s.call("/close")
+    box = bbox_diff(none, on)
+    if not s.check("Keystrokes drawn in the editor", box is not None, box):
+        return
+    n = count_exact(on, box, HL_ACCENT_RGB)
+    s.check("a solid accent cap (W held)", n >= (16 * h.sf) ** 2, n)
+    s.check("its letter in the contrast colour", count_exact(on, box, HL_PRESSED_TEXT) > 0)
+    s.check("no CPS line under the space bar", box_size(box)[1] <= 67 * h.sf + 2, box_size(box))
+    h.all_off()
+
+
+def hl_text(h):
+    s = h.s
+    s.begin("HL-text", "FPS, CPS, Ping: 18 px boxes hugging the text, units in the accent, CPS divider, [bare] Off")
+    sf = h.sf
+    by = {g[0]: g for g in h.groups}
+    h.all_off()
+    none = h.shot("text-none")
+    for name in ("fps", "cps", "ping"):
+        h.only(by[name])
+        on = h.shot(name + "-on")
+        h.group_bg(by[name], False)
+        off = h.shot(name + "-off")
+        h.group_bg(by[name], True)
+        box, bare = bbox_diff(none, on), bbox_diff(none, off)
+        if not s.check(name + ": drawn", box is not None and bare is not None, (box, bare)):
+            continue
+        w, hgt = box_size(box)
+        s.check(name + ": box 18 px tall", hgt == 18 * sf, hgt)
+        if name == "fps":
+            s.check("fps: width for 1-4 digits", w in [hl_text_box_width(["9" * d, " FPS"]) * sf for d in (1, 2, 3, 4)], w)
+        s.check(name + ": unit in the accent", count_exact(on, box, HL_ACCENT_RGB) > 0)
+        s.check(name + ": number white", count_exact(on, box, HL_WHITE) > 0)
+        if name == "cps":
+            gray = xs_of(on, box, HL_GRAY)
+            col = (gray[0], box[1], gray[0], box[3]) if gray else None
+            s.check("cps: divider 1 x 8 px column of gray", col is not None and count_exact(on, col, HL_GRAY) == 8 * sf,
+                    col and count_exact(on, col, HL_GRAY))
+            sh = (gray[0] + sf, box[1], gray[0] + sf, box[3]) if gray else None
+            s.check("cps: divider shadow one px right and down", sh is not None and count_exact(on, sh, HL_DIVIDER_SHADOW) > 0)
+        if name == "ping":
+            ys = ys_of(on, box, HL_WHITE)
+            s.check("ping: '--' (white on one font row)", ys is not None and ys[1] - ys[0] + 1 == sf, ys)
+        s.check(name + " Off: bare text at most 9 px tall", box_size(bare)[1] <= 9 * sf, box_size(bare))
+    # The Auto layout follows a Background switch: CPS moves up by FPS's height change (18 -> 9 + 2 x 3).
+    h.all_off()
+    h.f(by["fps"][1], True)
+    h.f(by["cps"][1], True)
+    a = h.shot("fps-cps-on")
+    h.group_bg(by["fps"], False)
+    b = h.shot("fps-cps-fpsoff")
+    h.group_bg(by["fps"], True)
+    ra = changed_runs(none, a, bbox_diff(none, a) or (0, 0, 0, 0), "y")
+    rb = changed_runs(none, b, bbox_diff(none, b) or (0, 0, 0, 0), "y")
+    moved = (ra[1][1] - rb[1][1]) if len(ra) == 2 and len(rb) == 2 else None
+    s.check("CPS's Auto box moves with FPS's Background (3 GUI px)", moved is not None and abs(moved - 3 * sf) <= 1,
+            (ra, rb))
+    h.all_off()
+
+
+def hl_edit(h):
+    s = h.s
+    s.begin("HL-edit", "FPS in Edit HUD: drag moves it, a corner resizes it, Delete hides it")
+    p = HL_LAYOUT["fps"]
+    h.all_off()
+    h.f("fpsEnabled", True)
+    h.f(p + "Anchor", 0)
+    h.f(p + "X", 40)
+    h.f(p + "Y", 60)
+    x0 = h.f(p + "X").get("value")
+    sc0 = h.f(p + "Scale").get("value")
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    w = hl_text_box_width(["150", " FPS"])  # the editor's example value
+    cx, cy = 40 + w // 2, 60 + 9
+    s.call("/down", {"x": cx, "y": cy})
+    s.call("/drag", {"x": cx + 50, "y": cy})
+    s.call("/up", {"x": cx + 50, "y": cy})
+    time.sleep(0.3)
+    x1 = h.f(p + "X").get("value")
+    s.check("fpsHudX moved by ~50 (snap allowed)", x1 is not None and abs((x1 - x0) - 50) <= 8, (x0, x1))
+    rx, ry = (x1 or 90) + w - 1, 60 + 17
+    s.call("/down", {"x": rx, "y": ry})
+    s.call("/drag", {"x": rx + 20, "y": ry + 20})
+    s.call("/up", {"x": rx + 20, "y": ry + 20})
+    time.sleep(0.3)
+    sc1 = h.f(p + "Scale").get("value")
+    s.check("fpsHudScale grew", sc1 is not None and sc0 is not None and sc1 > sc0, (sc0, sc1))
+    s.call("/click", {"x": cx + 50, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    time.sleep(0.3)
+    s.check("Delete hid FPS", h.f("fpsEnabled").get("value") is False)
+    s.call("/close")
+    h.f(p + "Anchor", -1)
+    h.f(p + "Scale", 1.0)
+    h.all_off()
+
+
+def hl_scale(h):
+    s = h.s
+    s.begin("HL-scale", "small and fractional module scales: text stays in its box, Auto boxes never overlap")
+    by = {g[0]: g for g in h.groups}
+    names = ["potion", "fps", "cps", "ping", "keystrokes"]
+    for gui, scale in ((1, 0.3), (2, 0.75)):
+        s.call("/scale", {"n": gui})
+        sf = (s.status() or {}).get("scaleFactor") or gui
+        for i in ("potion", "fps", "cps", "ping", "keystrokes", "armor"):
+            h.f(HL_LAYOUT[i] + "Scale", scale)
+        s.cmd("/effect @p clear")
+        for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 45 0 true"):
+            s.cmd(c)
+        s.call("/close")
+        h.all_off()
+        none = h.shot("scale-%d-none" % gui)
+        on_boxes = {}
+        for bg in (True, False):
+            for name in names:
+                h.group_bg(by[name], bg)
+            for name in names:
+                h.only(by[name])
+                img = h.shot("scale-%d-%s-%s" % (gui, name, "on" if bg else "off"))
+                box = bbox_diff(none, img)
+                label = "GUI %d, %.2f, %s, Background %s" % (gui, scale, name, "On" if bg else "Off")
+                if box is None:
+                    s.check(label + ": drawn", False)
+                elif bg:
+                    on_boxes[name] = box
+                    if name != "keystrokes":
+                        edge = ring(box, 0)
+                        bad = sum(1 for p in edge if not see_through_ok(px(img, *p), px(none, *p)))
+                        s.check(label + ": text inside its panel", bad <= len(edge) // 20,
+                                "%d/%d edge px are not panel" % (bad, len(edge)))
+                else:
+                    # bare: the margin replaces the panel's padding, so the text stays near where the panel was
+                    s.check(label + ": text where its panel was", inside(box, grow(on_boxes.get(name, box), (HL_PAD + 2) * sf)),
+                            (box, on_boxes.get(name)))
+            h.all_off()
+            for name in ("armor", "fps", "cps", "ping", "potion"):
+                h.f(by[name][1], True)
+            img = h.shot("scale-%d-column-%s" % (gui, "on" if bg else "off"))
+            col = bbox_diff(none, img)
+            runs = changed_runs(none, img, col, "y") if col else []
+            # bare potion rows have a gap between them (3 effects: 3 runs), a panel does not
+            want = 5 if bg else 7
+            s.check("GUI %d, %.2f, Background %s: armor, fps, cps, ping, potion stacked without overlap (%d runs)"
+                    % (gui, scale, "On" if bg else "Off", want), len(runs) == want and disjoint(runs), runs)
+            h.all_off()
+        for name in names:
+            h.group_bg(by[name], True)
+    for i in ("potion", "fps", "cps", "ping", "keystrokes", "armor"):
+        h.f(HL_LAYOUT[i] + "Scale", 1.0)
+    s.call("/scale", {"n": 2})
+    s.cmd("/effect @p clear")
+
+
+def hl_font(h):
+    s = h.s
+    s.begin("HL-font", "Modern font: potion and FPS/CPS/Ping text keeps a shadow with the Background off")
+    by = {g[0]: g for g in h.groups}
+    h.f("guiFont", "modern")
+    try:
+        s.cmd("/effect @p clear")
+        h.all_off()
+        none = h.shot("font-none")
+        for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 45 0 true"):
+            s.cmd(c)
+        s.call("/close")
+        for name in ("potion", "fps", "cps", "ping"):
+            h.group_bg(by[name], False)
+            h.only(by[name])
+            img = h.shot("font-" + name)
+            box = bbox_diff(none, img)
+            n = count_near(img, box, HL_SHADOW, 8) if box else 0
+            s.check(name + ": Inter shadow pixels", n >= 10, n)
+            h.group_bg(by[name], True)
+    finally:
+        h.f("guiFont", "minecraft")
+        s.cmd("/effect @p clear")
+        h.all_off()
+
+
+def hl_icons(h, cold):
+    s = h.s
+    tag = "cold" if cold else "warm"
+    s.begin("HL-icons-" + tag, "modern potion icons, %s cache: %s" % (
+        tag, "one real fetch from Mojang through the production path" if cold else "no request"))
+    if cold:
+        h.icon_dir = "/private/tmp/cobblify-smoke-icons-" + time.strftime("%Y%m%d-%H%M%S")
+    elif not h.icon_dir:
+        return s.unavailable("the cold check did not run, so there is no cache directory to reuse")
+    h.restart_game()
+    s.field(ICONS + ".cacheDirOverride", h.icon_dir)  # before the loader exists (fresh JVM, title screen)
+    h.enter_world()
+    h.setup()
+    g = HL_GROUPS[0]
+    s.cmd("/effect @p 1 45 1 true")
+    s.call("/close")
+    h.only(g)
+    state = None
+    for _ in range(40):
+        r, _ = s.try_call("/field", post={"path": ICONS + ".LOADER.state"})
+        state = r and r.get("value")
+        if state in ("READY", "FAILED"):
+            break
+        time.sleep(0.5)
+    src = s.field(ICONS + ".LOADER.source").get("value")
+    req = s.call("/invoke", post={"path": ICONS + ".LOADER.requests", "args": ""}).get("value")
+    pub = s.call("/invoke", post={"path": ICONS + ".LOADER.published", "args": ""}).get("value")
+    s.check("loader READY", state == "READY", state)
+    s.check("source " + ("NETWORK" if cold else "CACHE"), src == ("NETWORK" if cold else "CACHE"), src)
+    s.check("requests == %d" % (1 if cold else 0), req == (1 if cold else 0), req)
+    s.check("23 icons published", pub == 23, pub)
+    if cold:
+        modern = h.shot("icons-modern")
+        s.field(ICONS + ".enabled", False)
+        old = h.shot("icons-1.8.9")
+        s.field(ICONS + ".enabled", True)
+        box = bbox_diff(old, modern)
+        panel = h.boxes.get("potion")
+        slot = (panel[0] + HL_PAD * h.sf, panel[1] + HL_PAD * h.sf, panel[0] + (HL_PAD + 18) * h.sf - 1,
+                panel[1] + (HL_PAD + 18) * h.sf - 1) if panel else None
+        s.check("the modern icon differs from the 1.8.9 one, only in the 18 x 18 icon slot",
+                box is not None and inside(box, slot), (box, slot))
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def smoke_hud_look(s, cfg, restart_game):
+    s.begin("HL", "HUD look: setup (singleplayer, scale 2, Minecraft font, pale blue, HUD Size Medium, all Auto)")
+    if not cfg or not s.has("com.bedwarsqol.hud.HudBackground"):
+        return s.unavailable("the per-item Background (HudBackground) is not in this build")
+    h = HudLook(s, cfg, restart_game)
+    h.snapshot()
+    h.icon_dir = None
+    try:
+        h.setup()
+        s.check("setup done", True, {"scaleFactor": h.sf, "modules": [g[0] for g in h.groups]})
+        subs = [hl_bg, hl_persist, hl_potion, hl_mapinfo, hl_keys, hl_text, hl_edit, hl_scale, hl_font,
+                lambda x: hl_icons(x, True), lambda x: hl_icons(x, False)]  # icons last: they restart the game
+        for sub in subs:
+            try:
+                sub(h)
+            except ForeignSave:
+                raise
+            except (ApiError, KeyError, TypeError, ValueError, IndexError) as e:
+                s.error(e)
+    finally:
+        h.restore()
+
+
 def cmd_smoke(args):
     wt = worktree(args)
     take_lock(wt, args.steal)
@@ -1523,6 +2227,7 @@ def cmd_smoke(args):
                   lambda: smoke_zoom(s, cfg_box.get("cfg")),
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
+                  lambda: smoke_hud_look(s, cfg_box.get("cfg"), lambda: restart(wt, args, stage=False)),
                   lambda: smoke_overlays(s, cfg_box.get("cfg")),
                   lambda: smoke_clutch(s, cfg_box.get("cfg"))]
     for step in steps:
@@ -1653,7 +2358,7 @@ def main():
                                 " clutch-blast DX DY DZ, use-item [ITEM]")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
-    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")
+    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch), report in ~/.cache/cobdev/smoke")
     p.add_argument("--prod", action="store_true", help="boot the release jar in the production layout")
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
