@@ -5,6 +5,8 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatCopyAccess;
 import com.bedwarsqol.feature.ChatStack;
 import com.bedwarsqol.feature.ChatStackCore;
+import com.bedwarsqol.hud.BedwarsHudRenderer;
+import com.bedwarsqol.hud.ChatItemAccess;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.GuiNewChat;
@@ -21,6 +23,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyConstant;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.ArrayList;
@@ -54,9 +57,14 @@ import java.util.List;
  * back to its source message by walking {@code chatLines} and counting each message's wrapped lines
  * with the same {@code splitText} call {@code setChatLine} uses, since {@code drawnChatLines} is
  * built from {@code chatLines} in order.
+ *
+ * <p><b>Chat item</b> ({@link ChatItemAccess}): the chat can be moved and scaled as a HUD item, but
+ * vanilla's {@code getChatComponent} (clicks, hover text, Cobblify's hover stats) and Copy Chat measure
+ * the mouse from vanilla's fixed chat origin. Both first map the raw mouse position back to where it
+ * would be over vanilla's chat ({@link BedwarsHudRenderer#chatRawX}, the identity at the default spot).
  */
 @Mixin(GuiNewChat.class)
-public abstract class GuiNewChatMixin implements ChatCopyAccess {
+public abstract class GuiNewChatMixin implements ChatCopyAccess, ChatItemAccess {
 
     @Shadow @Final private Minecraft mc;
     @Shadow @Final private List<ChatLine> chatLines;
@@ -214,11 +222,36 @@ public abstract class GuiNewChatMixin implements ChatCopyAccess {
         return GuiUtilRenderComponents.splitText(component, width, mc.fontRendererObj, false, false);
     }
 
+    // ---- Chat item: box inputs and mouse mapping ----
+
+    @Override
+    public int bedwarsqol$drawnLineCount() {
+        return drawnChatLines.size();
+    }
+
+    @Override
+    public int bedwarsqol$scrollPos() {
+        return scrollPos;
+    }
+
+    @ModifyVariable(method = "getChatComponent", at = @At("HEAD"), argsOnly = true, ordinal = 0, require = 1)
+    private int bedwarsqol$chatItemRawX(int rawMouseX) {
+        return BedwarsHudRenderer.chatRawX(rawMouseX);
+    }
+
+    @ModifyVariable(method = "getChatComponent", at = @At("HEAD"), argsOnly = true, ordinal = 1, require = 1)
+    private int bedwarsqol$chatItemRawY(int rawMouseY) {
+        return BedwarsHudRenderer.chatRawY(rawMouseY);
+    }
+
     // ---- Copy Chat ----
 
     @Override
     public IChatComponent bedwarsqol$fullComponentAt(int rawMouseX, int rawMouseY) {
         if (!getChatOpen()) return null;
+        // the chat item may be moved and scaled: measure from where the mouse would be over vanilla's chat
+        rawMouseX = BedwarsHudRenderer.chatRawX(rawMouseX);
+        rawMouseY = BedwarsHudRenderer.chatRawY(rawMouseY);
         ScaledResolution sr = new ScaledResolution(mc);
         int scaleFactor = sr.getScaleFactor();
         float chatScale = getChatScale();

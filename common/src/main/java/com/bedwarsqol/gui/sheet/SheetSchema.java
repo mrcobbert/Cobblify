@@ -76,6 +76,8 @@ public final class SheetSchema {
         public final String id, name, desc, kw;
         public final List<Row> rows;
         Category category;
+        /** The HUD item a Background module switches with its own toggle; null for every other module. */
+        String hudItem;
 
         Module(String id, String name, String desc, String kw, Row... rows) {
             this.id = id;
@@ -91,6 +93,8 @@ public final class SheetSchema {
         }
 
         public Category category() { return category; }
+        /** The HUD item id this Background module switches, or null if it is not one. */
+        public String hudItem() { return hudItem; }
     }
 
     public static final class Section {
@@ -182,6 +186,17 @@ public final class SheetSchema {
 
     private static Module module(String id, String name, String desc, String kw, Row... rows) {
         return new Module(id, name, desc, kw, rows);
+    }
+
+    /**
+     * The module-level form of {@link #background}: a leaf module whose toggle is HUD item {@code hudItem}'s
+     * Background, for the items with no on/off of their own to host a sub-row (the scoreboard, tab list and chat;
+     * a module's sub-rows are disabled while its toggle is off). Platform-only like the rows ({@link #platformOnly}).
+     */
+    private static Module backgroundModule(String id, String name, String hudItem, String desc, String kw) {
+        Module m = new Module(id, name, desc, kw);
+        m.hudItem = hudItem;
+        return m;
     }
 
     private static Category category(String id, String name, Module... modules) {
@@ -287,7 +302,11 @@ public final class SheetSchema {
                         seg("boStyle", "Style", "How the block is marked", null, "Outline", "Fill", "Both"),
                         seg("boOpacity", "Opacity", "How strong the fill is", null, "Low", "Medium", "High"),
                         toggle("boWhite", "White", "White instead of your accent", "colour color")),
-                module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list")));
+                module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list"),
+                backgroundModule("scoreboardBg", "Scoreboard Background", "scoreboard",
+                        "See-through fill behind the sidebar", "transparent opacity box"),
+                backgroundModule("tabListBg", "Tab List Background", "tablist",
+                        "See-through fills behind the player list", "transparent opacity box")));
         cats.add(category("chat", "Chat",
                 module("chatStack", "Stack Spam Messages", "Collapse repeats into one (xN) line", "spam repeat compact",
                         toggle("stackBlanks", "Ignore Blank Lines", "Never stack empty lines"),
@@ -303,6 +322,7 @@ public final class SheetSchema {
                 module("chatKeep", "Keep Chat History", "Keep chat across server switches", "history"),
                 module("chatCopy", "Copy Chat", "Right-click a message to copy it", "clipboard"),
                 module("chatLong", "Longer Messages", "256-character chat on Hypixel", "length limit"),
+                backgroundModule("chatBg", "Chat Background", "chat", "Fill behind chat lines", "transparent opacity box"),
                 // Lunar has no Chat Notifications module, so there Inc, Bed and BG Alert are modules of their own.
                 module("incAlert", "Inc Alert", "Sound when a teammate says inc", "sound incoming"),
                 module("bedAlert", "Bed Alert", "Sound when a teammate says bed", "sound ping"),
@@ -351,18 +371,23 @@ public final class SheetSchema {
         return ROWS.get(id);
     }
 
-    /** Whether {@code id} is a platform-only module, a row of one, or a Background row (see {@link #background}). */
+    /**
+     * Whether {@code id} is a platform-only module, a row of one, a Background row (see {@link #background}) or a
+     * Background module (see {@link #backgroundModule}).
+     */
     public static boolean platformOnly(String id) {
         Row r = ROWS.get(id);
         if (r != null && r.hudItem != null) return true;
         Module m = r != null ? r.module : MODULES.get(id);
-        return m != null && PLATFORM_ONLY.contains(m.id);
+        return m != null && (PLATFORM_ONLY.contains(m.id) || m.hudItem != null);
     }
 
-    /** The HUD item Background row {@code rowId} switches, or null if it is not a Background row. */
-    public static String hudItem(String rowId) {
-        Row r = ROWS.get(rowId);
-        return r == null ? null : r.hudItem;
+    /** The HUD item Background row or module {@code id} switches, or null if it is neither. */
+    public static String hudItem(String id) {
+        Row r = ROWS.get(id);
+        if (r != null) return r.hudItem;
+        Module m = MODULES.get(id);
+        return m == null ? null : m.hudItem;
     }
 
     /** Whether the sheet lists module or row {@code id} on the platform behind {@code values}. */

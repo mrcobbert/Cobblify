@@ -109,9 +109,15 @@ public class SettingsBindingsBackgroundTest {
 
     @Test
     public void everyBackgroundRowNamesABackgroundCapableItem() {
-        int rows = 0;
+        int rows = 0, modules = 0;
         for (SheetSchema.Category c : SheetSchema.CATS) {
             for (SheetSchema.Module m : c.modules) {
+                // the module-level form (scoreboard, tab list, chat): a leaf module whose toggle is the Background
+                if (m.hudItem() != null) {
+                    modules++;
+                    assertTrue(m.id + " -> " + m.hudItem(), HudModules.backgroundIds().contains(m.hudItem()));
+                    assertTrue(m.id + " has no rows", m.rows.isEmpty());
+                }
                 for (SheetSchema.Row r : m.rows) {
                     if (r.hudItem() == null) continue;
                     rows++;
@@ -121,5 +127,6 @@ public class SettingsBindingsBackgroundTest {
             }
         }
         assertTrue(rows >= 7);
+        assertEquals(3, modules);
     }
 }

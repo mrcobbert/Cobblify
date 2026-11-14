@@ -121,7 +121,85 @@ final class Policy {
             case "use-item":
                 return null;
             default:
-                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item)";
+                return OVERLAY_PROBES.contains(name) ? null
+                        : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, "
+                        + String.join(", ", OVERLAY_PROBES) + ")";
         }
+    }
+
+    // ------------------------------------------------------------------ overlay items (HUD parity B)
+
+    /** The scoreboard, chat and tab list probes (Cobblify's overlay items). */
+    static final java.util.List<String> OVERLAY_PROBES = java.util.Arrays.asList("overlay-boxes", "chat-fixture",
+            "chat-clear", "chat-open", "chat-at", "chat-click", "tab-header-footer", "place-item", "chat-heights");
+    /** The overlay items {@code place-item} may move. */
+    static final java.util.List<String> OVERLAY_ITEMS = java.util.Arrays.asList("scoreboard", "chat", "tablist");
+    /** The chat fixtures the bridge ships (bridge/resources/chat-&lt;name&gt;.json). */
+    static final java.util.List<String> CHAT_FIXTURES = java.util.Arrays.asList("overlays");
+
+    /**
+     * {@code chat-click} injects a real click into vanilla's chat screen (links, Copy Chat); every other
+     * input goes only to Cobblify screens, so it is allowed only while the open screen is exactly
+     * vanilla's {@code GuiChat} (not a subclass, not any other screen).
+     */
+    static String chatClick(boolean screenIsVanillaChat) {
+        return screenIsVanillaChat ? null : "chat-click needs vanilla's chat screen open (probe chat-open first)";
+    }
+
+    static String placeItem(String id) {
+        return OVERLAY_ITEMS.contains(id) ? null : "place-item takes " + String.join(", ", OVERLAY_ITEMS) + ": " + id;
+    }
+
+    static String chatFixture(String name) {
+        return CHAT_FIXTURES.contains(name) ? null : "chat-fixture takes " + String.join(", ", CHAT_FIXTURES) + ": " + name;
+    }
+
+    /** {@code chat-heights FOCUSED UNFOCUSED} (vanilla's sliders, 0 to 1) or {@code chat-heights restore}: null = restore. */
+    static float[] chatHeights(java.util.List<String> args) {
+        if (args.size() == 1 && "restore".equals(args.get(0))) return null;
+        if (args.size() != 2) throw new Refused("probe chat-heights FOCUSED UNFOCUSED (0 to 1) or chat-heights restore");
+        float[] out = new float[2];
+        for (int i = 0; i < 2; i++) {
+            try {
+                out[i] = Float.parseFloat(args.get(i));
+            } catch (NumberFormatException e) {
+                throw new Refused("chat heights are numbers from 0 to 1");
+            }
+            if (!(out[i] >= 0f && out[i] <= 1f)) throw new Refused("chat heights are numbers from 0 to 1");
+        }
+        return out;
+    }
+
+    /** {@code tab-header-footer HEADER FOOTER} or {@code tab-header-footer clear}: null = clear. */
+    static String[] tabHeaderFooter(java.util.List<String> args) {
+        if (args.size() == 1 && "clear".equals(args.get(0))) return null;
+        if (args.size() != 2) throw new Refused("probe tab-header-footer HEADER FOOTER or tab-header-footer clear");
+        for (String a : args) {
+            if (a.length() > 64) throw new Refused("tab header and footer are limited to 64 characters");
+        }
+        return new String[]{args.get(0), args.get(1)};
+    }
+
+    /**
+     * {@code chat-at GX GY} and {@code chat-click GX GY [BUTTON]}: GUI coordinates. A click is button 0 (left)
+     * only: a right-click is Copy Chat, which would overwrite the user's clipboard ({@code chat-at} reports
+     * what it would copy instead).
+     */
+    static int[] chatPoint(java.util.List<String> args, boolean withButton) {
+        int n = args.size();
+        if (n != 2 && !(withButton && n == 3)) {
+            throw new Refused(withButton ? "probe chat-click GX GY [BUTTON]" : "probe chat-at GX GY");
+        }
+        int[] out = new int[3];
+        try {
+            for (int i = 0; i < n; i++) out[i] = Integer.parseInt(args.get(i));
+        } catch (NumberFormatException e) {
+            throw new Refused("chat coordinates are integers");
+        }
+        if (out[2] != 0) {
+            throw new Refused("chat-click is a left click (button 0): a right-click would copy to the clipboard;"
+                    + " probe chat-at reports what Copy Chat would copy");
+        }
+        return out;
     }
 }

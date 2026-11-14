@@ -28,6 +28,19 @@ public final class HudModules {
             BedwarsHudRenderer.CPS_HUD,
             BedwarsHudRenderer.PING_HUD));
 
+    /** Vanilla's scoreboard, chat and tab list as HUD items: placed and resized, but drawn by vanilla. */
+    private static final List<String> OVERLAY_IDS = Collections.unmodifiableList(Arrays.asList(
+            BedwarsHudRenderer.SCOREBOARD_HUD,
+            BedwarsHudRenderer.CHAT_HUD,
+            BedwarsHudRenderer.TAB_LIST_HUD));
+
+    private static final List<String> ALL_IDS;
+    static {
+        List<String> all = new java.util.ArrayList<String>(IDS);
+        all.addAll(OVERLAY_IDS);
+        ALL_IDS = Collections.unmodifiableList(all);
+    }
+
     private static final List<String> BACKGROUND_IDS;
 
     static {
@@ -44,6 +57,21 @@ public final class HudModules {
         return IDS;
     }
 
+    /** The scoreboard, chat and tab list items. Not in {@link #ids()}: vanilla draws them. */
+    public static List<String> overlayIds() {
+        return OVERLAY_IDS;
+    }
+
+    /** Every item the editor can place: the modules, then the overlays. */
+    public static List<String> allIds() {
+        return ALL_IDS;
+    }
+
+    /** Whether {@code id} is the scoreboard, chat or tab list item. */
+    public static boolean isOverlay(String id) {
+        return OVERLAY_IDS.contains(id);
+    }
+
     public static String title(String id) {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) return "Potion";
         if (BedwarsHudRenderer.ARMOR_HUD.equals(id)) return "Armor";
@@ -56,6 +84,9 @@ public final class HudModules {
         if (BedwarsHudRenderer.FPS_HUD.equals(id)) return "FPS";
         if (BedwarsHudRenderer.CPS_HUD.equals(id)) return "CPS";
         if (BedwarsHudRenderer.PING_HUD.equals(id)) return "Ping";
+        if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) return "Scoreboard";
+        if (BedwarsHudRenderer.CHAT_HUD.equals(id)) return "Chat";
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) return "Tab List";
         return id;
     }
 
@@ -92,6 +123,16 @@ public final class HudModules {
         }
         if (BedwarsHudRenderer.PING_HUD.equals(id)) {
             return new HudModuleState(c.pingHudX, c.pingHudY, c.pingHudAnchor, c.pingHudScale, c.pingEnabled, c.hudBackground(id));
+        }
+        if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
+            return new HudModuleState(c.scoreboardHudX, c.scoreboardHudY, c.scoreboardHudAnchor, c.scoreboardHudScale, c.scoreboardHudEnabled, c.hudBackground(id));
+        }
+        // chat and the tab list have no Hide: always enabled
+        if (BedwarsHudRenderer.CHAT_HUD.equals(id)) {
+            return new HudModuleState(c.chatHudX, c.chatHudY, c.chatHudAnchor, c.chatHudScale, true, c.hudBackground(id));
+        }
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) {
+            return new HudModuleState(c.tabListHudX, c.tabListHudY, c.tabListHudAnchor, c.tabListHudScale, true, c.hudBackground(id));
         }
         return null;
     }
@@ -142,20 +183,34 @@ public final class HudModules {
             c.pingHudX = s.x; c.pingHudY = s.y; c.pingHudAnchor = s.anchor; c.pingHudScale = s.scale;
             c.pingEnabled = s.enabled;
             c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
+            c.scoreboardHudX = s.x; c.scoreboardHudY = s.y; c.scoreboardHudAnchor = s.anchor; c.scoreboardHudScale = s.scale;
+            c.scoreboardHudEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.CHAT_HUD.equals(id)) {
+            c.chatHudX = s.x; c.chatHudY = s.y; c.chatHudAnchor = s.anchor; c.chatHudScale = s.scale;
+            c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) {
+            c.tabListHudX = s.x; c.tabListHudY = s.y; c.tabListHudAnchor = s.anchor; c.tabListHudScale = s.scale;
+            c.setHudBackground(id, s.background);
         }
     }
 
-    /** The module reset: back in the default layout at the current HUD Size; it keeps its on/off and Background. */
+    /**
+     * The module reset: back in the default layout at the current HUD Size; it keeps its on/off and Background.
+     * An overlay goes back to vanilla's spot at vanilla's size, whatever the HUD Size.
+     */
     public static HudModuleState defaults(ClientSettings c, String id) {
         HudModuleState now = get(c, id);
         if (now == null) return null;
-        return new HudModuleState(0, 0, HudPlacement.AUTO, c.defaultTextSizeScale(), now.enabled, now.background);
+        float scale = isOverlay(id) ? OverlayItems.DEFAULT_SCALE : c.defaultTextSizeScale();
+        return new HudModuleState(0, 0, HudPlacement.AUTO, scale, now.enabled, now.background);
     }
 
-    /** Every module's state, for undo. */
+    /** Every item's state (modules and overlays), for undo. */
     public static Map<String, HudModuleState> snapshot(ClientSettings c) {
         Map<String, HudModuleState> out = new LinkedHashMap<String, HudModuleState>();
-        for (String id : IDS) out.put(id, get(c, id));
+        for (String id : ALL_IDS) out.put(id, get(c, id));
         return out;
     }
 

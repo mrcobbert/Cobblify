@@ -24,6 +24,7 @@ import com.bedwarsqol.gui.render.GuiTheme;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
+import net.minecraft.client.gui.GuiNewChat;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
@@ -36,6 +37,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
+import net.minecraft.scoreboard.Scoreboard;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Mouse;
 
@@ -59,6 +61,10 @@ public class BedwarsHudRenderer {
     public static final String FPS_HUD = "fps";
     public static final String CPS_HUD = "cps";
     public static final String PING_HUD = "ping";
+    /** Vanilla's sidebar scoreboard, chat and tab list as HUD items (see {@link HudModules#overlayIds()}). */
+    public static final String SCOREBOARD_HUD = "scoreboard";
+    public static final String CHAT_HUD = "chat";
+    public static final String TAB_LIST_HUD = "tablist";
     private static final int INV_COLS = 9;
     private static final int INV_ROWS = 3; // storage rows only — the hotbar is already on screen
     // Inventory grid geometry (local pre-scale units). ONE gutter value (INV_GAP) is used everywhere:
@@ -107,9 +113,11 @@ public class BedwarsHudRenderer {
 
     /**
      * Session Stats goes on top of everything: this runs at the end of the HUD frame, once the scoreboard sidebar, chat and tab list,
-     * which all draw after the Text pass, are done.
+     * which all draw after the Text pass, are done. While the tab list shows it is hidden like every other
+     * module, in every mode, Hold Key included (holding Tab hides the Cobblify HUD).
      */
     public void onRenderPost() {
+        if (TabHudGate.hidesHud()) return;
         ClientSettings cfg = hudSettings();
         if (cfg != null) drawSessionHud(Minecraft.getMinecraft(), cfg, false);
     }
@@ -162,7 +170,115 @@ public class BedwarsHudRenderer {
         addEditorBox(boxes, cfg, textBox(mc, cfg, FPS_HUD, true, true));
         addEditorBox(boxes, cfg, textBox(mc, cfg, CPS_HUD, true, true));
         addEditorBox(boxes, cfg, textBox(mc, cfg, PING_HUD, true, true));
+        addEditorBox(boxes, cfg, scoreboardBox(mc, cfg));
+        addEditorBox(boxes, cfg, chatBox(mc, cfg));
         return boxes;
+    }
+
+    // ----- Vanilla overlays as HUD items (scoreboard, chat, tab list) -----
+
+    /**
+     * An overlay item's live box (pad 0), or null when there is nothing to show (no sidebar objective, no
+     * chat line, ...). The box is where vanilla's drawing lands after the item's move and scale.
+     */
+    public static HudBox overlayBox(Minecraft mc, ClientSettings cfg, String id) {
+        if (mc == null || cfg == null) return null;
+        if (SCOREBOARD_HUD.equals(id)) return scoreboardBox(mc, cfg);
+        if (TAB_LIST_HUD.equals(id)) return tabListBox(mc, cfg);
+        if (CHAT_HUD.equals(id)) return chatBox(mc, cfg);
+        return null;
+    }
+
+    /** Whether overlay {@code id} draws its Background (fill behind its lines): its Background switch, On without a config. */
+    public static boolean overlayBackground(ClientSettings cfg, String id) {
+        return cfg == null || HudModules.background(cfg, id);
+    }
+
+    /** The sidebar scoreboard's box: vanilla's sidebar for the shown objective, moved and scaled; null without one. */
+    public static HudBox scoreboardBox(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] rect = OverlayScale.scoreboardRect(OverlayScale.sidebarObjective(mc), r.getScaledWidth(), r.getScaledHeight());
+        if (rect == null) return null;
+        float[] box = OverlayScale.scoreboardBox(cfg, rect, r.getScaledWidth(), r.getScaledHeight());
+        return new HudBox(SCOREBOARD_HUD, box[0], box[1], box[2], box[3], 0f);
+    }
+
+    /**
+     * The tab list's box: the live player list (header and footer included unless hidden), moved and scaled,
+     * whether or not vanilla draws it this frame; null without a connection. Not an editor box: the tab list
+     * is never an obstacle, and Edit HUD shows it only while Tab is held.
+     */
+    public static HudBox tabListBox(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null || mc.ingameGUI == null || mc.theWorld == null) return null;
+        Scoreboard board = mc.theWorld.getScoreboard();
+        if (board == null) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] m = ((TabOverlayScale) mc.ingameGUI.getTabList())
+                .bedwarsqol$measure(r.getScaledWidth(), board, board.getObjectiveInDisplaySlot(0));
+        if (m == null) return null;
+        float[] box = TabOverlayScale.placement(cfg, m, r.getScaledWidth(), r.getScaledHeight());
+        return new HudBox(TAB_LIST_HUD, box[0], box[1], box[2], box[3], 0f);
+    }
+
+    /**
+     * The chat item's slot ({@link ChatLayout}): {@code closedLineCount} rows whose bottom the item's anchor
+     * holds, never clamped, as {@code {x, y, w, h, rowHeight, closedRows}}; null before the in-game GUI exists.
+     */
+    private static float[] chatSlot(Minecraft mc, ClientSettings cfg, float sw, float sh) {
+        if (mc == null || cfg == null || mc.ingameGUI == null || mc.gameSettings == null) return null;
+        GuiNewChat chat = mc.ingameGUI.getChatGUI();
+        float f = chat.getChatScale(), s = cfg.chatHudScale;
+        int closed = ChatLayout.closedLineCount(
+                GuiNewChat.calculateChatboxHeight(mc.gameSettings.chatHeightUnfocused) / ChatLayout.ROW_HEIGHT);
+        float[] auto = ChatLayout.autoSlot(ChatLayout.vanillaSlot((int) sh, chat.getChatWidth(), f, closed), sh, s);
+        float[] slot = ChatLayout.slot(cfg.chatHudX, cfg.chatHudY, cfg.chatHudAnchor, auto, sw, sh);
+        return new float[]{slot[0], slot[1], slot[2], slot[3], ChatLayout.ROW_HEIGHT * f * s, closed};
+    }
+
+    /**
+     * The chat's box: the rows a closed chat shows (at least one), at the slot's bottom, clamped on screen.
+     * Its bottom-left is where vanilla's chat is drawn from and where clicks are measured from; an open
+     * chat grows upward from it.
+     */
+    public static HudBox chatBox(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float sw = r.getScaledWidth(), sh = r.getScaledHeight();
+        float[] slot = chatSlot(mc, cfg, sw, sh);
+        if (slot == null) return null;
+        int drawn = ((ChatItemAccess) mc.ingameGUI.getChatGUI()).bedwarsqol$drawnLineCount();
+        float[] box = ChatLayout.visibleBox(slot, ChatLayout.boxRows(drawn, (int) slot[5]), slot[4], sw, sh);
+        return new HudBox(CHAT_HUD, box[0], box[1], box[2], box[3], 0f);
+    }
+
+    /** The {@code drawChat} call-site transform {@code {tx, ty, scale}}; null at vanilla's spot and size. */
+    public static float[] chatTransform(Minecraft mc, ClientSettings cfg) {
+        HudBox box = chatBox(mc, cfg);
+        if (box == null) return null;
+        float s = cfg.chatHudScale;
+        float[] t = ChatLayout.callSiteTranslate(box.x, box.bottom(), s, new ScaledResolution(mc).getScaledHeight());
+        if (t[0] == 0f && t[1] == 0f && s == 1f) return null;
+        return new float[]{t[0], t[1], s};
+    }
+
+    /** A raw LWJGL mouse x over the chat item, as vanilla's {@code getChatComponent} expects it over vanilla's chat. */
+    public static int chatRawX(int rawX) {
+        Minecraft mc = Minecraft.getMinecraft();
+        ClientSettings cfg = BedwarsQol.config;
+        HudBox box = chatBox(mc, cfg);
+        if (box == null) return rawX;
+        return ChatLayout.toVanillaRawX(rawX, new ScaledResolution(mc).getScaleFactor(), box.x, cfg.chatHudScale);
+    }
+
+    /** As {@link #chatRawX} for the raw mouse y (device px from the window's bottom). */
+    public static int chatRawY(int rawY) {
+        Minecraft mc = Minecraft.getMinecraft();
+        ClientSettings cfg = BedwarsQol.config;
+        HudBox box = chatBox(mc, cfg);
+        if (box == null) return rawY;
+        ScaledResolution r = new ScaledResolution(mc);
+        return ChatLayout.toVanillaRawY(rawY, r.getScaleFactor(), r.getScaledHeight(), box.bottom(), cfg.chatHudScale);
     }
 
     private static void addEditorBox(List<HudBox> boxes, ClientSettings cfg, HudBox box) {
@@ -171,10 +287,21 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
-    /** Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. */
+    /**
+     * Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. For the
+     * chat, (x, y, width, height) is its visible box and the stored slot shares the box's bottom
+     * ({@link ChatLayout#storedSlot}, the chat slot rule).
+     */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
         HudModuleState state = HudModules.get(cfg, id);
         if (state == null) return;
+        if (CHAT_HUD.equals(id)) {
+            float[] slot = chatSlot(Minecraft.getMinecraft(), cfg, screenWidth, screenHeight);
+            float slotH = slot == null ? height : slot[3];
+            int[] at = ChatLayout.storedSlot(new float[]{x, y, width, height}, slotH, screenWidth, screenHeight);
+            HudModules.set(cfg, id, state.withPosition(at[0], at[1], at[2]));
+            return;
+        }
         int anchor = HudPlacement.anchorFor(x, y, width, height, screenWidth, screenHeight);
         HudModules.set(cfg, id, state.withPosition(HudPlacement.storedX(x, anchor, width, screenWidth),
                 HudPlacement.storedY(y, anchor, height, screenHeight), anchor));
