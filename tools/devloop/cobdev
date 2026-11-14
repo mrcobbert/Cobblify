@@ -4542,7 +4542,7 @@ def tu_sweep(s, hud_size, which, sizes, scales):
 
 def tu_move_keeps_size(s, cfg, mode):
     """Review code-2 I2: at 854x480, GUI scale 2, HUD Size 2 the default panel is stepped down to fit; select
-    it in Edit HUD and press Right once: it moves one pixel and keeps its size, clear of the hotbar."""
+    it in Edit HUD and press Right once: it moves one screen pixel and keeps its size, clear of the hotbar."""
     scale_path = cfg + ".teamUpgradesHudScale"
     configured = s.field(scale_path).get("value")
     if mode == "dev":
@@ -4560,10 +4560,12 @@ def tu_move_keeps_size(s, cfg, mode):
     after = boxes[TU_ID]
     s.shot("tu-moved")
     mine, _ = tu_layout_overlaps(gw, gh, {TU_ID: after})
+    # Edit HUD moves one screen pixel per arrow press (cycle 2026-11-14-edit-hud): 1 / scale factor GUI px
+    step = 1.0 / ((s.status() or {}).get("scaleFactor") or 1)
     s.check("moving the stepped-down panel keeps its size, clear of the hotbar",
             abs(after["w"] - before["w"]) < 0.01 and abs(after["h"] - before["h"]) < 0.01
-            and abs(after["x"] - before["x"] - 1) < 0.01 and not mine,
-            {"before": before, "after": after, "gui": [gw, gh], "overlaps": mine})
+            and abs(after["x"] - before["x"] - step) < 0.01 and not mine,
+            {"before": before, "after": after, "step": step, "gui": [gw, gh], "overlaps": mine})
     s.call("/close")
     s.field(cfg + ".teamUpgradesHudAnchor", -1)  # back to the default spot, at the configured size
     s.field(cfg + ".teamUpgradesHudX", 0)
