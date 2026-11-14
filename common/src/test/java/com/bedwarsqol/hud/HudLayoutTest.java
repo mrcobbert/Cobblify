@@ -18,6 +18,7 @@ import static com.bedwarsqol.hud.HudLayout.Vertical.MIDDLE;
 import static com.bedwarsqol.hud.HudLayout.Vertical.TOP;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class HudLayoutTest {
 
@@ -190,6 +191,41 @@ public class HudLayoutTest {
         List<Box> obstacles = Arrays.asList(new Box(336f, 430f, 182f, 50f));
         List<Item> mapInfo = Collections.singletonList(new Item("map", 168f, 72f, new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)));
         assertEquals(1.0f, new HudLayout(854f, 480f, 2, 2).fitScale(mapInfo, obstacles, "team", 1.5f, 1f, 1f, snapped, TEAM_SPOTS), 1e-6f);
+    }
+
+    /** Review code-2 I1: 854x480 at GUI scale 2, HUD Size 1, every module on (recorded smoke boxes). */
+    private static final List<Box> EVERY_MODULE = Arrays.asList(
+            new Box(2, 32, 47, 44), new Box(2, 2, 22, 22), new Box(98.5f, 2, 206, 74), new Box(382, 2, 43, 22),
+            new Box(337, 2, 43, 22), new Box(57, 158, 64, 80), new Box(306, 26, 119, 148), new Box(2, 101, 86, 38),
+            new Box(122.5f, 190, 182, 50));
+    private static final HudLayout.Sizer PADDED = s -> {
+        float pad = Math.max(2f, Math.round(4f * s));
+        return new float[]{130f * s + 2f * pad, 129f * s + 2f * pad};
+    };
+    private static final Spot[] BESIDE = {new Spot(LEFT, MIDDLE, HudLayout.Slide.RIGHT),
+            new Spot(LEFT, TOP, HudLayout.Slide.RIGHT)};
+
+    @Test
+    public void aFullLeftEdgeTriesBesideTheLeftColumnAtTheSmallestSize() {
+        HudLayout layout = new HudLayout(427f, 240f, 2, 2);
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, EVERY_MODULE, "team", 1.0f, 0.5f, 0.5f, PADDED, TEAM_SPOTS, BESIDE);
+        assertEquals(0.5f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        float[] size = PADDED.size(fit.scale);
+        float[] team = layout.place(Collections.singletonList(new Item("team", size[0], size[1], fit.spots)), EVERY_MODULE).get("team");
+        for (Box b : EVERY_MODULE) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    @Test
+    public void aFreeLeftEdgeNeverMovesBesideTheColumn() {
+        // the profile layout: only Map Info and the timers; the left edge has room at full size
+        List<Box> profile = Arrays.asList(new Box(595, 2, 43, 22), new Box(550, 2, 43, 22), new Box(2, 101, 86, 38),
+                new Box(229, 310, 182, 50));
+        HudLayout.Fit fit = new HudLayout(640f, 360f, 2, 2).fit(NONE_BEFORE, profile, "team", 1.0f, 0.5f, 0.5f, PADDED,
+                TEAM_SPOTS, BESIDE);
+        assertEquals(1.0f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        assertEquals(TEAM_SPOTS.length, fit.spots.length);
     }
 
     @Test

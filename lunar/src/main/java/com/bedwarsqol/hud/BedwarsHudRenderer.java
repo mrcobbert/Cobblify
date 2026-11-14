@@ -109,6 +109,10 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
+    /** Edit HUD calls this before it moves or resizes a module; no Lunar module draws below its own scale. */
+    public static void pinDrawnScale(ClientSettings cfg, String id) {
+    }
+
     /** Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
         HudModuleState state = HudModules.get(cfg, id);

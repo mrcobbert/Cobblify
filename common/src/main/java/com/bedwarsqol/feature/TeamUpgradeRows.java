@@ -10,7 +10,7 @@ import java.util.List;
  * <ul>
  *   <li>Compact: owned upgrades in shop order ({@code Reinforced Armor  II  8}, the forge by its tier
  *       name, {@code Max} when maxed), then always the Traps section: {@code 1 Blindness}, ... and a
- *       {@code Next} row with 1/2/4 or {@code Full}; {@code None} when nothing is queued.</li>
+ *       {@code Next} row with 1/2/4 or {@code Full}; {@code None} above it when nothing is queued.</li>
  *   <li>Full: all six upgrades in shop order, unowned ones dimmed with their tier-one cost (unknown
  *       entries from the shop after them), and three trap slots, empty ones as a dash.</li>
  *   <li>Costs: the cost the shop window showed beats the bracket table; with neither, no cost.</li>
@@ -102,10 +102,7 @@ public final class TeamUpgradeRows {
             fade = 1f - (now - state.firedAt()) / (float) TeamUpgradeState.FIRED_FLASH_MS;
             fade = Math.max(0f, Math.min(1f, fade));
         }
-        if (names.isEmpty() && !full) {
-            out.add(new Row(Kind.NONE, NONE, "", "", Style.NORMAL, 1f));
-            return out;
-        }
+        if (names.isEmpty() && !full) out.add(new Row(Kind.NONE, NONE, "", "", Style.NORMAL, 1f));
         for (int i = 0; i < names.size(); i++) {
             out.add(new Row(Kind.TRAP, (i + 1) + " " + TeamUpgradeCatalog.trapLabel(names.get(i)), "", "",
                     styles.get(i), i == firedAt ? fade : 1f));

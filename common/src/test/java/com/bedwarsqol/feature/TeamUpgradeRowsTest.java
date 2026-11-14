@@ -99,13 +99,15 @@ public class TeamUpgradeRowsTest {
                 "UPGRADE|Molten Forge||Max|NORMAL",
                 "UPGRADE|Cushioned Boots|II|Max|NORMAL",
                 "HEADER|Traps|||NORMAL",
-                "NONE|None|||NORMAL"),
+                "NONE|None|||NORMAL",
+                "NEXT|Next||1|NORMAL"),
                 fmt(TeamUpgradeRows.rows(s, Layout.COMPACT, Bracket.EIGHT_TEAM, 0)));
     }
 
     @Test
-    public void emptyStateInCompactIsJustTheTrapWarning() {
-        assertEquals(Arrays.asList("HEADER|Traps|||NORMAL", "NONE|None|||NORMAL"),
+    public void emptyStateInCompactIsTheTrapWarningAndTheFirstTrapCost() {
+        // review code-2 O1: the Next row is the panel's last row in every state (PLAN)
+        assertEquals(Arrays.asList("HEADER|Traps|||NORMAL", "NONE|None|||NORMAL", "NEXT|Next||1|NORMAL"),
                 fmt(TeamUpgradeRows.rows(new TeamUpgradeState(), Layout.COMPACT, Bracket.EIGHT_TEAM, 0)));
     }
 
@@ -233,7 +235,7 @@ public class TeamUpgradeRowsTest {
         s.trapFired("Miner Fatigue Trap", 5000);
         assertEquals(Arrays.asList("HEADER|Traps|||NORMAL", "TRAP|1 Miner Fatigue|||FIRED", "NEXT|Next||1|NORMAL"),
                 fmt(TeamUpgradeRows.rows(s, Layout.COMPACT, Bracket.EIGHT_TEAM, 5100)));
-        assertEquals(Arrays.asList("HEADER|Traps|||NORMAL", "NONE|None|||NORMAL"),
+        assertEquals(Arrays.asList("HEADER|Traps|||NORMAL", "NONE|None|||NORMAL", "NEXT|Next||1|NORMAL"),
                 fmt(TeamUpgradeRows.rows(s, Layout.COMPACT, Bracket.EIGHT_TEAM, 6500)));
     }
 

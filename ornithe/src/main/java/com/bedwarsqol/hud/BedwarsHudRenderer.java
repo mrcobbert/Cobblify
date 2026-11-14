@@ -524,10 +524,24 @@ public class BedwarsHudRenderer {
             float pad = panelPad(s);
             return new float[]{size.width + 2f * pad, size.height + 2f * pad};
         };
-        HudLayout.Spot[] spots = DEFAULT_SPOTS.get(TEAM_UPGRADES_HUD);
-        layoutTeamScale = layout.fitScale(items.subList(0, at), obstacles, TEAM_UPGRADES_HUD, scale, step, min, sizer, spots);
-        float[] size = sizer.size(layoutTeamScale);
-        items.set(at, new HudLayout.Item(TEAM_UPGRADES_HUD, size[0], size[1], spots));
+        HudLayout.Fit fit = layout.fit(items.subList(0, at), obstacles, TEAM_UPGRADES_HUD, scale, step, min, sizer,
+                DEFAULT_SPOTS.get(TEAM_UPGRADES_HUD), TEAM_UPGRADES_CROWDED_SPOTS);
+        layoutTeamScale = fit.scale;
+        float[] size = sizer.size(fit.scale);
+        items.set(at, new HudLayout.Item(TEAM_UPGRADES_HUD, size[0], size[1], fit.spots));
+    }
+
+    /** With the left edge full even at the smallest size: beside the left column (review code-2 I1). */
+    private static final HudLayout.Spot[] TEAM_UPGRADES_CROWDED_SPOTS = {
+            new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.RIGHT), new Spot(Horizontal.LEFT, Vertical.TOP, Slide.RIGHT)};
+
+    /**
+     * Edit HUD calls this before it moves or resizes module {@code id}: a Team Upgrades panel the default
+     * layout stepped down keeps the size it is drawn at once it leaves its default spot (review code-2 I2).
+     */
+    public static void pinDrawnScale(ClientSettings cfg, String id) {
+        if (cfg == null || !TEAM_UPGRADES_HUD.equals(id) || cfg.teamUpgradesHudAnchor != HudPlacement.AUTO) return;
+        cfg.teamUpgradesHudScale = teamUpgradesScale(cfg);
     }
 
     /** Everything the default layout depends on; it is worked out again only when this changes. */

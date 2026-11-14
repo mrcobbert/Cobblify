@@ -136,6 +136,43 @@ public final class HudLayout {
         }
     }
 
+    /** The scale a module fits at and the spots to place it with ({@link #fit}). */
+    public static final class Fit {
+        public final float scale;
+        public final Spot[] spots;
+        /** False when no spot is free even so: the module takes the least-covered place. */
+        public final boolean free;
+
+        Fit(float scale, Spot[] spots, boolean free) {
+            this.scale = scale;
+            this.spots = spots;
+            this.free = free;
+        }
+    }
+
+    /**
+     * {@link #fitScale} over {@code spots}; when none of them is free even at the smallest size, the
+     * {@code crowded} spots are tried after them at that size (never larger), so a full edge moves the
+     * module aside before it covers another one.
+     */
+    public Fit fit(List<Item> before, List<Box> obstacles, String id, float scale, float step, float min,
+                   Sizer sizer, Spot[] spots, Spot[] crowded) {
+        float s = fitScale(before, obstacles, id, scale, step, min, sizer, spots);
+        if (freeAt(before, obstacles, id, sizer.size(s), spots)) return new Fit(s, spots, true);
+        Spot[] all = Arrays.copyOf(spots, spots.length + crowded.length);
+        System.arraycopy(crowded, 0, all, spots.length, crowded.length);
+        return new Fit(s, all, freeAt(before, obstacles, id, sizer.size(s), all));
+    }
+
+    private boolean freeAt(List<Item> before, List<Box> obstacles, String id, float[] size, Spot[] spots) {
+        List<Box> taken = new ArrayList<Box>(obstacles);
+        for (Item item : before) {
+            float[] at = placeOne(item, taken);
+            taken.add(new Box(at[0], at[1], item.width, item.height));
+        }
+        return placeOne(new Item(id, size[0], size[1], spots), taken)[2] > 0f;
+    }
+
     /** {x, y, free}: the first free spot (free = 1), else where it covers the least (free = 0). */
     private float[] placeOne(Item item, List<Box> taken) {
         float[] fallback = null;

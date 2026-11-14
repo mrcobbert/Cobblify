@@ -356,6 +356,7 @@ public class EditHudGui extends GuiScreen {
             int corner = CornerResize.cornerAt(mouseX, mouseY, grabbed.visualX(), grabbed.visualY(),
                     grabbed.visualWidth(), grabbed.visualHeight(), HANDLE_REACH);
             selectedId = grabbed.id;
+            BedwarsHudRenderer.pinDrawnScale(cfg, grabbed.id); // start from the size it is drawn at
             resize = new CornerResize(corner, grabbed.x, grabbed.y, grabbed.width, grabbed.height,
                     HudModules.get(cfg, grabbed.id).scale);
             // The handle sits on the drawn frame, outside the content; keep that offset so the size
@@ -526,6 +527,7 @@ public class EditHudGui extends GuiScreen {
 
     /** Moves {@code box}'s content to (x, y), kept on screen with its panel padding. */
     private void place(ClientSettings cfg, HudBox box, float x, float y) {
+        BedwarsHudRenderer.pinDrawnScale(cfg, box.id); // a move never changes the size
         BedwarsHudRenderer.setHudAbsolutePosition(cfg, box.id,
                 clamp(x, box.pad, width - box.width - box.pad),
                 clamp(y, box.pad, height - box.height - box.pad),
