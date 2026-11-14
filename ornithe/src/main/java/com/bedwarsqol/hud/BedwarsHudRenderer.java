@@ -117,9 +117,11 @@ public class BedwarsHudRenderer {
 
     /**
      * Session Stats goes on top of everything: this runs at the end of the HUD frame, once the scoreboard sidebar, chat and tab list,
-     * which all draw after the Text pass, are done.
+     * which all draw after the Text pass, are done. While the tab list shows it is hidden like every other
+     * module, in every mode, Hold Key included (holding Tab hides the Cobblify HUD).
      */
     public void onRenderPost() {
+        if (TabHudGate.hidesHud()) return;
         ClientSettings cfg = hudSettings();
         if (cfg != null) drawSessionHud(Minecraft.getMinecraft(), cfg, false);
     }

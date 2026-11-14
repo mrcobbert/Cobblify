@@ -1,6 +1,7 @@
 package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.hud.OverlayScale;
+import com.bedwarsqol.hud.TabHudGate;
 import com.bedwarsqol.hud.TabOverlayScale;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -38,6 +39,7 @@ public abstract class GuiIngameOverlayScaleMixin {
             target = "Lnet/minecraft/client/gui/GuiPlayerTabOverlay;renderPlayerlist(ILnet/minecraft/scoreboard/Scoreboard;Lnet/minecraft/scoreboard/ScoreObjective;)V"))
     private void bedwarsqol$scaleTab(GuiPlayerTabOverlay tab, int width, Scoreboard scoreboard, ScoreObjective objective,
                                      Operation<Void> original) {
+        TabHudGate.vanillaDrewTab();
         TabOverlayScale scale = (TabOverlayScale) tab;
         scale.bedwarsqol$beginWrappedTab(width, scoreboard, objective);
         try {

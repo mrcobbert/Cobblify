@@ -1,6 +1,8 @@
 package com.bedwarsqol.mixin;
 
+import com.bedwarsqol.hud.TabHudGate;
 import com.bedwarsqol.ornithe.ModEvents;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiIngame;
 import net.minecraft.client.renderer.GlStateManager;
 import org.spongepowered.asm.mixin.Mixin;
@@ -21,6 +23,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       (Forge's {@code RenderGameOverlayEvent.Post} with type ALL).</li>
  * </ul>
  * Both are {@code require = 1}: a missed target fails at boot instead of silently dropping the HUD.
+ * While the tab list shows this frame ({@link TabHudGate}), the Text layer is not posted, so no
+ * Cobblify HUD element draws under or over it; the Post layer still runs and its listeners check
+ * {@link TabHudGate#hidesHud()} themselves.
  */
 @Mixin(GuiIngame.class)
 public abstract class GuiIngameHudMixin {
@@ -32,12 +37,15 @@ public abstract class GuiIngameHudMixin {
             require = 1)
     private void bedwarsqol$hudText(float partialTicks, CallbackInfo ci) {
         // Forge's renderHUDText sets this blend function before posting its Text event.
+        // Kept unconditional so vanilla's GL state is the same whether or not the HUD draws.
         GlStateManager.tryBlendFuncSeparate(770, 771, 1, 0);
-        ModEvents.HUD_TEXT.post(partialTicks);
+        TabHudGate.beginFrame(Minecraft.getMinecraft());
+        if (!TabHudGate.hidesHud()) ModEvents.HUD_TEXT.post(partialTicks);
     }
 
     @Inject(method = "renderGameOverlay", at = @At("TAIL"), require = 1)
     private void bedwarsqol$hudPost(float partialTicks, CallbackInfo ci) {
         ModEvents.HUD_POST.post(partialTicks);
+        TabHudGate.endFrame();
     }
 }
