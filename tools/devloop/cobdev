@@ -2395,6 +2395,16 @@ def overlap_area(a, b):
     return max(0.0, min(ax + aw, bx + bw) - max(ax, bx)) * max(0.0, min(ay + ah, by + bh) - max(ay, by))
 
 
+WALL_EPS = 1e-3  # HudWalls.EPS: flush to within this many GUI px is not overlap
+
+
+def clear_of(a, b, eps=WALL_EPS):
+    """Whether boxes a and b do not overlap, as the editor's walls see it (HudWalls.overlaps: flush within eps)."""
+    ax, ay, aw, ah = vis(a)
+    bx, by, bw, bh = vis(b)
+    return not (ax < bx + bw - eps and ax + aw > bx + eps and ay < by + bh - eps and ay + ah > by + eps)
+
+
 def others_unchanged(before, after, moving):
     """Problems with 'nothing else moved': every other shown item's drawn box (1e-3), scale, on/off and Background
     are what they were; a state may differ only by going from Auto to a stored spot (the pinning)."""
@@ -2662,7 +2672,7 @@ def edithud_e5_e6(run):
         s.call("/drag", {"x": last[0] + 1, "y": last[1], "device": 1})
         hb7 = run.probe()
         s.check("E6 one plain pixel later it is clear again",
-                overlap_area(run.box("heightlimit", hb7), run.box("keystrokes", hb7)) == 0)
+                clear_of(run.box("heightlimit", hb7), run.box("keystrokes", hb7)))
     finally:
         s.call("/up", {"x": last[0] + 1, "y": last[1], "device": 1})
     s.shot("edithud-e5-e6")
@@ -2706,7 +2716,7 @@ def edithud_e7(run):
     s.check("E7 and stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
             grow_stopped_ok(vis(ks)[0] - right, mi["w"], scale, after["scale"], run.minecraft_font()),
             "right %.4f, Keystrokes left %.4f, scale %.4f" % (right, vis(ks)[0], scale))
-    s.check("E7 no overlap", overlap_area(mi, ks) == 0)
+    s.check("E7 no overlap", clear_of(mi, ks))
     problems = others_unchanged(before, after, {"heightlimit"})
     s.check("E7 nothing else moved", not problems, problems or None)
     s.shot("edithud-e7")
@@ -2731,7 +2741,7 @@ def edithud_e7b(run):
     s.check("E7b its left edge stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
             grow_stopped_ok(vis(s1)[0] - (vis(ks)[0] + vis(ks)[2]), s1["w"], scale, after["scale"], run.minecraft_font()),
             "left %.4f, Keystrokes right %.4f, scale %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2], scale))
-    s.check("E7b no overlap", overlap_area(s1, ks) == 0)
+    s.check("E7b no overlap", clear_of(s1, ks))
     s.shot("edithud-e7b")
 
 
@@ -3101,7 +3111,7 @@ def edithud_e12_moves(run, sb, tab, inventory):
     s.call("/drag", {"x": far, "y": gy})
     s.call("/up", {"x": far, "y": gy})
     tab = run.overlay_box("tablist")
-    s.check("E12 the corner resize stops at the scoreboard", overlap_area(tab, sb) == 0
+    s.check("E12 the corner resize stops at the scoreboard", clear_of(tab, sb)
             and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))
     # Inventory is hidden while Tab is held, so it is no wall
     ix, iy, iw, ih = vis(inventory)

@@ -995,6 +995,20 @@ class EditHudSmokeHelpers(unittest.TestCase):
         self.assertGreater(cobdev.changed_frac(play, brighter, (0, 0, 10, 10)), 0.4)  # content changed
 
 
+class EditHudClearOf(unittest.TestCase):
+    """'No overlap' as the editor's walls mean it: flush within HudWalls.EPS (1e-3 GUI px) is not overlap."""
+
+    def test_the_rerun_tab_list_is_flush_with_the_scoreboard(self):
+        # smoke-20261114-115606-dev: right edge 444.99997 + 132.001 = 577.00097 against the scoreboard at 577.0
+        tab = {"x": 444.99997, "y": 168.5, "w": 132.001, "h": 14.347936, "pad": 0}
+        sb = {"x": 577.0, "y": 164.0, "w": 62.0, "h": 19.0, "pad": 0}
+        self.assertTrue(cobdev.clear_of(tab, sb))
+        self.assertTrue(cobdev.clear_of(sb, tab))
+        self.assertFalse(cobdev.clear_of(dict(tab, w=132.01), sb))   # 0.01 px in: overlap
+        self.assertTrue(cobdev.clear_of(dict(tab, y=200), sb))       # beside, not level with it
+        self.assertFalse(cobdev.clear_of(dict(tab, x=500), sb))
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:
