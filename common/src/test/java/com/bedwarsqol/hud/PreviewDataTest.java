@@ -70,6 +70,16 @@ public class PreviewDataTest {
     }
 
     @Test
+    public void theScoreboardChatAndTabListAreLive() {
+        // D11: chat with lines and a scoreboard with a sidebar are live; with nothing to show they have no box
+        for (PreviewData.Facts f : new PreviewData.Facts[]{NOTHING, NO_PLAYER, LIVE}) {
+            assertFalse(PreviewData.sample("scoreboard", f));
+            assertFalse(PreviewData.sample("chat", f));
+            assertFalse(PreviewData.sample("tablist", f));
+        }
+    }
+
+    @Test
     public void keystrokesSessionStatsAndUnknownIdsAreAlwaysLive() {
         for (PreviewData.Facts f : new PreviewData.Facts[]{NOTHING, NO_PLAYER, LIVE}) {
             assertFalse(PreviewData.sample("keystrokes", f));

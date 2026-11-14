@@ -38,8 +38,9 @@ public interface TabOverlayScale {
         float es = TabListLayout.effectiveScale(s, measure[4], sw);
         float[] rect = {measure[0], measure[1], measure[2], measure[3]};
         float[] auto = TabListLayout.autoBox(rect, sw, es);
-        float[] box = cfg == null ? auto
-                : OverlayBox.placed(rect, es, cfg.tabListHudX, cfg.tabListHudY, cfg.tabListHudAnchor, sw, sh, auto);
+        // the stored spot to a fraction of a GUI pixel (Edit HUD moves it by one screen pixel)
+        HudModuleState st = cfg == null ? null : HudModules.get(cfg, BedwarsHudRenderer.TAB_LIST_HUD);
+        float[] box = st == null ? auto : OverlayBox.placed(rect, es, st.exactX(), st.exactY(), st.anchor, sw, sh, auto);
         return new float[]{box[0], box[1], box[2], box[3], es};
     }
 }

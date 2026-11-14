@@ -269,6 +269,21 @@ public class BedwarsHudRenderer {
     }
 
     /**
+     * The largest tab list item scale whose list still fits the screen width (cycle B's fit rule,
+     * {@link TabListLayout#effectiveScale}): Edit HUD's corner resize stops growing there. {@code CornerResize.MAX_SCALE}
+     * when there is no list to measure.
+     */
+    public static float tabListFitScale(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null || mc.ingameGUI == null || mc.theWorld == null) return CornerResize.MAX_SCALE;
+        Scoreboard board = mc.theWorld.getScoreboard();
+        if (board == null) return CornerResize.MAX_SCALE;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] m = ((TabOverlayScale) mc.ingameGUI.getTabList())
+                .bedwarsqol$measure(r.getScaledWidth(), board, board.getObjectiveInDisplaySlot(0));
+        return m == null ? CornerResize.MAX_SCALE : TabListLayout.effectiveScale(CornerResize.MAX_SCALE, m[4], r.getScaledWidth());
+    }
+
+    /**
      * The chat item's slot ({@link ChatLayout}): {@code closedLineCount} rows whose bottom the item's anchor
      * holds, never clamped, as {@code {x, y, w, h, rowHeight, closedRows}}; null before the in-game GUI exists.
      */
@@ -378,6 +393,8 @@ public class BedwarsHudRenderer {
         float sw = r.getScaledWidth(), sh = r.getScaledHeight();
         List<HudBox> boxes = getEditorBoxes(mc, cfg); // every spot as it is now, before the first write
         for (HudBox b : boxes) {
+            // only modules the Auto layout places: an overlay on Auto sits at its vanilla spot, which no change moves
+            if (!HudModules.ids().contains(b.id)) continue;
             HudModuleState s = HudModules.get(cfg, b.id);
             if (s != null && HudPins.shouldPin(b.id, b.shown, s.anchor, changingIds)) {
                 setHudAbsolutePosition(cfg, b.id, b.x, b.y, b.width, b.height, sw, sh);
@@ -395,14 +412,15 @@ public class BedwarsHudRenderer {
         cfg.sanitize();
         ScaledResolution r = new ScaledResolution(mc);
         List<DefaultHudLayout.Item> items = new ArrayList<DefaultHudLayout.Item>();
-        for (String id : HudModules.ids()) {
+        // every item: the scoreboard, chat and tab list have no spot, so they go back to Auto (their vanilla spot)
+        for (String id : HudModules.allIds()) {
             HudModuleState s = HudModules.get(cfg, id);
             if (s == null) continue;
             Size size = layoutSize(mc, cfg, id);
             items.add(new DefaultHudLayout.Item(id, size.width, size.height, layoutPad(cfg, id), s.enabled));
         }
         Map<String, DefaultHudLayout.Spot> spots = DefaultHudLayout.place(r.getScaledWidth(), r.getScaledHeight(), items);
-        for (String id : HudModules.ids()) {
+        for (String id : HudModules.allIds()) {
             DefaultHudLayout.Spot spot = spots.get(id);
             if (spot != null) HudModules.set(cfg, id, spot.apply(HudModules.get(cfg, id)));
         }
@@ -727,11 +745,13 @@ public class BedwarsHudRenderer {
 
     /** Drawn box {x, y, width, height} of every module still in its default spot, by id. */
     private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
-        String key = layoutKey(cfg, sw, sh);
+        List<float[]> overlays = overlayObstacles(mc, cfg, sw, sh);
+        String key = layoutKey(cfg, sw, sh, overlays);
         if (key.equals(layoutKey)) return layoutCache;
 
         List<HudLayout.Box> obstacles = new ArrayList<HudLayout.Box>();
         obstacles.add(new HudLayout.Box((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H));
+        for (float[] o : overlays) obstacles.add(new HudLayout.Box(o[0], o[1], o[2], o[3]));
         List<HudLayout.Item> shown = new ArrayList<HudLayout.Item>();
         List<HudLayout.Item> hidden = new ArrayList<HudLayout.Item>();
         for (Map.Entry<String, Spot[]> e : DEFAULT_SPOTS.entrySet()) {
@@ -757,10 +777,31 @@ public class BedwarsHudRenderer {
         return layoutCache;
     }
 
+    /**
+     * The scoreboard and chat as Auto-layout obstacles (as walls in Edit HUD; the tab list is neither), whole GUI px:
+     * the scoreboard's live box while it shows, and the chat's whole closed-chat slot, so the layout does not move
+     * while the chat fills up. (Edit HUD frames the chat's visible rows.)
+     */
+    private static List<float[]> overlayObstacles(Minecraft mc, ClientSettings cfg, float sw, float sh) {
+        List<float[]> out = new ArrayList<float[]>(2);
+        HudModuleState sb = HudModules.get(cfg, SCOREBOARD_HUD);
+        HudBox board = sb != null && sb.enabled ? scoreboardBox(mc, cfg) : null;
+        if (board != null) out.add(whole(board.x, board.y, board.width, board.height));
+        float[] slot = chatSlot(mc, cfg, sw, sh);
+        if (slot != null) out.add(whole(slot[0], slot[1], slot[2], slot[3]));
+        return out;
+    }
+
+    private static float[] whole(float x, float y, float w, float h) {
+        float x0 = (float) Math.floor(x), y0 = (float) Math.floor(y);
+        return new float[]{x0, y0, (float) Math.ceil(x + w) - x0, (float) Math.ceil(y + h) - y0};
+    }
+
     /** Everything the default layout depends on; it is worked out again only when this changes. */
-    private static String layoutKey(ClientSettings cfg, float sw, float sh) {
+    private static String layoutKey(ClientSettings cfg, float sw, float sh, List<float[]> overlays) {
         // the font sizes every text module (Minecraft's snaps to the GUI scale, which the screen size follows)
         StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('|').append(cfg.guiFont);
+        for (float[] o : overlays) b.append("|o").append(o[0]).append(',').append(o[1]).append(',').append(o[2]).append(',').append(o[3]);
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
             if (s != null) b.append('|').append(s.exactX()).append(',').append(s.exactY()).append(',').append(s.anchor)

@@ -2081,7 +2081,7 @@ def smoke_clutch(s, cfg):
 EDIT_HUD_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
                    "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
                    "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud", "fps": "fpsHud", "cps": "cpsHud",
-                   "ping": "pingHud"}
+                   "ping": "pingHud", "scoreboard": "scoreboardHud", "chat": "chatHud", "tablist": "tabListHud"}
 # Edit HUD (A4-edithud): each module's switch in ClientSettings and the HudModules ids it shows.
 EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", ("armor",)),
                     ("inventoryHudEnabled", ("inventory",)), ("genTimersEnabled", ("diamondtimer", "emeraldtimer")),
@@ -2191,9 +2191,14 @@ class EditHudRun:
             self.s.call("/up", {"x": x, "y": y, "device": 1})
         return (cx, cy), (x, y)
 
-    def menu_click(self, item, label):
+    def overlay_box(self, item):
+        """The scoreboard's, chat's or tab list's box from cycle B's overlay-boxes probe (pad 0), or None."""
+        b = (self.s.probe("overlay-boxes").get("items") or {}).get(item)
+        return None if b is None else dict(b, pad=0)
+
+    def menu_click(self, item, label, box=None):
         """Right-clicks `item`'s centre and clicks its menu row `label`; returns the rows seen (labels)."""
-        cx, cy = gui_centre(self.box(item))
+        cx, cy = gui_centre(box or self.box(item))
         self.s.call("/click", {"x": cx, "y": cy, "button": 1})
         rows = ((self.probe().get("editor") or {}).get("menu") or {}).get("rows") or []
         hit = [r for r in rows if r["label"] == label]
@@ -2249,8 +2254,15 @@ class EditHudRun:
         return self.s.probe("hud-boxes")
 
     def box(self, item, hb=None):
+        """`item`'s editor box; the tab list (never an editor box) comes from cycle B's overlay-boxes probe."""
         hb = hb or self.probe()
-        return next(b for b in hb["boxes"] if b["id"] == item)
+        for b in hb["boxes"]:
+            if b["id"] == item:
+                return b
+        ob = self.overlay_box(item) if item in ("scoreboard", "chat", "tablist") else None
+        if ob is None:
+            raise KeyError(item)
+        return ob
 
     def scale(self, n):
         self.s.call("/scale", {"n": n})  # the bridge reinits the open screen
@@ -2808,6 +2820,103 @@ def edithud_e10(run, item="potion"):
                                     "args": ARG_SEP.join([item, "true" if on0 else "false"])})
 
 
+def edithud_e10_overlays(run):
+    """E10, cycle B's items: the chat and tab list menus have no Show or Hide, and Delete leaves chat on."""
+    s = run.s
+    run.show_only(None)
+    chat = run.box("chat")
+    rows = run.menu_click("chat", "-", box=chat)
+    s.check("E10 chat's menu has no Show or Hide", "Show" not in rows and "Hide" not in rows and rows, rows)
+    cx, cy = gui_centre(chat)
+    s.call("/click", {"x": cx, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    s.check("E10 Delete leaves chat on", run.state("chat", run.probe())["enabled"])
+    s.call("/keyhold", {"name": "key.playerlist", "state": "on", "raw": 1})
+    try:
+        time.sleep(0.3)
+        tab = run.overlay_box("tablist")
+        if not s.check("E10 the tab list has a box while Tab is held", tab is not None):
+            return
+        rows = run.menu_click("tablist", "-", box=tab)
+        s.check("E10 the tab list's menu has no Show or Hide", "Show" not in rows and "Hide" not in rows and rows, rows)
+    finally:
+        s.try_call("/keyhold", {"name": "key.playerlist", "state": "off", "raw": 1})
+
+
+TAB_SCOREBOARD = ("/scoreboard objectives remove cobtab", "/scoreboard objectives add cobtab dummy Cobblify",
+                  "/scoreboard players set CobblifyDev cobtab 1", "/scoreboard objectives setdisplay list cobtab",
+                  "/scoreboard objectives setdisplay sidebar cobtab")
+
+
+def edithud_e12(run):
+    """E12: holding Tab (its keyboard state, held raw, so the release is the editor's own path) shows only the tab
+    list, scoreboard and chat; the tab list stops flush at the scoreboard, its corner resize stops there too, and it
+    passes over Inventory's spot (the Cobblify items are no walls then); on release the editor lets go of the binding
+    and the items are back."""
+    s = run.s
+    run.show_only(None)
+    for c in TAB_SCOREBOARD:
+        s.cmd(c)
+    s.call("/close")
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.4)
+    inventory = run.box("inventory")
+    s.call("/keyhold", {"name": "key.playerlist", "state": "on", "raw": 1})
+    try:
+        time.sleep(0.4)
+        ed = run.probe().get("editor") or {}
+        s.check("E12 held: tabHeld and the player-list binding pressed", ed.get("tabHeld") is True
+                and ed.get("playerListPressed") is True, ed)
+        s.check("E12 held: only the tab list, scoreboard and chat", set(ed.get("visibleIds") or []) == {"tablist", "scoreboard", "chat"},
+                ed.get("visibleIds"))
+        s.shot("edithud-e12-held")
+        sb, tab = run.overlay_box("scoreboard"), run.overlay_box("tablist")
+        if not s.check("E12 the scoreboard and tab list have boxes", sb is not None and tab is not None, (sb, tab)):
+            return
+        tx, ty, tw, th = vis(tab)
+        bx, by, bw, bh = vis(sb)
+        # beside the scoreboard at its height, 30 GUI px short of it (Alt: free), then 20 px into it (walls)
+        run.device_drag("tablist", (bx - 30 - tw) - tx, (by + bh / 2.0 - th / 2.0) - ty, mods="alt")
+        tab = run.overlay_box("tablist")
+        run.device_drag("tablist", 50, 0)
+        tab = run.overlay_box("tablist")
+        tx, ty, tw, th = vis(tab)
+        s.check("E12 the tab list stops flush at the scoreboard", close_enough(tx + tw, bx, 1e-3),
+                "right %.4f, scoreboard left %.4f" % (tx + tw, bx))
+        # its bottom-right corner, dragged well past the scoreboard: it grows only up to it
+        run.device_drag("tablist", -40, 0)
+        tab = run.overlay_box("tablist")
+        tx, ty, tw, th = vis(tab)
+        cx, cy = gui_centre(tab)
+        s.call("/click", {"x": cx, "y": cy})
+        gx, gy = int(tx + tw - 1), int(ty + th - 1)
+        s.call("/down", {"x": gx, "y": gy})
+        s.call("/drag", {"x": gx + 20, "y": gy})
+        s.call("/drag", {"x": gx + 150, "y": gy})
+        s.call("/up", {"x": gx + 150, "y": gy})
+        tab = run.overlay_box("tablist")
+        s.check("E12 the corner resize stops at the scoreboard", overlap_area(tab, sb) == 0
+                and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))
+        # Inventory is hidden while Tab is held, so it is no wall
+        ix, iy, iw, ih = vis(inventory)
+        tx, ty, tw, th = vis(tab)
+        run.device_drag("tablist", ix - tx, iy - ty)
+        tab = run.overlay_box("tablist")
+        s.check("E12 the tab list passes over Inventory's spot", overlap_area(tab, inventory) > 0,
+                "%s vs Inventory %s" % (vis(tab), vis(inventory)))
+    finally:
+        s.try_call("/keyhold", {"name": "key.playerlist", "state": "off", "raw": 1})
+    time.sleep(0.4)
+    ed = run.probe().get("editor") or {}
+    s.check("E12 released: the editor let go of the binding", ed.get("tabHeld") is False
+            and ed.get("playerListPressed") is False, ed)
+    s.check("E12 released: the Cobblify items are back", "inventory" in (ed.get("visibleIds") or []), ed.get("visibleIds"))
+    s.shot("edithud-e12-released")
+    for c in ("/scoreboard objectives setdisplay list", "/scoreboard objectives setdisplay sidebar",
+              "/scoreboard objectives remove cobtab"):
+        s.try_call("/command", post={"command": c})
+
+
 def edithud_e13(run, item="potion"):
     """E13: no Reset All (the field and method are gone, shot under the crosshair); Delete hides and undo brings it
     back; Reset Position puts it on Auto and undo restores; Reset Size gives the HUD Size default."""
@@ -2841,7 +2950,8 @@ def edithud_e13(run, item="potion"):
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
 EDIT_HUD_CHECKS = [("E1", edithud_e1_e2), ("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
                    ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E11", edithud_e11),
-                   ("E11k", edithud_e11k), ("E10", edithud_e10), ("E13", edithud_e13), ("E15", edithud_e15)]
+                   ("E11k", edithud_e11k), ("E10", edithud_e10), ("E10o", edithud_e10_overlays),
+                   ("E12", edithud_e12), ("E13", edithud_e13), ("E15", edithud_e15)]
 
 
 def edithud_e0(s, hb, enabled):

@@ -129,4 +129,39 @@ public class HudWallsTest {
         assertEquals(182f, z.w, 0f);
         assertEquals(50f, z.h, 0f);
     }
+
+    // ----- which boxes are walls (the rule the editor feeds; edit-hud 7b, G28, G29, D10) -----
+
+    @Test
+    public void everyOtherShownItemIsAWallButTheTabList() {
+        assertTrue(HudWalls.isWall("potion", "armor", true, false));
+        assertTrue("chat and HUD items are walls to each other (G29)", HudWalls.isWall("potion", "chat", true, false));
+        assertTrue(HudWalls.isWall("chat", "keystrokes", true, false));
+        assertTrue(HudWalls.isWall("potion", "scoreboard", true, false));
+        assertFalse("a hidden item is no wall", HudWalls.isWall("potion", "armor", false, false));
+        assertFalse("nor is the item itself", HudWalls.isWall("potion", "potion", true, false));
+        assertFalse("the tab list is never an obstacle", HudWalls.isWall("potion", "tablist", true, false));
+    }
+
+    @Test
+    public void whileTabIsHeldTheTabListsWallsAreScoreboardAndChat() {
+        assertTrue(HudWalls.isWall("tablist", "scoreboard", true, true));
+        assertTrue(HudWalls.isWall("tablist", "chat", true, true));
+        assertFalse("the Cobblify items are hidden while Tab is held", HudWalls.isWall("tablist", "inventory", true, true));
+        assertFalse(HudWalls.isWall("tablist", "potion", true, true));
+        assertFalse(HudWalls.isWall("tablist", "scoreboard", false, true));
+    }
+
+    @Test
+    public void chatsHotbarWallIsTheHotbarOnly() {
+        HudWalls.Rect chat = HudWalls.hotbarWall("chat", 480, 270);
+        assertEquals(149f, chat.x, 0f);
+        assertEquals(248f, chat.y, 0f);
+        assertEquals(182f, chat.w, 0f);
+        assertEquals(22f, chat.h, 0f);
+        HudWalls.Rect other = HudWalls.hotbarWall("potion", 480, 270);
+        assertEquals(220f, other.y, 0f);
+        assertEquals(50f, other.h, 0f);
+        assertEquals(50f, HudWalls.hotbarWall("tablist", 480, 270).h, 0f);
+    }
 }

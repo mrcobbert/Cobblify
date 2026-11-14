@@ -89,7 +89,9 @@ public final class OverlayScale {
         float s = cfg == null ? OverlayItems.DEFAULT_SCALE : cfg.scoreboardHudScale;
         float[] auto = ScoreboardLayout.autoBox(rect, sw, sh, s);
         if (cfg == null) return auto;
-        return OverlayBox.placed(rect, s, cfg.scoreboardHudX, cfg.scoreboardHudY, cfg.scoreboardHudAnchor, sw, sh, auto);
+        // the stored spot to a fraction of a GUI pixel (Edit HUD moves it by one screen pixel)
+        HudModuleState st = HudModules.get(cfg, BedwarsHudRenderer.SCOREBOARD_HUD);
+        return OverlayBox.placed(rect, s, st.exactX(), st.exactY(), st.anchor, sw, sh, auto);
     }
 
     /** Maps the vanilla sidebar onto the item's box on the current matrix. */

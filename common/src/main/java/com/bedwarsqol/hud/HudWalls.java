@@ -55,6 +55,30 @@ public final class HudWalls {
         return new Rect((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H);
     }
 
+    /**
+     * Whether item {@code other} (shown or not) is a wall for a drag of {@code moving}: every other shown item, the
+     * scoreboard and chat included (chat and HUD items are walls to each other, G29), but never the tab list. While
+     * Tab is held ({@code tabHeld}, moving the tab list) the Cobblify items are hidden, so its walls are the
+     * scoreboard and chat only (G28). Ids are the HUD item ids ({@code scoreboard}, {@code chat}, {@code tablist}).
+     */
+    public static boolean isWall(String moving, String other, boolean otherShown, boolean tabHeld) {
+        if (!otherShown || other == null || other.equals(moving) || TAB_LIST.equals(other)) return false;
+        return !tabHeld || SCOREBOARD.equals(other) || CHAT.equals(other);
+    }
+
+    /**
+     * The hotbar wall for a drag of {@code moving}: the 182x50 zone with the health, armour and food rows, except for
+     * chat, which may sit over those rows as vanilla's does on a narrow screen, so its wall is the 182x22 hotbar (D10).
+     */
+    public static Rect hotbarWall(String moving, float sw, float sh) {
+        if (CHAT.equals(moving)) return new Rect((sw - HOTBAR_W) / 2f, sh - HOTBAR_H, HOTBAR_W, HOTBAR_H);
+        return hotbarZone(sw, sh);
+    }
+
+    private static final String SCOREBOARD = "scoreboard";
+    private static final String CHAT = "chat";
+    private static final String TAB_LIST = "tablist";
+
     /** Whether the box (x, y, w, h) overlaps {@code o} by more than {@link #EPS}. */
     public static boolean overlaps(float x, float y, float w, float h, Rect o) {
         return x < o.x + o.w - EPS && x + w > o.x + EPS && y < o.y + o.h - EPS && y + h > o.y + EPS;
