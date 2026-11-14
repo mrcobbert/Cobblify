@@ -292,7 +292,7 @@ class EditHudSmoke(unittest.TestCase):
                 return "/dev/null", (1, 1, [b"\0\0\0"])
 
         s = Fake("dev", "test")
-        cobdev.smoke_edithud(s, "com.bedwarsqol.BedwarsQol.config", "dev")
+        cobdev.smoke_edithud(s, "com.bedwarsqol.BedwarsQol.config", "dev", checks=("E0",))
         return s, calls, fields
 
     def test_restores_fields_and_scale_after_a_pass(self):
@@ -312,6 +312,84 @@ class EditHudSmoke(unittest.TestCase):
 
     def test_a_missing_module_fails_e0(self):
         s, _, _ = self.run_step(boxes=[{"id": "potion", "shown": True}])
+        self.assertEqual(s.step["status"], "fail")
+
+
+class FakeEditor(cobdev.Smoke):
+    """A tiny model of Edit HUD for the A4-edithud checks: boxes in GUI px, arrows move one screen pixel (Shift
+    ten), a device-pixel drag moves start + travel / scale, and the left screen edge snaps within 4 screen px."""
+
+    def __init__(self, boxes, scale=2):
+        cobdev.Smoke.__init__(self, "dev", "test")
+        self.begin("A4-edithud", "test")
+        self.boxes = {b["id"]: dict(b) for b in boxes}
+        self.sc, self.selected, self.press = scale, None, None
+
+    def call(self, path, params=None, post=None, timeout=60):
+        q = params or post or {}
+        if path == "/scale":
+            self.sc = int(q["n"])
+        elif path == "/probe":
+            return {"scale": self.sc, "boxes": [dict(b) for b in self.boxes.values()]}
+        elif path == "/click":
+            self.selected = next(i for i, b in self.boxes.items()
+                                 if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
+        elif path == "/key" and self.selected:
+            step = 10 if q.get("mods") == "shift" else 1
+            self.boxes[self.selected]["x"] += step * (1 if q["code"] == cobdev.KEYS["right"] else -1) / float(self.sc)
+        elif path == "/down":
+            b = next(b for b in self.boxes.values() if b["shown"])
+            self.selected, self.press = b["id"], (q["x"], b["x"])
+        elif path == "/drag":
+            b = self.boxes[self.selected]
+            x = self.press[1] + (q["x"] - self.press[0]) / float(self.sc)
+            if q.get("mods") != "alt" and 0 < x - b["pad"] <= 4.0 / self.sc:
+                x = b["pad"]
+            b["x"] = x
+        return {"ok": True, "value": False}
+
+    def shot(self, tag, wait=300):
+        return "/dev/null", (1, 1, [b"\0\0\0"])
+
+
+class EditHudChecks(unittest.TestCase):
+    def run_check(self, fn, boxes):
+        s = FakeEditor(boxes)
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            fn(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        return s
+
+    def test_e8_passes_on_an_editor_that_moves_one_screen_pixel(self):
+        s = self.run_check(cobdev.edithud_e8, [{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertEqual(len([c for c in s.step["checks"] if c["check"].startswith("E8")]), 8)
+
+    def test_e9_passes_when_only_the_edge_snaps(self):
+        s = self.run_check(cobdev.edithud_e9, [{"id": "heightlimit", "x": 3, "y": 100, "w": 120, "h": 38, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+
+    def test_e8_fails_on_an_editor_that_moves_whole_gui_pixels(self):
+        class Coarse(FakeEditor):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = FakeEditor.call(self, path, params, post, timeout)
+                if path == "/key" and self.selected:
+                    b = self.boxes[self.selected]
+                    b["x"] = float(round(b["x"]))
+                return r
+
+        s = Coarse([{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1, "shown": True}])
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e8(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
         self.assertEqual(s.step["status"], "fail")
 
 

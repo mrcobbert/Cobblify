@@ -95,6 +95,11 @@ divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
 divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
 divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
 
+# Edit HUD of the HUD parity work (Ornithe only): one-screen-pixel moves, a 4 px snap,
+# walls instead of pushing, the menu rule, Tab-held tab list editing. Lunar keeps the
+# old editor.
+divergent main com/bedwarsqol/gui/EditHudGui.java
+
 # ---------------------------------------------------------------------------
 # one-sided: exists in one tree only
 # ---------------------------------------------------------------------------

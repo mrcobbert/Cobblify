@@ -12,6 +12,8 @@ import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.hud.CornerResize;
+import com.bedwarsqol.hud.HudDrag;
+import com.bedwarsqol.hud.HudGrid;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.HudSnapper;
@@ -54,7 +56,6 @@ public class EditHudGui extends GuiScreen {
     private static final int TEXT_DIM = 0xFFAAAAAA;
     private static final float HANDLE = 3f;                 // corner handle side, GUI px
     private static final float HANDLE_REACH = 4f;           // how far from a corner a press still grabs it
-    private static final float SNAP_DEVICE_PX = 8f;         // snap threshold in real pixels, the same at every GUI scale
     private static final long OPEN_FADE_MS = 160L;
     private static final long GUIDE_FADE_MS = 200L;
     private static final long NUDGE_GROUP_MS = 800L;        // arrow presses this close together undo as one step
@@ -350,6 +351,8 @@ public class EditHudGui extends GuiScreen {
             }
         }
 
+        // Grab offsets and the press point to a fraction of a GUI pixel, so every step can be one screen pixel.
+        float[] p = eventPointer();
         // A corner of the selected or hovered module starts a resize.
         HudBox grabbed = cornerTarget(boxes, mouseX, mouseY);
         if (grabbed != null) {
@@ -360,16 +363,16 @@ public class EditHudGui extends GuiScreen {
                     HudModules.get(cfg, grabbed.id).scale);
             // The handle sits on the drawn frame, outside the content; keep that offset so the size
             // does not jump on the first move.
-            grabX = mouseX - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
-            grabY = mouseY - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
+            grabX = p[0] - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
+            grabY = p[1] - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
             badgeX = mouseX;
             badgeY = mouseY;
             beginChange(Mode.RESIZE);
             return;
         }
 
-        clickX = mouseX;
-        clickY = mouseY;
+        clickX = p[0];
+        clickY = p[1];
         List<String> stack = stackAt(boxes, mouseX, mouseY);
         if (stack.isEmpty()) {
             selectedId = null;
@@ -378,8 +381,8 @@ public class EditHudGui extends GuiScreen {
         wasSelectedBeforeClick = stack.contains(selectedId);
         if (!wasSelectedBeforeClick) selectedId = stack.get(0);
         HudBox box = boxById(boxes, selectedId);
-        grabX = mouseX - box.x;
-        grabY = mouseY - box.y;
+        grabX = p[0] - box.x;
+        grabY = p[1] - box.y;
         beginChange(Mode.DRAG);
     }
 
@@ -387,15 +390,16 @@ public class EditHudGui extends GuiScreen {
     protected void mouseClickMove(int mouseX, int mouseY, int clickedMouseButton, long timeSinceLastClick) {
         super.mouseClickMove(mouseX, mouseY, clickedMouseButton, timeSinceLastClick);
         if (clickedMouseButton != 0 || selectedId == null) return;
+        float[] p = eventPointer();
         if (mode == Mode.DRAG) {
-            if (!moved && Math.abs(mouseX - clickX) < 1f && Math.abs(mouseY - clickY) < 1f) return;
+            if (!moved && Math.abs(p[0] - clickX) < 1f && Math.abs(p[1] - clickY) < 1f) return;
             moved = true;
-            drag(mouseX - grabX, mouseY - grabY);
+            drag(p[0] - grabX, p[1] - grabY);
         } else if (mode == Mode.RESIZE) {
             moved = true;
             badgeX = mouseX;
             badgeY = mouseY;
-            resizeTo(mouseX - grabX, mouseY - grabY);
+            resizeTo(p[0] - grabX, p[1] - grabY);
         }
     }
 
@@ -434,7 +438,8 @@ public class EditHudGui extends GuiScreen {
             return;
         }
         if (selectedId == null) return;
-        int step = isShiftKeyDown() ? 10 : 1;
+        int step = isShiftKeyDown() ? 10 : 1; // screen pixels
+
         if (keyCode == Keyboard.KEY_UP) nudge(0, -step);
         else if (keyCode == Keyboard.KEY_DOWN) nudge(0, step);
         else if (keyCode == Keyboard.KEY_LEFT) nudge(-step, 0);
@@ -481,22 +486,19 @@ public class EditHudGui extends GuiScreen {
         guidesReleasedMs = Minecraft.getSystemTime();
     }
 
+    /** Moves the dragged module's content towards (rawX, rawY): where it was at the press plus the pointer's travel. */
     private void drag(float rawX, float rawY) {
         ClientSettings cfg = settings();
         List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
         HudBox box = boxById(boxes, selectedId);
         if (box == null) return;
-        float vx = rawX - box.pad, vy = rawY - box.pad;
-        if (snapping()) {
-            List<HudSnapper.Target> targets = snapTargets(boxes, box.id);
-            snapX = HudSnapper.snap(vx, box.visualWidth(), true, width, targets, snapThreshold());
-            snapY = HudSnapper.snap(vy, box.visualHeight(), false, height, targets, snapThreshold());
-            vx = snapX.position;
-            vy = snapY.position;
-        } else {
-            snapX = snapY = null;
-        }
-        place(cfg, box, vx + box.pad, vy + box.pad);
+        boolean snap = snapping();
+        List<HudSnapper.Target> targets = snap ? snapTargets(boxes, box.id) : Collections.<HudSnapper.Target>emptyList();
+        HudDrag.Result r = HudDrag.move(rawX - box.pad, rawY - box.pad, box.visualWidth(), box.visualHeight(),
+                width, height, scaleFactor(), snap, targets);
+        snapX = r.snapX;
+        snapY = r.snapY;
+        place(cfg, box, r.x + box.pad, r.y + box.pad);
     }
 
     private void resizeTo(float cornerX, float cornerY) {
@@ -513,6 +515,7 @@ public class EditHudGui extends GuiScreen {
                 scaled.width, scaled.height, width, height);
     }
 
+    /** Moves the selected module by whole screen pixels from wherever it is, sub-pixel offset included. */
     private void nudge(int dx, int dy) {
         ClientSettings cfg = settings();
         HudBox box = selectedBox();
@@ -520,7 +523,8 @@ public class EditHudGui extends GuiScreen {
         long now = Minecraft.getSystemTime();
         if (now - lastNudgeMs > NUDGE_GROUP_MS) history.record(HudModules.snapshot(cfg));
         lastNudgeMs = now;
-        place(cfg, box, box.x + dx, box.y + dy);
+        int sf = scaleFactor();
+        place(cfg, box, HudGrid.nudged(box.x, dx, sf), HudGrid.nudged(box.y, dy, sf));
         markDirty();
     }
 
@@ -681,8 +685,16 @@ public class EditHudGui extends GuiScreen {
         return targets;
     }
 
-    private float snapThreshold() {
-        return SNAP_DEVICE_PX / new ScaledResolution(mc).getScaleFactor();
+    private int scaleFactor() {
+        return new ScaledResolution(mc).getScaleFactor();
+    }
+
+    /**
+     * The pointer of the mouse event being handled, in GUI px to a fraction (vanilla passes whole GUI px). Valid only
+     * inside {@code handleMouseInput}, which calls mouseClicked, mouseClickMove and mouseReleased.
+     */
+    private float[] eventPointer() {
+        return HudGrid.pointer(Mouse.getEventX(), Mouse.getEventY(), mc.displayHeight, scaleFactor());
     }
 
     private static boolean snapping() {

@@ -1548,28 +1548,23 @@ EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", (
                     ("heightLimitEnabled", ("heightlimit",))]
 
 
-def smoke_edithud(s, cfg, mode):
+def smoke_edithud(s, cfg, mode, checks=None):
     """Edit HUD driven precisely through --mods, --device, keyhold --raw and probe hud-boxes (edit-hud PLAN,
-    runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks here. Every touched
-    field and the GUI scale go back to what they were, whatever happens in between."""
-    s.begin("A4-edithud", "Edit HUD: hud-boxes probe on an open editor (E0)")
+    runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
+    Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
+    limits the run to those ids (all when None)."""
+    s.begin("A4-edithud", "Edit HUD: probe, fine moves, snap (E0, E8, E9)")
     if not cfg or not s.has(SCREENS["hud"]):
         return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
-    touched = {}  # field path -> value before the step
+    run = EditHudRun(s, cfg)
     old_scale = (s.status() or {}).get("guiScaleSetting")
     try:
         for name, _ in EDIT_HUD_MODULES:
-            path = find_field(s, cfg, [name])
-            if path:
-                touched[path] = s.field(path).get("value")
+            run.remember(name)
         if mode == "dev":
             s.call("/size", {"w": 1280, "h": 720})  # size is dev-only (Minecraft.resize by its MCP name)
         s.call("/scale", {"n": 2})
-        enabled = set()
-        for name, ids in EDIT_HUD_MODULES:
-            if cfg + "." + name in touched:
-                s.field(cfg + "." + name, True)
-                enabled.update(ids)
+        enabled = run.show_only(None)
         s.call("/open", {"class": SCREENS["hud"]})
         time.sleep(0.5)
         try:
@@ -1579,15 +1574,146 @@ def smoke_edithud(s, cfg, mode):
                 return s.unavailable("the running bridge has no hud-boxes probe (stage a build with it)")
             raise
         edithud_e0(s, hb, enabled)
-    finally:
-        for path, value in touched.items():
+        for cid, fn in EDIT_HUD_CHECKS:
+            if checks is not None and cid not in checks:
+                continue
             try:
-                s.field(path, value)
-            except ApiError:
-                pass
+                fn(run)
+            except (ApiError, KeyError, TypeError, ValueError, StopIteration) as e:
+                s.check("%s ran to the end" % cid, False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        run.restore()
         if old_scale is not None:
             s.try_call("/scale", {"n": old_scale})
         s.try_call("/close")
+
+
+class EditHudRun:
+    """One A4-edithud run: the fields it touched (restored at the end) and small helpers over probe hud-boxes."""
+
+    def __init__(self, s, cfg):
+        self.s, self.cfg, self.touched = s, cfg, {}
+
+    def remember(self, name):
+        path = self.cfg + "." + name
+        if path not in self.touched:
+            r, _ = self.s.try_call("/field", post={"path": path})
+            if r is not None:
+                self.touched[path] = r.get("value")
+        return path if path in self.touched else None
+
+    def set(self, name, value):
+        path = self.remember(name)
+        if path:
+            self.s.field(path, value)
+        return path
+
+    def restore(self):
+        for path, value in self.touched.items():
+            try:
+                self.s.field(path, value)
+            except ApiError:
+                pass
+
+    def show_only(self, ids):
+        """Switches every module on (ids None) or only the ones showing an id in `ids`; returns the shown ids."""
+        shown = set()
+        for name, mids in EDIT_HUD_MODULES:
+            on = ids is None or any(i in ids for i in mids)
+            if self.set(name, on) and on:
+                shown.update(mids)
+        time.sleep(0.2)
+        return shown
+
+    def probe(self):
+        return self.s.probe("hud-boxes")
+
+    def box(self, item, hb=None):
+        hb = hb or self.probe()
+        return next(b for b in hb["boxes"] if b["id"] == item)
+
+    def scale(self, n):
+        self.s.call("/scale", {"n": n})  # the bridge reinits the open screen
+        time.sleep(0.3)
+
+
+def visual_x(b):
+    return b["x"] - b["pad"]
+
+
+def gui_centre(b):
+    return int(b["x"] + b["w"] / 2.0), int(b["y"] + b["h"] / 2.0)
+
+
+def device_centre(b, scale):
+    """A box's centre in display pixels from the top-left (for --device)."""
+    return int(round((b["x"] + b["w"] / 2.0) * scale)), int(round((b["y"] + b["h"] / 2.0) * scale))
+
+
+def edithud_e8(run, scales=(2, 3)):
+    """E8: arrows move exactly one screen pixel (Shift ten), and one device pixel of drag moves one screen pixel,
+    from whatever sub-pixel offset the item starts at. Only Inventory shows, so no wall or other edge is near."""
+    s = run.s
+    run.show_only({"inventory"})
+    for sc in scales:
+        run.scale(sc)
+        b = run.box("inventory")
+        cx, cy = gui_centre(b)
+        s.call("/click", {"x": cx, "y": cy})  # select it
+        x0 = b["x"]
+        for _ in range(3):
+            s.call("/key", {"code": KEYS["right"]})
+        x1 = run.box("inventory")["x"]
+        s.call("/key", {"code": KEYS["right"], "mods": "shift"})
+        b2 = run.box("inventory")
+        x2 = b2["x"]
+        s.check("E8 GUI %d: three right arrows move 3 screen px" % sc, close_enough(x1 - x0, 3.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x0, x1))
+        s.check("E8 GUI %d: Shift+right moves 10 screen px" % sc, close_enough(x2 - x1, 10.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x1, x2))
+        dx, dy = device_centre(b2, sc)
+        s.call("/down", {"x": dx, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx + 6, "y": dy, "device": 1})
+        xa = run.box("inventory")["x"]
+        s.call("/drag", {"x": dx + 7, "y": dy, "device": 1})
+        xb = run.box("inventory")["x"]
+        s.call("/up", {"x": dx + 7, "y": dy, "device": 1})
+        s.check("E8 GUI %d: a 6 device px drag moves 6 screen px" % sc, close_enough(xa - x2, 6.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x2, xa))
+        s.check("E8 GUI %d: one more device px moves exactly 1 screen px" % sc, close_enough(xb - xa, 1.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (xa, xb))
+    s.shot("edithud-e8")
+
+
+def edithud_e9(run, scales=(2, 3), item="heightlimit"):
+    """E9: dragged to 3 screen px from the left edge it snaps flush; at about 5 px it stays; with Alt at 2 px it
+    stays. Only Map Info shows (left-middle), so the screen edge is the only line near it."""
+    s = run.s
+    run.show_only({item})
+    for sc in scales:
+        run.scale(sc)
+        b = run.box(item)
+        vx = visual_x(b)
+        dx, dy = device_centre(b, sc)
+        s.call("/down", {"x": dx, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx + 40, "y": dy, "device": 1})  # past the 1 GUI px press-to-drag threshold
+        for target, mods in ((3, None), (5, None), (2, "alt")):
+            travel = int(round(target - vx * sc))  # device px from the press, so the left edge lands near `target`
+            params = {"x": dx + travel, "y": dy, "device": 1}
+            if mods:
+                params["mods"] = mods
+            s.call("/drag", params)
+            got = visual_x(run.box(item))
+            want = 0.0 if target == 3 else vx + travel / float(sc)
+            what = "snaps flush" if target == 3 else ("stays (Alt)" if mods else "stays")
+            s.check("E9 GUI %d: left edge %d screen px from the edge %s" % (sc, target, what),
+                    close_enough(got, want, 1e-3), "%.4f, want %.4f" % (got, want))
+        s.call("/up", {"x": dx, "y": dy, "device": 1})
+    s.shot("edithud-e9")
+
+
+# Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
+EDIT_HUD_CHECKS = [("E8", edithud_e8), ("E9", edithud_e9)]
 
 
 def edithud_e0(s, hb, enabled):
