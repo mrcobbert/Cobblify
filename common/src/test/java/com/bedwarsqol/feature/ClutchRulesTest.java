@@ -2,6 +2,12 @@ package com.bedwarsqol.feature;
 
 import org.junit.Test;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -21,16 +27,112 @@ public class ClutchRulesTest {
     }
 
     @Test
-    public void breaksOnlyCheapDefenceBlocks() {
+    public void breaksAnythingButBlastProofBlocks() {
         assertTrue(ClutchRules.breaks("minecraft:wool"));
         assertTrue(ClutchRules.breaks("minecraft:planks"));
         assertTrue(ClutchRules.breaks("minecraft:stained_hardened_clay"));
+        assertTrue(ClutchRules.breaks("minecraft:dirt"));
+        assertTrue(ClutchRules.breaks("minecraft:leaves"));
+        assertTrue(ClutchRules.breaks("minecraft:stone"));
         assertFalse(ClutchRules.breaks("minecraft:end_stone"));
         assertFalse(ClutchRules.breaks("minecraft:obsidian"));
+        assertFalse(ClutchRules.breaks("minecraft:bedrock"));
         assertFalse(ClutchRules.breaks("minecraft:glass"));
         assertFalse(ClutchRules.breaks("minecraft:stained_glass"));
         assertFalse(ClutchRules.breaks("minecraft:bed"));
         assertFalse(ClutchRules.breaks(null));
+    }
+
+    // ---- block ray-cast (vanilla 1.8.9 resistances: Block.getExplosionResistance = resistance / 5) ----
+
+    private static final float LEAVES = 0.2f, DIRT = 0.5f, WOOL = 0.8f, PLANKS = 3f, CLAY = 4.2f, STONE = 6f,
+            END_STONE = 9f;
+
+    /** A world of air holding the blocks put into it. */
+    private static final class Grid implements ClutchRules.Resistance {
+        private final Map<String, Float> blocks = new HashMap<String, Float>();
+
+        Grid put(int x, int y, int z, float resistance) {
+            blocks.put(x + "," + y + "," + z, resistance);
+            return this;
+        }
+
+        /** Fills the inclusive box with one block type. */
+        Grid box(int x0, int y0, int z0, int x1, int y1, int z1, float resistance) {
+            for (int x = x0; x <= x1; x++) for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) put(x, y, z, resistance);
+            return this;
+        }
+
+        @Override
+        public float at(int x, int y, int z) {
+            Float r = blocks.get(x + "," + y + "," + z);
+            return r == null ? -1f : r;
+        }
+    }
+
+    private static Set<String> blast(Grid grid, double x, double y, double z, long seed) {
+        Set<String> out = new HashSet<String>();
+        for (int[] p : ClutchRules.blastBlocks(x, y, z, ClutchRules.EXPLOSION_POWER, new Random(seed), grid)) {
+            out.add(p[0] + "," + p[1] + "," + p[2]);
+        }
+        return out;
+    }
+
+    /** Hypixel fireball jump: the blast sits 0.62 above the floor (recording, throw 6). */
+    @Test
+    public void fireballJumpAlwaysBreaksTheBlockUnderYou() {
+        for (float floor : new float[]{WOOL, DIRT, LEAVES}) {
+            Grid grid = new Grid().box(-4, 77, -4, 4, 79, 4, floor);
+            for (long seed = 0; seed < 40; seed++) {
+                Set<String> hit = blast(grid, 0.5, 80.62, 0.5, seed);
+                assertTrue("floor " + floor + " seed " + seed, hit.contains("0,79,0"));
+                // A single fireball digs a shallow crater, never three layers down.
+                for (String p : hit) assertFalse(p, p.split(",")[1].equals("77"));
+            }
+        }
+    }
+
+    @Test
+    public void woolWallNextToTheBlastLosesItsMiddle() {
+        Grid grid = new Grid().box(-2, 79, 2, 2, 83, 2, WOOL);
+        for (long seed = 0; seed < 40; seed++) {
+            assertTrue("seed " + seed, blast(grid, 0.5, 81.5, 1.0, seed).contains("0,81,2"));
+        }
+        // Out of reach: the strongest ray (2.6) is spent after 12 steps, 3.6 blocks.
+        for (long seed = 0; seed < 40; seed++) assertTrue(blast(grid, 0.5, 81.5, -2.0, seed).isEmpty());
+    }
+
+    @Test
+    public void glassShieldsTheWallBehindIt() {
+        Grid open = new Grid().box(-3, 78, 3, 3, 84, 3, WOOL);
+        Grid shielded = new Grid().box(-3, 78, 3, 3, 84, 3, WOOL).box(-4, 77, 2, 4, 85, 2, ClutchRules.SHIELD_RESISTANCE);
+        int openHits = 0;
+        for (long seed = 0; seed < 40; seed++) {
+            openHits += blast(open, 0.5, 81.5, 1.2, seed).size();
+            for (String p : blast(shielded, 0.5, 81.5, 1.2, seed)) assertFalse("wool behind glass broke: " + p, p.endsWith(",3"));
+        }
+        assertTrue(openHits > 0);
+    }
+
+    @Test
+    public void endStoneNeverBreaksAndWoodIsHarderThanWool() {
+        Grid endStone = new Grid().box(-3, 77, -3, 3, 79, 3, END_STONE);
+        for (long seed = 0; seed < 40; seed++) assertTrue(blast(endStone, 0.5, 80.02, 0.5, seed).isEmpty());
+
+        int wool = 0, planks = 0, clay = 0, stone = 0;
+        for (long seed = 0; seed < 40; seed++) {
+            wool += blast(new Grid().box(-3, 77, -3, 3, 79, 3, WOOL), 0.5, 80.62, 0.5, seed).size();
+            planks += blast(new Grid().box(-3, 77, -3, 3, 79, 3, PLANKS), 0.5, 80.62, 0.5, seed).size();
+            clay += blast(new Grid().box(-3, 77, -3, 3, 79, 3, CLAY), 0.5, 80.62, 0.5, seed).size();
+            stone += blast(new Grid().box(-3, 77, -3, 3, 79, 3, STONE), 0.5, 80.62, 0.5, seed).size();
+        }
+        assertTrue(wool > planks && planks > clay && clay >= stone);
+        assertTrue("wood breaks sometimes", planks > 0);
+    }
+
+    @Test
+    public void airIsNeverListed() {
+        for (long seed = 0; seed < 5; seed++) assertTrue(blast(new Grid(), 0.5, 80.5, 0.5, seed).isEmpty());
     }
 
     @Test
