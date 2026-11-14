@@ -1143,7 +1143,12 @@ def smoke_world(s):
               # loaded): Clutch knockback moves the player each run. Default flat layers: dirt 1-2, grass 3.
               "/fill -24 1 -24 24 2 24 minecraft:dirt", "/fill -24 3 -24 24 3 24 minecraft:grass",
               "/fill -24 4 -24 24 9 24 minecraft:air",
-              "/effect @p clear", "/tp @p 0.5 4 0.5 0 0"):
+              "/effect @p clear", "/tp @p 0.5 4 0.5 0 0",
+              # Armor saved on the player would cut every damage check below (14 points: 2.0 -> 0.88).
+              "/replaceitem entity @p slot.armor.head minecraft:air",
+              "/replaceitem entity @p slot.armor.chest minecraft:air",
+              "/replaceitem entity @p slot.armor.legs minecraft:air",
+              "/replaceitem entity @p slot.armor.feet minecraft:air"):
         s.cmd(c)
     s.call("/close")
     time.sleep(3)  # chunks render
@@ -1401,7 +1406,7 @@ def smoke_hud(s, cfg):
 
 
 def smoke_clutch(s, cfg):
-    s.begin("A2-clutch", "Clutch Practice: blast damage/knockback, block filter, damage cap, isolation, fire charge")
+    s.begin("A2-clutch", "Clutch Practice: blast damage/knockback, block damage, isolation, fire charge")
     if not s.has("com.bedwarsqol.feature.ClutchPractice") or not cfg:
         return s.unavailable("Clutch Practice is not in this build (Track A port)")
     ready = s.call("/invoke", post={"path": CLUTCH_GET, "args": ""}).get("value")
@@ -1442,31 +1447,22 @@ def smoke_clutch(s, cfg):
         heal()
         s.field(bd, on)
         # Absolute positions, captured before the blast moves the player (review I3).
+        # Since 2026-11-14 the blast breaks any block by blast resistance (stone too, at point blank);
+        # end stone, obsidian, beds and glass never break.
         wool_at = place(3, 0, 1, "minecraft:wool")
-        stone_at = place(3, 0, -1, "minecraft:stone")
+        end_at = place(3, 0, -1, "minecraft:end_stone")
         time.sleep(0.2)
         s.probe("clutch-blast", 3, 0, 0)
         time.sleep(0.2)
-        wool, stone = read(wool_at), read(stone_at)
+        wool, end = read(wool_at), read(end_at)
         label = "on" if on else "off"
         if on:
             s.check("Block Damage on: wool breaks", wool == "minecraft:air", "%s at %s" % (wool, wool_at))
         else:
             s.check("Block Damage off: wool stays", wool == "minecraft:wool", "%s at %s" % (wool, wool_at))
-        s.check("Block Damage %s: stone stays" % label, stone == "minecraft:stone", "%s at %s" % (stone, stone_at))
+        s.check("Block Damage %s: end stone stays" % label, end == "minecraft:end_stone", "%s at %s" % (end, end_at))
     s.field(bd, False)
-    # Low health (review I4): Instant Damage I (6) three times takes 20 -> 2, so an uncapped 2-point
-    # blast would kill. (Duration 0 would remove the effect instead of applying it.)
-    heal()
-    for _ in range(3):
-        s.cmd("/effect @p 7 1 0")
-        time.sleep(1.2)
-    low = s.probe("clutch-blast", 3, 0, 0)
-    before, after = low["before"]["health"], low["after"]["health"]
-    dmg = low.get("expectedDamage") or 0
-    s.check("health is low enough that an uncapped blast would kill", 0 < before <= dmg,
-            "health %.2f, blast damage %s" % (before, dmg))
-    s.check("low health: the hit leaves >= half a heart", after >= 1.0 - 1e-6, "%.2f -> %.2f" % (before, after))
+    # No damage-cap check: since 2026-11-14 Clutch damage is vanilla and can kill (no half-heart floor).
     heal()
     # Isolation (plan R1-I3): with Clutch Practice on and Block Damage off, an ordinary TNT blast
     # stays vanilla: it still breaks blocks and still deals its own damage.
