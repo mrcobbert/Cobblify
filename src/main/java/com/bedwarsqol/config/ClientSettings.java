@@ -276,7 +276,7 @@ public class ClientSettings {
      * charges / wool, and a void reset to the last solid ground. Inert on any multiplayer server.
      */
     public boolean clutchPractice = false;
-    /** Sub of Clutch Practice: fireballs break wool, planks and clay (never on when off). */
+    /** Sub of Clutch Practice: fireballs break blocks by blast resistance; glass, end stone hold. */
     public boolean clutchBlockDamage = false;
 
     /** First-person held-item position offset (X/Y/Z, eye space) + size scale, gated by the master toggle. */

@@ -143,7 +143,6 @@ one-sided main ornithe com/bedwarsqol/mixin/GuiScreenCommandMixin.java
 # Clutch Practice server-side hooks, at Forge's PlayerInteractEvent,
 # ExplosionEvent.Detonate, PlayerTickEvent and LivingHurtEvent positions.
 one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerMixin.java
-one-sided main ornithe com/bedwarsqol/mixin/ExplosionMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/ItemInWorldManagerMixin.java
 
 # Zoom, No Hurt Cam and Dynamic FOV: Ornithe-only features (P4), with their sheet-row test.

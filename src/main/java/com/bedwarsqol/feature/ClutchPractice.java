@@ -3,6 +3,7 @@ package com.bedwarsqol.feature;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import net.minecraft.block.Block;
+import net.minecraft.block.material.Material;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
@@ -18,19 +19,18 @@ import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.DamageSource;
+import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.Explosion;
 import net.minecraft.world.World;
-import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.event.world.ExplosionEvent;
 import net.minecraftforge.fml.common.eventhandler.Event;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.minecraftforge.fml.relauncher.Side;
 
+import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -41,18 +41,17 @@ import java.util.List;
  * <ul>
  *   <li>Right-clicking a fire charge throws a {@link ClutchFireball} (no vanilla ignite), 0.5 s
  *       cooldown, consumed outside creative.</li>
- *   <li>Its blast pushes and lightly hurts nearby entities, never sets fire, and with Block Damage
- *       on breaks only {@link ClutchRules#breaks wool, planks and clay}.</li>
- *   <li>Pearls, fire charges and wool stay topped up, damage never kills, and falling
- *       {@link ClutchRules#shouldVoidReset into the void} puts you back on your last solid ground.</li>
+ *   <li>Its blast pushes and lightly hurts nearby entities and never sets fire. With Block Damage on
+ *       it breaks what it reaches by blast resistance, with no drops; glass stops it and
+ *       {@link ClutchRules#breaks end stone, obsidian, beds} and containers never break.</li>
+ *   <li>Pearls, fire charges and wool stay topped up. Damage is vanilla: falls, pearls and blasts
+ *       can kill. Falling {@link ClutchRules#shouldVoidReset into the void}, with nothing solid
+ *       beneath you, puts you back on your last solid ground at full health.</li>
  * </ul>
  */
 public class ClutchPractice {
 
     private static final int VISUAL_RANGE_SQ = 64 * 64;
-
-    /** The explosion currently being detonated by {@link #explode}; its event is ours to filter. */
-    private static Explosion detonating;
 
     private long lastThrowTick = -1;
     private EntityPlayerMP safeFor;
@@ -92,21 +91,19 @@ public class ClutchPractice {
     /**
      * Blast at the fireball, the way Hypixel delivers it: a flat heart of damage, then the knockback
      * replaces the victim's motion and reaches the client as exactly one S12 (set). The S27 carries
-     * no player motion, so the client never adds a second push on top.
+     * no player motion, so the client never adds a second push on top. Blocks are our own vanilla
+     * ray-cast ({@link ClutchRules#blastBlocks}), not a vanilla {@code Explosion}, so no Forge event
+     * or vanilla entity damage is involved.
      */
     static void explode(ClutchFireball fireball) {
         World world = fireball.worldObj;
         ClientSettings c = BedwarsQol.config;
-        boolean blockDamage = c != null && c.clutchBlockDamage;
         double x = fireball.posX, y = fireball.posY, z = fireball.posZ;
-        Explosion explosion = new Explosion(world, fireball, x, y, z, ClutchRules.EXPLOSION_POWER, false, blockDamage);
-        detonating = explosion;
-        try {
-            explosion.doExplosionA();
-        } finally {
-            detonating = null;
-        }
-        explosion.doExplosionB(false);
+        List<BlockPos> broken = c != null && c.clutchBlockDamage
+                ? breakBlocks(world, fireball, x, y, z) : Collections.<BlockPos>emptyList();
+        // What vanilla's doExplosionB plays server side; the client adds its own from the S27.
+        world.playSoundEffect(x, y, z, "random.explode", 4.0F,
+                (1.0F + (world.rand.nextFloat() - world.rand.nextFloat()) * 0.2F) * 0.7F);
 
         double r = ClutchRules.BLAST_RADIUS;
         List<Entity> near = world.getEntitiesWithinAABBExcludingEntity(fireball,
@@ -131,32 +128,44 @@ public class ClutchPractice {
             }
         }
 
-        // Visuals only, as on Hypixel: blast position and strength, no player motion.
+        // Blast position and strength, the broken blocks for the client to clear and puff, no player motion.
         Vec3 none = new Vec3(0, 0, 0);
-        List<BlockPos> blocks = blockDamage ? explosion.getAffectedBlockPositions() : Collections.<BlockPos>emptyList();
         for (EntityPlayer player : world.playerEntities) {
             if (!(player instanceof EntityPlayerMP) || player.getDistanceSq(x, y, z) > VISUAL_RANGE_SQ) continue;
             ((EntityPlayerMP) player).playerNetServerHandler.sendPacket(
-                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_STRENGTH, blocks, none));
+                    new S27PacketExplosion(x, y, z, ClutchRules.EXPLOSION_POWER, broken, none));
         }
     }
 
-    /** Our blast handles entities itself; blocks are kept only when whitelisted and Block Damage is on. */
-    @SubscribeEvent
-    public void onDetonate(ExplosionEvent.Detonate event) {
-        if (event.explosion != detonating || detonating == null) return;
-        event.getAffectedEntities().clear();
-        ClientSettings c = BedwarsQol.config;
-        if (c == null || !c.clutchBlockDamage) {
-            event.getAffectedBlocks().clear();
-            return;
+    /**
+     * Breaks every block the blast reaches, with no drops: wool, dirt and leaves easily, wood and clay
+     * sometimes, stone rarely. Glass stops the rays; protected blocks and containers never break.
+     */
+    private static List<BlockPos> breakBlocks(final World world, final ClutchFireball fireball, double x, double y, double z) {
+        List<int[]> reached = ClutchRules.blastBlocks(x, y, z, ClutchRules.EXPLOSION_POWER, world.rand,
+                (bx, by, bz) -> {
+                    Block block = world.getBlockState(new BlockPos(bx, by, bz)).getBlock();
+                    if (block.getMaterial() == Material.air) return -1f;
+                    if (ClutchRules.shieldsBlast(name(block))) return ClutchRules.SHIELD_RESISTANCE;
+                    return block.getExplosionResistance(fireball);
+                });
+        // Only for onBlockDestroyedByExplosion (TNT primes off it); it never runs itself.
+        Explosion explosion = new Explosion(world, fireball, x, y, z, ClutchRules.EXPLOSION_POWER, false, true);
+        List<BlockPos> broken = new ArrayList<BlockPos>();
+        for (int[] p : reached) {
+            BlockPos pos = new BlockPos(p[0], p[1], p[2]);
+            Block block = world.getBlockState(pos).getBlock();
+            if (block.getMaterial() == Material.air || block.hasTileEntity() || !ClutchRules.breaks(name(block))) continue;
+            world.setBlockToAir(pos);
+            block.onBlockDestroyedByExplosion(world, pos, explosion);
+            broken.add(pos);
         }
-        Iterator<BlockPos> it = event.getAffectedBlocks().iterator();
-        while (it.hasNext()) {
-            Block block = event.world.getBlockState(it.next()).getBlock();
-            Object id = Block.blockRegistry.getNameForObject(block);
-            if (!ClutchRules.breaks(id == null ? null : id.toString())) it.remove();
-        }
+        return broken;
+    }
+
+    private static String name(Block block) {
+        Object id = Block.blockRegistry.getNameForObject(block);
+        return id == null ? null : id.toString();
     }
 
     @SubscribeEvent
@@ -174,7 +183,7 @@ public class ClutchPractice {
             safeX = player.posX;
             safeY = player.posY;
             safeZ = player.posZ;
-        } else if (ClutchRules.shouldVoidReset(player.posY, safeFor != null, safeY)) {
+        } else if (ClutchRules.shouldVoidReset(player.posY, safeFor != null, safeY) && !groundBelow(player)) {
             player.motionX = player.motionY = player.motionZ = 0;
             player.fallDistance = 0;
             player.setPositionAndUpdate(safeX, safeY, safeZ);
@@ -183,12 +192,13 @@ public class ClutchPractice {
         }
     }
 
-    /** Practice damage never kills: the hit is capped to leave half a heart. */
-    @SubscribeEvent
-    public void onHurt(LivingHurtEvent event) {
-        if (!(event.entityLiving instanceof EntityPlayer) || !active((EntityPlayer) event.entityLiving)) return;
-        float health = event.entityLiving.getHealth();
-        if (event.ammount >= health) event.ammount = Math.max(0f, health - 1f);
+    /** True when any block lies under the player's column: they will land, not fall into the void. */
+    private static boolean groundBelow(EntityPlayer player) {
+        int x = MathHelper.floor_double(player.posX), z = MathHelper.floor_double(player.posZ);
+        for (int y = MathHelper.floor_double(player.posY); y >= 0; y--) {
+            if (!player.worldObj.isAirBlock(new BlockPos(x, y, z))) return true;
+        }
+        return false;
     }
 
     private static boolean standsOnSolid(EntityPlayer player) {

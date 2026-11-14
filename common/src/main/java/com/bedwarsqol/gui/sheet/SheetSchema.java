@@ -254,7 +254,7 @@ public final class SheetSchema {
                 module("dynamicFov", "Dynamic FOV", "FOV changes when sprinting, with Speed and bows", "fov effects optifine static"),
                 module("toggleSprint", "Toggle Sprint", "Press once to keep sprinting; bind in Controls", "auto sprint run"),
                 module("clutch", "Clutch Practice", "Pearl and fireball drill in singleplayer", "void fireball pearl",
-                        toggle("clutchBlocks", "Block Damage", "Fireballs break wool, wood and clay"))));
+                        toggle("clutchBlocks", "Block Damage", "Fireballs break blocks; glass and end stone hold"))));
         cats.add(category("visuals", "Visuals",
                 module("blockOverlay", "Block Overlay", "Highlight targeted block", "outline selection highlight",
                         toggle("boSee", "See-Through", "Show it through other blocks"),

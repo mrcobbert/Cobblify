@@ -185,8 +185,8 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.WORLD_LOAD.register(world -> teamUpgrades.onWorldLoad());
         ModEvents.CHAT.register(EventPriority.HIGHEST, true, teamUpgrades::onChat);
         ModEvents.CLIENT_TICK.register(mc -> teamUpgrades.onClientTick());
-        // Clutch Practice's four server-side hooks are called by its own mixins (ExplosionMixin,
-        // EntityPlayerMixin, ItemInWorldManagerMixin); they act only once it is enabled here.
+        // Clutch Practice's server-side hooks are called by its own mixins (EntityPlayerMixin,
+        // ItemInWorldManagerMixin); they act only once it is enabled here.
         ClutchPractice.enable();
 
         LOGGER.info(READY_LINE);
