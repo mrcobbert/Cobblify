@@ -1,0 +1,35 @@
+package com.bedwarsqol.hud;
+
+import java.util.Collection;
+
+/**
+ * Pin-on-change: an item that was never moved sits in the Auto layout, which re-flows around every moved item. So
+ * before any change to one item (drag, resize, nudge, menu action, hide or show), every other shown Auto item is
+ * stored where it is drawn now, and nothing but the changed item moves.
+ */
+public final class HudPins {
+
+    private HudPins() {
+    }
+
+    /** Whether item {@code id} gets pinned: shown, still on Auto, and not one of the items being changed. */
+    public static boolean shouldPin(String id, boolean shown, int anchor, Collection<String> changingIds) {
+        return shown && anchor == HudPlacement.AUTO && !changingIds.contains(id);
+    }
+
+    /**
+     * {@code state} stored with its content box's top-left at (x, y) ({@code w} x {@code h}) on an {@code sw} x
+     * {@code sh} screen: anchored to the screen third the box is in, to a fraction of a GUI pixel. Scale, on/off and
+     * Background are kept.
+     */
+    public static HudModuleState pinned(HudModuleState state, float x, float y, float w, float h, float sw, float sh) {
+        int anchor = HudPlacement.anchorFor(x, y, w, h, sw, sh);
+        return state.withExactPosition(HudPlacement.exactStoredX(x, anchor, w, sw),
+                HudPlacement.exactStoredY(y, anchor, h, sh), anchor);
+    }
+
+    /** A newly shown item: switched on and back on Auto, so it takes the first free Auto spot (whatever spot it had). */
+    public static HudModuleState shown(HudModuleState state) {
+        return state.withEnabled(true).withPosition(0, 0, HudPlacement.AUTO);
+    }
+}

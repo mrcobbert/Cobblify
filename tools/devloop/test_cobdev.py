@@ -393,6 +393,40 @@ class EditHudChecks(unittest.TestCase):
         self.assertEqual(s.step["status"], "fail")
 
 
+class EditHudHelpers(unittest.TestCase):
+    @staticmethod
+    def hb(boxes, states):
+        return {"boxes": boxes, "states": states}
+
+    def test_pinning_is_not_a_change_but_a_move_is(self):
+        box = {"id": "potion", "x": 3, "y": 30, "w": 52, "h": 44, "pad": 1, "shown": True}
+        auto = {"id": "potion", "anchor": -1, "scale": 1.0, "enabled": True, "background": True}
+        pinned = dict(auto, anchor=0, x=2, y=29)
+        before = self.hb([box], [auto])
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([box], [pinned]), set()), [])
+        moved = dict(box, x=3.01)
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([moved], [pinned]), set()))
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([box], [dict(auto, scale=1.5)]), set()))
+        self.assertTrue(cobdev.others_unchanged(self.hb([box], [pinned]), self.hb([box], [dict(pinned, anchor=3)]), set()))
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([moved], [pinned]), {"potion"}), [])
+        hidden = dict(box, shown=False)
+        self.assertEqual(cobdev.others_unchanged(self.hb([hidden], [auto]), self.hb([dict(hidden, y=90)], [auto]), set()),
+                         [], "a hidden module's ghost may re-flow")
+
+    def test_left_column_and_overlap(self):
+        inv = {"id": "inventory", "x": 218, "y": 3, "w": 204, "h": 72, "pad": 1, "shown": True}
+        armor = {"id": "armor", "x": 3, "y": 3, "w": 20, "h": 20, "pad": 1, "shown": True}
+        low = {"id": "heightlimit", "x": 3, "y": 160, "w": 118, "h": 36, "pad": 1, "shown": True}
+        ghost = dict(armor, id="potion", shown=False)
+        self.assertEqual([b["id"] for b in cobdev.left_column(self.hb([inv, armor, low, ghost], []), "inventory")],
+                         ["armor"])
+        self.assertEqual(cobdev.overlap_area(inv, armor), 0)
+        self.assertEqual(cobdev.overlap_area(armor, dict(armor, x=13)), 12 * 22)
+        self.assertTrue(cobdev.pinned_anchor({"anchor": 0}))
+        self.assertFalse(cobdev.pinned_anchor({"anchor": -1}))
+        self.assertFalse(cobdev.pinned_anchor({}))
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:

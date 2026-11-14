@@ -176,6 +176,8 @@ one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
 
 # Edit HUD sub-pixel positions (Ornithe only): ClientSettings.hudSubPixel with HudModules and Gson.
 one-sided test ornithe com/bedwarsqol/config/HudSubPixelConfigTest.java
+# Edit HUD: a module switched on in the settings takes its first free Auto spot (Ornithe only).
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsShowRuleTest.java
 
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources

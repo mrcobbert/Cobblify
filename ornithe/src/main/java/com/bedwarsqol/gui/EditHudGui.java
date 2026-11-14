@@ -17,6 +17,7 @@ import com.bedwarsqol.hud.HudGrid;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.HudSnapper;
+import com.bedwarsqol.hud.HudWalls;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
@@ -62,8 +63,8 @@ public class EditHudGui extends GuiScreen {
     private static final long SAVE_DELAY_MS = 400L;
     private static final float LABEL_SCALE = 0.8f;
     private static final float MENU_SCALE = 0.75f;
-    private static final float HOTBAR_W = 182f;             // the vanilla hotbar, a snap target
-    private static final float HOTBAR_H = 22f;
+    private static final float HOTBAR_W = HudWalls.HOTBAR_W; // the vanilla hotbar, a snap target
+    private static final float HOTBAR_H = HudWalls.HOTBAR_H;
 
     private static final String SHOW = "Show";
     private static final String HIDE = "Hide";
@@ -86,6 +87,7 @@ public class EditHudGui extends GuiScreen {
     private float grabY;
     private CornerResize resize;
     private boolean moved;
+    private boolean pinnedThisChange; // the other Auto modules were pinned for the current drag or resize
     private boolean wasSelectedBeforeClick;
     private float clickX;
     private float clickY;
@@ -469,6 +471,7 @@ public class EditHudGui extends GuiScreen {
     private void beginChange(Mode next) {
         mode = next;
         moved = false;
+        pinnedThisChange = false;
         before = HudModules.snapshot(settings());
         snapX = snapY = null;
         guidesReleasedMs = 0L;
@@ -489,13 +492,14 @@ public class EditHudGui extends GuiScreen {
     /** Moves the dragged module's content towards (rawX, rawY): where it was at the press plus the pointer's travel. */
     private void drag(float rawX, float rawY) {
         ClientSettings cfg = settings();
+        pinOnce();
         List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
         HudBox box = boxById(boxes, selectedId);
         if (box == null) return;
-        boolean snap = snapping();
+        boolean snap = snapping(); // Alt moves freely: no snapping, no walls
         List<HudSnapper.Target> targets = snap ? snapTargets(boxes, box.id) : Collections.<HudSnapper.Target>emptyList();
         HudDrag.Result r = HudDrag.move(rawX - box.pad, rawY - box.pad, box.visualWidth(), box.visualHeight(),
-                width, height, scaleFactor(), snap, targets);
+                width, height, scaleFactor(), snap, targets, snap, wallRects(boxes, box.id), box.visualX(), box.visualY());
         snapX = r.snapX;
         snapY = r.snapY;
         place(cfg, box, r.x + box.pad, r.y + box.pad);
@@ -503,10 +507,16 @@ public class EditHudGui extends GuiScreen {
 
     private void resizeTo(float cornerX, float cornerY) {
         ClientSettings cfg = settings();
+        pinOnce();
         HudModuleState s = HudModules.get(cfg, selectedId);
-        HudBox box = selectedBox();
+        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        HudBox box = boxById(boxes, selectedId);
         if (s == null || box == null || resize == null) return;
         float scale = resize.scaleFor(cornerX, cornerY, width, height, box.pad, snapping());
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed.
+        if (snapping()) {
+            scale = HudWalls.largestFreeScale(s.scale, scale, resizeProbe(cfg, selectedId, s), wallRects(boxes, selectedId));
+        }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.
         HudBox scaled = selectedBox();
@@ -523,9 +533,43 @@ public class EditHudGui extends GuiScreen {
         long now = Minecraft.getSystemTime();
         if (now - lastNudgeMs > NUDGE_GROUP_MS) history.record(HudModules.snapshot(cfg));
         lastNudgeMs = now;
+        pinOthers(box.id);
+        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
         int sf = scaleFactor();
-        place(cfg, box, HudGrid.nudged(box.x, dx, sf), HudGrid.nudged(box.y, dy, sf));
+        boolean walls = snapping(); // arrows stop at walls like a drag; Alt + arrow moves freely
+        HudDrag.Result r = HudDrag.move(HudGrid.nudged(box.x, dx, sf) - box.pad, HudGrid.nudged(box.y, dy, sf) - box.pad,
+                box.visualWidth(), box.visualHeight(), width, height, sf, false,
+                Collections.<HudSnapper.Target>emptyList(), walls, wallRects(boxes, box.id), box.visualX(), box.visualY());
+        place(cfg, box, r.x + box.pad, r.y + box.pad);
         markDirty();
+    }
+
+    /** Pins the other Auto modules once per drag or resize, at its first move (so a click alone changes nothing). */
+    private void pinOnce() {
+        if (pinnedThisChange || selectedId == null) return;
+        pinnedThisChange = true;
+        pinOthers(selectedId);
+    }
+
+    /** Every other shown Auto module keeps the spot it has now, so a change to {@code id} moves nothing else. */
+    private void pinOthers(String id) {
+        BedwarsHudRenderer.pinShownAuto(mc, settings(), Collections.singleton(id));
+    }
+
+    /**
+     * The rectangle a corner resize of {@code id} really covers at a candidate scale: the box measured alone at that
+     * scale (then the scale is put back), placed with the opposite corner pinned (review I2).
+     */
+    private HudWalls.ScaleProbe resizeProbe(final ClientSettings cfg, final String id, final HudModuleState base) {
+        return new HudWalls.ScaleProbe() {
+            @Override
+            public HudWalls.Rect at(float scale) {
+                HudModules.set(cfg, id, base.withScale(scale));
+                HudBox b = BedwarsHudRenderer.getEditorBox(mc, cfg, id);
+                HudModules.set(cfg, id, base);
+                return b == null || resize == null ? null : resize.visualRectAt(scale, b.width, b.height, b.pad);
+            }
+        };
     }
 
     /** Moves {@code box}'s content to (x, y), kept on screen with its panel padding. */
@@ -554,10 +598,14 @@ public class EditHudGui extends GuiScreen {
         markDirty();
     }
 
-    /** Runs {@code change} on the layout as one undoable step. */
-    private void edit(Runnable change) {
+    /**
+     * Runs {@code change} on the layout as one undoable step. A change to one module ({@code id}, null for none) first
+     * pins the other Auto modules, so it moves nothing else.
+     */
+    private void edit(String id, Runnable change) {
         ClientSettings cfg = settings();
         Map<String, HudModuleState> previous = HudModules.snapshot(cfg);
+        if (id != null) pinOthers(id);
         change.run();
         if (!HudModules.snapshot(cfg).equals(previous)) {
             history.record(previous);
@@ -567,7 +615,7 @@ public class EditHudGui extends GuiScreen {
     }
 
     private void resetAll() {
-        edit(new Runnable() {
+        edit(null, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
@@ -577,7 +625,7 @@ public class EditHudGui extends GuiScreen {
     }
 
     private void resetPosition(final String id) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
@@ -587,9 +635,12 @@ public class EditHudGui extends GuiScreen {
         });
     }
 
-    /** Back to the HUD Size default, keeping the module's top-left corner where it is. */
+    /**
+     * Back to the HUD Size default, keeping the module's top-left corner where it is; one that grew into a neighbour
+     * moves to the nearest free spot.
+     */
     private void resetSize(final String id) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
@@ -597,16 +648,37 @@ public class EditHudGui extends GuiScreen {
                 HudModules.set(cfg, id, HudModules.get(cfg, id).withScale(cfg.defaultTextSizeScale()));
                 HudBox scaled = boxById(BedwarsHudRenderer.getEditorBoxes(mc, cfg), id);
                 if (old != null && scaled != null) place(cfg, scaled, old.x, old.y);
+                moveClearOfWalls(cfg, id);
             }
         });
     }
 
+    /** Moves module {@code id} to the nearest spot clear of every wall, if it overlaps one. */
+    private void moveClearOfWalls(ClientSettings cfg, String id) {
+        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        HudBox now = boxById(boxes, id);
+        if (now == null) return;
+        List<HudWalls.Rect> walls = wallRects(boxes, id);
+        if (HudWalls.free(now.visualX(), now.visualY(), now.visualWidth(), now.visualHeight(), walls)) return;
+        float[] r = HudWalls.resolve(now.visualX(), now.visualY(), now.visualWidth(), now.visualHeight(), width, height,
+                walls, now.visualX(), now.visualY());
+        place(cfg, now, r[0] + now.pad, r[1] + now.pad);
+    }
+
+    /**
+     * Shows or hides module {@code id} as one undoable step, moving nothing else. A shown Cobblify module takes its
+     * first free Auto spot, whatever spot it had before it was hidden (undo brings that spot back).
+     */
     private void setShown(final String id, final boolean shown) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
-                HudModules.set(cfg, id, HudModules.get(cfg, id).withEnabled(shown));
+                if (shown && HudModules.ids().contains(id)) {
+                    BedwarsHudRenderer.show(mc, cfg, Collections.singletonList(id));
+                } else {
+                    HudModules.set(cfg, id, HudModules.get(cfg, id).withEnabled(shown));
+                }
             }
         });
     }
@@ -683,6 +755,20 @@ public class EditHudGui extends GuiScreen {
         }
         targets.add(new HudSnapper.Target(null, (width - HOTBAR_W) / 2f, height - HOTBAR_H, HOTBAR_W, HOTBAR_H));
         return targets;
+    }
+
+    /**
+     * The walls for moving {@code movingId}: every other shown module's box as drawn, and the hotbar zone (the hotbar
+     * with the health, armour and food rows above it).
+     */
+    private List<HudWalls.Rect> wallRects(List<HudBox> boxes, String movingId) {
+        List<HudWalls.Rect> walls = new ArrayList<HudWalls.Rect>();
+        for (HudBox b : boxes) {
+            if (b.id.equals(movingId) || !b.shown) continue;
+            walls.add(new HudWalls.Rect(b.visualX(), b.visualY(), b.visualWidth(), b.visualHeight()));
+        }
+        walls.add(HudWalls.hotbarZone(width, height));
+        return walls;
     }
 
     private int scaleFactor() {

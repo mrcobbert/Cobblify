@@ -64,6 +64,15 @@ public final class CornerResize {
     }
 
     /**
+     * The visual rectangle the resize really applies at {@code scale}: the content's top-left at
+     * ({@link #left}, {@link #top}) so the opposite corner stays pinned, the content {@code contentW} x
+     * {@code contentH} as measured at that scale, grown by {@code pad} on every side. Walls are checked against this.
+     */
+    public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad) {
+        return new HudWalls.Rect(left(scale) - pad, top(scale) - pad, contentW + 2f * pad, contentH + 2f * pad);
+    }
+
+    /**
      * The corner of the box (x, y, width, height) within {@code reach} of the mouse, or -1. The
      * nearest corner wins when the box is small enough for several to be in reach.
      */

@@ -178,16 +178,61 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
+    /** One module's Edit HUD box, measured alone (the corner-resize wall probe); null for an unknown id. */
+    public static HudBox getEditorBox(Minecraft mc, ClientSettings cfg, String id) {
+        if (mc == null || cfg == null) return null;
+        HudBox box = editorBox(mc, cfg, id);
+        if (box == null) return null;
+        HudModuleState state = HudModules.get(cfg, id);
+        return state != null && !state.enabled ? box.hidden() : box;
+    }
+
     /**
      * Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in, to a fraction of a
      * GUI pixel (the int fields get exactly what the whole-pixel path stored; see {@link ClientSettings#hudSubPixel}).
+     * Every pin and placement goes through here.
      */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
         HudModuleState state = HudModules.get(cfg, id);
         if (state == null) return;
-        int anchor = HudPlacement.anchorFor(x, y, width, height, screenWidth, screenHeight);
-        HudModules.set(cfg, id, state.withExactPosition(HudPlacement.exactStoredX(x, anchor, width, screenWidth),
-                HudPlacement.exactStoredY(y, anchor, height, screenHeight), anchor));
+        HudModules.set(cfg, id, HudPins.pinned(state, x, y, width, height, screenWidth, screenHeight));
+    }
+
+    /**
+     * Pin-on-change: every shown module still on Auto, other than {@code changingIds}, is stored where it is drawn now,
+     * so a change to those items moves nothing else (the Auto layout re-flows around every moved module).
+     */
+    public static void pinShownAuto(Minecraft mc, ClientSettings cfg, Collection<String> changingIds) {
+        if (mc == null || cfg == null) return;
+        ScaledResolution r = new ScaledResolution(mc);
+        float sw = r.getScaledWidth(), sh = r.getScaledHeight();
+        List<HudBox> boxes = getEditorBoxes(mc, cfg); // every spot as it is now, before the first write
+        for (HudBox b : boxes) {
+            HudModuleState s = HudModules.get(cfg, b.id);
+            if (s != null && HudPins.shouldPin(b.id, b.shown, s.anchor, changingIds)) {
+                setHudAbsolutePosition(cfg, b.id, b.x, b.y, b.width, b.height, sw, sh);
+            }
+        }
+    }
+
+    /**
+     * Shows modules {@code ids}: the other shown Auto modules are pinned first, then each goes on Auto and takes the
+     * first free Auto spot, whatever spot it had before it was hidden. A module that comes on with them (the two gen
+     * timers share one switch) is newly shown too.
+     */
+    public static void show(Minecraft mc, ClientSettings cfg, Collection<String> ids) {
+        Map<String, HudModuleState> before = HudModules.snapshot(cfg);
+        pinShownAuto(mc, cfg, ids);
+        for (String id : ids) {
+            HudModuleState s = HudModules.get(cfg, id);
+            if (s != null) HudModules.set(cfg, id, HudPins.shown(s));
+        }
+        for (String id : HudModules.ids()) {
+            HudModuleState was = before.get(id), now = HudModules.get(cfg, id);
+            if (was != null && now != null && !was.enabled && now.enabled && !ids.contains(id)) {
+                HudModules.set(cfg, id, HudPins.shown(now));
+            }
+        }
     }
 
     private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -430,8 +475,8 @@ public class BedwarsHudRenderer {
     // layout never shifts mid-game, and it follows HUD Size and the window on its own.
     private static final float LAYOUT_EDGE = 2f;
     private static final float LAYOUT_GAP = 2f;
-    private static final float HOTBAR_W = 182f;
-    private static final float HOTBAR_ZONE_H = 50f;
+    private static final float HOTBAR_W = HudWalls.HOTBAR_W;
+    private static final float HOTBAR_ZONE_H = HudWalls.HOTBAR_ZONE_H; // Edit HUD's hotbar wall is the same zone
     private static final Map<String, Spot[]> DEFAULT_SPOTS = new LinkedHashMap<String, Spot[]>();
     static {
         DEFAULT_SPOTS.put(DIAMOND_TIMER_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)});

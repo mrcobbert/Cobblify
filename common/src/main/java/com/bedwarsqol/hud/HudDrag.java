@@ -3,9 +3,10 @@ package com.bedwarsqol.hud;
 import java.util.List;
 
 /**
- * One step of an Edit HUD drag: where the dragged box goes for a raw position (its spot when the press began plus the
- * pointer's travel since, unrounded). It snaps each axis to the screen and the other boxes (unless Alt is held), then
- * keeps the box on screen. All positions are the box as drawn (its visual box, panel padding included), in GUI px.
+ * One step of an Edit HUD drag or nudge: where the moved box goes for a raw position (its spot when the press began
+ * plus the pointer's travel since, unrounded). It snaps each axis to the screen and the other boxes (unless Alt is
+ * held), keeps the box on screen, then keeps it out of every wall (unless Alt is held). All positions are the box as
+ * drawn (its visual box, panel padding included), in GUI px.
  */
 public final class HudDrag {
 
@@ -34,6 +35,17 @@ public final class HudDrag {
      */
     public static Result move(float rawX, float rawY, float w, float h, float sw, float sh, int scale, boolean snap,
                               List<HudSnapper.Target> targets) {
+        return move(rawX, rawY, w, h, sw, sh, scale, snap, targets, false, null, rawX, rawY);
+    }
+
+    /**
+     * As {@link #move(float, float, float, float, float, float, int, boolean, List)}, then, with {@code walls}, to the
+     * nearest spot clear of {@code wallRects} ({@link HudWalls#resolve}); with no free spot the box stays at
+     * ({@code curX}, {@code curY}), where it is now. An axis the walls moved loses its snap guide.
+     */
+    public static Result move(float rawX, float rawY, float w, float h, float sw, float sh, int scale, boolean snap,
+                              List<HudSnapper.Target> targets, boolean walls, List<HudWalls.Rect> wallRects,
+                              float curX, float curY) {
         float x = rawX, y = rawY;
         HudSnapper.Snap snapX = null, snapY = null;
         if (snap) {
@@ -43,6 +55,15 @@ public final class HudDrag {
             x = snapX.position;
             y = snapY.position;
         }
-        return new Result(HudPlacement.clamp(x, w, 0f, sw), HudPlacement.clamp(y, h, 0f, sh), snapX, snapY);
+        x = HudPlacement.clamp(x, w, 0f, sw);
+        y = HudPlacement.clamp(y, h, 0f, sh);
+        if (walls && wallRects != null) {
+            float[] r = HudWalls.resolve(x, y, w, h, sw, sh, wallRects, curX, curY);
+            if (r[0] != x) snapX = null;
+            if (r[1] != y) snapY = null;
+            x = r[0];
+            y = r[1];
+        }
+        return new Result(x, y, snapX, snapY);
     }
 }

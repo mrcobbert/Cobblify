@@ -10,7 +10,13 @@ import com.bedwarsqol.gui.sheet.SheetValues;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.stats.StatsCache;
+import net.minecraft.client.Minecraft;
 import org.lwjgl.input.Keyboard;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
@@ -51,6 +57,32 @@ final class SettingsBindings implements SheetValues {
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
         return null;
+    }
+
+    /**
+     * The HUD items a sheet switch shows when it goes from off to on, so they take their first free Auto spot: only the
+     * module enable switches, listed here on purpose (not derived from {@link #moduleForHud}). A Background switch, In
+     * Game Only, any other row and the scoreboard, chat and tab list show nothing, so they never move an item.
+     */
+    static List<String> hudIdsShownBy(String rowId) {
+        List<String> ids;
+        switch (rowId == null ? "" : rowId) {
+            case "potion": ids = Collections.singletonList(BedwarsHudRenderer.POTION_HUD); break;
+            case "armor": ids = Collections.singletonList(BedwarsHudRenderer.ARMOR_HUD); break;
+            case "inventory": ids = Collections.singletonList(BedwarsHudRenderer.INVENTORY_HUD); break;
+            case "genTimers":
+                ids = Arrays.asList(BedwarsHudRenderer.DIAMOND_TIMER_HUD, BedwarsHudRenderer.EMERALD_TIMER_HUD);
+                break;
+            case "keystrokes": ids = Collections.singletonList(BedwarsHudRenderer.KEYSTROKES_HUD); break;
+            case "mapInfo": ids = Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD); break;
+            case "session": ids = Collections.singletonList(BedwarsHudRenderer.SESSION_HUD); break;
+            default: return Collections.emptyList();
+        }
+        List<String> out = new ArrayList<String>();
+        for (String id : ids) {
+            if (HudModules.ids().contains(id)) out.add(id);
+        }
+        return out;
     }
 
     @Override
@@ -142,6 +174,9 @@ final class SettingsBindings implements SheetValues {
             c.save();
             return;
         }
+        // A module switched on: its items take their first free Auto spot, nothing else moves.
+        List<String> shown = v && !on(id) ? hudIdsShownBy(id) : Collections.<String>emptyList();
+        if (!shown.isEmpty()) BedwarsHudRenderer.show(Minecraft.getMinecraft(), c, shown);
         switch (id) {
             case "potion": c.potionStatusEnabled = v; break;
             case "potionInGame": c.potionInGameOnly = v; break;

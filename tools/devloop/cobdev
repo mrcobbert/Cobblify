@@ -1541,6 +1541,10 @@ def smoke_clutch(s, cfg):
     heal()
 
 
+# Edit HUD (A4-edithud): each module's position fields in ClientSettings (prefix + X, Y, Anchor, Scale).
+EDIT_HUD_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
+                   "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
+                   "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud"}
 # Edit HUD (A4-edithud): each module's switch in ClientSettings and the HudModules ids it shows.
 EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", ("armor",)),
                     ("inventoryHudEnabled", ("inventory",)), ("genTimersEnabled", ("diamondtimer", "emeraldtimer")),
@@ -1553,7 +1557,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
     runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
     Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
     limits the run to those ids (all when None)."""
-    s.begin("A4-edithud", "Edit HUD: probe, fine moves, snap (E0, E8, E9)")
+    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, show (E0, E3a-E9, E15)")
     if not cfg or not s.has(SCREENS["hud"]):
         return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
     run = EditHudRun(s, cfg)
@@ -1561,6 +1565,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
     try:
         for name, _ in EDIT_HUD_MODULES:
             run.remember(name)
+        run.remember_layout()
         if mode == "dev":
             s.call("/size", {"w": 1280, "h": 720})  # size is dev-only (Minecraft.resize by its MCP name)
         s.call("/scale", {"n": 2})
@@ -1615,6 +1620,39 @@ class EditHudRun:
             except ApiError:
                 pass
 
+    def remember_layout(self):
+        """Every module's x, y, anchor and scale field, restored at the end of the run. (The sub-pixel part of a
+        position lives in a map no field setter reaches, so a moved item comes back within half a GUI pixel.)"""
+        for prefix in EDIT_HUD_LAYOUT.values():
+            for suffix in ("X", "Y", "Anchor", "Scale"):
+                self.remember(prefix + suffix)
+
+    def layout_auto(self):
+        """A fresh layout: every module back on Auto (anchor -1), by field, before any pinning."""
+        for prefix in EDIT_HUD_LAYOUT.values():
+            self.set(prefix + "Anchor", -1)
+        time.sleep(0.2)
+
+    def state(self, item, hb):
+        return next(st for st in hb["states"] if st["id"] == item)
+
+    def device_drag(self, item, dx, dy, mods=None, steps=1, release=True):
+        """Presses on `item`'s centre and moves the pointer by (dx, dy) GUI px, in display pixels (so the travel is
+        exact to a screen pixel), in `steps` events; returns the press point and the last pointer (device px)."""
+        sc = self.probe()["scale"]
+        cx, cy = device_centre(self.box(item), sc)
+        self.s.call("/down", {"x": cx, "y": cy, "device": 1})
+        x, y = cx, cy
+        for k in range(1, steps + 1):
+            x, y = cx + int(round(dx * sc * k / steps)), cy + int(round(dy * sc * k / steps))
+            params = {"x": x, "y": y, "device": 1}
+            if mods:
+                params["mods"] = mods
+            self.s.call("/drag", params)
+        if release:
+            self.s.call("/up", {"x": x, "y": y, "device": 1})
+        return (cx, cy), (x, y)
+
     def show_only(self, ids):
         """Switches every module on (ids None) or only the ones showing an id in `ids`; returns the shown ids."""
         shown = set()
@@ -1639,6 +1677,61 @@ class EditHudRun:
 
 def visual_x(b):
     return b["x"] - b["pad"]
+
+
+def vis(b):
+    """A box as drawn: (x, y, w, h) with its panel padding."""
+    return b["x"] - b["pad"], b["y"] - b["pad"], b["w"] + 2 * b["pad"], b["h"] + 2 * b["pad"]
+
+
+def overlap_area(a, b):
+    ax, ay, aw, ah = vis(a)
+    bx, by, bw, bh = vis(b)
+    return max(0.0, min(ax + aw, bx + bw) - max(ax, bx)) * max(0.0, min(ay + ah, by + bh) - max(ay, by))
+
+
+def others_unchanged(before, after, moving):
+    """Problems with 'nothing else moved': every other shown item's drawn box (1e-3), scale, on/off and Background
+    are what they were; a state may differ only by going from Auto to a stored spot (the pinning)."""
+    problems = []
+    states0 = {st["id"]: st for st in before["states"]}
+    states1 = {st["id"]: st for st in after["states"]}
+    boxes1 = {b["id"]: b for b in after["boxes"]}
+    for b0 in before["boxes"]:
+        bid = b0["id"]
+        if bid in moving or not b0["shown"]:
+            continue
+        b1 = boxes1.get(bid)
+        if b1 is None or not b1["shown"]:
+            problems.append(bid + " is gone")
+            continue
+        if any(abs(p - q) > 1e-3 for p, q in zip(vis(b0), vis(b1))):
+            problems.append("%s moved %s -> %s" % (bid, vis(b0), vis(b1)))
+        s0, s1 = states0.get(bid) or {}, states1.get(bid) or {}
+        for k in ("scale", "enabled", "background"):
+            if s0.get(k) != s1.get(k):
+                problems.append("%s %s %s -> %s" % (bid, k, s0.get(k), s1.get(k)))
+        if s0.get("anchor") != s1.get("anchor") and not (s0.get("anchor") == -1 and pinned_anchor(s1)):
+            problems.append("%s anchor %s -> %s" % (bid, s0.get("anchor"), s1.get("anchor")))
+    return problems
+
+
+def pinned_anchor(state):
+    """A stored spot: anchor 0-8 (not Auto, -1)."""
+    a = state.get("anchor")
+    return a is not None and 0 <= a <= 8
+
+
+def left_column(hb, item):
+    """Shown boxes left of `item` that share some of its height."""
+    b = next(x for x in hb["boxes"] if x["id"] == item)
+    x, y, w, h = vis(b)
+    out = []
+    for o in hb["boxes"]:
+        ox, oy, ow, oh = vis(o)
+        if o["id"] != item and o["shown"] and ox + ow <= x + 1e-3 and oy < y + h - 1e-3 and oy + oh > y + 1e-3:
+            out.append(o)
+    return out
 
 
 def gui_centre(b):
@@ -1712,8 +1805,211 @@ def edithud_e9(run, scales=(2, 3), item="heightlimit"):
     s.shot("edithud-e9")
 
 
+def edithud_e3a(run):
+    """E3a: from a fresh all-Auto layout, dragging Armor moves nothing else (it used to re-flow Potion into the
+    corner); Potion's state is pinned instead."""
+    s = run.s
+    run.layout_auto()
+    run.show_only({"armor", "potion"})
+    before = run.probe()
+    sc = before["scale"]
+    a0 = run.box("armor", before)
+    run.device_drag("armor", 30, 0, steps=3)
+    after = run.probe()
+    a1 = run.box("armor", after)
+    p0, p1 = run.box("potion", before), run.box("potion", after)
+    s.check("E3a Armor moved about 30 GUI px right", abs(visual_x(a1) - visual_x(a0) - 30) <= 4.0 / sc + 1e-3,
+            "%.3f -> %.3f" % (visual_x(a0), visual_x(a1)))
+    s.check("E3a Potion's box is where it was", all(abs(p - q) <= 1e-3 for p, q in zip(vis(p0), vis(p1))),
+            "%s -> %s" % (vis(p0), vis(p1)))
+    problems = others_unchanged(before, after, {"armor"})
+    s.check("E3a nothing else moved", not problems, problems or None)
+    st0, st1 = run.state("potion", before), run.state("potion", after)
+    s.check("E3a Potion went from Auto to a stored spot", st0.get("anchor") == -1 and pinned_anchor(st1),
+            "anchor %s -> %s" % (st0.get("anchor"), st1.get("anchor")))
+    s.shot("edithud-e3a")
+
+
+def edithud_e3_e4(run):
+    """E3: Inventory dragged left at its own height stops flush at the left column (10 drag steps). E4: 30 GUI px
+    further down in the same drag, it stays flush and follows the pointer down."""
+    s = run.s
+    run.show_only(None)
+    before = run.probe()
+    sc = before["scale"]
+    column = left_column(before, "inventory")
+    if not s.check("E3 a module sits left of Inventory at its height", bool(column)):
+        return
+    inv = run.box("inventory", before)
+    col_right = max(vis(o)[0] + vis(o)[2] for o in column)
+    travel = (col_right - 10) - visual_x(inv)  # just past the column: flush is nearer than going around
+    press, last = run.device_drag("inventory", travel, 0, steps=10, release=False)
+    try:
+        mid = run.probe()
+        inv1 = run.box("inventory", mid)
+        s.check("E3 Inventory stops flush at the column", close_enough(visual_x(inv1), col_right, 1e-3),
+                "left %.4f, column right %.4f" % (visual_x(inv1), col_right))
+        problems = others_unchanged(before, mid, {"inventory"})
+        s.check("E3 nothing else moved", not problems, problems or None)
+        y0 = vis(inv1)[1]
+        s.call("/drag", {"x": last[0], "y": last[1] + int(round(30 * sc)), "device": 1})
+        end = run.probe()
+        inv2 = run.box("inventory", end)
+        column2 = left_column(end, "inventory")
+        right2 = max(vis(o)[0] + vis(o)[2] for o in column2) if column2 else None
+        s.check("E4 Inventory stays flush with the column 30 px lower", right2 is not None
+                and close_enough(visual_x(inv2), right2, 1e-3), "left %.4f, column right %s" % (visual_x(inv2), right2))
+        s.check("E4 its top follows the pointer down", abs(vis(inv2)[1] - (y0 + 30)) <= 4.0 / sc + 1e-3,
+                "%.3f -> %.3f" % (y0, vis(inv2)[1]))
+    finally:
+        s.call("/up", {"x": last[0], "y": last[1], "device": 1})
+    s.shot("edithud-e3-e4")
+
+
+def edithud_e5_e6(run):
+    """E5: Keystrokes in the screen centre is a wall Map Info goes around: dragged 30 px into its left side, Map
+    Info sits flush left of it; 30 px short of its right side, flush right of it. (Deep in the middle the nearest
+    free spot is above or below, so the checks stay 30 px from each side.) E6: with Alt it overlaps Keystrokes;
+    one plain pixel later it is clear again."""
+    s = run.s
+    run.show_only(None)
+    hb = run.probe()
+    sc, sw, sh = hb["scale"], hb["sw"], hb["sh"]
+    ks = run.box("keystrokes", hb)
+    kx, ky, kw, kh = vis(ks)
+    run.device_drag("keystrokes", sw / 2.0 - (kx + kw / 2.0), sh / 2.0 - (ky + kh / 2.0), mods="alt")
+    ks = run.box("keystrokes")
+    kx, ky, kw, kh = vis(ks)
+    mi = run.box("heightlimit")
+    mx, my, mw, mh = vis(mi)
+    run.device_drag("heightlimit", 0, (ky + kh / 2.0) - (my + mh / 2.0), mods="alt")  # the same height
+    for raw, want, side in ((kx - mw + 30, kx - mw, "left"), (kx + kw - 30, kx + kw, "right")):
+        mi = run.box("heightlimit")
+        run.device_drag("heightlimit", raw - visual_x(mi), 0)
+        got = visual_x(run.box("heightlimit"))
+        s.check("E5 Map Info pushed into Keystrokes sits flush %s of it" % side, close_enough(got, want, 1e-3),
+                "left %.4f, want %.4f" % (got, want))
+    mi = run.box("heightlimit")
+    mx, my, mw, mh = vis(mi)
+    press, last = run.device_drag("heightlimit", (kx + kw / 2.0) - (mx + mw / 2.0), 0, mods="alt", release=False)
+    try:
+        hb6 = run.probe()
+        s.check("E6 with Alt Map Info overlaps Keystrokes",
+                overlap_area(run.box("heightlimit", hb6), run.box("keystrokes", hb6)) > 0)
+        s.call("/drag", {"x": last[0] + 1, "y": last[1], "device": 1})
+        hb7 = run.probe()
+        s.check("E6 one plain pixel later it is clear again",
+                overlap_area(run.box("heightlimit", hb7), run.box("keystrokes", hb7)) == 0)
+    finally:
+        s.call("/up", {"x": last[0] + 1, "y": last[1], "device": 1})
+    s.shot("edithud-e5-e6")
+
+
+def edithud_corner_grow(run, item, other, corner, gap):
+    """Shared by E7/E7b: `other` is put `gap` GUI px beside `item` at its height (Alt), then `item` is grown by
+    `corner` ('br' or 'tl') well past it. Returns (before, after) probes."""
+    s = run.s
+    b = run.box(item)
+    x, y, w, h = vis(b)
+    o = run.box(other)
+    ox, oy, ow, oh = vis(o)
+    target_x = x + w + gap if corner == "br" else x - gap - ow
+    run.device_drag(other, target_x - ox, y - oy, mods="alt")
+    cx, cy = gui_centre(b)
+    s.call("/click", {"x": cx, "y": cy})  # select it, so its corner handles take the press
+    before = run.probe()
+    b = run.box(item, before)
+    x, y, w, h = vis(b)
+    gx, gy = (int(x + w - 1), int(y + h - 1)) if corner == "br" else (int(x + 1), int(y + 1))
+    far = 200 if corner == "br" else -200
+    s.call("/down", {"x": gx, "y": gy})
+    s.call("/drag", {"x": gx + far // 4, "y": gy})
+    s.call("/drag", {"x": gx + far, "y": gy})
+    after = run.probe()
+    s.call("/up", {"x": gx + far, "y": gy})
+    return before, after
+
+
+def edithud_e7(run):
+    """E7: Map Info's bottom-right corner, dragged well past Keystrokes 20 px to its right, grows it only until
+    its right edge is flush with Keystrokes."""
+    s = run.s
+    run.show_only({"heightlimit", "keystrokes"})
+    before, after = edithud_corner_grow(run, "heightlimit", "keystrokes", "br", 20)
+    mi, ks = run.box("heightlimit", after), run.box("keystrokes", after)
+    right = vis(mi)[0] + vis(mi)[2]
+    s.check("E7 Map Info grew", run.state("heightlimit", after)["scale"] > run.state("heightlimit", before)["scale"])
+    s.check("E7 and stopped flush at Keystrokes", close_enough(right, vis(ks)[0], 0.05),
+            "right %.4f, Keystrokes left %.4f" % (right, vis(ks)[0]))
+    s.check("E7 no overlap", overlap_area(mi, ks) == 0)
+    problems = others_unchanged(before, after, {"heightlimit"})
+    s.check("E7 nothing else moved", not problems, problems or None)
+    s.shot("edithud-e7")
+
+
+def edithud_e7b(run):
+    """E7b: Session Stats' top-left corner (bottom-right pinned), dragged well past Keystrokes 20 px to its left,
+    grows it only until its left edge is flush with Keystrokes (review I2: the probe uses the pinned corner)."""
+    s = run.s
+    run.show_only({"sessionstats", "keystrokes"})
+    hb = run.probe()
+    ss = run.box("sessionstats", hb)
+    run.device_drag("sessionstats", 0, (hb["sh"] - vis(ss)[3]) / 2.0 - vis(ss)[1], mods="alt")  # room to grow up
+    before, after = edithud_corner_grow(run, "sessionstats", "keystrokes", "tl", 20)
+    s0, s1 = run.box("sessionstats", before), run.box("sessionstats", after)
+    ks = run.box("keystrokes", after)
+    corner0, corner1 = (s0["x"] + s0["w"], s0["y"] + s0["h"]), (s1["x"] + s1["w"], s1["y"] + s1["h"])
+    s.check("E7b Session Stats grew", run.state("sessionstats", after)["scale"] > run.state("sessionstats", before)["scale"])
+    s.check("E7b its bottom-right corner stayed put", all(abs(p - q) <= 0.05 for p, q in zip(corner0, corner1)),
+            "%s -> %s" % (corner0, corner1))
+    s.check("E7b its left edge stopped flush at Keystrokes", close_enough(vis(s1)[0], vis(ks)[0] + vis(ks)[2], 0.05),
+            "left %.4f, Keystrokes right %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2]))
+    s.check("E7b no overlap", overlap_area(s1, ks) == 0)
+    s.shot("edithud-e7b")
+
+
+def edithud_e15(run):
+    """E15: a module hidden at a clear manual spot and shown again from its right-click menu takes its first free
+    Auto spot, not the old one; nothing else moves; undo brings the old spot back. (The settings-row half needs
+    the sheet-node probe.)"""
+    s = run.s
+    run.show_only(None)
+    hb = run.probe()
+    sw, sh = hb["sw"], hb["sh"]
+    ks = run.box("keystrokes", hb)
+    kx, ky, kw, kh = vis(ks)
+    run.device_drag("keystrokes", sw / 2.0 - (kx + kw / 2.0), sh / 2.0 - (ky + kh / 2.0), mods="alt")
+    placed = run.probe()
+    st0 = run.state("keystrokes", placed)
+    cx, cy = gui_centre(run.box("keystrokes", placed))
+    s.call("/click", {"x": cx, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    hidden = run.probe()
+    s.check("E15 Delete hides it", not run.state("keystrokes", hidden)["enabled"])
+    s.call("/click", {"x": cx, "y": cy, "button": 1})  # its ghost's menu
+    menu = ((run.probe().get("editor") or {}).get("menu") or {}).get("rows") or []
+    show = [r for r in menu if r["label"] == "Show"]
+    if not s.check("E15 the ghost's menu lists Show", bool(show), [r["label"] for r in menu]):
+        return
+    r = show[0]
+    s.call("/click", {"x": int(r["x"] + r["w"] / 2), "y": int(r["y"] + r["h"] / 2)})
+    shown = run.probe()
+    st1, b1 = run.state("keystrokes", shown), run.box("keystrokes", shown)
+    s.check("E15 after Show it is on Auto", st1["enabled"] and st1["anchor"] == -1, st1)
+    s.check("E15 not back at the centre spot", abs(vis(b1)[0] - vis(run.box("keystrokes", placed))[0]) > 1,
+            "drawn at %s" % (vis(b1),))
+    problems = others_unchanged(hidden, shown, {"keystrokes"})
+    s.check("E15 nothing else moved", not problems, problems or None)
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    undone = run.state("keystrokes", run.probe())
+    s.check("E15 undo brings the centre spot back", all(undone.get(k) == st0.get(k)
+                                                         for k in ("x", "y", "fracX", "fracY", "anchor")), undone)
+    s.shot("edithud-e15")
+
+
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
-EDIT_HUD_CHECKS = [("E8", edithud_e8), ("E9", edithud_e9)]
+EDIT_HUD_CHECKS = [("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
+                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E15", edithud_e15)]
 
 
 def edithud_e0(s, hb, enabled):

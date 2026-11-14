@@ -72,4 +72,51 @@ public class HudDragTest {
         assertEquals(387f, far.x, 0f);
         assertEquals(0f, far.y, 0f);
     }
+
+    // ----- walls (phase 3) -----
+
+    private static final List<HudWalls.Rect> WALL = Collections.singletonList(new HudWalls.Rect(200, 60, 50, 150));
+
+    @Test
+    public void altLetsTheBoxOverlapAWall() {
+        HudDrag.Result r = HudDrag.move(210f, 100f, 40f, 20f, 480f, 270f, 2, false, NONE, false, WALL, 0f, 0f);
+        assertEquals(210f, r.x, 0f);
+        assertEquals(100f, r.y, 0f);
+    }
+
+    @Test
+    public void wallsStopTheBoxAndKeepItsSnapOnTheOtherAxis() {
+        HudDrag.Result r = HudDrag.move(170f, 100f, 40f, 20f, 480f, 270f, 2, true, NONE, true, WALL, 0f, 0f);
+        assertEquals(160f, r.x, 0f);
+        assertEquals(100f, r.y, 0f);
+        assertNull("the walls moved x: no x guide", r.snapX);
+    }
+
+    @Test
+    public void aSnapIntoAWallIsUndoneAndItsGuideCleared() {
+        // the wall's left edge (200) pulls the box's left edge in: the box would sit inside the wall
+        HudSnapper.Target t = new HudSnapper.Target("wall", 200, 60, 50, 150);
+        HudDrag.Result r = HudDrag.move(201f, 100f, 40f, 20f, 480f, 270f, 2, true, Collections.singletonList(t),
+                true, WALL, 0f, 0f);
+        assertTrue(HudWalls.free(r.x, r.y, 40f, 20f, WALL));
+        assertNull(r.snapX);
+    }
+
+    @Test
+    public void wallsAndSnapLeaveABoxFiveScreenPixelsFromAWallWhereItWasDropped() {
+        HudSnapper.Target t = new HudSnapper.Target("wall", 200, 60, 50, 150);
+        float x = 160f - 5f / 2f; // right edge 5 screen px left of the wall at GUI 2
+        HudDrag.Result r = HudDrag.move(x, 100f, 40f, 20f, 480f, 270f, 2, true, Collections.singletonList(t),
+                true, WALL, 0f, 0f);
+        assertEquals(x, r.x, 0f);
+        assertFalse(r.snapX.snapped);
+    }
+
+    @Test
+    public void noFreeSpotKeepsTheCurrentSpot() {
+        List<HudWalls.Rect> all = Collections.singletonList(new HudWalls.Rect(0, 0, 480, 270));
+        HudDrag.Result r = HudDrag.move(100f, 100f, 40f, 20f, 480f, 270f, 2, false, NONE, true, all, 33f, 44f);
+        assertEquals(33f, r.x, 0f);
+        assertEquals(44f, r.y, 0f);
+    }
 }
