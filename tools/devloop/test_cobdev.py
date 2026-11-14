@@ -299,6 +299,32 @@ class OverlaySmokeNoise(unittest.TestCase):
         self.assertTrue(box["x"] * 2 <= x < (box["x"] + 1.5) * 2)
 
 
+class ChatBandGaps(unittest.TestCase):
+    """Full smoke 2026-11-14 11:56: at 1280x720 the crosshair's arm crosses the chat's margin column, which cut the
+    open chat's 20-row band to 17 rows."""
+
+    def chat(self, rows, crosshair_at=None):
+        ref = sky(700, 720)
+        box = {"x": 2.0, "y": 332.0 - 9 * rows, "w": 324.0, "h": 9.0 * rows}
+        img = paint_fn(ref, cobdev.gui_rect(box, 2), black(0x7F))
+        if crosshair_at is not None:  # a 1 GUI px crosshair arm (2 device px), inverted over the fill
+            img = paint_fn(img, (630, crosshair_at, 650, crosshair_at + 2), lambda c: (255 - c[0], 255 - c[1], 255 - c[2]))
+        return ref, img, box
+
+    def test_a_crosshair_arm_does_not_split_the_band(self):
+        ref, img, box = self.chat(20, crosshair_at=359)
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertEqual(20, rows)
+        self.assertEqual((304, 664), (top, bottom))
+
+    def test_a_real_gap_still_ends_the_band(self):
+        ref, img, box = self.chat(10)
+        img = paint_fn(img, (0, 500, 700, 520), lambda c: (120, 166, 255))  # 10 GUI px of sky inside the band
+        self.assertIsNotNone(cobdev.band_rows(img, ref, 648, 1 - 0x7F / 255.0))
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertLess(rows, 10)
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",
@@ -846,6 +872,40 @@ class HudLookNoise(unittest.TestCase):
         self.assertFalse(cobdev.hl_icon_swap(old, renamed, panel, sf)[0])
         self.assertFalse(cobdev.hl_icon_swap(old, old, panel, sf)[0])
         self.assertFalse(cobdev.hl_icon_swap(old, modern, None, sf)[0])
+
+
+class HudLookProdRun(unittest.TestCase):
+    """The first prod run (2026-11-14): the window changed size inside a module's shots and after a restart, and the
+    potion frames were taken one blink period apart."""
+
+    def test_a_backdrop_of_another_size_is_ignored_not_fatal(self):
+        before = flat(300, 200, SKY)
+        frame = paint(before, (200, 4, 273, 47), see_through(SKY))
+        resized = flat(150, 200, SKY)
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=resized), [(200, 4, 273, 47)])
+
+    def test_frames_of_different_sizes_mean_a_retake(self):
+        before = flat(300, 200, SKY)
+        on = paint(before, (4, 4, 97, 39), see_through(SKY))
+        small = flat(150, 200, SKY)
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, small), on, on, 2)
+        self.assertTrue(moved)
+        self.assertIsNone(box)
+
+    def test_counting_past_the_frame_is_clipped(self):
+        img = paint(flat(20, 10, SKY), (15, 5, 19, 9), (63, 63, 63))
+        self.assertEqual(cobdev.count_exact(img, (10, 0, 112, 134), (63, 63, 63)), 25)
+        self.assertEqual(cobdev.count_near(img, (-5, -5, 40, 40), (63, 63, 63), 0), 25)
+        self.assertEqual(cobdev.xs_of(img, (0, 0, 99, 99), (63, 63, 63)), (15, 19))
+
+    def test_potion_frames_see_both_halves_of_the_blink_from_any_start(self):
+        offsets = cobdev.hl_blink_offsets()
+        for start in [i / 20.0 for i in range(20)]:
+            phases = [((start + t) % 1.0) for t in offsets]  # PotionRows: 0.5 s shown, 0.5 s hidden
+            self.assertTrue(any(p < 0.5 for p in phases) and any(p >= 0.5 for p in phases), (start, phases))
+        self.assertLess(offsets[-1], 4.0)  # all inside a 9 s effect, after the setup
+        # the old spacing (one frame every ~1 s) can stay in one half
+        self.assertFalse(any(((0.1 + t) % 1.0) >= 0.5 for t in (0, 0.99, 1.98, 2.97)))
 
 
 class HudLookPressedCap(unittest.TestCase):

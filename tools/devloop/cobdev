@@ -1030,19 +1030,22 @@ def ratio_share(img, ref, rect, want, tol=0.02):
     return sum(1 for v in vals if abs(v - want) <= tol) / len(vals) if vals else 0.0
 
 
-def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None):
-    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive."""
+def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None, gap=0):
+    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive.
+    Up to `gap` non-matching rows inside a run do not end it (something 1 GUI px tall drawn over the fill, such as
+    the crosshair's arm at some window sizes)."""
     h = img[1]
     y1 = h if y1 is None else min(h, y1)
-    best, start = None, None
+    best, start, last = None, None, None
     for y in range(max(0, y0), y1 + 1):
         r = ratio_at(img, ref, x, y) if y < y1 else None
         if r is not None and abs(r - want) <= tol:
             if start is None:
                 start = y
-        elif start is not None:
-            if best is None or y - start > best[1] - best[0]:
-                best = (start, y)
+            last = y
+        elif start is not None and (y >= y1 or y - last > gap):
+            if best is None or last + 1 - start > best[1] - best[0]:
+                best = (start, last + 1)
             start = None
     return best
 
@@ -1780,6 +1783,9 @@ def smoke_ov_tabhide(s, cfg):
         s.check("the HUD's Tab prediction always matched vanilla", after == 0, "mismatchFrames %s -> %s" % (before, after))
     finally:
         scene.restore()
+        # the chestplate and Speed set above; armor left on would soften A2-clutch's damage check
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:air", "/effect @p clear"):
+            s.try_call("/command", post={"command": c})
         time.sleep(5)  # let the TNT go off before the next step
         s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
 
@@ -1787,7 +1793,7 @@ def smoke_ov_tabhide(s, cfg):
 def ov_chat_rows(s, img, ref, box, sf, scale, chat_scale=1.0):
     """(band rows, band top, band bottom) of chat fill in the right margin column (no text reaches it)."""
     x = chat_margin_column(box, scale, sf, chat_scale)
-    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05)
+    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05, gap=2 * sf)
     if band is None:
         return 0, None, None
     row = 9 * chat_scale * scale * sf
@@ -3216,25 +3222,33 @@ def see_through_ok(on_px, off_px, alpha=HL_FILL_ALPHA, tol=2):
     return all(abs(a - round(b * (1 - alpha / 255.0))) <= tol for a, b in zip(on_px, off_px))
 
 
+def clip(img, box):
+    """box cut to the frame (a box from another window size must not index past it)."""
+    w, h, _ = img
+    return max(0, box[0]), max(0, box[1]), min(w - 1, box[2]), min(h - 1, box[3])
+
+
 def count_exact(img, box, rgb):
-    x0, y0, x1, y1 = box
+    x0, y0, x1, y1 = clip(img, box)
     return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb))
 
 
 def count_near(img, box, rgb, tol):
-    x0, y0, x1, y1 = box
+    x0, y0, x1, y1 = clip(img, box)
     return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)
                if max(abs(c - t) for c, t in zip(px(img, x, y), rgb)) <= tol)
 
 
 def xs_of(img, box, rgb):
     """(min x, max x) of the pixels exactly rgb in box, or None."""
-    xs = [x for y in range(box[1], box[3] + 1) for x in range(box[0], box[2] + 1) if px(img, x, y) == tuple(rgb)]
+    x0, y0, x1, y1 = clip(img, box)
+    xs = [x for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb)]
     return (min(xs), max(xs)) if xs else None
 
 
 def ys_of(img, box, rgb):
-    ys = [y for y in range(box[1], box[3] + 1) for x in range(box[0], box[2] + 1) if px(img, x, y) == tuple(rgb)]
+    x0, y0, x1, y1 = clip(img, box)
+    ys = [y for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb)]
     return (min(ys), max(ys)) if ys else None
 
 
@@ -3277,7 +3291,7 @@ def hud_clusters(a, b, box=None, thresh=6, cell=4, join=3, also=None):
     `also` is a second backdrop (taken after the frame): a pixel counts only if b differs from both, so a world
     pixel that changed once, before or after the frame, does not. Returns [(points, bbox)], biggest first."""
     pts = changed_points(a, b, box, thresh) or []
-    if also is not None:
+    if also is not None and also[:2] == b[:2]:  # a backdrop from a resized window says nothing about b
         other = set(changed_points(also, b, box, thresh) or [])
         pts = [p for p in pts if p in other]
     cells = {}
@@ -3457,6 +3471,11 @@ class HudLook:
         if self.saved_gui is not None:
             self.s.try_call("/scale", {"n": self.saved_gui})
         self.s.try_call("/field", post={"path": ICONS + ".cacheDirOverride", "value": ""})
+        # setup() equips leggings and fills slots 9-10; armor left on would soften A2-clutch's damage check
+        for c in ("/effect @p clear", "/replaceitem entity @p slot.armor.legs minecraft:air",
+                  "/replaceitem entity @p slot.inventory.0 minecraft:air",
+                  "/replaceitem entity @p slot.inventory.1 minecraft:air"):
+            self.s.try_call("/command", post={"command": c})
         self.save_config()
         self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
 
@@ -3577,6 +3596,9 @@ def hl_bg_checks(name, kind, backdrops, on, off, sf):
     """Every HL-bg check for one module from its frames, as (check, ok, detail); its On box; and whether the scene
     moved (then the frames say nothing about the module)."""
     out = []
+    sizes = [f[:2] for f in (backdrops[0], backdrops[1], on, off)]
+    if len(set(sizes)) > 1:  # the window changed size between the frames
+        return [(name + ": its frames are one size", False, sizes)], None, True
     on_box, panels, off_box = hl_bg_boxes(name, backdrops, on, off, sf)
     out.append((name + ": drawn with its Background on", on_box is not None, on_box))
     if on_box is None:
@@ -3684,6 +3706,13 @@ def hl_persist(h):
     h.setup()
 
 
+def hl_blink_offsets():
+    """When the HL-potion frames are taken, in s from the first: 0.625 s apart, so the 1 s blink's phase steps 5/8 of
+    a period per frame and the six frames see both halves whatever the start (frames ~1 s apart can all land in
+    one half, as in the first prod run)."""
+    return [0.625 * i for i in range(6)]
+
+
 def hl_potion(h):
     s = h.s
     s.begin("HL-potion", "Lunar potion rows: 20 px pitch, white name, gray m:ss, under 10 s blinks")
@@ -3699,10 +3728,13 @@ def hl_potion(h):
     time.sleep(0.6)  # the FOV settles
     none = h.shot("potion-none")
     h.only(g)
-    frames = []
-    for i in range(4):
-        frames.append(h.shot("potion-rows-%d" % i))
-        time.sleep(0.25)
+    time.sleep(0.35)
+    frames, t0 = [], time.time()
+    for i, at in enumerate(hl_blink_offsets()):
+        delay = t0 + at - time.time()
+        if delay > 0:
+            time.sleep(delay)
+        frames.append(s.shot("hl-potion-rows-%d" % i, wait=50)[1])
     h.all_off()
     after = h.shot("potion-none-after")
     box = union_box([hud_bbox(none, f, also=after) for f in frames])
@@ -3726,14 +3758,30 @@ def hl_potion(h):
     h.all_off()
 
 
+def hl_measure(h, group, tag):
+    """(On box, On frame) of one module measured now, alone with its Background on, between a backdrop before and
+    after; the scale factor is read again. HL-bg's boxes go stale when a restart or the window changes the size (the
+    first prod run came back 363 x 427 at scale 1). Retaken when the window changes size between the frames."""
+    for attempt in range(3):
+        h.sf = (h.s.status() or {}).get("scaleFactor") or h.sf
+        h.all_off()
+        h.s.call("/close")
+        before = h.shot(tag + "-none")
+        h.only(group)
+        on = h.shot(tag + "-on")
+        h.all_off()
+        after = h.shot(tag + "-none-after")
+        if before[:2] == on[:2] == after[:2]:
+            return hud_bbox(before, on, also=after), on
+    return None, None
+
+
 def hl_mapinfo(h):
     s = h.s
     s.begin("HL-mapinfo", "Map Info: labels in the accent, values white")
-    box = h.boxes.get("heightlimit")
     g = [x for x in h.groups if x[0] == "heightlimit"][0]
-    h.only(g)
-    img = h.shot("mapinfo")
-    if not s.check("Map Info box known from HL-bg", box is not None, box):
+    box, img = hl_measure(h, g, "mapinfo")
+    if not s.check("Map Info measured", box is not None, box):
         return
     sf = h.sf
     top = box[1] + HL_PAD * sf
@@ -3759,10 +3807,10 @@ def hl_keys(h):
     s = h.s
     s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (W held raw in the editor)")
     g = [x for x in h.groups if x[0] == "keystrokes"][0]
-    # The caps' box from the game (HL-bg): the editor preview draws them in the same spot, but its frames and the
-    # other modules' ghosts change around them, so a frame diff in the editor would measure editor chrome.
-    box = h.boxes.get("keystrokes")
-    if not s.check("Keystrokes box known from HL-bg", box is not None, box):
+    # The caps' box measured in game: the editor preview draws them in the same spot, but its frames and the other
+    # modules' ghosts change around them, so a frame diff in the editor would measure editor chrome.
+    box, _ = hl_measure(h, g, "keys")
+    if not s.check("Keystrokes measured in game", box is not None, box):
         return
     sf = h.sf
     got = box_size(box)
@@ -4024,11 +4072,13 @@ def hl_icons(h, cold):
     s.check("requests == %d" % (1 if cold else 0), req == (1 if cold else 0), req)
     s.check("23 icons published", pub == 23, pub)
     if cold:
+        panel, _ = hl_measure(h, g, "icons-panel")
+        h.only(g)
         modern = h.shot("icons-modern")
         s.field(ICONS + ".enabled", False)
         old = h.shot("icons-1.8.9")
         s.field(ICONS + ".enabled", True)
-        ok, detail = hl_icon_swap(old, modern, h.boxes.get("potion"), h.sf)
+        ok, detail = hl_icon_swap(old, modern, panel if modern[:2] == old[:2] else None, h.sf)
         s.check("the modern icon differs from the 1.8.9 one, only in the 18 x 18 icon slot", ok, detail)
     s.cmd("/effect @p clear")
     h.all_off()
