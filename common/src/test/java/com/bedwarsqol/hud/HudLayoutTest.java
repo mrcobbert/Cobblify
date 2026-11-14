@@ -18,7 +18,6 @@ import static com.bedwarsqol.hud.HudLayout.Vertical.MIDDLE;
 import static com.bedwarsqol.hud.HudLayout.Vertical.TOP;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 public class HudLayoutTest {
 
@@ -131,33 +130,70 @@ public class HudLayoutTest {
         assertAt(380 - 2 - 360, 2, out.get("wide"));
     }
 
-    // ----- fitScale (Team Upgrades' Full panel on a small window, review code-1 I2) -----
+    // ----- fitScale (Team Upgrades' Full panel: review code-1 I2, and HUD Size 2 beside Map Info) -----
 
     /** The Full panel's measured size: {130 s + 12, 129 s + 12} GUI px. */
     private static final HudLayout.Sizer FULL_PANEL = s -> new float[]{130f * s + 12f, 129f * s + 12f};
+    private static final Spot[] TEAM_SPOTS = {new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN),
+            new Spot(LEFT, MIDDLE, HudLayout.Slide.UP), new Spot(LEFT, BOTTOM, HudLayout.Slide.UP)};
+    private static final List<Item> NONE_BEFORE = Collections.emptyList();
+
+    /** The hotbar with the health, armour and food bars: 182 x 50, centred on the bottom edge. */
+    private static List<Box> hotbar(float sw, float sh) {
+        return Collections.singletonList(new Box((sw - 182f) / 2f, sh - 50f, 182f, 50f));
+    }
+
+    private static float fit(float sw, float sh, List<Item> before, List<Box> obstacles, float scale) {
+        return new HudLayout(sw, sh, 2, 2).fitScale(before, obstacles, "team", scale, 0.5f, 0.5f, FULL_PANEL, TEAM_SPOTS);
+    }
 
     @Test
     public void fitScaleStepsDownUntilThePanelClearsTheHotbar() {
         // 854x480 at GUI scale 2 (427x240), HUD Size Large: 207 x 205.5 fits neither beside nor above
-        assertEquals(1.0f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 427f, 240f, 182f, 50f, 2f, 2f), 1e-6f);
+        assertEquals(1.0f, fit(427f, 240f, NONE_BEFORE, hotbar(427f, 240f), 1.5f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleStepsDownUntilThePanelClearsTheModulesPlacedBeforeIt() {
+        // 1280x720 at GUI scale 2 (640x360), HUD Size 2: Map Info in the middle of the left edge, Armor,
+        // Potion and Keystrokes above it. At 1.5 the panel fits neither under nor over Map Info; at 1.0 it does.
+        List<Box> obstacles = Arrays.asList(new Box(229f, 310f, 182f, 50f), new Box(2f, 2f, 94f, 148f));
+        List<Item> mapInfo = Collections.singletonList(new Item("map", 112f, 56f, new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)));
+        assertEquals(1.0f, fit(640f, 360f, mapInfo, obstacles, 1.5f), 1e-6f);
+        // without Map Info the configured scale already fits
+        assertEquals(1.5f, fit(640f, 360f, NONE_BEFORE, obstacles, 1.5f), 1e-6f);
+
+        // and the fitted panel is placed clear of everything
+        HudLayout layout = new HudLayout(640f, 360f, 2, 2);
+        float[] size = FULL_PANEL.size(1.0f);
+        Map<String, float[]> out = layout.place(Arrays.asList(mapInfo.get(0), new Item("team", size[0], size[1], TEAM_SPOTS)), obstacles);
+        float[] team = out.get("team"), map = out.get("map");
+        assertFalse(overlaps(team, map));
+        for (Box b : obstacles) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    private static boolean overlaps(float[] a, float[] b) {
+        return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
     }
 
     @Test
     public void fitScaleKeepsAScaleThatAlreadyFits() {
-        assertEquals(1.5f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 640f, 360f, 182f, 50f, 2f, 2f), 1e-6f);
-        assertEquals(1.0f, HudLayout.fitScale(1.0f, 0.5f, 0.5f, FULL_PANEL, 427f, 240f, 182f, 50f, 2f, 2f), 1e-6f);
+        assertEquals(1.5f, fit(640f, 360f, NONE_BEFORE, hotbar(640f, 360f), 1.5f), 1e-6f);
+        assertEquals(1.0f, fit(427f, 240f, NONE_BEFORE, hotbar(427f, 240f), 1.0f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleTriesTheMinimumWhenAStepWouldPassIt() {
+        // GUI scale 1 at HUD Size 2: 1.5 draws as 2.0, one font pixel down (1.0) would be 0.5, below the
+        // one-pixel minimum, so the minimum itself is the last try
+        HudLayout.Sizer snapped = s -> FULL_PANEL.size(s >= 1.5f ? 2f : s);
+        List<Box> obstacles = Arrays.asList(new Box(336f, 430f, 182f, 50f));
+        List<Item> mapInfo = Collections.singletonList(new Item("map", 168f, 72f, new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)));
+        assertEquals(1.0f, new HudLayout(854f, 480f, 2, 2).fitScale(mapInfo, obstacles, "team", 1.5f, 1f, 1f, snapped, TEAM_SPOTS), 1e-6f);
     }
 
     @Test
     public void fitScaleStopsAtTheMinimumWhenNothingFits() {
-        assertEquals(0.5f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 100f, 80f, 182f, 50f, 2f, 2f), 1e-6f);
-    }
-
-    @Test
-    public void besideTheHotbarNeedsTheSideColumnAboveItTheFullWidth() {
-        // beside: (427 - 182) / 2 - 4 = 118.5 wide, 236 high; above: 423 wide, 186 high
-        assertTrue(HudLayout.clearOfHotbar(new float[]{118.5f, 236f}, 427f, 240f, 182f, 50f, 2f, 2f));
-        assertTrue(HudLayout.clearOfHotbar(new float[]{423f, 186f}, 427f, 240f, 182f, 50f, 2f, 2f));
-        assertFalse(HudLayout.clearOfHotbar(new float[]{119f, 187f}, 427f, 240f, 182f, 50f, 2f, 2f));
+        assertEquals(0.5f, fit(100f, 80f, NONE_BEFORE, hotbar(100f, 80f), 1.5f), 1e-6f);
     }
 }

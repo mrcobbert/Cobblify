@@ -415,6 +415,8 @@ public class BedwarsHudRenderer {
             float exX = auto[0] + pad, exY = auto[1] + pad;
             float exW = auto[2] - 2f * pad, exH = auto[3] - 2f * pad;
             int a = HudPlacement.anchorFor(exX, exY, exW, exH, sw, sh);
+            // Team Upgrades stacks under the module above it and grows down: its top edge stays put.
+            if (TEAM_UPGRADES_HUD.equals(id)) a %= 3;
             x = HudPlacement.absoluteX(HudPlacement.storedX(exX, a, exW, sw), a, width, sw);
             y = HudPlacement.absoluteY(HudPlacement.storedY(exY, a, exH, sh), a, height, sh);
         } else {
@@ -456,6 +458,8 @@ public class BedwarsHudRenderer {
     }
     private static String layoutKey;
     private static Map<String, float[]> layoutCache;
+    /** The scale Team Upgrades fits at in its default spot, worked out with the layout. */
+    private static float layoutTeamScale = 1f;
 
     /** Drawn box {x, y, width, height} of every module still in its default spot, by id. */
     private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
@@ -478,21 +482,61 @@ public class BedwarsHudRenderer {
                 }
                 continue;
             }
-            Size size = layoutSize(mc, cfg, id);
-            float pad = layoutPad(cfg, id);
-            HudLayout.Item item = new HudLayout.Item(id, size.width + 2f * pad, size.height + 2f * pad, e.getValue());
+            HudLayout.Item item;
+            if (TEAM_UPGRADES_HUD.equals(id)) {
+                item = new HudLayout.Item(id, 0f, 0f, e.getValue()); // sized below, once the modules before it are known
+            } else {
+                Size size = layoutSize(mc, cfg, id);
+                float pad = layoutPad(cfg, id);
+                item = new HudLayout.Item(id, size.width + 2f * pad, size.height + 2f * pad, e.getValue());
+            }
             (state.enabled ? shown : hidden).add(item);
         }
         shown.addAll(hidden); // hidden modules only take what room is left
-        layoutCache = new HudLayout(sw, sh, LAYOUT_EDGE, LAYOUT_GAP).place(shown, obstacles);
+        HudLayout layout = new HudLayout(sw, sh, LAYOUT_EDGE, LAYOUT_GAP);
+        fitTeamUpgrades(layout, shown, obstacles, cfg);
+        layoutCache = layout.place(shown, obstacles);
         layoutKey = key;
         return layoutCache;
+    }
+
+    /**
+     * Team Upgrades in its default spot draws at the player's scale, except that a Full panel with no free
+     * spot (a small window or a large HUD Size, beside Map Info and the hotbar) steps down one font pixel at
+     * a time until it has one (review code-1 I2; HUD Size 2 smoke). Replaces its placeholder in {@code items}.
+     */
+    private static void fitTeamUpgrades(HudLayout layout, List<HudLayout.Item> items, List<HudLayout.Box> obstacles,
+                                        ClientSettings cfg) {
+        float scale = cfg.teamUpgradesHudScale;
+        layoutTeamScale = scale;
+        int at = -1;
+        for (int i = 0; i < items.size(); i++) if (TEAM_UPGRADES_HUD.equals(items.get(i).id)) at = i;
+        if (at < 0) return;
+        // Minecraft's font steps one screen pixel per font pixel and stops at one (the GUI scale 1 size);
+        // the modern font steps by an eighth and stops at half size.
+        boolean mcFont = BedwarsQolFont.minecraft();
+        float px = 1f / new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
+        float step = mcFont ? px : 0.125f;
+        float min = Math.min(scale, mcFont ? px : 0.5f);
+        final List<TeamUpgradeRows.Row> full = teamUpgradesFullExample();
+        HudLayout.Sizer sizer = s -> {
+            Size size = teamUpgradesSize(s, full);
+            float pad = panelPad(s);
+            return new float[]{size.width + 2f * pad, size.height + 2f * pad};
+        };
+        HudLayout.Spot[] spots = DEFAULT_SPOTS.get(TEAM_UPGRADES_HUD);
+        layoutTeamScale = layout.fitScale(items.subList(0, at), obstacles, TEAM_UPGRADES_HUD, scale, step, min, sizer, spots);
+        float[] size = sizer.size(layoutTeamScale);
+        items.set(at, new HudLayout.Item(TEAM_UPGRADES_HUD, size[0], size[1], spots));
     }
 
     /** Everything the default layout depends on; it is worked out again only when this changes. */
     private static String layoutKey(ClientSettings cfg, float sw, float sh) {
         // the font sizes every text module (Minecraft's snaps to the GUI scale, which the screen size follows)
-        StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('|').append(cfg.guiFont);
+        // and the scale factor: 1280x720 at 2 and 1920x1080 at 3 are both 640x360, with different font steps
+        int factor = new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
+        StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('@').append(factor)
+                .append('|').append(cfg.guiFont);
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
             if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
@@ -510,14 +554,12 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
         if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
-        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample());
-        return Size.EMPTY;
+        return Size.EMPTY; // Team Upgrades: fitTeamUpgrades
     }
 
     private static float layoutPad(ClientSettings cfg, String id) {
         if (SESSION_HUD.equals(id)) return panelPad(cfg.sessionStatsHudScale);
         if (HEIGHT_LIMIT_HUD.equals(id)) return panelPad(cfg.heightLimitHudScale);
-        if (TEAM_UPGRADES_HUD.equals(id)) return panelPad(teamUpgradesScale(cfg));
         return CONTENT_MARGIN;
     }
 
@@ -840,21 +882,15 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * The scale Team Upgrades draws at: the player's, except that in its default spot a Full panel too big
-     * to sit clear of the hotbar anywhere (a small window at a large HUD Size) steps down one font pixel at a
-     * time until it does (review code-1 I2). A panel the player moved keeps their scale.
+     * The scale Team Upgrades draws at: the player's, or in its default spot the one the layout fitted
+     * ({@link #fitTeamUpgrades}). A panel the player moved keeps their scale.
      */
     private static float teamUpgradesScale(ClientSettings cfg) {
-        float scale = cfg.teamUpgradesHudScale;
-        if (cfg.teamUpgradesHudAnchor != HudPlacement.AUTO) return scale;
-        ScaledResolution r = new ScaledResolution(Minecraft.getMinecraft());
-        float step = BedwarsQolFont.minecraft() ? 1f / r.getScaleFactor() : 0.125f;
-        final List<TeamUpgradeRows.Row> full = teamUpgradesFullExample();
-        return HudLayout.fitScale(scale, step, Math.min(scale, 0.5f), s -> {
-            Size size = teamUpgradesSize(s, full);
-            float pad = panelPad(s);
-            return new float[]{size.width + 2f * pad, size.height + 2f * pad};
-        }, r.getScaledWidth(), r.getScaledHeight(), HOTBAR_W, HOTBAR_ZONE_H, LAYOUT_EDGE, LAYOUT_GAP);
+        if (cfg.teamUpgradesHudAnchor != HudPlacement.AUTO) return cfg.teamUpgradesHudScale;
+        Minecraft mc = Minecraft.getMinecraft();
+        ScaledResolution r = new ScaledResolution(mc);
+        defaultLayout(mc, cfg, r.getScaledWidth(), r.getScaledHeight());
+        return layoutTeamScale;
     }
 
     /** The editor's and the layout's box: the Full example's size, whichever layout is chosen. */
@@ -903,7 +939,9 @@ public class BedwarsHudRenderer {
         List<TeamUpgradeRows.Row> rows = teamUpgradesRows(cfg, example);
         if (rows.isEmpty()) return; // no active game: nothing at all
         float scale = teamUpgradesScale(cfg);
-        HudBox box = example ? teamUpgradesEditorBox(mc, cfg, false) : teamUpgradesBox(mc, cfg, teamUpgradesSize(scale, rows));
+        // The example sits where the live panel would: the editor's box is the Full panel's, and a smaller
+        // panel holds that box's edge nearest the screen side, as in game.
+        HudBox box = teamUpgradesBox(mc, cfg, teamUpgradesSize(scale, rows));
         if (box == null) return;
         drawHudBackground(box, scale, example);
         scale = ts(scale);

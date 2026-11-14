@@ -95,14 +95,16 @@ public final class TeamUpgradesWatch {
     public void onChat(ChatReceivedEvent event) {
         if (event == null || event.message == null || event.type == 2) return;
         String plain = event.message.getUnformattedText();
-        TeamUpgradeChat.Event e = TeamUpgradeChat.classify(plain, event.message.getFormattedText(),
-                ChatSender.typedChatName(event.message));
+        String sender = ChatSender.typedChatName(event.message);
+        TeamUpgradeChat.Event e = TeamUpgradeChat.classify(plain, event.message.getFormattedText(), sender);
         if (e != null) {
             DiagLog.log("teamupgrades: chat " + e + " ingest=" + LIFECYCLE.ingestionAllowed());
             LIFECYCLE.chat(e, System.currentTimeMillis());
             return;
         }
+        if (sender != null || !LIFECYCLE.ingestionAllowed()) return; // a player's own words, or no game: never logged
         String text = plain == null ? "" : TeamUpgradeCatalog.strip(plain);
+        if (text.contains(": ")) return; // chat-shaped even without a recognised sender
         if (text.contains(" purchased ") || text.contains("set off") || text.contains("from the queue")) {
             DiagLog.log("teamupgrades: unmatched \"" + clip(text) + "\"");
         }

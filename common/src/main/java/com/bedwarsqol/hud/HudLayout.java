@@ -30,29 +30,6 @@ public final class HudLayout {
         float[] size(float scale);
     }
 
-    /**
-     * The largest of {@code scale}, {@code scale - step}, ... (never below {@code min}) at which a module
-     * of {@code sizer}'s size can sit clear of the hotbar zone ({@code hotbarW} x {@code hotbarH}, centred
-     * on the bottom edge) on a {@code sw} x {@code sh} screen, beside it at full height or above it at
-     * full width, {@code edge} from the screen edges and {@code gap} from the zone. {@code scale} when it
-     * already fits; the lowest step tried when nothing does.
-     */
-    public static float fitScale(float scale, float step, float min, Sizer sizer, float sw, float sh,
-                                 float hotbarW, float hotbarH, float edge, float gap) {
-        float s = scale;
-        while (!clearOfHotbar(sizer.size(s), sw, sh, hotbarW, hotbarH, edge, gap) && s - step >= min - 1e-4f) {
-            s -= step;
-        }
-        return s;
-    }
-
-    static boolean clearOfHotbar(float[] size, float sw, float sh, float hotbarW, float hotbarH, float edge, float gap) {
-        float w = size[0], h = size[1];
-        boolean beside = w <= (sw - hotbarW) / 2f - edge - gap && h <= sh - 2f * edge;
-        boolean above = h <= sh - hotbarH - edge - gap && w <= sw - 2f * edge;
-        return beside || above;
-    }
-
     /** One place a module may go: where it starts and which way it slides when blocked. */
     public static final class Spot {
         final Horizontal h;
@@ -137,6 +114,29 @@ public final class HudLayout {
         return out;
     }
 
+    /**
+     * The largest of {@code scale}, {@code scale - step}, ..., {@code min} at which the module
+     * {@code id}, {@code sizer}'s size at that scale, placed after {@code before} (in order, around
+     * {@code obstacles}), finds one of {@code spots} free and fully on screen. {@code scale} when it already
+     * does; the lowest step tried when nothing does.
+     */
+    public float fitScale(List<Item> before, List<Box> obstacles, String id, float scale, float step, float min,
+                          Sizer sizer, Spot... spots) {
+        List<Box> taken = new ArrayList<Box>(obstacles);
+        for (Item item : before) {
+            float[] at = placeOne(item, taken);
+            taken.add(new Box(at[0], at[1], item.width, item.height));
+        }
+        float s = scale;
+        while (true) {
+            float[] size = sizer.size(s);
+            if (placeOne(new Item(id, size[0], size[1], spots), taken)[2] > 0f) return s;
+            if (s <= min + 1e-4f) return s;
+            s = Math.max(min, s - step); // a step past the minimum tries the minimum itself
+        }
+    }
+
+    /** {x, y, free}: the first free spot (free = 1), else where it covers the least (free = 0). */
     private float[] placeOne(Item item, List<Box> taken) {
         float[] fallback = null;
         float leastCovered = Float.MAX_VALUE;
@@ -145,7 +145,7 @@ public final class HudLayout {
             for (int i = 0; i <= MAX_JUMPS; i++) {
                 boolean onScreen = onScreen(at[0], at[1], item);
                 Box hit = nearestHit(at[0], at[1], item, taken, spot.slide);
-                if (onScreen && hit == null) return at;
+                if (onScreen && hit == null) return new float[]{at[0], at[1], 1f};
                 float[] kept = clampToScreen(at, item);
                 float covered = covered(kept, item, taken);
                 if (covered < leastCovered) {
@@ -155,7 +155,7 @@ public final class HudLayout {
                 if (!onScreen || hit == null || !jump(at, item, hit, spot.slide)) break;
             }
         }
-        return fallback != null ? fallback : new float[]{edge, edge};
+        return fallback != null ? new float[]{fallback[0], fallback[1], 0f} : new float[]{edge, edge, 0f};
     }
 
     /** Moves {@code at} past {@code hit} in direction {@code slide}; false when it does not slide. */
