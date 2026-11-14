@@ -126,7 +126,7 @@ public final class PolicyTest {
 
         // overlay item probes (HUD parity B)
         for (String p : new String[]{"overlay-boxes", "chat-fixture", "chat-clear", "chat-open", "chat-at",
-                "chat-click", "tab-header-footer", "place-item", "chat-heights"}) {
+                "chat-click", "tab-header-footer", "place-item", "chat-heights", "chat-defaults"}) {
             allowed(Policy.probeName(p));
         }
         allowed(Policy.probeName("hud-boxes")); // the editor cycle's probe, beside B's once both are merged

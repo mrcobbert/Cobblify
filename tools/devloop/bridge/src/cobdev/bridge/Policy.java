@@ -190,7 +190,8 @@ final class Policy {
 
     /** The scoreboard, chat and tab list probes (Cobblify's overlay items). */
     static final java.util.List<String> OVERLAY_PROBES = java.util.Arrays.asList("overlay-boxes", "chat-fixture",
-            "chat-clear", "chat-open", "chat-at", "chat-click", "tab-header-footer", "place-item", "chat-heights");
+            "chat-clear", "chat-open", "chat-at", "chat-click", "tab-header-footer", "place-item", "chat-heights",
+            "chat-defaults");
     /** The overlay items {@code place-item} may move. */
     static final java.util.List<String> OVERLAY_ITEMS = java.util.Arrays.asList("scoreboard", "chat", "tablist");
     /** The chat fixtures the bridge ships (bridge/resources/chat-&lt;name&gt;.json). */
