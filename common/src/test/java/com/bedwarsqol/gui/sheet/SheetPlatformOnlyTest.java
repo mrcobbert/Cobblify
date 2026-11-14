@@ -153,9 +153,55 @@ public class SheetPlatformOnlyTest {
         assertTrue(SheetSchema.shows(acceptsEverything, "potionInGame"));
         assertTrue(SheetSearch.search("background", acceptsEverything).isEmpty());
         assertTrue(SheetSearch.search("background", lunar).isEmpty());
-        int rows = 0;
-        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) rows += h.rows.size();
-        assertEquals(BACKGROUND_ROWS.length, rows);
+        // on Ornithe the search finds exactly the Background rows
+        Set<String> found = new HashSet<String>();
+        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) {
+            for (SheetSchema.Row r : h.rows) found.add(r.id);
+        }
+        Set<String> expected = new HashSet<String>();
+        for (SheetSchema.Category c : SheetSchema.CATS) {
+            for (SheetSchema.Module m : c.modules) for (SheetSchema.Row r : m.rows) if (r.hudItem() != null) expected.add(r.id);
+        }
+        for (String[] b : BACKGROUND_ROWS) assertTrue(b[0], expected.contains(b[0]));
+        assertEquals(expected, found);
+    }
+
+    @Test
+    public void keystrokesNoLongerPromisesCps() {
+        SheetSchema.Module k = SheetSchema.module("keystrokes");
+        assertEquals("WASD, mouse buttons, spacebar", k.desc);
+        assertFalse(k.desc.toLowerCase().contains("cps"));
+        assertFalse(k.kw.toLowerCase().contains("cps"));
+        for (SheetSchema.Row r : k.rows) assertFalse(r.id, r.name.toLowerCase().contains("cps"));
+    }
+
+    @Test
+    public void textModulesArePlatformOnlyHudModules() {
+        List<String> hud = new ArrayList<String>();
+        for (SheetSchema.Module m : SheetSchema.category("hud").modules) hud.add(m.id);
+        int k = hud.indexOf("keystrokes");
+        assertEquals(Arrays.asList("keystrokes", "fps", "cps", "ping", "mapInfo"), hud.subList(k, k + 5));
+        assertEquals("FPS", SheetSchema.module("fps").name);
+        assertEquals("CPS", SheetSchema.module("cps").name);
+        assertEquals("Ping", SheetSchema.module("ping").name);
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        for (String id : new String[]{"fps", "cps", "ping"}) {
+            assertTrue(id, SheetSchema.platformOnly(id));
+            SheetSchema.Row bg = SheetSchema.module(id).rows.get(0);
+            assertEquals(id + "Bg", bg.id);
+            assertEquals(id, bg.hudItem());
+            assertEquals("Background", bg.name);
+            assertEquals("See-through box behind it", bg.desc);
+            for (String row : new String[]{id, id + "Bg"}) {
+                assertFalse(row, SheetSchema.shows(acceptsEverything, row));
+                assertFalse(row, SheetSchema.shows(lunar, row));
+                assertTrue(row, SheetSchema.shows(ornithe, row));
+            }
+        }
+        assertTrue(SheetSearch.search("fps", acceptsEverything).isEmpty());
+        assertTrue(SheetSearch.search("fps", lunar).isEmpty());
+        assertEquals("fps", SheetSearch.search("fps", ornithe).get(0).module.id);
     }
 
     /** The module toggles the Combat page draws, in order. */
