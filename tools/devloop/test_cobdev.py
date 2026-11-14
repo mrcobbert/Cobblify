@@ -565,18 +565,30 @@ class FakeEditor(cobdev.Smoke):
     """A tiny model of Edit HUD for the A4-edithud checks: boxes in GUI px, arrows move one screen pixel (Shift
     ten), a device-pixel drag moves start + travel / scale, and the left screen edge snaps within 4 screen px."""
 
-    def __init__(self, boxes, scale=2):
+    def __init__(self, boxes, scale=2, display=(1280, 720)):
         cobdev.Smoke.__init__(self, "dev", "test")
         self.begin("A4-edithud", "test")
         self.boxes = {b["id"]: dict(b) for b in boxes}
-        self.sc, self.selected, self.press = scale, None, None
+        self.display = display
+        self.sc, self.selected, self.press = cobdev.gui_scale(display[0], display[1], scale), None, None
+
+    @property
+    def sw(self):
+        return -(-self.display[0] // self.sc)  # ScaledResolution rounds up
+
+    @property
+    def sh(self):
+        return -(-self.display[1] // self.sc)
+
+    def status(self):
+        return {"display": "%dx%d" % self.display, "scaleFactor": self.sc}
 
     def call(self, path, params=None, post=None, timeout=60):
         q = params or post or {}
         if path == "/scale":
-            self.sc = int(q["n"])
+            self.sc = cobdev.gui_scale(self.display[0], self.display[1], int(q["n"]))
         elif path == "/probe":
-            return {"scale": self.sc, "sw": 640, "sh": 360, "boxes": [dict(b) for b in self.boxes.values()]}
+            return {"scale": self.sc, "sw": self.sw, "sh": self.sh, "boxes": [dict(b) for b in self.boxes.values()]}
         elif path == "/click":
             self.selected = next(i for i, b in self.boxes.items()
                                  if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
@@ -594,9 +606,9 @@ class FakeEditor(cobdev.Smoke):
                 reach = 4.0 / self.sc
                 if 0 < x - b["pad"] <= reach:
                     x = b["pad"]
-                right = 640 - (x + b["w"] + b["pad"])
+                right = self.sw - (x + b["w"] + b["pad"])
                 if 0 < right <= reach:
-                    x = 640 - b["w"] - b["pad"]
+                    x = self.sw - b["w"] - b["pad"]
             b["x"], b["y"] = x, y
         return {"ok": True, "value": False}
 
@@ -605,8 +617,8 @@ class FakeEditor(cobdev.Smoke):
 
 
 class EditHudChecks(unittest.TestCase):
-    def run_check(self, fn, boxes):
-        s = FakeEditor(boxes)
+    def run_check(self, fn, boxes, display=(1280, 720)):
+        s = FakeEditor(boxes, display=display)
         real = cobdev.time.sleep
         cobdev.time.sleep = lambda t: None
         try:
@@ -620,6 +632,15 @@ class EditHudChecks(unittest.TestCase):
                                                 "shown": True}])
         self.assertEqual(s.step["status"], "pass", s.step["checks"])
         self.assertEqual(len([c for c in s.step["checks"] if c["check"].startswith("E8")]), 8)
+
+    def test_e8_and_e9_on_a_738x894_window_test_gui_2_only(self):
+        # the prod run: 738x894 is GUI 369x447, and GUI 3 is not reachable (738 / 3 < 320): noted, not failed
+        for fn, item in ((cobdev.edithud_e8, "inventory"), (cobdev.edithud_e9, "heightlimit")):
+            box = {"id": item, "x": 120.5, "y": 200, "w": 120, "h": 38, "pad": 1, "shown": True}
+            s = self.run_check(fn, [box], display=(738, 894))
+            self.assertEqual(s.step["status"], "pass", s.step["checks"])
+            self.assertTrue(all("GUI 2" in c["check"] for c in s.step["checks"]), s.step["checks"])
+            self.assertTrue(any("not reachable" in n for n in s.step.get("notes", [])))
 
     def test_e9_passes_when_only_the_edge_snaps(self):
         s = self.run_check(cobdev.edithud_e9, [{"id": "heightlimit", "x": 3, "y": 100, "w": 120, "h": 38, "pad": 1,
@@ -1067,6 +1088,42 @@ class EditHudClearOf(unittest.TestCase):
         self.assertFalse(cobdev.clear_of(dict(tab, w=132.01), sb))   # 0.01 px in: overlap
         self.assertTrue(cobdev.clear_of(dict(tab, y=200), sb))       # beside, not level with it
         self.assertFalse(cobdev.clear_of(dict(tab, x=500), sb))
+
+
+class EditHudWindowSizes(unittest.TestCase):
+    """Every coordinate comes from the live window: the prod window (738x894) and the dev one (1280x720)."""
+
+    def test_gui_scale_follows_vanilla(self):
+        self.assertEqual(cobdev.gui_scale(738, 894, 2), 2)
+        self.assertEqual(cobdev.gui_scale(738, 894, 3), 2)
+        self.assertEqual(cobdev.gui_scale(738, 894, 0), 2)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 3), 3)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 0), 3)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 2), 2)
+
+    def test_clamp_point(self):
+        self.assertEqual(cobdev.clamp_point(976, 147, 738, 894), (737, 147))
+        self.assertEqual(cobdev.clamp_point(-16, 42, 369, 447), (0, 42))
+
+    def test_free_spot_at_both_window_sizes(self):
+        # the prod layout at 369x447: Inventory sits in the middle; the dev layout at 640x360
+        prod = {"sw": 369, "sh": 447, "boxes": [
+            {"id": "inventory", "x": 83, "y": 175.5, "w": 204, "h": 72, "pad": 1, "shown": True},
+            {"id": "chat", "x": 2, "y": 329, "w": 324, "h": 90, "pad": 0, "shown": True},
+            {"id": "sessionstats", "x": 260, "y": 30, "w": 103, "h": 138, "pad": 4, "shown": True},
+            {"id": "ghost", "x": 150, "y": 100, "w": 50, "h": 50, "pad": 0, "shown": False}]}
+        dev = {"sw": 640, "sh": 360, "boxes": [
+            {"id": "inventory", "x": 218, "y": 3, "w": 204, "h": 72, "pad": 1, "shown": True},
+            {"id": "chat", "x": 2, "y": 242, "w": 324, "h": 90, "pad": 0, "shown": True}]}
+        for hb in (prod, dev):
+            x, y = cobdev.free_spot(hb, 62, 73)
+            box = {"x": x, "y": y, "w": 62, "h": 73, "pad": 0}
+            self.assertTrue(0 <= x and x + 62 <= hb["sw"] and 0 <= y and y + 73 <= hb["sh"])
+            for b in hb["boxes"]:
+                if b["shown"]:
+                    self.assertTrue(cobdev.clear_of(box, b), (hb["sw"], b["id"], x, y))
+        self.assertIsNone(cobdev.free_spot({"sw": 100, "sh": 100, "boxes": [
+            {"id": "all", "x": 0, "y": 0, "w": 100, "h": 100, "pad": 0, "shown": True}]}, 10, 10))
 
 
 class Pins(unittest.TestCase):
