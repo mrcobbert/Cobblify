@@ -21,7 +21,6 @@ import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
-import com.bedwarsqol.gui.sheet.SheetColors;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
@@ -82,22 +81,10 @@ public class BedwarsHudRenderer {
     private static final float ARMOR_ICON_SIZE = 16f;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
 
-    // Keystrokes: WASD, a spacebar and a mouse row (LMB/RMB with CPS), as caps in the HUD panel's look
-    // (same fill, square corners and white/gray text as Map Info and Session Stats). A pressed cap takes the
-    // menu accent and fades back out after release. Geometry is in local units (multiplied by the HUD
-    // scale at draw time).
-    private static final float KS_UNIT = 18f;     // square key cap side
-    private static final float KS_GAP = 2f;       // gap between caps
-    private static final float KS_SPACE_H = 14f;  // spacebar height
-    private static final float KS_LETTER = 1.0f;  // letter scale within a cap
-    private static final float KS_MOUSE_LABEL = 0.75f; // "LMB" / "RMB"
-    private static final float KS_CPS_LABEL = 0.55f;   // the "N CPS" line under it
+    // Keystrokes: Lunar's caps (KeystrokesLayout): WASD, the mouse row and a spacebar, see-through idle caps while
+    // its Background is on, none while it is off. A pressed cap takes the menu accent (KeyCapStyle) and fades back out
+    // after release. Geometry is in local units, multiplied by the labels' own scale at draw time.
     private static final long KS_FADE_MS = 120L;
-    private static final int KS_FILL_OFF = 0xD0121212;   // HUD_BG_FILL
-    private static final int KS_TEXT_OFF = 0xFFFFFFFF;
-    private static final int KS_TEXT_ON = 0xFFFFFFFF;
-    private static final int KS_TEXT_ON_LIGHT = 0xFF121212; // on an accent too light for white to read
-    private static final int KS_CPS_OFF = 0xFFAAAAAA;    // StatRowColors.LABEL_NEUTRAL
 
     /** Cap order everywhere below: W, A, S, D, Space, LMB, RMB. */
     private static final int KS_W = 0, KS_A = 1, KS_S = 2, KS_D = 3, KS_SPACE = 4, KS_LMB = 5, KS_RMB = 6;
@@ -138,7 +125,7 @@ public class BedwarsHudRenderer {
         return cfg;
     }
 
-    /** Counts in-game presses for the Keystrokes CPS line; the in-game mouse loop runs only with no screen open (or one that allows input). */
+    /** Counts in-game presses for the CPS module and the Keystrokes mouse caps; the in-game mouse loop runs only with no screen open (or one that allows input). */
     public void onMouse(MouseButtonEvent event) {
         if (!event.buttonstate) return;
         long now = Minecraft.getSystemTime();
@@ -348,11 +335,6 @@ public class BedwarsHudRenderer {
 
     private static float fontWidth(String text, BedwarsQolFont.Weight weight) {
         return BedwarsQolFont.width(text, 1f, weight);
-    }
-
-    /** Line height at {@code scale}; ~9px at scale 1.0. */
-    private static float fontHeight(float scale) {
-        return BedwarsQolFont.height(scale);
     }
 
     /**
@@ -1009,7 +991,7 @@ public class BedwarsHudRenderer {
         BedwarsQolFont.draw(text, x, y, e, color, true, BedwarsQolFont.Weight.BOLD);
     }
 
-    // ----- Keystrokes (WASD, spacebar, mouse buttons with CPS) -----
+    // ----- Keystrokes (WASD, mouse buttons, spacebar) -----
 
     private static HudBox keystrokesBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
         if (!all && !cfg.keystrokesEnabled) return null;
@@ -1021,136 +1003,56 @@ public class BedwarsHudRenderer {
     }
 
     private static Size keystrokesSize(ClientSettings cfg) {
-        float scale = cfg.keystrokesHudScale;
-        return new Size((3f * KS_UNIT + 2f * KS_GAP) * scale, (3f * KS_UNIT + 3f * KS_GAP + KS_SPACE_H) * scale);
+        float e = ts(cfg.keystrokesHudScale);
+        return new Size(KeystrokesLayout.WIDTH * e, KeystrokesLayout.HEIGHT * e);
     }
 
+    /**
+     * Lunar's caps, in cap order: the fill per {@link KeyCapStyle}, then the label (or the space bar's line). Laid out
+     * at the labels' own scale {@code e}, so they always fit their caps; labels shadowed only on bare, unpressed caps.
+     */
     private static void drawKeystrokesHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = keystrokesBox(mc, cfg, example, false);
         if (box == null) return;
         boolean[] held = keyStates(mc, example);
         long now = Minecraft.getSystemTime();
-        float[] level = new float[held.length];
-        for (int i = 0; i < held.length; i++) {
-            // The editor preview shows a still frame and must not disturb the live fades.
-            level[i] = example ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
-        }
+        boolean background = HudModules.background(cfg, KEYSTROKES_HUD);
         int accent = GuiTheme.fromToken(cfg.guiAccent).base();
-        String leftCps = (example ? 12 : LEFT_CLICKS.cps(now)) + " CPS";
-        String rightCps = (example ? 3 : RIGHT_CLICKS.cps(now)) + " CPS";
-
-        float u = KS_UNIT;
-        float step = KS_UNIT + KS_GAP;
-        float width = 3f * KS_UNIT + 2f * KS_GAP;
-        float half = (width - KS_GAP) / 2f;
-        // {x, y, w, h} of each cap, in cap order
-        float[][] caps = {{step, 0f, u, u}, {0f, step, u, u}, {step, step, u, u}, {2f * step, step, u, u},
-                {0f, 2f * step, width, KS_SPACE_H},
-                {0f, 2f * step + KS_SPACE_H + KS_GAP, half, u}, {half + KS_GAP, 2f * step + KS_SPACE_H + KS_GAP, half, u}};
-        String[] labels = {"W", "A", "S", "D", "", "LMB", "RMB"};
-        String[] subs = {null, null, null, null, null, leftCps, rightCps};
-        int[] order = {KS_W, KS_A, KS_S, KS_D, KS_LMB, KS_RMB, KS_SPACE};
-        // Minecraft's font draws the labels after the caps, in GUI space on whole pixels; the modern font draws
-        // them with their caps
-        boolean labelsAfter = BedwarsQolFont.minecraft();
-
-        // Draw everything in local (unscaled) coordinates under one translate+scale, so the caps and
-        // letters scale together through the modelview matrix.
-        GlStateManager.pushMatrix();
-        GlStateManager.translate(box.x, box.y, 0f);
-        GlStateManager.scale(cfg.keystrokesHudScale, cfg.keystrokesHudScale, 1f);
-
-        for (int i : order) {
-            float[] r = caps[i];
-            drawKeyCap(r[0], r[1], r[2], r[3], labelsAfter ? "" : labels[i], subs[i], level[i], accent);
+        float e = ts(cfg.keystrokesHudScale);
+        float ox = box.x, oy = box.y, trail = 0f;
+        if (BedwarsQolFont.minecraft()) {
+            // the font lands on whole device pixels; put the caps on the same grid
+            int sf = new ScaledResolution(mc).getScaleFactor();
+            ox = Math.round(ox * sf) / (float) sf;
+            oy = Math.round(oy * sf) / (float) sf;
+            trail = 1f; // Minecraft's font ends every string on an empty column
         }
-        drawSpaceSymbol(0f, 2f * step, width, KS_SPACE_H, level[KS_SPACE], accent);
-
-        GlStateManager.popMatrix();
-        if (labelsAfter) {
-            for (int i : order) {
-                float[] r = caps[i];
-                if (labels[i].isEmpty()) continue;
-                drawKeyLabel(box, cfg.keystrokesHudScale, r[0] + r[2] / 2f, r[1] + r[3] / 2f, labels[i], subs[i], level[i], accent);
+        for (int i = 0; i < KeystrokesLayout.CAPS.length; i++) {
+            // The editor preview shows a still frame and must not disturb the live fades.
+            float level = example ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
+            float[] r = KeystrokesLayout.CAPS[i];
+            int fill = KeyCapStyle.fill(level, background, accent);
+            if ((fill >>> 24) != 0) {
+                GuiRender.rect(ox + r[0] * e, oy + r[1] * e, ox + (r[0] + r[2]) * e, oy + (r[1] + r[3]) * e, fill);
+            }
+            int text = KeyCapStyle.text(level, accent);
+            boolean shadow = KeyCapStyle.shadow(level, background);
+            String label = KeystrokesLayout.LABELS[i];
+            if (label.isEmpty()) {
+                float[] l = KeystrokesLayout.SPACE_LINE;
+                if (shadow) {
+                    GuiRender.rect(ox + (l[0] + 1) * e, oy + (l[1] + 1) * e, ox + (l[0] + l[2] + 1) * e,
+                            oy + (l[1] + l[3] + 1) * e, KeystrokesLayout.SPACE_LINE_SHADOW);
+                }
+                GuiRender.rect(ox + l[0] * e, oy + l[1] * e, ox + (l[0] + l[2]) * e, oy + (l[1] + l[3]) * e, text);
+            } else {
+                float lx = ox + KeystrokesLayout.labelX(r, fontWidth(label), trail) * e;
+                float ly = oy + KeystrokesLayout.labelY(r) * e;
+                if (shadow) BedwarsQolFont.draw(label, lx, ly, e, text, true, BedwarsQolFont.Weight.BOLD);
+                else BedwarsQolFont.drawFlat(label, lx, ly, e, text);
             }
         }
         resetGlState();
-    }
-
-    /**
-     * A cap's label in Minecraft's font, centred on the cap's local centre (cx, cy) but drawn in GUI space, so its
-     * pixels land whole; a mouse cap's CPS line sits under its label, the two centred as one block.
-     *
-     * <p>The shadow falls on the cap, so it follows the cap's colour: Minecraft's own under the idle white, and on a
-     * pressed cap the accent's pressed shade, the sheet's shadow on a pressed face (vanilla's, the text's colour at
-     * a quarter, would only smudge the dark text pale accents get).
-     */
-    private static void drawKeyLabel(HudBox box, float hudScale, float cx, float cy, String label, String sub,
-                                     float level, int accent) {
-        int on = onAccent(accent);
-        int text = GuiRender.lerpColor(KS_TEXT_OFF, on, level);
-        int pressedShadow = SheetColors.pressSh(accent & 0xFFFFFF);
-        int shadow = GuiRender.lerpColor(SheetColors.textShadow(KS_TEXT_OFF), pressedShadow, level);
-        float gx = box.x + cx * hudScale, gy = box.y + cy * hudScale;
-        if (sub == null) {
-            float t = ts(KS_LETTER * hudScale);
-            BedwarsQolFont.drawMinecraftOver(label, gx - fontWidth(label) * t / 2f, gy - fontHeight(t) / 2f, t, text, shadow);
-            return;
-        }
-        // LMB and RMB are Minecraft's letters drawn as tall as the modern font's label (MouseKeyLabel), on whole
-        // device pixels, over the same shadow; the CPS line under them stays the font, never larger than designed
-        int sf = new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
-        int p = MouseKeyLabel.pixel(BedwarsQolFont.capHeight(KS_MOUSE_LABEL * hudScale, BedwarsQolFont.Weight.BOLD) * sf);
-        float tc = BedwarsQolFont.textScaleAtMost(KS_CPS_LABEL * hudScale);
-        float lh = (MouseKeyLabel.HEIGHT + 1) * p / (float) sf, gap = 2f * tc;
-        int left = Math.round(gx * sf - MouseKeyLabel.width(label) * p / 2f);
-        int top = Math.round((gy - (lh + gap + fontHeight(tc)) / 2f) * sf);
-        drawPixelLabel(label, left + p, top + p, p, sf, shadow);
-        drawPixelLabel(label, left, top, p, sf, text);
-        int cps = GuiRender.lerpColor(KS_CPS_OFF, on, level);
-        BedwarsQolFont.drawMinecraftOver(sub, gx - fontWidth(sub) * tc / 2f, top / (float) sf + lh + gap, tc, cps,
-                GuiRender.lerpColor(SheetColors.textShadow(KS_CPS_OFF), pressedShadow, level));
-    }
-
-    /** A {@link MouseKeyLabel} with its top left at device px (x, y), {@code p} device px per pixel, in GUI space. */
-    private static void drawPixelLabel(String label, final int x, final int y, final int p, final int sf, final int color) {
-        MouseKeyLabel.runs(label, (rx, ry, w) -> GuiRender.rect((x + rx * p) / (float) sf, (y + ry * p) / (float) sf,
-                (x + (rx + w) * p) / (float) sf, (y + (ry + 1) * p) / (float) sf, color));
-    }
-
-    /** One cap: {@code level} 0 is idle, 1 fully pressed (accent fill). */
-    private static void drawKeyCap(float x, float y, float w, float h, String label, String sub, float level, int accent) {
-        GuiRender.rect(x, y, x + w, y + h, GuiRender.lerpColor(KS_FILL_OFF, accent, level));
-        if (label.isEmpty()) return;
-        int on = onAccent(accent);
-        int text = GuiRender.lerpColor(KS_TEXT_OFF, on, level);
-        float cx = x + w / 2f;
-        float cy = y + h / 2f;
-        if (sub == null) {
-            drawCentered(label, cx, cy, KS_LETTER, text);
-        } else {
-            drawCentered(label, cx, cy - 3f, KS_MOUSE_LABEL, text);
-            drawCentered(sub, cx, cy + 3.5f, KS_CPS_LABEL, GuiRender.lerpColor(KS_CPS_OFF, on, level));
-        }
-    }
-
-    /** A pressed cap's text colour: white, unless white falls under 2:1 on the accent (pale, yellow, white). */
-    private static int onAccent(int accent) {
-        return GuiTheme.contrast(accent & 0xFFFFFF, 0xFFFFFF) < 2.0 ? KS_TEXT_ON_LIGHT : KS_TEXT_ON;
-    }
-
-    private static void drawCentered(String text, float cx, float cy, float scale, int color) {
-        float tw = fontWidth(text) * scale;
-        fontDraw(text, cx - tw / 2f, cy - fontHeight(scale) / 2f, scale, color, BedwarsQolFont.Weight.BOLD);
-    }
-
-    /** A centered horizontal bar (thin, square corners) standing in for the space key's label. */
-    private static void drawSpaceSymbol(float x, float y, float w, float h, float level, int accent) {
-        float barW = w * 0.30f;
-        float barH = 1.25f;
-        float bx1 = x + (w - barW) / 2f;
-        float by1 = y + (h - barH) / 2f;
-        GuiRender.rect(bx1, by1, bx1 + barW, by1 + barH, GuiRender.lerpColor(KS_TEXT_OFF, onAccent(accent), level));
     }
 
     /**

@@ -250,7 +250,7 @@ public final class SheetSchema {
                 module("genTimers", "Gen Timers", "Diamond and emerald timers", "generator diamond emerald",
                         background("genTimersBg", "diamondtimer", "See-through panels behind them"),
                         inGame("genTimersInGame", "Hide them in lobbies")),
-                module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
+                module("keystrokes", "Keystrokes", "WASD, mouse buttons, spacebar", "keys wasd clicks mouse",
                         background("keystrokesBg", "keystrokes", "See-through key caps"),
                         inGame("keystrokesInGame", "Hide it in lobbies")),
                 module("fps", "FPS", "Frames per second", "frames performance",

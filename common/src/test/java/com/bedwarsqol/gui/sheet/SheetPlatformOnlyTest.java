@@ -167,6 +167,15 @@ public class SheetPlatformOnlyTest {
     }
 
     @Test
+    public void keystrokesNoLongerPromisesCps() {
+        SheetSchema.Module k = SheetSchema.module("keystrokes");
+        assertEquals("WASD, mouse buttons, spacebar", k.desc);
+        assertFalse(k.desc.toLowerCase().contains("cps"));
+        assertFalse(k.kw.toLowerCase().contains("cps"));
+        for (SheetSchema.Row r : k.rows) assertFalse(r.id, r.name.toLowerCase().contains("cps"));
+    }
+
+    @Test
     public void textModulesArePlatformOnlyHudModules() {
         List<String> hud = new ArrayList<String>();
         for (SheetSchema.Module m : SheetSchema.category("hud").modules) hud.add(m.id);
