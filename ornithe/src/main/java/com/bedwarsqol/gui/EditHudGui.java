@@ -520,7 +520,8 @@ public class EditHudGui extends GuiScreen {
                 HudModules.set(cfg, id, base.withScale(scale));
                 HudBox b = BedwarsHudRenderer.getEditorBox(mc, cfg, id);
                 HudModules.set(cfg, id, base);
-                return b == null || resize == null ? null : resize.visualRectAt(scale, b.width, b.height, b.pad);
+                return b == null || resize == null ? null
+                        : resize.visualRectAt(scale, b.width, b.height, b.pad, width, height);
             }
         };
     }
@@ -641,9 +642,30 @@ public class EditHudGui extends GuiScreen {
     // ------------------------------------------------------------------ right-click menu
 
     private List<String> menuItems() {
-        HudModuleState s = HudModules.get(settings(), menuId);
+        ClientSettings cfg = settings();
+        HudModuleState s = HudModules.get(cfg, menuId);
         boolean shown = s != null && s.enabled;
-        return EditHudMenu.items(shown, EditHudMenu.hideable(menuId), null);
+        Boolean background = HudModules.backgroundIds().contains(menuId) ? HudModules.background(cfg, menuId) : null;
+        return EditHudMenu.items(shown, EditHudMenu.hideable(menuId), background);
+    }
+
+    /**
+     * Switches item {@code id}'s Background, the same setting as its settings row, as one undoable step. An item whose
+     * box grew into a neighbour (a panel pads more than bare content) moves to the nearest free spot.
+     */
+    private void toggleBackground(final String id) {
+        edit(id, new Runnable() {
+            @Override
+            public void run() {
+                ClientSettings cfg = settings();
+                Map<String, Boolean> before = new HashMap<String, Boolean>();
+                for (String i : HudModules.ids()) before.put(i, HudModules.background(cfg, i));
+                HudModules.setBackground(cfg, id, !HudModules.background(cfg, id));
+                for (String i : HudModules.ids()) {
+                    if (before.get(i).booleanValue() != HudModules.background(cfg, i)) moveClearOfWalls(cfg, i);
+                }
+            }
+        });
     }
 
     private static float menuRowHeight() {
@@ -674,6 +696,7 @@ public class EditHudGui extends GuiScreen {
             else if (EditHudMenu.HIDE.equals(item)) setShown(id, false);
             else if (EditHudMenu.RESET_POSITION.equals(item)) resetPosition(id);
             else if (EditHudMenu.RESET_SIZE.equals(item)) resetSize(id);
+            else if (EditHudMenu.isBackground(item)) toggleBackground(id);
             else if (EditHudMenu.OPEN_SETTINGS.equals(item)) {
                 settings().save();
                 mc.displayGuiScreen(SettingsGui.forHudModule(id));

@@ -73,6 +73,17 @@ public final class CornerResize {
     }
 
     /**
+     * As {@link #visualRectAt(float, float, float, float)}, with the content pulled on screen the way the renderer
+     * draws it ({@link HudPlacement#clamp} with the padding at that scale, which can grow with the scale): near the
+     * screen edge that moves the box, and the wall check must see where it is really drawn (code review R1-I1).
+     */
+    public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad, float screenW, float screenH) {
+        float x = HudPlacement.clamp(left(scale), contentW, pad, screenW);
+        float y = HudPlacement.clamp(top(scale), contentH, pad, screenH);
+        return new HudWalls.Rect(x - pad, y - pad, contentW + 2f * pad, contentH + 2f * pad);
+    }
+
+    /**
      * The corner of the box (x, y, width, height) within {@code reach} of the mouse, or -1. The
      * nearest corner wins when the box is small enough for several to be in reach.
      */

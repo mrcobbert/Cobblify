@@ -2245,6 +2245,29 @@ def edithud_e11k(run):
     s.check("E11k the player did not move", all(abs(p - q) < 1e-6 for p, q in zip(pos0, pos1)), "%s -> %s" % (pos0, pos1))
 
 
+def edithud_e10(run, item="potion"):
+    """E10 (the Cobblify modules; chat and the tab list join with cycle B): the right-click menu lists EditHudMenu's
+    rows with Background: On|Off; clicking it flips the item's Background, the setting its settings row reads
+    (ClientSettings.hudBackground); undo restores it."""
+    s = run.s
+    run.show_only(None)
+    st0 = run.state(item, run.probe())
+    on0 = bool(st0["background"])
+    label = "Background: " + ("On" if on0 else "Off")
+    try:
+        rows = run.menu_click(item, label)
+        s.check("E10 the menu lists its rows", rows == ["Reset Position", "Reset Size", label, "Settings", "Hide"], rows)
+        st1 = run.state(item, run.probe())
+        row = s.call("/invoke", post={"path": run.cfg + ".hudBackground", "args": item}).get("value")
+        s.check("E10 the Background row flips the item's Background", st1["background"] == (not on0), st1)
+        s.check("E10 ... the same setting its settings row reads", row == (not on0), row)
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        s.check("E10 undo restores it", run.state(item, run.probe())["background"] == on0)
+    finally:
+        s.try_call("/invoke", post={"path": run.cfg + ".setHudBackground",
+                                    "args": ARG_SEP.join([item, "true" if on0 else "false"])})
+
+
 def edithud_e13(run, item="potion"):
     """E13: no Reset All (the field and method are gone, shot under the crosshair); Delete hides and undo brings it
     back; Reset Position puts it on Auto and undo restores; Reset Size gives the HUD Size default."""
@@ -2278,7 +2301,7 @@ def edithud_e13(run, item="potion"):
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
 EDIT_HUD_CHECKS = [("E1", edithud_e1_e2), ("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
                    ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E11", edithud_e11),
-                   ("E11k", edithud_e11k), ("E13", edithud_e13), ("E15", edithud_e15)]
+                   ("E11k", edithud_e11k), ("E10", edithud_e10), ("E13", edithud_e13), ("E15", edithud_e15)]
 
 
 def edithud_e0(s, hb, enabled):
