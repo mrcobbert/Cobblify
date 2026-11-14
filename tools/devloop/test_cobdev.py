@@ -689,6 +689,43 @@ class HudLookDryRun(unittest.TestCase):
         self.assertIn("/scale", calls)
 
 
+class EditHudE12Cleanup(unittest.TestCase):
+    """E12's scoreboard fixture is removed and the release is checked even when the overlay boxes are missing."""
+
+    def test_missing_overlay_boxes_still_clean_up(self):
+        sent = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                q = params or post or {}
+                sent.append((path, q.get("command") or q.get("name") or q.get("state")))
+                if path == "/probe" and q.get("name") == "overlay-boxes":
+                    return {"items": {}}
+                if path == "/probe":
+                    return {"scale": 2, "boxes": [{"id": "inventory", "x": 200, "y": 3, "w": 200, "h": 70, "pad": 1,
+                                                   "shown": True}], "states": [],
+                            "editor": {"tabHeld": False, "playerListPressed": False, "visibleIds": ["inventory"]}}
+                return {"ok": True, "value": False}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        s.begin("A4-edithud", "test")
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e12(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        commands = [c for p, c in sent if p == "/command"]
+        self.assertIn("/scoreboard objectives remove cobtab", commands)
+        self.assertEqual(commands[-1], "/scoreboard objectives remove cobtab")
+        self.assertIn(("/keyhold", "key.playerlist"), sent)
+        names = [c["check"] for c in s.step["checks"]]
+        self.assertTrue(any("released" in n for n in names), names)
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:

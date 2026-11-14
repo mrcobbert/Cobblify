@@ -2855,8 +2855,18 @@ def edithud_e12(run):
     and the items are back."""
     s = run.s
     run.show_only(None)
-    for c in TAB_SCOREBOARD:
-        s.cmd(c)
+    try:
+        for c in TAB_SCOREBOARD:
+            s.cmd(c)
+        edithud_e12_held(run)
+    finally:  # the fixture never outlives the check, whatever fails
+        for c in ("/scoreboard objectives setdisplay list", "/scoreboard objectives setdisplay sidebar",
+                  "/scoreboard objectives remove cobtab"):
+            s.try_call("/command", post={"command": c})
+
+
+def edithud_e12_held(run):
+    s = run.s
     s.call("/close")
     s.call("/open", {"class": SCREENS["hud"]})
     time.sleep(0.4)
@@ -2871,39 +2881,8 @@ def edithud_e12(run):
                 ed.get("visibleIds"))
         s.shot("edithud-e12-held")
         sb, tab = run.overlay_box("scoreboard"), run.overlay_box("tablist")
-        if not s.check("E12 the scoreboard and tab list have boxes", sb is not None and tab is not None, (sb, tab)):
-            return
-        tx, ty, tw, th = vis(tab)
-        bx, by, bw, bh = vis(sb)
-        # beside the scoreboard at its height, 30 GUI px short of it (Alt: free), then 20 px into it (walls)
-        run.device_drag("tablist", (bx - 30 - tw) - tx, (by + bh / 2.0 - th / 2.0) - ty, mods="alt")
-        tab = run.overlay_box("tablist")
-        run.device_drag("tablist", 50, 0)
-        tab = run.overlay_box("tablist")
-        tx, ty, tw, th = vis(tab)
-        s.check("E12 the tab list stops flush at the scoreboard", close_enough(tx + tw, bx, 1e-3),
-                "right %.4f, scoreboard left %.4f" % (tx + tw, bx))
-        # its bottom-right corner, dragged well past the scoreboard: it grows only up to it
-        run.device_drag("tablist", -40, 0)
-        tab = run.overlay_box("tablist")
-        tx, ty, tw, th = vis(tab)
-        cx, cy = gui_centre(tab)
-        s.call("/click", {"x": cx, "y": cy})
-        gx, gy = int(tx + tw - 1), int(ty + th - 1)
-        s.call("/down", {"x": gx, "y": gy})
-        s.call("/drag", {"x": gx + 20, "y": gy})
-        s.call("/drag", {"x": gx + 150, "y": gy})
-        s.call("/up", {"x": gx + 150, "y": gy})
-        tab = run.overlay_box("tablist")
-        s.check("E12 the corner resize stops at the scoreboard", overlap_area(tab, sb) == 0
-                and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))
-        # Inventory is hidden while Tab is held, so it is no wall
-        ix, iy, iw, ih = vis(inventory)
-        tx, ty, tw, th = vis(tab)
-        run.device_drag("tablist", ix - tx, iy - ty)
-        tab = run.overlay_box("tablist")
-        s.check("E12 the tab list passes over Inventory's spot", overlap_area(tab, inventory) > 0,
-                "%s vs Inventory %s" % (vis(tab), vis(inventory)))
+        if s.check("E12 the scoreboard and tab list have boxes", sb is not None and tab is not None, (sb, tab)):
+            edithud_e12_moves(run, sb, tab, inventory)
     finally:
         s.try_call("/keyhold", {"name": "key.playerlist", "state": "off", "raw": 1})
     time.sleep(0.4)
@@ -2912,9 +2891,42 @@ def edithud_e12(run):
             and ed.get("playerListPressed") is False, ed)
     s.check("E12 released: the Cobblify items are back", "inventory" in (ed.get("visibleIds") or []), ed.get("visibleIds"))
     s.shot("edithud-e12-released")
-    for c in ("/scoreboard objectives setdisplay list", "/scoreboard objectives setdisplay sidebar",
-              "/scoreboard objectives remove cobtab"):
-        s.try_call("/command", post={"command": c})
+
+
+def edithud_e12_moves(run, sb, tab, inventory):
+    """E12's moves while Tab is held: flush at the scoreboard, a corner resize stopped by it, over Inventory's spot."""
+    s = run.s
+    tx, ty, tw, th = vis(tab)
+    bx, by, bw, bh = vis(sb)
+    # beside the scoreboard at its height, 30 GUI px short of it (Alt: free), then 20 px into it (walls)
+    run.device_drag("tablist", (bx - 30 - tw) - tx, (by + bh / 2.0 - th / 2.0) - ty, mods="alt")
+    tab = run.overlay_box("tablist")
+    run.device_drag("tablist", 50, 0)
+    tab = run.overlay_box("tablist")
+    tx, ty, tw, th = vis(tab)
+    s.check("E12 the tab list stops flush at the scoreboard", close_enough(tx + tw, bx, 1e-3),
+            "right %.4f, scoreboard left %.4f" % (tx + tw, bx))
+    # its bottom-right corner, dragged well past the scoreboard: it grows only up to it
+    run.device_drag("tablist", -40, 0)
+    tab = run.overlay_box("tablist")
+    tx, ty, tw, th = vis(tab)
+    cx, cy = gui_centre(tab)
+    s.call("/click", {"x": cx, "y": cy})
+    gx, gy = int(tx + tw - 1), int(ty + th - 1)
+    s.call("/down", {"x": gx, "y": gy})
+    s.call("/drag", {"x": gx + 20, "y": gy})
+    s.call("/drag", {"x": gx + 150, "y": gy})
+    s.call("/up", {"x": gx + 150, "y": gy})
+    tab = run.overlay_box("tablist")
+    s.check("E12 the corner resize stops at the scoreboard", overlap_area(tab, sb) == 0
+            and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))
+    # Inventory is hidden while Tab is held, so it is no wall
+    ix, iy, iw, ih = vis(inventory)
+    tx, ty, tw, th = vis(tab)
+    run.device_drag("tablist", ix - tx, iy - ty)
+    tab = run.overlay_box("tablist")
+    s.check("E12 the tab list passes over Inventory's spot", overlap_area(tab, inventory) > 0,
+            "%s vs Inventory %s" % (vis(tab), vis(inventory)))
 
 
 def edithud_e13(run, item="potion"):

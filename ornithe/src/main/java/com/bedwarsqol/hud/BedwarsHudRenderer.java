@@ -294,7 +294,8 @@ public class BedwarsHudRenderer {
         int closed = ChatLayout.closedLineCount(
                 GuiNewChat.calculateChatboxHeight(mc.gameSettings.chatHeightUnfocused) / ChatLayout.ROW_HEIGHT);
         float[] auto = ChatLayout.autoSlot(ChatLayout.vanillaSlot((int) sh, chat.getChatWidth(), f, closed), sh, s);
-        float[] slot = ChatLayout.slot(cfg.chatHudX, cfg.chatHudY, cfg.chatHudAnchor, auto, sw, sh);
+        HudModuleState st = HudModules.get(cfg, CHAT_HUD); // the stored slot to a fraction of a GUI pixel
+        float[] slot = ChatLayout.slot(st.exactX(), st.exactY(), st.anchor, auto, sw, sh);
         return new float[]{slot[0], slot[1], slot[2], slot[3], ChatLayout.ROW_HEIGHT * f * s, closed};
     }
 
@@ -376,8 +377,10 @@ public class BedwarsHudRenderer {
         if (CHAT_HUD.equals(id)) {
             float[] slot = chatSlot(Minecraft.getMinecraft(), cfg, screenWidth, screenHeight);
             float slotH = slot == null ? height : slot[3];
-            int[] at = ChatLayout.storedSlot(new float[]{x, y, width, height}, slotH, screenWidth, screenHeight);
-            HudModules.set(cfg, id, state.withPosition(at[0], at[1], at[2]));
+            // exact, so a wall-safe spot stays clear and a one-screen-pixel nudge sticks (code review round 2, I1);
+            // the int fields get ChatLayout.storedSlot's whole position
+            float[] at = ChatLayout.exactStoredSlot(new float[]{x, y, width, height}, slotH, screenWidth, screenHeight);
+            HudModules.set(cfg, id, state.withExactPosition(at[0], at[1], (int) at[2]));
             return;
         }
         HudModules.set(cfg, id, HudPins.pinned(state, x, y, width, height, screenWidth, screenHeight));

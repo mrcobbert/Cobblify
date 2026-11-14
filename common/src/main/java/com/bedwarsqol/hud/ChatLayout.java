@@ -81,8 +81,20 @@ public final class ChatLayout {
                 HudPlacement.storedY(slot[1], anchor, slot[3], sh), anchor};
     }
 
-    /** The slot for a stored position ({@code autoSlot} while never moved); never clamped. */
-    public static float[] slot(int x, int y, int anchor, float[] autoSlot, float sw, float sh) {
+    /**
+     * As {@link #storedSlot}, unrounded: {@code {x, y, anchor}} of the same slot to a fraction of a GUI pixel, so Edit HUD
+     * can move the chat by one screen pixel and a wall-safe spot is stored exactly. {@code Math.round} of x and y is
+     * {@link #storedSlot}'s whole position.
+     */
+    public static float[] exactStoredSlot(float[] box, float slotH, float sw, float sh) {
+        int anchor = HudPlacement.anchorFor(box[0], box[1], box[2], box[3], sw, sh);
+        float[] slot = slotFromBox(box, slotH);
+        return new float[]{HudPlacement.exactStoredX(slot[0], anchor, slot[2], sw),
+                HudPlacement.exactStoredY(slot[1], anchor, slot[3], sh), anchor};
+    }
+
+    /** The slot for a stored position ({@code autoSlot} while never moved); never clamped. x and y may be exact. */
+    public static float[] slot(float x, float y, int anchor, float[] autoSlot, float sw, float sh) {
         if (anchor == HudPlacement.AUTO) return autoSlot;
         float w = autoSlot[2], h = autoSlot[3];
         return new float[]{HudPlacement.absoluteX(x, anchor, w, sw), HudPlacement.absoluteY(y, anchor, h, sh), w, h};
