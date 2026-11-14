@@ -111,6 +111,16 @@ public class ClientSettings {
      */
     public Map<String, Boolean> hudBackgrounds = new LinkedHashMap<String, Boolean>();
 
+    /**
+     * Sub-pixel part of each moved HUD item's stored position, by HUD item id: {@code [fracX, fracY]}, each in
+     * [-0.5, 0.5] GUI px. The int {@code ...HudX/Y} fields keep the rounded position, which is exactly what a build
+     * without this map stores, so an older build (a channel switch or a rollback sharing this file) reads every item
+     * within half a GUI pixel of where it was, ignores this key and drops it on its next save. A config without the
+     * map loads exactly where it was: no {@link #settingsVersion} step. Read and written through
+     * {@code HudModules.get/set}; an item at a whole position has no entry.
+     */
+    public Map<String, float[]> hudSubPixel = new LinkedHashMap<String, float[]>();
+
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
@@ -414,6 +424,7 @@ public class ClientSettings {
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
         hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
+        hudSubPixel = sanitizedSubPixel(hudSubPixel);
 
         blockOverlayStyle = clamp(blockOverlayStyle, 0, 2);
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
@@ -435,6 +446,27 @@ public class ClientSettings {
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
         if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;
+    }
+
+    /**
+     * A fresh copy of {@code in} without entries Gson or a hand edit could leave broken: a null key or value, not two
+     * values, a value that is not finite (Gson cannot write NaN) or outside [-0.5, 0.5]. Unknown ids are kept, so a
+     * newer build's items survive a round trip.
+     */
+    private static Map<String, float[]> sanitizedSubPixel(Map<String, float[]> in) {
+        Map<String, float[]> out = new LinkedHashMap<String, float[]>();
+        if (in == null) return out;
+        for (Map.Entry<String, float[]> e : in.entrySet()) {
+            float[] f = e.getValue();
+            if (e.getKey() == null || f == null || f.length != 2) continue;
+            if (!subPixelPart(f[0]) || !subPixelPart(f[1])) continue;
+            out.put(e.getKey(), new float[]{f[0], f[1]});
+        }
+        return out;
+    }
+
+    private static boolean subPixelPart(float v) {
+        return v >= -0.5f && v <= 0.5f; // false for NaN
     }
 
     /** Whether HUD item {@code itemId} draws its background (true unless switched Off). */

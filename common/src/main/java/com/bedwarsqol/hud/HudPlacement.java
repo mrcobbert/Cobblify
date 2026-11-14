@@ -43,6 +43,18 @@ public final class HudPlacement {
         return Math.round(y - a * screenHeight + a * height);
     }
 
+    /** The exact stored X for a box whose left edge is at {@code x}: the unrounded inverse of {@link #absoluteX}. */
+    public static float exactStoredX(float x, int anchor, float width, float screenWidth) {
+        float a = ANCHOR_X[safe(anchor)];
+        return x - a * screenWidth + a * width;
+    }
+
+    /** The exact stored Y for a box whose top edge is at {@code y}: the unrounded inverse of {@link #absoluteY}. */
+    public static float exactStoredY(float y, int anchor, float height, float screenHeight) {
+        float a = ANCHOR_Y[safe(anchor)];
+        return y - a * screenHeight + a * height;
+    }
+
     /** The anchor for a box: the screen third its edges reach on each axis, corners first. Never {@link #AUTO}. */
     public static int anchorFor(float x, float y, float width, float height, float screenWidth, float screenHeight) {
         float right = x + width;

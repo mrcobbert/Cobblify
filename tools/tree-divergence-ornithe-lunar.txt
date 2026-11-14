@@ -150,6 +150,9 @@ one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
 one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
 
+# Edit HUD sub-pixel positions (Ornithe only): ClientSettings.hudSubPixel with HudModules and Gson.
+one-sided test ornithe com/bedwarsqol/config/HudSubPixelConfigTest.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java

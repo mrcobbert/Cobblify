@@ -178,13 +178,16 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
-    /** Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. */
+    /**
+     * Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in, to a fraction of a
+     * GUI pixel (the int fields get exactly what the whole-pixel path stored; see {@link ClientSettings#hudSubPixel}).
+     */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
         HudModuleState state = HudModules.get(cfg, id);
         if (state == null) return;
         int anchor = HudPlacement.anchorFor(x, y, width, height, screenWidth, screenHeight);
-        HudModules.set(cfg, id, state.withPosition(HudPlacement.storedX(x, anchor, width, screenWidth),
-                HudPlacement.storedY(y, anchor, height, screenHeight), anchor));
+        HudModules.set(cfg, id, state.withExactPosition(HudPlacement.exactStoredX(x, anchor, width, screenWidth),
+                HudPlacement.exactStoredY(y, anchor, height, screenHeight), anchor));
     }
 
     private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -411,8 +414,11 @@ public class BedwarsHudRenderer {
             x = HudPlacement.absoluteX(HudPlacement.storedX(exX, a, exW, sw), a, width, sw);
             y = HudPlacement.absoluteY(HudPlacement.storedY(exY, a, exH, sh), a, height, sh);
         } else {
-            x = HudPlacement.absoluteX(storedX, anchor, width, sw);
-            y = HudPlacement.absoluteY(storedY, anchor, height, sh);
+            // A moved module's stored spot plus its sub-pixel part (ClientSettings.hudSubPixel), by id.
+            float[] frac = cfg.hudSubPixel == null ? null : cfg.hudSubPixel.get(id);
+            boolean fine = frac != null && frac.length == 2;
+            x = HudPlacement.absoluteX(storedX + (fine ? frac[0] : 0f), anchor, width, sw);
+            y = HudPlacement.absoluteY(storedY + (fine ? frac[1] : 0f), anchor, height, sh);
         }
         return new float[]{HudPlacement.clamp(x, width, pad, sw), HudPlacement.clamp(y, height, pad, sh)};
     }
@@ -485,7 +491,7 @@ public class BedwarsHudRenderer {
         StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('|').append(cfg.guiFont);
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
-            if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
+            if (s != null) b.append('|').append(s.exactX()).append(',').append(s.exactY()).append(',').append(s.anchor)
                     .append(',').append(s.scale).append(',').append(s.enabled);
         }
         return b.toString();
