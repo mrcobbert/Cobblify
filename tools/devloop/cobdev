@@ -1943,24 +1943,37 @@ def hl_mapinfo(h):
     h.all_off()
 
 
+def hl_pressed_cap(img, box, sf):
+    """(accent px, dark-letter px) inside the W cap of the Keystrokes box. Edit HUD paints its faint frame fill over
+    the preview, which tints both colours a little, so they are matched with a tolerance, inside the cap only."""
+    c = HL_CAPS[0]
+    cap = (box[0] + int(round(c[0] * sf)), box[1] + int(round(c[1] * sf)),
+           box[0] + int(round((c[0] + c[2]) * sf)) - 1, box[1] + int(round((c[1] + c[3]) * sf)) - 1)
+    return count_near(img, cap, HL_ACCENT_RGB, 8), count_near(img, cap, HL_PRESSED_TEXT, 16)
+
+
 def hl_keys(h):
     s = h.s
     s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (editor example holds W)")
     g = [x for x in h.groups if x[0] == "keystrokes"][0]
-    h.all_off()
+    # The caps' box from the game (HL-bg): the editor preview draws them in the same spot, but its frames and the
+    # other modules' ghosts change around them, so a frame diff in the editor would measure editor chrome.
+    box = h.boxes.get("keystrokes")
+    if not s.check("Keystrokes box known from HL-bg", box is not None, box):
+        return
+    sf = h.sf
+    got = box_size(box)
+    s.check("in game: 56 x 67 px x sf, no CPS line under the space bar",
+            abs(got[0] - 56 * sf) <= 1 and abs(got[1] - 67 * sf) <= 1, got)
+    h.only(g)
+    s.try_call("/hover", {"off": 1})
     s.call("/open", {"class": SCREENS["hud"]})
     time.sleep(0.6)
-    none = h.shot("keys-editor-none")
-    h.f(g[1], True)
-    on = h.shot("keys-editor-on")
+    on = h.shot("keys-editor")
     s.call("/close")
-    box = bbox_diff(none, on)
-    if not s.check("Keystrokes drawn in the editor", box is not None, box):
-        return
-    n = count_exact(on, box, HL_ACCENT_RGB)
-    s.check("a solid accent cap (W held)", n >= (16 * h.sf) ** 2, n)
-    s.check("its letter in the contrast colour", count_exact(on, box, HL_PRESSED_TEXT) > 0)
-    s.check("no CPS line under the space bar", box_size(box)[1] <= 67 * h.sf + 2, box_size(box))
+    accent, letter = hl_pressed_cap(on, box, sf)
+    s.check("the W cap is solid accent (W held)", accent >= (16 * sf) ** 2, accent)
+    s.check("its letter in the contrast colour", letter > 0, letter)
     h.all_off()
 
 

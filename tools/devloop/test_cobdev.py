@@ -281,6 +281,31 @@ class HudLookHelpers(unittest.TestCase):
         self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
 
 
+class HudLookPressedCap(unittest.TestCase):
+    """HL-keys reads the W cap through Edit HUD's faint frame fill (0x0DFFFFFF over the preview)."""
+
+    @staticmethod
+    def frame(cap_rgb, letter_rgb=None, sf=2):
+        img = flat(160, 160, SKY)
+        box = (10, 10, 10 + 56 * sf - 1, 10 + 67 * sf - 1)
+        img = paint(img, (10 + 19 * sf, 10, 10 + 37 * sf - 1, 10 + 18 * sf - 1), cap_rgb)
+        if letter_rgb:
+            img = paint(img, (10 + 26 * sf, 10 + 5 * sf, 10 + 28 * sf - 1, 10 + 12 * sf - 1), letter_rgb)
+        return img, box
+
+    def test_tinted_pressed_cap_passes(self):
+        img, box = self.frame((195, 222, 255), (30, 30, 30))  # pale blue and #121212 under 5% white
+        accent, letter = cobdev.hl_pressed_cap(img, box, 2)
+        self.assertGreaterEqual(accent, (16 * 2) ** 2)
+        self.assertGreater(letter, 0)
+
+    def test_exact_colours_pass_and_an_idle_cap_fails(self):
+        img, box = self.frame((192, 220, 255), (18, 18, 18))
+        self.assertGreaterEqual(cobdev.hl_pressed_cap(img, box, 2)[0], (16 * 2) ** 2)
+        idle, box = self.frame(see_through(SKY))
+        self.assertEqual(cobdev.hl_pressed_cap(idle, box, 2), (0, 0))
+
+
 class HudLookDryRun(unittest.TestCase):
     """The HL step against a fake game: every sub-check runs to the end without raising (its checks fail)."""
 
