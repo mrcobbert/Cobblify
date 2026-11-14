@@ -108,6 +108,56 @@ public class SheetPlatformOnlyTest {
         assertEquals("noHurtCam", SheetSearch.search("hurt cam", ornithe).get(0).module.id);
     }
 
+    /** Background row id, its module and the HUD item it switches (Ornithe's per-item Background). */
+    private static final String[][] BACKGROUND_ROWS = {
+            {"potionBg", "potion", "potion"},
+            {"armorBg", "armor", "armor"},
+            {"inventoryBg", "inventory", "inventory"},
+            {"genTimersBg", "genTimers", "diamondtimer"},
+            {"keystrokesBg", "keystrokes", "keystrokes"},
+            {"mapInfoBg", "mapInfo", "heightlimit"},
+            {"sessionBg", "session", "sessionstats"},
+    };
+
+    @Test
+    public void backgroundRowsArePlatformOnlyRowsOfSharedModules() {
+        for (String[] b : BACKGROUND_ROWS) {
+            SheetSchema.Row r = SheetSchema.row(b[0]);
+            assertEquals(b[0], SheetSchema.Kind.TOGGLE, r.kind);
+            assertEquals(b[0], "Background", r.name);
+            assertEquals(b[0], b[1], r.module().id);
+            assertEquals(b[0] + " is the first row of its module", r, SheetSchema.module(b[1]).rows.get(0));
+            assertEquals(b[0], b[2], r.hudItem());
+            assertEquals(b[0], b[2], SheetSchema.hudItem(b[0]));
+            assertTrue(b[0], SheetSchema.platformOnly(b[0]));
+            // the module itself is shared, and so are its other rows
+            assertFalse(b[1], SheetSchema.platformOnly(b[1]));
+            assertEquals(null, SheetSchema.hudItem(b[1]));
+        }
+        assertFalse(SheetSchema.platformOnly("potionInGame"));
+        assertEquals(null, SheetSchema.hudItem("potionInGame"));
+        assertEquals(null, SheetSchema.hudItem("nonsense"));
+        assertEquals(null, SheetSchema.row("potionInGame").hudItem());
+    }
+
+    @Test
+    public void backgroundRowsHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        for (String[] b : BACKGROUND_ROWS) {
+            assertFalse(b[0], SheetSchema.shows(acceptsEverything, b[0]));
+            assertFalse(b[0], SheetSchema.shows(lunar, b[0]));
+            assertTrue(b[0], SheetSchema.shows(ornithe, b[0]));
+        }
+        assertTrue("the shared module still shows on Forge", SheetSchema.shows(acceptsEverything, "potion"));
+        assertTrue(SheetSchema.shows(acceptsEverything, "potionInGame"));
+        assertTrue(SheetSearch.search("background", acceptsEverything).isEmpty());
+        assertTrue(SheetSearch.search("background", lunar).isEmpty());
+        int rows = 0;
+        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) rows += h.rows.size();
+        assertEquals(BACKGROUND_ROWS.length, rows);
+    }
+
     /** The module toggles the Combat page draws, in order. */
     private static List<String> combatModules(SheetValues values) {
         SheetState state = new SheetState();
