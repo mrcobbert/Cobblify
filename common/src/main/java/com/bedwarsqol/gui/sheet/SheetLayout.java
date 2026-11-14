@@ -236,7 +236,7 @@ public final class SheetLayout {
         boolean first = true;
         if (c.isSettings()) {
             for (Section s : c.sections) {
-                y = section(f, s, y, first, null, null, s.rows);
+                y = section(f, s, y, first, null, null, visibleRows(s));
                 first = false;
             }
         } else {
@@ -252,6 +252,13 @@ public final class SheetLayout {
     private List<Row> visibleRows(Module m) {
         List<Row> out = new ArrayList<Row>();
         for (Row r : m.rows) if (SheetSchema.shows(values, r.id)) out.add(r);
+        return out;
+    }
+
+    /** A Settings-page section's rows this platform has (Ornithe sizes the scoreboard and tab list as HUD items). */
+    private List<Row> visibleRows(Section s) {
+        List<Row> out = new ArrayList<Row>();
+        for (Row r : s.rows) if (SheetSchema.shows(values, r.id)) out.add(r);
         return out;
     }
 

@@ -81,6 +81,7 @@ final class Probes {
             case "sheet-node":
                 return Bridge.onMain(() -> sheetNode(args));
             default:
+                if (Policy.OVERLAY_PROBES.contains(name)) return OverlayProbes.run(name, args);
                 throw new Refused("unknown probe " + name);
         }
     }

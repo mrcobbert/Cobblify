@@ -17,9 +17,16 @@ public final class ModEvents {
     public static final EventDispatcher<ChatReceivedEvent> CHAT = new EventDispatcher<>();
     /** A new client world (Forge {@code WorldEvent.Load} from {@code WorldClient}). */
     public static final EventDispatcher<WorldClient> WORLD_LOAD = new EventDispatcher<>();
-    /** HUD text layer, at vanilla's debug-overlay position (Forge {@code RenderGameOverlayEvent.Text}). */
+    /**
+     * HUD text layer, at vanilla's debug-overlay position (Forge {@code RenderGameOverlayEvent.Text}).
+     * Not posted in frames where the tab list shows ({@code com.bedwarsqol.hud.TabHudGate}).
+     */
     public static final EventDispatcher<Float> HUD_TEXT = new EventDispatcher<>();
-    /** End of the in-game HUD frame (Forge {@code RenderGameOverlayEvent.Post}, type ALL). */
+    /**
+     * End of the in-game HUD frame (Forge {@code RenderGameOverlayEvent.Post}, type ALL). Unlike
+     * {@link #HUD_TEXT}, it is posted while the tab list shows: listeners that draw HUD elements must
+     * return early when {@code com.bedwarsqol.hud.TabHudGate.hidesHud()} is true.
+     */
     public static final EventDispatcher<Float> HUD_POST = new EventDispatcher<>();
     /** In-game mouse loop (Forge {@code MouseEvent}). */
     public static final EventDispatcher<MouseButtonEvent> MOUSE = new EventDispatcher<>();

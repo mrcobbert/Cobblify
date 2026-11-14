@@ -579,14 +579,19 @@ public final class Bridge {
         cursor = null;
     }
 
-    private static void holdCursor(int[] display) throws Exception {
+    static void holdCursor(int[] display) throws Exception {
         cursor = display;
         cursorUntil = System.currentTimeMillis() + CURSOR_HOLD_MS;
         Input.pointer(display[0], display[1]);
     }
 
+    /** One mouse event into the screen (B's overlay probes call this; no modifier keys). */
+    static void inject(GuiScreen screen, int x, int y, int button, boolean pressed, int notches) throws Exception {
+        inject(screen, x, y, button, pressed, notches, new int[0]);
+    }
+
     /** One mouse event into the screen, with {@code mods} held for exactly this event (released in finally). */
-    private static void inject(GuiScreen screen, int x, int y, int button, boolean pressed, int notches, int[] mods)
+    static void inject(GuiScreen screen, int x, int y, int button, boolean pressed, int notches, int[] mods)
             throws Exception {
         boolean[] was = Input.pressKeys(mods);
         try {
@@ -611,7 +616,7 @@ public final class Bridge {
     }
 
     /** GUI coordinates to the display pixel vanilla maps back onto them (middle of the run). */
-    private static int[] toDisplay(int gx, int gy) {
+    static int[] toDisplay(int gx, int gy) {
         Minecraft m = mc();
         int dw = m.displayWidth;
         int dh = m.displayHeight;

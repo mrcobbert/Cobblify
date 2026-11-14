@@ -4,6 +4,7 @@ import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.hud.HudBackground;
 import com.bedwarsqol.hud.HudPlacement;
+import com.bedwarsqol.hud.OverlayItems;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsBackendUrl;
@@ -349,11 +350,30 @@ public class ClientSettings {
     public float handPosZ = 0f;
     public float handScale = 1.0f;
 
-    /** Vanilla scoreboard sidebar size. 0 = small, 1 = medium, 2 = large (the original full size). */
-    public int scoreboardSize = 2;
+    // --- The scoreboard, chat and tab list as HUD items: placed and corner-resized in Edit HUD ---
+    // AUTO keeps vanilla's spot (scaled about vanilla's anchor). HUD Size does not rescale them.
 
-    /** Vanilla tab player list size. 0 = small, 1 = medium, 2 = large (the original full size). */
-    public int styledTabListSize = 2;
+    public int scoreboardHudX = 0;
+    public int scoreboardHudY = 0;
+    public int scoreboardHudAnchor = HudPlacement.AUTO; // vanilla's right-middle until moved
+    public float scoreboardHudScale = OverlayItems.DEFAULT_SCALE;
+    /** Edit HUD's Hide for the sidebar scoreboard: hidden = vanilla's sidebar is not drawn. */
+    public boolean scoreboardHudEnabled = true;
+
+    public int tabListHudX = 0;
+    public int tabListHudY = 0;
+    public int tabListHudAnchor = HudPlacement.AUTO; // vanilla's top centre until moved
+    public float tabListHudScale = OverlayItems.DEFAULT_SCALE;
+
+    public int chatHudX = 0;
+    public int chatHudY = 0;
+    public int chatHudAnchor = HudPlacement.AUTO; // vanilla's bottom left until moved
+    public float chatHudScale = OverlayItems.DEFAULT_SCALE;
+
+    // The Scoreboard Size and Tab List Size rows (0 = small, 1 = medium, 2 = large) saved before the
+    // three became HUD items. migrate() turns a saved one into its item's scale once and nulls it;
+    // Gson never writes a null member, so the key drops on the next save.
+    Integer scoreboardSize, styledTabListSize;
     /** Hide the server-sent header/footer text above and below the tab player list. */
     public boolean tabHideHeaderFooter = false;
 
@@ -400,6 +420,11 @@ public class ClientSettings {
             if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
         }
         if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
+        // Outside the version steps (no settingsVersion bump): a saved Size row becomes the item's scale
+        // whenever it is present, the same on-screen size it drew at.
+        if (scoreboardSize != null) scoreboardHudScale = OverlayItems.legacySizeScale(scoreboardSize);
+        if (styledTabListSize != null) tabListHudScale = OverlayItems.legacySizeScale(styledTabListSize);
+        scoreboardSize = styledTabListSize = null;
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphTags = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
@@ -451,8 +476,12 @@ public class ClientSettings {
         if (cpsHudScale < 0.3f || cpsHudScale > 10.0f) cpsHudScale = defaultTextSizeScale();
         pingHudAnchor = clamp(pingHudAnchor, HudPlacement.AUTO, 8);
         if (pingHudScale < 0.3f || pingHudScale > 10.0f) pingHudScale = defaultTextSizeScale();
-        scoreboardSize = clamp(scoreboardSize, 0, 2);
-        styledTabListSize = clamp(styledTabListSize, 0, 2);
+        scoreboardHudAnchor = clamp(scoreboardHudAnchor, HudPlacement.AUTO, 8);
+        scoreboardHudScale = overlayScale(scoreboardHudScale);
+        tabListHudAnchor = clamp(tabListHudAnchor, HudPlacement.AUTO, 8);
+        tabListHudScale = overlayScale(tabListHudScale);
+        chatHudAnchor = clamp(chatHudAnchor, HudPlacement.AUTO, 8);
+        chatHudScale = overlayScale(chatHudScale);
         hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
         hudSubPixel = sanitizedSubPixel(hudSubPixel);
 
@@ -497,6 +526,11 @@ public class ClientSettings {
 
     private static boolean subPixelPart(float v) {
         return v >= -0.5f && v <= 0.5f; // false for NaN
+    }
+
+    /** An overlay item's scale, or its default when out of range (overlays do not follow HUD Size). */
+    private static float overlayScale(float scale) {
+        return scale < 0.3f || scale > 10.0f || Float.isNaN(scale) ? OverlayItems.DEFAULT_SCALE : scale;
     }
 
     /** Whether HUD item {@code itemId} draws its background (true unless switched Off). */

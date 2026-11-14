@@ -124,6 +124,39 @@ public final class PolicyTest {
         refused(Policy.keyhold("on", true, false));
         allowed(Policy.keyhold("off", true, false));
 
+        // overlay item probes (HUD parity B)
+        for (String p : new String[]{"overlay-boxes", "chat-fixture", "chat-clear", "chat-open", "chat-at",
+                "chat-click", "tab-header-footer", "place-item", "chat-heights"}) {
+            allowed(Policy.probeName(p));
+        }
+        allowed(Policy.probeName("hud-boxes")); // the editor cycle's probe, beside B's once both are merged
+        allowed(Policy.chatClick(true));
+        refused(Policy.chatClick(false)); // any other screen, a subclass, or none
+        for (String id : new String[]{"scoreboard", "chat", "tablist"}) allowed(Policy.placeItem(id));
+        refused(Policy.placeItem("potion"));
+        refused(Policy.placeItem(null));
+        allowed(Policy.chatFixture("overlays"));
+        refused(Policy.chatFixture("../../etc/passwd"));
+        refused(Policy.chatFixture(null));
+        checks++;
+        if (Policy.chatHeights(java.util.Arrays.asList("restore")) != null) fail("restore has no heights");
+        same("1.0,0.5", Policy.chatHeights(java.util.Arrays.asList("1", "0.5"))[0] + ","
+                + Policy.chatHeights(java.util.Arrays.asList("1", "0.5"))[1]);
+        refusedCall(() -> Policy.chatHeights(java.util.Arrays.asList("1.5", "0.5")));
+        refusedCall(() -> Policy.chatHeights(java.util.Arrays.asList("NaN", "0.5")));
+        refusedCall(() -> Policy.chatHeights(java.util.Arrays.asList("1")));
+        checks++;
+        if (Policy.tabHeaderFooter(java.util.Arrays.asList("clear")) != null) fail("clear has no text");
+        same("Cobdev Header|Cobdev Footer", String.join("|",
+                Policy.tabHeaderFooter(java.util.Arrays.asList("Cobdev Header", "Cobdev Footer"))));
+        refusedCall(() -> Policy.tabHeaderFooter(java.util.Arrays.asList("only one")));
+        same("12,34,0", join(Policy.chatPoint(java.util.Arrays.asList("12", "34"), false)));
+        same("12,34,0", join(Policy.chatPoint(java.util.Arrays.asList("12", "34", "0"), true)));
+        refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "34", "0"), false));
+        refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "34", "1"), true)); // Copy Chat: clipboard
+        refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "34", "2"), true));
+        refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "x"), false));
+
         System.out.println("PolicyTest: " + checks + " checks passed");
     }
 
