@@ -283,6 +283,32 @@ public class SheetLayoutTest {
     }
 
     @Test
+    public void settingsPageLeavesOutRowsThePlatformDoesNotHave() {
+        // Ornithe moved Scoreboard Size and Tab List Size into the items' own corner-resize scale
+        values.missing.add("sbSize");
+        values.missing.add("tabSize");
+        state.category = "settings";
+        Frame f = layout();
+        assertNull(find(f, T.LABEL, "sbSize"));
+        assertNull(find(f, T.LABEL, "tabSize"));
+        assertNull(find(f, T.OPTION, "sbSize"));
+        assertNull(find(f, T.OPTION, "tabSize"));
+        java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (Node n : f.body) if (n.type == T.LABEL) labels.add(n.id);
+        assertEquals(java.util.Arrays.asList("hudSize", "guiSize", "font", "accent"), labels);
+        assertEquals("level with a module name", 7f, find(f, T.LABEL, "hudSize").lineTop, 0f);
+    }
+
+    @Test
+    public void settingsPageListsTheSizeRowsWhereThePlatformHasThem() {
+        state.category = "settings";
+        Frame f = layout();
+        java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (Node n : f.body) if (n.type == T.LABEL) labels.add(n.id);
+        assertEquals(java.util.Arrays.asList("hudSize", "sbSize", "tabSize", "guiSize", "font", "accent"), labels);
+    }
+
+    @Test
     public void searchFieldEndsAtTheCloseButtonAndStartsAboveHypixel() {
         Frame f = layout();
         Node search = find(f, T.SEARCH, null);

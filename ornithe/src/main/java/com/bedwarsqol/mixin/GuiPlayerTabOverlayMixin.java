@@ -3,6 +3,7 @@ package com.bedwarsqol.mixin;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.Denicks;
+import com.bedwarsqol.hud.OverlayItems;
 import com.bedwarsqol.hud.TabOverlayScale;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.TabListLookup;
@@ -76,14 +77,9 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
     private IChatComponent bedwarsqol$savedFooter;
     private boolean bedwarsqol$restoreHeaderFooter;
 
-    /** Overall tab scale from the Size setting (Large = 1.0, the vanilla full size). */
+    /** Overall tab scale: the tab list item's scale (1.0 = vanilla's full size). */
     private static float bedwarsqol$sizeScale() {
-        int size = BedwarsQol.config == null ? 2 : BedwarsQol.config.styledTabListSize;
-        switch (size) {
-            case 0: return 0.7f;
-            case 1: return 0.85f;
-            default: return 1.0f;
-        }
+        return BedwarsQol.config == null ? OverlayItems.DEFAULT_SCALE : BedwarsQol.config.tabListHudScale;
     }
 
     /**

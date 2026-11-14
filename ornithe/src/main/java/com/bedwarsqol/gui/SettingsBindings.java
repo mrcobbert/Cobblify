@@ -51,9 +51,14 @@ final class SettingsBindings implements SheetValues {
         return null;
     }
 
+    /**
+     * Every schema id but Lunar's top-level alerts, and the Scoreboard Size and Tab List Size rows: here the
+     * scoreboard and tab list are HUD items, sized with Edit HUD's corner resize.
+     */
     @Override
     public boolean has(String id) {
         return !"incAlert".equals(id) && !"bedAlert".equals(id) && !"bgAlert".equals(id)
+                && !"sbSize".equals(id) && !"tabSize".equals(id)
                 && (SheetSchema.module(id) != null || SheetSchema.row(id) != null);
     }
 
@@ -206,8 +211,6 @@ final class SettingsBindings implements SheetValues {
             case "boStyle": return SheetSchema.row(id).options()[clamp(c.blockOverlayStyle, 0, 2)];
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
-            case "sbSize": return SIZES[clamp(c.scoreboardSize, 0, 2)];
-            case "tabSize": return SIZES[clamp(c.styledTabListSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
             case "font": return c.minecraftFont() ? "Minecraft" : "Modern";
             case "accent": return GuiTheme.fromToken(c.guiAccent).label();
@@ -227,8 +230,6 @@ final class SettingsBindings implements SheetValues {
             case "boStyle": c.blockOverlayStyle = i; break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
-            case "sbSize": c.scoreboardSize = i; break;
-            case "tabSize": c.styledTabListSize = i; break;
             case "guiSize": c.guiSize = i; break;
             case "font": c.guiFont = "Minecraft".equals(option) ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
             case "accent": c.guiAccent = GuiTheme.Accent.values()[i].token(); break;

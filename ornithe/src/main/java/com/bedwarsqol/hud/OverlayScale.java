@@ -18,14 +18,9 @@ public final class OverlayScale {
     private OverlayScale() {
     }
 
-    /** Scoreboard scale from the Size setting (Large = 1.0, the vanilla full size). */
+    /** Scoreboard scale: the scoreboard item's scale (1.0 = vanilla's full size). */
     public static float scoreboardScale() {
-        int size = BedwarsQol.config == null ? 2 : BedwarsQol.config.scoreboardSize;
-        switch (size) {
-            case 0: return 0.7f;
-            case 1: return 0.85f;
-            default: return 1.0f;
-        }
+        return BedwarsQol.config == null ? OverlayItems.DEFAULT_SCALE : BedwarsQol.config.scoreboardHudScale;
     }
 
     /** Scales the current matrix around the screen's right edge / vertical centre, so the sidebar stays put. */

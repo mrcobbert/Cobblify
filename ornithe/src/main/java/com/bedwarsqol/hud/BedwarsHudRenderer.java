@@ -54,6 +54,10 @@ public class BedwarsHudRenderer {
     public static final String HEIGHT_LIMIT_HUD = "heightlimit";
     public static final String EMERALD_TIMER_HUD = "emeraldtimer";
     public static final String KEYSTROKES_HUD = "keystrokes";
+    /** Vanilla's sidebar scoreboard, chat and tab list as HUD items (see {@link HudModules#overlayIds()}). */
+    public static final String SCOREBOARD_HUD = "scoreboard";
+    public static final String CHAT_HUD = "chat";
+    public static final String TAB_LIST_HUD = "tablist";
     private static final int INV_COLS = 9;
     private static final int INV_ROWS = 3; // storage rows only — the hotbar is already on screen
     // Inventory grid geometry (local pre-scale units). ONE gutter value (INV_GAP) is used everywhere:

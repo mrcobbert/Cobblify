@@ -33,4 +33,16 @@ public class PlatformSheetRowsTest {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }
+
+    /** Ornithe sizes the scoreboard and tab list as HUD items (corner resize), so its Settings page drops the rows. */
+    @Test
+    public void scoreboardAndTabListSizeRowsAreHiddenOnlyOnOrnithe() {
+        boolean ornithe = present("com.bedwarsqol.ornithe.ModEvents");
+        String platform = ornithe ? "ornithe" : present("net.weavemc.api.ModInitializer") ? "lunar" : "forge";
+        SettingsBindings values = new SettingsBindings();
+        for (String id : new String[] {"sbSize", "tabSize"}) {
+            assertEquals(platform + " lists " + id, !ornithe, SheetSchema.shows(values, id));
+        }
+        assertEquals(platform + " lists hudSize", true, SheetSchema.shows(values, "hudSize"));
+    }
 }

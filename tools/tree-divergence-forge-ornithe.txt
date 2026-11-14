@@ -163,6 +163,9 @@ divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
 # HUD parity (Ornithe only): the scoreboard, chat and tab list as HUD items, and holding Tab
 # hides the Cobblify HUD (TabHudGate asks vanilla's tab-list question at the Text layer).
 one-sided main ornithe com/bedwarsqol/hud/TabHudGate.java
+one-sided test ornithe com/bedwarsqol/config/OverlayItemSettingsTest.java
+# HudModules lists the three overlay items next to the modules (Forge keeps its Size rows).
+divergent main com/bedwarsqol/hud/HudModules.java
 
 # Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
