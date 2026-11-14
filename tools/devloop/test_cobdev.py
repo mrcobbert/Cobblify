@@ -773,6 +773,81 @@ class HudLookHelpers(unittest.TestCase):
         self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
 
 
+class HudLookNoise(unittest.TestCase):
+    """The first live run (2026-11-14): world specks, the horizon redrawing far chunks, a camera that turned and a
+    ticking potion timer made frame diffs measure the world instead of the module. The HL boxes must ignore them."""
+
+    W, H = 300, 200
+    HORIZON = 100
+
+    def world(self, horizon_shift=0, specks=()):
+        img = flat(self.W, self.H, SKY)
+        img = paint(img, (0, self.HORIZON + horizon_shift, self.W - 1, self.H - 1), GRASS)
+        for x, y in specks:
+            img = paint(img, (x, y, x, y), (200, 40, 40))
+        return img
+
+    def fps_on(self, base):
+        """An FPS box at (4, 4), 94 x 36 px (47 x 18 GUI px at scale factor 2), white text with a 63 shadow."""
+        img = paint(base, (4, 4, 97, 39), see_through(SKY))
+        img = paint(img, (14, 16, 30, 27), (63, 63, 63))
+        return paint(img, (12, 14, 28, 25), (255, 255, 255))
+
+    def fps_off(self, base):
+        img = paint(base, (12, 12, 30, 23), (63, 63, 63))
+        return paint(img, (10, 10, 28, 21), (255, 255, 255))
+
+    def test_changed_points_skips_identical_rows_and_matches_bbox_diff(self):
+        a = self.world()
+        b = paint(a, (5, 7, 9, 8), GRASS)
+        pts = cobdev.changed_points(a, b)
+        self.assertEqual(len(pts), 10)
+        self.assertEqual(cobdev.bbox_of(pts), (5, 7, 9, 8))
+        self.assertEqual(cobdev.bbox_diff(a, b), (5, 7, 9, 8))
+        self.assertEqual(cobdev.changed_points(a, a), [])
+        self.assertIsNone(cobdev.changed_points(a, flat(10, 10, SKY)))
+
+    def test_specks_and_a_horizon_band_do_not_count(self):
+        before = self.world()
+        frame = self.fps_on(self.world(horizon_shift=1, specks=[(150, 160), (220, 180)]))
+        self.assertEqual(cobdev.bbox_diff(before, frame)[2:], (self.W - 1, 180))  # the old, noisy box
+        self.assertEqual(cobdev.hud_bbox(before, frame), (4, 4, 97, 39))
+
+    def test_a_second_backdrop_removes_a_change_seen_only_in_the_first(self):
+        before = self.world(horizon_shift=-2)          # a transient horizon in the first backdrop only
+        after = self.world()
+        frame = self.fps_on(self.world())
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=after), [(4, 4, 97, 39)])
+
+    def test_two_panels_far_apart_are_two_boxes_biggest_first(self):
+        before = self.world()
+        frame = paint(paint(before, (200, 4, 273, 47), see_through(SKY)), (120, 4, 163, 47), see_through(SKY))
+        self.assertEqual(cobdev.hud_boxes(before, frame), [(200, 4, 273, 47), (120, 4, 163, 47)])
+        self.assertEqual(cobdev.union_box(cobdev.hud_boxes(before, frame)), (120, 4, 273, 47))
+
+    def test_bg_checks_pass_through_noise_and_detect_a_moved_scene(self):
+        before, after = self.world(), self.world()
+        on = self.fps_on(self.world(specks=[(150, 160)]))
+        off = self.fps_off(self.world(horizon_shift=1))
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, after), on, off, 2)
+        self.assertEqual(box, (4, 4, 97, 39))
+        self.assertFalse(moved)
+        self.assertEqual([c for c in checks if not c[1]], [])
+        turned = self.fps_off(self.world(horizon_shift=40))  # the camera looked down between the shots
+        self.assertTrue(cobdev.hl_bg_checks("fps", "textbox", (before, after), on, turned, 2)[2])
+
+    def test_icon_swap_ignores_the_ticking_time_line(self):
+        panel, sf = (4, 4, 139, 51), 2
+        old = paint(self.world(), panel, see_through(SKY))
+        modern = paint(old, (12, 12, 40, 40), (180, 40, 40))           # the icon slot
+        ticked = paint(modern, (60, 34, 80, 42), (170, 170, 170))       # "0:43" became "0:42"
+        self.assertTrue(cobdev.hl_icon_swap(old, ticked, panel, sf)[0])
+        renamed = paint(modern, (60, 14, 80, 20), (255, 255, 255))      # the name line changed: not only the icon
+        self.assertFalse(cobdev.hl_icon_swap(old, renamed, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, old, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, modern, None, sf)[0])
+
+
 class HudLookPressedCap(unittest.TestCase):
     """HL-keys reads the W cap through Edit HUD's faint frame fill (0x0DFFFFFF over the preview)."""
 

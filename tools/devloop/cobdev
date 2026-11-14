@@ -3178,6 +3178,7 @@ HL_PRESSED_TEXT = (18, 18, 18)             # KeyCapStyle: dark letter on a pale 
 HL_ACCENT = "pale-blue"
 HL_ACCENT_RGB = (192, 220, 255)            # GuiTheme PALE_BLUE 0xFFC0DCFF
 HL_PAD = 3                                 # HudBackground.pad(1) = CONTENT_MARGIN, GUI px
+HL_TIME_DY = 10                            # PotionRows.TIME_DY: the time line's top in a potion row
 ICONS = "com.bedwarsqol.hud.EffectIconTextures"
 
 # Vanilla 1.8.9 font advances (glyph + 1 px column), as the unit tests use them.
@@ -3231,19 +3232,96 @@ def ys_of(img, box, rgb):
     return (min(ys), max(ys)) if ys else None
 
 
-def bbox_diff(a, b, box=None, thresh=6):
-    """Exact bounding box of the pixels that differ between two frames (every pixel, unlike diff())."""
-    w, h, _ = a
+def changed_points(a, b, box=None, thresh=6):
+    """Pixels (x, y) inside box that differ by more than thresh in a channel; rows that are identical are skipped
+    whole, so a frame where only the HUD changed is scanned quickly. None when the frames differ in size."""
+    w, h, ra = a
     if (w, h) != b[:2]:
         return None
+    rb = b[2]
     x0, y0, x1, y1 = box or (0, 0, w - 1, h - 1)
-    bb = None
-    for y in range(max(0, y0), min(h - 1, y1) + 1):
-        for x in range(max(0, x0), min(w - 1, x1) + 1):
-            pa, pb = px(a, x, y), px(b, x, y)
-            if max(abs(pa[0] - pb[0]), abs(pa[1] - pb[1]), abs(pa[2] - pb[2])) > thresh:
-                bb = [x, y, x, y] if bb is None else [min(bb[0], x), min(bb[1], y), max(bb[2], x), max(bb[3], y)]
-    return tuple(bb) if bb else None
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w - 1, x1), min(h - 1, y1)
+    out = []
+    for y in range(y0, y1 + 1):
+        sa, sb = ra[y][3 * x0:3 * x1 + 3], rb[y][3 * x0:3 * x1 + 3]
+        if sa == sb:
+            continue
+        for i in range(0, len(sa), 3):
+            if sa[i:i + 3] != sb[i:i + 3] and max(abs(sa[i] - sb[i]), abs(sa[i + 1] - sb[i + 1]),
+                                                  abs(sa[i + 2] - sb[i + 2])) > thresh:
+                out.append((x0 + i // 3, y))
+    return out
+
+
+def bbox_of(points):
+    if not points:
+        return None
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def bbox_diff(a, b, box=None, thresh=6):
+    """Exact bounding box of the pixels that differ between two frames (every pixel, unlike diff())."""
+    pts = changed_points(a, b, box, thresh)
+    return bbox_of(pts) if pts is not None else None
+
+
+def hud_clusters(a, b, box=None, thresh=6, cell=4, join=3, also=None):
+    """The changed pixels grouped into clusters: cells of `cell` px, joined across gaps of up to `join` cells.
+    `also` is a second backdrop (taken after the frame): a pixel counts only if b differs from both, so a world
+    pixel that changed once, before or after the frame, does not. Returns [(points, bbox)], biggest first."""
+    pts = changed_points(a, b, box, thresh) or []
+    if also is not None:
+        other = set(changed_points(also, b, box, thresh) or [])
+        pts = [p for p in pts if p in other]
+    cells = {}
+    for p in pts:
+        cells.setdefault((p[0] // cell, p[1] // cell), []).append(p)
+    seen, out = set(), []
+    for start in cells:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack, members = [start], []
+        while stack:
+            c = stack.pop()
+            members.extend(cells[c])
+            for dx in range(-join, join + 1):
+                for dy in range(-join, join + 1):
+                    n = (c[0] + dx, c[1] + dy)
+                    if n in cells and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        out.append((members, bbox_of(members)))
+    return sorted(out, key=lambda m: -len(m[0]))
+
+
+def hud_boxes(a, b, box=None, thresh=6, min_px=12, max_frac=0.75, also=None):
+    """Bounding boxes of the HUD changes between two frames, biggest first: the clusters of changed pixels, without
+    specks (under min_px: a world pixel that flickered) and bands wider than max_frac of the frame (the horizon and
+    far chunks redrawing, a camera that moved)."""
+    w = a[0]
+    return [bb for members, bb in hud_clusters(a, b, box, thresh, also=also)
+            if len(members) >= min_px and box_size(bb)[0] < max_frac * w]
+
+
+def hud_bbox(a, b, box=None, thresh=6, min_px=12, max_frac=0.75, also=None):
+    """The biggest HUD change (hud_boxes), or None."""
+    found = hud_boxes(a, b, box, thresh, min_px, max_frac, also)
+    return found[0] if found else None
+
+
+def union_box(boxes):
+    boxes = [b for b in boxes if b]
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def world_changes(a, b, keep, thresh=6):
+    """Changed pixels outside the box `keep` (the module and its margin): the scene itself moved when this is big."""
+    pts = changed_points(a, b, None, thresh) or []
+    return sum(1 for p in pts if not inside((p[0], p[1], p[0], p[1]), keep))
 
 
 def changed_runs(a, b, box, axis, thresh=6):
@@ -3457,77 +3535,131 @@ def hl_expected_panel(group, sf):
     return None
 
 
+HL_ARMOR_ICON_MIN = 0.3   # diamond leggings cover ~44% of their 16 x 16 slot
+HL_ITEM_MIN = 0.1         # an arrow covers ~17% of its tile
+
+
+def hl_scene_moved(none, img, box, sf):
+    """Did the world change outside the module (camera turned, a screen opened, the window resized)?"""
+    if box is None or img[:2] != none[:2]:
+        return img[:2] != none[:2]
+    w, hgt, _ = none
+    return world_changes(none, img, grow(box, 8 * sf)) > max(400, 0.002 * w * hgt)
+
+
+def hl_backdrop(img, backdrops, box, sf):
+    """Of the backdrops (module off, taken before and after), the one that matches img best outside the module."""
+    if box is None:
+        return backdrops[0]
+    same = [n for n in backdrops if n[:2] == img[:2]] or [backdrops[0]]
+    return min(same, key=lambda n: world_changes(n, img, grow(box, 8 * sf)))
+
+
+def hl_bg_boxes(name, backdrops, on, off, sf):
+    """(On box, its panels, Off box): the module's change in each frame, as clusters of the pixels that differ from
+    both backdrops, so world specks, the horizon and far chunks redrawing do not count. The gen timers are two
+    panels; the Off content is looked for around the On box."""
+    before, after = backdrops
+    found = hud_boxes(before, on, also=after)
+    panels = found[:2] if name == "timers" else found[:1]
+    on_box = union_box(panels)
+    off_box = union_box(hud_boxes(before, off, grow(on_box, 8 * sf), also=after)) if on_box else None
+    return on_box, sorted(panels), off_box
+
+
+def hl_bg_checks(name, kind, backdrops, on, off, sf):
+    """Every HL-bg check for one module from its frames, as (check, ok, detail); its On box; and whether the scene
+    moved (then the frames say nothing about the module)."""
+    out = []
+    on_box, panels, off_box = hl_bg_boxes(name, backdrops, on, off, sf)
+    out.append((name + ": drawn with its Background on", on_box is not None, on_box))
+    if on_box is None:
+        return out, None, False
+    none, none_off = hl_backdrop(on, backdrops, on_box, sf), hl_backdrop(off, backdrops, on_box, sf)
+    moved = hl_scene_moved(none, on, on_box, sf) or hl_scene_moved(none_off, off, on_box, sf)
+    if name == "timers":
+        out.append(("timers: two panels", len(panels) == 2, panels))
+    want = hl_expected_panel(name, sf)
+    if want:
+        got = box_size(on_box)
+        out.append((name + ": panel/box %sx%s px (+-1)" % want,
+                    abs(got[0] - want[0]) <= 1 and abs(got[1] - want[1]) <= 1, got))
+    if kind == "keys":
+        pts = hl_cap_points(on_box, sf)
+        bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
+        out.append(("keystrokes: every idle cap is 0x6F black", len(pts) == 7 and not bad, (len(pts), bad)))
+        ok, why = hl_bare_ok(off, none_off, pts)
+        out.append(("keystrokes Off: no cap fill", ok, why))
+        out.append(("keystrokes On: letters have no shadow", count_exact(on, on_box, HL_SHADOW) == 0, None))
+        out.append(("keystrokes Off: letters have a shadow", count_exact(off, on_box, HL_SHADOW) >= 10, None))
+        return out, on_box, moved
+    for p in panels:
+        ok, why = hl_ring_ok(on, none, p)
+        out.append((name + ": panel ring is see-through black (not 0xD0121212)", ok, why))
+        if kind != "textbox":
+            ok, why = hl_bare_ok(off, none_off, ring(p, 1))
+            out.append((name + " Off: no fill on that ring", ok, why))
+    if kind != "textbox":
+        out.append((name + " Off: drawn inside the On panel only", inside(off_box, grow(on_box, 1)), off_box))
+        if off_box and name not in ("armor", "inventory"):
+            margins = (off_box[0] - on_box[0], off_box[1] - on_box[1], on_box[2] - off_box[2], on_box[3] - off_box[3])
+            out.append((name + ": the panel pads the content", min(margins) >= (HL_PAD - 1) * sf, margins))
+    content = (on_box[0] + HL_PAD * sf, on_box[1] + HL_PAD * sf, on_box[2] - HL_PAD * sf, on_box[3] - HL_PAD * sf)
+    if kind in ("text", "textbox"):
+        for tag, img, box in (("On", on, on_box), ("Off", off, off_box or on_box)):
+            n = count_exact(img, box, HL_SHADOW)
+            out.append(("%s %s: white text with its shadow" % (name, tag), n >= 10, n))
+    elif kind == "armor":
+        icon = (content[0], content[1], content[0] + 16 * sf - 1, content[1] + 16 * sf - 1)
+        area = (16 * sf) ** 2
+        for tag, img, back, least in (("On", on, none, 0.5), ("Off", off, none_off, HL_ARMOR_ICON_MIN)):
+            frac = len(changed_points(back, img, icon)) / float(area)
+            out.append(("armor %s: leggings icon drawn" % tag, frac >= least, "%.2f of %d px" % (frac, area)))
+    elif kind == "inventory":
+        for slot, count in ((0, "4"), (1, "8")):
+            tile = (content[0] + (2 + 22 * slot) * sf, content[1] + 2 * sf,
+                    content[0] + (2 + 22 * slot + 20) * sf - 1, content[1] + 22 * sf - 1)
+            area = (20 * sf) ** 2
+            for tag, img, back in (("On", on, none), ("Off", off, none_off)):
+                frac = len(changed_points(back, img, tile)) / float(area)
+                out.append(("inventory %s: item in slot %d" % (tag, slot + 1), frac > HL_ITEM_MIN, "%.2f" % frac))
+                n = count_exact(img, tile, HL_SHADOW)
+                out.append(("inventory %s: stack count %s with its shadow" % (tag, count), n >= 4, n))
+    return out, on_box, moved
+
+
 def hl_bg(h):
     s = h.s
     s.begin("HL-bg", "Background On: Lunar 0x6F panel; Off: no fill, content still drawn (per module)")
     h.boxes = {}
     for g in h.groups:
         name, _, _, kind = g
-        h.all_off()
-        s.cmd("/effect @p clear")
-        if name == "potion":
-            s.cmd("/effect @p 1 45 1 true")
-        s.call("/close")
-        none = h.shot(name + "-none")
-        h.only(g)
-        on = h.shot(name + "-on")
-        h.group_bg(g, False)
-        off = h.shot(name + "-off")
-        h.group_bg(g, True)
-        on_box, off_box = bbox_diff(none, on), bbox_diff(none, off)
+        for attempt in range(3):
+            # A fixed view, no screen open, a backdrop before and after: real input reaching the window (a turned
+            # camera, an opened chat, a resize) changes the whole frame, and then this module's shots are retaken.
+            h.all_off()
+            s.cmd("/effect @p clear")
+            if name == "potion":
+                s.cmd("/effect @p 1 45 1 true")
+            s.cmd("/tp @p 0.5 4 0.5 0 0")
+            s.call("/close")
+            time.sleep(0.6)  # the FOV settles after an effect change
+            before = h.shot(name + "-none")
+            h.only(g)
+            on = h.shot(name + "-on")
+            h.group_bg(g, False)
+            off = h.shot(name + "-off")
+            h.group_bg(g, True)
+            h.all_off()
+            after = h.shot(name + "-none-after")
+            checks, on_box, moved = hl_bg_checks(name, kind, (before, after), on, off, h.sf)
+            if not moved:
+                break
         h.boxes[name] = on_box
-        if not s.check(name + ": drawn with its Background on", on_box is not None, on_box):
+        if not s.check(name + ": the scene held still for its shots (else real input reached the game)", not moved):
             continue
-        panels = changed_runs(none, on, on_box, "x") if name == "timers" else [on_box]
-        if name == "timers":
-            if len(panels) < 2:
-                panels = changed_runs(none, on, on_box, "y")
-            s.check("timers: two panels", len(panels) == 2, panels)
-        want = hl_expected_panel(name, h.sf)
-        if want:
-            got = box_size(on_box)
-            s.check(name + ": panel/box %sx%s px (+-1)" % want,
-                    abs(got[0] - want[0]) <= 1 and abs(got[1] - want[1]) <= 1, got)
-        if kind == "keys":
-            pts = hl_cap_points(on_box, h.sf)
-            bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
-            s.check("keystrokes: every idle cap is 0x6F black", len(pts) == 7 and not bad, (len(pts), bad))
-            ok, why = hl_bare_ok(off, none, pts)
-            s.check("keystrokes Off: no cap fill", ok, why)
-            s.check("keystrokes On: letters have no shadow", count_exact(on, on_box, HL_SHADOW) == 0)
-            s.check("keystrokes Off: letters have a shadow", count_exact(off, on_box, HL_SHADOW) >= 10)
-            continue
-        for p in panels:
-            ok, why = hl_ring_ok(on, none, p)
-            s.check(name + ": panel ring is see-through black (not 0xD0121212)", ok, why)
-            if kind != "textbox":
-                ok, why = hl_bare_ok(off, none, ring(p, 1))
-                s.check(name + " Off: no fill on that ring", ok, why)
-        if kind != "textbox":
-            s.check(name + " Off: drawn inside the On panel only", inside(off_box, grow(on_box, 1)), off_box)
-            if off_box and name not in ("armor", "inventory"):
-                margins = (off_box[0] - on_box[0], off_box[1] - on_box[1], on_box[2] - off_box[2], on_box[3] - off_box[3])
-                s.check(name + ": the panel pads the content", min(margins) >= (HL_PAD - 1) * h.sf, margins)
-        content = (on_box[0] + HL_PAD * h.sf, on_box[1] + HL_PAD * h.sf, on_box[2] - HL_PAD * h.sf, on_box[3] - HL_PAD * h.sf)
-        if kind in ("text", "textbox"):
-            for tag, img, box in (("On", on, on_box), ("Off", off, off_box or on_box)):
-                n = count_exact(img, box, HL_SHADOW)
-                s.check("%s %s: white text with its shadow" % (name, tag), n >= 10, n)
-        elif kind == "armor":
-            icon = (content[0], content[1], content[0] + 16 * h.sf - 1, content[1] + 16 * h.sf - 1)
-            area = (16 * h.sf) ** 2
-            for tag, img in (("On", on), ("Off", off)):
-                frac, _ = diff(none, img, step=1, thresh=6, box=(icon[0], icon[1], icon[2] + 1, icon[3] + 1))
-                s.check("armor %s: leggings icon drawn" % tag, frac >= 0.5, "%.2f of %d px" % (frac, area))
-        elif kind == "inventory":
-            for slot, count in ((0, "4"), (1, "8")):
-                tile = (content[0] + (2 + 22 * slot) * h.sf, content[1] + 2 * h.sf,
-                        content[0] + (2 + 22 * slot + 20) * h.sf - 1, content[1] + 22 * h.sf - 1)
-                for tag, img in (("On", on), ("Off", off)):
-                    frac, _ = diff(none, img, step=1, thresh=6, box=(tile[0], tile[1], tile[2] + 1, tile[3] + 1))
-                    s.check("inventory %s: item in slot %d" % (tag, slot + 1), frac > 0.2, "%.2f" % frac)
-                    n = count_exact(img, tile, HL_SHADOW)
-                    s.check("inventory %s: stack count %s with its shadow" % (tag, count), n >= 4, n)
+        for check, ok, detail in checks:
+            s.check(check, ok, detail)
     s.cmd("/effect @p clear")
     h.all_off()
 
@@ -3552,22 +3684,22 @@ def hl_potion(h):
     g = HL_GROUPS[0]
     h.all_off()
     s.cmd("/effect @p clear")
-    s.call("/close")
-    none = h.shot("potion-none")
+    # The effects first, then the backdrop: Speed widens the field of view and Invisibility hides the hand, so a
+    # backdrop taken before them differs from every later frame across the whole screen.
     for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 9 0 true"):
         s.cmd(c)
+    s.cmd("/tp @p 0.5 4 0.5 0 0")
     s.call("/close")
+    time.sleep(0.6)  # the FOV settles
+    none = h.shot("potion-none")
     h.only(g)
     frames = []
     for i in range(4):
         frames.append(h.shot("potion-rows-%d" % i))
         time.sleep(0.25)
-    box = None
-    for f in frames:
-        b = bbox_diff(none, f)
-        if b is None:
-            continue
-        box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+    h.all_off()
+    after = h.shot("potion-none-after")
+    box = union_box([hud_bbox(none, f, also=after) for f in frames])
     if not s.check("potion panel drawn", box is not None, box):
         return
     sf = h.sf
@@ -3660,7 +3792,9 @@ def hl_text(h):
         h.group_bg(by[name], False)
         off = h.shot(name + "-off")
         h.group_bg(by[name], True)
-        box, bare = bbox_diff(none, on), bbox_diff(none, off)
+        h.all_off()
+        after = h.shot(name + "-none-after")
+        box, bare = hud_bbox(none, on, also=after), hud_bbox(none, off, also=after)
         if not s.check(name + ": drawn", box is not None and bare is not None, (box, bare)):
             continue
         w, hgt = box_size(box)
@@ -3688,8 +3822,10 @@ def hl_text(h):
     h.group_bg(by["fps"], False)
     b = h.shot("fps-cps-fpsoff")
     h.group_bg(by["fps"], True)
-    ra = changed_runs(none, a, bbox_diff(none, a) or (0, 0, 0, 0), "y")
-    rb = changed_runs(none, b, bbox_diff(none, b) or (0, 0, 0, 0), "y")
+    h.all_off()
+    after = h.shot("fps-cps-none-after")
+    ra = changed_runs(none, a, union_box(hud_boxes(none, a, also=after)) or (0, 0, 0, 0), "y")
+    rb = changed_runs(none, b, union_box(hud_boxes(none, b, also=after)) or (0, 0, 0, 0), "y")
     moved = (ra[1][1] - rb[1][1]) if len(ra) == 2 and len(rb) == 2 else None
     s.check("CPS's Auto box moves with FPS's Background (3 GUI px)", moved is not None and abs(moved - 3 * sf) <= 1,
             (ra, rb))
@@ -3734,6 +3870,43 @@ def hl_edit(h):
     h.all_off()
 
 
+def hl_scale_checks(gui, scale, sf, names, backdrops, frames):
+    """HL-scale's checks for one GUI scale, from its frames {(background, name or "column"): image}, as
+    (check, ok, detail). Boxes are clusters of the pixels that differ from both backdrops (before and after), so
+    the horizon redrawing far chunks in one backdrop does not count."""
+    before, after = backdrops
+    out, on_boxes = [], {}
+    for bg in (True, False):
+        for name in names:
+            img = frames[(bg, name)]
+            near = on_boxes.get(name)
+            box = (union_box(hud_boxes(before, img, grow(near, (HL_PAD + 6) * sf), also=after))
+                   if not bg and near else hud_bbox(before, img, also=after))
+            label = "GUI %d, %.2f, %s, Background %s" % (gui, scale, name, "On" if bg else "Off")
+            if box is None:
+                out.append((label + ": drawn", False, None))
+            elif bg:
+                on_boxes[name] = box
+                if name != "keystrokes":
+                    none = hl_backdrop(img, backdrops, box, sf)
+                    edge = ring(box, 0)
+                    bad = sum(1 for p in edge if not see_through_ok(px(img, *p), px(none, *p)))
+                    out.append((label + ": text inside its panel", bad <= len(edge) // 20,
+                                "%d/%d edge px are not panel" % (bad, len(edge))))
+            else:
+                # bare: the margin replaces the panel's padding, so the text stays near where the panel was
+                out.append((label + ": text where its panel was", inside(box, grow(on_boxes.get(name, box), (HL_PAD + 2) * sf)),
+                            (box, on_boxes.get(name))))
+        img = frames[(bg, "column")]
+        col = union_box(hud_boxes(before, img, also=after))  # bare modules are separate clusters
+        runs = changed_runs(hl_backdrop(img, backdrops, col, sf), img, col, "y") if col else []
+        # bare potion rows have a gap between them (3 effects: 3 runs), a panel does not
+        want = 5 if bg else 7
+        out.append(("GUI %d, %.2f, Background %s: armor, fps, cps, ping, potion stacked without overlap (%d runs)"
+                    % (gui, scale, "On" if bg else "Off", want), len(runs) == want and disjoint(runs), runs))
+    return out
+
+
 def hl_scale(h):
     s = h.s
     s.begin("HL-scale", "small and fractional module scales: text stays in its box, Auto boxes never overlap")
@@ -3747,44 +3920,28 @@ def hl_scale(h):
         s.cmd("/effect @p clear")
         for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 45 0 true"):
             s.cmd(c)
+        s.cmd("/tp @p 0.5 4 0.5 0 0")
         s.call("/close")
         h.all_off()
-        none = h.shot("scale-%d-none" % gui)
-        on_boxes = {}
+        time.sleep(0.6)  # the FOV settles after the effects
+        before = h.shot("scale-%d-none" % gui)
+        frames = {}
         for bg in (True, False):
             for name in names:
                 h.group_bg(by[name], bg)
             for name in names:
                 h.only(by[name])
-                img = h.shot("scale-%d-%s-%s" % (gui, name, "on" if bg else "off"))
-                box = bbox_diff(none, img)
-                label = "GUI %d, %.2f, %s, Background %s" % (gui, scale, name, "On" if bg else "Off")
-                if box is None:
-                    s.check(label + ": drawn", False)
-                elif bg:
-                    on_boxes[name] = box
-                    if name != "keystrokes":
-                        edge = ring(box, 0)
-                        bad = sum(1 for p in edge if not see_through_ok(px(img, *p), px(none, *p)))
-                        s.check(label + ": text inside its panel", bad <= len(edge) // 20,
-                                "%d/%d edge px are not panel" % (bad, len(edge)))
-                else:
-                    # bare: the margin replaces the panel's padding, so the text stays near where the panel was
-                    s.check(label + ": text where its panel was", inside(box, grow(on_boxes.get(name, box), (HL_PAD + 2) * sf)),
-                            (box, on_boxes.get(name)))
+                frames[(bg, name)] = h.shot("scale-%d-%s-%s" % (gui, name, "on" if bg else "off"))
             h.all_off()
             for name in ("armor", "fps", "cps", "ping", "potion"):
                 h.f(by[name][1], True)
-            img = h.shot("scale-%d-column-%s" % (gui, "on" if bg else "off"))
-            col = bbox_diff(none, img)
-            runs = changed_runs(none, img, col, "y") if col else []
-            # bare potion rows have a gap between them (3 effects: 3 runs), a panel does not
-            want = 5 if bg else 7
-            s.check("GUI %d, %.2f, Background %s: armor, fps, cps, ping, potion stacked without overlap (%d runs)"
-                    % (gui, scale, "On" if bg else "Off", want), len(runs) == want and disjoint(runs), runs)
+            frames[(bg, "column")] = h.shot("scale-%d-column-%s" % (gui, "on" if bg else "off"))
             h.all_off()
         for name in names:
             h.group_bg(by[name], True)
+        after = h.shot("scale-%d-none-after" % gui)
+        for check, ok, detail in hl_scale_checks(gui, scale, sf, names, (before, after), frames):
+            s.check(check, ok, detail)
     for i in ("potion", "fps", "cps", "ping", "keystrokes", "armor"):
         h.f(HL_LAYOUT[i] + "Scale", 1.0)
     s.call("/scale", {"n": 2})
@@ -3815,6 +3972,18 @@ def hl_font(h):
         h.f("guiFont", "minecraft")
         s.cmd("/effect @p clear")
         h.all_off()
+
+
+def hl_icon_swap(old, modern, panel, sf):
+    """Did switching the modern icons off change the icon slot and nothing else of the row? The time line under the
+    name is left out: it ticks between the two frames."""
+    if not panel:
+        return False, "no potion panel from HL-bg"
+    slot = (panel[0] + HL_PAD * sf, panel[1] + HL_PAD * sf, panel[0] + (HL_PAD + 18) * sf - 1,
+            panel[1] + (HL_PAD + 18) * sf - 1)
+    above_time = (panel[0], panel[1], panel[2], panel[1] + (HL_PAD + HL_TIME_DY) * sf - 1)
+    swapped, elsewhere = bbox_diff(old, modern, slot), bbox_diff(old, modern, above_time)
+    return swapped is not None and (elsewhere is None or inside(elsewhere, slot)), (swapped, elsewhere, slot)
 
 
 def hl_icons(h, cold):
@@ -3853,12 +4022,8 @@ def hl_icons(h, cold):
         s.field(ICONS + ".enabled", False)
         old = h.shot("icons-1.8.9")
         s.field(ICONS + ".enabled", True)
-        box = bbox_diff(old, modern)
-        panel = h.boxes.get("potion")
-        slot = (panel[0] + HL_PAD * h.sf, panel[1] + HL_PAD * h.sf, panel[0] + (HL_PAD + 18) * h.sf - 1,
-                panel[1] + (HL_PAD + 18) * h.sf - 1) if panel else None
-        s.check("the modern icon differs from the 1.8.9 one, only in the 18 x 18 icon slot",
-                box is not None and inside(box, slot), (box, slot))
+        ok, detail = hl_icon_swap(old, modern, h.boxes.get("potion"), h.sf)
+        s.check("the modern icon differs from the 1.8.9 one, only in the 18 x 18 icon slot", ok, detail)
     s.cmd("/effect @p clear")
     h.all_off()
 
