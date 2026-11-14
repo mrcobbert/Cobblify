@@ -91,12 +91,17 @@ cobdev probe player           # health, motion, hurtResistantTime, position (cli
 cobdev probe block 3 0 1 [minecraft:wool]          # read or place one block near the player
 cobdev probe clutch-blast 3 0 0                    # Clutch Practice's own blast, server thread
 cobdev probe use-item [minecraft:fire_charge]      # server-side right-click with the held item
+cobdev probe open-shop full                        # a chest window from bridge/resources/team-upgrades-full.json
 ```
+
+The smoke also leaves the world through the bridge (`/world` with `leave=1`, its own `cobdev` save only)
+to get a real world load; `cobdev world` opens it again.
 
 ## Smoke checks
 
-`cobdev smoke [--prod] [--boot-only]` runs PLAN Verification A3-A6 plus the Clutch Practice check
-against the running game and writes every command, status, shot path and pass/fail per check to
+`cobdev smoke [--prod] [--boot-only] [--only team-upgrades]` runs PLAN Verification A3-A6, the Clutch
+Practice check and the Team Upgrades steps (synthetic Bed Wars scoreboard, chat lines, titles and shop
+windows, then an Edit HUD sweep over window sizes, GUI scales and HUD Size) against the running game and writes every command, status, shot path and pass/fail per check to
 `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"

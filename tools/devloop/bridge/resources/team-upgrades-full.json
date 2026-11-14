@@ -1,0 +1,274 @@
+{
+ "_comment": "Synthetic Upgrades & Traps window (research-hypixel.md section 4, 8-team prices). Owned: Sharpened Swords, Reinforced Armor II, Maniac Miner I, Golden Forge. Queue: Miner Fatigue Trap, Blindness Trap.",
+ "title": "Upgrades & Traps",
+ "size": 54,
+ "items": [
+  {
+   "slot": 10,
+   "id": "minecraft:iron_sword",
+   "name": "§aSharpened Swords",
+   "lore": [
+    "§7Your team permanently gains",
+    "§7Sharpness I on all swords and",
+    "§7axes!",
+    "",
+    "§7Cost: §b4 Diamonds",
+    "",
+    "§aUNLOCKED"
+   ]
+  },
+  {
+   "slot": 11,
+   "id": "minecraft:iron_chestplate",
+   "name": "§cReinforced Armor III",
+   "lore": [
+    "§7Your team permanently gains",
+    "§7Protection on all armor pieces!",
+    "",
+    "§aTier 1: Protection I§7, §b2 Diamonds",
+    "§aTier 2: Protection II§7, §b4 Diamonds",
+    "§7Tier 3: Protection III§7, §b8 Diamonds",
+    "§7Tier 4: Protection IV§7, §b16 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ],
+   "count": 2
+  },
+  {
+   "slot": 12,
+   "id": "minecraft:golden_pickaxe",
+   "name": "§cManiac Miner II",
+   "lore": [
+    "§7All players on your team",
+    "§7permanently gain Haste.",
+    "",
+    "§aTier 1: Haste I§7, §b2 Diamonds",
+    "§7Tier 2: Haste II§7, §b4 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ]
+  },
+  {
+   "slot": 14,
+   "id": "minecraft:tripwire_hook",
+   "name": "§cBlindness Trap",
+   "lore": [
+    "§7Inflicts Blindness and Slowness",
+    "§7for 8 seconds.",
+    "",
+    "§7Cost: §b4 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ]
+  },
+  {
+   "slot": 15,
+   "id": "minecraft:feather",
+   "name": "§cCounter-Offensive Trap",
+   "lore": [
+    "§7Grants Speed II and Jump Boost II",
+    "§7for 8 seconds.",
+    "",
+    "§7Cost: §b4 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ]
+  },
+  {
+   "slot": 16,
+   "id": "minecraft:redstone_torch",
+   "name": "§cReveal Trap",
+   "lore": [
+    "§7Reveals invisible players",
+    "§7for 8 seconds.",
+    "",
+    "§7Cost: §b4 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ]
+  },
+  {
+   "slot": 19,
+   "id": "minecraft:furnace",
+   "name": "§cEmerald Forge",
+   "lore": [
+    "§7Upgrade resource spawning on",
+    "§7your island.",
+    "",
+    "§aTier 1: +50% Resources§7, §b2 Diamonds",
+    "§aTier 2: +100% Resources§7, §b4 Diamonds",
+    "§7Tier 3: Spawn emeralds§7, §b6 Diamonds",
+    "§7Tier 4: +200% Resources§7, §b8 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ],
+   "count": 2
+  },
+  {
+   "slot": 20,
+   "id": "minecraft:beacon",
+   "name": "§eHeal Pool",
+   "lore": [
+    "§7Creates a Regeneration field",
+    "§7around your base!",
+    "",
+    "§7Cost: §b1 Diamond",
+    "",
+    "§eClick to purchase!"
+   ]
+  },
+  {
+   "slot": 21,
+   "id": "minecraft:diamond_boots",
+   "name": "§eCushioned Boots I",
+   "lore": [
+    "§7Your team permanently gains",
+    "§7Feather Falling on boots!",
+    "",
+    "§7Tier 1: Feather Falling I§7, §b1 Diamond",
+    "§7Tier 2: Feather Falling II§7, §b2 Diamonds",
+    "",
+    "§eClick to purchase!"
+   ]
+  },
+  {
+   "slot": 23,
+   "id": "minecraft:iron_pickaxe",
+   "name": "§cMiner Fatigue Trap",
+   "lore": [
+    "§7Inflict Mining Fatigue",
+    "§7for 8 seconds.",
+    "",
+    "§7Cost: §b4 Diamonds",
+    "",
+    "§cYou don't have enough Diamonds!"
+   ]
+  },
+  {
+   "slot": 27,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 28,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 29,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 30,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 31,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 32,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 33,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 34,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 35,
+   "id": "minecraft:stained_glass_pane",
+   "name": "§8⬆ §7Purchasable",
+   "lore": [
+    "§8⬇ §7Traps Queue"
+   ],
+   "damage": 7
+  },
+  {
+   "slot": 39,
+   "id": "minecraft:iron_pickaxe",
+   "name": "§aTrap #1: Miner Fatigue Trap",
+   "lore": [
+    "§7Inflict Mining Fatigue",
+    "§7for 8 seconds.",
+    "",
+    "§7Queued by: §aSteve",
+    "",
+    "§eRight Click to remove! (No refund)"
+   ]
+  },
+  {
+   "slot": 40,
+   "id": "minecraft:tripwire_hook",
+   "name": "§aTrap #2: Blindness Trap",
+   "lore": [
+    "§7Inflicts Blindness and Slowness",
+    "§7for 8 seconds.",
+    "",
+    "§7Queued by: §aSteve",
+    "",
+    "§eRight Click to remove! (No refund)"
+   ]
+  },
+  {
+   "slot": 41,
+   "id": "minecraft:stained_glass",
+   "name": "§cTrap #3: No Trap!",
+   "lore": [
+    "§7The first enemy to walk into",
+    "§7your base will trigger this",
+    "§7trap!",
+    "",
+    "§7Purchasing a trap will queue",
+    "§7it here. Its cost will scale",
+    "§7based on the number of",
+    "§7traps queued.",
+    "",
+    "§7Next trap: §b4 Diamonds"
+   ],
+   "count": 3,
+   "damage": 8
+  }
+ ]
+}

@@ -1,23 +1,35 @@
 package cobdev.bridge;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.renderer.EntityRenderer;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.inventory.InventoryBasic;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
+import net.minecraft.nbt.NBTTagString;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.MathHelper;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -29,7 +41,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 
 /**
- * The named smoke probes (PLAN Solution 5): a fixed set of reads and writes instead of open
+ * The named smoke probes (PLAN Solution 5, plus Team Upgrades' {@code open-shop}): a fixed set of reads and writes instead of open
  * reflection on Minecraft. Every probe refuses unless the game is in singleplayer with the
  * integrated server running ({@link Policy#singleplayerWorld}). Minecraft names are MCP and
  * compile-checked; the one private method ({@code EntityRenderer.getFOVModifier}) is located by its
@@ -63,6 +75,8 @@ final class Probes {
                 return clutchBlast(args);
             case "use-item":
                 return useItem(args);
+            case "open-shop":
+                return openShop(args);
             default:
                 throw new Refused("unknown probe " + name);
         }
@@ -214,6 +228,64 @@ final class Probes {
             out.put("used", used);
             out.put("spawned", spawned);
             out.put("clutchReady", ready);
+            return out;
+        });
+    }
+
+    /**
+     * {@code open-shop FIXTURE}: opens a server-side chest window filled from the bridge resource
+     * {@code team-upgrades-FIXTURE.json} ({@code title}, {@code size}, {@code items[]} of {@code slot},
+     * {@code id}, {@code damage}, {@code count}, {@code name}, {@code lore[]}), the way Hypixel's
+     * {@code Upgrades & Traps} window arrives: an open-window packet plus the slot contents. Close it
+     * with {@code cobdev close}.
+     */
+    private static Map<String, Object> openShop(List<String> args) throws Exception {
+        Refused.check(Policy.shopFixture(args));
+        String resource = "/team-upgrades-" + args.get(0) + ".json";
+        JsonObject fixture;
+        try (InputStream in = Probes.class.getResourceAsStream(resource)) {
+            if (in == null) throw new Refused("no fixture " + resource + " in the bridge");
+            try (Reader r = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                fixture = new JsonParser().parse(r).getAsJsonObject();
+            }
+        }
+        String title = fixture.get("title").getAsString();
+        int size = fixture.has("size") ? fixture.get("size").getAsInt() : 54;
+        if (size <= 0 || size > 54 || size % 9 != 0) throw new Refused(resource + ": size must be 9-54 in rows of 9");
+        InventoryBasic window = new InventoryBasic(title, true, size);
+        int filled = 0;
+        for (JsonElement e : fixture.getAsJsonArray("items")) {
+            JsonObject o = e.getAsJsonObject();
+            int slot = o.get("slot").getAsInt();
+            if (slot < 0 || slot >= size) throw new Refused(resource + ": slot " + slot + " is outside the window");
+            String id = o.get("id").getAsString();
+            Item item = Item.getByNameOrId(id);
+            if (item == null) throw new Refused(resource + ": unknown item " + id);
+            int count = o.has("count") ? o.get("count").getAsInt() : 1;
+            int damage = o.has("damage") ? o.get("damage").getAsInt() : 0;
+            ItemStack stack = new ItemStack(item, count, damage);
+            NBTTagCompound display = new NBTTagCompound();
+            if (o.has("name")) display.setString("Name", o.get("name").getAsString());
+            if (o.has("lore")) {
+                NBTTagList lore = new NBTTagList();
+                JsonArray lines = o.getAsJsonArray("lore");
+                for (JsonElement line : lines) lore.appendTag(new NBTTagString(line.getAsString()));
+                display.setTag("Lore", lore);
+            }
+            NBTTagCompound tag = new NBTTagCompound();
+            tag.setTag("display", display);
+            stack.setTagCompound(tag);
+            window.setInventorySlotContents(slot, stack);
+            filled++;
+        }
+        int items = filled;
+        return onServer(() -> {
+            serverPlayer().displayGUIChest(window);
+            Map<String, Object> out = Bridge.ok();
+            out.put("fixture", args.get(0));
+            out.put("title", title);
+            out.put("size", size);
+            out.put("items", items);
             return out;
         });
     }

@@ -1499,6 +1499,287 @@ def smoke_clutch(s, cfg):
     heal()
 
 
+# Team Upgrades (cycle 2026-11-13-team-upgrades, PLAN Phase 4). Real names: ornithe/src TeamUpgradesWatch
+# (static LIFECYCLE), common/src TeamUpgradeLifecycle (field live, pending(), ingestionAllowed(), visible())
+# and TeamUpgradeState (keys(), tier(key), traps()); ClientSettings teamUpgradesEnabled, teamUpgradesLayout
+# (0 Compact, 1 Full), defaultTextSize and setHudSize(0-2). Fixtures: bridge/resources/team-upgrades-*.json.
+# The lines are synthetic and the dev profile's own: a VICTORY! title may also count in its Session Stats.
+TU_WATCH = "com.bedwarsqol.feature.TeamUpgradesWatch"
+TU_LIFE = TU_WATCH + ".LIFECYCLE"
+TU_SIDEBAR, TU_BELOW = "cobtusb", "cobtubn"
+TU_SIZES = [(854, 480), (1280, 720), (1920, 1080), (2560, 1440)]
+TU_LOCATION_WAIT = 10.0  # TeamUpgradeLifecycle.LOCATION_WAIT_MS
+TU_DEDUPE = 5.0  # TeamUpgradeState.FIRED_DEDUPE_MS
+TU_EMPTY = {"tiers": {}, "traps": []}
+
+
+def tu_call(s, target, method, *args):
+    """A method on TeamUpgradesWatch.LIFECYCLE (target "") or on its live state ("live"); None if that is null."""
+    path = TU_LIFE + ("." + target if target else "") + "." + method
+    r, _ = s.try_call("/invoke", post={"path": path, "args": ARG_SEP.join(str(a) for a in args)})
+    return None if r is None else r.get("value")
+
+
+def tu_state(s):
+    """Owned tiers and trap queue of the live state, or None when no game is being tracked."""
+    traps = tu_call(s, "live", "traps")
+    if traps is None:
+        return None
+    return {"tiers": {k: tu_call(s, "live", "tier", k) for k in tu_call(s, "live", "keys") or []}, "traps": traps}
+
+
+def tu_chat(s, text):
+    """One system chat line, colour codes written as &x. Commands travel as chat, where a raw section sign
+    is "Illegal characters in chat" (a kick), so the codes go in as JSON escapes."""
+    s.cmd('/tellraw @p "%s"' % text.replace("&", "\\u00a7"))
+
+
+def tu_purchase(s, item):
+    """Hypixel's team purchase broadcast, green "<player> purchased " + gold item, in both shapes."""
+    parts = '["",{"text":"Steve purchased ","color":"green"},{"text":"%s","color":"gold"}]' % item
+    if len("/tellraw @p " + parts) <= 100:
+        s.cmd("/tellraw @p " + parts)  # formatted: ...purchased §r§6<item>§r
+    else:
+        tu_chat(s, "&aSteve purchased &6" + item)  # formatted: ...purchased §6<item>§r
+
+
+def tu_title(s, kind, text, color="red"):
+    s.cmd('/title @p %s {"text":"%s","color":"%s"}' % (kind, text, color))
+
+
+def tu_try(s, command):
+    s.try_call("/command", post={"command": command})
+
+
+def tu_board(s, sidebar, below):
+    """The BED WARS sidebar and/or the below-name objective (sidebar + below-name = an active game)."""
+    if sidebar:
+        tu_try(s, "/scoreboard objectives add %s dummy BED WARS" % TU_SIDEBAR)
+        s.cmd("/scoreboard objectives setdisplay sidebar " + TU_SIDEBAR)
+    if below:
+        tu_try(s, "/scoreboard objectives add %s health" % TU_BELOW)
+        s.cmd("/scoreboard objectives setdisplay belowName " + TU_BELOW)
+    time.sleep(0.4)
+
+
+def tu_queue(s):
+    """A pregame queue: the sidebar with a "Mode:" line and no below-name objective. Clears every game."""
+    tu_try(s, "/scoreboard objectives setdisplay belowName")
+    tu_board(s, True, False)
+    s.cmd("/scoreboard players set Mode:Doubles %s 1" % TU_SIDEBAR)
+    time.sleep(0.4)
+    queued = tu_state(s)
+    s.cmd("/scoreboard players reset Mode:Doubles %s" % TU_SIDEBAR)
+    return queued
+
+
+def tu_clear_board(s):
+    for o in (TU_SIDEBAR, TU_BELOW):
+        tu_try(s, "/scoreboard objectives remove " + o)
+    time.sleep(0.4)
+
+
+def tu_left_diff(a, b):
+    w, h, _ = a
+    return diff(a, b, box=(0, h // 5, w // 2, 4 * h // 5))
+
+
+def tu_reopen_world(s):
+    """Save and Quit, then open the smoke save again: one world load, as when joining another game server."""
+    s.call("/world", {"leave": "1"}, timeout=90)
+    for _ in range(30):
+        if (api_quiet("/status") or {}).get("title"):
+            break
+        time.sleep(1)
+    time.sleep(5)  # the integrated server finishes saving on its own thread
+    require_smoke_save(s.call("/world", timeout=120))
+    for _ in range(90):
+        st = api_quiet("/status") or {}
+        if st.get("inWorld") and st.get("responsive"):
+            break
+        time.sleep(1)
+    s.call("/close")
+    time.sleep(2)
+
+
+def smoke_team_upgrades(s, cfg):
+    s.begin("TU", "Team Upgrades: chat, titles, shop window, game lifecycle (synthetic lines, dev world)")
+    if not cfg or not s.has(TU_WATCH):
+        return s.unavailable(TU_WATCH + " is not in this build")
+    en, lay = cfg + ".teamUpgradesEnabled", cfg + ".teamUpgradesLayout"
+    was = s.field(en).get("value"), s.field(lay).get("value")
+    try:
+        tu_clear_board(s)
+        tu_try(s, "/title @p reset")
+        s.field(en, False)
+        s.field(lay, 0)
+        s.check("pregame queue: no game tracked", tu_queue(s) is None)
+
+        # An "active game" (no location in singleplayer: pending with an empty state for 10 s).
+        tu_board(s, True, True)
+        s.check("active game: ingestion allowed", tu_call(s, "", "ingestionAllowed") is True)
+        s.check("no location yet: pending", tu_call(s, "", "pending") is True)
+        st = tu_state(s)
+        s.check("a new game starts empty", st == TU_EMPTY, st)
+        _, off = s.shot("tu-off")
+        s.field(en, True)
+        time.sleep(0.4)
+        _, empty = s.shot("tu-empty")
+        frac, box = tu_left_diff(off, empty)
+        s.check("panel drawn on the left (Traps / None)", frac > 0.001, "diff %.4f in %s" % (frac, box))
+
+        # Purchases in both component shapes, then two spoofs that must change nothing.
+        for item in ("Sharpened Swords", "Reinforced Armor I", "Reinforced Armor II", "Iron Forge", "Heal Pool",
+                     "Blindness Trap", "Counter-Offensive Trap"):
+            tu_purchase(s, item)
+        tu_chat(s, "Steve: Steve purchased &6Maniac Miner I")  # player-shaped
+        tu_chat(s, "&aSteve purchased Maniac Miner I")  # not gold
+        time.sleep(0.4)
+        st = tu_state(s) or {}
+        tiers = st.get("tiers", {})
+        s.check("purchases counted", tiers.get("Sharpened Swords") == 1 and tiers.get("Reinforced Armor") == 2
+                and tiers.get("Forge") == 1 and tiers.get("Heal Pool") == 1, tiers)
+        s.check("trap queue in purchase order", st.get("traps") == ["Blindness Trap", "Counter-Offensive Trap"],
+                st.get("traps"))
+        s.check("spoofed lines ignored", not tiers.get("Maniac Miner"), tiers)
+        s.shot("tu-compact")
+        s.field(lay, 1)
+        time.sleep(0.4)
+        s.shot("tu-full-live")
+        s.field(lay, 0)
+
+        # One trap going off the way Hypixel shows it: chat line, subtitle and title, counted once.
+        tu_chat(s, "&cBlindness Trap was set off!")
+        tu_title(s, "subtitle", "Your Blindness Trap has been set off!", "white")
+        tu_title(s, "title", "TRAP TRIGGERED!")
+        s.shot("tu-fired", wait=100)
+        st = tu_state(s) or {}
+        s.check("set-off + subtitle + title fire one trap", st.get("traps") == ["Counter-Offensive Trap"],
+                st.get("traps"))
+        time.sleep(TU_DEDUPE + 0.3)
+        s.shot("tu-after-fire")
+        # Titles alone (the displayTitle inject) fire the next one.
+        tu_title(s, "subtitle", "Your Counter-Offensive Trap has been set off!", "white")
+        tu_title(s, "title", "TRAP TRIGGERED!")
+        st = tu_state(s) or {}
+        s.check("subtitle + title alone fire the next trap", st.get("traps") == [], st.get("traps"))
+        tu_purchase(s, "Miner Fatigue Trap")
+        tu_chat(s, "&cRemoved Miner Fatigue Trap from the queue!")
+        st = tu_state(s) or {}
+        s.check("removal line takes the trap out", st.get("traps") == [], st.get("traps"))
+        tu_try(s, "/title @p clear")
+
+        # The shop window: one look replaces the state exactly.
+        s.probe("open-shop", "full")
+        time.sleep(0.8)
+        s.shot("tu-shop-window")
+        s.call("/close")
+        st = tu_state(s) or {}
+        tiers = st.get("tiers", {})
+        s.check("shop window: owned tiers", tiers.get("Reinforced Armor") == 2 and tiers.get("Maniac Miner") == 1
+                and tiers.get("Forge") == 2 and tiers.get("Heal Pool") == 0, tiers)
+        s.check("shop window: trap queue", st.get("traps") == ["Miner Fatigue Trap", "Blindness Trap"], st.get("traps"))
+        s.shot("tu-after-shop")
+        s.probe("open-shop", "unknown")
+        time.sleep(0.8)
+        s.call("/close")
+        tiers = (tu_state(s) or {}).get("tiers") or {}
+        s.check("unknown shop entry kept by its own name", tiers.get("Future Upgrade") == 1, tiers)
+        s.check("unknown trap for sale is not an upgrade", "Glue Trap" not in tiers, tiers)
+        s.shot("tu-unknown-compact")
+        s.field(lay, 1)
+        time.sleep(0.4)
+        s.shot("tu-unknown-full")
+        s.field(lay, 0)
+
+        # Flicker: the below-name objective goes and comes back without a world load.
+        s.cmd("/scoreboard objectives setdisplay belowName")
+        time.sleep(0.4)
+        s.check("objective gone: nothing visible", tu_call(s, "", "visible") is None)
+        tu_board(s, False, True)
+        tiers = (tu_state(s) or {}).get("tiers") or {}
+        s.check("objective back, same world: state kept", tiers.get("Future Upgrade") == 1, tiers)
+
+        # A world load into another game. No location in singleplayer: the old game must never show.
+        tu_reopen_world(s)
+        tu_board(s, True, True)  # the save keeps the objectives; adding them again is harmless
+        st = tu_state(s)
+        s.check("after a world load: a new, empty game", st == TU_EMPTY, st)
+        time.sleep(TU_LOCATION_WAIT + 1)
+        s.check("decided after 10 s without a location", tu_call(s, "", "pending") is False)
+        st = tu_state(s)
+        s.check("still empty: the previous game was dropped", st == TU_EMPTY, st)
+        s.shot("tu-new-world")
+
+        # Game end: VICTORY! clears, and nothing is taken in afterwards.
+        tu_purchase(s, "Heal Pool")
+        tu_title(s, "title", "VICTORY!", "gold")
+        time.sleep(1.3)  # one gear poll
+        s.check("after VICTORY!: nothing visible", tu_call(s, "", "visible") is None)
+        tu_purchase(s, "Iron Forge")
+        s.check("after VICTORY!: nothing ingested", tu_call(s, "", "ingestionAllowed") is False)
+        s.shot("tu-ended")
+        tu_try(s, "/title @p clear")
+        tu_clear_board(s)
+        s.shot("tu-no-board")
+    finally:
+        tu_clear_board(s)
+        tu_try(s, "/title @p reset")
+        s.field(en, was[0])
+        s.field(lay, was[1])
+
+
+def smoke_team_upgrades_look(s, cfg, mode):
+    """Edit HUD (every module's example in its default spot) over window sizes x GUI scales, at the default
+    and the largest HUD Size, plus the live panel (Compact and Full) at each HUD Size."""
+    s.begin("TU-look", "Team Upgrades: Edit HUD layout sweep and HUD Size (%s)" % mode)
+    if not cfg or not s.has(TU_WATCH):
+        return s.unavailable(TU_WATCH + " is not in this build")
+    en, lay, hs = cfg + ".teamUpgradesEnabled", cfg + ".teamUpgradesLayout", cfg + ".defaultTextSize"
+    was = s.field(en).get("value"), s.field(lay).get("value"), s.field(hs).get("value")
+    st = s.status()
+    scale_was, display_was = st.get("guiScaleSetting", 0), st.get("display")
+    sizes = TU_SIZES if mode == "dev" else [None]  # cobdev size is dev-only
+    scales = [0, 1, 2, 3] if mode == "dev" else [1, 2, 3]  # Pylon breaks above 3 (issue #18)
+    try:
+        s.field(en, True)
+        for hud_size in sorted({was[2], 2}):
+            s.call("/invoke", post={"path": cfg + ".setHudSize", "args": str(hud_size)})
+            s.field(lay, 0)
+            for size in sizes:
+                if size:
+                    s.call("/size", {"w": size[0], "h": size[1]})
+                    time.sleep(1)
+                for scale in scales:
+                    s.call("/scale", {"n": scale})
+                    s.call("/open", {"class": SCREENS["hud"]})
+                    time.sleep(0.6)
+                    tag = "tu-edithud-h%d-%s-s%d" % (hud_size, "%dx%d" % size if size else "default", scale)
+                    _, img = s.shot(tag)
+                    s.check("frame " + tag, spread(img) > 8)
+                    s.call("/close")
+            if display_was and mode == "dev":
+                s.call("/size", {"w": int(display_was.split("x")[0]), "h": int(display_was.split("x")[1])})
+            s.call("/scale", {"n": scale_was})
+            s.check("queue before the live panel: no game tracked", tu_queue(s) is None)
+            tu_board(s, True, True)
+            for item in ("Sharpened Swords", "Reinforced Armor II", "Iron Forge", "Blindness Trap"):
+                tu_purchase(s, item)
+            for layout in (0, 1):
+                s.field(lay, layout)
+                time.sleep(0.4)
+                s.shot("tu-live-h%d-%s" % (hud_size, "full" if layout else "compact"))
+            tu_clear_board(s)
+    finally:
+        if display_was and mode == "dev":
+            s.try_call("/size", {"w": int(display_was.split("x")[0]), "h": int(display_was.split("x")[1])})
+        s.try_call("/scale", {"n": scale_was})
+        s.try_call("/invoke", post={"path": cfg + ".setHudSize", "args": str(was[2])})
+        s.field(en, was[0])
+        s.field(lay, was[1])
+        tu_clear_board(s)
+
+
 def cmd_smoke(args):
     wt = worktree(args)
     take_lock(wt, args.steal)
@@ -1524,7 +1805,14 @@ def cmd_smoke(args):
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
                   lambda: smoke_overlays(s, cfg_box.get("cfg")),
-                  lambda: smoke_clutch(s, cfg_box.get("cfg"))]
+                  lambda: smoke_clutch(s, cfg_box.get("cfg")),
+                  lambda: smoke_team_upgrades(s, cfg_box.get("cfg")),
+                  lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode)]
+        if args.only == "team-upgrades":
+            steps = steps[:1] + [lambda: smoke_world(s),
+                                 lambda: cfg_box.setdefault("cfg", find_config(s)),
+                                 lambda: smoke_team_upgrades(s, cfg_box.get("cfg")),
+                                 lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode)]
     for step in steps:
         try:
             step()
@@ -1653,8 +1941,9 @@ def main():
                                 " clutch-blast DX DY DZ, use-item [ITEM]")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
-    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")
+    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, Clutch, Team Upgrades), report in ~/.cache/cobdev/smoke")
     p.add_argument("--prod", action="store_true", help="boot the release jar in the production layout")
+    p.add_argument("--only", choices=["team-upgrades"], help="boot, world, then only these steps")
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")

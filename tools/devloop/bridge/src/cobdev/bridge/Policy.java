@@ -119,9 +119,21 @@ final class Policy {
             case "block":
             case "clutch-blast":
             case "use-item":
+            case "open-shop":
                 return null;
             default:
-                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item)";
+                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop)";
         }
+    }
+
+    /**
+     * {@code open-shop} fixture names: lower-case letters, digits and dashes only, so a name can only pick
+     * one of the bridge's own {@code team-upgrades-<name>.json} resources.
+     */
+    static String shopFixture(java.util.List<String> args) {
+        if (args == null || args.size() != 1) return "probe open-shop FIXTURE (full, unknown)";
+        String name = args.get(0);
+        if (name == null || !name.matches("[a-z0-9-]{1,32}")) return "bad open-shop fixture name " + name;
+        return null;
     }
 }
