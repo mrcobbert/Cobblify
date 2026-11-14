@@ -299,6 +299,32 @@ class OverlaySmokeNoise(unittest.TestCase):
         self.assertTrue(box["x"] * 2 <= x < (box["x"] + 1.5) * 2)
 
 
+class ChatBandGaps(unittest.TestCase):
+    """Full smoke 2026-11-14 11:56: at 1280x720 the crosshair's arm crosses the chat's margin column, which cut the
+    open chat's 20-row band to 17 rows."""
+
+    def chat(self, rows, crosshair_at=None):
+        ref = sky(700, 720)
+        box = {"x": 2.0, "y": 332.0 - 9 * rows, "w": 324.0, "h": 9.0 * rows}
+        img = paint_fn(ref, cobdev.gui_rect(box, 2), black(0x7F))
+        if crosshair_at is not None:  # a 1 GUI px crosshair arm (2 device px), inverted over the fill
+            img = paint_fn(img, (630, crosshair_at, 650, crosshair_at + 2), lambda c: (255 - c[0], 255 - c[1], 255 - c[2]))
+        return ref, img, box
+
+    def test_a_crosshair_arm_does_not_split_the_band(self):
+        ref, img, box = self.chat(20, crosshair_at=359)
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertEqual(20, rows)
+        self.assertEqual((304, 664), (top, bottom))
+
+    def test_a_real_gap_still_ends_the_band(self):
+        ref, img, box = self.chat(10)
+        img = paint_fn(img, (0, 500, 700, 520), lambda c: (120, 166, 255))  # 10 GUI px of sky inside the band
+        self.assertIsNotNone(cobdev.band_rows(img, ref, 648, 1 - 0x7F / 255.0))
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertLess(rows, 10)
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",

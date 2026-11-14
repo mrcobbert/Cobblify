@@ -1030,19 +1030,22 @@ def ratio_share(img, ref, rect, want, tol=0.02):
     return sum(1 for v in vals if abs(v - want) <= tol) / len(vals) if vals else 0.0
 
 
-def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None):
-    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive."""
+def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None, gap=0):
+    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive.
+    Up to `gap` non-matching rows inside a run do not end it (something 1 GUI px tall drawn over the fill, such as
+    the crosshair's arm at some window sizes)."""
     h = img[1]
     y1 = h if y1 is None else min(h, y1)
-    best, start = None, None
+    best, start, last = None, None, None
     for y in range(max(0, y0), y1 + 1):
         r = ratio_at(img, ref, x, y) if y < y1 else None
         if r is not None and abs(r - want) <= tol:
             if start is None:
                 start = y
-        elif start is not None:
-            if best is None or y - start > best[1] - best[0]:
-                best = (start, y)
+            last = y
+        elif start is not None and (y >= y1 or y - last > gap):
+            if best is None or last + 1 - start > best[1] - best[0]:
+                best = (start, last + 1)
             start = None
     return best
 
@@ -1787,7 +1790,7 @@ def smoke_ov_tabhide(s, cfg):
 def ov_chat_rows(s, img, ref, box, sf, scale, chat_scale=1.0):
     """(band rows, band top, band bottom) of chat fill in the right margin column (no text reaches it)."""
     x = chat_margin_column(box, scale, sf, chat_scale)
-    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05)
+    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05, gap=2 * sf)
     if band is None:
         return 0, None, None
     row = 9 * chat_scale * scale * sf
