@@ -268,7 +268,7 @@ public class TeamUpgradeRowsTest {
                 "HEADER|Traps|||NORMAL",
                 "TRAP|1 Blindness|||NORMAL",
                 "TRAP|2 Counter-Offensive|||NORMAL",
-                "NEXT|Next||2|NORMAL"),
+                "NEXT|Next||4|NORMAL"),
                 fmt(TeamUpgradeRows.example(Layout.COMPACT)));
     }
 
@@ -286,7 +286,7 @@ public class TeamUpgradeRowsTest {
                 "TRAP|1 Blindness|||NORMAL",
                 "TRAP|2 Counter-Offensive|||NORMAL",
                 "TRAP|3 —|||DIM",
-                "NEXT|Next||2|NORMAL"),
+                "NEXT|Next||4|NORMAL"),
                 fmt(TeamUpgradeRows.example(Layout.FULL)));
     }
 

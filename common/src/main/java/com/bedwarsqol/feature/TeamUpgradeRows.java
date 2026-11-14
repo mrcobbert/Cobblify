@@ -54,10 +54,6 @@ public final class TeamUpgradeRows {
             this.alpha = alpha;
         }
 
-        Row withRight(String r) {
-            return new Row(kind, label, value, r, style, alpha);
-        }
-
         @Override
         public String toString() {
             return kind + "|" + label + "|" + value + "|" + right + "|" + style;
@@ -126,7 +122,7 @@ public final class TeamUpgradeRows {
 
     /**
      * Example rows for Edit HUD: Sharpened Swords Max, Reinforced Armor II 8, Iron Forge 4, Heal Pool
-     * Max; traps Blindness, Counter-Offensive; Next 2 (the approved mock's numbers).
+     * Max; traps Blindness, Counter-Offensive; Next 4 (two traps queued, so the real next cost).
      */
     public static List<Row> example(Layout layout) {
         TeamUpgradeState s = new TeamUpgradeState();
@@ -136,11 +132,7 @@ public final class TeamUpgradeRows {
         s.purchase("Heal Pool", 0);
         s.purchase(TeamUpgradeCatalog.BLINDNESS_TRAP, 0);
         s.purchase(TeamUpgradeCatalog.COUNTER_OFFENSIVE_TRAP, 0);
-        List<Row> rows = rows(s, layout, TeamUpgradeCatalog.Bracket.EIGHT_TEAM, 0);
-        for (int i = 0; i < rows.size(); i++) {
-            if (rows.get(i).kind == Kind.NEXT) rows.set(i, rows.get(i).withRight("2"));
-        }
-        return rows;
+        return rows(s, layout, TeamUpgradeCatalog.Bracket.EIGHT_TEAM, 0);
     }
 
     private static Row header(String text) {
