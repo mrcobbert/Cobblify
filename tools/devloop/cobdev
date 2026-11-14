@@ -1557,7 +1557,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
     runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
     Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
     limits the run to those ids (all when None)."""
-    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, menu, show (E0, E3a-E9, E13, E15)")
+    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, live preview, menu, show (E0, E3a-E15)")
     if not cfg or not s.has(SCREENS["hud"]):
         return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
     run = EditHudRun(s, cfg)
@@ -2021,6 +2021,105 @@ def edithud_e15(run):
 
 
 HUD_SIZE_SCALES = {0: 0.75, 1: 1.0, 2: 1.5}  # ClientSettings.defaultTextSizeScale()
+IN_GAME_ONLY = ("potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "keystrokesInGameOnly")
+# Live data that differs from the editor's samples (2 potions, diamond leggings, an empty inventory).
+LIVE_DATA = ("/effect @p regeneration 600 0", "/effect @p strength 600 0",
+             "/replaceitem entity @p slot.armor.legs iron_leggings", "/replaceitem entity @p slot.inventory.0 wool 64 11")
+LIVE_DATA_CLEAR = ("/effect @p clear", "/replaceitem entity @p slot.armor.legs air",
+                   "/replaceitem entity @p slot.inventory.0 air")
+POTION_ICON = 18.0  # BedwarsHudRenderer.POTION_ICON_SIZE
+# Keystrokes caps in local units (BedwarsHudRenderer KS_UNIT 18, KS_GAP 2, KS_SPACE_H 14): x, y, w, h.
+KS_CAPS = {"W": (20, 0, 18, 18), "A": (0, 20, 18, 18), "S": (20, 20, 18, 18), "D": (40, 20, 18, 18),
+           "Space": (0, 40, 58, 14), "LMB": (0, 56, 28, 18), "RMB": (30, 56, 28, 18)}
+
+
+def px_box(x, y, w, h, sc, inset=0.0):
+    """A GUI rectangle in screenshot pixels, shrunk by `inset` GUI px on every side."""
+    return (int(round((x + inset) * sc)), int(round((y + inset) * sc)),
+            int(round((x + w - inset) * sc)), int(round((y + h - inset) * sc)))
+
+
+def cap_px(ks_box, ks_scale, cap, sc):
+    """The middle 60% of a Keystrokes cap, in screenshot pixels."""
+    x, y, w, h = KS_CAPS[cap]
+    gx, gy = ks_box["x"] + (x + 0.2 * w) * ks_scale, ks_box["y"] + (y + 0.2 * h) * ks_scale
+    return px_box(gx, gy, 0.6 * w * ks_scale, 0.6 * h * ks_scale, sc)
+
+
+def edithud_e11(run):
+    """E11: opening Edit HUD changes no item's content or size: inside the potion icon column, Armor, Inventory and
+    Keystrokes (1 px border excluded), 99% of pixels differ by less than 24 levels between play and the editor (the
+    editor's 15% dim behind translucent panels). Live data chosen to differ from the samples; timers and Map Info
+    show their samples in singleplayer (reviewed shot)."""
+    s = run.s
+    ids = ("potion", "armor", "inventory", "keystrokes")
+    for name in IN_GAME_ONLY:
+        run.set(name, False)
+    run.show_only(set(ids))
+    for c in LIVE_DATA:
+        s.cmd(c)
+    try:
+        hb = run.probe()
+        sc = hb["scale"]
+        s.call("/close")
+        s.call("/hover", {"off": 1})
+        time.sleep(1.0)
+        _, play = s.shot("edithud-e11-play", wait=500)
+        s.call("/open", {"class": SCREENS["hud"]})
+        _, editor = s.shot("edithud-e11-editor", wait=600)
+        hb2 = run.probe()
+        for item in ids:
+            b0, b1 = run.box(item, hb), run.box(item, hb2)
+            s.check("E11 %s has the same box in play and in the editor" % item,
+                    all(abs(p - q) <= 1e-3 for p, q in zip(vis(b0), vis(b1))), "%s vs %s" % (vis(b0), vis(b1)))
+            w = POTION_ICON * run.state(item, hb)["scale"] if item == "potion" else b1["w"]
+            area = px_box(b1["x"], b1["y"], w, b1["h"], sc, inset=1.0)
+            frac, where = diff(play, editor, step=1, thresh=23, box=area)
+            s.check("E11 %s: 99%% of pixels within 24 levels, play vs editor" % item, frac <= 0.01,
+                    "%.4f differ, around %s" % (frac, where))
+    finally:
+        for c in LIVE_DATA_CLEAR:
+            s.try_call("/command", post={"command": c})
+
+
+def edithud_e11k(run):
+    """E11k: in the editor, a held movement key lights its Keystrokes cap (keyboard state, held raw so the editor
+    sees a real press and release); released, every movement cap is idle; the mouse caps stay unlit while the left
+    button is down in the editor (D12); the player does not move."""
+    s = run.s
+    run.set("keystrokesInGameOnly", False)
+    run.show_only({"keystrokes", "inventory"})
+    hb = run.probe()
+    sc = hb["scale"]
+    ks, ks_scale = run.box("keystrokes", hb), run.state("keystrokes", hb)["scale"]
+    pos0 = s.probe("player")["client"]["pos"]
+    _, idle = s.shot("edithud-e11k-idle")
+
+    def lit(img, cap):
+        return diff(idle, img, step=1, thresh=23, box=cap_px(ks, ks_scale, cap, sc))[0] > 0.5
+
+    try:
+        s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+        _, w = s.shot("edithud-e11k-w")
+        s.check("E11k holding W lights the W cap", lit(w, "W"))
+        s.check("E11k ... and not Space", not lit(w, "Space"))
+        s.call("/keyhold", {"name": "key.jump", "state": "on", "raw": 1})
+        _, wj = s.shot("edithud-e11k-w-space")
+        s.check("E11k W and Space held light both caps", lit(wj, "W") and lit(wj, "Space"))
+    finally:
+        s.try_call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+        s.try_call("/keyhold", {"name": "key.jump", "state": "off", "raw": 1})
+    _, off = s.shot("edithud-e11k-released")
+    s.check("E11k after release every movement cap is idle", not any(lit(off, c) for c in ("W", "A", "S", "D", "Space")))
+    cx, cy = gui_centre(run.box("inventory", hb))
+    s.call("/down", {"x": cx, "y": cy})
+    try:
+        _, down = s.shot("edithud-e11k-lmb")
+        s.check("E11k the mouse caps stay unlit with the left button down", not lit(down, "LMB") and not lit(down, "RMB"))
+    finally:
+        s.call("/up", {"x": cx, "y": cy})
+    pos1 = s.probe("player")["client"]["pos"]
+    s.check("E11k the player did not move", all(abs(p - q) < 1e-6 for p, q in zip(pos0, pos1)), "%s -> %s" % (pos0, pos1))
 
 
 def edithud_e13(run, item="potion"):
@@ -2055,8 +2154,8 @@ def edithud_e13(run, item="potion"):
 
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
 EDIT_HUD_CHECKS = [("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
-                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E13", edithud_e13),
-                   ("E15", edithud_e15)]
+                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E11", edithud_e11),
+                   ("E11k", edithud_e11k), ("E13", edithud_e13), ("E15", edithud_e15)]
 
 
 def edithud_e0(s, hb, enabled):

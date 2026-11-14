@@ -427,6 +427,15 @@ class EditHudHelpers(unittest.TestCase):
         self.assertFalse(cobdev.pinned_anchor({}))
 
 
+class EditHudPixels(unittest.TestCase):
+    def test_cap_and_box_rectangles(self):
+        ks = {"x": 100.0, "y": 50.0}
+        # W cap at local (20, 0, 18, 18), scale 1, GUI 2: middle 60% = (23.6..34.4, 3.6..14.4) local
+        self.assertEqual(cobdev.cap_px(ks, 1.0, "W", 2), (247, 107, 269, 129))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 3), (30, 60, 120, 180))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 2, inset=1.0), (22, 42, 78, 118))
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:

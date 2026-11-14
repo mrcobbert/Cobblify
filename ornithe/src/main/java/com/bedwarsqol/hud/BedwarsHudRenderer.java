@@ -22,6 +22,7 @@ import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.SheetColors;
+import net.minecraft.client.settings.GameSettings;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
@@ -148,28 +149,74 @@ public class BedwarsHudRenderer {
         }
     }
 
+    /**
+     * True while Edit HUD measures or draws: In Game Only and the other visibility gates pass and panels keep the
+     * editor's 1 px inset, but each item shows live data unless it has nothing live to show ({@link PreviewData}).
+     * Set only by {@link #renderEditPreview}, {@link #getEditorBoxes} and {@link #getEditorBox}, in try/finally, on the
+     * render thread.
+     */
+    private static boolean editing;
+
     public static void renderEditPreview(Minecraft mc, ClientSettings cfg) {
-        render(mc, cfg, true);
+        boolean was = editing;
+        editing = true;
+        try {
+            render(mc, cfg, true);
+        } finally {
+            editing = was;
+        }
     }
 
     /**
-     * Every module's box for Edit HUD, with example data and hidden modules included. {@link HudBox#shown}
-     * says which ones the player has switched on.
+     * Every module's box for Edit HUD, hidden modules included, measured from the data the editor shows (live, or the
+     * sample for an item with nothing live). {@link HudBox#shown} says which ones the player has switched on.
      */
     public static List<HudBox> getEditorBoxes(Minecraft mc, ClientSettings cfg) {
         if (mc == null || cfg == null) return Collections.emptyList();
         cfg.sanitize();
 
-        List<HudBox> boxes = new ArrayList<>(8);
-        addEditorBox(boxes, cfg, potionBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, armorBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, inventoryBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, true, true));
-        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, false, true));
-        addEditorBox(boxes, cfg, keystrokesBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
-        return boxes;
+        boolean was = editing;
+        editing = true;
+        try {
+            PreviewData.Facts f = previewFacts(mc);
+            List<HudBox> boxes = new ArrayList<>(8);
+            for (String id : EDITOR_ORDER) addEditorBox(boxes, cfg, editorItemBox(mc, cfg, id, f));
+            return boxes;
+        } finally {
+            editing = was;
+        }
+    }
+
+    /** Edit HUD's module order (its boxes and their draw order). */
+    private static final String[] EDITOR_ORDER = {POTION_HUD, ARMOR_HUD, INVENTORY_HUD, DIAMOND_TIMER_HUD,
+            EMERALD_TIMER_HUD, KEYSTROKES_HUD, SESSION_HUD, HEIGHT_LIMIT_HUD};
+
+    /** One module's Edit HUD box with the editor's data choice, whether or not it is switched on. */
+    private static HudBox editorItemBox(Minecraft mc, ClientSettings cfg, String id, PreviewData.Facts f) {
+        boolean sample = sample(id, f);
+        if (POTION_HUD.equals(id)) return potionBox(mc, cfg, sample, true);
+        if (ARMOR_HUD.equals(id)) return armorBox(mc, cfg, sample, true);
+        if (INVENTORY_HUD.equals(id)) return inventoryBox(mc, cfg, sample, true);
+        if (DIAMOND_TIMER_HUD.equals(id)) return timerBox(mc, cfg, sample, true, true);
+        if (EMERALD_TIMER_HUD.equals(id)) return timerBox(mc, cfg, sample, false, true);
+        if (KEYSTROKES_HUD.equals(id)) return keystrokesBox(mc, cfg, sample, true);
+        if (SESSION_HUD.equals(id)) return sessionBox(mc, cfg, sample, true);
+        if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitBox(mc, cfg, sample, true);
+        return null;
+    }
+
+    /** Whether item {@code id} draws sample data in the editor ({@code f} null: not in the editor, so never). */
+    private static boolean sample(String id, PreviewData.Facts f) {
+        return f != null && PreviewData.sample(id, f);
+    }
+
+    /** What play has to show right now, from the same sources the HUD draws from. */
+    private static PreviewData.Facts previewFacts(Minecraft mc) {
+        boolean player = mc != null && mc.thePlayer != null;
+        int potions = player ? potionEntries(mc, false).size() : 0;
+        boolean legs = player && currentLeggings(mc, false) != null;
+        return new PreviewData.Facts(player, potions, legs, GeneratorTracker.diamondSeconds(),
+                GeneratorTracker.emeraldSeconds(), HeightLimitWatch.core().map() != null);
     }
 
     private static void addEditorBox(List<HudBox> boxes, ClientSettings cfg, HudBox box) {
@@ -178,13 +225,19 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
-    /** One module's Edit HUD box, measured alone (the corner-resize wall probe); null for an unknown id. */
+    /** One module's Edit HUD box, measured alone (the corner-resize wall probe), as {@link #getEditorBoxes} has it. */
     public static HudBox getEditorBox(Minecraft mc, ClientSettings cfg, String id) {
         if (mc == null || cfg == null) return null;
-        HudBox box = editorBox(mc, cfg, id);
-        if (box == null) return null;
-        HudModuleState state = HudModules.get(cfg, id);
-        return state != null && !state.enabled ? box.hidden() : box;
+        boolean was = editing;
+        editing = true;
+        try {
+            HudBox box = editorItemBox(mc, cfg, id, previewFacts(mc));
+            if (box == null) return null;
+            HudModuleState state = HudModules.get(cfg, id);
+            return state != null && !state.enabled ? box.hidden() : box;
+        } finally {
+            editing = was;
+        }
     }
 
     /**
@@ -235,16 +288,21 @@ public class BedwarsHudRenderer {
         }
     }
 
-    private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
-        if (cfg.potionStatusEnabled) drawPotionHud(mc, cfg, example);
-        if (cfg.armorTypeEnabled) drawArmorHud(mc, cfg, example);
-        drawInventoryHud(mc, cfg, example);
-        drawTimerHud(mc, cfg, example, true);
-        drawTimerHud(mc, cfg, example, false);
-        if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
-        drawHeightLimitHud(mc, cfg, example);
+    /**
+     * Draws every module: in play with live data; in the editor ({@code editor}) each with live data unless it has
+     * nothing live to show. Every draw line passes {@code editor && sample(ID, f)}, never {@code editor} alone.
+     */
+    private static void render(Minecraft mc, ClientSettings cfg, boolean editor) {
+        PreviewData.Facts f = editor ? previewFacts(mc) : null;
+        if (cfg.potionStatusEnabled) drawPotionHud(mc, cfg, editor && sample(POTION_HUD, f));
+        if (cfg.armorTypeEnabled) drawArmorHud(mc, cfg, editor && sample(ARMOR_HUD, f));
+        drawInventoryHud(mc, cfg, editor && sample(INVENTORY_HUD, f));
+        drawTimerHud(mc, cfg, editor && sample(DIAMOND_TIMER_HUD, f), true);
+        drawTimerHud(mc, cfg, editor && sample(EMERALD_TIMER_HUD, f), false);
+        if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, editor && sample(KEYSTROKES_HUD, f));
+        drawHeightLimitHud(mc, cfg, editor && sample(HEIGHT_LIMIT_HUD, f));
         // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
-        if (example) drawSessionHud(mc, cfg, true);
+        if (editor) drawSessionHud(mc, cfg, sample(SESSION_HUD, f));
     }
 
     /**
@@ -271,7 +329,7 @@ public class BedwarsHudRenderer {
      * edge sits over the world like every other module's frame.
      */
     private static void drawHudBackground(HudBox box, float scale, boolean example) {
-        float pad = panelPad(scale) - (example ? 1f : 0f);
+        float pad = panelPad(scale) - (example || editing ? 1f : 0f);
         float x1 = box.x - pad, y1 = box.y - pad;
         float x2 = box.right() + pad, y2 = box.bottom() + pad;
         GuiRender.rect(x1, y1, x2, y2, HUD_BG_FILL); // square, so the Edit HUD frame matches its edge
@@ -647,7 +705,7 @@ public class BedwarsHudRenderer {
 
     /** Whether a HUD's "In Game Only" is satisfied: an active BedWars game, or the edit preview. */
     private static boolean bedwarsActive(boolean example) {
-        return example || HypixelContext.isInActiveBedwarsGame();
+        return example || editing || HypixelContext.isInActiveBedwarsGame();
     }
 
     private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -768,7 +826,7 @@ public class BedwarsHudRenderer {
     private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !HeightLimitWatch.visible(cfg, example)) return null;
+        if (!all && !HeightLimitWatch.visible(cfg, example || editing)) return null;
         Size size = heightLimitSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -853,7 +911,7 @@ public class BedwarsHudRenderer {
     // ----- Session Stats (Lunar-style game + session tally) -----
 
     private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !SessionStatsWatch.visible(cfg, example)) return null;
+        if (!all && !SessionStatsWatch.visible(cfg, example || editing)) return null;
         Size size = sessionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -948,7 +1006,7 @@ public class BedwarsHudRenderer {
         float[] level = new float[held.length];
         for (int i = 0; i < held.length; i++) {
             // The editor preview shows a still frame and must not disturb the live fades.
-            level[i] = example ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
+            level[i] = example || editing ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
         }
         int accent = GuiTheme.fromToken(cfg.guiAccent).base();
         String leftCps = (example ? 12 : LEFT_CLICKS.cps(now)) + " CPS";
@@ -1071,9 +1129,17 @@ public class BedwarsHudRenderer {
     /**
      * Held state in cap order (W, A, S, D, Space, LMB, RMB). Movement follows the player's binds; the
      * mouse row is the physical buttons its labels name, and only counts in game (no screen open).
+     * In Edit HUD a screen leaves the bindings unpressed, so the movement caps read their keys' keyboard
+     * state, and the mouse caps stay unlit: the mouse is the editor's pointer (D12). Gameplay input stays off.
      */
     private static boolean[] keyStates(Minecraft mc, boolean example) {
         if (example || mc.gameSettings == null) return new boolean[]{true, false, false, false, false, false, false};
+        if (editing) {
+            GameSettings g = mc.gameSettings;
+            return new boolean[]{GameSettings.isKeyDown(g.keyBindForward), GameSettings.isKeyDown(g.keyBindLeft),
+                    GameSettings.isKeyDown(g.keyBindBack), GameSettings.isKeyDown(g.keyBindRight),
+                    GameSettings.isKeyDown(g.keyBindJump), false, false};
+        }
         boolean inGame = mc.currentScreen == null;
         return new boolean[]{
                 isDown(mc.gameSettings.keyBindForward),
