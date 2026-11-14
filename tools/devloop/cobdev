@@ -1783,6 +1783,9 @@ def smoke_ov_tabhide(s, cfg):
         s.check("the HUD's Tab prediction always matched vanilla", after == 0, "mismatchFrames %s -> %s" % (before, after))
     finally:
         scene.restore()
+        # the chestplate and Speed set above; armor left on would soften A2-clutch's damage check
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:air", "/effect @p clear"):
+            s.try_call("/command", post={"command": c})
         time.sleep(5)  # let the TNT go off before the next step
         s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
 
@@ -3468,6 +3471,11 @@ class HudLook:
         if self.saved_gui is not None:
             self.s.try_call("/scale", {"n": self.saved_gui})
         self.s.try_call("/field", post={"path": ICONS + ".cacheDirOverride", "value": ""})
+        # setup() equips leggings and fills slots 9-10; armor left on would soften A2-clutch's damage check
+        for c in ("/effect @p clear", "/replaceitem entity @p slot.armor.legs minecraft:air",
+                  "/replaceitem entity @p slot.inventory.0 minecraft:air",
+                  "/replaceitem entity @p slot.inventory.1 minecraft:air"):
+            self.s.try_call("/command", post={"command": c})
         self.save_config()
         self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
 
