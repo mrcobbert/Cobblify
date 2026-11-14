@@ -5,21 +5,22 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
-import com.bedwarsqol.gui.sheet.EditHudChrome;
-import com.bedwarsqol.gui.sheet.McCanvas;
-import com.bedwarsqol.gui.sheet.SheetColors;
-import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.hud.CornerResize;
+import com.bedwarsqol.hud.HudDrag;
+import com.bedwarsqol.hud.HudGrid;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.HudSnapper;
+import com.bedwarsqol.hud.HudWalls;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
+import net.minecraft.client.settings.GameSettings;
+import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
@@ -54,28 +55,24 @@ public class EditHudGui extends GuiScreen {
     private static final int TEXT_DIM = 0xFFAAAAAA;
     private static final float HANDLE = 3f;                 // corner handle side, GUI px
     private static final float HANDLE_REACH = 4f;           // how far from a corner a press still grabs it
-    private static final float SNAP_DEVICE_PX = 8f;         // snap threshold in real pixels, the same at every GUI scale
     private static final long OPEN_FADE_MS = 160L;
     private static final long GUIDE_FADE_MS = 200L;
     private static final long NUDGE_GROUP_MS = 800L;        // arrow presses this close together undo as one step
     private static final long SAVE_DELAY_MS = 400L;
     private static final float LABEL_SCALE = 0.8f;
     private static final float MENU_SCALE = 0.75f;
-    private static final float HOTBAR_W = 182f;             // the vanilla hotbar, a snap target
-    private static final float HOTBAR_H = 22f;
-
-    private static final String SHOW = "Show";
-    private static final String HIDE = "Hide";
-    private static final String RESET_POSITION = "Reset Position";
-    private static final String RESET_SIZE = "Reset Size";
-    private static final String OPEN_SETTINGS = "Settings";
+    private static final float HOTBAR_W = HudWalls.HOTBAR_W; // the vanilla hotbar, a snap target
+    private static final float HOTBAR_H = HudWalls.HOTBAR_H;
 
     private enum Mode { NONE, DRAG, RESIZE }
 
+    /** Reset Positions done from the settings menu, undoable here if the layout has not changed since (D7). */
+    private static final PendingUndo<Map<String, HudModuleState>> PENDING = new PendingUndo<Map<String, HudModuleState>>();
+
     private final EditHistory<Map<String, HudModuleState>> history = new EditHistory<Map<String, HudModuleState>>(100);
+    /** Holding Tab shows the tab list alone (G28); fed only with the player-list key's keyboard state. */
+    private final EditTabHold tabHold = new EditTabHold();
     private final Map<String, HoverFade> hoverFades = new HashMap<String, HoverFade>();
-    private final HoverFade resetFade = new HoverFade(120L, 240L);
-    private final McCanvas canvas = new McCanvas();
 
     private String selectedId;
     private String hoverId;
@@ -85,6 +82,7 @@ public class EditHudGui extends GuiScreen {
     private float grabY;
     private CornerResize resize;
     private boolean moved;
+    private boolean pinnedThisChange; // the other Auto modules were pinned for the current drag or resize
     private boolean wasSelectedBeforeClick;
     private float clickX;
     private float clickY;
@@ -100,13 +98,6 @@ public class EditHudGui extends GuiScreen {
     private String menuId;          // the module the right-click menu is for; null when closed
     private float menuX;
     private float menuY;
-    // Reset All as last drawn, in sheet units of resetUnit device px; whether the left button went down on it.
-    private float[] resetRect;
-    private float resetUnit = 2f;
-    private boolean resetCovered;
-    private boolean resetPressed;
-    private SheetColors.Shades shades;
-    private int shadesOf;
     private float badgeX;
     private float badgeY;
 
@@ -114,13 +105,70 @@ public class EditHudGui extends GuiScreen {
     public void initGui() {
         buttonList.clear();
         Keyboard.enableRepeatEvents(true);
-        if (openedMs == 0L) openedMs = Minecraft.getSystemTime();
+        if (openedMs == 0L) {
+            openedMs = Minecraft.getSystemTime();
+            Map<String, HudModuleState> beforeReset = PENDING.take(HudModules.snapshot(settings()));
+            if (beforeReset != null) history.record(beforeReset);
+        }
+    }
+
+    /** Offers a change made outside the editor (Reset Positions) as the first undo step of the next Edit HUD. */
+    static void offerUndo(Map<String, HudModuleState> before, Map<String, HudModuleState> after) {
+        PENDING.offer(before, after);
     }
 
     @Override
     public void onGuiClosed() {
         Keyboard.enableRepeatEvents(false);
+        if (tabHold.held()) KeyBinding.setKeyBindState(mc.gameSettings.keyBindPlayerList.getKeyCode(), false);
         settings().save();
+    }
+
+    /**
+     * Feeds the player-list key's keyboard state to the Tab hold, once a frame and on each input event. Its binding is
+     * this editor's output (pressed while held, so vanilla draws the tab list where the item puts it) and is never read
+     * here, so the physical release always gets through (plan review R1-B1).
+     */
+    private void pollTab() {
+        KeyBinding list = mc.gameSettings.keyBindPlayerList;
+        EditTabHold.Step step = tabHold.step(GameSettings.isKeyDown(list));
+        if (step == EditTabHold.Step.NONE) return;
+        if (mode != Mode.NONE) endChange(); // a change in progress is kept (undoable)
+        menuId = null;
+        boolean held = step == EditTabHold.Step.PRESS;
+        // the selection stays only on an item that is still shown: the scoreboard and chat show either way
+        if (held ? selectedId != null && !isOverlay(selectedId) : BedwarsHudRenderer.TAB_LIST_HUD.equals(selectedId)) {
+            selectedId = null;
+        }
+        KeyBinding.setKeyBindState(list.getKeyCode(), held);
+    }
+
+    private static boolean isOverlay(String id) {
+        return BedwarsHudRenderer.SCOREBOARD_HUD.equals(id) || BedwarsHudRenderer.CHAT_HUD.equals(id)
+                || BedwarsHudRenderer.TAB_LIST_HUD.equals(id);
+    }
+
+    /**
+     * What the editor shows and takes input for: every editor box (the modules, the scoreboard and chat), or while Tab
+     * is held only the tab list, the scoreboard and chat, the tab list on top.
+     */
+    private List<HudBox> visibleBoxes() {
+        ClientSettings cfg = settings();
+        List<HudBox> all = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        if (!tabHold.held()) return all;
+        List<HudBox> out = new ArrayList<HudBox>();
+        for (HudBox b : all) {
+            if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(b.id) || BedwarsHudRenderer.CHAT_HUD.equals(b.id)) out.add(b);
+        }
+        HudBox tab = BedwarsHudRenderer.tabListBox(mc, cfg);
+        if (tab != null) out.add(tab);
+        return out;
+    }
+
+    /** Item {@code id}'s box measured alone: the tab list's own box, else its editor box. */
+    private HudBox measuredBox(ClientSettings cfg, String id) {
+        return BedwarsHudRenderer.TAB_LIST_HUD.equals(id) ? BedwarsHudRenderer.tabListBox(mc, cfg)
+                : BedwarsHudRenderer.getEditorBox(mc, cfg, id);
     }
 
     @Override
@@ -147,7 +195,9 @@ public class EditHudGui extends GuiScreen {
 
         GuiRender.rect(0, 0, width, height, fade(DIM, open));
 
-        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        pollTab();
+        boolean tabHeld = tabHold.held();
+        List<HudBox> boxes = visibleBoxes();
         // A press only becomes a drag once the mouse moves; until then nothing changes, so a click doesn't flash.
         hoverId = (mode == Mode.NONE || !moved) && menuId == null ? topmostAt(boxes, mouseX, mouseY) : null;
         Map<String, Float> hover = new HashMap<String, Float>();
@@ -158,7 +208,8 @@ public class EditHudGui extends GuiScreen {
             if (!box.shown) drawGhost(box, box.id.equals(selectedId) ? accent : GHOST, open);
         }
 
-        BedwarsHudRenderer.renderEditPreview(mc, cfg);
+        // While Tab is held vanilla draws the tab list (its binding is pressed) and the Cobblify items stay hidden.
+        if (!tabHeld) BedwarsHudRenderer.renderEditPreview(mc, cfg);
         // Item icons in the preview write depth; clear it so frames, labels and menus always draw on top.
         GlStateManager.clear(GL11.GL_DEPTH_BUFFER_BIT);
         drawGuides(now, accent, open);
@@ -177,7 +228,6 @@ public class EditHudGui extends GuiScreen {
         }
 
         if (mode == Mode.RESIZE && selectedId != null) drawResizeBadge(cfg, open);
-        drawResetAll(now, accent, open);
         if (menuId != null) drawMenu(mouseX, mouseY, accent);
 
         super.drawScreen(mouseX, mouseY, partialTicks);
@@ -277,31 +327,6 @@ public class EditHudGui extends GuiScreen {
         GuiRender.text(text, x + 4f, y + 2.5f, MENU_SCALE, fade(TEXT, open), BedwarsQolFont.Weight.BOLD);
     }
 
-    /** Reset All just under the crosshair, a spot no HUD module or vanilla bar uses: the sheet's accent button. */
-    private void drawResetAll(long now, int accent, float open) {
-        int sf = new ScaledResolution(mc).getScaleFactor();
-        boolean minecraftFont = settings().minecraftFont();
-        float u = SheetLayout.unit(sf, settings().guiSize, minecraftFont);
-        resetUnit = u;
-        // the canvas measures the label, so it starts the frame first
-        canvas.begin(u, 0f, 0f, mc.displayHeight, sf, minecraftFont);
-        resetRect = EditHudChrome.resetAll(canvas, mc.displayWidth / u, mc.displayHeight / u, u);
-        resetCovered = resetCovered(resetRect, sf / u);
-        if (shades == null || shadesOf != accent) {
-            shades = SheetColors.Shades.of(accent & 0xFFFFFF);
-            shadesOf = accent;
-        }
-        boolean busy = (mode != Mode.NONE && moved) || menuId != null;
-        float alpha = (1f - 0.75f * resetFade.update(busy || resetCovered, now)) * open;
-        float[] m = mouseUnits(Mouse.getX(), Mouse.getY(), u);
-        boolean over = !busy && !resetCovered && EditHudChrome.hit(resetRect, m[0], m[1]);
-        canvas.pushAlpha(alpha);
-        // a press shows only while the pointer stays on the button, as in the sheet
-        EditHudChrome.paintResetAll(canvas, resetRect, shades, over, resetPressed && over);
-        canvas.popAlpha();
-        canvas.end();
-    }
-
     private void drawMenu(int mouseX, int mouseY, int accent) {
         List<String> items = menuItems();
         float[] r = menuRect(items);
@@ -322,13 +347,14 @@ public class EditHudGui extends GuiScreen {
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) {
         super.mouseClicked(mouseX, mouseY, mouseButton);
+        pollTab();
         if (menuId != null) {
             if (mouseButton == 0) clickMenu(mouseX, mouseY);
             menuId = null;
             return;
         }
         ClientSettings cfg = settings();
-        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        List<HudBox> boxes = visibleBoxes();
 
         if (mouseButton == 1) {
             String id = topmostAt(boxes, mouseX, mouseY);
@@ -342,14 +368,8 @@ public class EditHudGui extends GuiScreen {
         }
         if (mouseButton != 0) return;
 
-        if (resetRect != null && !resetCovered) {
-            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
-            if (EditHudChrome.hit(resetRect, m[0], m[1])) {
-                resetPressed = true; // it acts on release, over the button
-                return;
-            }
-        }
-
+        // Grab offsets and the press point to a fraction of a GUI pixel, so every step can be one screen pixel.
+        float[] p = eventPointer();
         // A corner of the selected or hovered module starts a resize.
         HudBox grabbed = cornerTarget(boxes, mouseX, mouseY);
         if (grabbed != null) {
@@ -357,19 +377,19 @@ public class EditHudGui extends GuiScreen {
                     grabbed.visualWidth(), grabbed.visualHeight(), HANDLE_REACH);
             selectedId = grabbed.id;
             resize = new CornerResize(corner, grabbed.x, grabbed.y, grabbed.width, grabbed.height,
-                    HudModules.get(cfg, grabbed.id).scale);
+                    resizeStartScale(cfg, grabbed.id));
             // The handle sits on the drawn frame, outside the content; keep that offset so the size
             // does not jump on the first move.
-            grabX = mouseX - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
-            grabY = mouseY - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
+            grabX = p[0] - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
+            grabY = p[1] - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
             badgeX = mouseX;
             badgeY = mouseY;
             beginChange(Mode.RESIZE);
             return;
         }
 
-        clickX = mouseX;
-        clickY = mouseY;
+        clickX = p[0];
+        clickY = p[1];
         List<String> stack = stackAt(boxes, mouseX, mouseY);
         if (stack.isEmpty()) {
             selectedId = null;
@@ -378,43 +398,39 @@ public class EditHudGui extends GuiScreen {
         wasSelectedBeforeClick = stack.contains(selectedId);
         if (!wasSelectedBeforeClick) selectedId = stack.get(0);
         HudBox box = boxById(boxes, selectedId);
-        grabX = mouseX - box.x;
-        grabY = mouseY - box.y;
+        grabX = p[0] - box.x;
+        grabY = p[1] - box.y;
         beginChange(Mode.DRAG);
     }
 
     @Override
     protected void mouseClickMove(int mouseX, int mouseY, int clickedMouseButton, long timeSinceLastClick) {
         super.mouseClickMove(mouseX, mouseY, clickedMouseButton, timeSinceLastClick);
+        pollTab();
         if (clickedMouseButton != 0 || selectedId == null) return;
+        float[] p = eventPointer();
         if (mode == Mode.DRAG) {
-            if (!moved && Math.abs(mouseX - clickX) < 1f && Math.abs(mouseY - clickY) < 1f) return;
+            if (!moved && Math.abs(p[0] - clickX) < 1f && Math.abs(p[1] - clickY) < 1f) return;
             moved = true;
-            drag(mouseX - grabX, mouseY - grabY);
+            drag(p[0] - grabX, p[1] - grabY);
         } else if (mode == Mode.RESIZE) {
             moved = true;
             badgeX = mouseX;
             badgeY = mouseY;
-            resizeTo(mouseX - grabX, mouseY - grabY);
+            resizeTo(p[0] - grabX, p[1] - grabY);
         }
     }
 
     @Override
     protected void mouseReleased(int mouseX, int mouseY, int state) {
         super.mouseReleased(mouseX, mouseY, state);
-        if (resetPressed && state == 0) {
-            resetPressed = false;
-            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
-            if (resetCovered || !EditHudChrome.hit(resetRect, m[0], m[1])) return;
-            playClick();
-            resetAll();
-            return;
-        }
         if (mode != Mode.NONE) endChange();
     }
 
     @Override
     protected void keyTyped(char typedChar, int keyCode) {
+        pollTab();
+        if (keyCode == Keyboard.KEY_TAB) return; // holding Tab shows the tab list (D9: it no longer cycles the selection)
         if (keyCode == Keyboard.KEY_ESCAPE) {
             escape();
             return;
@@ -429,17 +445,16 @@ public class EditHudGui extends GuiScreen {
             return;
         }
         if (mode != Mode.NONE) return;
-        if (keyCode == Keyboard.KEY_TAB) {
-            cycleSelection(isShiftKeyDown() ? -1 : 1);
-            return;
-        }
         if (selectedId == null) return;
-        int step = isShiftKeyDown() ? 10 : 1;
+        int step = isShiftKeyDown() ? 10 : 1; // screen pixels
+
         if (keyCode == Keyboard.KEY_UP) nudge(0, -step);
         else if (keyCode == Keyboard.KEY_DOWN) nudge(0, step);
         else if (keyCode == Keyboard.KEY_LEFT) nudge(-step, 0);
         else if (keyCode == Keyboard.KEY_RIGHT) nudge(step, 0);
-        else if (keyCode == Keyboard.KEY_DELETE || keyCode == Keyboard.KEY_BACK) setShown(selectedId, false);
+        else if ((keyCode == Keyboard.KEY_DELETE || keyCode == Keyboard.KEY_BACK) && EditHudMenu.hideable(selectedId)) {
+            setShown(selectedId, false);
+        }
     }
 
     /** Esc backs out one step: the menu, then a drag in progress, then the selection, then the editor. */
@@ -464,6 +479,7 @@ public class EditHudGui extends GuiScreen {
     private void beginChange(Mode next) {
         mode = next;
         moved = false;
+        pinnedThisChange = false;
         before = HudModules.snapshot(settings());
         snapX = snapY = null;
         guidesReleasedMs = 0L;
@@ -481,38 +497,49 @@ public class EditHudGui extends GuiScreen {
         guidesReleasedMs = Minecraft.getSystemTime();
     }
 
+    /** Moves the dragged module's content towards (rawX, rawY): where it was at the press plus the pointer's travel. */
     private void drag(float rawX, float rawY) {
         ClientSettings cfg = settings();
-        List<HudBox> boxes = BedwarsHudRenderer.getEditorBoxes(mc, cfg);
+        pinOnce();
+        List<HudBox> boxes = visibleBoxes();
         HudBox box = boxById(boxes, selectedId);
         if (box == null) return;
-        float vx = rawX - box.pad, vy = rawY - box.pad;
-        if (snapping()) {
-            List<HudSnapper.Target> targets = snapTargets(boxes, box.id);
-            snapX = HudSnapper.snap(vx, box.visualWidth(), true, width, targets, snapThreshold());
-            snapY = HudSnapper.snap(vy, box.visualHeight(), false, height, targets, snapThreshold());
-            vx = snapX.position;
-            vy = snapY.position;
-        } else {
-            snapX = snapY = null;
-        }
-        place(cfg, box, vx + box.pad, vy + box.pad);
+        boolean snap = snapping(); // Alt moves freely: no snapping, no walls
+        List<HudSnapper.Target> targets = snap ? snapTargets(boxes, box.id) : Collections.<HudSnapper.Target>emptyList();
+        HudDrag.Result r = HudDrag.move(rawX - box.pad, rawY - box.pad, box.visualWidth(), box.visualHeight(),
+                width, height, scaleFactor(), snap, targets, snap, wallRects(boxes, box.id), box.visualX(), box.visualY());
+        snapX = r.snapX;
+        snapY = r.snapY;
+        place(cfg, box, r.x + box.pad, r.y + box.pad);
     }
 
     private void resizeTo(float cornerX, float cornerY) {
         ClientSettings cfg = settings();
+        pinOnce();
         HudModuleState s = HudModules.get(cfg, selectedId);
-        HudBox box = selectedBox();
+        List<HudBox> boxes = visibleBoxes();
+        HudBox box = boxById(boxes, selectedId);
         if (s == null || box == null || resize == null) return;
         float scale = resize.scaleFor(cornerX, cornerY, width, height, box.pad, snapping());
+        // The tab list stops growing once it fills the screen width (cycle B's fit rule), before any wall.
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(selectedId)) {
+            scale = Math.min(scale, BedwarsHudRenderer.tabListFitScale(mc, cfg));
+        }
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed.
+        if (snapping()) {
+            scale = HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, resizeProbe(cfg, selectedId, s),
+                    wallRects(boxes, selectedId));
+        }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.
         HudBox scaled = selectedBox();
         if (scaled == null) return;
-        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.left(scale), resize.top(scale),
+        // Placed from its measured size: a box laid out at its text scale steps in whole device pixels (A-I1).
+        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.leftFor(scaled.width), resize.topFor(scaled.height),
                 scaled.width, scaled.height, width, height);
     }
 
+    /** Moves the selected module by whole screen pixels from wherever it is, sub-pixel offset included. */
     private void nudge(int dx, int dy) {
         ClientSettings cfg = settings();
         HudBox box = selectedBox();
@@ -520,8 +547,57 @@ public class EditHudGui extends GuiScreen {
         long now = Minecraft.getSystemTime();
         if (now - lastNudgeMs > NUDGE_GROUP_MS) history.record(HudModules.snapshot(cfg));
         lastNudgeMs = now;
-        place(cfg, box, box.x + dx, box.y + dy);
+        pinOthers(box.id);
+        List<HudBox> boxes = visibleBoxes();
+        int sf = scaleFactor();
+        boolean walls = snapping(); // arrows stop at walls like a drag; Alt + arrow moves freely
+        HudDrag.Result r = HudDrag.move(HudGrid.nudged(box.x, dx, sf) - box.pad, HudGrid.nudged(box.y, dy, sf) - box.pad,
+                box.visualWidth(), box.visualHeight(), width, height, sf, false,
+                Collections.<HudSnapper.Target>emptyList(), walls, wallRects(boxes, box.id), box.visualX(), box.visualY());
+        place(cfg, box, r.x + box.pad, r.y + box.pad);
         markDirty();
+    }
+
+    /** Pins the other Auto modules once per drag or resize, at its first move (so a click alone changes nothing). */
+    private void pinOnce() {
+        if (pinnedThisChange || selectedId == null) return;
+        pinnedThisChange = true;
+        pinOthers(selectedId);
+    }
+
+    /**
+     * Every other shown Auto module keeps the spot it has now, so a change to {@code id} moves nothing else. The tab
+     * list is no Auto-layout obstacle, so a change to it moves nothing and pins nothing.
+     */
+    private void pinOthers(String id) {
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) return;
+        BedwarsHudRenderer.pinShownAuto(mc, settings(), Collections.singleton(id));
+    }
+
+    /**
+     * The scale a corner resize starts from: the item's, or for the tab list the scale it really draws at (its scale,
+     * shrunk to fit the screen width), so the box the resize measures matches.
+     */
+    private float resizeStartScale(ClientSettings cfg, String id) {
+        float s = HudModules.get(cfg, id).scale;
+        return BedwarsHudRenderer.TAB_LIST_HUD.equals(id) ? Math.min(s, BedwarsHudRenderer.tabListFitScale(mc, cfg)) : s;
+    }
+
+    /**
+     * The rectangle a corner resize of {@code id} really covers at a candidate scale: the box measured alone at that
+     * scale (then the scale is put back), placed with the opposite corner pinned (review I2).
+     */
+    private HudWalls.ScaleProbe resizeProbe(final ClientSettings cfg, final String id, final HudModuleState base) {
+        return new HudWalls.ScaleProbe() {
+            @Override
+            public HudWalls.Rect at(float scale) {
+                HudModules.set(cfg, id, base.withScale(scale));
+                HudBox b = measuredBox(cfg, id);
+                HudModules.set(cfg, id, base);
+                return b == null || resize == null ? null
+                        : resize.visualRectAt(scale, b.width, b.height, b.pad, width, height);
+            }
+        };
     }
 
     /** Moves {@code box}'s content to (x, y), kept on screen with its panel padding. */
@@ -550,10 +626,14 @@ public class EditHudGui extends GuiScreen {
         markDirty();
     }
 
-    /** Runs {@code change} on the layout as one undoable step. */
-    private void edit(Runnable change) {
+    /**
+     * Runs {@code change} on the layout as one undoable step. A change to one module ({@code id}, null for none) first
+     * pins the other Auto modules, so it moves nothing else.
+     */
+    private void edit(String id, Runnable change) {
         ClientSettings cfg = settings();
         Map<String, HudModuleState> previous = HudModules.snapshot(cfg);
+        if (id != null) pinOthers(id);
         change.run();
         if (!HudModules.snapshot(cfg).equals(previous)) {
             history.record(previous);
@@ -562,18 +642,8 @@ public class EditHudGui extends GuiScreen {
         }
     }
 
-    private void resetAll() {
-        edit(new Runnable() {
-            @Override
-            public void run() {
-                ClientSettings cfg = settings();
-                for (String id : HudModules.ids()) HudModules.set(cfg, id, HudModules.defaults(cfg, id));
-            }
-        });
-    }
-
     private void resetPosition(final String id) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
@@ -583,38 +653,57 @@ public class EditHudGui extends GuiScreen {
         });
     }
 
-    /** Back to the HUD Size default, keeping the module's top-left corner where it is. */
+    /**
+     * Back to the HUD Size default, keeping the module's top-left corner where it is; one that grew into a neighbour
+     * moves to the nearest free spot.
+     */
     private void resetSize(final String id) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
-                HudBox old = boxById(BedwarsHudRenderer.getEditorBoxes(mc, cfg), id);
-                HudModules.set(cfg, id, HudModules.get(cfg, id).withScale(cfg.defaultTextSizeScale()));
-                HudBox scaled = boxById(BedwarsHudRenderer.getEditorBoxes(mc, cfg), id);
+                HudBox old = boxById(visibleBoxes(), id);
+                // the HUD Size default for a module, 1.0 for the scoreboard, chat and tab list (cycle B)
+                HudModules.set(cfg, id, HudModules.get(cfg, id).withScale(HudModules.defaults(cfg, id).scale));
+                HudBox scaled = boxById(visibleBoxes(), id);
                 if (old != null && scaled != null) place(cfg, scaled, old.x, old.y);
+                moveClearOfWalls(cfg, id);
             }
         });
     }
 
+    /** Moves module {@code id} to the nearest spot clear of every wall, if it overlaps one. */
+    private void moveClearOfWalls(ClientSettings cfg, String id) {
+        List<HudBox> boxes = visibleBoxes();
+        HudBox now = boxById(boxes, id);
+        if (now == null) return;
+        List<HudWalls.Rect> walls = wallRects(boxes, id);
+        if (HudWalls.free(now.visualX(), now.visualY(), now.visualWidth(), now.visualHeight(), walls)) return;
+        float[] r = HudWalls.resolve(now.visualX(), now.visualY(), now.visualWidth(), now.visualHeight(), width, height,
+                walls, now.visualX(), now.visualY());
+        place(cfg, now, r[0] + now.pad, r[1] + now.pad);
+    }
+
+    /**
+     * Shows or hides module {@code id} as one undoable step, moving nothing else. A shown Cobblify module takes its
+     * first free Auto spot, whatever spot it had before it was hidden (undo brings that spot back).
+     */
     private void setShown(final String id, final boolean shown) {
-        edit(new Runnable() {
+        edit(id, new Runnable() {
             @Override
             public void run() {
                 ClientSettings cfg = settings();
-                HudModules.set(cfg, id, HudModules.get(cfg, id).withEnabled(shown));
+                if (shown && HudModules.ids().contains(id)) {
+                    BedwarsHudRenderer.show(mc, cfg, Collections.singletonList(id));
+                } else {
+                    HudModules.set(cfg, id, HudModules.get(cfg, id).withEnabled(shown));
+                }
             }
         });
-    }
-
-    private void cycleSelection(int dir) {
-        List<String> ids = HudModules.ids();
-        int i = selectedId == null ? (dir > 0 ? -1 : 0) : ids.indexOf(selectedId);
-        selectedId = ids.get(Math.floorMod(i + dir, ids.size()));
     }
 
     private void cycleUnderneath() {
-        List<String> stack = stackAt(BedwarsHudRenderer.getEditorBoxes(mc, settings()), clickX, clickY);
+        List<String> stack = stackAt(visibleBoxes(), clickX, clickY);
         int i = stack.indexOf(selectedId);
         if (stack.size() > 1 && i >= 0) selectedId = stack.get((i + 1) % stack.size());
     }
@@ -622,15 +711,30 @@ public class EditHudGui extends GuiScreen {
     // ------------------------------------------------------------------ right-click menu
 
     private List<String> menuItems() {
-        HudModuleState s = HudModules.get(settings(), menuId);
+        ClientSettings cfg = settings();
+        HudModuleState s = HudModules.get(cfg, menuId);
         boolean shown = s != null && s.enabled;
-        List<String> items = new ArrayList<String>();
-        if (!shown) items.add(SHOW);
-        items.add(RESET_POSITION);
-        items.add(RESET_SIZE);
-        items.add(OPEN_SETTINGS);
-        if (shown) items.add(HIDE);
-        return items;
+        Boolean background = HudModules.backgroundIds().contains(menuId) ? HudModules.background(cfg, menuId) : null;
+        return EditHudMenu.items(shown, EditHudMenu.hideable(menuId), background);
+    }
+
+    /**
+     * Switches item {@code id}'s Background, the same setting as its settings row, as one undoable step. An item whose
+     * box grew into a neighbour (a panel pads more than bare content) moves to the nearest free spot.
+     */
+    private void toggleBackground(final String id) {
+        edit(id, new Runnable() {
+            @Override
+            public void run() {
+                ClientSettings cfg = settings();
+                Map<String, Boolean> before = new HashMap<String, Boolean>();
+                for (String i : HudModules.ids()) before.put(i, HudModules.background(cfg, i));
+                HudModules.setBackground(cfg, id, !HudModules.background(cfg, id));
+                for (String i : HudModules.ids()) {
+                    if (before.get(i).booleanValue() != HudModules.background(cfg, i)) moveClearOfWalls(cfg, i);
+                }
+            }
+        });
     }
 
     private static float menuRowHeight() {
@@ -657,11 +761,12 @@ public class EditHudGui extends GuiScreen {
             String item = items.get(i);
             String id = menuId;
             playClick();
-            if (SHOW.equals(item)) setShown(id, true);
-            else if (HIDE.equals(item)) setShown(id, false);
-            else if (RESET_POSITION.equals(item)) resetPosition(id);
-            else if (RESET_SIZE.equals(item)) resetSize(id);
-            else if (OPEN_SETTINGS.equals(item)) {
+            if (EditHudMenu.SHOW.equals(item)) setShown(id, true);
+            else if (EditHudMenu.HIDE.equals(item)) setShown(id, false);
+            else if (EditHudMenu.RESET_POSITION.equals(item)) resetPosition(id);
+            else if (EditHudMenu.RESET_SIZE.equals(item)) resetSize(id);
+            else if (EditHudMenu.isBackground(item)) toggleBackground(id);
+            else if (EditHudMenu.OPEN_SETTINGS.equals(item)) {
                 settings().save();
                 mc.displayGuiScreen(SettingsGui.forHudModule(id));
             }
@@ -681,8 +786,32 @@ public class EditHudGui extends GuiScreen {
         return targets;
     }
 
-    private float snapThreshold() {
-        return SNAP_DEVICE_PX / new ScaledResolution(mc).getScaleFactor();
+    /**
+     * The walls for moving {@code movingId} ({@link HudWalls#isWall}): every other shown item's box as drawn, the
+     * scoreboard and chat included, never the tab list (while Tab is held: the scoreboard and chat only), and the
+     * hotbar zone (for chat the hotbar alone, D10).
+     */
+    private List<HudWalls.Rect> wallRects(List<HudBox> boxes, String movingId) {
+        List<HudWalls.Rect> walls = new ArrayList<HudWalls.Rect>();
+        boolean tabHeld = tabHold.held();
+        for (HudBox b : boxes) {
+            if (!HudWalls.isWall(movingId, b.id, b.shown, tabHeld)) continue;
+            walls.add(new HudWalls.Rect(b.visualX(), b.visualY(), b.visualWidth(), b.visualHeight()));
+        }
+        walls.add(HudWalls.hotbarWall(movingId, width, height));
+        return walls;
+    }
+
+    private int scaleFactor() {
+        return new ScaledResolution(mc).getScaleFactor();
+    }
+
+    /**
+     * The pointer of the mouse event being handled, in GUI px to a fraction (vanilla passes whole GUI px). Valid only
+     * inside {@code handleMouseInput}, which calls mouseClicked, mouseClickMove and mouseReleased.
+     */
+    private float[] eventPointer() {
+        return HudGrid.pointer(Mouse.getEventX(), Mouse.getEventY(), mc.displayHeight, scaleFactor());
     }
 
     private static boolean snapping() {
@@ -718,23 +847,8 @@ public class EditHudGui extends GuiScreen {
         return stack.isEmpty() ? null : stack.get(0);
     }
 
-    /** Whether a module sits over Reset All, which then fades and stops taking clicks. {@code k}: su per GUI px. */
-    private boolean resetCovered(float[] r, float k) {
-        float left = r[0], top = r[1], right = r[0] + r[2], bottom = r[1] + r[3];
-        for (HudBox box : BedwarsHudRenderer.getEditorBoxes(mc, settings())) {
-            if (box.visualX() * k < right && box.visualRight() * k > left
-                    && box.visualY() * k < bottom && box.visualBottom() * k > top) return true;
-        }
-        return false;
-    }
-
-    /** A mouse position as LWJGL gives it (from the bottom-left, device px) in sheet units of {@code u} px. */
-    private float[] mouseUnits(int x, int y, float u) {
-        return new float[]{(x + 0.5f) / u, (mc.displayHeight - y - 0.5f) / u};
-    }
-
     private HudBox selectedBox() {
-        return boxById(BedwarsHudRenderer.getEditorBoxes(mc, settings()), selectedId);
+        return boxById(visibleBoxes(), selectedId);
     }
 
     private static HudBox boxById(List<HudBox> boxes, String id) {

@@ -57,6 +57,8 @@ public final class Bridge {
     private static volatile int[] cursor;
     private static volatile long cursorUntil;
     private static final Set<Integer> heldKeys = ConcurrentHashMap.newKeySet();
+    /** Raw holds: keyboard state only, re-written every few ms, never the binding (keyhold --raw). */
+    private static final Set<Integer> rawKeys = ConcurrentHashMap.newKeySet();
 
     private Bridge() {
     }
@@ -101,13 +103,12 @@ public final class Bridge {
                     return ok();
                 });
             case "/click":
-                return click(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0));
+                return click(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0), (String) q.get("mods"));
             case "/down":
             case "/up":
-                return mouseButton(intParam(q, "x", -1), intParam(q, "y", -1), intParam(q, "button", 0),
-                        path.equals("/down"));
+                return mouse(q, intParam(q, "button", 0), path.equals("/down"), 0);
             case "/drag":
-                return mouse(intParam(q, "x", -1), intParam(q, "y", -1), -1, false, 0);
+                return mouse(q, -1, false, 0);
             case "/scroll":
                 return mouse(intParam(q, "x", -1), intParam(q, "y", -1), -1, false, intParam(q, "amount", 0));
             case "/hover":
@@ -129,8 +130,15 @@ public final class Bridge {
             case "/key":
                 return onMain(() -> {
                     requireLocal();
+                    int[] mods = mods(q);
                     String ch = (String) q.get("char");
-                    keyTyped(modScreen(), ch == null || ch.isEmpty() ? '\0' : ch.charAt(0), intParam(q, "code", 0));
+                    GuiScreen screen = modScreen();
+                    boolean[] was = Input.pressKeys(mods);
+                    try {
+                        keyTyped(screen, ch == null || ch.isEmpty() ? '\0' : ch.charAt(0), intParam(q, "code", 0));
+                    } finally {
+                        Input.restoreKeys(mods, was);
+                    }
                     return ok();
                 });
             case "/scale":
@@ -158,7 +166,7 @@ public final class Bridge {
             case "/command":
                 return command(str(q, "command"));
             case "/keyhold":
-                return keyhold((String) q.get("name"), (String) q.get("state"));
+                return keyhold((String) q.get("name"), (String) q.get("state"), "1".equals(q.get("raw")));
             case "/probe":
                 return Probes.run(str(q, "name"), list(q.get("args")));
             default:
@@ -267,37 +275,72 @@ public final class Bridge {
         });
     }
 
-    private static Map<String, Object> click(int x, int y, int button) throws Exception {
-        int[] p = onMain(() -> {
+    private static Map<String, Object> click(int x, int y, int button, String modNames) throws Exception {
+        Object[] p = onMain(() -> {
             requireLocal();
+            int[] mods = mods(modNames);
             int[] d = toDisplay(x, y);
             holdCursor(d);
-            inject(modScreen(), d[0], d[1], button, true, 0);
-            return d;
+            inject(modScreen(), d[0], d[1], button, true, 0, mods);
+            return new Object[]{d, mods};
         });
+        int[] d = (int[]) p[0];
+        int[] mods = (int[]) p[1];
         // Release on the next frame, as a real click would; it goes to whatever screen the press left open.
         return onMain(() -> {
             GuiScreen screen = mc().currentScreen;
             if (screen != null && screen.getClass().getName().startsWith(MOD_PREFIX)) {
-                inject(screen, p[0], p[1], button, false, 0);
+                inject(screen, d[0], d[1], button, false, 0, mods);
             }
             return ok();
         });
     }
 
-    private static Map<String, Object> mouseButton(int x, int y, int button, boolean down) throws Exception {
-        return mouse(x, y, button, down, 0);
+    /**
+     * {@code down}, {@code up} and {@code drag}: X Y are GUI coordinates, or with {@code device=1} display
+     * pixels from the top-left, so a scripted drag can move one screen pixel. {@code mods} holds modifier
+     * keys for this one event. Button -1 with a button still held in the screen is vanilla's drag event
+     * (mouseClickMove).
+     */
+    private static Map<String, Object> mouse(Map<String, Object> q, int button, boolean down, int notches) throws Exception {
+        int x = intParam(q, "x", -1);
+        int y = intParam(q, "y", -1);
+        boolean device = "1".equals(q.get("device"));
+        return onMain(() -> {
+            requireLocal();
+            int[] mods = mods(q);
+            int[] d;
+            if (device) {
+                Minecraft m = mc();
+                Refused.check(Policy.device(x, y, m.displayWidth, m.displayHeight));
+                d = new int[]{x, m.displayHeight - 1 - y}; // LWJGL origin is the bottom-left
+            } else {
+                d = toDisplay(x, y);
+            }
+            holdCursor(d);
+            inject(modScreen(), d[0], d[1], button, down, notches, mods);
+            return ok();
+        });
     }
 
-    /** Button -1 with a button still held in the screen is vanilla's drag event (mouseClickMove). */
     private static Map<String, Object> mouse(int x, int y, int button, boolean down, int notches) throws Exception {
         return onMain(() -> {
             requireLocal();
             int[] d = toDisplay(x, y);
             holdCursor(d);
-            inject(modScreen(), d[0], d[1], button, down, notches);
+            inject(modScreen(), d[0], d[1], button, down, notches, new int[0]);
             return ok();
         });
+    }
+
+    /** The {@code mods} parameter's key codes (game thread: the server check reads the client state). */
+    private static int[] mods(Map<String, Object> q) {
+        return mods((String) q.get("mods"));
+    }
+
+    private static int[] mods(String names) {
+        Minecraft m = mc();
+        return Policy.modifiers(names, m.theWorld != null, m.isSingleplayer());
     }
 
     private static Map<String, Object> scale(int n) throws Exception {
@@ -391,8 +434,12 @@ public final class Bridge {
         });
     }
 
-    /** Holds (or releases) a key binding Cobblify registered, re-applied every few ms until released. */
-    private static Map<String, Object> keyhold(String name, String state) throws Exception {
+    /**
+     * Holds (or releases) a key binding Cobblify registered, re-applied every few ms until released. With
+     * {@code raw}, holds the key's keyboard state instead and never touches the binding: what a real press
+     * and release produce while a screen is open (Edit HUD reads Tab and the movement keys that way).
+     */
+    private static Map<String, Object> keyhold(String name, String state, boolean raw) throws Exception {
         return onMain(() -> {
             Minecraft m = mc();
             // Releasing is always allowed: a hold must be endable from anywhere (review I2).
@@ -400,24 +447,39 @@ public final class Bridge {
             List<Object> listed = new ArrayList<>();
             KeyBinding match = null;
             for (KeyBinding kb : mc().gameSettings.keyBindings) {
+                boolean holdable = Policy.keyBinding(kb.getKeyCategory(), kb.getKeyDescription(), raw) == null;
+                if (holdable && name != null && kb.getKeyDescription().equalsIgnoreCase(name)) match = kb;
                 if (Policy.keyBinding(kb.getKeyCategory(), kb.getKeyDescription()) != null) continue;
                 Map<String, Object> k = new LinkedHashMap<>();
                 k.put("name", kb.getKeyDescription());
                 k.put("code", kb.getKeyCode());
                 k.put("down", kb.isKeyDown());
                 listed.add(k);
-                if (name != null && kb.getKeyDescription().equalsIgnoreCase(name)) match = kb;
             }
             Map<String, Object> out = ok();
             out.put("bindings", listed);
             if (name == null || name.isEmpty()) return out; // list only
             if (match == null) {
-                throw new Refused("no Cobblify key binding named " + name + " (category " + Policy.KEY_CATEGORY
-                        + "; registered: " + listed.size() + ")");
+                throw new Refused(raw
+                        ? "no key binding named " + name + " a raw hold may use (Cobblify's, key.playerlist, "
+                                + Policy.RAW_MOVEMENT_KEYS + ")"
+                        : "no Cobblify key binding named " + name + " (category " + Policy.KEY_CATEGORY
+                                + "; registered: " + listed.size() + ")");
             }
             if (match.getKeyCode() == 0) throw new Refused(name + " is unbound in Controls");
             boolean on = "on".equals(state);
             if (!on && !"off".equals(state)) throw new Refused("keyhold NAME on|off");
+            if (raw) {
+                Refused.check(Policy.rawKeyCode(name, match.getKeyCode()));
+                if (on) rawKeys.add(match.getKeyCode());
+                else rawKeys.remove(match.getKeyCode());
+                Input.rawKey(match.getKeyCode(), on);
+                out.put("raw", true);
+                out.put("held", on);
+                out.put("keyDown", Input.keyDown(match.getKeyCode()));
+                out.put("down", match.isKeyDown()); // the binding: a raw hold never sets it
+                return out;
+            }
             if (on) heldKeys.add(match.getKeyCode());
             else heldKeys.remove(match.getKeyCode());
             KeyBinding.setKeyBindState(match.getKeyCode(), on);
@@ -470,7 +532,7 @@ public final class Bridge {
                 try {
                     Minecraft m = Minecraft.getMinecraft();
                     boolean holdCursor = cursor != null && System.currentTimeMillis() < cursorUntil;
-                    if (m != null && (holdCursor || !heldKeys.isEmpty())) {
+                    if (m != null && (holdCursor || !heldKeys.isEmpty() || !rawKeys.isEmpty())) {
                         m.addScheduledTask(() -> {
                             try {
                                 if (!Policy.keepHolding(m.theWorld != null, m.isSingleplayer())) {
@@ -480,6 +542,9 @@ public final class Bridge {
                                 int[] c = cursor;
                                 if (c != null && System.currentTimeMillis() < cursorUntil) Input.pointer(c[0], c[1]);
                                 for (int code : heldKeys) KeyBinding.setKeyBindState(code, true);
+                                // poll() refills the keyboard buffer every frame; Pylon also drops all
+                                // keys when the window loses focus.
+                                for (int code : rawKeys) Input.rawKey(code, true);
                             } catch (Exception ignored) {
                                 // the next round tries again
                             }
@@ -499,10 +564,18 @@ public final class Bridge {
         t.start();
     }
 
-    /** Ends every hold (keys and cursor): runs on the game thread when the client reaches a server. */
+    /** Ends every hold (keys, raw keys and cursor): runs on the game thread when the client reaches a server. */
     private static void releaseAll() {
         for (Integer code : heldKeys) KeyBinding.setKeyBindState(code, false);
         heldKeys.clear();
+        for (Integer code : rawKeys) {
+            try {
+                Input.rawKey(code, false);
+            } catch (Exception ignored) {
+                // the server poll refills the buffer from the real keyboard anyway
+            }
+        }
+        rawKeys.clear();
         cursor = null;
     }
 
@@ -512,12 +585,21 @@ public final class Bridge {
         Input.pointer(display[0], display[1]);
     }
 
+    /** One mouse event into the screen (B's overlay probes call this; no modifier keys). */
     static void inject(GuiScreen screen, int x, int y, int button, boolean pressed, int notches) throws Exception {
-        Input.event(x, y, button, pressed, notches);
+        inject(screen, x, y, button, pressed, notches, new int[0]);
+    }
+
+    /** One mouse event into the screen, with {@code mods} held for exactly this event (released in finally). */
+    static void inject(GuiScreen screen, int x, int y, int button, boolean pressed, int notches, int[] mods)
+            throws Exception {
+        boolean[] was = Input.pressKeys(mods);
         try {
+            Input.event(x, y, button, pressed, notches);
             screen.handleMouseInput();
         } finally {
             Input.clearWheel();
+            Input.restoreKeys(mods, was);
         }
     }
 

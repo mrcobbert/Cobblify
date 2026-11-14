@@ -18,10 +18,10 @@ public final class OverlayBox {
 
     /**
      * The item's box: {@code autoBox} while it was never moved ({@link HudPlacement#AUTO}), otherwise a box
-     * {@code rect} scaled by {@code s} at its stored spot from {@code anchor}, pulled fully on screen (no
+     * {@code rect} scaled by {@code s} at its stored spot (x, y, to a fraction of a GUI pixel) from {@code anchor}, pulled fully on screen (no
      * padding; a box larger than the screen keeps its leading edge on screen).
      */
-    public static float[] placed(float[] rect, float s, int x, int y, int anchor, float sw, float sh, float[] autoBox) {
+    public static float[] placed(float[] rect, float s, float x, float y, int anchor, float sw, float sh, float[] autoBox) {
         if (anchor == HudPlacement.AUTO) return autoBox;
         float w = rect[2] * s, h = rect[3] * s;
         float bx = HudPlacement.clamp(HudPlacement.absoluteX(x, anchor, w, sw), w, 0f, sw);

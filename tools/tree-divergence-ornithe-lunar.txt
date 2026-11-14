@@ -95,6 +95,11 @@ divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
 divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
 divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
 
+# Edit HUD of the HUD parity work (Ornithe only): one-screen-pixel moves, a 4 px snap,
+# walls instead of pushing, the menu rule, Tab-held tab list editing. Lunar keeps the
+# old editor.
+divergent main com/bedwarsqol/gui/EditHudGui.java
+
 # ---------------------------------------------------------------------------
 # one-sided: exists in one tree only
 # ---------------------------------------------------------------------------
@@ -157,6 +162,11 @@ one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
 one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
 one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
+
+# Edit HUD sub-pixel positions (Ornithe only): ClientSettings.hudSubPixel with HudModules and Gson.
+one-sided test ornithe com/bedwarsqol/config/HudSubPixelConfigTest.java
+# Edit HUD: a module switched on in the settings takes its first free Auto spot (Ornithe only).
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsShowRuleTest.java
 
 # FPS, CPS and Ping HUD modules (Ornithe only): their settings and sheet-row test.
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTextModulesTest.java

@@ -75,13 +75,61 @@ public final class PolicyTest {
         }
         refused(Policy.probeName("setblock"));
         refused(Policy.probeName(null));
+        allowed(Policy.probeName("hud-boxes"));
+        allowed(Policy.probeName("sheet-node"));
+
+        // --mods: alt, shift and ctrl only; ctrl is Ctrl and Cmd (GuiScreen.isCtrlKeyDown reads Cmd on macOS)
+        same("56", joinAll(Policy.modifiers("alt", true, true)));
+        same("42", joinAll(Policy.modifiers("shift", false, false)));
+        same("29,219", joinAll(Policy.modifiers("ctrl", true, true)));
+        same("56,42,29,219", joinAll(Policy.modifiers("alt,shift,ctrl", true, true)));
+        same("42,56", joinAll(Policy.modifiers(" shift , alt ,shift", true, true)));
+        same("", joinAll(Policy.modifiers(null, true, true)));
+        same("", joinAll(Policy.modifiers("", true, true)));
+        refusedCall(() -> Policy.modifiers("meta", true, true));
+        refusedCall(() -> Policy.modifiers("alt,cmd", true, true));
+        refusedCall(() -> Policy.modifiers("alt,,shift", true, true));
+        // ... and refused on a multiplayer server, like every other input
+        refusedCall(() -> Policy.modifiers("alt", true, false));
+        refusedCall(() -> Policy.modifiers(null, true, false));
+
+        // --device: display pixels from the top-left, inside the display
+        allowed(Policy.device(0, 0, 2560, 1440));
+        allowed(Policy.device(2559, 1439, 2560, 1440));
+        refused(Policy.device(2560, 0, 2560, 1440));
+        refused(Policy.device(0, 1440, 2560, 1440));
+        refused(Policy.device(-1, 5, 2560, 1440));
+        refused(Policy.device(5, -1, 2560, 1440));
+
+        // keyhold --raw: keyboard state for the Tab key, the five movement keys and Cobblify's bindings
+        allowed(Policy.keyBinding("key.categories.multiplayer", "key.playerlist", true));
+        for (String move : new String[]{"key.forward", "key.left", "key.back", "key.right", "key.jump"}) {
+            allowed(Policy.keyBinding("key.categories.movement", move, true));
+            refused(Policy.keyBinding("key.categories.movement", move, false)); // a binding hold stays refused
+        }
+        allowed(Policy.keyBinding("Cobblify", "Zoom", true));
+        refused(Policy.keyBinding("key.categories.movement", "key.sneak", true));
+        refused(Policy.keyBinding("key.categories.movement", "key.sprint", true));
+        refused(Policy.keyBinding("key.categories.gameplay", "key.attack", true));
+        refused(Policy.keyBinding("key.categories.multiplayer", "key.chat", true));
+        refused(Policy.keyBinding("key.categories.misc", "key.forward", true)); // right name, wrong category
+        refused(Policy.keyBinding(null, null, true));
+        // only keyboard keys have a keyboard state (mouse bindings are negative codes)
+        allowed(Policy.rawKeyCode("key.playerlist", 15));
+        allowed(Policy.rawKeyCode("key.forward", 17));
+        refused(Policy.rawKeyCode("key.forward", 0));
+        refused(Policy.rawKeyCode("key.attack", -100));
+        refused(Policy.rawKeyCode("key.forward", 256));
+        // a raw hold follows the keyhold rule: never on a server, release always allowed
+        refused(Policy.keyhold("on", true, false));
+        allowed(Policy.keyhold("off", true, false));
 
         // overlay item probes (HUD parity B)
         for (String p : new String[]{"overlay-boxes", "chat-fixture", "chat-clear", "chat-open", "chat-at",
                 "chat-click", "tab-header-footer", "place-item", "chat-heights", "chat-defaults"}) {
             allowed(Policy.probeName(p));
         }
-        refused(Policy.probeName("hud-boxes")); // the editor cycle's probe, not this one
+        allowed(Policy.probeName("hud-boxes")); // the editor cycle's probe, beside B's once both are merged
         allowed(Policy.chatClick(true));
         refused(Policy.chatClick(false)); // any other screen, a subclass, or none
         for (String id : new String[]{"scoreboard", "chat", "tablist"}) allowed(Policy.placeItem(id));
@@ -118,6 +166,12 @@ public final class PolicyTest {
 
     private static String join(int[] p) {
         return p[0] + "," + p[1] + "," + p[2];
+    }
+
+    private static String joinAll(int[] p) {
+        StringBuilder sb = new StringBuilder();
+        for (int v : p) sb.append(sb.length() == 0 ? "" : ",").append(v);
+        return sb.toString();
     }
 
     private static void refusedCall(Runnable r) {

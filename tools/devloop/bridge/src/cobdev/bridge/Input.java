@@ -2,6 +2,7 @@ package cobdev.bridge;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 
 /**
  * Fakes mouse state the way a real device would leave it, then lets the screen's own
@@ -13,11 +14,17 @@ import java.lang.reflect.Method;
  *
  * <p>Never calls {@code Mouse.setCursorPosition}: on Pylon that warps the user's real pointer.
  * These are private Pylon internals (checked against Pylon 0.2.8); a rename fails loudly here.
+ *
+ * <p>Keyboard state works the same way: {@code Keyboard.keyDownBuffer} is what
+ * {@code Keyboard.isKeyDown} reads (modifier keys, {@code GameSettings.isKeyDown}).
  */
 final class Input {
 
     private static final Class<?> MOUSE = org.lwjgl.input.Mouse.class;
     private static final boolean PYLON = has(MOUSE, "eventButtonState");
+    private static final Class<?> KEYBOARD = org.lwjgl.input.Keyboard.class;
+    /** Pylon's Keyboard copies {@code KeyboardSdl.keyDownBuffer} (byte[], LWJGL codes) into its own buffer in poll(). */
+    private static final boolean PYLON_KEYBOARD = has(KEYBOARD, "SDL");
 
     private Input() {
     }
@@ -71,6 +78,53 @@ final class Input {
             set(MOUSE, null, "x", x);
             set(MOUSE, null, "y", y);
         }
+    }
+
+    // ------------------------------------------------------------------------------ keyboard
+
+    /** {@code Keyboard.isKeyDown(code)} as the game reads it right now. */
+    static boolean keyDown(int code) throws Exception {
+        return keyBuffer().get(code) != 0;
+    }
+
+    /**
+     * Sets the keys {@code Keyboard.isKeyDown} reports until the game's next {@code poll()} refills the
+     * buffer at the end of the frame. Used around one synchronous injected event ({@code --mods});
+     * returns the previous states for {@link #restoreKeys}.
+     */
+    static boolean[] pressKeys(int[] codes) throws Exception {
+        ByteBuffer b = keyBuffer();
+        boolean[] was = new boolean[codes.length];
+        for (int i = 0; i < codes.length; i++) {
+            was[i] = b.get(codes[i]) != 0;
+            b.put(codes[i], (byte) 1);
+        }
+        return was;
+    }
+
+    static void restoreKeys(int[] codes, boolean[] was) throws Exception {
+        ByteBuffer b = keyBuffer();
+        for (int i = codes.length - 1; i >= 0; i--) b.put(codes[i], (byte) (was[i] ? 1 : 0));
+    }
+
+    /**
+     * A raw hold's keyboard state, as a real key would leave it: the game's buffer for this frame and, on
+     * Pylon, the SDL-side state that {@code poll()} copies in every frame (kept until a real key event for
+     * that key changes it). No key event is queued and no binding is touched.
+     */
+    static void rawKey(int code, boolean down) throws Exception {
+        keyBuffer().put(code, (byte) (down ? 1 : 0));
+        if (PYLON_KEYBOARD) {
+            Class<?> sdl = Class.forName("pl.tomgirl.pylon.window.KeyboardSdl", true, KEYBOARD.getClassLoader());
+            Object keyboardSdl = sdl.getMethod("instance").invoke(null);
+            byte[] state = (byte[]) field(sdl, "keyDownBuffer").get(keyboardSdl);
+            if (code < state.length) state[code] = (byte) (down ? 1 : 0);
+        }
+    }
+
+    /** {@code Keyboard.keyDownBuffer}: the same name and type in Pylon and LWJGL 2. */
+    private static ByteBuffer keyBuffer() throws Exception {
+        return (ByteBuffer) field(KEYBOARD, "keyDownBuffer").get(null);
     }
 
     private static boolean has(Class<?> c, String name) {

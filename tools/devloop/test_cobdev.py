@@ -1,6 +1,7 @@
 """Game-free tests for cobdev's pure helpers. Run: python3 -I tools/devloop/test_cobdev.py (or cobdev selftest)."""
 import contextlib
 import importlib.machinery
+import io
 import importlib.util
 import io
 import os
@@ -364,6 +365,272 @@ class SmokeSave(unittest.TestCase):
         self.assertEqual(sent, [])
 
 
+class Flags(unittest.TestCase):
+    """--mods, --device and keyhold --raw reach the bridge as plain parameters (Edit HUD checks)."""
+
+    def parse(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()):  # argparse prints usage before SystemExit
+            return cobdev.build_parser().parse_args(list(argv))
+
+    def test_drag_with_mods_and_device(self):
+        a = self.parse("drag", "10", "20", "--mods", "alt,shift", "--device")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 10, "y": 20, "mods": "alt,shift", "device": 1})
+
+    def test_plain_input_sends_no_extras(self):
+        a = self.parse("click", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0})
+        a = self.parse("drag", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 5, "y": 6})
+
+    def test_down_and_up_take_device_pixels(self):
+        for cmd in ("down", "up"):
+            a = self.parse(cmd, "1279", "0", "--device", "--button", "1")
+            self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 1279, "y": 0, "button": 1, "device": 1})
+
+    def test_ctrl_click(self):
+        a = self.parse("click", "5", "6", "--mods", "ctrl")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0, "mods": "ctrl"})
+
+    def test_click_and_key_have_no_device_flag(self):
+        with self.assertRaises(SystemExit):
+            self.parse("click", "1", "2", "--device")
+        with self.assertRaises(SystemExit):
+            self.parse("key", "z", "--device")
+
+    def test_modifiers_are_whitelisted_and_normalised(self):
+        self.assertEqual(self.parse("up", "1", "2", "--mods", " Shift, alt,shift").mods, "shift,alt")
+        for bad in ("meta", "alt,cmd", "alt,,shift", ""):
+            with self.assertRaises(SystemExit):
+                self.parse("down", "1", "2", "--mods", bad)
+
+    def test_key_letters_and_mods(self):
+        a = self.parse("key", "z", "--mods", "ctrl")
+        self.assertEqual(cobdev.key_params(a), {"code": 44, "mods": "ctrl"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "Y")), {"code": 21})
+        self.assertEqual(cobdev.key_params(self.parse("key", "right", "--mods", "shift")), {"code": 205, "mods": "shift"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "57", "--char", " ")), {"code": 57, "char": " "})
+
+    def test_keyhold_raw(self):
+        a = self.parse("keyhold", "key.playerlist", "on", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.playerlist", "state": "on", "raw": 1})
+        a = self.parse("keyhold", "key.forward", "off", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.forward", "state": "off", "raw": 1})
+
+    def test_keyhold_binding_and_list(self):
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold", "Zoom", "on")), {"name": "Zoom", "state": "on"})
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold")), {})
+
+    def test_keyhold_needs_name_and_state(self):
+        for argv in (("keyhold", "--raw"), ("keyhold", "Zoom"), ("keyhold", "Zoom", "maybe", "--raw")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                cobdev.keyhold_params(self.parse(*argv))
+
+
+class EditHudSmoke(unittest.TestCase):
+    """A4-edithud puts back every field and the GUI scale it touched, whatever happens in between."""
+
+    def run_step(self, probe_error=None, boxes=None):
+        calls, fields = [], {}
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                calls.append((path, params or post or {}))
+                self.step["commands"].append({"call": path})
+                if path == "/field":
+                    if "value" in post:
+                        fields[post["path"]] = post["value"]
+                        return {"ok": True}
+                    return {"ok": True, "value": fields.get(post["path"], False)}
+                if path == "/probe":
+                    if probe_error:
+                        raise cobdev.ApiError(probe_error)
+                    return {"ok": True, "scale": 2, "sw": 640, "sh": 360, "boxes": boxes or [],
+                            "states": [{"id": b["id"]} for b in boxes or []], "editor": {"selectedId": None}}
+                return {"ok": True}
+
+            def has(self, cls, member=None):
+                return True
+
+            def status(self):
+                return {"guiScaleSetting": 3}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        cobdev.smoke_edithud(s, "com.bedwarsqol.BedwarsQol.config", "dev", checks=("E0",))
+        return s, calls, fields
+
+    def test_restores_fields_and_scale_after_a_pass(self):
+        boxes = [{"id": i, "shown": True} for i in ("potion", "armor", "inventory", "diamondtimer", "emeraldtimer",
+                                                    "keystrokes", "sessionstats", "heightlimit", "fps", "cps", "ping")]
+        s, calls, fields = self.run_step(boxes=boxes)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+        self.assertIn(("/size", {"w": 1280, "h": 720}), calls)
+
+    def test_an_older_bridge_without_the_probe_is_not_a_failure(self):
+        s, calls, fields = self.run_step(probe_error="unknown probe hud-boxes (fov, hurt)")
+        self.assertEqual(s.step["status"], "not available yet")
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+
+    def test_a_missing_module_fails_e0(self):
+        s, _, _ = self.run_step(boxes=[{"id": "potion", "shown": True}])
+        self.assertEqual(s.step["status"], "fail")
+
+
+class FakeEditor(cobdev.Smoke):
+    """A tiny model of Edit HUD for the A4-edithud checks: boxes in GUI px, arrows move one screen pixel (Shift
+    ten), a device-pixel drag moves start + travel / scale, and the left screen edge snaps within 4 screen px."""
+
+    def __init__(self, boxes, scale=2):
+        cobdev.Smoke.__init__(self, "dev", "test")
+        self.begin("A4-edithud", "test")
+        self.boxes = {b["id"]: dict(b) for b in boxes}
+        self.sc, self.selected, self.press = scale, None, None
+
+    def call(self, path, params=None, post=None, timeout=60):
+        q = params or post or {}
+        if path == "/scale":
+            self.sc = int(q["n"])
+        elif path == "/probe":
+            return {"scale": self.sc, "boxes": [dict(b) for b in self.boxes.values()]}
+        elif path == "/click":
+            self.selected = next(i for i, b in self.boxes.items()
+                                 if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
+        elif path == "/key" and self.selected:
+            step = 10 if q.get("mods") == "shift" else 1
+            self.boxes[self.selected]["x"] += step * (1 if q["code"] == cobdev.KEYS["right"] else -1) / float(self.sc)
+        elif path == "/down":
+            b = next(b for b in self.boxes.values() if b["shown"])
+            self.selected, self.press = b["id"], (q["x"], b["x"])
+        elif path == "/drag":
+            b = self.boxes[self.selected]
+            x = self.press[1] + (q["x"] - self.press[0]) / float(self.sc)
+            if q.get("mods") != "alt" and 0 < x - b["pad"] <= 4.0 / self.sc:
+                x = b["pad"]
+            b["x"] = x
+        return {"ok": True, "value": False}
+
+    def shot(self, tag, wait=300):
+        return "/dev/null", (1, 1, [b"\0\0\0"])
+
+
+class EditHudChecks(unittest.TestCase):
+    def run_check(self, fn, boxes):
+        s = FakeEditor(boxes)
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            fn(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        return s
+
+    def test_e8_passes_on_an_editor_that_moves_one_screen_pixel(self):
+        s = self.run_check(cobdev.edithud_e8, [{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertEqual(len([c for c in s.step["checks"] if c["check"].startswith("E8")]), 8)
+
+    def test_e9_passes_when_only_the_edge_snaps(self):
+        s = self.run_check(cobdev.edithud_e9, [{"id": "heightlimit", "x": 3, "y": 100, "w": 120, "h": 38, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+
+    def test_e8_fails_on_an_editor_that_moves_whole_gui_pixels(self):
+        class Coarse(FakeEditor):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = FakeEditor.call(self, path, params, post, timeout)
+                if path == "/key" and self.selected:
+                    b = self.boxes[self.selected]
+                    b["x"] = float(round(b["x"]))
+                return r
+
+        s = Coarse([{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1, "shown": True}])
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e8(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        self.assertEqual(s.step["status"], "fail")
+
+
+class EditHudHelpers(unittest.TestCase):
+    @staticmethod
+    def hb(boxes, states):
+        return {"boxes": boxes, "states": states}
+
+    def test_pinning_is_not_a_change_but_a_move_is(self):
+        box = {"id": "potion", "x": 3, "y": 30, "w": 52, "h": 44, "pad": 1, "shown": True}
+        auto = {"id": "potion", "anchor": -1, "scale": 1.0, "enabled": True, "background": True}
+        pinned = dict(auto, anchor=0, x=2, y=29)
+        before = self.hb([box], [auto])
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([box], [pinned]), set()), [])
+        moved = dict(box, x=3.01)
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([moved], [pinned]), set()))
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([box], [dict(auto, scale=1.5)]), set()))
+        self.assertTrue(cobdev.others_unchanged(self.hb([box], [pinned]), self.hb([box], [dict(pinned, anchor=3)]), set()))
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([moved], [pinned]), {"potion"}), [])
+        hidden = dict(box, shown=False)
+        self.assertEqual(cobdev.others_unchanged(self.hb([hidden], [auto]), self.hb([dict(hidden, y=90)], [auto]), set()),
+                         [], "a hidden module's ghost may re-flow")
+
+    def test_left_column_and_overlap(self):
+        inv = {"id": "inventory", "x": 218, "y": 3, "w": 204, "h": 72, "pad": 1, "shown": True}
+        armor = {"id": "armor", "x": 3, "y": 3, "w": 20, "h": 20, "pad": 1, "shown": True}
+        low = {"id": "heightlimit", "x": 3, "y": 160, "w": 118, "h": 36, "pad": 1, "shown": True}
+        ghost = dict(armor, id="potion", shown=False)
+        self.assertEqual([b["id"] for b in cobdev.left_column(self.hb([inv, armor, low, ghost], []), "inventory")],
+                         ["armor"])
+        self.assertEqual(cobdev.overlap_area(inv, armor), 0)
+        self.assertEqual(cobdev.overlap_area(armor, dict(armor, x=13)), 12 * 22)
+        self.assertTrue(cobdev.pinned_anchor({"anchor": 0}))
+        self.assertFalse(cobdev.pinned_anchor({"anchor": -1}))
+        self.assertFalse(cobdev.pinned_anchor({}))
+
+
+class EditHudPixels(unittest.TestCase):
+    def test_cap_and_box_rectangles(self):
+        ks = {"x": 100.0, "y": 50.0, "w": 56.0}
+        # W cap at local (19, 0, 18, 18), box scale 1, GUI 2: middle 60% = (22.6..33.4, 3.6..14.4) local
+        self.assertEqual(cobdev.cap_px(ks, "W", 2), (245, 107, 267, 129))
+        # a box drawn at 1.5: the caps scale with it
+        self.assertEqual(cobdev.cap_px(dict(ks, w=84.0), "W", 2), (268, 111, 300, 143))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 3), (30, 60, 120, 180))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 2, inset=1.0), (22, 42, 78, 118))
+
+
+class DefaultLayoutCheck(unittest.TestCase):
+    """g30_problems over the DefaultHudLayoutTest fixture at 960x540 (visual boxes; content = visual - 2)."""
+    SPOTS = {"fps": (2, 2, 46, 18), "cps": (2, 22, 52, 18), "ping": (2, 42, 40, 18), "armor": (2, 62, 22, 22),
+             "potion": (2, 86, 52, 44), "heightlimit": (2, 251, 120, 38), "diamondtimer": (916, 2, 42, 22),
+             "emeraldtimer": (872, 2, 42, 22), "sessionstats": (820, 26, 138, 148), "inventory": (377, 2, 206, 74),
+             "keystrokes": (894, 458, 64, 80)}
+
+    def hb(self, spots):
+        return {"sw": 960, "sh": 540, "boxes": [{"id": i, "x": x + 1, "y": y + 1, "w": w - 2, "h": h - 2, "pad": 1,
+                                                 "shown": True} for i, (x, y, w, h) in spots.items()]}
+
+    def test_the_default_layout_passes(self):
+        self.assertEqual(cobdev.g30_problems(self.hb(self.SPOTS)), [])
+
+    def test_a_moved_module_is_reported(self):
+        moved = dict(self.SPOTS, keystrokes=(800, 400, 64, 80))
+        self.assertEqual(len(cobdev.g30_problems(self.hb(moved))), 2)
+        gap = dict(self.SPOTS, cps=(2, 23, 52, 18))
+        self.assertTrue(cobdev.g30_problems(self.hb(gap)))
+
+    def test_hidden_and_missing_modules_are_skipped(self):
+        spots = dict(self.SPOTS)
+        del spots["fps"], spots["cps"], spots["ping"]
+        spots["armor"], spots["potion"] = (2, 2, 22, 22), (2, 26, 52, 44)
+        self.assertEqual(cobdev.g30_problems(self.hb(spots)), [])
+
+
 def flat(w, h, rgb):
     return w, h, [bytes(rgb) * w for _ in range(h)]
 
@@ -519,6 +786,43 @@ class HudLookDryRun(unittest.TestCase):
         self.assertEqual([st["id"] for st in s.report["steps"] if "error" in st], [])
         self.assertEqual(len(restarts), 3)  # persist, icons cold, icons warm
         self.assertIn("/scale", calls)
+
+
+class EditHudE12Cleanup(unittest.TestCase):
+    """E12's scoreboard fixture is removed and the release is checked even when the overlay boxes are missing."""
+
+    def test_missing_overlay_boxes_still_clean_up(self):
+        sent = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                q = params or post or {}
+                sent.append((path, q.get("command") or q.get("name") or q.get("state")))
+                if path == "/probe" and q.get("name") == "overlay-boxes":
+                    return {"items": {}}
+                if path == "/probe":
+                    return {"scale": 2, "boxes": [{"id": "inventory", "x": 200, "y": 3, "w": 200, "h": 70, "pad": 1,
+                                                   "shown": True}], "states": [],
+                            "editor": {"tabHeld": False, "playerListPressed": False, "visibleIds": ["inventory"]}}
+                return {"ok": True, "value": False}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        s.begin("A4-edithud", "test")
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e12(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        commands = [c for p, c in sent if p == "/command"]
+        self.assertIn("/scoreboard objectives remove cobtab", commands)
+        self.assertEqual(commands[-1], "/scoreboard objectives remove cobtab")
+        self.assertIn(("/keyhold", "key.playerlist"), sent)
+        names = [c["check"] for c in s.step["checks"]]
+        self.assertTrue(any("released" in n for n in names), names)
 
 
 class Pins(unittest.TestCase):

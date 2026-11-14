@@ -154,7 +154,10 @@ final class SheetFixtures {
         final Map<String, Object> v = new HashMap<String, Object>();
         final Set<String> missing = new HashSet<String>();
         final Map<String, Integer> keys = new HashMap<String, Integer>();
+        /** Platform-only ids this tree opts in to ({@link SheetValues#hasPlatformOnly}); none by default. */
+        final Set<String> platformOnly = new HashSet<String>();
         int saves, runs;
+        String lastRun;
 
         Values() {
             for (String id : ("potion armor inventory genTimers keystrokes session mapInfo potionInGame armorInGame "
@@ -187,6 +190,11 @@ final class SheetFixtures {
         @Override
         public boolean has(String id) {
             return !missing.contains(id);
+        }
+
+        @Override
+        public boolean hasPlatformOnly(String id) {
+            return platformOnly.contains(id);
         }
 
         @Override
@@ -230,6 +238,7 @@ final class SheetFixtures {
         @Override
         public void run(String id) {
             runs++;
+            lastRun = id;
         }
 
         @Override

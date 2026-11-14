@@ -90,7 +90,28 @@ public final class HudModules {
         return id;
     }
 
+    /**
+     * Module {@code id}'s state: its stored fields plus the sub-pixel part kept in {@link ClientSettings#hudSubPixel}
+     * (any id {@link #stored} knows gets it, with no per-item code); null for an unknown id.
+     */
     public static HudModuleState get(ClientSettings c, String id) {
+        HudModuleState s = stored(c, id);
+        if (s == null) return null;
+        float[] f = c.hudSubPixel == null ? null : c.hudSubPixel.get(id);
+        return f == null || f.length != 2 ? s : s.withFraction(f[0], f[1]);
+    }
+
+    /** Writes {@code s}: the stored fields, and its sub-pixel part (no entry for a whole position). */
+    public static void set(ClientSettings c, String id, HudModuleState s) {
+        if (s == null) return;
+        setStored(c, id, s);
+        if (stored(c, id) == null) return; // only ids this build stores
+        if (c.hudSubPixel == null) c.hudSubPixel = new LinkedHashMap<String, float[]>();
+        if (s.fracX == 0f && s.fracY == 0f) c.hudSubPixel.remove(id);
+        else c.hudSubPixel.put(id, new float[]{s.fracX, s.fracY});
+    }
+
+    private static HudModuleState stored(ClientSettings c, String id) {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) {
             return new HudModuleState(c.potionHudX, c.potionHudY, c.potionHudAnchor, c.potionHudScale, c.potionStatusEnabled, c.hudBackground(id));
         }
@@ -137,8 +158,7 @@ public final class HudModules {
         return null;
     }
 
-    public static void set(ClientSettings c, String id, HudModuleState s) {
-        if (s == null) return;
+    private static void setStored(ClientSettings c, String id, HudModuleState s) {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) {
             c.potionHudX = s.x; c.potionHudY = s.y; c.potionHudAnchor = s.anchor; c.potionHudScale = s.scale;
             c.potionStatusEnabled = s.enabled;

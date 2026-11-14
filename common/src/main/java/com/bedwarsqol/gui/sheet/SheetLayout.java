@@ -44,7 +44,7 @@ public final class SheetLayout {
     }
 
     public enum T {
-        BRAND, VERSION, SEARCH, CLOSE, CATEGORY, HERO,
+        BRAND, VERSION, SEARCH, CLOSE, CATEGORY, HERO, RESET_POSITIONS,
         RESULTS, DIVIDER, PATH, OPEN, NAME, DESC, MODULE_TOGGLE, WELL,
         LABEL, ROW_DESC, TOGGLE, OPTION, SWATCH, SLIDER, VALUE, KEY, BUTTON, MORE
     }
@@ -82,7 +82,7 @@ public final class SheetLayout {
         /** Whether the screen reacts to this node under the cursor. */
         public boolean interactive() {
             switch (type) {
-                case SEARCH: case CLOSE: case CATEGORY: case HERO: case MODULE_TOGGLE: case TOGGLE:
+                case SEARCH: case CLOSE: case CATEGORY: case HERO: case RESET_POSITIONS: case MODULE_TOGGLE: case TOGGLE:
                 case OPTION: case SWATCH: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
                     return !disabled;
                 case OPEN:
@@ -210,7 +210,22 @@ public final class SheetLayout {
         hero.text = "Edit HUD";
         hero.font = SheetFont.HERO;
         f.chrome.add(hero);
+        if (values.hasPlatformOnly(RESET_POSITIONS_ID)) {
+            // Reset Positions, right of Edit HUD: as tall, as wide as its label plus the side room of an accent
+            // button, 4 su apart; Edit HUD takes the rest
+            float w = tm.width(RESET_POSITIONS_LABEL, SheetFont.HERO) + 24f;
+            Node reset = new Node(T.RESET_POSITIONS, hero.x + hero.w - w, hero.y, w, hero.h);
+            reset.id = RESET_POSITIONS_ID;
+            reset.text = RESET_POSITIONS_LABEL;
+            reset.font = SheetFont.HERO;
+            hero.w -= w + 4f;
+            f.chrome.add(reset);
+        }
     }
+
+    /** The footer's Reset Positions button: a tree opts in with {@code hasPlatformOnly("resetPositions")}. */
+    public static final String RESET_POSITIONS_ID = "resetPositions";
+    static final String RESET_POSITIONS_LABEL = "Reset Positions";
 
     // ------------------------------------------------------------------ body
 

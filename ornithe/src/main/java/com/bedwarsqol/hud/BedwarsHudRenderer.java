@@ -21,6 +21,7 @@ import com.bedwarsqol.gui.StatRowSegments;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
+import net.minecraft.client.settings.GameSettings;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
@@ -146,33 +147,79 @@ public class BedwarsHudRenderer {
         }
     }
 
+    /**
+     * True while Edit HUD measures or draws: In Game Only and the other visibility gates pass and panels keep the
+     * editor's 1 px inset, but each item shows live data unless it has nothing live to show ({@link PreviewData}).
+     * Set only by {@link #renderEditPreview}, {@link #getEditorBoxes} and {@link #getEditorBox}, in try/finally, on the
+     * render thread.
+     */
+    private static boolean editing;
+
     public static void renderEditPreview(Minecraft mc, ClientSettings cfg) {
-        render(mc, cfg, true);
+        boolean was = editing;
+        editing = true;
+        try {
+            render(mc, cfg, true);
+        } finally {
+            editing = was;
+        }
     }
 
     /**
-     * Every module's box for Edit HUD, with example data and hidden modules included. {@link HudBox#shown}
-     * says which ones the player has switched on.
+     * Every module's box for Edit HUD, hidden modules included, measured from the data the editor shows (live, or the
+     * sample for an item with nothing live). {@link HudBox#shown} says which ones the player has switched on.
      */
     public static List<HudBox> getEditorBoxes(Minecraft mc, ClientSettings cfg) {
         if (mc == null || cfg == null) return Collections.emptyList();
         cfg.sanitize();
 
-        List<HudBox> boxes = new ArrayList<>(8);
-        addEditorBox(boxes, cfg, potionBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, armorBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, inventoryBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, true, true));
-        addEditorBox(boxes, cfg, timerBox(mc, cfg, true, false, true));
-        addEditorBox(boxes, cfg, keystrokesBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
-        addEditorBox(boxes, cfg, textBox(mc, cfg, FPS_HUD, true, true));
-        addEditorBox(boxes, cfg, textBox(mc, cfg, CPS_HUD, true, true));
-        addEditorBox(boxes, cfg, textBox(mc, cfg, PING_HUD, true, true));
-        addEditorBox(boxes, cfg, scoreboardBox(mc, cfg));
-        addEditorBox(boxes, cfg, chatBox(mc, cfg));
-        return boxes;
+        boolean was = editing;
+        editing = true;
+        try {
+            PreviewData.Facts f = previewFacts(mc);
+            List<HudBox> boxes = new ArrayList<>(8);
+            for (String id : EDITOR_ORDER) addEditorBox(boxes, cfg, editorItemBox(mc, cfg, id, f));
+            return boxes;
+        } finally {
+            editing = was;
+        }
+    }
+
+    /** Edit HUD's item order (its boxes and their draw order); the tab list is not an editor box (cycle B). */
+    private static final String[] EDITOR_ORDER = {POTION_HUD, ARMOR_HUD, INVENTORY_HUD, DIAMOND_TIMER_HUD,
+            EMERALD_TIMER_HUD, KEYSTROKES_HUD, SESSION_HUD, HEIGHT_LIMIT_HUD, FPS_HUD, CPS_HUD, PING_HUD, SCOREBOARD_HUD,
+            CHAT_HUD};
+
+    /** One module's Edit HUD box with the editor's data choice, whether or not it is switched on. */
+    private static HudBox editorItemBox(Minecraft mc, ClientSettings cfg, String id, PreviewData.Facts f) {
+        boolean sample = sample(id, f);
+        if (POTION_HUD.equals(id)) return potionBox(mc, cfg, sample, true);
+        if (ARMOR_HUD.equals(id)) return armorBox(mc, cfg, sample, true);
+        if (INVENTORY_HUD.equals(id)) return inventoryBox(mc, cfg, sample, true);
+        if (DIAMOND_TIMER_HUD.equals(id)) return timerBox(mc, cfg, sample, true, true);
+        if (EMERALD_TIMER_HUD.equals(id)) return timerBox(mc, cfg, sample, false, true);
+        if (KEYSTROKES_HUD.equals(id)) return keystrokesBox(mc, cfg, sample, true);
+        if (SESSION_HUD.equals(id)) return sessionBox(mc, cfg, sample, true);
+        if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitBox(mc, cfg, sample, true);
+        if (isTextModule(id)) return textBox(mc, cfg, id, sample, true);
+        // the scoreboard and chat are live, with no box when there is nothing to show (no sidebar objective)
+        if (SCOREBOARD_HUD.equals(id)) return scoreboardBox(mc, cfg);
+        if (CHAT_HUD.equals(id)) return chatBox(mc, cfg);
+        return null;
+    }
+
+    /** Whether item {@code id} draws sample data in the editor ({@code f} null: not in the editor, so never). */
+    private static boolean sample(String id, PreviewData.Facts f) {
+        return f != null && PreviewData.sample(id, f);
+    }
+
+    /** What play has to show right now, from the same sources the HUD draws from. */
+    private static PreviewData.Facts previewFacts(Minecraft mc) {
+        boolean player = mc != null && mc.thePlayer != null;
+        int potions = player ? potionEntries(mc, false).size() : 0;
+        boolean legs = player && currentLeggings(mc, false) != null;
+        return new PreviewData.Facts(player, potions, legs, GeneratorTracker.diamondSeconds(),
+                GeneratorTracker.emeraldSeconds(), HeightLimitWatch.core().map() != null);
     }
 
     // ----- Vanilla overlays as HUD items (scoreboard, chat, tab list) -----
@@ -222,6 +269,21 @@ public class BedwarsHudRenderer {
     }
 
     /**
+     * The largest tab list item scale whose list still fits the screen width (cycle B's fit rule,
+     * {@link TabListLayout#effectiveScale}): Edit HUD's corner resize stops growing there. {@code CornerResize.MAX_SCALE}
+     * when there is no list to measure.
+     */
+    public static float tabListFitScale(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null || mc.ingameGUI == null || mc.theWorld == null) return CornerResize.MAX_SCALE;
+        Scoreboard board = mc.theWorld.getScoreboard();
+        if (board == null) return CornerResize.MAX_SCALE;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] m = ((TabOverlayScale) mc.ingameGUI.getTabList())
+                .bedwarsqol$measure(r.getScaledWidth(), board, board.getObjectiveInDisplaySlot(0));
+        return m == null ? CornerResize.MAX_SCALE : TabListLayout.effectiveScale(CornerResize.MAX_SCALE, m[4], r.getScaledWidth());
+    }
+
+    /**
      * The chat item's slot ({@link ChatLayout}): {@code closedLineCount} rows whose bottom the item's anchor
      * holds, never clamped, as {@code {x, y, w, h, rowHeight, closedRows}}; null before the in-game GUI exists.
      */
@@ -232,7 +294,8 @@ public class BedwarsHudRenderer {
         int closed = ChatLayout.closedLineCount(
                 GuiNewChat.calculateChatboxHeight(mc.gameSettings.chatHeightUnfocused) / ChatLayout.ROW_HEIGHT);
         float[] auto = ChatLayout.autoSlot(ChatLayout.vanillaSlot((int) sh, chat.getChatWidth(), f, closed), sh, s);
-        float[] slot = ChatLayout.slot(cfg.chatHudX, cfg.chatHudY, cfg.chatHudAnchor, auto, sw, sh);
+        HudModuleState st = HudModules.get(cfg, CHAT_HUD); // the stored slot to a fraction of a GUI pixel
+        float[] slot = ChatLayout.slot(st.exactX(), st.exactY(), st.anchor, auto, sw, sh);
         return new float[]{slot[0], slot[1], slot[2], slot[3], ChatLayout.ROW_HEIGHT * f * s, closed};
     }
 
@@ -287,10 +350,26 @@ public class BedwarsHudRenderer {
         boxes.add(state != null && !state.enabled ? box.hidden() : box);
     }
 
+    /** One module's Edit HUD box, measured alone (the corner-resize wall probe), as {@link #getEditorBoxes} has it. */
+    public static HudBox getEditorBox(Minecraft mc, ClientSettings cfg, String id) {
+        if (mc == null || cfg == null) return null;
+        boolean was = editing;
+        editing = true;
+        try {
+            HudBox box = editorItemBox(mc, cfg, id, previewFacts(mc));
+            if (box == null) return null;
+            HudModuleState state = HudModules.get(cfg, id);
+            return state != null && !state.enabled ? box.hidden() : box;
+        } finally {
+            editing = was;
+        }
+    }
+
     /**
-     * Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in. For the
-     * chat, (x, y, width, height) is its visible box and the stored slot shares the box's bottom
-     * ({@link ChatLayout#storedSlot}, the chat slot rule).
+     * Stores module {@code id} with its top-left at (x, y), anchored to the screen third it is in, to a fraction of a
+     * GUI pixel (the int fields get exactly what the whole-pixel path stored; see {@link ClientSettings#hudSubPixel}).
+     * Every pin and placement goes through here. For the chat, (x, y, width, height) is its visible box and the stored
+     * slot shares the box's bottom ({@link ChatLayout#storedSlot}, the chat slot rule of cycle B, a contract).
      */
     public static void setHudAbsolutePosition(ClientSettings cfg, String id, float x, float y, float width, float height, float screenWidth, float screenHeight) {
         HudModuleState state = HudModules.get(cfg, id);
@@ -298,28 +377,96 @@ public class BedwarsHudRenderer {
         if (CHAT_HUD.equals(id)) {
             float[] slot = chatSlot(Minecraft.getMinecraft(), cfg, screenWidth, screenHeight);
             float slotH = slot == null ? height : slot[3];
-            int[] at = ChatLayout.storedSlot(new float[]{x, y, width, height}, slotH, screenWidth, screenHeight);
-            HudModules.set(cfg, id, state.withPosition(at[0], at[1], at[2]));
+            // exact, so a wall-safe spot stays clear and a one-screen-pixel nudge sticks (code review round 2, I1);
+            // the int fields get ChatLayout.storedSlot's whole position
+            float[] at = ChatLayout.exactStoredSlot(new float[]{x, y, width, height}, slotH, screenWidth, screenHeight);
+            HudModules.set(cfg, id, state.withExactPosition(at[0], at[1], (int) at[2]));
             return;
         }
-        int anchor = HudPlacement.anchorFor(x, y, width, height, screenWidth, screenHeight);
-        HudModules.set(cfg, id, state.withPosition(HudPlacement.storedX(x, anchor, width, screenWidth),
-                HudPlacement.storedY(y, anchor, height, screenHeight), anchor));
+        HudModules.set(cfg, id, HudPins.pinned(state, x, y, width, height, screenWidth, screenHeight));
     }
 
-    private static void render(Minecraft mc, ClientSettings cfg, boolean example) {
-        if (cfg.potionStatusEnabled) drawPotionHud(mc, cfg, example);
-        if (cfg.armorTypeEnabled) drawArmorHud(mc, cfg, example);
-        drawInventoryHud(mc, cfg, example);
-        drawTimerHud(mc, cfg, example, true);
-        drawTimerHud(mc, cfg, example, false);
-        if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
-        drawTextModule(mc, cfg, FPS_HUD, example);
-        drawTextModule(mc, cfg, CPS_HUD, example);
-        drawTextModule(mc, cfg, PING_HUD, example);
-        drawHeightLimitHud(mc, cfg, example);
+    /**
+     * Pin-on-change: every shown module still on Auto, other than {@code changingIds}, is stored where it is drawn now,
+     * so a change to those items moves nothing else (the Auto layout re-flows around every moved module).
+     */
+    public static void pinShownAuto(Minecraft mc, ClientSettings cfg, Collection<String> changingIds) {
+        if (mc == null || cfg == null) return;
+        ScaledResolution r = new ScaledResolution(mc);
+        float sw = r.getScaledWidth(), sh = r.getScaledHeight();
+        List<HudBox> boxes = getEditorBoxes(mc, cfg); // every spot as it is now, before the first write
+        for (HudBox b : boxes) {
+            // only modules the Auto layout places: an overlay on Auto sits at its vanilla spot, which no change moves
+            if (!HudModules.ids().contains(b.id)) continue;
+            HudModuleState s = HudModules.get(cfg, b.id);
+            if (s != null && HudPins.shouldPin(b.id, b.shown, s.anchor, changingIds)) {
+                setHudAbsolutePosition(cfg, b.id, b.x, b.y, b.width, b.height, sw, sh);
+            }
+        }
+    }
+
+    /**
+     * Reset Positions (G26): every module goes to its {@link DefaultHudLayout} spot for this screen, measured at the
+     * stable sample sizes the Auto layout uses (D5); a hidden module and any module without a spot go on Auto. Only
+     * position, anchor and fraction change: size, on/off and Background stay. The caller saves.
+     */
+    public static void resetPositions(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null) return;
+        cfg.sanitize();
+        ScaledResolution r = new ScaledResolution(mc);
+        List<DefaultHudLayout.Item> items = new ArrayList<DefaultHudLayout.Item>();
+        // every item: the scoreboard, chat and tab list have no spot, so they go back to Auto (their vanilla spot)
+        for (String id : HudModules.allIds()) {
+            HudModuleState s = HudModules.get(cfg, id);
+            if (s == null) continue;
+            Size size = layoutSize(mc, cfg, id);
+            items.add(new DefaultHudLayout.Item(id, size.width, size.height, layoutPad(cfg, id), s.enabled));
+        }
+        Map<String, DefaultHudLayout.Spot> spots = DefaultHudLayout.place(r.getScaledWidth(), r.getScaledHeight(), items);
+        for (String id : HudModules.allIds()) {
+            DefaultHudLayout.Spot spot = spots.get(id);
+            if (spot != null) HudModules.set(cfg, id, spot.apply(HudModules.get(cfg, id)));
+        }
+    }
+
+    /**
+     * Shows modules {@code ids}: the other shown Auto modules are pinned first, then each goes on Auto and takes the
+     * first free Auto spot, whatever spot it had before it was hidden. A module that comes on with them (the two gen
+     * timers share one switch) is newly shown too.
+     */
+    public static void show(Minecraft mc, ClientSettings cfg, Collection<String> ids) {
+        Map<String, HudModuleState> before = HudModules.snapshot(cfg);
+        pinShownAuto(mc, cfg, ids);
+        for (String id : ids) {
+            HudModuleState s = HudModules.get(cfg, id);
+            if (s != null) HudModules.set(cfg, id, HudPins.shown(s));
+        }
+        for (String id : HudModules.ids()) {
+            HudModuleState was = before.get(id), now = HudModules.get(cfg, id);
+            if (was != null && now != null && !was.enabled && now.enabled && !ids.contains(id)) {
+                HudModules.set(cfg, id, HudPins.shown(now));
+            }
+        }
+    }
+
+    /**
+     * Draws every module: in play with live data; in the editor ({@code editor}) each with live data unless it has
+     * nothing live to show. Every draw line passes {@code editor && sample(ID, f)}, never {@code editor} alone.
+     */
+    private static void render(Minecraft mc, ClientSettings cfg, boolean editor) {
+        PreviewData.Facts f = editor ? previewFacts(mc) : null;
+        if (cfg.potionStatusEnabled) drawPotionHud(mc, cfg, editor && sample(POTION_HUD, f));
+        if (cfg.armorTypeEnabled) drawArmorHud(mc, cfg, editor && sample(ARMOR_HUD, f));
+        drawInventoryHud(mc, cfg, editor && sample(INVENTORY_HUD, f));
+        drawTimerHud(mc, cfg, editor && sample(DIAMOND_TIMER_HUD, f), true);
+        drawTimerHud(mc, cfg, editor && sample(EMERALD_TIMER_HUD, f), false);
+        if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, editor && sample(KEYSTROKES_HUD, f));
+        drawTextModule(mc, cfg, FPS_HUD, editor && sample(FPS_HUD, f));
+        drawTextModule(mc, cfg, CPS_HUD, editor && sample(CPS_HUD, f));
+        drawTextModule(mc, cfg, PING_HUD, editor && sample(PING_HUD, f));
+        drawHeightLimitHud(mc, cfg, editor && sample(HEIGHT_LIMIT_HUD, f));
         // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
-        if (example) drawSessionHud(mc, cfg, true);
+        if (editor) drawSessionHud(mc, cfg, sample(SESSION_HUD, f));
     }
 
     /**
@@ -363,7 +510,7 @@ public class BedwarsHudRenderer {
      * edge sits over the world like every other module's frame.
      */
     private static void drawHudBackground(HudBox box, float scale, boolean example) {
-        float pad = panelPad(scale) - (example ? 1f : 0f);
+        float pad = panelPad(scale) - (example || editing ? 1f : 0f);
         float x1 = box.x - pad, y1 = box.y - pad;
         float x2 = box.right() + pad, y2 = box.bottom() + pad;
         GuiRender.rect(x1, y1, x2, y2, HUD_BG_FILL); // square, so the Edit HUD frame matches its edge
@@ -556,8 +703,11 @@ public class BedwarsHudRenderer {
             x = HudPlacement.absoluteX(HudPlacement.storedX(exX, a, exW, sw), a, width, sw);
             y = HudPlacement.absoluteY(HudPlacement.storedY(exY, a, exH, sh), a, height, sh);
         } else {
-            x = HudPlacement.absoluteX(storedX, anchor, width, sw);
-            y = HudPlacement.absoluteY(storedY, anchor, height, sh);
+            // A moved module's stored spot plus its sub-pixel part (ClientSettings.hudSubPixel), by id.
+            float[] frac = cfg.hudSubPixel == null ? null : cfg.hudSubPixel.get(id);
+            boolean fine = frac != null && frac.length == 2;
+            x = HudPlacement.absoluteX(storedX + (fine ? frac[0] : 0f), anchor, width, sw);
+            y = HudPlacement.absoluteY(storedY + (fine ? frac[1] : 0f), anchor, height, sh);
         }
         return new float[]{HudPlacement.clamp(x, width, pad, sw), HudPlacement.clamp(y, height, pad, sh)};
     }
@@ -569,8 +719,8 @@ public class BedwarsHudRenderer {
     // layout never shifts mid-game, and it follows HUD Size and the window on its own.
     private static final float LAYOUT_EDGE = 2f;
     private static final float LAYOUT_GAP = 2f;
-    private static final float HOTBAR_W = 182f;
-    private static final float HOTBAR_ZONE_H = 50f;
+    private static final float HOTBAR_W = HudWalls.HOTBAR_W;
+    private static final float HOTBAR_ZONE_H = HudWalls.HOTBAR_ZONE_H; // Edit HUD's hotbar wall is the same zone
     private static final Map<String, Spot[]> DEFAULT_SPOTS = new LinkedHashMap<String, Spot[]>();
     static {
         DEFAULT_SPOTS.put(DIAMOND_TIMER_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)});
@@ -598,11 +748,13 @@ public class BedwarsHudRenderer {
 
     /** Drawn box {x, y, width, height} of every module still in its default spot, by id. */
     private static Map<String, float[]> defaultLayout(Minecraft mc, ClientSettings cfg, float sw, float sh) {
-        String key = layoutKey(cfg, sw, sh);
+        List<float[]> overlays = overlayObstacles(mc, cfg, sw, sh);
+        String key = layoutKey(cfg, sw, sh, overlays);
         if (key.equals(layoutKey)) return layoutCache;
 
         List<HudLayout.Box> obstacles = new ArrayList<HudLayout.Box>();
         obstacles.add(new HudLayout.Box((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H));
+        for (float[] o : overlays) obstacles.add(new HudLayout.Box(o[0], o[1], o[2], o[3]));
         List<HudLayout.Item> shown = new ArrayList<HudLayout.Item>();
         List<HudLayout.Item> hidden = new ArrayList<HudLayout.Item>();
         for (Map.Entry<String, Spot[]> e : DEFAULT_SPOTS.entrySet()) {
@@ -628,13 +780,34 @@ public class BedwarsHudRenderer {
         return layoutCache;
     }
 
+    /**
+     * The scoreboard and chat as Auto-layout obstacles (as walls in Edit HUD; the tab list is neither), whole GUI px:
+     * the scoreboard's live box while it shows, and the chat's whole closed-chat slot, so the layout does not move
+     * while the chat fills up. (Edit HUD frames the chat's visible rows.)
+     */
+    private static List<float[]> overlayObstacles(Minecraft mc, ClientSettings cfg, float sw, float sh) {
+        List<float[]> out = new ArrayList<float[]>(2);
+        HudModuleState sb = HudModules.get(cfg, SCOREBOARD_HUD);
+        HudBox board = sb != null && sb.enabled ? scoreboardBox(mc, cfg) : null;
+        if (board != null) out.add(whole(board.x, board.y, board.width, board.height));
+        float[] slot = chatSlot(mc, cfg, sw, sh);
+        if (slot != null) out.add(whole(slot[0], slot[1], slot[2], slot[3]));
+        return out;
+    }
+
+    private static float[] whole(float x, float y, float w, float h) {
+        float x0 = (float) Math.floor(x), y0 = (float) Math.floor(y);
+        return new float[]{x0, y0, (float) Math.ceil(x + w) - x0, (float) Math.ceil(y + h) - y0};
+    }
+
     /** Everything the default layout depends on; it is worked out again only when this changes. */
-    private static String layoutKey(ClientSettings cfg, float sw, float sh) {
+    private static String layoutKey(ClientSettings cfg, float sw, float sh, List<float[]> overlays) {
         // the font sizes every text module (Minecraft's snaps to the GUI scale, which the screen size follows)
         StringBuilder b = new StringBuilder().append(sw).append('x').append(sh).append('|').append(cfg.guiFont);
+        for (float[] o : overlays) b.append("|o").append(o[0]).append(',').append(o[1]).append(',').append(o[2]).append(',').append(o[3]);
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
-            if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
+            if (s != null) b.append('|').append(s.exactX()).append(',').append(s.exactY()).append(',').append(s.anchor)
                     .append(',').append(s.scale).append(',').append(s.enabled).append(',').append(s.background);
         }
         return b.toString();
@@ -739,7 +912,7 @@ public class BedwarsHudRenderer {
 
     /** Whether a HUD's "In Game Only" is satisfied: an active BedWars game, or the edit preview. */
     private static boolean bedwarsActive(boolean example) {
-        return example || HypixelContext.isInActiveBedwarsGame();
+        return example || editing || HypixelContext.isInActiveBedwarsGame();
     }
 
     private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -864,7 +1037,7 @@ public class BedwarsHudRenderer {
     private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !HeightLimitWatch.visible(cfg, example)) return null;
+        if (!all && !HeightLimitWatch.visible(cfg, example || editing)) return null;
         Size size = heightLimitSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -946,7 +1119,7 @@ public class BedwarsHudRenderer {
     // ----- Session Stats (Lunar-style game + session tally) -----
 
     private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !SessionStatsWatch.visible(cfg, example)) return null;
+        if (!all && !SessionStatsWatch.visible(cfg, example || editing)) return null;
         Size size = sessionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -1156,7 +1329,7 @@ public class BedwarsHudRenderer {
         }
         for (int i = 0; i < KeystrokesLayout.CAPS.length; i++) {
             // The editor preview shows a still frame and must not disturb the live fades.
-            float level = example ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
+            float level = example || editing ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
             float[] r = KeystrokesLayout.CAPS[i];
             int fill = KeyCapStyle.fill(level, background, accent);
             if ((fill >>> 24) != 0) {
@@ -1185,9 +1358,17 @@ public class BedwarsHudRenderer {
     /**
      * Held state in cap order (W, A, S, D, Space, LMB, RMB). Movement follows the player's binds; the
      * mouse row is the physical buttons its labels name, and only counts in game (no screen open).
+     * In Edit HUD a screen leaves the bindings unpressed, so the movement caps read their keys' keyboard
+     * state, and the mouse caps stay unlit: the mouse is the editor's pointer (D12). Gameplay input stays off.
      */
     private static boolean[] keyStates(Minecraft mc, boolean example) {
         if (example || mc.gameSettings == null) return new boolean[]{true, false, false, false, false, false, false};
+        if (editing) {
+            GameSettings g = mc.gameSettings;
+            return new boolean[]{GameSettings.isKeyDown(g.keyBindForward), GameSettings.isKeyDown(g.keyBindLeft),
+                    GameSettings.isKeyDown(g.keyBindBack), GameSettings.isKeyDown(g.keyBindRight),
+                    GameSettings.isKeyDown(g.keyBindJump), false, false};
+        }
         boolean inGame = mc.currentScreen == null;
         return new boolean[]{
                 isDown(mc.gameSettings.keyBindForward),

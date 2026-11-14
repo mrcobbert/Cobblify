@@ -7,10 +7,19 @@ import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.SheetSchema;
 import com.bedwarsqol.gui.sheet.SheetValues;
+import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
+import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.stats.StatsCache;
+import net.minecraft.client.Minecraft;
 import org.lwjgl.input.Keyboard;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
@@ -61,6 +70,35 @@ final class SettingsBindings implements SheetValues {
     }
 
     /**
+     * The HUD items a sheet switch shows when it goes from off to on, so they take their first free Auto spot: only the
+     * module enable switches, listed here on purpose (not derived from {@link #moduleForHud}). A Background switch, In
+     * Game Only, any other row and the scoreboard, chat and tab list show nothing, so they never move an item.
+     */
+    static List<String> hudIdsShownBy(String rowId) {
+        List<String> ids;
+        switch (rowId == null ? "" : rowId) {
+            case "potion": ids = Collections.singletonList(BedwarsHudRenderer.POTION_HUD); break;
+            case "armor": ids = Collections.singletonList(BedwarsHudRenderer.ARMOR_HUD); break;
+            case "inventory": ids = Collections.singletonList(BedwarsHudRenderer.INVENTORY_HUD); break;
+            case "genTimers":
+                ids = Arrays.asList(BedwarsHudRenderer.DIAMOND_TIMER_HUD, BedwarsHudRenderer.EMERALD_TIMER_HUD);
+                break;
+            case "keystrokes": ids = Collections.singletonList(BedwarsHudRenderer.KEYSTROKES_HUD); break;
+            case "mapInfo": ids = Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD); break;
+            case "session": ids = Collections.singletonList(BedwarsHudRenderer.SESSION_HUD); break;
+            case "fps": ids = Collections.singletonList(BedwarsHudRenderer.FPS_HUD); break;
+            case "cps": ids = Collections.singletonList(BedwarsHudRenderer.CPS_HUD); break;
+            case "ping": ids = Collections.singletonList(BedwarsHudRenderer.PING_HUD); break;
+            default: return Collections.emptyList();
+        }
+        List<String> out = new ArrayList<String>();
+        for (String id : ids) {
+            if (HudModules.ids().contains(id)) out.add(id);
+        }
+        return out;
+    }
+
+    /**
      * Every schema id but Lunar's top-level alerts, and the Scoreboard Size and Tab List Size rows: here the
      * scoreboard and tab list are HUD items, sized with Edit HUD's corner resize.
      */
@@ -75,7 +113,7 @@ final class SettingsBindings implements SheetValues {
     public boolean hasPlatformOnly(String id) {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
                 || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
-                || SheetSchema.hudItem(id) != null;
+                || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
     @Override
@@ -158,6 +196,9 @@ final class SettingsBindings implements SheetValues {
             c.save();
             return;
         }
+        // A module switched on: its items take their first free Auto spot, nothing else moves.
+        List<String> shown = v && !on(id) ? hudIdsShownBy(id) : Collections.<String>emptyList();
+        if (!shown.isEmpty()) BedwarsHudRenderer.show(Minecraft.getMinecraft(), c, shown);
         switch (id) {
             case "potion": c.potionStatusEnabled = v; break;
             case "potionInGame": c.potionInGameOnly = v; break;
@@ -311,6 +352,16 @@ final class SettingsBindings implements SheetValues {
     @Override
     public void run(String id) {
         if ("sessionReset".equals(id)) SessionStatsWatch.reset();
+        else if (SheetLayout.RESET_POSITIONS_ID.equals(id)) resetPositions();
+    }
+
+    /** Reset Positions from the settings menu: the default layout, saved, and undoable in the next Edit HUD (D7). */
+    private static void resetPositions() {
+        ClientSettings c = settings();
+        Map<String, HudModuleState> before = HudModules.snapshot(c);
+        BedwarsHudRenderer.resetPositions(Minecraft.getMinecraft(), c);
+        c.save();
+        EditHudGui.offerUndo(before, HudModules.snapshot(c));
     }
 
     private static int nearest(int[] values, int v) {

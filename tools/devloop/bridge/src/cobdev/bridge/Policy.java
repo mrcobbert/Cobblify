@@ -50,9 +50,66 @@ final class Policy {
     static final String PLAYER_LIST_KEY = "key.playerlist";
 
     static String keyBinding(String category, String description) {
+        return keyBinding(category, description, false);
+    }
+
+    /** The movement keys whose keyboard state a raw hold may set (Edit HUD's live Keystrokes preview). */
+    static final java.util.List<String> RAW_MOVEMENT_KEYS = java.util.Arrays.asList(
+            "key.forward", "key.left", "key.back", "key.right", "key.jump");
+
+    /**
+     * {@code raw} holds the key's keyboard state (what {@code Keyboard.isKeyDown} and
+     * {@code GameSettings.isKeyDown} read) and never the binding, so a screen sees exactly what a real
+     * press and release produce. It also allows the five movement keys: inside a screen their state
+     * moves nothing, because a screen leaves the bindings unpressed.
+     */
+    static String keyBinding(String category, String description, boolean raw) {
         if (KEY_CATEGORY.equals(category)) return null;
         if ("key.categories.multiplayer".equals(category) && PLAYER_LIST_KEY.equals(description)) return null;
-        return "only key bindings Cobblify registers (category " + KEY_CATEGORY + ") and the Tab key can be held";
+        if (raw && "key.categories.movement".equals(category) && RAW_MOVEMENT_KEYS.contains(description)) return null;
+        return raw
+                ? "raw holds are for Cobblify's key bindings, the Tab key and " + RAW_MOVEMENT_KEYS
+                : "only key bindings Cobblify registers (category " + KEY_CATEGORY + ") and the Tab key can be held";
+    }
+
+    /** A raw hold writes the keyboard state, so the binding must be on a keyboard key (mouse codes are negative). */
+    static String rawKeyCode(String name, int code) {
+        if (code > 0 && code < 256) return null;
+        return name + " is not bound to a keyboard key (code " + code + "); a raw hold needs one";
+    }
+
+    /**
+     * {@code --mods}: the LWJGL key codes held around one injected event. Only alt (LMENU), shift (LSHIFT)
+     * and ctrl, which holds both LCONTROL and LMETA because {@code GuiScreen.isCtrlKeyDown} reads Cmd on
+     * macOS. Refused on a multiplayer server like every other input.
+     */
+    static int[] modifiers(String mods, boolean inWorld, boolean singleplayer) {
+        Refused.check(local(inWorld, singleplayer));
+        java.util.LinkedHashSet<Integer> codes = new java.util.LinkedHashSet<>();
+        if (mods == null || mods.trim().isEmpty()) return new int[0];
+        for (String raw : mods.split(",", -1)) {
+            String m = raw.trim().toLowerCase(java.util.Locale.ROOT);
+            if (m.equals("alt")) {
+                codes.add(56);
+            } else if (m.equals("shift")) {
+                codes.add(42);
+            } else if (m.equals("ctrl")) {
+                codes.add(29);
+                codes.add(219);
+            } else {
+                throw new Refused("--mods takes alt, shift and ctrl (comma-separated), not '" + raw + "'");
+            }
+        }
+        int[] out = new int[codes.size()];
+        int i = 0;
+        for (int c : codes) out[i++] = c;
+        return out;
+    }
+
+    /** {@code --device}: display pixels from the top-left, inside the display. */
+    static String device(int x, int y, int displayWidth, int displayHeight) {
+        if (x >= 0 && y >= 0 && x < displayWidth && y < displayHeight) return null;
+        return "(" + x + "," + y + ") is outside the " + displayWidth + "x" + displayHeight + " display";
     }
 
     /** Holding a key needs a local world; releasing ("off") is always allowed, wherever the client is. */
@@ -119,11 +176,13 @@ final class Policy {
             case "block":
             case "clutch-blast":
             case "use-item":
+            case "hud-boxes":
+            case "sheet-node":
                 return null;
             default:
                 return OVERLAY_PROBES.contains(name) ? null
-                        : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, "
-                        + String.join(", ", OVERLAY_PROBES) + ")";
+                        : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, hud-boxes, "
+                        + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ")";
         }
     }
 

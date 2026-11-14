@@ -74,4 +74,18 @@ public class OverlayBoxTest {
             }
         }
     }
+
+    @Test
+    public void aStoredSpotKeepsItsSubPixelPart() {
+        // edit-hud 7b: the scoreboard and tab list move by one screen pixel too, so their stored spot is exact
+        float[] rect = {0f, 0f, 100f, 60f};
+        for (int anchor = 0; anchor <= 8; anchor++) {
+            // inward from the anchor's own edge, so the screen clamp stays out of it
+            float dx = anchor % 3 == 2 ? -1f / 3f : 1f / 3f, dy = anchor / 3 == 2 ? -0.25f : 0.25f;
+            float[] whole = OverlayBox.placed(rect, 1f, 0f, 0f, anchor, 480, 270, null);
+            float[] exact = OverlayBox.placed(rect, 1f, dx, dy, anchor, 480, 270, null);
+            assertEquals("anchor " + anchor, whole[0] + dx, exact[0], 1e-4f);
+            assertEquals("anchor " + anchor, whole[1] + dy, exact[1], 1e-4f);
+        }
+    }
 }

@@ -33,6 +33,28 @@ public class HudPlacementTest {
     }
 
     @Test
+    public void exactStoredIsTheUnroundedInverseOfAbsolute() {
+        float[][] screens = {{427f, 240f}, {640f, 360f}, {427.5f, 240.5f}, {960f, 540f}};
+        float[][] boxes = {{206f, 74f}, {40.5f, 21.25f}, {51f, 1f}};
+        float[] positions = {0f, 110.5f, 10.4f, 133.333f, 2f};
+        for (float[] scr : screens) {
+            for (float[] box : boxes) {
+                for (float p : positions) {
+                    for (int anchor = 0; anchor <= 8; anchor++) {
+                        float sx = HudPlacement.exactStoredX(p, anchor, box[0], scr[0]);
+                        float sy = HudPlacement.exactStoredY(p, anchor, box[1], scr[1]);
+                        String at = "anchor " + anchor + " p " + p + " box " + box[0] + " screen " + scr[0];
+                        assertEquals(at, p, HudPlacement.absoluteX(sx, anchor, box[0], scr[0]), EPS);
+                        assertEquals(at, p, HudPlacement.absoluteY(sy, anchor, box[1], scr[1]), EPS);
+                        assertEquals(at, HudPlacement.storedX(p, anchor, box[0], scr[0]), Math.round(sx));
+                        assertEquals(at, HudPlacement.storedY(p, anchor, box[1], scr[1]), Math.round(sy));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     public void anchorFollowsTheScreenThirds() {
         assertEquals(0, HudPlacement.anchorFor(5, 5, 40, 20, 480, 270));
         assertEquals(2, HudPlacement.anchorFor(430, 5, 45, 20, 480, 270));

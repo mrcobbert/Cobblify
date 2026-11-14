@@ -9,7 +9,18 @@ import java.util.List;
  */
 public final class HudSnapper {
 
+    /**
+     * Edit HUD's snap reach in screen pixels, the same at every GUI scale: close enough to catch a deliberate line-up,
+     * small enough that a box can sit a few pixels from an edge (Forge and Lunar keep their own 8).
+     */
+    public static final float SNAP_DEVICE_PX = 4f;
+
     private HudSnapper() {
+    }
+
+    /** {@link #SNAP_DEVICE_PX} in GUI px at GUI scale {@code scale}. */
+    public static float threshold(int scale) {
+        return SNAP_DEVICE_PX / scale;
     }
 
     /** Another box the moving one can snap to. */
