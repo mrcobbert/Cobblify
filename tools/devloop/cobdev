@@ -3674,6 +3674,8 @@ def hl_bg(h):
             s.cmd("/effect @p clear")
             if name == "potion":
                 s.cmd("/effect @p 1 45 1 true")
+            if name == "teamupgrades":
+                tu_board(s, True, True)  # an active game (sidebar + below-name): Team Upgrades draws only then
             s.cmd("/tp @p 0.5 4 0.5 0 0")
             s.call("/close")
             time.sleep(0.6)  # the FOV settles after an effect change
@@ -3685,6 +3687,8 @@ def hl_bg(h):
             h.group_bg(g, True)
             h.all_off()
             after = h.shot(name + "-none-after")
+            if name == "teamupgrades":
+                tu_clear_board(s)
             checks, on_box, moved = hl_bg_checks(name, kind, (before, after), on, off, h.sf)
             if not moved:
                 break

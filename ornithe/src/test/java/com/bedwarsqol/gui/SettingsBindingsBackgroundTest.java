@@ -108,6 +108,23 @@ public class SettingsBindingsBackgroundTest {
     }
 
     @Test
+    public void teamUpgradesRowSwitchesItsPanel() {
+        SettingsBindings values = new SettingsBindings();
+        SheetSchema.Row r = SheetSchema.module("teamUpgrades").rows.get(0);
+        assertEquals("teamUpgradesBg", r.id);
+        assertEquals(BedwarsHudRenderer.TEAM_UPGRADES_HUD, r.hudItem());
+        assertEquals("See-through panel behind it", r.desc);
+        assertTrue(SheetSchema.shows(values, "teamUpgradesBg"));
+        assertTrue(values.on("teamUpgradesBg"));
+        values.setOn("teamUpgradesBg", false);
+        assertFalse(HudModules.background(BedwarsQol.config, BedwarsHudRenderer.TEAM_UPGRADES_HUD));
+        assertFalse(HudModules.get(BedwarsQol.config, BedwarsHudRenderer.TEAM_UPGRADES_HUD).background);
+        assertFalse("the row saved", SettingsManager.load().hudBackground(BedwarsHudRenderer.TEAM_UPGRADES_HUD));
+        values.setOn("teamUpgradesBg", true);
+        assertTrue(HudModules.background(BedwarsQol.config, BedwarsHudRenderer.TEAM_UPGRADES_HUD));
+    }
+
+    @Test
     public void everyBackgroundRowNamesABackgroundCapableItem() {
         int rows = 0, modules = 0;
         for (SheetSchema.Category c : SheetSchema.CATS) {

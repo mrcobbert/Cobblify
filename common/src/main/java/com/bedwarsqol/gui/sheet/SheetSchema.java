@@ -279,6 +279,7 @@ public final class SheetSchema {
                         inGame("mapInfoInGame", "Hide it in lobbies")),
                 module("teamUpgrades", "Team Upgrades", "Your team's upgrades and trap queue",
                         "traps forge sharpness protection heal pool",
+                        background("teamUpgradesBg", "teamupgrades", "See-through panel behind it"),
                         seg("teamUpgradesLayout", "Layout", "Only what you own, or every upgrade", null, "Compact", "Full")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
                         background("sessionBg", "sessionstats", "See-through panel behind it"),

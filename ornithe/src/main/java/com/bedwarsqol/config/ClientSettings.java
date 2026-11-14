@@ -106,7 +106,7 @@ public class ClientSettings {
     public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
 
-    /** Team Upgrades: your team's upgrades and trap queue in a Bed Wars game; always drawn on its panel. */
+    /** Team Upgrades: your team's upgrades and trap queue in a Bed Wars game, on its panel while its Background is on. */
     public static final int TEAM_UPGRADES_COMPACT = 0;
     public static final int TEAM_UPGRADES_FULL = 1;
     public boolean teamUpgradesEnabled = false;

@@ -158,7 +158,7 @@ public final class HudModules {
             return new HudModuleState(c.tabListHudX, c.tabListHudY, c.tabListHudAnchor, c.tabListHudScale, true, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(id)) {
-            return new HudModuleState(c.teamUpgradesHudX, c.teamUpgradesHudY, c.teamUpgradesHudAnchor, c.teamUpgradesHudScale, c.teamUpgradesEnabled);
+            return new HudModuleState(c.teamUpgradesHudX, c.teamUpgradesHudY, c.teamUpgradesHudAnchor, c.teamUpgradesHudScale, c.teamUpgradesEnabled, c.hudBackground(id));
         }
         return null;
     }
@@ -221,6 +221,7 @@ public final class HudModules {
         } else if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(id)) {
             c.teamUpgradesHudX = s.x; c.teamUpgradesHudY = s.y; c.teamUpgradesHudAnchor = s.anchor; c.teamUpgradesHudScale = s.scale;
             c.teamUpgradesEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         }
     }
 

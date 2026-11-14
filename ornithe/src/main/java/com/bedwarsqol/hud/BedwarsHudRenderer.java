@@ -843,7 +843,7 @@ public class BedwarsHudRenderer {
         final List<TeamUpgradeRows.Row> full = teamUpgradesFullExample();
         HudLayout.Sizer sizer = s -> {
             Size size = teamUpgradesSize(s, full);
-            float pad = panelPad(s);
+            float pad = padFor(cfg, TEAM_UPGRADES_HUD, s);
             return new float[]{size.width + 2f * pad, size.height + 2f * pad};
         };
         HudLayout.Fit fit = layout.fit(items.subList(0, at), obstacles, TEAM_UPGRADES_HUD, scale, step, min, sizer,
@@ -1236,7 +1236,7 @@ public class BedwarsHudRenderer {
     private static HudBox teamUpgradesBox(Minecraft mc, ClientSettings cfg, Size size) {
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float pad = panelPad(teamUpgradesScale(cfg));
+        float pad = padFor(cfg, TEAM_UPGRADES_HUD, teamUpgradesScale(cfg));
         float[] at = place(mc, cfg, TEAM_UPGRADES_HUD, cfg.teamUpgradesHudX, cfg.teamUpgradesHudY, cfg.teamUpgradesHudAnchor, size.width, size.height, pad, r);
         return new HudBox(TEAM_UPGRADES_HUD, at[0], at[1], size.width, size.height, pad);
     }
@@ -1277,7 +1277,7 @@ public class BedwarsHudRenderer {
         // panel holds that box's edge nearest the screen side, as in game.
         HudBox box = teamUpgradesBox(mc, cfg, teamUpgradesSize(scale, rows));
         if (box == null) return;
-        drawHudBackground(box, scale, example);
+        drawPanel(cfg, TEAM_UPGRADES_HUD, box, scale, example);
         scale = ts(scale);
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;

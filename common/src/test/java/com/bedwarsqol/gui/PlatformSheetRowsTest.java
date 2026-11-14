@@ -31,7 +31,7 @@ public class PlatformSheetRowsTest {
 
         SettingsBindings values = new SettingsBindings();
         for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov", "teamUpgrades",
-                "teamUpgradesLayout",
+                "teamUpgradesLayout", "teamUpgradesBg",
                 "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
                 "scoreboardBg", "tabListBg", "chatBg",
                 "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {
