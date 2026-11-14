@@ -245,6 +245,60 @@ class OverlayScene(unittest.TestCase):
             cobdev.time.sleep = real
 
 
+class OverlaySmokeNoise(unittest.TestCase):
+    """Triage of the first integrated smoke run (2026-11-14): checks that failed on correct rendering."""
+
+    def stray(self, img, pts, rgb=(90, 140, 60)):
+        for x, y in pts:
+            img = paint_fn(img, (x, y, x + 1, y + 1), lambda c, v=rgb: v)
+        return img
+
+    def test_stray_pixels_do_not_stretch_a_drawn_box(self):
+        ref = sky(200, 120)
+        img = paint_fn(ref, (80, 10, 120, 20), black(0x80))          # the tab list
+        img = self.stray(img, [(3, 100), (190, 5), (60, 110), (150, 90)])  # grass shimmer
+        self.assertEqual(cobdev.quiet_bbox(ref, img), (80, 10, 120, 20))
+        self.assertEqual(cobdev.box_width(cobdev.quiet_bbox(ref, img)), 40)
+        self.assertEqual(cobdev.drawn_bbox(ref, img), (3, 5, 191, 111))  # the old box would be ~190 px wide
+        self.assertIsNone(cobdev.quiet_bbox(ref, self.stray(ref, [(3, 100), (190, 5)])))
+
+    def test_frames_match_allows_a_few_shimmering_pixels_only(self):
+        ref = sky(200, 120)
+        same, n = cobdev.frames_match(ref, self.stray(ref, [(3, 100), (190, 5), (60, 110), (150, 90)]))
+        self.assertTrue(same)
+        self.assertEqual(4, n)
+        swirl = paint_fn(ref, (120, 50, 140, 70), lambda c: (90, 120, 140))  # a potion particle
+        same, n = cobdev.frames_match(ref, swirl)
+        self.assertFalse(same)
+        self.assertEqual(400, n)
+
+    def one_row_tab(self, background):
+        """A 1-player tab list at scale 1.5, GUI scale 2: border, head, name text, ping bars."""
+        ref = sky(400, 200)
+        box = {"x": 50.0, "y": 20.0, "w": 138.0, "h": 15.0}
+        rect = cobdev.gui_rect(box, 2)
+        img = ref
+        if background:
+            img = paint_fn(img, rect, black(0x80))
+            img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[2] - 3, rect[3] - 3), black(0x20))
+        img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[0] + 27, rect[1] + 27), lambda c: (120, 80, 60))  # head
+        img = paint_fn(img, (rect[0] + 30, rect[1] + 4, rect[2] - 30, rect[3] - 4), lambda c: (255, 255, 255))  # text
+        img = paint_fn(img, (rect[2] - 26, rect[1] + 8, rect[2] - 4, rect[3] - 4), lambda c: (0, 255, 0))  # ping
+        return ref, img, box
+
+    def test_tab_background_off_on_a_short_list(self):
+        ref, off, box = self.one_row_tab(False)
+        # the old check: most of a one-row list is content, so "80% clear" can never hold
+        self.assertLess(cobdev.ratio_share(off, ref, cobdev.gui_rect(box, 2), 1.0), 0.8)
+        ok, detail = cobdev.tab_background_off(off, ref, box, 1.5, 2)
+        self.assertTrue(ok, detail)
+        ref, on, box = self.one_row_tab(True)
+        ok, detail = cobdev.tab_background_off(on, ref, box, 1.5, 2)
+        self.assertFalse(ok, detail)
+        x = cobdev.tab_border_column(box, 1.5, 2)
+        self.assertTrue(box["x"] * 2 <= x < (box["x"] + 1.5) * 2)
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",
@@ -717,6 +771,81 @@ class HudLookHelpers(unittest.TestCase):
         self.assertEqual(cobdev.hl_expected_panel("keystrokes", 2), (112, 134))
         self.assertEqual(cobdev.hl_expected_panel("armor", 2), (44, 44))
         self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
+
+
+class HudLookNoise(unittest.TestCase):
+    """The first live run (2026-11-14): world specks, the horizon redrawing far chunks, a camera that turned and a
+    ticking potion timer made frame diffs measure the world instead of the module. The HL boxes must ignore them."""
+
+    W, H = 300, 200
+    HORIZON = 100
+
+    def world(self, horizon_shift=0, specks=()):
+        img = flat(self.W, self.H, SKY)
+        img = paint(img, (0, self.HORIZON + horizon_shift, self.W - 1, self.H - 1), GRASS)
+        for x, y in specks:
+            img = paint(img, (x, y, x, y), (200, 40, 40))
+        return img
+
+    def fps_on(self, base):
+        """An FPS box at (4, 4), 94 x 36 px (47 x 18 GUI px at scale factor 2), white text with a 63 shadow."""
+        img = paint(base, (4, 4, 97, 39), see_through(SKY))
+        img = paint(img, (14, 16, 30, 27), (63, 63, 63))
+        return paint(img, (12, 14, 28, 25), (255, 255, 255))
+
+    def fps_off(self, base):
+        img = paint(base, (12, 12, 30, 23), (63, 63, 63))
+        return paint(img, (10, 10, 28, 21), (255, 255, 255))
+
+    def test_changed_points_skips_identical_rows_and_matches_bbox_diff(self):
+        a = self.world()
+        b = paint(a, (5, 7, 9, 8), GRASS)
+        pts = cobdev.changed_points(a, b)
+        self.assertEqual(len(pts), 10)
+        self.assertEqual(cobdev.bbox_of(pts), (5, 7, 9, 8))
+        self.assertEqual(cobdev.bbox_diff(a, b), (5, 7, 9, 8))
+        self.assertEqual(cobdev.changed_points(a, a), [])
+        self.assertIsNone(cobdev.changed_points(a, flat(10, 10, SKY)))
+
+    def test_specks_and_a_horizon_band_do_not_count(self):
+        before = self.world()
+        frame = self.fps_on(self.world(horizon_shift=1, specks=[(150, 160), (220, 180)]))
+        self.assertEqual(cobdev.bbox_diff(before, frame)[2:], (self.W - 1, 180))  # the old, noisy box
+        self.assertEqual(cobdev.hud_bbox(before, frame), (4, 4, 97, 39))
+
+    def test_a_second_backdrop_removes_a_change_seen_only_in_the_first(self):
+        before = self.world(horizon_shift=-2)          # a transient horizon in the first backdrop only
+        after = self.world()
+        frame = self.fps_on(self.world())
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=after), [(4, 4, 97, 39)])
+
+    def test_two_panels_far_apart_are_two_boxes_biggest_first(self):
+        before = self.world()
+        frame = paint(paint(before, (200, 4, 273, 47), see_through(SKY)), (120, 4, 163, 47), see_through(SKY))
+        self.assertEqual(cobdev.hud_boxes(before, frame), [(200, 4, 273, 47), (120, 4, 163, 47)])
+        self.assertEqual(cobdev.union_box(cobdev.hud_boxes(before, frame)), (120, 4, 273, 47))
+
+    def test_bg_checks_pass_through_noise_and_detect_a_moved_scene(self):
+        before, after = self.world(), self.world()
+        on = self.fps_on(self.world(specks=[(150, 160)]))
+        off = self.fps_off(self.world(horizon_shift=1))
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, after), on, off, 2)
+        self.assertEqual(box, (4, 4, 97, 39))
+        self.assertFalse(moved)
+        self.assertEqual([c for c in checks if not c[1]], [])
+        turned = self.fps_off(self.world(horizon_shift=40))  # the camera looked down between the shots
+        self.assertTrue(cobdev.hl_bg_checks("fps", "textbox", (before, after), on, turned, 2)[2])
+
+    def test_icon_swap_ignores_the_ticking_time_line(self):
+        panel, sf = (4, 4, 139, 51), 2
+        old = paint(self.world(), panel, see_through(SKY))
+        modern = paint(old, (12, 12, 40, 40), (180, 40, 40))           # the icon slot
+        ticked = paint(modern, (60, 34, 80, 42), (170, 170, 170))       # "0:43" became "0:42"
+        self.assertTrue(cobdev.hl_icon_swap(old, ticked, panel, sf)[0])
+        renamed = paint(modern, (60, 14, 80, 20), (255, 255, 255))      # the name line changed: not only the icon
+        self.assertFalse(cobdev.hl_icon_swap(old, renamed, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, old, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, modern, None, sf)[0])
 
 
 class HudLookPressedCap(unittest.TestCase):
