@@ -344,6 +344,10 @@ public final class Bench {
                     "/gamerule randomTickSpeed 0",
                     "/gamerule doFireTick false",
                     "/kill @e[type=!Player]",
+                    // A glass floor under the camera: flying does not survive the save, so the player
+                    // stands on it instead of falling back to the ground before the template is saved.
+                    "/fill " + (x - 1) + " " + (y - 1) + " " + (z - 1) + " " + (x + 1) + " " + (y - 1) + " " + (z + 1)
+                            + " minecraft:glass",
                     "/tp " + player + " " + (x + 0.5) + " " + y + " " + (z + 0.5) + " 0 15",
                     "/fill " + (x - 9) + " " + (y - 4) + " " + (z - 22) + " " + (x + 9) + " " + (y - 4) + " " + (z - 8)
                             + " minecraft:stone",
