@@ -401,11 +401,15 @@ public class BedwarsHudRenderer {
         ScaledResolution r = new ScaledResolution(mc);
         float sw = r.getScaledWidth(), sh = r.getScaledHeight();
         List<HudBox> boxes = getEditorBoxes(mc, cfg); // every spot as it is now, before the first write
+        // and the size Team Upgrades is drawn at now: a panel the default layout stepped down keeps it once pinned,
+        // as when it is moved itself (pinDrawnScale); read before the first pin re-flows the layout
+        float teamScale = cfg.teamUpgradesHudAnchor == HudPlacement.AUTO ? teamUpgradesScale(cfg) : cfg.teamUpgradesHudScale;
         for (HudBox b : boxes) {
             // only modules the Auto layout places: an overlay on Auto sits at its vanilla spot, which no change moves
             if (!HudModules.ids().contains(b.id)) continue;
             HudModuleState s = HudModules.get(cfg, b.id);
             if (s != null && HudPins.shouldPin(b.id, b.shown, s.anchor, changingIds)) {
+                if (TEAM_UPGRADES_HUD.equals(b.id)) cfg.teamUpgradesHudScale = teamScale;
                 setHudAbsolutePosition(cfg, b.id, b.x, b.y, b.width, b.height, sw, sh);
             }
         }

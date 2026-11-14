@@ -4555,6 +4555,25 @@ def tu_move_keeps_size(s, cfg, mode):
     time.sleep(0.6)
     gw, gh, boxes = tu_boxes(s)
     before = boxes[TU_ID]
+    # Outcome review (edit-hud, round 1): moving ANOTHER item pins every shown Auto module where it is drawn; the
+    # stepped-down panel must keep its drawn size then too. Nudge the chat one step, compare, undo.
+    chat = boxes.get("chat")
+    if chat and chat.get("shown"):
+        s.call("/click", {"x": int(chat["x"] + chat["w"] - 6), "y": int(chat["y"] + chat["h"] / 2)})
+        s.call("/key", {"code": KEYS["right"]})
+        time.sleep(0.3)
+        _, _, moved = tu_boxes(s)
+        other = moved[TU_ID]
+        s.check("moving another item keeps the stepped-down panel's size and spot",
+                abs(other["w"] - before["w"]) < 0.01 and abs(other["h"] - before["h"]) < 0.01
+                and abs(other["x"] - before["x"]) < 0.01 and abs(other["y"] - before["y"]) < 0.01,
+                {"before": before, "after": other, "chat": chat})
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        time.sleep(0.3)
+        gw, gh, boxes = tu_boxes(s)
+        before = boxes[TU_ID]
+    else:
+        s.note("chat not shown in the editor: the pin-by-another-item check did not run")
     s.call("/click", {"x": int(before["x"] + before["w"] / 2), "y": int(before["y"] + 4)})
     s.call("/key", {"code": KEYS["right"]})
     time.sleep(0.3)
