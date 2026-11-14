@@ -145,6 +145,86 @@ class OverlayPixels(unittest.TestCase):
         self.assertEqual(cobdev.dark_count(img, ref, (0, 0, 30, 20)), 14)
 
 
+class OverlayScene(unittest.TestCase):
+    """The OV steps' sample rects and their settings bookkeeping (review round 1, I1 and I2)."""
+
+    def test_scoreboard_samples_are_never_empty(self):
+        # P1-P3 boxes at GUI scale 2, incl. the small one (x 6, scale 0.7) whose old margin rect was empty
+        for box, scale in (({"x": 423.0, "y": 107.0, "w": 56.0, "h": 37.0}, 1.0),
+                           ({"x": 6.0, "y": 40.0, "w": 39.2, "h": 38.5}, 0.7),
+                           ({"x": 390.0, "y": 150.0, "w": 84.0, "h": 55.5}, 1.5),
+                           ({"x": 0.0, "y": 0.0, "w": 12.0, "h": 11.1}, 0.3)):
+            for sf in (1, 2, 3):
+                lines, title = cobdev.scoreboard_samples(box, scale, sf)
+                for rect in (lines, title):
+                    self.assertGreater(rect[2] - rect[0], 0, (box, scale, sf, rect))
+                    self.assertGreater(rect[3] - rect[1], 0, (box, scale, sf, rect))
+                # inside the left margin, left of where the text starts (2 px in)
+                self.assertGreaterEqual(lines[0], int(box["x"] * sf))
+                self.assertLess(lines[0], (box["x"] + 2 * scale) * sf)
+                self.assertLessEqual(title[3], (box["y"] + 9 * scale) * sf + 1)
+                self.assertGreaterEqual(lines[1], title[3])
+
+    def test_a_fill_in_the_sample_measures(self):
+        ref = sky(120, 200)
+        box, scale, sf = {"x": 6.0, "y": 40.0, "w": 39.2, "h": 38.5}, 0.7, 2
+        img = paint_fn(ref, cobdev.gui_rect(box, sf), black(0x50))
+        for rect in cobdev.scoreboard_samples(box, scale, sf):
+            self.assertAlmostEqual(cobdev.fill_ratio(img, ref, rect), 1 - 0x50 / 255.0, delta=0.01)
+
+    def fake(self, backgrounds):
+        test = self
+
+        class Fake(object):
+            def __init__(self):
+                self.bg, self.fields = dict(backgrounds), {}
+
+            def call(self, path, params=None, post=None, timeout=60):
+                if path == "/invoke":
+                    name = post["path"].rsplit(".", 1)[1]
+                    args = post["args"].split(cobdev.ARG_SEP)
+                    if name == "hudBackground":
+                        return {"value": self.bg.get(args[0], True)}
+                    test.assertEqual("setHudBackground", name)
+                    self.bg[args[0]] = args[1] == "true"
+                return {"ok": True}
+
+            def try_call(self, path, params=None, post=None, timeout=60):
+                return self.call(path, params, post), None
+
+            def field(self, path, value=None):
+                if value is None:
+                    return {"value": self.fields.get(path, True)}
+                self.fields[path] = value
+                return {"ok": True}
+
+            def status(self):
+                return {"guiScaleSetting": 3}
+
+            def cmd(self, command):
+                pass
+
+            def probe(self, name, *args):
+                return {"ok": True}
+        return Fake()
+
+    def test_backgrounds_start_on_and_come_back_as_they_were(self):
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda _: None
+        try:
+            s = self.fake({"scoreboard": False, "chat": True})
+            scene = cobdev.OvScene(s, "com.bedwarsqol.BedwarsQol.config")
+            scene.setup()
+            self.assertEqual({"scoreboard": True, "tablist": True, "chat": True}, s.bg)
+            scene.background("scoreboard", False)
+            scene.background("chat", False)
+            scene.background("scoreboard", True)
+            scene.restore()
+            self.assertEqual({"scoreboard": False, "tablist": True, "chat": True}, s.bg)
+        finally:
+            cobdev.time.sleep = real
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",
