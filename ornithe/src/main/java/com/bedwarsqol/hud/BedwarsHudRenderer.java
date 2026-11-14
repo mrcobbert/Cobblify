@@ -26,6 +26,8 @@ import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.client.renderer.entity.RenderItem;
@@ -55,6 +57,9 @@ public class BedwarsHudRenderer {
     public static final String HEIGHT_LIMIT_HUD = "heightlimit";
     public static final String EMERALD_TIMER_HUD = "emeraldtimer";
     public static final String KEYSTROKES_HUD = "keystrokes";
+    public static final String FPS_HUD = "fps";
+    public static final String CPS_HUD = "cps";
+    public static final String PING_HUD = "ping";
     private static final int INV_COLS = 9;
     private static final int INV_ROWS = 3; // storage rows only — the hotbar is already on screen
     // Inventory grid geometry (local pre-scale units). ONE gutter value (INV_GAP) is used everywhere:
@@ -167,6 +172,9 @@ public class BedwarsHudRenderer {
         addEditorBox(boxes, cfg, keystrokesBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
+        addEditorBox(boxes, cfg, textBox(mc, cfg, FPS_HUD, true, true));
+        addEditorBox(boxes, cfg, textBox(mc, cfg, CPS_HUD, true, true));
+        addEditorBox(boxes, cfg, textBox(mc, cfg, PING_HUD, true, true));
         return boxes;
     }
 
@@ -192,6 +200,9 @@ public class BedwarsHudRenderer {
         drawTimerHud(mc, cfg, example, true);
         drawTimerHud(mc, cfg, example, false);
         if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
+        drawTextModule(mc, cfg, FPS_HUD, example);
+        drawTextModule(mc, cfg, CPS_HUD, example);
+        drawTextModule(mc, cfg, PING_HUD, example);
         drawHeightLimitHud(mc, cfg, example);
         // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
         if (example) drawSessionHud(mc, cfg, true);
@@ -218,10 +229,13 @@ public class BedwarsHudRenderer {
 
     /**
      * Space around module {@code id}'s content box: its panel's padding while its Background is on, else the plain
-     * margin. Keystrokes keeps the margin either way: its caps are its background.
+     * margin. Keystrokes keeps the margin either way: its caps are its background. FPS, CPS and Ping are boxes that
+     * are their own panel.
      */
     private static float padFor(ClientSettings cfg, String id, float scale) {
         if (KEYSTROKES_HUD.equals(id)) return CONTENT_MARGIN;
+        // FPS, CPS and Ping: the box is the panel, so no padding around it; bare text keeps the margin
+        if (isTextModule(id)) return HudModules.background(cfg, id) ? 0f : CONTENT_MARGIN;
         return HudModules.background(cfg, id) ? panelPad(scale) : CONTENT_MARGIN;
     }
 
@@ -454,6 +468,10 @@ public class BedwarsHudRenderer {
         DEFAULT_SPOTS.put(EMERALD_TIMER_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.LEFT)});
         DEFAULT_SPOTS.put(SESSION_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.TOP, Slide.DOWN),
                 new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
+        // FPS, CPS and Ping go first down the left edge, then Armor and Potion under them (the approved layout)
+        DEFAULT_SPOTS.put(FPS_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
+        DEFAULT_SPOTS.put(CPS_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
+        DEFAULT_SPOTS.put(PING_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
         DEFAULT_SPOTS.put(ARMOR_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
         DEFAULT_SPOTS.put(POTION_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.TOP, Slide.DOWN)});
         DEFAULT_SPOTS.put(KEYSTROKES_HUD, new Spot[]{new Spot(Horizontal.RIGHT, Vertical.BOTTOM, Slide.UP),
@@ -522,6 +540,7 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
         if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
+        if (isTextModule(id)) return textModuleSize(cfg, id, textSegs(mc, id, true));
         return Size.EMPTY;
     }
 
@@ -540,6 +559,7 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerBox(mc, cfg, true, false, true);
         if (SESSION_HUD.equals(id)) return sessionBox(mc, cfg, true, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitBox(mc, cfg, true, true);
+        if (isTextModule(id)) return textBox(mc, cfg, id, true, true);
         return null;
     }
 
@@ -886,6 +906,107 @@ public class BedwarsHudRenderer {
         out.add(new Line("Session Games: " + games, SESSION_ROW_WEIGHT));
         out.add(new Line("Session Time: " + time, SESSION_ROW_WEIGHT));
         return out;
+    }
+
+    // ----- FPS, CPS and Ping (TextModules) -----
+
+    private static boolean isTextModule(String id) {
+        return FPS_HUD.equals(id) || CPS_HUD.equals(id) || PING_HUD.equals(id);
+    }
+
+    /** The HUD font's advance at scale 1, as TextModules measures. */
+    private static final TextModules.Advance HUD_ADVANCE = new TextModules.Advance() {
+        @Override
+        public float of(String s) {
+            return fontWidth(s);
+        }
+    };
+
+    private static List<TextModules.Seg> textSegs(Minecraft mc, String id, boolean example) {
+        if (FPS_HUD.equals(id)) return TextModules.fps(example ? TextModules.EXAMPLE_FPS : Minecraft.getDebugFPS());
+        if (CPS_HUD.equals(id)) {
+            if (example) return TextModules.cps(TextModules.EXAMPLE_CPS_LEFT, TextModules.EXAMPLE_CPS_RIGHT);
+            long now = Minecraft.getSystemTime();
+            return TextModules.cps(LEFT_CLICKS.cps(now), RIGHT_CLICKS.cps(now));
+        }
+        return TextModules.ping(example ? TextModules.EXAMPLE_PING : pingValue(mc));
+    }
+
+    /** The player's own latency as the tab list shows it (only read: no packet is sent), or "--". */
+    private static String pingValue(Minecraft mc) {
+        NetHandlerPlayClient net = mc.getNetHandler();
+        NetworkPlayerInfo info = net == null || mc.thePlayer == null ? null : net.getPlayerInfo(mc.thePlayer.getUniqueID());
+        return TextModules.pingText(mc.isSingleplayer(), info != null, info == null ? 0 : info.getResponseTime());
+    }
+
+    /**
+     * The text module's box, laid out at its text's own scale {@code e} so the text always fits: an 18 px box hugging
+     * the text with its Background on, else the bare text in brackets.
+     */
+    private static Size textModuleSize(ClientSettings cfg, String id, List<TextModules.Seg> segs) {
+        float e = ts(HudModules.get(cfg, id).scale);
+        if (HudModules.background(cfg, id)) {
+            float trail = BedwarsQolFont.minecraft() ? 1f : 0f; // Minecraft's font ends every string on an empty column
+            return new Size(TextModules.boxWidth(segs, HUD_ADVANCE, trail) * e, TextModules.BOX_H * e);
+        }
+        return new Size(TextModules.bareWidth(segs, HUD_ADVANCE) * e, TextModules.BARE_H * e);
+    }
+
+    private static HudBox textBox(Minecraft mc, ClientSettings cfg, String id, boolean example, boolean all) {
+        return textBox(mc, cfg, id, textSegs(mc, id, example), all);
+    }
+
+    private static HudBox textBox(Minecraft mc, ClientSettings cfg, String id, List<TextModules.Seg> segs, boolean all) {
+        HudModuleState s = HudModules.get(cfg, id);
+        if (s == null || (!all && !s.enabled)) return null;
+        Size size = textModuleSize(cfg, id, segs);
+        float pad = padFor(cfg, id, s.scale);
+        float[] at = place(mc, cfg, id, s.x, s.y, s.anchor, size.width, size.height, pad, new ScaledResolution(mc));
+        return new HudBox(id, at[0], at[1], size.width, size.height, pad);
+    }
+
+    /** One text module: numbers white, the unit in the accent, CPS's divider and its shadow as rects; text shadowed. */
+    private static void drawTextModule(Minecraft mc, ClientSettings cfg, String id, boolean example) {
+        List<TextModules.Seg> segs = textSegs(mc, id, example);
+        HudBox box = textBox(mc, cfg, id, segs, false);
+        if (box == null) return;
+        float e = ts(HudModules.get(cfg, id).scale);
+        boolean background = HudModules.background(cfg, id);
+        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        float ox = box.x, oy = box.y;
+        if (background) {
+            GuiRender.rect(box.x, box.y, box.right(), box.bottom(), HudBackground.FILL);
+            ox += TextModules.HPAD * e;
+            oy += TextModules.TEXT_DY * e;
+        }
+        if (BedwarsQolFont.minecraft()) {
+            // the font lands on whole device pixels; put the divider rects on the same grid
+            int sf = new ScaledResolution(mc).getScaleFactor();
+            ox = Math.round(ox * sf) / (float) sf;
+            oy = Math.round(oy * sf) / (float) sf;
+        }
+        if (!background) {
+            drawShadowed("[", ox, oy, e, TextModules.BRACKET);
+            ox += fontWidth("[") * e;
+        }
+        for (TextModules.Placed p : TextModules.layout(segs, HUD_ADVANCE)) {
+            if (p.rect != null) {
+                GuiRender.rect(ox + p.shadow[0] * e, oy + p.shadow[1] * e, ox + p.shadow[2] * e, oy + p.shadow[3] * e,
+                        TextModules.DIVIDER_SHADOW);
+                GuiRender.rect(ox + p.rect[0] * e, oy + p.rect[1] * e, ox + p.rect[2] * e, oy + p.rect[3] * e,
+                        TextModules.DIVIDER);
+            } else {
+                int color = p.seg.role == TextModules.Role.UNIT ? accent : TextModules.NUMBER;
+                drawShadowed(p.seg.text, ox + p.x * e, oy, e, color);
+            }
+        }
+        if (!background) drawShadowed("]", ox + TextModules.segWidth(segs, HUD_ADVANCE) * e, oy, e, TextModules.BRACKET);
+        resetGlState();
+    }
+
+    /** HUD text with its shadow in either font (Minecraft's own shadow, or the modern font's). */
+    private static void drawShadowed(String text, float x, float y, float e, int color) {
+        BedwarsQolFont.draw(text, x, y, e, color, true, BedwarsQolFont.Weight.BOLD);
     }
 
     // ----- Keystrokes (WASD, spacebar, mouse buttons with CPS) -----

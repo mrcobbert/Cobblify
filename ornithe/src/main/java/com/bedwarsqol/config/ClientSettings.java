@@ -105,6 +105,27 @@ public class ClientSettings {
     public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
 
+    /** FPS: the game's frames per second in a small box (Ornithe build). */
+    public boolean fpsEnabled = false;
+    public int fpsHudX = 0;
+    public int fpsHudY = 0;
+    public int fpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float fpsHudScale = 1.0f;
+
+    /** CPS: left and right clicks per second in a small box (Ornithe build). */
+    public boolean cpsEnabled = false;
+    public int cpsHudX = 0;
+    public int cpsHudY = 0;
+    public int cpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float cpsHudScale = 1.0f;
+
+    /** Ping: your own latency from the tab list, in a small box (Ornithe build); "--" in singleplayer. */
+    public boolean pingEnabled = false;
+    public int pingHudX = 0;
+    public int pingHudY = 0;
+    public int pingHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float pingHudScale = 1.0f;
+
     /**
      * Per-item Background switch of every HUD item (the HUD modules and the scoreboard, chat and tab list), by HUD
      * item id: only items switched Off are stored, as {@code false}; an absent id is On. Gson leaves an absent member
@@ -414,6 +435,12 @@ public class ClientSettings {
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
+        fpsHudAnchor = clamp(fpsHudAnchor, HudPlacement.AUTO, 8);
+        if (fpsHudScale < 0.3f || fpsHudScale > 10.0f) fpsHudScale = defaultTextSizeScale();
+        cpsHudAnchor = clamp(cpsHudAnchor, HudPlacement.AUTO, 8);
+        if (cpsHudScale < 0.3f || cpsHudScale > 10.0f) cpsHudScale = defaultTextSizeScale();
+        pingHudAnchor = clamp(pingHudAnchor, HudPlacement.AUTO, 8);
+        if (pingHudScale < 0.3f || pingHudScale > 10.0f) pingHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
         hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
@@ -480,6 +507,9 @@ public class ClientSettings {
         keystrokesHudScale = rescaled(keystrokesHudScale, factor);
         sessionStatsHudScale = rescaled(sessionStatsHudScale, factor);
         heightLimitHudScale = rescaled(heightLimitHudScale, factor);
+        fpsHudScale = rescaled(fpsHudScale, factor);
+        cpsHudScale = rescaled(cpsHudScale, factor);
+        pingHudScale = rescaled(pingHudScale, factor);
     }
 
     private static float rescaled(float scale, float factor) {
