@@ -14,11 +14,11 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Scoreboard Size and Tab List Size from the two call sites in {@code renderGameOverlay}, so the scale
- * is current when Argentum's Font Batching draws what it recorded (after the callee returns).
- * Argentum wraps the scoreboard call with its own WrapOperation; this mixin's higher priority makes
- * ours the outer wrapper. It wraps the whole {@code renderPlayerlist} method, which a call-site wrapper
- * always encloses. Without Argentum the result is the same scale, one level further out.
+ * The scoreboard and tab list items' placement from the two call sites in {@code renderGameOverlay}, so
+ * the transform is current when Argentum's Font Batching draws what it recorded (after the callee
+ * returns). Argentum wraps the scoreboard call with its own WrapOperation; this mixin's higher priority
+ * makes ours the outer wrapper. It wraps the whole {@code renderPlayerlist} method, which a call-site
+ * wrapper always encloses. Without Argentum the result is the same transform, one level further out.
  */
 @Mixin(value = GuiIngame.class, priority = 1500)
 public abstract class GuiIngameOverlayScaleMixin {
@@ -27,7 +27,8 @@ public abstract class GuiIngameOverlayScaleMixin {
             target = "Lnet/minecraft/client/gui/GuiIngame;renderScoreboard(Lnet/minecraft/scoreboard/ScoreObjective;Lnet/minecraft/client/gui/ScaledResolution;)V"))
     private void bedwarsqol$scaleScoreboard(GuiIngame self, ScoreObjective objective, ScaledResolution sr,
                                             Operation<Void> original) {
-        OverlayScale.beginScoreboard(sr);
+        if (!OverlayScale.scoreboardShown()) return; // hidden in Edit HUD: vanilla's sidebar is not drawn
+        OverlayScale.beginScoreboard(objective, sr);
         try {
             original.call(self, objective, sr);
         } finally {

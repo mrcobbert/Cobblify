@@ -175,7 +175,35 @@ public class BedwarsHudRenderer {
         addEditorBox(boxes, cfg, keystrokesBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
+        addEditorBox(boxes, cfg, scoreboardBox(mc, cfg));
         return boxes;
+    }
+
+    // ----- Vanilla overlays as HUD items (scoreboard, chat, tab list) -----
+
+    /**
+     * An overlay item's live box (pad 0), or null when there is nothing to show (no sidebar objective, no
+     * chat line, ...). The box is where vanilla's drawing lands after the item's move and scale.
+     */
+    public static HudBox overlayBox(Minecraft mc, ClientSettings cfg, String id) {
+        if (mc == null || cfg == null) return null;
+        if (SCOREBOARD_HUD.equals(id)) return scoreboardBox(mc, cfg);
+        return null;
+    }
+
+    /** Whether overlay {@code id} draws its Background (fill behind its lines). On until the switches exist. */
+    public static boolean overlayBackground(ClientSettings cfg, String id) {
+        return true;
+    }
+
+    /** The sidebar scoreboard's box: vanilla's sidebar for the shown objective, moved and scaled; null without one. */
+    public static HudBox scoreboardBox(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] rect = OverlayScale.scoreboardRect(OverlayScale.sidebarObjective(mc), r.getScaledWidth(), r.getScaledHeight());
+        if (rect == null) return null;
+        float[] box = OverlayScale.scoreboardBox(cfg, rect, r.getScaledWidth(), r.getScaledHeight());
+        return new HudBox(SCOREBOARD_HUD, box[0], box[1], box[2], box[3], 0f);
     }
 
     private static void addEditorBox(List<HudBox> boxes, ClientSettings cfg, HudBox box) {
