@@ -3,13 +3,16 @@ package com.bedwarsqol.mixin;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.Denicks;
+import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.OverlayItems;
+import com.bedwarsqol.hud.TabListLayout;
 import com.bedwarsqol.hud.TabOverlayScale;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.TabListLookup;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.GuiPlayerTabOverlay;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.renderer.GlStateManager;
@@ -36,7 +39,8 @@ import java.util.Map;
 
 /**
  * Keeps Minecraft's default tab player list, but adds client tweaks on top of it:
- *   - Size (Small/Medium/Large): uniformly scales the whole vanilla list around the top centre.
+ *   - The tab list item: the whole vanilla list drawn at the item's box (moved and scaled; vanilla's top
+ *     centre until moved), with the Background look (Lunar's fills, or none).
  *   - Hide Header/Footer: suppresses the server-sent text above/below the list.
  *   - BedWars stats overlay, drawn inline on the vanilla list.
  *
@@ -57,8 +61,6 @@ import java.util.Map;
  */
 @Mixin(GuiPlayerTabOverlay.class)
 public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
-
-    private static final float STATS_SCALE = 0.75F;
 
     /** Vanilla's hardcoded per-cell reserve (px) for the signal-bar ping icon, in the column-width formula. */
     private static final int VANILLA_PING_RESERVE = 13;
@@ -91,8 +93,7 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
      * this same value so the reserved gap and the drawn text stay in sync.
      */
     private static float bedwarsqol$statsScale() {
-        float s = bedwarsqol$sizeScale();
-        return Math.min(STATS_SCALE / s, 1.0f);
+        return TabListLayout.statsScale(bedwarsqol$sizeScale());
     }
 
     /**
@@ -190,12 +191,12 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
 
     /** Number of columns vanilla splits {@code n} players into (max 20 rows per column). */
     private static int bedwarsqol$columns(int n) {
-        int columns = 1, rows = n;
-        while (rows > 20) {
-            columns++;
-            rows = (n + columns - 1) / columns;
-        }
-        return columns;
+        return TabListLayout.columns(n);
+    }
+
+    /** Vanilla's head column: drawn on an integrated or encrypted (online-mode) server, as on Hypixel. */
+    private static boolean bedwarsqol$heads(Minecraft mc, NetHandlerPlayClient net) {
+        return mc.isIntegratedServerRunning() || net.getNetworkManager().getIsencrypted();
     }
 
     /**
@@ -226,8 +227,33 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
         }
         int score = objective == null ? 0 : (hearts ? 90 : scoreW);
         int columns = bedwarsqol$columns(n);
-        int i1 = HEAD_WIDTH + maxName + score + reserve;
+        int i1 = (bedwarsqol$heads(mc, net) ? HEAD_WIDTH : 0) + maxName + score + reserve;
         return columns * i1 + (columns - 1) * COLUMN_GAP;
+    }
+
+    @Override
+    public float[] bedwarsqol$measure(int width, Scoreboard scoreboard, ScoreObjective objective) {
+        Minecraft mc = Minecraft.getMinecraft();
+        NetHandlerPlayClient net = mc.getNetHandler();
+        FontRenderer fr = mc.fontRendererObj;
+        if (net == null || fr == null) return null;
+        int n = Math.min(net.getPlayerInfoMap().size(), 80);
+        int natural = bedwarsqol$naturalTabWidth(scoreboard, objective);
+        boolean hide = BedwarsQol.config != null && BedwarsQol.config.tabHideHeaderFooter;
+        int[] header = bedwarsqol$wrappedLines(fr, hide ? null : this.header, width);
+        int[] footer = bedwarsqol$wrappedLines(fr, hide ? null : this.footer, width);
+        int listWidth = Math.max(natural, Math.max(header[1], footer[1]));
+        float[] rect = TabListLayout.vanillaRect(width, listWidth, header[0], TabListLayout.rows(n, bedwarsqol$columns(n)), footer[0]);
+        return new float[]{rect[0], rect[1], rect[2], rect[3], natural};
+    }
+
+    /** {lines, widest line} of a header or footer, wrapped as vanilla wraps it ({@code width - 50}); {0, 0} without one. */
+    private static int[] bedwarsqol$wrappedLines(FontRenderer fr, IChatComponent text, int width) {
+        if (text == null) return new int[]{0, 0};
+        List<String> lines = fr.listFormattedStringToWidth(text.getFormattedText(), width - 50);
+        int widest = 0;
+        for (String line : lines) widest = Math.max(widest, fr.getStringWidth(line));
+        return new int[]{lines.size(), widest};
     }
 
     /** True while GuiIngameOverlayScaleMixin has applied the scale around the call (see TabOverlayScale). */
@@ -282,24 +308,39 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
         if (!bedwarsqol$wrapped) bedwarsqol$pushTabScale(width, scoreboard, objective);
     }
 
-    /** Pushes the matrix and scales the list (Size setting, clamped to fit the screen) around the top centre. */
+    /**
+     * Pushes the matrix and maps the list onto the tab list item's box: {@code translate(box.x, box.y);
+     * scale(s); translate(-rect.x, -rect.y)}. With the column clamp removed, a long-named / many-player list
+     * can be wider than the screen, so the drawn scale shrinks to fit (never overlapping), but never grows
+     * beyond the item's scale. A never-moved list stays centred at the top of the screen.
+     */
     private void bedwarsqol$pushTabScale(int width, Scoreboard scoreboard, ScoreObjective objective) {
         GlStateManager.pushMatrix();
-        float s = bedwarsqol$sizeScale();
-        // With the column clamp removed, a long-named / many-player list can be wider than the screen.
-        // Shrink the whole grid to fit (never overlapping), but never enlarge beyond the chosen Size.
-        int natural = bedwarsqol$naturalTabWidth(scoreboard, objective);
-        if (natural > 0) {
-            float fit = (width - 4f) / natural;
-            if (fit < s) s = fit;
-        }
-        if (s != 1.0f) {
-            // Anchor at the top centre so the list stays centred at the top of the screen as it scales.
-            float ax = width / 2f;
-            GlStateManager.translate(ax, 0f, 0f);
-            GlStateManager.scale(s, s, 1f);
-            GlStateManager.translate(-ax, 0f, 0f);
-        }
+        float[] m = bedwarsqol$measure(width, scoreboard, objective);
+        if (m == null) return;
+        int height = new ScaledResolution(Minecraft.getMinecraft()).getScaledHeight();
+        float[] box = TabOverlayScale.placement(BedwarsQol.config, m, width, height);
+        float s = box[4];
+        if (s == 1f && box[0] == m[0] && box[1] == m[1]) return;
+        GlStateManager.translate(box[0], box[1], 0f);
+        GlStateManager.scale(s, s, 1f);
+        GlStateManager.translate(-m[0], -m[1], 0f);
+    }
+
+    private static boolean bedwarsqol$tabBackground() {
+        return BedwarsHudRenderer.overlayBackground(BedwarsQol.config, BedwarsHudRenderer.TAB_LIST_HUD);
+    }
+
+    /** Each player's row cell ({@code 0x20FFFFFF} in vanilla). */
+    @ModifyConstant(method = "renderPlayerlist", constant = @Constant(intValue = 553648127), require = 1)
+    private int bedwarsqol$tabRowFill(int vanilla) {
+        return TabListLayout.rowFill(bedwarsqol$tabBackground());
+    }
+
+    /** The header, list and footer fills ({@code Integer.MIN_VALUE}, three {@code ldc}s). */
+    @ModifyConstant(method = "renderPlayerlist", constant = @Constant(intValue = Integer.MIN_VALUE), require = 1)
+    private int bedwarsqol$tabListFill(int vanilla) {
+        return TabListLayout.listFill(bedwarsqol$tabBackground());
     }
 
     @Inject(method = "renderPlayerlist", at = @At("RETURN"))

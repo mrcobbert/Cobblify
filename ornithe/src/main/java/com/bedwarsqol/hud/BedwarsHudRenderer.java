@@ -34,6 +34,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
+import net.minecraft.scoreboard.Scoreboard;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Mouse;
 
@@ -188,6 +189,7 @@ public class BedwarsHudRenderer {
     public static HudBox overlayBox(Minecraft mc, ClientSettings cfg, String id) {
         if (mc == null || cfg == null) return null;
         if (SCOREBOARD_HUD.equals(id)) return scoreboardBox(mc, cfg);
+        if (TAB_LIST_HUD.equals(id)) return tabListBox(mc, cfg);
         return null;
     }
 
@@ -204,6 +206,23 @@ public class BedwarsHudRenderer {
         if (rect == null) return null;
         float[] box = OverlayScale.scoreboardBox(cfg, rect, r.getScaledWidth(), r.getScaledHeight());
         return new HudBox(SCOREBOARD_HUD, box[0], box[1], box[2], box[3], 0f);
+    }
+
+    /**
+     * The tab list's box: the live player list (header and footer included unless hidden), moved and scaled,
+     * whether or not vanilla draws it this frame; null without a connection. Not an editor box: the tab list
+     * is never an obstacle, and Edit HUD shows it only while Tab is held.
+     */
+    public static HudBox tabListBox(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null || mc.ingameGUI == null || mc.theWorld == null) return null;
+        Scoreboard board = mc.theWorld.getScoreboard();
+        if (board == null) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float[] m = ((TabOverlayScale) mc.ingameGUI.getTabList())
+                .bedwarsqol$measure(r.getScaledWidth(), board, board.getObjectiveInDisplaySlot(0));
+        if (m == null) return null;
+        float[] box = TabOverlayScale.placement(cfg, m, r.getScaledWidth(), r.getScaledHeight());
+        return new HudBox(TAB_LIST_HUD, box[0], box[1], box[2], box[3], 0f);
     }
 
     private static void addEditorBox(List<HudBox> boxes, ClientSettings cfg, HudBox box) {
