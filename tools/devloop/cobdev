@@ -997,6 +997,11 @@ class Smoke:
         print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % detail if detail is not None else ""))
         return ok
 
+    def note(self, name, detail=None):
+        """Recorded and printed, never a failure: something a step saw outside what it asserts."""
+        self.step.setdefault("notes", []).append({"note": name, "detail": detail})
+        print("   note %s%s" % (name, "  (%s)" % detail if detail is not None else ""))
+
     def unavailable(self, why):
         self.step["status"] = "not available yet"
         self.step["note"] = why
@@ -1579,9 +1584,50 @@ def tu_clear_board(s):
     time.sleep(0.4)
 
 
-def tu_left_diff(a, b):
+TU_ID = "teamupgrades"
+HOTBAR_W, HOTBAR_ZONE_H = 182, 50  # BedwarsHudRenderer's reserved hotbar/health/food zone, GUI px
+
+
+def tu_boxes(s):
+    """probe hud-boxes: (gui width, gui height, {id: box}) with every module's Edit HUD box in GUI px."""
+    r = s.probe("hud-boxes")
+    gw, gh = r["gui"]
+    return gw, gh, {b["id"]: b for b in r["boxes"]}
+
+
+def tu_box_diff(a, b, box, gw):
+    """Changed fraction inside one GUI-px box (screenshot px = GUI px x the screenshot's width / gui width)."""
     w, h, _ = a
-    return diff(a, b, box=(0, h // 5, w // 2, 4 * h // 5))
+    k = w / float(gw)
+    x0, y0 = max(0, int(box["x"] * k)), max(0, int(box["y"] * k))
+    x1, y1 = min(w, int((box["x"] + box["w"]) * k)), min(h, int((box["y"] + box["h"]) * k))
+    return diff(a, b, box=(x0, y0, x1, y1))
+
+
+def boxes_overlap(a, b):
+    return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
+
+
+def tu_layout_overlaps(gw, gh, boxes):
+    """(what Team Upgrades overlaps: switched-on modules and the hotbar zone; overlaps among the others)."""
+    zone = {"id": "hotbar", "x": (gw - HOTBAR_W) / 2.0, "y": gh - HOTBAR_ZONE_H, "w": HOTBAR_W, "h": HOTBAR_ZONE_H}
+    shown = [b for b in boxes.values() if b.get("shown") and b["id"] != TU_ID]
+    tu = boxes.get(TU_ID)
+    mine = [o["id"] for o in shown + [zone] if tu and boxes_overlap(tu, o)]
+    others = ["%s/%s" % (a["id"], b["id"]) for i, a in enumerate(shown) for b in shown[i + 1:] if boxes_overlap(a, b)]
+    return mine, others
+
+
+def tu_save(s, cfg):
+    """Write the restored settings to disk: closing Edit HUD saves the config, so values switched on for a
+    check would otherwise outlive the step (the next restart loads them)."""
+    s.try_call("/invoke", post={"path": cfg + ".save", "args": ""})
+
+
+def tu_quiet_chat(s):
+    """Close the chat screen and let its lines fade (200 ticks), so a shot shows the HUD under it."""
+    s.call("/close")
+    time.sleep(10.5)
 
 
 def tu_reopen_world(s):
@@ -1609,6 +1655,7 @@ def smoke_team_upgrades(s, cfg):
     en, lay = cfg + ".teamUpgradesEnabled", cfg + ".teamUpgradesLayout"
     was = s.field(en).get("value"), s.field(lay).get("value")
     try:
+        s.call("/close")  # a screen left open (even by real keys reaching the window) would cover the shots
         tu_clear_board(s)
         tu_try(s, "/title @p reset")
         s.field(en, False)
@@ -1621,12 +1668,14 @@ def smoke_team_upgrades(s, cfg):
         s.check("no location yet: pending", tu_call(s, "", "pending") is True)
         st = tu_state(s)
         s.check("a new game starts empty", st == TU_EMPTY, st)
+        gw, _, boxes = tu_boxes(s)
         _, off = s.shot("tu-off")
         s.field(en, True)
         time.sleep(0.4)
         _, empty = s.shot("tu-empty")
-        frac, box = tu_left_diff(off, empty)
-        s.check("panel drawn on the left (Traps / None)", frac > 0.001, "diff %.4f in %s" % (frac, box))
+        frac, box = tu_box_diff(off, empty, boxes[TU_ID], gw)
+        s.check("panel drawn in its default spot (Traps / None)", frac > 0.001,
+                "diff %.4f in %s, spot %s" % (frac, box, boxes[TU_ID]))
 
         # Purchases in both component shapes, then two spoofs that must change nothing.
         for item in ("Sharpened Swords", "Reinforced Armor I", "Reinforced Armor II", "Iron Forge", "Heal Pool",
@@ -1740,6 +1789,36 @@ def smoke_team_upgrades(s, cfg):
         tu_try(s, "/title @p reset")
         s.field(en, was[0])
         s.field(lay, was[1])
+        tu_save(s, cfg)
+
+
+TU_OTHER_MODULES = ("potionStatusEnabled", "armorTypeEnabled", "inventoryHudEnabled", "genTimersEnabled",
+                    "keystrokesEnabled", "sessionStatsEnabled", "heightLimitEnabled")
+
+
+def tu_sweep(s, hud_size, which, sizes, scales):
+    """Edit HUD at every window size x GUI scale: a shot, and Team Upgrades' default spot clear of every
+    switched-on module and the hotbar zone (probe hud-boxes)."""
+    for size in sizes:
+        if size:
+            s.call("/size", {"w": size[0], "h": size[1]})
+            time.sleep(1)
+        for scale in scales:
+            s.call("/scale", {"n": scale})
+            s.call("/open", {"class": SCREENS["hud"]})
+            time.sleep(0.6)
+            tag = "tu-edithud-h%d-%s-%s-s%d" % (hud_size, which, "%dx%d" % size if size else "default", scale)
+            _, img = s.shot(tag)
+            s.check("frame " + tag, spread(img) > 8)
+            gw, gh, boxes = tu_boxes(s)
+            mine, others = tu_layout_overlaps(gw, gh, boxes)
+            detail = {"overlaps": mine, "box": boxes.get(TU_ID), "gui": [gw, gh], "others (not Team Upgrades)": others}
+            if which == "profile" or not mine:
+                s.check("clear of modules and hotbar " + tag, not mine, detail)
+            else:
+                # every module on in a small GUI: the screen is full (HudLayout's least-covered fallback)
+                s.note("no room with every module on " + tag, detail)
+            s.call("/close")
 
 
 def smoke_team_upgrades_look(s, cfg, mode):
@@ -1750,6 +1829,8 @@ def smoke_team_upgrades_look(s, cfg, mode):
         return s.unavailable(TU_WATCH + " is not in this build")
     en, lay, hs = cfg + ".teamUpgradesEnabled", cfg + ".teamUpgradesLayout", cfg + ".defaultTextSize"
     was = s.field(en).get("value"), s.field(lay).get("value"), s.field(hs).get("value")
+    mods = [cfg + "." + f for f in TU_OTHER_MODULES]
+    mods_was = [s.field(m).get("value") for m in mods]
     st = s.status()
     scale_was, display_was = st.get("guiScaleSetting", 0), st.get("display")
     sizes = TU_SIZES if mode == "dev" else [None]  # cobdev size is dev-only
@@ -1759,18 +1840,12 @@ def smoke_team_upgrades_look(s, cfg, mode):
         for hud_size in sorted({was[2], 2}):
             s.call("/invoke", post={"path": cfg + ".setHudSize", "args": str(hud_size)})
             s.field(lay, 0)
-            for size in sizes:
-                if size:
-                    s.call("/size", {"w": size[0], "h": size[1]})
-                    time.sleep(1)
-                for scale in scales:
-                    s.call("/scale", {"n": scale})
-                    s.call("/open", {"class": SCREENS["hud"]})
-                    time.sleep(0.6)
-                    tag = "tu-edithud-h%d-%s-s%d" % (hud_size, "%dx%d" % size if size else "default", scale)
-                    _, img = s.shot(tag)
-                    s.check("frame " + tag, spread(img) > 8)
-                    s.call("/close")
+            for which in ("profile", "all"):  # the profile's modules, then every module switched on (the fullest layout)
+                for m, v in zip(mods, mods_was):
+                    s.field(m, True if which == "all" else v)
+                tu_sweep(s, hud_size, which, sizes, scales)
+            for m, v in zip(mods, mods_was):
+                s.field(m, v)
             if display_was and mode == "dev":
                 s.call("/size", {"w": int(display_was.split("x")[0]), "h": int(display_was.split("x")[1])})
             s.call("/scale", {"n": scale_was})
@@ -1778,6 +1853,7 @@ def smoke_team_upgrades_look(s, cfg, mode):
             tu_board(s, True, True)
             for item in ("Sharpened Swords", "Reinforced Armor II", "Iron Forge", "Blindness Trap"):
                 tu_purchase(s, item)
+            tu_quiet_chat(s)
             for layout in (0, 1):
                 s.field(lay, layout)
                 time.sleep(0.4)
@@ -1788,8 +1864,11 @@ def smoke_team_upgrades_look(s, cfg, mode):
             s.try_call("/size", {"w": int(display_was.split("x")[0]), "h": int(display_was.split("x")[1])})
         s.try_call("/scale", {"n": scale_was})
         s.try_call("/invoke", post={"path": cfg + ".setHudSize", "args": str(was[2])})
+        for m, v in zip(mods, mods_was):
+            s.field(m, v)
         s.field(en, was[0])
         s.field(lay, was[1])
+        tu_save(s, cfg)
         tu_clear_board(s)
 
 

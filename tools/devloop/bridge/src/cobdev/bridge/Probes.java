@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.EntityRenderer;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -41,7 +42,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 
 /**
- * The named smoke probes (PLAN Solution 5, plus Team Upgrades' {@code open-shop}): a fixed set of reads and writes instead of open
+ * The named smoke probes (PLAN Solution 5, plus Team Upgrades' {@code open-shop} and {@code hud-boxes}): a fixed set of reads and writes instead of open
  * reflection on Minecraft. Every probe refuses unless the game is in singleplayer with the
  * integrated server running ({@link Policy#singleplayerWorld}). Minecraft names are MCP and
  * compile-checked; the one private method ({@code EntityRenderer.getFOVModifier}) is located by its
@@ -77,6 +78,8 @@ final class Probes {
                 return useItem(args);
             case "open-shop":
                 return openShop(args);
+            case "hud-boxes":
+                return Bridge.onMain(Probes::hudBoxes);
             default:
                 throw new Refused("unknown probe " + name);
         }
@@ -328,6 +331,36 @@ final class Probes {
         if (get.invoke(null) == null) {
             throw new Refused("Clutch Practice is not enabled yet (ClutchPractice.get() is null until READY)");
         }
+    }
+
+    /**
+     * Read-only: every HUD module's box as Edit HUD lays it out ({@code BedwarsHudRenderer.getEditorBoxes}),
+     * drawn bounds in GUI px, with {@code shown} for the modules switched on, plus the GUI size.
+     */
+    private static Map<String, Object> hudBoxes() throws Exception {
+        Minecraft mc = Bridge.mc();
+        Class<?> renderer = cobblifyClass("com.bedwarsqol.hud.BedwarsHudRenderer", "hud-boxes");
+        Class<?> settings = cobblifyClass("com.bedwarsqol.config.ClientSettings", "hud-boxes");
+        Object cfg = cobblifyClass("com.bedwarsqol.BedwarsQol", "hud-boxes").getField("config").get(null);
+        List<?> boxes = (List<?>) renderer.getMethod("getEditorBoxes", Minecraft.class, settings).invoke(null, mc, cfg);
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Object b : boxes) {
+            Class<?> c = b.getClass();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", c.getField("id").get(b));
+            m.put("x", c.getMethod("visualX").invoke(b));
+            m.put("y", c.getMethod("visualY").invoke(b));
+            m.put("w", c.getMethod("visualWidth").invoke(b));
+            m.put("h", c.getMethod("visualHeight").invoke(b));
+            m.put("shown", c.getField("shown").get(b));
+            list.add(m);
+        }
+        ScaledResolution r = new ScaledResolution(mc);
+        Map<String, Object> out = Bridge.ok();
+        out.put("gui", Arrays.asList(r.getScaledWidth(), r.getScaledHeight()));
+        out.put("scaleFactor", r.getScaleFactor());
+        out.put("boxes", list);
+        return out;
     }
 
     private static Class<?> cobblifyClass(String name, String probe) {

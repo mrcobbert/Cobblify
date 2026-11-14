@@ -120,9 +120,10 @@ final class Policy {
             case "clutch-blast":
             case "use-item":
             case "open-shop":
+            case "hud-boxes":
                 return null;
             default:
-                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop)";
+                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes)";
         }
     }
 

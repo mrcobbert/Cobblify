@@ -70,7 +70,7 @@ public final class PolicyTest {
         // probe reach and names
         allowed(Policy.near(3, 0, -16));
         refused(Policy.near(17, 0, 0));
-        for (String p : new String[]{"fov", "hurt", "player", "block", "clutch-blast", "use-item", "open-shop"}) {
+        for (String p : new String[]{"fov", "hurt", "player", "block", "clutch-blast", "use-item", "open-shop", "hud-boxes"}) {
             allowed(Policy.probeName(p));
         }
         allowed(Policy.shopFixture(java.util.Arrays.asList("full")));
