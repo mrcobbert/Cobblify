@@ -874,6 +874,40 @@ class HudLookNoise(unittest.TestCase):
         self.assertFalse(cobdev.hl_icon_swap(old, modern, None, sf)[0])
 
 
+class HudLookProdRun(unittest.TestCase):
+    """The first prod run (2026-11-14): the window changed size inside a module's shots and after a restart, and the
+    potion frames were taken one blink period apart."""
+
+    def test_a_backdrop_of_another_size_is_ignored_not_fatal(self):
+        before = flat(300, 200, SKY)
+        frame = paint(before, (200, 4, 273, 47), see_through(SKY))
+        resized = flat(150, 200, SKY)
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=resized), [(200, 4, 273, 47)])
+
+    def test_frames_of_different_sizes_mean_a_retake(self):
+        before = flat(300, 200, SKY)
+        on = paint(before, (4, 4, 97, 39), see_through(SKY))
+        small = flat(150, 200, SKY)
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, small), on, on, 2)
+        self.assertTrue(moved)
+        self.assertIsNone(box)
+
+    def test_counting_past_the_frame_is_clipped(self):
+        img = paint(flat(20, 10, SKY), (15, 5, 19, 9), (63, 63, 63))
+        self.assertEqual(cobdev.count_exact(img, (10, 0, 112, 134), (63, 63, 63)), 25)
+        self.assertEqual(cobdev.count_near(img, (-5, -5, 40, 40), (63, 63, 63), 0), 25)
+        self.assertEqual(cobdev.xs_of(img, (0, 0, 99, 99), (63, 63, 63)), (15, 19))
+
+    def test_potion_frames_see_both_halves_of_the_blink_from_any_start(self):
+        offsets = cobdev.hl_blink_offsets()
+        for start in [i / 20.0 for i in range(20)]:
+            phases = [((start + t) % 1.0) for t in offsets]  # PotionRows: 0.5 s shown, 0.5 s hidden
+            self.assertTrue(any(p < 0.5 for p in phases) and any(p >= 0.5 for p in phases), (start, phases))
+        self.assertLess(offsets[-1], 4.0)  # all inside a 9 s effect, after the setup
+        # the old spacing (one frame every ~1 s) can stay in one half
+        self.assertFalse(any(((0.1 + t) % 1.0) >= 0.5 for t in (0, 0.99, 1.98, 2.97)))
+
+
 class HudLookPressedCap(unittest.TestCase):
     """HL-keys reads the W cap through Edit HUD's faint frame fill (0x0DFFFFFF over the preview)."""
 
