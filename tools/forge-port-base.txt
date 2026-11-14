@@ -20,7 +20,7 @@
 deb60e3e2341cf695db5e5fee85f0e7f71699c0d src/main/java/com/bedwarsqol/bedwars/GeneratorTracker.java
 a773fbd21bc14945bccc2b2d661455589f70fffb src/main/java/com/bedwarsqol/command/BedwarsQolCommand.java
 00be83b8f7a908f25cffabdb349990d2c97f0551 src/main/java/com/bedwarsqol/command/BedwarsStatsCommand.java
-f5740653387981155729e0a1c4957dc3e94903b2 src/main/java/com/bedwarsqol/config/ClientSettings.java
+dcf0646077ffe14c7b9f9306d85ce2c5c173e148 src/main/java/com/bedwarsqol/config/ClientSettings.java
 b7b6bcc644b9b9b03657010971bafa3913a6b80e src/main/java/com/bedwarsqol/config/SettingsManager.java
 673c10ce4f9400ab3d3dbc8577e7502a6b640da8 src/main/java/com/bedwarsqol/feature/AlertCopyReason.java
 556100c83832aff5cb2cc91628d643330d5e4520 src/main/java/com/bedwarsqol/feature/AutoGg.java
@@ -34,7 +34,7 @@ b7a05dec7fc8ed143b7010b7802a3e8579a4703e src/main/java/com/bedwarsqol/feature/Ch
 966ceb2afbfa20fc4db52b20b8004f7ed65648da src/main/java/com/bedwarsqol/feature/ChatSplice.java
 c256cb1e6ab72c029f7b2c8bcbbbe49339c1fd6d src/main/java/com/bedwarsqol/feature/ChatStack.java
 6ae32b487816fbd3fddae6aeb79b18c03c79c6a2 src/main/java/com/bedwarsqol/feature/ClutchFireball.java
-f5fe4e931bd2a07fc412c333690d92be85b9538c src/main/java/com/bedwarsqol/feature/ClutchPractice.java
+5712f49fc0453319bc060fd6a82bd88d2233194f src/main/java/com/bedwarsqol/feature/ClutchPractice.java
 72af9bb439ae04cf107d22c229864f316e569a9a src/main/java/com/bedwarsqol/feature/GameRosterChat.java
 0932138fa0bd1468cb27f4c9dfcfc5999eccaf94 src/main/java/com/bedwarsqol/feature/HeightLimitWatch.java
 ea8decb7fa87d6f7a841e482455497a34dad802b src/main/java/com/bedwarsqol/feature/IncSender.java

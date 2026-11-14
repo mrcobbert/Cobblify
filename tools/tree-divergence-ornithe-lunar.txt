@@ -125,7 +125,6 @@ one-sided main ornithe com/bedwarsqol/mixin/C01PacketChatMessageMixin.java
 one-sided main ornithe com/bedwarsqol/feature/ClutchFireball.java
 one-sided main ornithe com/bedwarsqol/feature/ClutchPractice.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerMixin.java
-one-sided main ornithe com/bedwarsqol/mixin/ExplosionMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/ItemInWorldManagerMixin.java
 
 # Zoom, No Hurt Cam and Dynamic FOV: Ornithe-only features (P4), with their sheet-row test.

@@ -4,7 +4,6 @@ import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
-import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
@@ -143,22 +142,22 @@ public class ClutchPractice {
      * sometimes, stone rarely. Glass stops the rays; protected blocks and containers never break.
      */
     private static List<BlockPos> breakBlocks(final World world, final ClutchFireball fireball, double x, double y, double z) {
-        final Explosion explosion = new Explosion(world, fireball, x, y, z, ClutchRules.EXPLOSION_POWER, false, true);
         List<int[]> reached = ClutchRules.blastBlocks(x, y, z, ClutchRules.EXPLOSION_POWER, world.rand,
                 (bx, by, bz) -> {
-                    BlockPos pos = new BlockPos(bx, by, bz);
-                    Block block = world.getBlockState(pos).getBlock();
+                    Block block = world.getBlockState(new BlockPos(bx, by, bz)).getBlock();
                     if (block.getMaterial() == Material.air) return -1f;
                     if (ClutchRules.shieldsBlast(name(block))) return ClutchRules.SHIELD_RESISTANCE;
-                    return block.getExplosionResistance(world, pos, fireball, explosion);
+                    return block.getExplosionResistance(fireball);
                 });
+        // Only for onBlockDestroyedByExplosion (TNT primes off it); it never runs itself.
+        Explosion explosion = new Explosion(world, fireball, x, y, z, ClutchRules.EXPLOSION_POWER, false, true);
         List<BlockPos> broken = new ArrayList<BlockPos>();
         for (int[] p : reached) {
             BlockPos pos = new BlockPos(p[0], p[1], p[2]);
-            IBlockState state = world.getBlockState(pos);
-            Block block = state.getBlock();
-            if (block.getMaterial() == Material.air || block.hasTileEntity(state) || !ClutchRules.breaks(name(block))) continue;
-            block.onBlockExploded(world, pos, explosion);
+            Block block = world.getBlockState(pos).getBlock();
+            if (block.getMaterial() == Material.air || block.hasTileEntity() || !ClutchRules.breaks(name(block))) continue;
+            world.setBlockToAir(pos);
+            block.onBlockDestroyedByExplosion(world, pos, explosion);
             broken.add(pos);
         }
         return broken;
@@ -195,12 +194,9 @@ public class ClutchPractice {
 
     /** True when any block lies under the player's column: they will land, not fall into the void. */
     private static boolean groundBelow(EntityPlayer player) {
-        World world = player.worldObj;
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         int x = MathHelper.floor_double(player.posX), z = MathHelper.floor_double(player.posZ);
         for (int y = MathHelper.floor_double(player.posY); y >= 0; y--) {
-            pos.set(x, y, z);
-            if (!world.isAirBlock(pos)) return true;
+            if (!player.worldObj.isAirBlock(new BlockPos(x, y, z))) return true;
         }
         return false;
     }

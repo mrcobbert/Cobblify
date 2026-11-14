@@ -178,8 +178,8 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.SERVER_CONNECT.register(heightLimit::onServerConnect);
         ModEvents.CHAT.register(heightLimit::onChat);
         ModEvents.CLIENT_TICK.register(mc -> heightLimit.onClientTick());
-        // Clutch Practice's four server-side hooks are called by its own mixins (ExplosionMixin,
-        // EntityPlayerMixin, ItemInWorldManagerMixin); they act only once it is enabled here.
+        // Clutch Practice's server-side hooks are called by its own mixins (EntityPlayerMixin,
+        // ItemInWorldManagerMixin); they act only once it is enabled here.
         ClutchPractice.enable();
 
         LOGGER.info(READY_LINE);
