@@ -16,7 +16,7 @@ public final class GuiTheme {
 
     /**
      * The selectable GUI accents, in the settings sheet's swatch order: twelve hue columns in a pale, a vivid and a
-     * deep row, then three neutrals. Each carries a stable lowercase {@code token} used for persistence
+     * deep row, then four neutrals. Each carries a stable lowercase {@code token} used for persistence
      * ({@code ClientSettings.guiAccent}), a sentence-case label and a base ARGB. Pale Blue is the default; the original
      * ten keep their tokens and colours.
      */
@@ -63,7 +63,9 @@ public final class GuiTheme {
         // neutrals
         WHITE("white", "White", 0xFFE6E6E6),
         SILVER("silver", "Silver", 0xFFB8B8B8),
-        GREY("grey", "Grey", 0xFF8A8A8A);
+        GREY("grey", "Grey", 0xFF8A8A8A),
+        // as dark as the deep row (luminance 0.14): light text on it, 3:1 on the sheet
+        DARK_GREY("dark-grey", "Dark Grey", 0xFF696969);
 
         private final String token;
         private final String label;

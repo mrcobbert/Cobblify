@@ -12,9 +12,9 @@ import static org.junit.Assert.assertTrue;
 public class AccentPaletteTest {
 
     @Test
-    public void twelveHuesInThreeTonesThenThreeNeutrals() {
+    public void twelveHuesInThreeTonesThenFourNeutrals() {
         GuiTheme.Accent[] all = GuiTheme.Accent.values();
-        assertEquals(12 * 3 + 3, all.length);
+        assertEquals(12 * 3 + 4, all.length);
         Set<String> tokens = new HashSet<String>(), labels = new HashSet<String>();
         for (GuiTheme.Accent a : all) {
             assertTrue("token " + a.token(), tokens.add(a.token()));
@@ -25,6 +25,7 @@ public class AccentPaletteTest {
         assertEquals("red", all[12].token());
         assertEquals("deep-red", all[24].token());
         assertEquals("white", all[36].token());
+        assertEquals("dark-grey", all[39].token());
     }
 
     @Test

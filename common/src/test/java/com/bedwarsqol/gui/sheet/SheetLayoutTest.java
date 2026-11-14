@@ -258,13 +258,15 @@ public class SheetLayoutTest {
         Frame f = layout();
         java.util.List<Node> sw = new java.util.ArrayList<Node>();
         for (Node n : f.body) if (n.type == T.SWATCH) sw.add(n);
-        assertEquals(39, sw.size());
+        assertEquals(40, sw.size());
         assertEquals(sw.get(0).y, sw.get(11).y, 0f);
         assertEquals(sw.get(0).x, sw.get(12).x, 0f);
         assertEquals(sw.get(0).y + 18f, sw.get(12).y, 0f);
         assertEquals(sw.get(0).x + 11 * 18f, sw.get(11).x, 0f);
         assertTrue("the last column ends inside the row", sw.get(11).x + 15f <= SheetLayout.WIDTH - 9f);
         assertEquals(sw.get(0).y + 3 * 18f, sw.get(38).y, 0f);
+        assertEquals("Dark Grey closes the neutrals row", sw.get(36).y, sw.get(39).y, 0f);
+        assertEquals(sw.get(0).x + 3 * 18f, sw.get(39).x, 0f);
     }
 
     @Test
