@@ -166,6 +166,9 @@ one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
 one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
 
+# Team Upgrades: Ornithe-only HUD source (Lunar has its own Upgrades & Traps HUD).
+one-sided main ornithe com/bedwarsqol/feature/TeamUpgradesWatch.java
+
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
 # ---------------------------------------------------------------------------
