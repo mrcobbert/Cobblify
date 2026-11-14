@@ -936,6 +936,95 @@ def tilt(img):
     return None if left is None or right is None else left - right
 
 
+# Overlay items (scoreboard, chat, tab list as HUD items): a black fill of alpha A over the backdrop
+# leaves every channel at 1 - A/255 of it, which is what the ratio helpers below measure.
+
+def gui_rect(box, sf):
+    """A GUI-px box ({x, y, w, h} from probe overlay-boxes, or a tuple) as a device-px rect (x0, y0, x1, y1),
+    x1 and y1 exclusive."""
+    x, y, w, h = (box["x"], box["y"], box["w"], box["h"]) if isinstance(box, dict) else box
+    return int(round(x * sf)), int(round(y * sf)), int(round((x + w) * sf)), int(round((y + h) * sf))
+
+
+def clip_rect(rect, img):
+    w, h, _ = img
+    x0, y0, x1, y1 = rect
+    return max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+
+
+def drawn_bbox(ref, img, rect=None, thresh=24):
+    """Device-px rect (x0, y0, x1, y1), exclusive, of every pixel that differs from the reference frame."""
+    _, bb = diff(ref, img, step=1, thresh=thresh, box=clip_rect(rect, img) if rect else None)
+    return None if bb is None else (bb[0], bb[1], bb[2] + 1, bb[3] + 1)
+
+
+def rect_close(a, b, tol):
+    return a is not None and b is not None and all(abs(p - q) <= tol for p, q in zip(a, b))
+
+
+def ratio_at(img, ref, x, y):
+    """Mean channel ratio of img to the backdrop at one pixel; None where the backdrop is too dark to tell."""
+    a, b = px(img, x, y), px(ref, x, y)
+    if min(b) < 16:
+        return None
+    return (a[0] / b[0] + a[1] / b[1] + a[2] / b[2]) / 3
+
+
+def fill_ratio(img, ref, rect):
+    """Mean ratio over a rect that should hold only fill (no text): 1 - alpha/255 of a black fill, 1.0 without."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    vals = [r for y in range(y0, y1) for x in range(x0, x1) for r in [ratio_at(img, ref, x, y)] if r is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def ratio_share(img, ref, rect, want, tol=0.02):
+    """Fraction of the rect's pixels whose ratio is within tol of want (fills show up as a cluster)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    vals = [ratio_at(img, ref, x, y) for y in range(y0, y1) for x in range(x0, x1)]
+    vals = [v for v in vals if v is not None]
+    return sum(1 for v in vals if abs(v - want) <= tol) / len(vals) if vals else 0.0
+
+
+def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None):
+    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive."""
+    h = img[1]
+    y1 = h if y1 is None else min(h, y1)
+    best, start = None, None
+    for y in range(max(0, y0), y1 + 1):
+        r = ratio_at(img, ref, x, y) if y < y1 else None
+        if r is not None and abs(r - want) <= tol:
+            if start is None:
+                start = y
+        elif start is not None:
+            if best is None or y - start > best[1] - best[0]:
+                best = (start, y)
+            start = None
+    return best
+
+
+def color_count(img, rect, rgb, tol=12):
+    """Pixels in the rect within tol of an exact colour (e.g. the scoreboard's red score, 0xFF5555)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if max(abs(c - t) for c, t in zip(px(img, x, y), rgb)) <= tol)
+
+
+def dark_count(img, ref, rect, factor=0.6):
+    """Pixels darker than factor x the backdrop in every channel (text shadows over a fill-less overlay)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if all(a < factor * b for a, b in zip(px(img, x, y), px(ref, x, y))))
+
+
+def rightmost_bright(img, rect, floor=230):
+    """Rightmost x in the rect with a near-white pixel (overlay text), or None."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    for x in range(x1 - 1, x0 - 1, -1):
+        if any(min(px(img, x, y)) >= floor for y in range(y0, y1)):
+            return x
+    return None
+
+
 # ----------------------------------------------------------------------------------- smoke
 
 class Smoke:
@@ -1272,6 +1361,406 @@ def smoke_overlays(s, cfg):
         s.cmd("/scoreboard objectives remove cobsb")
 
 
+# ------------------------------------------------- overlay items: scoreboard, chat, tab list (HUD parity B)
+# PLAN 2026-11-14-hud-overlays Phase 6. Every shot is the same scene: GUI scale 2, morning, clear sky,
+# the player looking straight up so the backdrop is plain sky, Cobblify modules off unless a step turns
+# them on; every field and setting a step changes is put back in `finally`.
+
+OV_MODULES = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled", "sessionStatsEnabled",
+              "heightLimitEnabled", "inventoryHudEnabled", "genTimersEnabled", "tntFuseEnabled"]
+OV_IN_GAME_ONLY = ["armorInGameOnly", "potionInGameOnly", "keystrokesInGameOnly"]
+SCORE_RED = (255, 85, 85)
+FILL_50 = 1 - 0x50 / 255.0                      # scoreboard Background On
+FILL_80 = 1 - 0x80 / 255.0                      # tab list, header, footer; chat typing bar
+ROWS_80_20 = (1 - 0x80 / 255.0) * (1 - 0x20 / 255.0)  # a tab row over the list fill
+CHAT_FILL = 1 - 0x7F / 255.0                    # vanilla chat line fill at full chat opacity
+TAB_HIDE_FIELD = "com.bedwarsqol.hud.TabHudGate.mismatchFrames"
+# (anchor, x, y, scale): P1 never moved, P2 and P3 placed (PLAN OV steps)
+OV_SB_PLACES = [("p1", (-1, 0, 0, 1.0)), ("p2", (0, 6, 40, 0.7)), ("p3", (8, -6, -60, 1.5))]
+OV_CHAT_PLACES = [("p1", (-1, 0, 0, 1.0)), ("p2", (5, -10, 0, 1.5)), ("p3", (0, 4, 4, 0.75))]
+CHAT_FIXTURE_ROWS = {"wrapped": (0, 1), "hover": 2, "link": 3}  # bridge/resources/chat-overlays.json
+CHAT_LINK = "https://example.com/cobdev"
+CHAT_WRAPPED = "Cobdev wrapped line: a fixture message long enough to wrap onto a second chat row"
+
+
+class OvScene:
+    """The fixed overlay scene, and a record of every Cobblify field it changed so `restore` puts it back."""
+
+    def __init__(self, s, cfg):
+        self.s, self.cfg, self.saved, self.scale = s, cfg, {}, None
+
+    def setup(self):
+        st = self.s.status()
+        self.scale = st.get("guiScaleSetting")
+        self.s.call("/scale", {"n": 2})
+        for c in ("/gamerule sendCommandFeedback false", "/gamerule doDaylightCycle false", "/time set 1000",
+                  "/weather clear", "/effect @p clear", "/tp @p 0.5 4 0.5 0 -90"):
+            self.s.cmd(c)
+        for f in OV_MODULES:
+            self.set(f, False)
+        self.s.call("/close")
+        self.s.probe("chat-clear")
+        time.sleep(1.5)
+
+    def set(self, name, value):
+        path = self.cfg + "." + name
+        if path not in self.saved:
+            self.saved[path] = self.s.field(path).get("value")
+        self.s.field(path, value)
+
+    def place(self, prefix, where):
+        anchor, x, y, scale = where
+        self.set(prefix + "Anchor", anchor)
+        self.set(prefix + "X", x)
+        self.set(prefix + "Y", y)
+        self.set(prefix + "Scale", scale)
+
+    def restore(self):
+        for path, value in self.saved.items():
+            self.s.try_call("/field", post={"path": path,
+                                            "value": str(value).lower() if isinstance(value, bool) else str(value)})
+        self.saved = {}
+        self.s.try_call("/probe", post={"name": "chat-heights", "args": "restore"})
+        self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
+        if self.scale is not None:
+            self.s.try_call("/scale", {"n": self.scale})
+
+
+def ov_boxes(s):
+    r = s.probe("overlay-boxes")
+    return r["scaleFactor"], r["gui"], r["items"]
+
+
+def ov_objective(s, sidebar=True, tablist=False):
+    for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
+              "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
+              "/scoreboard players set Finals cobsb 12", "/scoreboard players set Kills cobsb -1",
+              "/scoreboard players set Wins cobsb 0"):
+        s.cmd(c)
+    s.cmd("/scoreboard objectives setdisplay sidebar" + (" cobsb" if sidebar else ""))
+    s.cmd("/scoreboard objectives setdisplay list" + (" cobsb" if tablist else ""))
+
+
+def ov_ready(s, cfg):
+    if not cfg:
+        s.unavailable("Cobblify config not found")
+        return False
+    if not s.has("com.bedwarsqol.hud.BedwarsHudRenderer", "overlayBox"):
+        s.unavailable("this build has no overlay items (BedwarsHudRenderer.overlayBox)")
+        return False
+    return True
+
+
+def smoke_ov_scoreboard(s, cfg):
+    s.begin("OV-scoreboard", "scoreboard item: drawn at its box (3 placements), Lunar fill, numbers hidden")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        ov_objective(s)
+        s.call("/close")
+        scene.set("scoreboardHudEnabled", False)
+        time.sleep(0.4)
+        _, ref = s.shot("ov-sb-ref")
+        scene.set("scoreboardHudEnabled", True)
+        for tag, where in OV_SB_PLACES:
+            scene.place("scoreboardHud", where)
+            time.sleep(0.4)
+            _, img = s.shot("ov-sb-" + tag)
+            sf, _, items = ov_boxes(s)
+            box, scale = items.get("scoreboard"), where[3]
+            if not s.check("%s: the scoreboard has a box" % tag, box is not None, items):
+                continue
+            rect = gui_rect(box, sf)
+            drawn = drawn_bbox(ref, img)
+            s.check("%s: drawn where its box is (1 GUI px)" % tag, rect_close(drawn, rect, sf), "%s vs %s" % (drawn, rect))
+            margin = (rect[0] + 1, int((box["y"] + 10 * scale) * sf) + 1, int((box["x"] + 2 * scale) * sf) - 1, rect[3] - 1)
+            title = (margin[0], rect[1] + 1, margin[2], int((box["y"] + 9 * scale) * sf) - 1)
+            lines_r, title_r = fill_ratio(img, ref, margin), fill_ratio(img, ref, title)
+            s.check("%s: Background On fills the lines 0x50" % tag, close_enough(lines_r, FILL_50, 0.03), lines_r)
+            s.check("%s: the title row has the same fill (not vanilla's 0x60)" % tag,
+                    close_enough(title_r, FILL_50, 0.03), title_r)
+            s.check("%s: no red score numbers" % tag, color_count(img, rect, SCORE_RED) == 0)
+            right = rightmost_bright(img, rect)
+            s.check("%s: score column trimmed (text ends near the box's right edge)" % tag,
+                    right is not None and rect[2] - 1 - right <= 4 * scale * sf, "text ends at %s, box at %s" % (right, rect[2]))
+        scene.set("scoreboardHudEnabled", False)
+        time.sleep(0.4)
+        _, hidden = s.shot("ov-sb-hidden")
+        s.check("hidden in Edit HUD: nothing drawn", drawn_bbox(ref, hidden) is None)
+    finally:
+        scene.restore()
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def smoke_ov_tab(s, cfg):
+    s.begin("OV-tab", "tab list item: drawn at its box (3 placements) with the Lunar fills")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        ov_objective(s, sidebar=False, tablist=True)
+        s.probe("tab-header-footer", "Cobdev Header", "Cobdev Footer")
+        s.call("/close")
+        time.sleep(0.4)
+        _, ref = s.shot("ov-tab-ref")
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            for tag, where in OV_SB_PLACES:
+                scene.place("tabListHud", where)
+                time.sleep(0.4)
+                _, img = s.shot("ov-tab-" + tag)
+                sf, _, items = ov_boxes(s)
+                box = items.get("tablist")
+                if not s.check("%s: the tab list has a box" % tag, box is not None, items):
+                    continue
+                rect = gui_rect(box, sf)
+                drawn = drawn_bbox(ref, img)
+                s.check("%s: drawn where its box is (1 GUI px)" % tag, rect_close(drawn, rect, sf), "%s vs %s" % (drawn, rect))
+                list_share = ratio_share(img, ref, rect, FILL_80)
+                row_share = ratio_share(img, ref, rect, ROWS_80_20)
+                s.check("%s: list, header and footer fill 0x80" % tag, list_share > 0.05, "%.3f of the box" % list_share)
+                s.check("%s: rows 0x20 over the list fill" % tag, row_share > 0.02, "%.3f of the box" % row_share)
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+    finally:
+        scene.restore()
+        s.try_call("/probe", post={"name": "tab-header-footer", "args": "clear"})
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def smoke_ov_tabhide(s, cfg):
+    s.begin("OV-tabhide", "holding Tab hides every Cobblify HUD element; scoreboard and chat stay")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    on = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled", "sessionStatsEnabled", "tntFuseEnabled"]
+
+    def modules(state):
+        for f in on:
+            scene.set(f, state)
+        time.sleep(0.4)
+
+    try:
+        scene.setup()
+        for f in OV_IN_GAME_ONLY:
+            scene.set(f, False)
+        scene.set("sessionStatsHoldKey", False)
+        ov_objective(s, sidebar=True, tablist=True)  # the list objective lets singleplayer show the tab list
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:iron_chestplate", "/effect @p 1 120 1"):
+            s.cmd(c)
+        s.call("/close")
+        _, _, free = ov_boxes(s)
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            s.cmd("/summon PrimedTnt ~6 ~ ~ {Fuse:120}")
+            s.call("/close")
+            modules(True)
+            _, held_on = s.shot("ov-tabhide-held-on")
+            modules(False)
+            _, held_off = s.shot("ov-tabhide-held-off")
+            frac, box = diff(held_on, held_off)
+            s.check("Tab held: modules on and off draw the same frame", frac == 0, "diff %.4f in %s" % (frac, box))
+            _, _, held = ov_boxes(s)
+            for item in ("scoreboard", "chat"):
+                s.check("Tab held: the %s still draws in the same box" % item,
+                        held.get(item) is not None and held.get(item) == free.get(item), "%s vs %s" % (held.get(item), free.get(item)))
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+        s.cmd("/summon PrimedTnt ~6 ~ ~ {Fuse:120}")
+        s.call("/close")
+        modules(True)
+        _, free_on = s.shot("ov-tabhide-free-on")
+        modules(False)
+        _, free_off = s.shot("ov-tabhide-free-off")
+        w, h, _ = free_on
+        for name, region in (("left", (0, 0, w // 3, h)), ("right", (2 * w // 3, 0, w, h)),
+                             ("crosshair", (w // 3, h // 3, 2 * w // 3, 2 * h // 3))):
+            frac, box = diff(free_on, free_off, box=region)
+            s.check("released: the modules draw again (%s)" % name, frac > 0, "diff %.4f in %s" % (frac, box))
+        before = s.field(TAB_HIDE_FIELD).get("value")
+        for _ in range(20):
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+            time.sleep(0.3)
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+            time.sleep(0.3)
+        after = s.field(TAB_HIDE_FIELD).get("value")
+        s.check("the HUD's Tab prediction always matched vanilla", after == 0, "mismatchFrames %s -> %s" % (before, after))
+    finally:
+        scene.restore()
+        time.sleep(5)  # let the TNT go off before the next step
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def ov_chat_rows(s, img, ref, box, sf, scale, chat_scale=1.0):
+    """(band rows, band top, band bottom) of chat fill in the right margin column (no text reaches it)."""
+    x = int((box["x"] + box["w"] - 2 * scale * chat_scale) * sf)
+    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05)
+    if band is None:
+        return 0, None, None
+    row = 9 * chat_scale * scale * sf
+    return int(round((band[1] - band[0]) / row)), band[0], band[1]
+
+
+def smoke_ov_chat(s, cfg):
+    s.begin("OV-chat", "chat item: never fades, 10 rows closed / 20 open from the bottom, box hugs its lines")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        _, ref = s.shot("ov-chat-ref")  # an empty chat draws nothing
+        for tag, where in OV_CHAT_PLACES:
+            scene.place("chatHud", where)
+            scale = where[3]
+            s.probe("chat-clear")
+            for i in range(3):
+                s.cmd('/tellraw @p {"text":"Cobdev short line %d"}' % (i + 1))
+            s.call("/close")
+            time.sleep(0.4)
+            _, img = s.shot("ov-chat-%s-3" % tag)
+            sf, gui, items = ov_boxes(s)
+            box3 = items["chat"]
+            rows, top, bottom = ov_chat_rows(s, img, ref, box3, sf, scale)
+            s.check("%s: 3 lines: box and fill are 3 rows (no empty rows on top)" % tag,
+                    rows == 3 and close_enough(box3["h"], 3 * 9 * scale, 0.01), "band %s rows, box h %s" % (rows, box3["h"]))
+            s.probe("chat-fixture", "overlays")
+            s.call("/close")
+            if tag == "p1":
+                time.sleep(12)  # past vanilla's 200-tick fade
+            else:
+                time.sleep(0.4)
+            _, img = s.shot("ov-chat-%s-closed" % tag)
+            sf, gui, items = ov_boxes(s)
+            box = items["chat"]
+            rows, top, bottom = ov_chat_rows(s, img, ref, box, sf, scale)
+            s.check("%s: closed chat shows 10 rows%s" % (tag, " after 12 s" if tag == "p1" else ""), rows == 10, rows)
+            s.check("%s: box is 10 rows and the fill ends at its bottom" % tag,
+                    close_enough(box["h"], 10 * 9 * scale, 0.01) and bottom is not None
+                    and abs(bottom - (box["y"] + box["h"]) * sf) <= sf, "box %s, band bottom %s" % (box, bottom))
+            s.check("%s: the bottom stays put while rows grow 3 -> 10" % tag,
+                    close_enough(box3["y"] + box3["h"], box["y"] + box["h"], 0.5), "%s vs %s" % (box3, box))
+            if tag in ("p1", "p2"):
+                s.probe("chat-open")
+                time.sleep(0.4)
+                _, opened = s.shot("ov-chat-%s-open" % tag)
+                orows, otop, obottom = ov_chat_rows(s, opened, ref, box, sf, scale)
+                s.check("%s: open chat grows upward from the same bottom" % tag,
+                        orows > 10 and obottom is not None and abs(obottom - bottom) <= sf, "%s rows, bottom %s vs %s" % (orows, obottom, bottom))
+                sw, sh = gui
+                bar = [fill_ratio(opened, ref, (int(x0 * sf), (sh - 13) * sf, int(x1 * sf), (sh - 11) * sf))
+                       for x0, x1 in ((2, 3.5), (sw - 3.5, sw - 2))]
+                s.check("%s: the typing bar stays full width at the bottom" % tag,
+                        all(close_enough(b, FILL_80, 0.03) for b in bar), bar)
+                s.call("/close")
+        # The Unfocused Height slider at its maximum still shows 10 closed rows (vanilla would show 20).
+        scene.place("chatHud", OV_CHAT_PLACES[0][1])
+        s.probe("chat-clear")
+        s.probe("chat-heights", 1.0, 1.0)
+        s.probe("chat-fixture", "overlays")
+        s.probe("chat-fixture", "overlays")
+        s.call("/close")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-slider-closed")
+        sf, gui, items = ov_boxes(s)
+        rows, _, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("slider at max: closed chat still 10 rows, 10-row box", rows == 10 and close_enough(items["chat"]["h"], 90, 0.01),
+                "%s rows, box %s" % (rows, items["chat"]))
+        s.probe("chat-open")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-slider-open")
+        rows, _, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("slider at max: open chat 20 rows", rows == 20, rows)
+        s.call("/close")
+        s.probe("chat-heights", "restore")
+        # Top edge: a short chat placed at y 4 stays there; grown to 10 rows its top clamps to 0.
+        s.probe("chat-clear")
+        for i in range(3):
+            s.cmd('/tellraw @p {"text":"Cobdev short line %d"}' % (i + 1))
+        s.call("/close")
+        s.probe("place-item", "chat", 4, 4)
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-top-3")
+        sf, gui, items = ov_boxes(s)
+        rows, top, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("top edge: a 3-row chat placed at y 4 stays at y 4", close_enough(items["chat"]["y"], 4, 0.01)
+                and top is not None and abs(top - 4 * sf) <= sf, "box %s, band top %s" % (items["chat"], top))
+        for i in range(7):
+            s.cmd('/tellraw @p {"text":"Cobdev more line %d"}' % (i + 1))
+        s.call("/close")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-top-10")
+        sf, gui, items = ov_boxes(s)
+        rows, top, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("top edge: grown to 10 rows the box top clamps to 0", close_enough(items["chat"]["y"], 0, 0.01)
+                and rows == 10 and top is not None and top <= sf, "box %s, %s rows from %s" % (items["chat"], rows, top))
+    finally:
+        scene.restore()
+        s.try_call("/probe", post={"name": "chat-clear"})
+
+
+def smoke_ov_chatclick(s, cfg):
+    s.begin("OV-chatclick", "chat item: links, hover text and Copy Chat at a moved, scaled chat")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        for tag, where in OV_CHAT_PLACES[:2]:
+            scene.place("chatHud", where)
+            scale = where[3]
+            s.probe("chat-clear")
+            s.probe("chat-fixture", "overlays")
+            s.probe("chat-open")
+            time.sleep(0.4)
+            sf, gui, items = ov_boxes(s)
+            box = items["chat"]
+            row = 9 * scale
+
+            def at(chat_x, r):
+                return int(round(box["x"] + chat_x * scale)), int(round(box["y"] + box["h"] - row * (r + 0.5)))
+
+            gx, gy = at(120, CHAT_FIXTURE_ROWS["link"])
+            hit = s.probe("chat-at", gx, gy)
+            comp = hit.get("component") or {}
+            s.check("%s: the link row opens the fixture URL" % tag,
+                    (comp.get("click") or {}).get("action") == "open_url" and (comp.get("click") or {}).get("value") == CHAT_LINK, hit)
+            hx, hy = at(30, CHAT_FIXTURE_ROWS["hover"])
+            hit = s.probe("chat-at", hx, hy)
+            comp = hit.get("component") or {}
+            s.check("%s: the hover row carries its hover text" % tag, (comp.get("hover") or {}).get("action") == "show_text", hit)
+            hit = s.probe("chat-at", int(box["x"]) - 1, gy)
+            s.check("%s: 1 px left of the box is no line" % tag, hit.get("component") is None and hit.get("copy") is None, hit)
+            for r in CHAT_FIXTURE_ROWS["wrapped"]:
+                hit = s.probe("chat-at", *at(30, r))
+                s.check("%s: Copy Chat copies the whole wrapped message (row %d)" % (tag, r),
+                        (hit.get("copy") or {}).get("text") == CHAT_WRAPPED, hit)
+            _, before = s.shot("ov-chatclick-%s-nohover" % tag)
+            s.call("/hover", {"x": hx, "y": hy})
+            _, hovered = s.shot("ov-chatclick-%s-hover" % tag)
+            s.call("/hover", {"off": 1})
+            frac, bb = diff(before, hovered, box=(max(0, (hx - 20) * sf), max(0, (hy - 40) * sf),
+                                                    min(hovered[0], (hx + 160) * sf), min(hovered[1], (hy + 20) * sf)))
+            s.check("%s: hovering the hover row shows its tooltip" % tag, frac > 0, "diff %.4f in %s" % (frac, bb))
+            click = s.probe("chat-click", gx, gy)
+            s.check("%s: clicking the link opens the link prompt" % tag, click.get("screenAfter") == "confirm-open-link", click)
+            s.call("/close")  # never confirms the link
+    finally:
+        s.try_call("/close")
+        scene.restore()
+        s.try_call("/probe", post={"name": "chat-clear"})
+
+
+def overlay_steps(s, cfg_box):
+    return [lambda: smoke_ov_scoreboard(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_tab(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_tabhide(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_chat(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_chatclick(s, cfg_box.get("cfg"))]
+
+
 def smoke_sprint(s, cfg):
     s.begin("A5-sprint", "Toggle Sprint: its key toggles, the sprint key is held while on")
     if not s.has("com.bedwarsqol.feature.ToggleSprint") or not cfg:
@@ -1514,7 +2003,9 @@ def cmd_smoke(args):
     s = Smoke(mode, source_of(os.path.realpath(os.path.join(SHARED, "current"))))
     steps = [lambda: smoke_boot(s, mode, fresh)]
     cfg_box = {}
-    if not args.boot_only:
+    if args.only == "overlays" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s))] + overlay_steps(s, cfg_box)
+    elif not args.boot_only:
         steps += [lambda: smoke_screen(s, "A4-settings", "settings screen", "settings"),
                   lambda: smoke_screen(s, "A4-hudeditor", "HUD editor", "hud"),
                   lambda: smoke_world(s),
@@ -1523,7 +2014,7 @@ def cmd_smoke(args):
                   lambda: smoke_zoom(s, cfg_box.get("cfg")),
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
-                  lambda: smoke_overlays(s, cfg_box.get("cfg")),
+                  lambda: smoke_overlays(s, cfg_box.get("cfg"))] + overlay_steps(s, cfg_box) + [
                   lambda: smoke_clutch(s, cfg_box.get("cfg"))]
     for step in steps:
         try:
@@ -1650,7 +2141,9 @@ def main():
     p.add_argument("name", nargs="?")
     p.add_argument("state", nargs="?")
     p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
-                                " clutch-blast DX DY DZ, use-item [ITEM]")
+                                " clutch-blast DX DY DZ, use-item [ITEM]; overlay items: overlay-boxes,"
+                                " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
+                                " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
     p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")
@@ -1658,6 +2151,7 @@ def main():
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
+    p.add_argument("--only", choices=["overlays"], help="boot, world, then only these steps (overlays: OV-*)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

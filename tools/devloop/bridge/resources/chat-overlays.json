@@ -1,0 +1,88 @@
+{
+  "_comment": "cobdev chat fixture 'overlays' (probe chat-fixture overlays): 14 filler lines, then a link, a hover line and a line that wraps to two rows at vanilla's 320 px chat width. Printed in order, so the wrapped line is drawn rows 0-1 (0 = bottom), the hover line row 2, the link row 3, the fillers rows 4-17. No player data.",
+  "lines": [
+    {
+      "text": "Cobdev filler line 1",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 2",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 3",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 4",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 5",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 6",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 7",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 8",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 9",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 10",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 11",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 12",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 13",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev filler line 14",
+      "color": "gray"
+    },
+    {
+      "text": "Cobdev link: ",
+      "extra": [
+        {
+          "text": "https://example.com/cobdev",
+          "color": "aqua",
+          "underlined": true,
+          "clickEvent": {
+            "action": "open_url",
+            "value": "https://example.com/cobdev"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Cobdev hover line",
+      "color": "yellow",
+      "hoverEvent": {
+        "action": "show_text",
+        "value": {
+          "text": "Cobdev hover text"
+        }
+      }
+    },
+    {
+      "text": "Cobdev wrapped line: a fixture message long enough to wrap onto a second chat row"
+    }
+  ]
+}

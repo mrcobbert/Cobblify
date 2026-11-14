@@ -77,6 +77,72 @@ class Analysis(unittest.TestCase):
         self.assertEqual(cobdev.diff(a, a, step=1), (0.0, None))
 
 
+def sky(w, h):
+    return w, h, [bytes(SKY * w)] * h
+
+
+def paint(img, rect, fn):
+    """A copy of img with fn(rgb) applied inside rect (x0, y0, x1, y1), through a PNG round trip."""
+    w, h, rows = img
+    rows = [bytearray(r) for r in rows]
+    x0, y0, x1, y1 = rect
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            rows[y][3 * x:3 * x + 3] = bytes(fn(tuple(rows[y][3 * x:3 * x + 3])))
+    return cobdev.png_read(cobdev.png_write(w, h, [bytes(r) for r in rows]))
+
+
+def black(alpha):
+    return lambda c: tuple(int(v * (1 - alpha / 255.0)) for v in c)
+
+
+class OverlayPixels(unittest.TestCase):
+    """The overlay smoke's pixel helpers (OV steps), on synthetic frames."""
+
+    def test_gui_box_to_device_rect(self):
+        self.assertEqual(cobdev.gui_rect({"x": 10, "y": 20.5, "w": 30, "h": 9}, 2), (20, 41, 80, 59))
+        self.assertEqual(cobdev.gui_rect((1.25, 0, 4, 4), 4), (5, 0, 21, 16))
+
+    def test_drawn_bbox_is_exclusive_and_matches_the_box(self):
+        ref = sky(80, 60)
+        img = paint(ref, (12, 8, 40, 30), black(0x50))
+        drawn = cobdev.drawn_bbox(ref, img)
+        self.assertEqual(drawn, (12, 8, 40, 30))
+        self.assertTrue(cobdev.rect_close(drawn, cobdev.gui_rect((6, 4, 14, 11), 2), 2))
+        self.assertFalse(cobdev.rect_close(drawn, (16, 8, 40, 30), 2))
+        self.assertIsNone(cobdev.drawn_bbox(ref, ref))
+
+    def test_fill_ratios_name_the_alpha(self):
+        ref = sky(40, 40)
+        img = paint(ref, (0, 0, 20, 40), black(0x50))
+        self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (2, 2, 18, 38)), 1 - 0x50 / 255.0, delta=0.01)
+        self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (22, 2, 38, 38)), 1.0, delta=0.001)
+        rows = paint(paint(ref, (0, 0, 40, 40), black(0x80)), (0, 10, 40, 20), black(0x20))
+        list_r, row_r = 1 - 0x80 / 255.0, (1 - 0x80 / 255.0) * (1 - 0x20 / 255.0)
+        self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), list_r), 0.75, delta=0.01)
+        self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), row_r), 0.25, delta=0.01)
+
+    def test_band_rows_finds_the_longest_fill_run(self):
+        ref = sky(20, 100)
+        img = paint(paint(ref, (0, 40, 20, 76), black(0x7F)), (0, 10, 20, 14), black(0x7F))
+        self.assertEqual(cobdev.band_rows(img, ref, 5, 1 - 0x7F / 255.0), (40, 76))
+        self.assertIsNone(cobdev.band_rows(ref, ref, 5, 0.5))
+        # a band touching the bottom edge still ends there
+        low = paint(ref, (0, 90, 20, 100), black(0x7F))
+        self.assertEqual(cobdev.band_rows(low, ref, 5, 1 - 0x7F / 255.0), (90, 100))
+
+    def test_colour_dark_and_bright_pixels(self):
+        ref = sky(30, 20)
+        img = paint(ref, (3, 3, 5, 10), lambda c: (255, 85, 85))
+        img = paint(img, (10, 3, 12, 10), lambda c: (255, 255, 255))
+        img = paint(img, (12, 4, 14, 11), lambda c: (20, 30, 60))  # a shadow beside the text
+        self.assertEqual(cobdev.color_count(img, (0, 0, 30, 20), (255, 85, 85)), 14)
+        self.assertEqual(cobdev.color_count(img, (6, 0, 30, 20), (255, 85, 85)), 0)
+        self.assertEqual(cobdev.rightmost_bright(img, (0, 0, 30, 20)), 11)
+        self.assertIsNone(cobdev.rightmost_bright(ref, (0, 0, 30, 20)))
+        self.assertEqual(cobdev.dark_count(img, ref, (0, 0, 30, 20)), 14)
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",

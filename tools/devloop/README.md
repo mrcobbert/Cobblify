@@ -93,6 +93,24 @@ cobdev probe clutch-blast 3 0 0                    # Clutch Practice's own blast
 cobdev probe use-item [minecraft:fire_charge]      # server-side right-click with the held item
 ```
 
+Overlay items (the scoreboard, chat and tab list as HUD items), also singleplayer only:
+
+```
+cobdev probe overlay-boxes                  # scoreboard, chat, tablist boxes (GUI px), scale factor, GUI size
+cobdev probe place-item chat 4 4            # put an item's box at GUI (x, y), as Edit HUD does
+cobdev probe chat-fixture overlays          # prints bridge/resources/chat-overlays.json (link, hover, wrap)
+cobdev probe chat-clear
+cobdev probe chat-open                      # vanilla's chat screen
+cobdev probe chat-at 40 300                 # what a click there hits, and what Copy Chat would copy (read-only)
+cobdev probe chat-click 40 300              # a left click in vanilla's chat screen only; reports screenAfter
+cobdev probe tab-header-footer "H" "F"      # or: tab-header-footer clear
+cobdev probe chat-heights 1.0 1.0           # vanilla's chat height sliders this session; or: chat-heights restore
+```
+
+`chat-click` is the one input that reaches a vanilla screen: it is refused unless vanilla's chat screen is
+open, is a left click only (a right click is Copy Chat, which would overwrite the clipboard), and is refused
+while Chat Links Prompt is off (a link click would open the browser).
+
 ## Smoke checks
 
 `cobdev smoke [--prod] [--boot-only]` runs PLAN Verification A3-A6 plus the Clutch Practice check
@@ -101,6 +119,11 @@ against the running game and writes every command, status, shot path and pass/fa
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"
 instead of failing. Exit status is 1 if any check failed.
+
+`cobdev smoke --only overlays` runs the boot and world steps, then only the overlay item checks (OV-scoreboard,
+OV-tab, OV-tabhide, OV-chat, OV-chatclick): drawn bounding boxes against `probe overlay-boxes` at three
+placements, Background fill ratios against the plain-sky backdrop, chat rows closed/open, the Tab-hides-HUD
+frame comparison with `TabHudGate.mismatchFrames`, and scripted chat clicks. The full smoke runs them too.
 
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
