@@ -14,7 +14,7 @@ import org.lwjgl.input.Keyboard;
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
- * the platform that lists the platform-only Zoom and No Hurt Cam.
+ * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV and Team Upgrades.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -48,6 +48,7 @@ final class SettingsBindings implements SheetValues {
         }
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
+        if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(hudId)) return "teamUpgrades";
         return null;
     }
 
@@ -59,7 +60,8 @@ final class SettingsBindings implements SheetValues {
 
     @Override
     public boolean hasPlatformOnly(String id) {
-        return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id);
+        return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
+                || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id);
     }
 
     @Override
@@ -80,6 +82,7 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": return c.sessionStatsHoldKey;
             case "mapInfo": return c.heightLimitEnabled;
             case "mapInfoInGame": return c.heightLimitInGameOnly;
+            case "teamUpgrades": return c.teamUpgradesEnabled;
             case "handPos": return c.handPositionEnabled;
             case "tnt": return c.tntFuseEnabled;
             case "noEsc": return c.suppressEscMenu;
@@ -146,6 +149,7 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": c.sessionStatsHoldKey = v; break;
             case "mapInfo": c.heightLimitEnabled = v; break;
             case "mapInfoInGame": c.heightLimitInGameOnly = v; break;
+            case "teamUpgrades": c.teamUpgradesEnabled = v; break;
             case "handPos": c.handPositionEnabled = v; break;
             case "tnt": c.tntFuseEnabled = v; break;
             case "noEsc": c.suppressEscMenu = v; break;
@@ -204,6 +208,7 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": return String.valueOf(TNT_RADII[nearest(TNT_RADII, c.tntFuseRadius)]);
             case "boStyle": return SheetSchema.row(id).options()[clamp(c.blockOverlayStyle, 0, 2)];
+            case "teamUpgradesLayout": return SheetSchema.row(id).options()[clamp(c.teamUpgradesLayout, 0, 1)];
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
             case "sbSize": return SIZES[clamp(c.scoreboardSize, 0, 2)];
@@ -225,6 +230,7 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": c.tntFuseRadius = TNT_RADII[i]; break;
             case "boStyle": c.blockOverlayStyle = i; break;
+            case "teamUpgradesLayout": c.teamUpgradesLayout = i; break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
             case "sbSize": c.scoreboardSize = i; break;

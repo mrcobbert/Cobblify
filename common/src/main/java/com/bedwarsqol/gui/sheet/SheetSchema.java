@@ -207,9 +207,10 @@ public final class SheetSchema {
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
-     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV and Toggle Sprint are the Ornithe build's; Lunar has its own.
+     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint and Team Upgrades are the Ornithe build's; Lunar has its own.
      */
-    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov"));
+    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
+            "teamUpgrades"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -233,6 +234,9 @@ public final class SheetSchema {
                         inGame("keystrokesInGame", "Hide it in lobbies")),
                 module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
                         inGame("mapInfoInGame", "Hide it in lobbies")),
+                module("teamUpgrades", "Team Upgrades", "Your team's upgrades and trap queue",
+                        "traps forge sharpness protection heal pool",
+                        seg("teamUpgradesLayout", "Layout", "Only what you own, or every upgrade", null, "Compact", "Full")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
                         toggle("sessionHold", "Hold Key to Show", "Show the stats only while a key is held"),
                         sessionKey, sessionReset)));

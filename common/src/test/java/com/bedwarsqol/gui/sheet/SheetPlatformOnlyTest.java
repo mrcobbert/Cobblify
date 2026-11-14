@@ -18,7 +18,8 @@ import static org.junit.Assert.assertTrue;
 /**
  * Zoom and No Hurt Cam are Combat modules of the Ornithe build only. Lunar's {@code SettingsBindings.has} lists its
  * own ids and Forge's accepts every schema id, and neither overrides {@link SheetValues#hasPlatformOnly}, so both
- * must keep hiding them; only a tree that opts in lists them. This runs in every build that compiles common/.
+ * must keep hiding them; only a tree that opts in lists them. Team Upgrades, a HUD module, is the same. This runs in
+ * every build that compiles common/.
  */
 public class SheetPlatformOnlyTest {
 
@@ -106,6 +107,42 @@ public class SheetPlatformOnlyTest {
         assertTrue(combat.contains("noHurtCam"));
         assertEquals(1, SheetSearch.search("zoom", ornithe).size());
         assertEquals("noHurtCam", SheetSearch.search("hurt cam", ornithe).get(0).module.id);
+    }
+
+    @Test
+    public void teamUpgradesIsAHudModuleWithALayoutRowMarkedPlatformOnly() {
+        SheetSchema.Module m = SheetSchema.module("teamUpgrades");
+        assertEquals("hud", m.category().id);
+        assertEquals("Team Upgrades", m.name);
+        assertTrue(SheetSchema.platformOnly("teamUpgrades"));
+        assertTrue(SheetSchema.platformOnly("teamUpgradesLayout"));
+        assertEquals(Arrays.asList("Compact", "Full"), Arrays.asList(SheetSchema.row("teamUpgradesLayout").options()));
+        List<String> hud = modules(new Tree(null, true), "hud");
+        assertEquals(hud.indexOf("mapInfo") + 1, hud.indexOf("teamUpgrades"));
+    }
+
+    @Test
+    public void teamUpgradesHiddenOnForgeAndLunarListedOnOrnithe() {
+        for (String id : new String[] {"teamUpgrades", "teamUpgradesLayout"}) {
+            assertFalse(id, SheetSchema.shows(acceptsEverything, id));
+            assertFalse(id, SheetSchema.shows(lunar(), id));
+            assertTrue(id, SheetSchema.shows(new Tree(null, true), id));
+        }
+        assertFalse(modules(acceptsEverything, "hud").contains("teamUpgrades"));
+        assertFalse(modules(lunar(), "hud").contains("teamUpgrades"));
+        assertTrue(SheetSearch.search("traps", acceptsEverything).isEmpty());
+        assertTrue(SheetSearch.search("traps", lunar()).isEmpty());
+        assertEquals("teamUpgrades", SheetSearch.search("traps", new Tree(null, true)).get(0).module.id);
+    }
+
+    /** The module toggles a page draws, in order. */
+    private static List<String> modules(SheetValues values, String category) {
+        SheetState state = new SheetState();
+        state.category = category;
+        Frame f = new SheetLayout(new SheetFixtures.Metrics(), values, state).layout(447f, "v0");
+        List<String> ids = new ArrayList<String>();
+        for (Node n : f.body) if (n.type == T.MODULE_TOGGLE) ids.add(n.id);
+        return ids;
     }
 
     /** The module toggles the Combat page draws, in order. */

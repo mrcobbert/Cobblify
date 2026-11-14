@@ -22,7 +22,8 @@ public final class HudModules {
             BedwarsHudRenderer.EMERALD_TIMER_HUD,
             BedwarsHudRenderer.KEYSTROKES_HUD,
             BedwarsHudRenderer.SESSION_HUD,
-            BedwarsHudRenderer.HEIGHT_LIMIT_HUD));
+            BedwarsHudRenderer.HEIGHT_LIMIT_HUD,
+            BedwarsHudRenderer.TEAM_UPGRADES_HUD));
 
     private HudModules() {
     }
@@ -41,6 +42,7 @@ public final class HudModules {
         if (BedwarsHudRenderer.KEYSTROKES_HUD.equals(id)) return "Keystrokes";
         if (BedwarsHudRenderer.SESSION_HUD.equals(id)) return "Session Stats";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) return "Map Info";
+        if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(id)) return "Team Upgrades";
         return id;
     }
 
@@ -68,6 +70,9 @@ public final class HudModules {
         }
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
             return new HudModuleState(c.heightLimitHudX, c.heightLimitHudY, c.heightLimitHudAnchor, c.heightLimitHudScale, c.heightLimitEnabled);
+        }
+        if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(id)) {
+            return new HudModuleState(c.teamUpgradesHudX, c.teamUpgradesHudY, c.teamUpgradesHudAnchor, c.teamUpgradesHudScale, c.teamUpgradesEnabled);
         }
         return null;
     }
@@ -98,6 +103,9 @@ public final class HudModules {
         } else if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
             c.heightLimitHudX = s.x; c.heightLimitHudY = s.y; c.heightLimitHudAnchor = s.anchor; c.heightLimitHudScale = s.scale;
             c.heightLimitEnabled = s.enabled;
+        } else if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(id)) {
+            c.teamUpgradesHudX = s.x; c.teamUpgradesHudY = s.y; c.teamUpgradesHudAnchor = s.anchor; c.teamUpgradesHudScale = s.scale;
+            c.teamUpgradesEnabled = s.enabled;
         }
     }
 

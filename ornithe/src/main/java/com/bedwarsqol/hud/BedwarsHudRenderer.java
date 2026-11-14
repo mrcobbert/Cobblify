@@ -9,6 +9,10 @@ import com.bedwarsqol.feature.SessionStats;
 import com.bedwarsqol.feature.HeightLimitCore;
 import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.SessionStatsWatch;
+import com.bedwarsqol.feature.TeamUpgradeCatalog;
+import com.bedwarsqol.feature.TeamUpgradeLifecycle;
+import com.bedwarsqol.feature.TeamUpgradeRows;
+import com.bedwarsqol.feature.TeamUpgradesWatch;
 import com.bedwarsqol.ornithe.MouseButtonEvent;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
@@ -52,6 +56,7 @@ public class BedwarsHudRenderer {
     public static final String DIAMOND_TIMER_HUD = "diamondtimer";
     public static final String SESSION_HUD = "sessionstats";
     public static final String HEIGHT_LIMIT_HUD = "heightlimit";
+    public static final String TEAM_UPGRADES_HUD = "teamupgrades";
     public static final String EMERALD_TIMER_HUD = "emeraldtimer";
     public static final String KEYSTROKES_HUD = "keystrokes";
     private static final int INV_COLS = 9;
@@ -169,6 +174,7 @@ public class BedwarsHudRenderer {
         addEditorBox(boxes, cfg, keystrokesBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, sessionBox(mc, cfg, true, true));
         addEditorBox(boxes, cfg, heightLimitBox(mc, cfg, true, true));
+        addEditorBox(boxes, cfg, teamUpgradesEditorBox(mc, cfg, true));
         return boxes;
     }
 
@@ -195,6 +201,7 @@ public class BedwarsHudRenderer {
         drawTimerHud(mc, cfg, example, false);
         if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, example);
         drawHeightLimitHud(mc, cfg, example);
+        drawTeamUpgradesHud(mc, cfg, example);
         // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
         if (example) drawSessionHud(mc, cfg, true);
     }
@@ -443,6 +450,9 @@ public class BedwarsHudRenderer {
         DEFAULT_SPOTS.put(HEIGHT_LIMIT_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.DOWN),
                 new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.UP),
                 new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)});
+        DEFAULT_SPOTS.put(TEAM_UPGRADES_HUD, new Spot[]{new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.DOWN),
+                new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.UP),
+                new Spot(Horizontal.LEFT, Vertical.BOTTOM, Slide.UP)});
     }
     private static String layoutKey;
     private static Map<String, float[]> layoutCache;
@@ -500,12 +510,14 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
         if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
+        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(cfg, teamUpgradesFullExample());
         return Size.EMPTY;
     }
 
     private static float layoutPad(ClientSettings cfg, String id) {
         if (SESSION_HUD.equals(id)) return panelPad(cfg.sessionStatsHudScale);
         if (HEIGHT_LIMIT_HUD.equals(id)) return panelPad(cfg.heightLimitHudScale);
+        if (TEAM_UPGRADES_HUD.equals(id)) return panelPad(cfg.teamUpgradesHudScale);
         return CONTENT_MARGIN;
     }
 
@@ -519,6 +531,7 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerBox(mc, cfg, true, false, true);
         if (SESSION_HUD.equals(id)) return sessionBox(mc, cfg, true, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitBox(mc, cfg, true, true);
+        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesEditorBox(mc, cfg, true);
         return null;
     }
 
@@ -797,6 +810,126 @@ public class BedwarsHudRenderer {
         out.add("Height Limit: " + (limit < 0 ? "?" : Integer.toString(limit)));
         out.add("Distance: " + (distance < 0 ? "?" : Integer.toString(distance)));
         return out;
+    }
+
+    // ----- Team Upgrades (upgrades and trap queue, Session Stats look) -----
+
+    /** Next-tier diamond costs, in Minecraft's aqua. */
+    private static final int TEAM_COST_COLOR = 0xFF55FFFF;
+    /** A trap that just fired, in Minecraft's red; it fades with the row's alpha. */
+    private static final int TEAM_FIRED_RGB = 0xFF5555;
+    /** Space between the label column and the right-aligned cost column, in local units. */
+    private static final float TEAM_COLUMN_GAP = 8f;
+
+    private static TeamUpgradeRows.Layout teamUpgradesLayout(ClientSettings cfg) {
+        return cfg.teamUpgradesLayout == ClientSettings.TEAM_UPGRADES_FULL
+                ? TeamUpgradeRows.Layout.FULL : TeamUpgradeRows.Layout.COMPACT;
+    }
+
+    /** Edit HUD and the default layout measure this, so switching to Full never runs into a neighbour. */
+    private static List<TeamUpgradeRows.Row> teamUpgradesFullExample() {
+        return TeamUpgradeRows.example(TeamUpgradeRows.Layout.FULL);
+    }
+
+    /** The rows to draw: the example in the editor; in game the visible state's, empty outside an active game. */
+    private static List<TeamUpgradeRows.Row> teamUpgradesRows(ClientSettings cfg, boolean example) {
+        if (example) return TeamUpgradeRows.example(teamUpgradesLayout(cfg));
+        TeamUpgradeLifecycle lifecycle = TeamUpgradesWatch.lifecycle();
+        return TeamUpgradeRows.rows(lifecycle.visible(), teamUpgradesLayout(cfg),
+                TeamUpgradeCatalog.bracket(lifecycle.mode()), System.currentTimeMillis());
+    }
+
+    /** The editor's and the layout's box: the Full example's size, whichever layout is chosen. */
+    private static HudBox teamUpgradesEditorBox(Minecraft mc, ClientSettings cfg, boolean all) {
+        if (!all && !cfg.teamUpgradesEnabled) return null;
+        return teamUpgradesBox(mc, cfg, teamUpgradesSize(cfg, teamUpgradesFullExample()));
+    }
+
+    private static HudBox teamUpgradesBox(Minecraft mc, ClientSettings cfg, Size size) {
+        if (size.width <= 0f || size.height <= 0f) return null;
+        ScaledResolution r = new ScaledResolution(mc);
+        float pad = panelPad(cfg.teamUpgradesHudScale);
+        float[] at = place(mc, cfg, TEAM_UPGRADES_HUD, cfg.teamUpgradesHudX, cfg.teamUpgradesHudY, cfg.teamUpgradesHudAnchor, size.width, size.height, pad, r);
+        return new HudBox(TEAM_UPGRADES_HUD, at[0], at[1], size.width, size.height, pad);
+    }
+
+    /** Widest left column + gap + widest right column wide, one line per row high. */
+    private static Size teamUpgradesSize(ClientSettings cfg, List<TeamUpgradeRows.Row> rows) {
+        if (rows.isEmpty()) return Size.EMPTY;
+        float scale = ts(cfg.teamUpgradesHudScale);
+        float left = 0f, right = 0f;
+        for (TeamUpgradeRows.Row row : rows) {
+            left = Math.max(left, teamLeftWidth(row) * scale);
+            right = Math.max(right, fontWidth(row.right, teamWeight(row)) * scale);
+        }
+        float width = left + (right > 0f ? TEAM_COLUMN_GAP * scale + right : 0f);
+        float height = rows.size() * ((TEXT_HEIGHT + LINE_GAP) * scale) - LINE_GAP * scale - inkTrim(scale);
+        return new Size(width, height);
+    }
+
+    private static BedwarsQolFont.Weight teamWeight(TeamUpgradeRows.Row row) {
+        return row.kind == TeamUpgradeRows.Kind.HEADER ? SESSION_HEADER_WEIGHT : SESSION_ROW_WEIGHT;
+    }
+
+    /** Label, then a space and the value when there is one. */
+    private static String teamLeftText(TeamUpgradeRows.Row row) {
+        return row.value.isEmpty() ? row.label : row.label + " " + row.value;
+    }
+
+    private static float teamLeftWidth(TeamUpgradeRows.Row row) {
+        return fontWidth(teamLeftText(row), teamWeight(row));
+    }
+
+    private static void drawTeamUpgradesHud(Minecraft mc, ClientSettings cfg, boolean example) {
+        if (!cfg.teamUpgradesEnabled) return;
+        List<TeamUpgradeRows.Row> rows = teamUpgradesRows(cfg, example);
+        if (rows.isEmpty()) return; // no active game: nothing at all
+        HudBox box = example ? teamUpgradesEditorBox(mc, cfg, false) : teamUpgradesBox(mc, cfg, teamUpgradesSize(cfg, rows));
+        if (box == null) return;
+        float scale = cfg.teamUpgradesHudScale;
+        drawHudBackground(box, scale, example);
+        scale = ts(scale);
+        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        float step = (TEXT_HEIGHT + LINE_GAP) * scale;
+        for (int i = 0; i < rows.size(); i++) {
+            TeamUpgradeRows.Row row = rows.get(i);
+            float y = box.y + i * step;
+            BedwarsQolFont.Weight weight = teamWeight(row);
+            if (row.kind == TeamUpgradeRows.Kind.HEADER) {
+                fontDraw(row.label, box.x, y, scale, header, weight);
+                continue;
+            }
+            int fired = 0;
+            if (row.style == TeamUpgradeRows.Style.FIRED) {
+                int a = Math.round(Math.max(0f, Math.min(1f, row.alpha)) * 255f);
+                if (a < 8) continue; // the vanilla font would draw an almost transparent colour opaque
+                fired = (a << 24) | TEAM_FIRED_RGB;
+            }
+            boolean dim = row.style == TeamUpgradeRows.Style.DIM;
+            int label = fired != 0 ? fired : dim ? STAT_SLASH_COLOR : STAT_LABEL_COLOR;
+            int value = fired != 0 ? fired : dim ? STAT_SLASH_COLOR : STAT_VALUE_COLOR;
+            float x = box.x;
+            if (row.kind == TeamUpgradeRows.Kind.TRAP) {
+                // "1 Blindness": the slot number gray, the trap name white
+                int sp = row.label.indexOf(' ');
+                if (sp > 0) {
+                    x = drawSegment(row.label.substring(0, sp + 1), x, y, scale, label, weight);
+                    drawSegment(row.label.substring(sp + 1), x, y, scale, value, weight);
+                } else {
+                    drawSegment(row.label, x, y, scale, value, weight);
+                }
+            } else if (row.kind == TeamUpgradeRows.Kind.NONE) {
+                drawSegment(row.label, x, y, scale, value, weight);
+            } else {
+                x = drawSegment(row.label, x, y, scale, label, weight);
+                if (!row.value.isEmpty()) drawSegment(" " + row.value, x, y, scale, value, weight);
+            }
+            if (!row.right.isEmpty()) {
+                boolean number = Character.isDigit(row.right.charAt(0));
+                int color = fired != 0 ? fired : dim ? STAT_SLASH_COLOR : number ? TEAM_COST_COLOR : STAT_VALUE_COLOR;
+                fontDraw(row.right, box.right() - fontWidth(row.right, weight) * scale, y, scale, color, weight);
+            }
+        }
     }
 
     // ----- Session Stats (Lunar-style game + session tally) -----

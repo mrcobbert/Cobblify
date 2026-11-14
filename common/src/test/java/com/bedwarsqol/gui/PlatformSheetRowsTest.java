@@ -6,8 +6,8 @@ import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 
 /**
- * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom and No Hurt Cam
- * are listed on Ornithe and hidden on Lunar and Forge.
+ * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom, No Hurt Cam,
+ * Toggle Sprint, Dynamic FOV and Team Upgrades (with its Layout row) are listed on Ornithe and hidden on Lunar and Forge.
  */
 public class PlatformSheetRowsTest {
 
@@ -29,7 +29,8 @@ public class PlatformSheetRowsTest {
         String platform = ornithe ? "ornithe" : lunar ? "lunar" : "forge";
 
         SettingsBindings values = new SettingsBindings();
-        for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov"}) {
+        for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov", "teamUpgrades",
+                "teamUpgradesLayout"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }

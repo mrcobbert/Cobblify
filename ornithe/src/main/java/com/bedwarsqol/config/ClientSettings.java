@@ -98,6 +98,17 @@ public class ClientSettings {
     public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
 
+    /** Team Upgrades: your team's upgrades and trap queue in a Bed Wars game; always drawn on its panel. */
+    public static final int TEAM_UPGRADES_COMPACT = 0;
+    public static final int TEAM_UPGRADES_FULL = 1;
+    public boolean teamUpgradesEnabled = false;
+    /** {@link #TEAM_UPGRADES_COMPACT} (only what the team owns) or {@link #TEAM_UPGRADES_FULL} (every upgrade). */
+    public int teamUpgradesLayout = TEAM_UPGRADES_COMPACT;
+    public int teamUpgradesHudX = 0;
+    public int teamUpgradesHudY = 0;
+    public int teamUpgradesHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float teamUpgradesHudScale = 1.0f;
+
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
     /** Nametag/tab stat overlays no longer have toggles — forced on with Player Stats (see sanitize). */
@@ -398,6 +409,9 @@ public class ClientSettings {
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
+        if (teamUpgradesLayout != TEAM_UPGRADES_FULL) teamUpgradesLayout = TEAM_UPGRADES_COMPACT;
+        teamUpgradesHudAnchor = clamp(teamUpgradesHudAnchor, HudPlacement.AUTO, 8);
+        if (teamUpgradesHudScale < 0.3f || teamUpgradesHudScale > 10.0f) teamUpgradesHudScale = defaultTextSizeScale();
         scoreboardSize = clamp(scoreboardSize, 0, 2);
         styledTabListSize = clamp(styledTabListSize, 0, 2);
 
@@ -452,6 +466,7 @@ public class ClientSettings {
         keystrokesHudScale = rescaled(keystrokesHudScale, factor);
         sessionStatsHudScale = rescaled(sessionStatsHudScale, factor);
         heightLimitHudScale = rescaled(heightLimitHudScale, factor);
+        teamUpgradesHudScale = rescaled(teamUpgradesHudScale, factor);
     }
 
     private static float rescaled(float scale, float factor) {
