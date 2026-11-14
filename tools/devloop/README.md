@@ -104,7 +104,7 @@ to get a real world load; `cobdev world` opens it again.
 Practice check and the Team Upgrades steps (synthetic Bed Wars scoreboard, chat lines, titles and shop
 windows, then an Edit HUD sweep over window sizes, GUI scales and HUD Size that checks Team Upgrades' default
 spot against every switched-on module and the hotbar, with the profile's modules and again with all of them
-on, where a full screen is a note, not a failure) against the running game and writes every command, status, shot path and pass/fail per check to
+on, where only a screen whose other modules already overlap one another is a note, not a failure) against the running game and writes every command, status, shot path and pass/fail per check to
 `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"

@@ -1809,12 +1809,43 @@ def tu_sweep(s, hud_size, which, sizes, scales):
             gw, gh, boxes = tu_boxes(s)
             mine, others = tu_layout_overlaps(gw, gh, boxes)
             detail = {"overlaps": mine, "box": boxes.get(TU_ID), "gui": [gw, gh], "others (not Team Upgrades)": others}
-            if which == "profile" or not mine:
+            if which == "profile" or not mine or not others:
                 s.check("clear of modules and hotbar " + tag, not mine, detail)
             else:
-                # every module on in a small GUI: the screen is full (HudLayout's least-covered fallback)
-                s.note("no room with every module on " + tag, detail)
+                # every module on and the others already overlap one another: the screen is full
+                s.note("screen full with every module on " + tag, detail)
             s.call("/close")
+
+
+def tu_move_keeps_size(s, cfg, mode):
+    """Review code-2 I2: at 854x480, GUI scale 2, HUD Size 2 the default panel is stepped down to fit; select
+    it in Edit HUD and press Right once: it moves one pixel and keeps its size, clear of the hotbar."""
+    scale_path = cfg + ".teamUpgradesHudScale"
+    configured = s.field(scale_path).get("value")
+    if mode == "dev":
+        s.call("/size", {"w": 854, "h": 480})
+        time.sleep(1)
+    s.call("/scale", {"n": 2})
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    gw, gh, boxes = tu_boxes(s)
+    before = boxes[TU_ID]
+    s.call("/click", {"x": int(before["x"] + before["w"] / 2), "y": int(before["y"] + 4)})
+    s.call("/key", {"code": KEYS["right"]})
+    time.sleep(0.3)
+    gw, gh, boxes = tu_boxes(s)
+    after = boxes[TU_ID]
+    s.shot("tu-moved")
+    mine, _ = tu_layout_overlaps(gw, gh, {TU_ID: after})
+    s.check("moving the stepped-down panel keeps its size, clear of the hotbar",
+            abs(after["w"] - before["w"]) < 0.01 and abs(after["h"] - before["h"]) < 0.01
+            and abs(after["x"] - before["x"] - 1) < 0.01 and not mine,
+            {"before": before, "after": after, "gui": [gw, gh], "overlaps": mine})
+    s.call("/close")
+    s.field(cfg + ".teamUpgradesHudAnchor", -1)  # back to the default spot, at the configured size
+    s.field(cfg + ".teamUpgradesHudX", 0)
+    s.field(cfg + ".teamUpgradesHudY", 0)
+    s.field(scale_path, configured)
 
 
 def smoke_team_upgrades_look(s, cfg, mode):
@@ -1842,6 +1873,8 @@ def smoke_team_upgrades_look(s, cfg, mode):
                 tu_sweep(s, hud_size, which, sizes, scales)
             for m, v in zip(mods, mods_was):
                 s.field(m, v)
+            if hud_size == 2:
+                tu_move_keeps_size(s, cfg, mode)
             if display_was and mode == "dev":
                 s.call("/size", {"w": int(display_was.split("x")[0]), "h": int(display_was.split("x")[1])})
             s.call("/scale", {"n": scale_was})
@@ -1862,6 +1895,7 @@ def smoke_team_upgrades_look(s, cfg, mode):
         s.try_call("/invoke", post={"path": cfg + ".setHudSize", "args": str(was[2])})
         for m, v in zip(mods, mods_was):
             s.field(m, v)
+        s.field(cfg + ".teamUpgradesHudAnchor", -1)
         s.field(en, was[0])
         s.field(lay, was[1])
         tu_save(s, cfg)
