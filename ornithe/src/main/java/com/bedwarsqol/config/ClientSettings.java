@@ -2,6 +2,7 @@ package com.bedwarsqol.config;
 
 import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.hud.HudBackground;
 import com.bedwarsqol.hud.HudPlacement;
 import com.bedwarsqol.hud.OverlayItems;
 import com.bedwarsqol.stats.BackendDefaults;
@@ -9,6 +10,9 @@ import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsBackendUrl;
 import com.bedwarsqol.stats.StatsMode;
 import org.lwjgl.input.Keyboard;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class ClientSettings {
 
@@ -98,6 +102,15 @@ public class ClientSettings {
     public int heightLimitHudY = 0;
     public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
+
+    /**
+     * Per-item Background switch of every HUD item (the HUD modules and the scoreboard, chat and tab list), by HUD
+     * item id: only items switched Off are stored, as {@code false}; an absent id is On. Gson leaves an absent member
+     * at its initialiser, so a config saved before this existed loads with every Background On, with no
+     * {@link #settingsVersion} step. The 0.16.3 per-module Background keys stay ignored.
+     * Read and write through {@link #hudBackground} and {@link #setHudBackground}.
+     */
+    public Map<String, Boolean> hudBackgrounds = new LinkedHashMap<String, Boolean>();
 
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
@@ -429,6 +442,7 @@ public class ClientSettings {
         tabListHudScale = overlayScale(tabListHudScale);
         chatHudAnchor = clamp(chatHudAnchor, HudPlacement.AUTO, 8);
         chatHudScale = overlayScale(chatHudScale);
+        hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
 
         blockOverlayStyle = clamp(blockOverlayStyle, 0, 2);
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
@@ -455,6 +469,17 @@ public class ClientSettings {
     /** An overlay item's scale, or its default when out of range (overlays do not follow HUD Size). */
     private static float overlayScale(float scale) {
         return scale < 0.3f || scale > 10.0f || Float.isNaN(scale) ? OverlayItems.DEFAULT_SCALE : scale;
+    }
+
+    /** Whether HUD item {@code itemId} draws its background (true unless switched Off). */
+    public boolean hudBackground(String itemId) {
+        return HudBackground.on(hudBackgrounds, itemId);
+    }
+
+    /** Switches HUD item {@code itemId}'s background; On removes its entry. */
+    public void setHudBackground(String itemId, boolean on) {
+        if (hudBackgrounds == null) hudBackgrounds = new LinkedHashMap<String, Boolean>();
+        HudBackground.set(hudBackgrounds, itemId, on);
     }
 
     /** Whether the menu and the HUD use Minecraft's font. */

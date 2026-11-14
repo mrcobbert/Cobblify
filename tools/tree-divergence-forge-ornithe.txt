@@ -92,6 +92,11 @@ divergent main com/bedwarsqol/feature/ClutchPractice.java
 divergent main com/bedwarsqol/config/ClientSettings.java
 divergent main com/bedwarsqol/gui/SettingsBindings.java
 
+# Per-item HUD Background (Ornithe only): HudModules carries each module's Background
+# flag in its state, and lists the scoreboard, chat and tab list items (HUD parity B).
+# Team Upgrades adds the same line; keep one on merge.
+divergent main com/bedwarsqol/hud/HudModules.java
+
 # Forge-patched GuiScreen.mouseClicked/keyTyped throw IOException; vanilla's do not.
 # The Ornithe copy is Lunar's (byte-identical to lunar/).
 divergent main com/bedwarsqol/gui/EditHudGui.java
@@ -168,13 +173,16 @@ one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatOverlayMixin.java
 # GuiNewChatMixin also maps the mouse for the moved chat item and exposes its rows (ChatItemAccess).
 divergent main com/bedwarsqol/mixin/GuiNewChatMixin.java
 one-sided test ornithe com/bedwarsqol/config/OverlayItemSettingsTest.java
-# HudModules lists the three overlay items next to the modules (Forge keeps its Size rows).
-divergent main com/bedwarsqol/hud/HudModules.java
 
 # Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
 one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
+
+# Per-item HUD Background (Ornithe only): its persistence, HudModules and sheet-row tests.
+one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
 
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources

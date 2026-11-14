@@ -37,6 +37,8 @@ public final class SheetSchema {
         String unit = "";
         String dep, reason, label;
         boolean confirm;
+        /** The HUD item a Background row switches; null for every other row. */
+        String hudItem;
         Module module;
         Section section;
         Category category;
@@ -63,6 +65,8 @@ public final class SheetSchema {
         public String label() { return label; }
         /** An action that asks for a second press. */
         public boolean confirm() { return confirm; }
+        /** The HUD item id this Background row switches, or null if it is not a Background row. */
+        public String hudItem() { return hudItem; }
         public Module module() { return module; }
         public Section section() { return section; }
         public Category category() { return category; }
@@ -188,6 +192,17 @@ public final class SheetSchema {
         return toggle(id, "In Game Only", desc);
     }
 
+    /**
+     * A "Background" toggle row for HUD item {@code hudItem} (a {@code HudModules} id or one of
+     * {@code HudBackground.OVERLAY_IDS}). It is platform-only (see {@link #platformOnly}): Forge's {@code has}
+     * accepts every schema id, so a shared module's Background row would otherwise appear there.
+     */
+    private static Row background(String id, String hudItem, String desc) {
+        Row r = toggle(id, "Background", desc);
+        r.hudItem = hudItem;
+        return r;
+    }
+
     private static String[] accentNames() {
         GuiTheme.Accent[] all = GuiTheme.Accent.values();
         String[] out = new String[all.length];
@@ -222,18 +237,25 @@ public final class SheetSchema {
         List<Category> cats = new ArrayList<Category>();
         cats.add(category("hud", "HUD",
                 module("potion", "Potion", "Active effects and timers", "effects speed strength",
+                        background("potionBg", "potion", "See-through panel behind it"),
                         inGame("potionInGame", "Hide it in lobbies")),
                 module("armor", "Armor", "Equipped armor type", "durability",
+                        background("armorBg", "armor", "See-through panel behind it"),
                         inGame("armorInGame", "Hide it in lobbies")),
                 module("inventory", "Inventory", "Stored items at a glance", "items blocks",
+                        background("inventoryBg", "inventory", "See-through panel behind it"),
                         inGame("inventoryInGame", "Hide it in lobbies")),
                 module("genTimers", "Gen Timers", "Diamond and emerald timers", "generator diamond emerald",
+                        background("genTimersBg", "diamondtimer", "See-through panels behind them"),
                         inGame("genTimersInGame", "Hide them in lobbies")),
                 module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
+                        background("keystrokesBg", "keystrokes", "See-through key caps"),
                         inGame("keystrokesInGame", "Hide it in lobbies")),
                 module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
+                        background("mapInfoBg", "heightlimit", "See-through panel behind it"),
                         inGame("mapInfoInGame", "Hide it in lobbies")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
+                        background("sessionBg", "sessionstats", "See-through panel behind it"),
                         toggle("sessionHold", "Hold Key to Show", "Show the stats only while a key is held"),
                         sessionKey, sessionReset)));
         cats.add(category("combat", "Combat",
@@ -321,11 +343,18 @@ public final class SheetSchema {
         return ROWS.get(id);
     }
 
-    /** Whether {@code id} is a platform-only module, or a row of one. */
+    /** Whether {@code id} is a platform-only module, a row of one, or a Background row (see {@link #background}). */
     public static boolean platformOnly(String id) {
         Row r = ROWS.get(id);
+        if (r != null && r.hudItem != null) return true;
         Module m = r != null ? r.module : MODULES.get(id);
         return m != null && PLATFORM_ONLY.contains(m.id);
+    }
+
+    /** The HUD item Background row {@code rowId} switches, or null if it is not a Background row. */
+    public static String hudItem(String rowId) {
+        Row r = ROWS.get(rowId);
+        return r == null ? null : r.hudItem;
     }
 
     /** Whether the sheet lists module or row {@code id} on the platform behind {@code values}. */

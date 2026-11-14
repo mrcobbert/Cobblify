@@ -152,6 +152,11 @@ one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
 one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
 
+# Per-item HUD Background (Ornithe only): its persistence, HudModules and sheet-row tests.
+one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java
