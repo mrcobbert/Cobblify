@@ -158,6 +158,12 @@ one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
 one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
 
+# FPS, CPS and Ping HUD modules (Ornithe only): their settings and sheet-row test.
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTextModulesTest.java
+
+# Modern potion effect icons (Ornithe only): the GL upload of the icons common/'s loader fetches.
+one-sided main ornithe com/bedwarsqol/hud/EffectIconTextures.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java

@@ -31,7 +31,8 @@ public class PlatformSheetRowsTest {
         SettingsBindings values = new SettingsBindings();
         for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov",
                 "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
-                "scoreboardBg", "tabListBg", "chatBg"}) {
+                "scoreboardBg", "tabListBg", "chatBg",
+                "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }

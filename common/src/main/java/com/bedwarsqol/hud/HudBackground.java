@@ -13,6 +13,9 @@ import java.util.Map;
  */
 public final class HudBackground {
 
+    /** Lunar's square see-through panel: black at alpha 0x6F (about 44%). */
+    public static final int FILL = 0x6F000000;
+
     /**
      * HUD items that have a Background switch without being Edit HUD modules: the vanilla scoreboard, chat and tab
      * list (the ids cycle B uses for its rows and its rendering).
@@ -21,6 +24,14 @@ public final class HudBackground {
             "scoreboard", "chat", "tablist"));
 
     private HudBackground() {
+    }
+
+    /**
+     * Padding of a panel around its content at module scale {@code scale}: 3 GUI px at HUD Size Medium (the margin a
+     * module without a panel keeps, so switching the Background does not move it), never under 2.
+     */
+    public static int pad(float scale) {
+        return Math.max(2, Math.round(3f * scale));
     }
 
     /** Whether item {@code id} draws its background: true unless {@code offs} holds {@code false} for it. */

@@ -1,6 +1,8 @@
 """Game-free tests for cobdev's pure helpers. Run: python3 -I tools/devloop/test_cobdev.py (or cobdev selftest)."""
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -81,7 +83,7 @@ def sky(w, h):
     return w, h, [bytes(SKY * w)] * h
 
 
-def paint(img, rect, fn):
+def paint_fn(img, rect, fn):
     """A copy of img with fn(rgb) applied inside rect (x0, y0, x1, y1), through a PNG round trip."""
     w, h, rows = img
     rows = [bytearray(r) for r in rows]
@@ -105,7 +107,7 @@ class OverlayPixels(unittest.TestCase):
 
     def test_drawn_bbox_is_exclusive_and_matches_the_box(self):
         ref = sky(80, 60)
-        img = paint(ref, (12, 8, 40, 30), black(0x50))
+        img = paint_fn(ref, (12, 8, 40, 30), black(0x50))
         drawn = cobdev.drawn_bbox(ref, img)
         self.assertEqual(drawn, (12, 8, 40, 30))
         self.assertTrue(cobdev.rect_close(drawn, cobdev.gui_rect((6, 4, 14, 11), 2), 2))
@@ -114,28 +116,28 @@ class OverlayPixels(unittest.TestCase):
 
     def test_fill_ratios_name_the_alpha(self):
         ref = sky(40, 40)
-        img = paint(ref, (0, 0, 20, 40), black(0x50))
+        img = paint_fn(ref, (0, 0, 20, 40), black(0x50))
         self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (2, 2, 18, 38)), 1 - 0x50 / 255.0, delta=0.01)
         self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (22, 2, 38, 38)), 1.0, delta=0.001)
-        rows = paint(paint(ref, (0, 0, 40, 40), black(0x80)), (0, 10, 40, 20), black(0x20))
+        rows = paint_fn(paint_fn(ref, (0, 0, 40, 40), black(0x80)), (0, 10, 40, 20), black(0x20))
         list_r, row_r = 1 - 0x80 / 255.0, (1 - 0x80 / 255.0) * (1 - 0x20 / 255.0)
         self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), list_r), 0.75, delta=0.01)
         self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), row_r), 0.25, delta=0.01)
 
     def test_band_rows_finds_the_longest_fill_run(self):
         ref = sky(20, 100)
-        img = paint(paint(ref, (0, 40, 20, 76), black(0x7F)), (0, 10, 20, 14), black(0x7F))
+        img = paint_fn(paint_fn(ref, (0, 40, 20, 76), black(0x7F)), (0, 10, 20, 14), black(0x7F))
         self.assertEqual(cobdev.band_rows(img, ref, 5, 1 - 0x7F / 255.0), (40, 76))
         self.assertIsNone(cobdev.band_rows(ref, ref, 5, 0.5))
         # a band touching the bottom edge still ends there
-        low = paint(ref, (0, 90, 20, 100), black(0x7F))
+        low = paint_fn(ref, (0, 90, 20, 100), black(0x7F))
         self.assertEqual(cobdev.band_rows(low, ref, 5, 1 - 0x7F / 255.0), (90, 100))
 
     def test_colour_dark_and_bright_pixels(self):
         ref = sky(30, 20)
-        img = paint(ref, (3, 3, 5, 10), lambda c: (255, 85, 85))
-        img = paint(img, (10, 3, 12, 10), lambda c: (255, 255, 255))
-        img = paint(img, (12, 4, 14, 11), lambda c: (20, 30, 60))  # a shadow beside the text
+        img = paint_fn(ref, (3, 3, 5, 10), lambda c: (255, 85, 85))
+        img = paint_fn(img, (10, 3, 12, 10), lambda c: (255, 255, 255))
+        img = paint_fn(img, (12, 4, 14, 11), lambda c: (20, 30, 60))  # a shadow beside the text
         self.assertEqual(cobdev.color_count(img, (0, 0, 30, 20), (255, 85, 85)), 14)
         self.assertEqual(cobdev.color_count(img, (6, 0, 30, 20), (255, 85, 85)), 0)
         self.assertEqual(cobdev.rightmost_bright(img, (0, 0, 30, 20)), 11)
@@ -261,6 +263,163 @@ class SmokeSave(unittest.TestCase):
         finally:
             cobdev.api_quiet = real
         self.assertEqual(sent, [])
+
+
+def flat(w, h, rgb):
+    return w, h, [bytes(rgb) * w for _ in range(h)]
+
+
+def paint(img, box, rgb):
+    """A copy of img with box (x0, y0, x1, y1, inclusive) filled with rgb."""
+    w, h, rows = img
+    rows = [bytearray(r) for r in rows]
+    for y in range(box[1], box[3] + 1):
+        for x in range(box[0], box[2] + 1):
+            rows[y][3 * x:3 * x + 3] = bytes(rgb)
+    return w, h, [bytes(r) for r in rows]
+
+
+def see_through(rgb):
+    return tuple(round(c * (1 - 0x6F / 255.0)) for c in rgb)
+
+
+class HudLookHelpers(unittest.TestCase):
+    """The HL step's pure helpers, on synthetic frames."""
+
+    def test_ring_visits_each_edge_pixel_once(self):
+        pts = cobdev.ring((0, 0, 4, 3), 0)
+        self.assertEqual(len(pts), len(set(pts)))
+        self.assertEqual(len(pts), 2 * 5 + 2 * 2)
+        self.assertEqual(set(cobdev.ring((0, 0, 4, 3), 1)), {(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)})
+        self.assertEqual(cobdev.ring((0, 0, 1, 1), 1), [])
+        self.assertEqual(cobdev.ring((2, 2, 2, 2), 0), [(2, 2)])
+
+    def test_see_through_ratio(self):
+        self.assertTrue(cobdev.see_through_ok(see_through(SKY), SKY))
+        self.assertTrue(cobdev.see_through_ok((69, 94, 145), SKY))  # within 2
+        self.assertFalse(cobdev.see_through_ok((26, 26, 26), SKY))  # 0xD0121212 over the sky
+        self.assertFalse(cobdev.see_through_ok(SKY, SKY))           # no panel
+
+    def test_counts(self):
+        img = paint(flat(10, 8, SKY), (2, 2, 4, 3), (63, 63, 63))
+        self.assertEqual(cobdev.count_exact(img, (0, 0, 9, 7), (63, 63, 63)), 6)
+        self.assertEqual(cobdev.count_exact(img, (3, 0, 9, 7), (63, 63, 63)), 4)
+        self.assertEqual(cobdev.count_near(img, (0, 0, 9, 7), (60, 66, 63), 3), 6)
+        self.assertEqual(cobdev.count_near(img, (0, 0, 9, 7), (60, 66, 63), 2), 0)
+        self.assertEqual(cobdev.xs_of(img, (0, 0, 9, 7), (63, 63, 63)), (2, 4))
+        self.assertEqual(cobdev.ys_of(img, (0, 0, 9, 7), (63, 63, 63)), (2, 3))
+        self.assertIsNone(cobdev.xs_of(img, (0, 0, 9, 7), (1, 2, 3)))
+
+    def test_bbox_diff_is_exact(self):
+        a = flat(20, 12, SKY)
+        b = paint(paint(a, (3, 4, 5, 4), GRASS), (11, 9, 11, 10), GRASS)
+        self.assertEqual(cobdev.bbox_diff(a, b), (3, 4, 11, 10))
+        self.assertEqual(cobdev.bbox_diff(a, b, (0, 0, 8, 11)), (3, 4, 5, 4))
+        self.assertIsNone(cobdev.bbox_diff(a, a))
+        self.assertIsNone(cobdev.bbox_diff(a, flat(21, 12, SKY)))
+
+    def test_changed_runs_split_at_unchanged_lines(self):
+        a = flat(30, 20, SKY)
+        b = paint(paint(a, (2, 3, 8, 6), GRASS), (12, 4, 20, 9), GRASS)
+        box = cobdev.bbox_diff(a, b)
+        self.assertEqual(cobdev.changed_runs(a, b, box, "x"), [(2, 3, 8, 6), (12, 4, 20, 9)])
+        self.assertEqual(cobdev.changed_runs(a, b, box, "y"), [(2, 3, 20, 9)])
+        c = paint(paint(a, (2, 1, 8, 4), GRASS), (2, 7, 8, 9), GRASS)
+        self.assertEqual(cobdev.changed_runs(a, c, cobdev.bbox_diff(a, c), "y"), [(2, 1, 8, 4), (2, 7, 8, 9)])
+
+    def test_inside_disjoint_grow(self):
+        self.assertTrue(cobdev.inside((2, 2, 4, 4), (0, 0, 4, 4)))
+        self.assertFalse(cobdev.inside((2, 2, 5, 4), (0, 0, 4, 4)))
+        self.assertFalse(cobdev.inside(None, (0, 0, 4, 4)))
+        self.assertTrue(cobdev.disjoint([(0, 0, 4, 4), (5, 0, 9, 4), (0, 5, 4, 9)]))
+        self.assertFalse(cobdev.disjoint([(0, 0, 4, 4), (4, 4, 9, 9)]))
+        self.assertEqual(cobdev.grow((5, 5, 6, 6), 2), (3, 3, 8, 8))
+        self.assertEqual(cobdev.box_size((3, 4, 5, 9)), (3, 6))
+
+    def test_vanilla_advances_match_the_unit_tests(self):
+        self.assertEqual(cobdev.vanilla_width("Jump Boost V"), 66)
+        self.assertEqual(cobdev.vanilla_width("0:38"), 20)
+        self.assertEqual(cobdev.hl_text_box_width(["150", " FPS"]), 47)
+        self.assertEqual(cobdev.hl_text_box_width(["9", "3", " CPS"], True), 48)
+        self.assertEqual(cobdev.hl_text_box_width(["--", " ms"]), 35)
+        self.assertEqual(cobdev.hl_expected_panel("keystrokes", 2), (112, 134))
+        self.assertEqual(cobdev.hl_expected_panel("armor", 2), (44, 44))
+        self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
+
+
+class HudLookPressedCap(unittest.TestCase):
+    """HL-keys reads the W cap through Edit HUD's faint frame fill (0x0DFFFFFF over the preview)."""
+
+    @staticmethod
+    def frame(cap_rgb, letter_rgb=None, sf=2):
+        img = flat(160, 160, SKY)
+        box = (10, 10, 10 + 56 * sf - 1, 10 + 67 * sf - 1)
+        img = paint(img, (10 + 19 * sf, 10, 10 + 37 * sf - 1, 10 + 18 * sf - 1), cap_rgb)
+        if letter_rgb:
+            img = paint(img, (10 + 26 * sf, 10 + 5 * sf, 10 + 28 * sf - 1, 10 + 12 * sf - 1), letter_rgb)
+        return img, box
+
+    def test_tinted_pressed_cap_passes(self):
+        img, box = self.frame((195, 222, 255), (30, 30, 30))  # pale blue and #121212 under 5% white
+        accent, letter = cobdev.hl_pressed_cap(img, box, 2)
+        self.assertGreaterEqual(accent, (16 * 2) ** 2)
+        self.assertGreater(letter, 0)
+
+    def test_exact_colours_pass_and_an_idle_cap_fails(self):
+        img, box = self.frame((192, 220, 255), (18, 18, 18))
+        self.assertGreaterEqual(cobdev.hl_pressed_cap(img, box, 2)[0], (16 * 2) ** 2)
+        idle, box = self.frame(see_through(SKY))
+        self.assertEqual(cobdev.hl_pressed_cap(idle, box, 2), (0, 0))
+
+
+class HudLookDryRun(unittest.TestCase):
+    """The HL step against a fake game: every sub-check runs to the end without raising (its checks fail)."""
+
+    def test_every_sub_check_runs(self):
+        backdrop = flat(160, 120, SKY)
+        drawn = paint(paint(backdrop, (10, 10, 60, 40), see_through(SKY)), (20, 20, 30, 24), (255, 255, 255))
+        calls = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                calls.append(path)
+                if path == "/world":
+                    return {"ok": True, "save": "cobdev"}
+                if path == "/has":
+                    return {"ok": True, "present": True}
+                if path == "/field":
+                    name = post["path"].rsplit(".", 1)[-1]
+                    value = {"state": "READY", "source": "NETWORK"}.get(name)
+                    if value is None:
+                        value = 1.0 if name.endswith("Scale") else 0 if name[-1:] in "XY" else False
+                    return {"ok": True, "value": value}
+                if path == "/invoke":
+                    return {"ok": True, "value": 0 if post["path"].endswith(("requests", "published")) else True}
+                return {"ok": True}
+
+            def shot(self, tag, wait=300):
+                self.step["shots"].append(tag)
+                return tag, backdrop if "none" in tag else drawn
+
+            def status(self):
+                return {"scaleFactor": 2, "guiScaleSetting": 2, "inWorld": True, "responsive": True}
+
+        real_sleep, real_quiet = cobdev.time.sleep, cobdev.api_quiet
+        cobdev.time.sleep = lambda t: None
+        cobdev.api_quiet = lambda *a, **k: {"inWorld": True, "responsive": True, "scaleFactor": 2}
+        restarts = []
+        try:
+            s = Fake("dev", "test")
+            with contextlib.redirect_stdout(io.StringIO()):  # the step prints every check
+                cobdev.smoke_hud_look(s, "com.bedwarsqol.BedwarsQol.config", lambda: restarts.append(1))
+        finally:
+            cobdev.time.sleep, cobdev.api_quiet = real_sleep, real_quiet
+        ids = [st["id"] for st in s.report["steps"]]
+        self.assertEqual(ids, ["HL", "HL-bg", "HL-persist", "HL-potion", "HL-mapinfo", "HL-keys", "HL-text",
+                               "HL-edit", "HL-scale", "HL-font", "HL-icons-cold", "HL-icons-warm"])
+        self.assertEqual([st["id"] for st in s.report["steps"] if "error" in st], [])
+        self.assertEqual(len(restarts), 3)  # persist, icons cold, icons warm
+        self.assertIn("/scale", calls)
 
 
 class Pins(unittest.TestCase):

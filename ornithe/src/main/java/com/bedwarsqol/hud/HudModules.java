@@ -23,7 +23,10 @@ public final class HudModules {
             BedwarsHudRenderer.EMERALD_TIMER_HUD,
             BedwarsHudRenderer.KEYSTROKES_HUD,
             BedwarsHudRenderer.SESSION_HUD,
-            BedwarsHudRenderer.HEIGHT_LIMIT_HUD));
+            BedwarsHudRenderer.HEIGHT_LIMIT_HUD,
+            BedwarsHudRenderer.FPS_HUD,
+            BedwarsHudRenderer.CPS_HUD,
+            BedwarsHudRenderer.PING_HUD));
 
     /** Vanilla's scoreboard, chat and tab list as HUD items: placed and resized, but drawn by vanilla. */
     private static final List<String> OVERLAY_IDS = Collections.unmodifiableList(Arrays.asList(
@@ -78,6 +81,9 @@ public final class HudModules {
         if (BedwarsHudRenderer.KEYSTROKES_HUD.equals(id)) return "Keystrokes";
         if (BedwarsHudRenderer.SESSION_HUD.equals(id)) return "Session Stats";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) return "Map Info";
+        if (BedwarsHudRenderer.FPS_HUD.equals(id)) return "FPS";
+        if (BedwarsHudRenderer.CPS_HUD.equals(id)) return "CPS";
+        if (BedwarsHudRenderer.PING_HUD.equals(id)) return "Ping";
         if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) return "Scoreboard";
         if (BedwarsHudRenderer.CHAT_HUD.equals(id)) return "Chat";
         if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) return "Tab List";
@@ -108,6 +114,15 @@ public final class HudModules {
         }
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
             return new HudModuleState(c.heightLimitHudX, c.heightLimitHudY, c.heightLimitHudAnchor, c.heightLimitHudScale, c.heightLimitEnabled, c.hudBackground(id));
+        }
+        if (BedwarsHudRenderer.FPS_HUD.equals(id)) {
+            return new HudModuleState(c.fpsHudX, c.fpsHudY, c.fpsHudAnchor, c.fpsHudScale, c.fpsEnabled, c.hudBackground(id));
+        }
+        if (BedwarsHudRenderer.CPS_HUD.equals(id)) {
+            return new HudModuleState(c.cpsHudX, c.cpsHudY, c.cpsHudAnchor, c.cpsHudScale, c.cpsEnabled, c.hudBackground(id));
+        }
+        if (BedwarsHudRenderer.PING_HUD.equals(id)) {
+            return new HudModuleState(c.pingHudX, c.pingHudY, c.pingHudAnchor, c.pingHudScale, c.pingEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
             return new HudModuleState(c.scoreboardHudX, c.scoreboardHudY, c.scoreboardHudAnchor, c.scoreboardHudScale, c.scoreboardHudEnabled, c.hudBackground(id));
@@ -155,6 +170,18 @@ public final class HudModules {
         } else if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
             c.heightLimitHudX = s.x; c.heightLimitHudY = s.y; c.heightLimitHudAnchor = s.anchor; c.heightLimitHudScale = s.scale;
             c.heightLimitEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.FPS_HUD.equals(id)) {
+            c.fpsHudX = s.x; c.fpsHudY = s.y; c.fpsHudAnchor = s.anchor; c.fpsHudScale = s.scale;
+            c.fpsEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.CPS_HUD.equals(id)) {
+            c.cpsHudX = s.x; c.cpsHudY = s.y; c.cpsHudAnchor = s.anchor; c.cpsHudScale = s.scale;
+            c.cpsEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
+        } else if (BedwarsHudRenderer.PING_HUD.equals(id)) {
+            c.pingHudX = s.x; c.pingHudY = s.y; c.pingHudAnchor = s.anchor; c.pingHudScale = s.scale;
+            c.pingEnabled = s.enabled;
             c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
             c.scoreboardHudX = s.x; c.scoreboardHudY = s.y; c.scoreboardHudAnchor = s.anchor; c.scoreboardHudScale = s.scale;

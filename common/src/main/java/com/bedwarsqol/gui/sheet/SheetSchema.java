@@ -237,9 +237,11 @@ public final class SheetSchema {
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
-     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV and Toggle Sprint are the Ornithe build's; Lunar has its own.
+     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint and the FPS, CPS and Ping HUD
+     * modules are the Ornithe build's; Lunar has its own.
      */
-    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov"));
+    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
+            "fps", "cps", "ping"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -263,9 +265,15 @@ public final class SheetSchema {
                 module("genTimers", "Gen Timers", "Diamond and emerald timers", "generator diamond emerald",
                         background("genTimersBg", "diamondtimer", "See-through panels behind them"),
                         inGame("genTimersInGame", "Hide them in lobbies")),
-                module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
+                module("keystrokes", "Keystrokes", "WASD, mouse buttons, spacebar", "keys wasd clicks mouse",
                         background("keystrokesBg", "keystrokes", "See-through key caps"),
                         inGame("keystrokesInGame", "Hide it in lobbies")),
+                module("fps", "FPS", "Frames per second", "frames performance",
+                        background("fpsBg", "fps", "See-through box behind it")),
+                module("cps", "CPS", "Clicks per second, left and right", "clicks",
+                        background("cpsBg", "cps", "See-through box behind it")),
+                module("ping", "Ping", "Your connection to the server", "latency ms",
+                        background("pingBg", "ping", "See-through box behind it")),
                 module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
                         background("mapInfoBg", "heightlimit", "See-through panel behind it"),
                         inGame("mapInfoInGame", "Hide it in lobbies")),

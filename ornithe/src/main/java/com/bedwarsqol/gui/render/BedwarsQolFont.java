@@ -101,16 +101,17 @@ public final class BedwarsQolFont {
      */
     public static void drawMinecraftOver(String s, float x, float y, float scale, int color, int shadow) {
         FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-        if (minecraft() && fr != null) drawMinecraft(fr, s, x, y, scale, color, true, shadow);
+        if (minecraft() && fr != null) drawMinecraft(fr, s, x, y, scale, color, true, shadow, false);
     }
 
     /** {@code s} in Minecraft's font with its top-left on the device pixel nearest (x, y), in the GUI's space. */
     private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color) {
-        drawMinecraft(fr, s, x, y, scale, color, false, 0);
+        drawMinecraft(fr, s, x, y, scale, color, false, 0, false);
     }
 
+    /** {@code flat}: no shadow at all (else light text gets Minecraft's own, or {@code shadow} with {@code ownShadow}). */
     private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color,
-                                      boolean ownShadow, int shadow) {
+                                      boolean ownShadow, int shadow, boolean flat) {
         int a = color >>> 24;
         // FontRenderer draws under 4/255 alpha opaque and alpha-tests away 0.1 and under; no alpha means opaque here
         if (a != 0 && a <= 25) return;
@@ -129,7 +130,7 @@ public final class BedwarsQolFont {
             fr.drawString(s, 1f, 1f, (argb & 0xFF000000) | (shadow & 0xFFFFFF), false);
             fr.drawString(s, 0f, 0f, argb, false);
         } else {
-            fr.drawString(s, 0f, 0f, argb, shadowed(color));
+            fr.drawString(s, 0f, 0f, argb, !flat && shadowed(color));
         }
         GlStateManager.popMatrix();
         if (!alphaTest) GlStateManager.disableAlpha(); // it turns the test on, which would drop faint fills after it
@@ -218,6 +219,19 @@ public final class BedwarsQolFont {
             f.drawGlyphs(s, x + off, y + off, scale, color, true);
         }
         f.drawGlyphs(s, x, y, scale, color, false);
+    }
+
+    /**
+     * {@code s} with no shadow in either font, for text on a surface of its own (Keystrokes' Lunar caps); {@link #draw}
+     * always shadows light text in Minecraft's font.
+     */
+    public static void drawFlat(String s, float x, float y, float scale, int color) {
+        if (minecraft()) {
+            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+            if (fr != null) drawMinecraft(fr, s, x, y, scale, color, false, 0, true);
+            return;
+        }
+        draw(s, x, y, scale, color, false, Weight.BOLD);
     }
 
     /** Standard Minecraft §0-§f colour table, indexed by the digit/letter in "0123456789abcdef". */
