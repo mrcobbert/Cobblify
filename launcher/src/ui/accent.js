@@ -12,7 +12,7 @@ export const ACCENTS = {
   "deep-red": "#C33038", "deep-orange": "#A75001", "deep-yellow": "#816503", "deep-lime": "#477401",
   "deep-green": "#017922", "deep-teal": "#047664", "deep-aqua": "#03737E", "deep-sky": "#007099",
   "deep-blue": "#2769B4", "deep-purple": "#7357BA", "deep-magenta": "#A03EAF", "deep-pink": "#A94283",
-  white: "#E6E6E6", silver: "#B8B8B8", grey: "#8A8A8A",
+  white: "#E6E6E6", silver: "#B8B8B8", grey: "#8A8A8A", "dark-grey": "#696969",
 };
 
 /** A brand-new player has no game config yet: the launcher opens in Pale Blue with the Minecraft font. */
