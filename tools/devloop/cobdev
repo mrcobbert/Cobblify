@@ -2162,6 +2162,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
             if checks is not None and cid not in checks:
                 continue
             try:
+                run.scale(2)  # every check starts at GUI 2; E1, E8 and E9 visit GUI 3 themselves
                 fn(run)
             except (ApiError, KeyError, TypeError, ValueError, StopIteration) as e:
                 s.check("%s ran to the end" % cid, False, "%s: %s" % (type(e).__name__, e))
@@ -2231,6 +2232,11 @@ class EditHudRun:
         if release:
             self.s.call("/up", {"x": x, "y": y, "device": 1})
         return (cx, cy), (x, y)
+
+    def minecraft_font(self):
+        """Whether the HUD draws in Minecraft's font (ClientSettings.guiFont), whose sizes step in device pixels."""
+        r, _ = self.s.try_call("/field", post={"path": self.cfg + ".guiFont"})
+        return (r or {}).get("value", "minecraft") != "modern"
 
     def overlay_box(self, item):
         """The scoreboard's, chat's or tab list's box from cycle B's overlay-boxes probe (pad 0), or None."""
@@ -2351,6 +2357,54 @@ def others_unchanged(before, after, moving):
     return problems
 
 
+def text_scale(scale, sc, minecraft_font):
+    """BedwarsQolFont.textScale: Minecraft's font draws in whole device pixels per font pixel, the modern font at any
+    scale."""
+    return max(1, int(scale * sc + 0.5)) / float(sc) if minecraft_font else scale  # Java's Math.round: half up
+
+
+def grow_stopped_ok(gap, content_w, scale, sc, minecraft_font):
+    """A corner resize stopped at a wall `gap` GUI px away: flush, or (Minecraft's font) closer than one more size step,
+    since a box laid out at its text scale grows in whole device pixels per font pixel (A's effective-scale rule)."""
+    if gap < -1e-3:
+        return False
+    step = content_w / text_scale(scale, sc, minecraft_font) / sc if minecraft_font else 0.0
+    return gap <= step + 0.05
+
+
+def free_point(hb, margin=4):
+    """A GUI point clear of every box (shown or ghost) by `margin`, for parking the pointer; None if there is none."""
+    rects = [vis(b) for b in hb["boxes"]]
+    for y in range(margin, int(hb["sh"]) - margin, 6):
+        for x in range(margin, int(hb["sw"]) - margin, 6):
+            if all(not (bx - margin <= x <= bx + bw + margin and by - margin <= y <= by + bh + margin)
+                   for bx, by, bw, bh in rects):
+                return x, y
+    return None
+
+
+DIM_ALPHA = 0x26 / 255.0  # EditHudGui.DIM: the editor's dim over the world
+
+
+def changed_frac(play, editor, area, excludes=(), dim=DIM_ALPHA, tol=10, thresh=24):
+    """Fraction of pixels in `area` (x0, y0, x1, y1, screenshot px) that the editor changed beyond its own dim: a
+    pixel passes when every channel differs by less than `thresh`, or lies between the play pixel dimmed by the
+    editor's DIM and the play pixel itself (+/- tol), as the world behind see-through caps and panels does. Pixels
+    inside `excludes` (other items' frames and ghosts) are skipped."""
+    x0, y0, x1, y1 = area
+    n = bad = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if any(ex0 <= x < ex1 and ey0 <= y < ey1 for ex0, ey0, ex1, ey1 in excludes):
+                continue
+            n += 1
+            p, e = px(play, x, y), px(editor, x, y)
+            if all(abs(a - b) < thresh or (b * (1 - dim) - tol <= a <= b + tol) for a, b in zip(e, p)):
+                continue
+            bad += 1
+    return (bad / float(n)) if n else 0.0
+
+
 def pinned_anchor(state):
     """A stored spot: anchor 0-8 (not Auto, -1)."""
     a = state.get("anchor")
@@ -2380,7 +2434,8 @@ def device_centre(b, scale):
 
 def edithud_e8(run, scales=(2, 3)):
     """E8: arrows move exactly one screen pixel (Shift ten), and one device pixel of drag moves one screen pixel,
-    from whatever sub-pixel offset the item starts at. Only Inventory shows, so no wall or other edge is near."""
+    from whatever sub-pixel offset the item starts at. Only Inventory shows; the drag holds Alt, because near the
+    screen centre a plain drag rightly snaps the centred box onto it (E9 covers snapping)."""
     s = run.s
     run.show_only({"inventory"})
     for sc in scales:
@@ -2401,9 +2456,9 @@ def edithud_e8(run, scales=(2, 3)):
                 "%.4f -> %.4f" % (x1, x2))
         dx, dy = device_centre(b2, sc)
         s.call("/down", {"x": dx, "y": dy, "device": 1})
-        s.call("/drag", {"x": dx + 6, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx + 6, "y": dy, "device": 1, "mods": "alt"})
         xa = run.box("inventory")["x"]
-        s.call("/drag", {"x": dx + 7, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx + 7, "y": dy, "device": 1, "mods": "alt"})
         xb = run.box("inventory")["x"]
         s.call("/up", {"x": dx + 7, "y": dy, "device": 1})
         s.check("E8 GUI %d: a 6 device px drag moves 6 screen px" % sc, close_enough(xa - x2, 6.0 / sc, 1e-3),
@@ -2414,29 +2469,38 @@ def edithud_e8(run, scales=(2, 3)):
 
 
 def edithud_e9(run, scales=(2, 3), item="heightlimit"):
-    """E9: dragged to 3 screen px from the left edge it snaps flush; at about 5 px it stays; with Alt at 2 px it
-    stays. Only Map Info shows (left-middle), so the screen edge is the only line near it."""
+    """E9: dragged to 3 screen px from the right screen edge Map Info snaps flush; at about 5 px it stays; with Alt at
+    2 px it stays. Only Map Info shows, near the top, so the screen's right edge is the only line near it (chat, always
+    shown, sits at the left and its left edge at x 2 is a snap line too)."""
     s = run.s
     run.show_only({item})
     for sc in scales:
         run.scale(sc)
+        hb = run.probe()
+        b = run.box(item, hb)
+        x, y, w, h = vis(b)
+        run.device_drag(item, (hb["sw"] - w) / 2.0 - x, 30 - y, mods="alt")  # top middle: clear of every line
         b = run.box(item)
-        vx = visual_x(b)
+        x, y, w, h = vis(b)
+        right, sw = x + w, hb["sw"]
         dx, dy = device_centre(b, sc)
         s.call("/down", {"x": dx, "y": dy, "device": 1})
-        s.call("/drag", {"x": dx + 40, "y": dy, "device": 1})  # past the 1 GUI px press-to-drag threshold
+        s.call("/drag", {"x": dx - 40, "y": dy, "device": 1})  # past the 1 GUI px press-to-drag threshold
+        last = dx
         for target, mods in ((3, None), (5, None), (2, "alt")):
-            travel = int(round(target - vx * sc))  # device px from the press, so the left edge lands near `target`
-            params = {"x": dx + travel, "y": dy, "device": 1}
+            travel = int(round((sw - right) * sc - target))  # device px from the press: right edge near `target`
+            last = dx + travel
+            params = {"x": last, "y": dy, "device": 1}
             if mods:
                 params["mods"] = mods
             s.call("/drag", params)
-            got = visual_x(run.box(item))
-            want = 0.0 if target == 3 else vx + travel / float(sc)
+            nb = run.box(item)
+            got = vis(nb)[0] + vis(nb)[2]
+            want = sw if target == 3 else right + travel / float(sc)
             what = "snaps flush" if target == 3 else ("stays (Alt)" if mods else "stays")
-            s.check("E9 GUI %d: left edge %d screen px from the edge %s" % (sc, target, what),
+            s.check("E9 GUI %d: right edge %d screen px from the edge %s" % (sc, target, what),
                     close_enough(got, want, 1e-3), "%.4f, want %.4f" % (got, want))
-        s.call("/up", {"x": dx, "y": dy, "device": 1})
+        s.call("/up", {"x": last, "y": dy, "device": 1})
     s.shot("edithud-e9")
 
 
@@ -2573,9 +2637,11 @@ def edithud_e7(run):
     before, after = edithud_corner_grow(run, "heightlimit", "keystrokes", "br", 20)
     mi, ks = run.box("heightlimit", after), run.box("keystrokes", after)
     right = vis(mi)[0] + vis(mi)[2]
-    s.check("E7 Map Info grew", run.state("heightlimit", after)["scale"] > run.state("heightlimit", before)["scale"])
-    s.check("E7 and stopped flush at Keystrokes", close_enough(right, vis(ks)[0], 0.05),
-            "right %.4f, Keystrokes left %.4f" % (right, vis(ks)[0]))
+    scale = run.state("heightlimit", after)["scale"]
+    s.check("E7 Map Info grew", scale > run.state("heightlimit", before)["scale"])
+    s.check("E7 and stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
+            grow_stopped_ok(vis(ks)[0] - right, mi["w"], scale, after["scale"], run.minecraft_font()),
+            "right %.4f, Keystrokes left %.4f, scale %.4f" % (right, vis(ks)[0], scale))
     s.check("E7 no overlap", overlap_area(mi, ks) == 0)
     problems = others_unchanged(before, after, {"heightlimit"})
     s.check("E7 nothing else moved", not problems, problems or None)
@@ -2597,8 +2663,10 @@ def edithud_e7b(run):
     s.check("E7b Session Stats grew", run.state("sessionstats", after)["scale"] > run.state("sessionstats", before)["scale"])
     s.check("E7b its bottom-right corner stayed put", all(abs(p - q) <= 0.05 for p, q in zip(corner0, corner1)),
             "%s -> %s" % (corner0, corner1))
-    s.check("E7b its left edge stopped flush at Keystrokes", close_enough(vis(s1)[0], vis(ks)[0] + vis(ks)[2], 0.05),
-            "left %.4f, Keystrokes right %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2]))
+    scale = run.state("sessionstats", after)["scale"]
+    s.check("E7b its left edge stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
+            grow_stopped_ok(vis(s1)[0] - (vis(ks)[0] + vis(ks)[2]), s1["w"], scale, after["scale"], run.minecraft_font()),
+            "left %.4f, Keystrokes right %.4f, scale %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2], scale))
     s.check("E7b no overlap", overlap_area(s1, ks) == 0)
     s.shot("edithud-e7b")
 
@@ -2737,7 +2805,7 @@ def edithud_e1_e2(run):
     run.scale(2)
 IN_GAME_ONLY = ("potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "keystrokesInGameOnly")
 # Live data that differs from the editor's samples (2 potions, diamond leggings, an empty inventory).
-LIVE_DATA = ("/effect @p regeneration 600 0", "/effect @p strength 600 0",
+LIVE_DATA = ("/effect @p regeneration 600 0 true", "/effect @p strength 600 0 true",  # no particles over the HUD
              "/replaceitem entity @p slot.armor.legs iron_leggings", "/replaceitem entity @p slot.inventory.0 wool 64 11")
 LIVE_DATA_CLEAR = ("/effect @p clear", "/replaceitem entity @p slot.armor.legs air",
                    "/replaceitem entity @p slot.inventory.0 air")
@@ -2777,8 +2845,12 @@ def edithud_e11(run):
     try:
         hb = run.probe()
         sc = hb["scale"]
+        park = free_point(hb)  # the editor would frame and label a hovered item
         s.call("/close")
-        s.call("/hover", {"off": 1})
+        if park:
+            s.call("/hover", {"x": park[0], "y": park[1]})
+        else:
+            s.call("/hover", {"off": 1})
         time.sleep(1.0)
         _, play = s.shot("edithud-e11-play", wait=500)
         s.call("/open", {"class": SCREENS["hud"]})
@@ -2790,10 +2862,14 @@ def edithud_e11(run):
                     all(abs(p - q) <= 1e-3 for p, q in zip(vis(b0), vis(b1))), "%s vs %s" % (vis(b0), vis(b1)))
             w = POTION_ICON * run.state(item, hb)["scale"] if item == "potion" else b1["w"]
             area = px_box(b1["x"], b1["y"], w, b1["h"], sc, inset=1.0)
-            frac, where = diff(play, editor, step=1, thresh=23, box=area)
-            s.check("E11 %s: 99%% of pixels within 24 levels, play vs editor" % item, frac <= 0.01,
-                    "%.4f differ, around %s" % (frac, where))
+            # other items' frames and ghosts (hidden modules, chat) are editor chrome, not this item's content
+            others = [px_box(o["x"] - o["pad"] - 1, o["y"] - o["pad"] - 1, o["w"] + 2 * o["pad"] + 2,
+                             o["h"] + 2 * o["pad"] + 2, sc) for o in hb2["boxes"] if o["id"] != item]
+            frac = changed_frac(play, editor, area, others)
+            s.check("E11 %s: 99%% of pixels unchanged but for the editor's dim, play vs editor" % item, frac <= 0.01,
+                    "%.4f changed" % frac)
     finally:
+        s.try_call("/hover", {"off": 1})
         for c in LIVE_DATA_CLEAR:
             s.try_call("/command", post={"command": c})
 
@@ -2939,10 +3015,11 @@ def edithud_e12_moves(run, sb, tab, inventory):
     s = run.s
     tx, ty, tw, th = vis(tab)
     bx, by, bw, bh = vis(sb)
-    # beside the scoreboard at its height, 30 GUI px short of it (Alt: free), then 20 px into it (walls)
+    # beside the scoreboard, centred on its height, 30 GUI px short of it (Alt: free), then 3 px into it (walls):
+    # pushed deeper than half their summed heights, the nearest free spot is above or below it, not flush beside it
     run.device_drag("tablist", (bx - 30 - tw) - tx, (by + bh / 2.0 - th / 2.0) - ty, mods="alt")
     tab = run.overlay_box("tablist")
-    run.device_drag("tablist", 50, 0)
+    run.device_drag("tablist", 33, 0)
     tab = run.overlay_box("tablist")
     tx, ty, tw, th = vis(tab)
     s.check("E12 the tab list stops flush at the scoreboard", close_enough(tx + tw, bx, 1e-3),
@@ -2954,10 +3031,11 @@ def edithud_e12_moves(run, sb, tab, inventory):
     cx, cy = gui_centre(tab)
     s.call("/click", {"x": cx, "y": cy})
     gx, gy = int(tx + tw - 1), int(ty + th - 1)
+    far = min(gx + 150, int(run.probe()["sw"]) - 1)  # GUI coordinates must stay on screen
     s.call("/down", {"x": gx, "y": gy})
     s.call("/drag", {"x": gx + 20, "y": gy})
-    s.call("/drag", {"x": gx + 150, "y": gy})
-    s.call("/up", {"x": gx + 150, "y": gy})
+    s.call("/drag", {"x": far, "y": gy})
+    s.call("/up", {"x": far, "y": gy})
     tab = run.overlay_box("tablist")
     s.check("E12 the corner resize stops at the scoreboard", overlap_area(tab, sb) == 0
             and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))

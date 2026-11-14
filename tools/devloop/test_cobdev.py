@@ -496,7 +496,7 @@ class FakeEditor(cobdev.Smoke):
         if path == "/scale":
             self.sc = int(q["n"])
         elif path == "/probe":
-            return {"scale": self.sc, "boxes": [dict(b) for b in self.boxes.values()]}
+            return {"scale": self.sc, "sw": 640, "sh": 360, "boxes": [dict(b) for b in self.boxes.values()]}
         elif path == "/click":
             self.selected = next(i for i, b in self.boxes.items()
                                  if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
@@ -505,13 +505,19 @@ class FakeEditor(cobdev.Smoke):
             self.boxes[self.selected]["x"] += step * (1 if q["code"] == cobdev.KEYS["right"] else -1) / float(self.sc)
         elif path == "/down":
             b = next(b for b in self.boxes.values() if b["shown"])
-            self.selected, self.press = b["id"], (q["x"], b["x"])
+            self.selected, self.press = b["id"], (q["x"], b["x"], q["y"], b["y"])
         elif path == "/drag":
             b = self.boxes[self.selected]
             x = self.press[1] + (q["x"] - self.press[0]) / float(self.sc)
-            if q.get("mods") != "alt" and 0 < x - b["pad"] <= 4.0 / self.sc:
-                x = b["pad"]
-            b["x"] = x
+            y = self.press[3] + (q["y"] - self.press[2]) / float(self.sc)
+            if q.get("mods") != "alt":
+                reach = 4.0 / self.sc
+                if 0 < x - b["pad"] <= reach:
+                    x = b["pad"]
+                right = 640 - (x + b["w"] + b["pad"])
+                if 0 < right <= reach:
+                    x = 640 - b["w"] - b["pad"]
+            b["x"], b["y"] = x, y
         return {"ok": True, "value": False}
 
     def shot(self, tag, wait=300):
@@ -823,6 +829,41 @@ class EditHudE12Cleanup(unittest.TestCase):
         self.assertIn(("/keyhold", "key.playerlist"), sent)
         names = [c["check"] for c in s.step["checks"]]
         self.assertTrue(any("released" in n for n in names), names)
+
+
+class EditHudSmokeHelpers(unittest.TestCase):
+    """The robustness helpers behind E7/E7b (sizes in device-pixel steps), E11 (the editor's dim) and the pointer."""
+
+    def test_text_scale_steps_in_device_pixels_in_minecrafts_font(self):
+        self.assertEqual(cobdev.text_scale(1.2499, 2, True), 1.0)
+        self.assertEqual(cobdev.text_scale(1.25, 2, True), 1.5)
+        self.assertAlmostEqual(cobdev.text_scale(1.2, 3, True), 4 / 3.0)
+        self.assertEqual(cobdev.text_scale(0.2, 2, True), 0.5)
+        self.assertEqual(cobdev.text_scale(1.2499, 2, False), 1.2499)
+
+    def test_a_resize_may_stop_one_size_step_short_in_minecrafts_font(self):
+        # the first smoke run: Map Info 82 GUI px of content at scale 1.2499 (text scale 1.0), stopped 19 px short
+        self.assertTrue(cobdev.grow_stopped_ok(19.0, 82.0, 1.2499, 2, True))   # the next step adds 41 px
+        self.assertFalse(cobdev.grow_stopped_ok(45.0, 82.0, 1.2499, 2, True))
+        self.assertFalse(cobdev.grow_stopped_ok(-0.5, 82.0, 1.2499, 2, True))  # overlapping
+        self.assertTrue(cobdev.grow_stopped_ok(0.02, 82.0, 1.2, 2, False))     # modern font: flush
+        self.assertFalse(cobdev.grow_stopped_ok(19.0, 82.0, 1.2, 2, False))
+
+    def test_free_point_avoids_every_box(self):
+        hb = {"sw": 60, "sh": 30, "boxes": [{"x": 1, "y": 1, "w": 30, "h": 28, "pad": 1}]}
+        x, y = cobdev.free_point(hb, margin=2)
+        self.assertGreater(x, 34)
+        self.assertIsNone(cobdev.free_point({"sw": 40, "sh": 30, "boxes": [{"x": 0, "y": 0, "w": 40, "h": 30, "pad": 0}]}))
+
+    def test_changed_frac_allows_the_editors_dim_only(self):
+        play = paint(flat(10, 10, SKY), (0, 0, 9, 4), (40, 40, 40))
+        dimmed = tuple(int(c * (1 - cobdev.DIM_ALPHA)) for c in SKY)
+        editor = paint(paint(flat(10, 10, dimmed), (0, 0, 9, 4), (40, 40, 40)), (9, 9, 9, 9), (255, 255, 255))
+        self.assertEqual(cobdev.changed_frac(play, editor, (0, 0, 9, 9)), 0.0)        # dimmed sky, same HUD
+        self.assertAlmostEqual(cobdev.changed_frac(play, editor, (0, 0, 10, 10)), 0.01)  # one changed pixel
+        self.assertEqual(cobdev.changed_frac(play, editor, (0, 0, 10, 10), [(9, 9, 10, 10)]), 0.0)  # excluded chrome
+        brighter = paint(flat(10, 10, SKY), (0, 0, 9, 4), (200, 200, 200))
+        self.assertGreater(cobdev.changed_frac(play, brighter, (0, 0, 10, 10)), 0.4)  # content changed
 
 
 class Pins(unittest.TestCase):
