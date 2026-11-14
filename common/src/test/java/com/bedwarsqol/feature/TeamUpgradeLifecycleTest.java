@@ -3,6 +3,11 @@ package com.bedwarsqol.feature;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -392,5 +397,92 @@ public class TeamUpgradeLifecycleTest {
         assertTrue(TeamUpgradeLifecycle.isGameEndTitle("§c§lGAME OVER!"));
         assertFalse(TeamUpgradeLifecycle.isGameEndTitle("TRAP TRIGGERED!"));
         assertFalse(TeamUpgradeLifecycle.isGameEndTitle(null));
+    }
+
+    // ----- the open shop window, read every few ticks (review code-1 I1) -----
+
+    /** The upgrades window with Heal Pool owned and {@code queue} as the trap slots. */
+    private static TeamUpgradeShop.Snapshot window(String... queue) {
+        List<TeamUpgradeShop.Slot> slots = new ArrayList<TeamUpgradeShop.Slot>();
+        slots.add(new TeamUpgradeShop.Slot("§aHeal Pool", Arrays.asList("§7Cost: §b1 Diamond", "§aUNLOCKED"), 1));
+        for (int i = 0; i < queue.length; i++) {
+            slots.add(new TeamUpgradeShop.Slot("§aTrap #" + (i + 1) + ": " + queue[i], Collections.<String>emptyList(), 1));
+        }
+        return TeamUpgradeShop.parse("Upgrades & Traps", slots);
+    }
+
+    private List<String> traps() {
+        TeamUpgradeState s = lc.visible();
+        return s == null ? null : s.traps();
+    }
+
+    private void fired(String subtitle, long now) {
+        lc.chat(TeamUpgradeChat.classifyTitle(subtitle), now);
+    }
+
+    @Test
+    public void rereadingAnUnchangedWindowDoesNotBringBackAFiredTrap() {
+        playGameOn("mini1A", 0);
+        TeamUpgradeShop.Snapshot open = window("Blindness Trap", "Reveal Trap");
+        lc.shopWindow(7, open, 5000);
+        assertEquals(Arrays.asList("Blindness Trap", "Reveal Trap"), traps());
+        fired("Your Blindness Trap has been set off!", 6000);
+        assertEquals(Arrays.asList("Reveal Trap"), traps());
+        lc.shopWindow(7, open, 6250); // the same window, read again five ticks later
+        fired("Your Blindness Trap has been set off!", 6300); // a duplicate, deduped
+        assertEquals(Arrays.asList("Reveal Trap"), traps());
+        lc.shopClosed();
+        assertEquals(Arrays.asList("Reveal Trap"), traps());
+    }
+
+    @Test
+    public void rereadingAnUnchangedWindowDoesNotUndoAPurchase() {
+        playGameOn("mini1A", 0);
+        TeamUpgradeShop.Snapshot open = window();
+        lc.shopWindow(7, open, 5000);
+        buy("Reinforced Armor II", 7000);
+        lc.shopWindow(7, open, 7250);
+        assertEquals(2, tier("Reinforced Armor"));
+    }
+
+    @Test
+    public void aNewWindowOrChangedContentsAreApplied() {
+        playGameOn("mini1A", 0);
+        lc.shopWindow(7, window("Blindness Trap"), 5000);
+        buy("Reinforced Armor II", 6000);
+        // Hypixel reopens the window after a purchase: a new window, the server's word
+        lc.shopWindow(8, window("Blindness Trap"), 6200);
+        assertEquals(0, tier("Reinforced Armor"));
+        // the same window updated in place
+        lc.shopWindow(8, window("Blindness Trap", "Reveal Trap"), 6400);
+        assertEquals(Arrays.asList("Blindness Trap", "Reveal Trap"), traps());
+    }
+
+    @Test
+    public void closingOrAWorldLoadMakesTheNextLookNews() {
+        playGameOn("mini1A", 0);
+        TeamUpgradeShop.Snapshot open = window("Blindness Trap");
+        lc.shopWindow(7, open, 5000);
+        fired("Your Blindness Trap has been set off!", 6000);
+        lc.shopClosed();
+        lc.shopWindow(7, open, 7000); // reopened, even with the same id
+        assertEquals(Arrays.asList("Blindness Trap"), traps());
+
+        fired("Your Blindness Trap has been set off!", 20000);
+        assertEquals(Collections.<String>emptyList(), traps());
+        lc.worldLoad(21000);
+        active(21100);
+        lc.shopWindow(7, open, 21200);
+        assertEquals(Arrays.asList("Blindness Trap"), traps());
+    }
+
+    @Test
+    public void aWindowOutsideAGameIsNotRememberedAsApplied() {
+        TeamUpgradeShop.Snapshot open = window("Blindness Trap");
+        lc.shopWindow(7, open, 100); // no game yet: ignored
+        lc.worldLoad(200);
+        active(300);
+        lc.shopWindow(7, open, 400);
+        assertEquals(Arrays.asList("Blindness Trap"), traps());
     }
 }

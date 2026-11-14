@@ -1,6 +1,7 @@
 package com.bedwarsqol.feature;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,6 +56,15 @@ public final class TeamUpgradeShop {
             this.costs = Collections.unmodifiableMap(costs);
             this.traps = Collections.unmodifiableList(traps);
         }
+    }
+
+    /** Equal for two looks that say the same: owned tiers, costs and the trap queue. */
+    public static String signature(Snapshot s) {
+        StringBuilder b = new StringBuilder().append(s.tiers).append('|').append(s.traps);
+        for (Map.Entry<String, int[]> e : s.costs.entrySet()) {
+            b.append('|').append(e.getKey()).append('=').append(Arrays.toString(e.getValue()));
+        }
+        return b.toString();
     }
 
     /** The snapshot in a window, or null when it is not the upgrades window or holds no known upgrade. */

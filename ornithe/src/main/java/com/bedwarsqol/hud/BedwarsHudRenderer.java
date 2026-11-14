@@ -510,14 +510,14 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
         if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
-        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(cfg, teamUpgradesFullExample());
+        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample());
         return Size.EMPTY;
     }
 
     private static float layoutPad(ClientSettings cfg, String id) {
         if (SESSION_HUD.equals(id)) return panelPad(cfg.sessionStatsHudScale);
         if (HEIGHT_LIMIT_HUD.equals(id)) return panelPad(cfg.heightLimitHudScale);
-        if (TEAM_UPGRADES_HUD.equals(id)) return panelPad(cfg.teamUpgradesHudScale);
+        if (TEAM_UPGRADES_HUD.equals(id)) return panelPad(teamUpgradesScale(cfg));
         return CONTENT_MARGIN;
     }
 
@@ -839,24 +839,42 @@ public class BedwarsHudRenderer {
                 TeamUpgradeCatalog.bracket(lifecycle.mode()), System.currentTimeMillis());
     }
 
+    /**
+     * The scale Team Upgrades draws at: the player's, except that in its default spot a Full panel too big
+     * to sit clear of the hotbar anywhere (a small window at a large HUD Size) steps down one font pixel at a
+     * time until it does (review code-1 I2). A panel the player moved keeps their scale.
+     */
+    private static float teamUpgradesScale(ClientSettings cfg) {
+        float scale = cfg.teamUpgradesHudScale;
+        if (cfg.teamUpgradesHudAnchor != HudPlacement.AUTO) return scale;
+        ScaledResolution r = new ScaledResolution(Minecraft.getMinecraft());
+        float step = BedwarsQolFont.minecraft() ? 1f / r.getScaleFactor() : 0.125f;
+        final List<TeamUpgradeRows.Row> full = teamUpgradesFullExample();
+        return HudLayout.fitScale(scale, step, Math.min(scale, 0.5f), s -> {
+            Size size = teamUpgradesSize(s, full);
+            float pad = panelPad(s);
+            return new float[]{size.width + 2f * pad, size.height + 2f * pad};
+        }, r.getScaledWidth(), r.getScaledHeight(), HOTBAR_W, HOTBAR_ZONE_H, LAYOUT_EDGE, LAYOUT_GAP);
+    }
+
     /** The editor's and the layout's box: the Full example's size, whichever layout is chosen. */
     private static HudBox teamUpgradesEditorBox(Minecraft mc, ClientSettings cfg, boolean all) {
         if (!all && !cfg.teamUpgradesEnabled) return null;
-        return teamUpgradesBox(mc, cfg, teamUpgradesSize(cfg, teamUpgradesFullExample()));
+        return teamUpgradesBox(mc, cfg, teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample()));
     }
 
     private static HudBox teamUpgradesBox(Minecraft mc, ClientSettings cfg, Size size) {
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float pad = panelPad(cfg.teamUpgradesHudScale);
+        float pad = panelPad(teamUpgradesScale(cfg));
         float[] at = place(mc, cfg, TEAM_UPGRADES_HUD, cfg.teamUpgradesHudX, cfg.teamUpgradesHudY, cfg.teamUpgradesHudAnchor, size.width, size.height, pad, r);
         return new HudBox(TEAM_UPGRADES_HUD, at[0], at[1], size.width, size.height, pad);
     }
 
-    /** Widest left column + gap + widest right column wide, one line per row high. */
-    private static Size teamUpgradesSize(ClientSettings cfg, List<TeamUpgradeRows.Row> rows) {
+    /** Widest left column + gap + widest right column wide, one line per row high, at module scale {@code moduleScale}. */
+    private static Size teamUpgradesSize(float moduleScale, List<TeamUpgradeRows.Row> rows) {
         if (rows.isEmpty()) return Size.EMPTY;
-        float scale = ts(cfg.teamUpgradesHudScale);
+        float scale = ts(moduleScale);
         float left = 0f, right = 0f;
         for (TeamUpgradeRows.Row row : rows) {
             left = Math.max(left, teamLeftWidth(row) * scale);
@@ -884,9 +902,9 @@ public class BedwarsHudRenderer {
         if (!cfg.teamUpgradesEnabled) return;
         List<TeamUpgradeRows.Row> rows = teamUpgradesRows(cfg, example);
         if (rows.isEmpty()) return; // no active game: nothing at all
-        HudBox box = example ? teamUpgradesEditorBox(mc, cfg, false) : teamUpgradesBox(mc, cfg, teamUpgradesSize(cfg, rows));
+        float scale = teamUpgradesScale(cfg);
+        HudBox box = example ? teamUpgradesEditorBox(mc, cfg, false) : teamUpgradesBox(mc, cfg, teamUpgradesSize(scale, rows));
         if (box == null) return;
-        float scale = cfg.teamUpgradesHudScale;
         drawHudBackground(box, scale, example);
         scale = ts(scale);
         int header = GuiTheme.fromToken(cfg.guiAccent).base();

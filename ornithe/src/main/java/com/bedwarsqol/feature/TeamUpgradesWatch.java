@@ -36,8 +36,9 @@ import java.util.List;
  *       {@code hyevent:location} payload (a read-only netty tap of its own, ahead of the vanilla packet
  *       handler), and every title and subtitle ({@code GuiIngameMixin.displayTitle}).</li>
  *   <li>Ingestion, which the lifecycle applies only inside an active game: Hypixel's purchase /
- *       set-off / removal chat lines, the {@code Upgrades & Traps} window while it is open, and once a
- *       second the player's armour enchantments and Haste / Regeneration effects (never swords).</li>
+ *       set-off / removal chat lines, the {@code Upgrades & Traps} window while it is open (read every
+ *       few ticks, applied once per window and again only when its contents change), and once a second
+ *       the player's armour enchantments and Haste / Regeneration effects (never swords).</li>
  * </ul>
  *
  * <p>This class never sends anything on any channel. The location payload only arrives because
@@ -115,10 +116,11 @@ public final class TeamUpgradesWatch {
         EntityPlayer player = mc == null ? null : mc.thePlayer;
         if (player == null) return;
 
-        IInventory shop = upgradesWindow(mc.currentScreen);
+        ContainerChest shop = upgradesWindow(mc.currentScreen);
         if (shop == null) {
             shopTicks = 0;
             lastShopSummary = null;
+            LIFECYCLE.shopClosed();
         } else if (++shopTicks >= SHOP_INTERVAL) {
             shopTicks = 0;
             readShop(shop, now);
@@ -132,8 +134,8 @@ public final class TeamUpgradesWatch {
 
     // ----- shop window -----
 
-    /** The lower inventory of an open chest window titled {@code Upgrades & Traps}, else null. */
-    private static IInventory upgradesWindow(GuiScreen screen) {
+    /** The open chest window titled {@code Upgrades & Traps}, else null. */
+    private static ContainerChest upgradesWindow(GuiScreen screen) {
         if (!(screen instanceof GuiChest)) return null;
         Container container = ((GuiChest) screen).inventorySlots;
         if (!(container instanceof ContainerChest)) return null;
@@ -141,10 +143,12 @@ public final class TeamUpgradesWatch {
         if (lower == null) return null;
         String title = title(lower);
         if (title == null || !TeamUpgradeShop.TITLE.equals(TeamUpgradeCatalog.strip(title).trim())) return null;
-        return lower;
+        return (ContainerChest) container;
     }
 
-    private void readShop(IInventory inv, long now) {
+    /** Reads the window; the lifecycle applies it only for a new window or changed contents. */
+    private void readShop(ContainerChest window, long now) {
+        IInventory inv = window.getLowerChestInventory();
         List<TeamUpgradeShop.Slot> slots = new ArrayList<TeamUpgradeShop.Slot>();
         int size = inv.getSizeInventory();
         for (int i = 0; i < size; i++) {
@@ -160,7 +164,7 @@ public final class TeamUpgradesWatch {
             lastShopSummary = summary;
             DiagLog.log("teamupgrades: shop " + summary + " ingest=" + LIFECYCLE.ingestionAllowed());
         }
-        LIFECYCLE.shop(snapshot, now);
+        LIFECYCLE.shopWindow(window.windowId, snapshot, now);
     }
 
     private static String title(IInventory inv) {

@@ -17,6 +17,8 @@ import static com.bedwarsqol.hud.HudLayout.Vertical.BOTTOM;
 import static com.bedwarsqol.hud.HudLayout.Vertical.MIDDLE;
 import static com.bedwarsqol.hud.HudLayout.Vertical.TOP;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class HudLayoutTest {
 
@@ -127,5 +129,35 @@ public class HudLayoutTest {
                 new Item("wide", 360, 50,
                         new Spot(CENTRE, TOP, HudLayout.Slide.LEFT))), columns);
         assertAt(380 - 2 - 360, 2, out.get("wide"));
+    }
+
+    // ----- fitScale (Team Upgrades' Full panel on a small window, review code-1 I2) -----
+
+    /** The Full panel's measured size: {130 s + 12, 129 s + 12} GUI px. */
+    private static final HudLayout.Sizer FULL_PANEL = s -> new float[]{130f * s + 12f, 129f * s + 12f};
+
+    @Test
+    public void fitScaleStepsDownUntilThePanelClearsTheHotbar() {
+        // 854x480 at GUI scale 2 (427x240), HUD Size Large: 207 x 205.5 fits neither beside nor above
+        assertEquals(1.0f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 427f, 240f, 182f, 50f, 2f, 2f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleKeepsAScaleThatAlreadyFits() {
+        assertEquals(1.5f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 640f, 360f, 182f, 50f, 2f, 2f), 1e-6f);
+        assertEquals(1.0f, HudLayout.fitScale(1.0f, 0.5f, 0.5f, FULL_PANEL, 427f, 240f, 182f, 50f, 2f, 2f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleStopsAtTheMinimumWhenNothingFits() {
+        assertEquals(0.5f, HudLayout.fitScale(1.5f, 0.5f, 0.5f, FULL_PANEL, 100f, 80f, 182f, 50f, 2f, 2f), 1e-6f);
+    }
+
+    @Test
+    public void besideTheHotbarNeedsTheSideColumnAboveItTheFullWidth() {
+        // beside: (427 - 182) / 2 - 4 = 118.5 wide, 236 high; above: 423 wide, 186 high
+        assertTrue(HudLayout.clearOfHotbar(new float[]{118.5f, 236f}, 427f, 240f, 182f, 50f, 2f, 2f));
+        assertTrue(HudLayout.clearOfHotbar(new float[]{423f, 186f}, 427f, 240f, 182f, 50f, 2f, 2f));
+        assertFalse(HudLayout.clearOfHotbar(new float[]{119f, 187f}, 427f, 240f, 182f, 50f, 2f, 2f));
     }
 }

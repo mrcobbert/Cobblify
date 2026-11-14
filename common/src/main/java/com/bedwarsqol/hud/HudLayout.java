@@ -25,6 +25,34 @@ public final class HudLayout {
 
     public enum Slide { NONE, UP, DOWN, LEFT, RIGHT }
 
+    /** A module's drawn size ({width, height}, panel included) at a given scale. */
+    public interface Sizer {
+        float[] size(float scale);
+    }
+
+    /**
+     * The largest of {@code scale}, {@code scale - step}, ... (never below {@code min}) at which a module
+     * of {@code sizer}'s size can sit clear of the hotbar zone ({@code hotbarW} x {@code hotbarH}, centred
+     * on the bottom edge) on a {@code sw} x {@code sh} screen, beside it at full height or above it at
+     * full width, {@code edge} from the screen edges and {@code gap} from the zone. {@code scale} when it
+     * already fits; the lowest step tried when nothing does.
+     */
+    public static float fitScale(float scale, float step, float min, Sizer sizer, float sw, float sh,
+                                 float hotbarW, float hotbarH, float edge, float gap) {
+        float s = scale;
+        while (!clearOfHotbar(sizer.size(s), sw, sh, hotbarW, hotbarH, edge, gap) && s - step >= min - 1e-4f) {
+            s -= step;
+        }
+        return s;
+    }
+
+    static boolean clearOfHotbar(float[] size, float sw, float sh, float hotbarW, float hotbarH, float edge, float gap) {
+        float w = size[0], h = size[1];
+        boolean beside = w <= (sw - hotbarW) / 2f - edge - gap && h <= sh - 2f * edge;
+        boolean above = h <= sh - hotbarH - edge - gap && w <= sw - 2f * edge;
+        return beside || above;
+    }
+
     /** One place a module may go: where it starts and which way it slides when blocked. */
     public static final class Spot {
         final Horizontal h;

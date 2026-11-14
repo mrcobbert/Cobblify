@@ -75,6 +75,10 @@ public final class TeamUpgradeLifecycle {
     private Loc firstGameLocSinceWorldLoad;
     private Loc lastGameLoc;
 
+    private static final int NO_WINDOW = Integer.MIN_VALUE;
+    private int shopWindow = NO_WINDOW;
+    private String shopApplied;
+
     public TeamUpgradeLifecycle() {}
 
     // --- observations (ungated) ---
@@ -93,6 +97,7 @@ public final class TeamUpgradeLifecycle {
         active = false;
         ended = false;
         firstGameLocSinceWorldLoad = null;
+        shopClosed();
     }
 
     /** Once per client tick: whether the pregame queue or an active Bed Wars game is showing. */
@@ -157,6 +162,27 @@ public final class TeamUpgradeLifecycle {
         if (s == null || !ingestionAllowed()) return;
         live.snapshot(s, now);
         if (pending) log.add(new Op(null, s, null, now));
+    }
+
+    /**
+     * A look at the open {@code Upgrades & Traps} window, {@code windowId} naming that window. Applied only
+     * when it is news: the first look at a window (Hypixel reopens it after every purchase or removal) or
+     * contents that changed since the last look applied. Reading an unchanged window again would undo the
+     * chat and title events that arrived after it was drawn (review code-1 I1).
+     */
+    public void shopWindow(int windowId, TeamUpgradeShop.Snapshot s, long now) {
+        if (s == null || !ingestionAllowed()) return;
+        String signature = TeamUpgradeShop.signature(s);
+        if (windowId == shopWindow && signature.equals(shopApplied)) return;
+        shopWindow = windowId;
+        shopApplied = signature;
+        shop(s, now);
+    }
+
+    /** No upgrades window is open: the next one is news even if it shows the same. */
+    public void shopClosed() {
+        shopWindow = NO_WINDOW;
+        shopApplied = null;
     }
 
     /** A gear poll (see {@link TeamUpgradeGear#infer}); priced by the decided game's mode. */
