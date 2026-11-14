@@ -274,7 +274,26 @@ public class ForgeBench {
         fPrevPitch.setFloat(p, pitch);
     }
 
-    private static void startScene() throws IllegalAccessException {
+    private static Method mHasName, mShowName;
+
+    private static int showNameTags() throws Exception {
+        if (mHasName == null) {
+            Class<?> entity = Class.forName("net.minecraft.entity.Entity");
+            mHasName = m(entity, "func_145818_k_");
+            mShowName = m(entity, "func_174805_g", boolean.class);
+        }
+        int k = 0;
+        for (Object e : (List<?>) fEntities.get(fWorld.get(mc))) {
+            if ((Boolean) mHasName.invoke(e)) {
+                mShowName.invoke(e, true);
+                k++;
+            }
+        }
+        return k;
+    }
+
+    private static void startScene() throws Exception {
+        if (scene == 0) notes.add("name tags shown: " + showNameTags());
         n = 0;
         activeSamples = 0;
         activeTrue = 0;

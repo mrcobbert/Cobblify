@@ -177,13 +177,15 @@ public final class Bench {
                 hold(mc);
                 if (secs(tState, now) >= 25) {
                     MinecraftServer s = mc.getIntegratedServer();
-                    s.addScheduledTask(() -> s.getCommandManager().executeCommand(s, "/save-all"));
+                    s.addScheduledTask(() -> s.getCommandManager().executeCommand(s, "/save-all flush"));
                     to(S.PREP_SAVED, now);
                 }
                 return;
             case PREP_SAVED:
                 hold(mc);
-                if (secs(tState, now) >= 8) {
+                // "/save-all flush" writes every pending chunk synchronously on the server thread (plain
+                // save-all only queues them, and quitting cut the queue off: the glass floor was lost).
+                if (secs(tState, now) >= 20) {
                     shot(mc, "prepare");
                     finish(mc);
                 }
@@ -235,7 +237,20 @@ public final class Bench {
         p.rotationPitch = p.prevRotationPitch = pitch;
     }
 
+    /** Name tags on every named entity (the summon's CustomNameVisible does not reach the client here). */
+    private static int showNameTags(Minecraft mc) {
+        int k = 0;
+        for (net.minecraft.entity.Entity e : mc.theWorld.loadedEntityList) {
+            if (e.hasCustomName()) {
+                e.setAlwaysRenderNameTag(true);
+                k++;
+            }
+        }
+        return k;
+    }
+
     private static void startScene(Minecraft mc, long now) {
+        if (scene == 0) notes.add("name tags shown: " + showNameTags(mc));
         n = 0;
         activeSamples = 0;
         activeTrue = 0;
@@ -332,7 +347,15 @@ public final class Bench {
             int x = MathHelper.floor_double(p.posX);
             int z = MathHelper.floor_double(p.posZ);
             int ground = w.getHeight(new BlockPos(x, 0, z)).getY();
-            int y = Math.max(ground + 20, 95);
+            // Above every block within 32 of the camera, so the view and the entity platform (to the
+            // north) are in open air in every direction.
+            int top = ground;
+            for (int dx = -32; dx <= 32; dx += 2) {
+                for (int dz = -32; dz <= 32; dz += 2) {
+                    top = Math.max(top, w.getHeight(new BlockPos(x + dx, 0, z + dz)).getY());
+                }
+            }
+            int y = Math.max(top + 6, 95);
             p.capabilities.allowFlying = true;
             p.capabilities.isFlying = true;
             p.sendPlayerAbilities();
@@ -364,7 +387,7 @@ public final class Bench {
                             + (z + dz + 0.5) + " " + nbt);
                 }
             }
-            notes.add("scene at " + x + " " + y + " " + z + " (ground " + ground + "), " + k + " entities");
+            notes.add("scene at " + x + " " + y + " " + z + " (ground " + ground + ", top " + top + "), " + k + " entities");
         });
         mc.thePlayer.capabilities.allowFlying = true;
         mc.thePlayer.capabilities.isFlying = true;
