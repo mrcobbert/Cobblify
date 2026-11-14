@@ -64,6 +64,9 @@ public class EditHudGui extends GuiScreen {
 
     private enum Mode { NONE, DRAG, RESIZE }
 
+    /** Reset Positions done from the settings menu, undoable here if the layout has not changed since (D7). */
+    private static final PendingUndo<Map<String, HudModuleState>> PENDING = new PendingUndo<Map<String, HudModuleState>>();
+
     private final EditHistory<Map<String, HudModuleState>> history = new EditHistory<Map<String, HudModuleState>>(100);
     private final Map<String, HoverFade> hoverFades = new HashMap<String, HoverFade>();
 
@@ -98,7 +101,16 @@ public class EditHudGui extends GuiScreen {
     public void initGui() {
         buttonList.clear();
         Keyboard.enableRepeatEvents(true);
-        if (openedMs == 0L) openedMs = Minecraft.getSystemTime();
+        if (openedMs == 0L) {
+            openedMs = Minecraft.getSystemTime();
+            Map<String, HudModuleState> beforeReset = PENDING.take(HudModules.snapshot(settings()));
+            if (beforeReset != null) history.record(beforeReset);
+        }
+    }
+
+    /** Offers a change made outside the editor (Reset Positions) as the first undo step of the next Edit HUD. */
+    static void offerUndo(Map<String, HudModuleState> before, Map<String, HudModuleState> after) {
+        PENDING.offer(before, after);
     }
 
     @Override

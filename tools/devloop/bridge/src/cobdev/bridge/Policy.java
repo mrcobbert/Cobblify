@@ -177,9 +177,11 @@ final class Policy {
             case "clutch-blast":
             case "use-item":
             case "hud-boxes":
+            case "sheet-node":
                 return null;
             default:
-                return "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, hud-boxes)";
+                return "unknown probe " + name
+                        + " (fov, hurt, player, block, clutch-blast, use-item, hud-boxes, sheet-node)";
         }
     }
 }

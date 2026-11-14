@@ -269,6 +269,29 @@ public class BedwarsHudRenderer {
     }
 
     /**
+     * Reset Positions (G26): every module goes to its {@link DefaultHudLayout} spot for this screen, measured at the
+     * stable sample sizes the Auto layout uses (D5); a hidden module and any module without a spot go on Auto. Only
+     * position, anchor and fraction change: size, on/off and Background stay. The caller saves.
+     */
+    public static void resetPositions(Minecraft mc, ClientSettings cfg) {
+        if (mc == null || cfg == null) return;
+        cfg.sanitize();
+        ScaledResolution r = new ScaledResolution(mc);
+        List<DefaultHudLayout.Item> items = new ArrayList<DefaultHudLayout.Item>();
+        for (String id : HudModules.ids()) {
+            HudModuleState s = HudModules.get(cfg, id);
+            if (s == null) continue;
+            Size size = layoutSize(mc, cfg, id);
+            items.add(new DefaultHudLayout.Item(id, size.width, size.height, layoutPad(cfg, id), s.enabled));
+        }
+        Map<String, DefaultHudLayout.Spot> spots = DefaultHudLayout.place(r.getScaledWidth(), r.getScaledHeight(), items);
+        for (String id : HudModules.ids()) {
+            DefaultHudLayout.Spot spot = spots.get(id);
+            if (spot != null) HudModules.set(cfg, id, spot.apply(HudModules.get(cfg, id)));
+        }
+    }
+
+    /**
      * Shows modules {@code ids}: the other shown Auto modules are pinned first, then each goes on Auto and takes the
      * first free Auto spot, whatever spot it had before it was hidden. A module that comes on with them (the two gen
      * timers share one switch) is newly shown too.

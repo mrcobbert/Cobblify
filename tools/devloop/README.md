@@ -109,6 +109,8 @@ cobdev probe block 3 0 1 [minecraft:wool]          # read or place one block nea
 cobdev probe clutch-blast 3 0 0                    # Clutch Practice's own blast, server thread
 cobdev probe use-item [minecraft:fire_charge]      # server-side right-click with the held item
 cobdev probe hud-boxes        # Edit HUD boxes, module states and the open editor's selection/menu rects
+cobdev probe sheet-node resetPositions             # where the open settings sheet draws a node (GUI + display px)
+cobdev probe sheet-node keystrokes MODULE_TOGGLE   # TYPE picks between nodes sharing an id (header vs switch)
 ```
 
 `hud-boxes` returns `{scale, sw, sh, boxes, states, editor}`: every `getEditorBoxes` box (content box

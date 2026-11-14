@@ -76,6 +76,7 @@ public final class PolicyTest {
         refused(Policy.probeName("setblock"));
         refused(Policy.probeName(null));
         allowed(Policy.probeName("hud-boxes"));
+        allowed(Policy.probeName("sheet-node"));
 
         // --mods: alt, shift and ctrl only; ctrl is Ctrl and Cmd (GuiScreen.isCtrlKeyDown reads Cmd on macOS)
         same("56", joinAll(Policy.modifiers("alt", true, true)));

@@ -1557,7 +1557,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
     runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
     Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
     limits the run to those ids (all when None)."""
-    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, live preview, menu, show (E0, E3a-E15)")
+    s.begin("A4-edithud", "Edit HUD: Reset Positions, walls, fine moves, snap, live preview, menu, show (E0-E15)")
     if not cfg or not s.has(SCREENS["hud"]):
         return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
     run = EditHudRun(s, cfg)
@@ -1665,6 +1665,37 @@ class EditHudRun:
         else:
             self.s.call("/key", {"code": KEYS["esc"]})  # close the menu
         return [r["label"] for r in rows]
+
+    def remember_path(self, path):
+        """A field outside the config (e.g. the sheet's session state), restored at the end of the run."""
+        if path not in self.touched:
+            r, _ = self.s.try_call("/field", post={"path": path})
+            if r is not None:
+                self.touched[path] = r.get("value")
+
+    def open_settings(self, category="hud"):
+        """The settings sheet on `category`, scrolled to the top, slid in."""
+        for f in ("category", "scroll", "scrollShown"):
+            self.remember_path(SHEET_STATE + "." + f)
+        self.s.field(SHEET_STATE + ".category", category)
+        self.s.field(SHEET_STATE + ".scroll", 0)
+        self.s.field(SHEET_STATE + ".scrollShown", 0)
+        self.s.call("/open", {"class": SCREENS["settings"]})
+        time.sleep(0.8)  # the sheet slides in
+
+    def sheet_click(self, node_id, node_type=None):
+        """Clicks the open sheet's node `node_id` (scrolled into view first); returns the probe."""
+        args = [node_id] + ([node_type] if node_type else [])
+        r = self.s.probe("sheet-node", *args)
+        if not r.get("visible"):
+            top = max(0.0, r["contentY"] - 20)
+            self.s.field(SHEET_STATE + ".scroll", top)
+            self.s.field(SHEET_STATE + ".scrollShown", top)
+            time.sleep(0.3)
+            r = self.s.probe("sheet-node", *args)
+        self.s.call("/click", {"x": r["centre"][0], "y": r["centre"][1]})
+        time.sleep(0.2)
+        return r
 
     def show_only(self, ids):
         """Switches every module on (ids None) or only the ones showing an id in `ids`; returns the shown ids."""
@@ -2018,9 +2049,101 @@ def edithud_e15(run):
     s.check("E15 undo brings the centre spot back", all(undone.get(k) == st0.get(k)
                                                          for k in ("x", "y", "fracX", "fracY", "anchor")), undone)
     s.shot("edithud-e15")
+    # Keystrokes is hidden at the centre again: its switch in the settings sheet shows it at the same Auto spot.
+    run.open_settings()
+    run.sheet_click("keystrokes", "MODULE_TOGGLE")
+    via = run.probe()
+    st2, b2 = run.state("keystrokes", via), run.box("keystrokes", via)
+    s.check("E15 the settings switch shows it on Auto", st2["enabled"] and st2["anchor"] == -1, st2)
+    s.check("E15 ... at the same Auto spot as the menu's Show", all(abs(p - q) <= 1e-3 for p, q in zip(vis(b1), vis(b2))),
+            "%s vs %s" % (vis(b1), vis(b2)))
+    s.call("/open", {"class": SCREENS["hud"]})
 
 
 HUD_SIZE_SCALES = {0: 0.75, 1: 1.0, 2: 1.5}  # ClientSettings.defaultTextSizeScale()
+SHEET_STATE = "com.bedwarsqol.gui.sheet.SheetState.SESSION"
+LEFT_COLUMN = ("fps", "cps", "ping", "armor", "potion")
+POSITION_KEYS = ("x", "y", "fracX", "fracY", "anchor")
+
+
+def g30_problems(hb):
+    """What differs from the default layout (G30) among the shown boxes of a hud-boxes probe; [] when none."""
+    sw, sh = hb["sw"], hb["sh"]
+    boxes = {b["id"]: vis(b) for b in hb["boxes"] if b["shown"]}
+    problems = []
+
+    def near(name, got, want, tol=1e-3):
+        if abs(got - want) > tol:
+            problems.append("%s %.3f, want %.3f" % (name, got, want))
+
+    y = 2.0
+    for i in LEFT_COLUMN:
+        if i in boxes:
+            x0, y0, w0, h0 = boxes[i]
+            near(i + " x", x0, 2)
+            near(i + " y", y0, y)
+            y = y0 + h0 + 2
+    timers_bottom = None
+    if "diamondtimer" in boxes:
+        x0, y0, w0, h0 = boxes["diamondtimer"]
+        near("diamondtimer right", x0 + w0, sw - 2)
+        near("diamondtimer y", y0, 2)
+        timers_bottom = y0 + h0
+        if "emeraldtimer" in boxes:
+            x1, y1, w1, h1 = boxes["emeraldtimer"]
+            near("emeraldtimer right", x1 + w1, x0 - 2)
+            near("emeraldtimer y", y1, 2)
+            timers_bottom = max(timers_bottom, y1 + h1)
+    if "sessionstats" in boxes:
+        x0, y0, w0, h0 = boxes["sessionstats"]
+        near("sessionstats right", x0 + w0, sw - 2)
+        near("sessionstats y", y0, 2 if timers_bottom is None else timers_bottom + 2)
+    if "inventory" in boxes:
+        x0, y0, w0, h0 = boxes["inventory"]
+        near("inventory centre", x0 + w0 / 2.0, sw / 2.0, 0.5)
+        near("inventory y", y0, 2)
+    if "keystrokes" in boxes:
+        x0, y0, w0, h0 = boxes["keystrokes"]
+        near("keystrokes right", x0 + w0, sw - 2)
+        near("keystrokes bottom", y0 + h0, sh - 2)
+    if "heightlimit" in boxes:
+        x0, y0, w0, h0 = boxes["heightlimit"]
+        near("heightlimit x", x0, 2)
+        near("heightlimit centre", y0 + h0 / 2.0, sh / 2.0, 0.5)
+    return problems
+
+
+def positions(hb):
+    return {st["id"]: tuple(st.get(k) for k in POSITION_KEYS) for st in hb["states"]}
+
+
+def edithud_e1_e2(run):
+    """E1: the settings sheet's Reset Positions puts every shown module on the default layout (GUI 2 and 3),
+    sizes kept. E2: in the next Edit HUD, Ctrl+Z gives back the layout from before the reset, Ctrl+Y the reset."""
+    s = run.s
+    run.show_only(None)
+    for sc in (2, 3):
+        run.scale(sc)
+        run.device_drag("keystrokes", -40, -30, mods="alt")  # off its default spot, so the reset is a change
+        before = run.probe()
+        run.open_settings()
+        node = run.sheet_click("resetPositions")
+        s.check("E1 GUI %d: the footer has Reset Positions" % sc, node.get("type") == "RESET_POSITIONS", node)
+        after = run.probe()
+        s.shot("edithud-e1-gui%d" % sc)
+        problems = g30_problems(after)
+        s.check("E1 GUI %d: every shown module is on its default spot" % sc, not problems, problems or None)
+        scales0 = {st["id"]: st.get("scale") for st in before["states"]}
+        scales1 = {st["id"]: st.get("scale") for st in after["states"]}
+        s.check("E1 GUI %d: sizes unchanged" % sc, scales0 == scales1)
+        s.call("/open", {"class": SCREENS["hud"]})
+        time.sleep(0.3)
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        s.check("E2 GUI %d: Ctrl+Z in Edit HUD gives back the layout before the reset" % sc,
+                positions(run.probe()) == positions(before))
+        s.call("/key", {"code": KEYS["y"], "mods": "ctrl"})
+        s.check("E2 GUI %d: Ctrl+Y puts the reset back" % sc, positions(run.probe()) == positions(after))
+    run.scale(2)
 IN_GAME_ONLY = ("potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "keystrokesInGameOnly")
 # Live data that differs from the editor's samples (2 potions, diamond leggings, an empty inventory).
 LIVE_DATA = ("/effect @p regeneration 600 0", "/effect @p strength 600 0",
@@ -2153,7 +2276,7 @@ def edithud_e13(run, item="potion"):
 
 
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
-EDIT_HUD_CHECKS = [("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
+EDIT_HUD_CHECKS = [("E1", edithud_e1_e2), ("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
                    ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E11", edithud_e11),
                    ("E11k", edithud_e11k), ("E13", edithud_e13), ("E15", edithud_e15)]
 
@@ -2338,7 +2461,7 @@ def build_parser():
     p.add_argument("--raw", action="store_true", help="hold the key's keyboard state, never the binding (also"
                                                       " key.forward/left/back/right/jump)")
     p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
-                                " clutch-blast DX DY DZ, use-item [ITEM], hud-boxes")
+                                " clutch-blast DX DY DZ, use-item [ITEM], hud-boxes, sheet-node ID [TYPE]")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
     p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")

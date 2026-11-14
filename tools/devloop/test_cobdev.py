@@ -436,6 +436,33 @@ class EditHudPixels(unittest.TestCase):
         self.assertEqual(cobdev.px_box(10, 20, 30, 40, 2, inset=1.0), (22, 42, 78, 118))
 
 
+class DefaultLayoutCheck(unittest.TestCase):
+    """g30_problems over the DefaultHudLayoutTest fixture at 960x540 (visual boxes; content = visual - 2)."""
+    SPOTS = {"fps": (2, 2, 46, 18), "cps": (2, 22, 52, 18), "ping": (2, 42, 40, 18), "armor": (2, 62, 22, 22),
+             "potion": (2, 86, 52, 44), "heightlimit": (2, 251, 120, 38), "diamondtimer": (916, 2, 42, 22),
+             "emeraldtimer": (872, 2, 42, 22), "sessionstats": (820, 26, 138, 148), "inventory": (377, 2, 206, 74),
+             "keystrokes": (894, 458, 64, 80)}
+
+    def hb(self, spots):
+        return {"sw": 960, "sh": 540, "boxes": [{"id": i, "x": x + 1, "y": y + 1, "w": w - 2, "h": h - 2, "pad": 1,
+                                                 "shown": True} for i, (x, y, w, h) in spots.items()]}
+
+    def test_the_default_layout_passes(self):
+        self.assertEqual(cobdev.g30_problems(self.hb(self.SPOTS)), [])
+
+    def test_a_moved_module_is_reported(self):
+        moved = dict(self.SPOTS, keystrokes=(800, 400, 64, 80))
+        self.assertEqual(len(cobdev.g30_problems(self.hb(moved))), 2)
+        gap = dict(self.SPOTS, cps=(2, 23, 52, 18))
+        self.assertTrue(cobdev.g30_problems(self.hb(gap)))
+
+    def test_hidden_and_missing_modules_are_skipped(self):
+        spots = dict(self.SPOTS)
+        del spots["fps"], spots["cps"], spots["ping"]
+        spots["armor"], spots["potion"] = (2, 2, 22, 22), (2, 26, 52, 44)
+        self.assertEqual(cobdev.g30_problems(self.hb(spots)), [])
+
+
 class Pins(unittest.TestCase):
     def test_every_pin_is_complete(self):
         for p in cobdev.PINS:

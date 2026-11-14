@@ -7,7 +7,9 @@ import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.SheetSchema;
 import com.bedwarsqol.gui.sheet.SheetValues;
+import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
+import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.Minecraft;
@@ -17,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
@@ -94,7 +97,7 @@ final class SettingsBindings implements SheetValues {
     @Override
     public boolean hasPlatformOnly(String id) {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
-                || SheetSchema.hudItem(id) != null;
+                || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
     @Override
@@ -331,6 +334,16 @@ final class SettingsBindings implements SheetValues {
     @Override
     public void run(String id) {
         if ("sessionReset".equals(id)) SessionStatsWatch.reset();
+        else if (SheetLayout.RESET_POSITIONS_ID.equals(id)) resetPositions();
+    }
+
+    /** Reset Positions from the settings menu: the default layout, saved, and undoable in the next Edit HUD (D7). */
+    private static void resetPositions() {
+        ClientSettings c = settings();
+        Map<String, HudModuleState> before = HudModules.snapshot(c);
+        BedwarsHudRenderer.resetPositions(Minecraft.getMinecraft(), c);
+        c.save();
+        EditHudGui.offerUndo(before, HudModules.snapshot(c));
     }
 
     private static int nearest(int[] values, int v) {

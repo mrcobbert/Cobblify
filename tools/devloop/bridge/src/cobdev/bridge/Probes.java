@@ -47,6 +47,7 @@ final class Probes {
     static final String HUD_RENDERER = "com.bedwarsqol.hud.BedwarsHudRenderer";
     static final String HUD_MODULES = "com.bedwarsqol.hud.HudModules";
     static final String EDIT_HUD = "com.bedwarsqol.gui.EditHudGui";
+    static final String SETTINGS_GUI = "com.bedwarsqol.gui.SettingsGui";
     /** HudBox fields as the probe reports them (key, Java field). */
     private static final String[][] BOX_FIELDS = {{"id", "id"}, {"x", "x"}, {"y", "y"}, {"w", "width"},
             {"h", "height"}, {"pad", "pad"}, {"shown", "shown"}};
@@ -77,6 +78,8 @@ final class Probes {
                 return useItem(args);
             case "hud-boxes":
                 return Bridge.onMain(Probes::hudBoxes);
+            case "sheet-node":
+                return Bridge.onMain(() -> sheetNode(args));
             default:
                 throw new Refused("unknown probe " + name);
         }
@@ -274,6 +277,78 @@ final class Probes {
         out.put("states", states);
         out.put("editor", editor(mc, boxes));
         return out;
+    }
+
+    /**
+     * {@code sheet-node ID}, read-only: where the open settings sheet draws its interactive node {@code ID} (the
+     * footer's Reset Positions, a module's switch, a row's control), in GUI px and display px, with the GUI-px centre
+     * a {@code click} can use, and whether a body node is scrolled into view. Reads {@code SettingsGui}'s laid-out
+     * frame, sheet unit, origin and scroll by reflection.
+     */
+    private static Map<String, Object> sheetNode(List<String> args) throws Exception {
+        if (args.size() != 1 && args.size() != 2) throw new Refused("probe sheet-node ID [TYPE]");
+        String id = args.get(0);
+        // A module's header (OPEN) shares its id with its switch: without TYPE the control wins.
+        String type = args.size() == 2 ? args.get(1) : null;
+        Minecraft mc = Bridge.mc();
+        GuiScreen screen = mc.currentScreen;
+        if (screen == null || !screen.getClass().getName().equals(SETTINGS_GUI)) {
+            throw new Refused("sheet-node needs the settings sheet open (cobdev open settings)");
+        }
+        Object frame = raw(screen, "frame");
+        if (frame == null) throw new Refused("the sheet has not drawn a frame yet");
+        float unit = ((Number) raw(screen, "unit")).floatValue();
+        float originX = ((Number) raw(screen, "originX")).floatValue();
+        Object paint = raw(screen, "paint");
+        float scroll = paint == null ? 0f : ((Number) raw(paint, "scroll")).floatValue();
+        float bodyTop = ((Number) raw(frame, "bodyTop")).floatValue();
+        float bodyHeight = ((Number) raw(frame, "bodyHeight")).floatValue();
+        Object node = null, header = null;
+        boolean inBody = false, headerInBody = false;
+        for (String part : new String[]{"chrome", "body"}) {
+            for (Object n : (List<?>) raw(frame, part)) {
+                Method interactive = method(n.getClass(), "interactive", 0, true);
+                if (!id.equals(raw(n, "id")) || !Boolean.TRUE.equals(call(interactive, n))) continue;
+                String t = String.valueOf(raw(n, "type"));
+                if (type != null ? !type.equals(t) : "OPEN".equals(t)) {
+                    if (type == null && header == null) {
+                        header = n;
+                        headerInBody = part.equals("body");
+                    }
+                    continue;
+                }
+                node = n;
+                inBody = part.equals("body");
+                break;
+            }
+            if (node != null) break;
+        }
+        if (node == null && header != null) {
+            node = header;
+            inBody = headerInBody;
+        }
+        if (node == null) throw new Refused("no interactive sheet node " + id + " on this page");
+        float nx = ((Number) raw(node, "x")).floatValue(), ny = ((Number) raw(node, "y")).floatValue();
+        float nw = ((Number) raw(node, "w")).floatValue(), nh = ((Number) raw(node, "h")).floatValue();
+        float sy = inBody ? bodyTop + ny - scroll : ny;
+        float dx = originX + nx * unit, dy = sy * unit, dw = nw * unit, dh = nh * unit;
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        Map<String, Object> out = Bridge.ok();
+        out.put("id", id);
+        out.put("type", String.valueOf(raw(node, "type")));
+        out.put("inBody", inBody);
+        out.put("contentY", finite(ny));
+        out.put("visible", !inBody || (sy >= bodyTop && sy + nh <= bodyTop + bodyHeight));
+        out.put("gui", Arrays.asList(finite(dx / sf), finite(dy / sf), finite(dw / sf), finite(dh / sf)));
+        out.put("device", Arrays.asList(finite(dx), finite(dy), finite(dw), finite(dh)));
+        out.put("centre", Arrays.asList((int) ((dx + dw / 2f) / sf), (int) ((dy + dh / 2f) / sf)));
+        return out;
+    }
+
+    /** A declared field's raw value anywhere up the hierarchy; null when there is no such field. */
+    private static Object raw(Object o, String name) throws Exception {
+        Field f = declaredField(o.getClass(), name);
+        return f == null ? null : f.get(o);
     }
 
     /** The open Edit HUD's state, or null when no {@code EditHudGui} is open. */

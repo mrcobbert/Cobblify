@@ -115,9 +115,25 @@ public final class SheetPainter {
             case HERO:
                 hero(c, n, p);
                 break;
+            case RESET_POSITIONS:
+                footerKey(c, n, p);
+                break;
             default:
                 break;
         }
+    }
+
+    /** A footer button beside Edit HUD in the neutral raised key look of an option, sunk 2 su while pressed. */
+    private static void footerKey(Canvas c, Node n, Paint p) {
+        boolean hover = n == p.hover;
+        if (n == p.pressed) {
+            pressedBox(c, n.x, n.y + 2f, n.w, n.h - 2f, hover ? FACE_HOVER : FACE, SH, SH2);
+            textCentred(c, n.text, n.font, n.x, n.y + 2f + 1f, n.w, n.h - 2f - 2f, TEXT_HI); // sunk with the face
+        } else {
+            raisedBox(c, n.x, n.y, n.w, n.h, hover ? FACE_HOVER : FACE, EDGE, EDGE, LOWER, LOWER, DEPTH);
+            textCentred(c, n.text, n.font, n.x, n.y + 1f, n.w, n.h - 2f - 2f, TEXT_HI);
+        }
+        if (n == p.focus) outline(c, n.x, n.y, n.w, n.h, 1f);
     }
 
     private static void search(Canvas c, Node n, Paint p) {

@@ -226,6 +226,10 @@ public final class SheetController {
             case HERO:
                 host.editHud();
                 break;
+            case RESET_POSITIONS:
+                values.run(n.id);
+                host.toast("HUD positions reset");
+                break;
             default:
                 break;
         }
@@ -433,8 +437,8 @@ public final class SheetController {
     private static boolean focusable(Node n) {
         if (n.disabled) return false;
         switch (n.type) {
-            case SEARCH: case CLOSE: case CATEGORY: case HERO: case MODULE_TOGGLE: case TOGGLE: case OPTION:
-            case SWATCH: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
+            case SEARCH: case CLOSE: case CATEGORY: case HERO: case RESET_POSITIONS: case MODULE_TOGGLE: case TOGGLE:
+            case OPTION: case SWATCH: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
                 return true;
             case OPEN:
                 return n.open;
@@ -443,17 +447,17 @@ public final class SheetController {
         }
     }
 
-    /** Document order: header, categories, body, footer. */
+    /** Document order: header, categories, body, footer (Edit HUD, then Reset Positions). */
     private List<Node> focusOrder() {
         List<Node> out = new ArrayList<Node>();
         if (frame == null) return out;
-        Node hero = null;
+        List<Node> footer = new ArrayList<Node>();
         for (Node n : frame.chrome) {
-            if (n.type == T.HERO) hero = n;
+            if (n.type == T.HERO || n.type == T.RESET_POSITIONS) footer.add(n);
             else if (focusable(n)) out.add(n);
         }
         for (Node n : frame.body) if (focusable(n)) out.add(n);
-        if (hero != null) out.add(hero);
+        for (Node n : footer) if (focusable(n)) out.add(n);
         return out;
     }
 
