@@ -61,6 +61,15 @@ public class PreviewDataTest {
     }
 
     @Test
+    public void fpsCpsAndPingAreAlwaysLive() {
+        for (PreviewData.Facts f : new PreviewData.Facts[]{NOTHING, NO_PLAYER, LIVE}) {
+            assertFalse(PreviewData.sample("fps", f));
+            assertFalse(PreviewData.sample("cps", f));
+            assertFalse(PreviewData.sample("ping", f));
+        }
+    }
+
+    @Test
     public void keystrokesSessionStatsAndUnknownIdsAreAlwaysLive() {
         for (PreviewData.Facts f : new PreviewData.Facts[]{NOTHING, NO_PLAYER, LIVE}) {
             assertFalse(PreviewData.sample("keystrokes", f));

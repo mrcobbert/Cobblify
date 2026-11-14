@@ -31,11 +31,15 @@ public class SettingsBindingsShowRuleTest {
         assertEquals(Collections.singletonList(BedwarsHudRenderer.INVENTORY_HUD), SettingsBindings.hudIdsShownBy("inventory"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.SESSION_HUD), SettingsBindings.hudIdsShownBy("session"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD), SettingsBindings.hudIdsShownBy("mapInfo"));
+        assertEquals(Collections.singletonList(BedwarsHudRenderer.FPS_HUD), SettingsBindings.hudIdsShownBy("fps"));
+        assertEquals(Collections.singletonList(BedwarsHudRenderer.CPS_HUD), SettingsBindings.hudIdsShownBy("cps"));
+        assertEquals(Collections.singletonList(BedwarsHudRenderer.PING_HUD), SettingsBindings.hudIdsShownBy("ping"));
     }
 
     @Test
     public void backgroundInGameOnlyAndOverlayRowsShowNothing() {
         for (String row : new String[]{"keystrokesBg", "potionBg", "genTimersBg", "scoreboardBg", "chatBg", "tabListBg",
+                "fpsBg", "cpsBg", "pingBg",
                 "potionInGame", "genTimersInGame", "scoreboard", "chat", "tablist", "sessionHold", "hudSize", null, ""}) {
             assertTrue(String.valueOf(row), SettingsBindings.hudIdsShownBy(row).isEmpty());
         }

@@ -1544,12 +1544,14 @@ def smoke_clutch(s, cfg):
 # Edit HUD (A4-edithud): each module's position fields in ClientSettings (prefix + X, Y, Anchor, Scale).
 EDIT_HUD_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
                    "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
-                   "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud"}
+                   "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud", "fps": "fpsHud", "cps": "cpsHud",
+                   "ping": "pingHud"}
 # Edit HUD (A4-edithud): each module's switch in ClientSettings and the HudModules ids it shows.
 EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", ("armor",)),
                     ("inventoryHudEnabled", ("inventory",)), ("genTimersEnabled", ("diamondtimer", "emeraldtimer")),
                     ("keystrokesEnabled", ("keystrokes",)), ("sessionStatsEnabled", ("sessionstats",)),
-                    ("heightLimitEnabled", ("heightlimit",))]
+                    ("heightLimitEnabled", ("heightlimit",)), ("fpsEnabled", ("fps",)), ("cpsEnabled", ("cps",)),
+                    ("pingEnabled", ("ping",))]
 
 
 def smoke_edithud(s, cfg, mode, checks=None):
@@ -2151,9 +2153,10 @@ LIVE_DATA = ("/effect @p regeneration 600 0", "/effect @p strength 600 0",
 LIVE_DATA_CLEAR = ("/effect @p clear", "/replaceitem entity @p slot.armor.legs air",
                    "/replaceitem entity @p slot.inventory.0 air")
 POTION_ICON = 18.0  # BedwarsHudRenderer.POTION_ICON_SIZE
-# Keystrokes caps in local units (BedwarsHudRenderer KS_UNIT 18, KS_GAP 2, KS_SPACE_H 14): x, y, w, h.
-KS_CAPS = {"W": (20, 0, 18, 18), "A": (0, 20, 18, 18), "S": (20, 20, 18, 18), "D": (40, 20, 18, 18),
-           "Space": (0, 40, 58, 14), "LMB": (0, 56, 28, 18), "RMB": (30, 56, 28, 18)}
+# Keystrokes caps in local units (KeystrokesLayout: CAP 18, GAP 1, 56 x 67, mouse row above the space bar): x, y, w, h.
+KS_WIDTH = 56.0
+KS_CAPS = {"W": (19, 0, 18, 18), "A": (0, 19, 18, 18), "S": (19, 19, 18, 18), "D": (38, 19, 18, 18),
+           "Space": (0, 57, 56, 10), "LMB": (0, 38, 27.5, 18), "RMB": (28.5, 38, 27.5, 18)}
 
 
 def px_box(x, y, w, h, sc, inset=0.0):
@@ -2162,11 +2165,12 @@ def px_box(x, y, w, h, sc, inset=0.0):
             int(round((x + w - inset) * sc)), int(round((y + h - inset) * sc)))
 
 
-def cap_px(ks_box, ks_scale, cap, sc):
-    """The middle 60% of a Keystrokes cap, in screenshot pixels."""
+def cap_px(ks_box, cap, sc):
+    """The middle 60% of a Keystrokes cap, in screenshot pixels; the caps are laid out at the box's own scale."""
+    e = ks_box["w"] / KS_WIDTH
     x, y, w, h = KS_CAPS[cap]
-    gx, gy = ks_box["x"] + (x + 0.2 * w) * ks_scale, ks_box["y"] + (y + 0.2 * h) * ks_scale
-    return px_box(gx, gy, 0.6 * w * ks_scale, 0.6 * h * ks_scale, sc)
+    gx, gy = ks_box["x"] + (x + 0.2 * w) * e, ks_box["y"] + (y + 0.2 * h) * e
+    return px_box(gx, gy, 0.6 * w * e, 0.6 * h * e, sc)
 
 
 def edithud_e11(run):
@@ -2214,12 +2218,12 @@ def edithud_e11k(run):
     run.show_only({"keystrokes", "inventory"})
     hb = run.probe()
     sc = hb["scale"]
-    ks, ks_scale = run.box("keystrokes", hb), run.state("keystrokes", hb)["scale"]
+    ks = run.box("keystrokes", hb)
     pos0 = s.probe("player")["client"]["pos"]
     _, idle = s.shot("edithud-e11k-idle")
 
     def lit(img, cap):
-        return diff(idle, img, step=1, thresh=23, box=cap_px(ks, ks_scale, cap, sc))[0] > 0.5
+        return diff(idle, img, step=1, thresh=23, box=cap_px(ks, cap, sc))[0] > 0.5
 
     try:
         s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
@@ -2770,7 +2774,7 @@ def hl_pressed_cap(img, box, sf):
 
 def hl_keys(h):
     s = h.s
-    s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (editor example holds W)")
+    s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (W held raw in the editor)")
     g = [x for x in h.groups if x[0] == "keystrokes"][0]
     # The caps' box from the game (HL-bg): the editor preview draws them in the same spot, but its frames and the
     # other modules' ghosts change around them, so a frame diff in the editor would measure editor chrome.
@@ -2785,7 +2789,12 @@ def hl_keys(h):
     s.try_call("/hover", {"off": 1})
     s.call("/open", {"class": SCREENS["hud"]})
     time.sleep(0.6)
-    on = h.shot("keys-editor")
+    # The editor shows live keys (edit-hud live preview): hold W's keyboard state, never its binding (edit-hud X6).
+    s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+    try:
+        on = h.shot("keys-editor")
+    finally:
+        s.try_call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
     s.call("/close")
     accent, letter = hl_pressed_cap(on, box, sf)
     s.check("the W cap is solid accent (W held)", accent >= (16 * sf) ** 2, accent)

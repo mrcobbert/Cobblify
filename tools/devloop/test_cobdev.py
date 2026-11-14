@@ -298,7 +298,7 @@ class EditHudSmoke(unittest.TestCase):
 
     def test_restores_fields_and_scale_after_a_pass(self):
         boxes = [{"id": i, "shown": True} for i in ("potion", "armor", "inventory", "diamondtimer", "emeraldtimer",
-                                                    "keystrokes", "sessionstats", "heightlimit")]
+                                                    "keystrokes", "sessionstats", "heightlimit", "fps", "cps", "ping")]
         s, calls, fields = self.run_step(boxes=boxes)
         self.assertEqual(s.step["status"], "pass", s.step["checks"])
         self.assertTrue(all(v == "false" for v in fields.values()), fields)
@@ -430,9 +430,11 @@ class EditHudHelpers(unittest.TestCase):
 
 class EditHudPixels(unittest.TestCase):
     def test_cap_and_box_rectangles(self):
-        ks = {"x": 100.0, "y": 50.0}
-        # W cap at local (20, 0, 18, 18), scale 1, GUI 2: middle 60% = (23.6..34.4, 3.6..14.4) local
-        self.assertEqual(cobdev.cap_px(ks, 1.0, "W", 2), (247, 107, 269, 129))
+        ks = {"x": 100.0, "y": 50.0, "w": 56.0}
+        # W cap at local (19, 0, 18, 18), box scale 1, GUI 2: middle 60% = (22.6..33.4, 3.6..14.4) local
+        self.assertEqual(cobdev.cap_px(ks, "W", 2), (245, 107, 267, 129))
+        # a box drawn at 1.5: the caps scale with it
+        self.assertEqual(cobdev.cap_px(dict(ks, w=84.0), "W", 2), (268, 111, 300, 143))
         self.assertEqual(cobdev.px_box(10, 20, 30, 40, 3), (30, 60, 120, 180))
         self.assertEqual(cobdev.px_box(10, 20, 30, 40, 2, inset=1.0), (22, 42, 78, 118))
 

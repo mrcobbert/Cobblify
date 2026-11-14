@@ -82,6 +82,9 @@ final class SettingsBindings implements SheetValues {
             case "keystrokes": ids = Collections.singletonList(BedwarsHudRenderer.KEYSTROKES_HUD); break;
             case "mapInfo": ids = Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD); break;
             case "session": ids = Collections.singletonList(BedwarsHudRenderer.SESSION_HUD); break;
+            case "fps": ids = Collections.singletonList(BedwarsHudRenderer.FPS_HUD); break;
+            case "cps": ids = Collections.singletonList(BedwarsHudRenderer.CPS_HUD); break;
+            case "ping": ids = Collections.singletonList(BedwarsHudRenderer.PING_HUD); break;
             default: return Collections.emptyList();
         }
         List<String> out = new ArrayList<String>();
