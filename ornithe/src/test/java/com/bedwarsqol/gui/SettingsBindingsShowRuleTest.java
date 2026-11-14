@@ -32,6 +32,8 @@ public class SettingsBindingsShowRuleTest {
         assertEquals(Collections.singletonList(BedwarsHudRenderer.SESSION_HUD), SettingsBindings.hudIdsShownBy("session"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD), SettingsBindings.hudIdsShownBy("mapInfo"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.FPS_HUD), SettingsBindings.hudIdsShownBy("fps"));
+        assertEquals(Collections.singletonList(BedwarsHudRenderer.TEAM_UPGRADES_HUD),
+                SettingsBindings.hudIdsShownBy("teamUpgrades"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.CPS_HUD), SettingsBindings.hudIdsShownBy("cps"));
         assertEquals(Collections.singletonList(BedwarsHudRenderer.PING_HUD), SettingsBindings.hudIdsShownBy("ping"));
     }

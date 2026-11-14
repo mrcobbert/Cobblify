@@ -2,6 +2,7 @@ package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.feature.SessionStatsWatch;
+import com.bedwarsqol.feature.TeamUpgradesWatch;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.OverlayScale;
 import com.bedwarsqol.hud.ScoreboardLayout;
@@ -35,7 +36,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>Also observes titles for the Session Stats tally: Hypixel announces the Bedwars outcome as a title
  * (gold VICTORY! / red GAME OVER!), which is a more reliable win/loss signal than the chat block.
  * public void displayTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut) — the
- * inject forwards the title text and changes nothing about the vanilla display.
+ * inject forwards the title text and changes nothing about the vanilla display. A second inject
+ * forwards the title and the subtitle to Team Upgrades (trap triggered, game end).
  */
 @Mixin(GuiIngame.class)
 public class GuiIngameMixin {
@@ -117,5 +119,12 @@ public class GuiIngameMixin {
     @Inject(method = "displayTitle", at = @At("HEAD"))
     private void bedwarsqol$observeTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut, CallbackInfo ci) {
         if (title != null) SessionStatsWatch.onTitle(title);
+    }
+
+    // Team Upgrades: trap-triggered titles and subtitles, and the game-end title (changes nothing shown).
+    @Inject(method = "displayTitle", at = @At("HEAD"))
+    private void bedwarsqol$observeTeamUpgradeTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut, CallbackInfo ci) {
+        if (title != null) TeamUpgradesWatch.onTitle(title);
+        if (subtitle != null) TeamUpgradesWatch.onTitle(subtitle);
     }
 }

@@ -199,6 +199,10 @@ one-sided main ornithe com/bedwarsqol/hud/EffectIconTextures.java
 # Keystrokes' Lunar caps (Ornithe only): the font's shadowless draw for their labels.
 divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
 
+# Team Upgrades: Ornithe-only HUD (Lunar has its own Upgrades & Traps HUD), its watcher and sheet-row test.
+one-sided main ornithe com/bedwarsqol/feature/TeamUpgradesWatch.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTeamUpgradesTest.java
+
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
 # ---------------------------------------------------------------------------

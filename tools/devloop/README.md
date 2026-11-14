@@ -111,12 +111,14 @@ cobdev probe use-item [minecraft:fire_charge]      # server-side right-click wit
 cobdev probe hud-boxes        # Edit HUD boxes, module states and the open editor's selection/menu rects
 cobdev probe sheet-node resetPositions             # where the open settings sheet draws a node (GUI + display px)
 cobdev probe sheet-node keystrokes MODULE_TOGGLE   # TYPE picks between nodes sharing an id (header vs switch)
+cobdev probe open-shop full                        # a chest window from bridge/resources/team-upgrades-full.json
 ```
 
 `hud-boxes` returns `{scale, sw, sh, boxes, states, editor}`: every `getEditorBoxes` box (content box
 and `pad`, GUI px, `shown`), every module's stored state (`x, y, fracX, fracY, anchor, scale, enabled,
 background`), and, while `EditHudGui` is open, its `selectedId`, `menuId`, `mode`, `tabHeld`,
 `playerListPressed` (`keyBindPlayerList.isKeyDown()`), `visibleIds` and the menu rows with GUI rects.
+It also reports `gui` (`[sw, sh]`) and `scaleFactor`, which the Team Upgrades steps read.
 It reads Cobblify by reflection, so a field a build does not have yet comes back as null.
 
 Overlay items (the scoreboard, chat and tab list as HUD items), also singleplayer only:
@@ -138,11 +140,18 @@ cobdev probe chat-defaults                  # vanilla's default chat width, scal
 open, is a left click only (a right click is Copy Chat, which would overwrite the clipboard), and is refused
 while Chat Links Prompt is off (a link click would open the browser).
 
+The smoke also leaves the world through the bridge (`/world` with `leave=1`, its own `cobdev` save only)
+to get a real world load; `cobdev world` opens it again.
+
 ## Smoke checks
 
-`cobdev smoke [--prod] [--boot-only]` runs PLAN Verification A3-A6 plus the Clutch Practice check
-and the Edit HUD step `A4-edithud` (its E-checks, from E0: the probe on an open editor) against the
-running game and writes every command, status, shot path and pass/fail per check to
+`cobdev smoke [--prod] [--boot-only] [--only overlays|team-upgrades]` runs PLAN Verification A3-A6, the
+Clutch Practice check, the HUD look step `HL`, the overlay steps `OV-*`, the Team Upgrades steps (synthetic
+Bed Wars scoreboard, chat lines, titles and shop windows, then an Edit HUD sweep over window sizes, GUI scales
+and HUD Size that checks Team Upgrades' default spot against every switched-on module and the hotbar, with the
+profile's modules and again with all of them on, where only a screen whose other modules already overlap one
+another is a note, not a failure) and the Edit HUD step `A4-edithud` (its E-checks, from E0: the probe on an
+open editor) against the running game and writes every command, status, shot path and pass/fail per check to
 `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"

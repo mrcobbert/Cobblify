@@ -6,8 +6,9 @@ import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 
 /**
- * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom, No Hurt Cam and
- * the per-item Background rows are listed on Ornithe and hidden on Lunar and Forge.
+ * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom, No Hurt Cam,
+ * Toggle Sprint, Dynamic FOV, Team Upgrades (with its Layout row), FPS, CPS, Ping and the per-item Background rows
+ * are listed on Ornithe and hidden on Lunar and Forge.
  */
 public class PlatformSheetRowsTest {
 
@@ -29,7 +30,8 @@ public class PlatformSheetRowsTest {
         String platform = ornithe ? "ornithe" : lunar ? "lunar" : "forge";
 
         SettingsBindings values = new SettingsBindings();
-        for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov",
+        for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov", "teamUpgrades",
+                "teamUpgradesLayout",
                 "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
                 "scoreboardBg", "tabListBg", "chatBg",
                 "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {

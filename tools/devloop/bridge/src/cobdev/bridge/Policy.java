@@ -176,12 +176,13 @@ final class Policy {
             case "block":
             case "clutch-blast":
             case "use-item":
+            case "open-shop":
             case "hud-boxes":
             case "sheet-node":
                 return null;
             default:
                 return OVERLAY_PROBES.contains(name) ? null
-                        : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, hud-boxes, "
+                        : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
                         + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ")";
         }
     }
@@ -261,5 +262,16 @@ final class Policy {
                     + " probe chat-at reports what Copy Chat would copy");
         }
         return out;
+    }
+
+    /**
+     * {@code open-shop} fixture names: lower-case letters, digits and dashes only, so a name can only pick
+     * one of the bridge's own {@code team-upgrades-<name>.json} resources.
+     */
+    static String shopFixture(java.util.List<String> args) {
+        if (args == null || args.size() != 1) return "probe open-shop FIXTURE (full, unknown)";
+        String name = args.get(0);
+        if (name == null || !name.matches("[a-z0-9-]{1,32}")) return "bad open-shop fixture name " + name;
+        return null;
     }
 }

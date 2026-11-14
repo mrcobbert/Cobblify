@@ -26,6 +26,7 @@ import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.feature.SettingsKeyHandler;
 import com.bedwarsqol.feature.SweatReport;
+import com.bedwarsqol.feature.TeamUpgradesWatch;
 import com.bedwarsqol.feature.TntFuseDisplay;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
@@ -110,7 +111,8 @@ public class BedwarsQol implements ClientModInitializer {
         ClientCommands.register(new BedwarsQolCommand());
 
         // Same order as the Forge build's EVENT_BUS registrations; only GameRosterChat and
-        // SessionStatsWatch listen to chat at HIGHEST with receiveCanceled, as on Forge.
+        // SessionStatsWatch listen to chat at HIGHEST with receiveCanceled, as on Forge (plus the
+        // Ornithe-only TeamUpgradesWatch, so no other listener can hide a line from it).
         SettingsKeyHandler settingsKey = new SettingsKeyHandler(settingsKeyBinding);
         ModEvents.CLIENT_TICK.register(mc -> settingsKey.onClientTick());
         PauseKeyHandler pauseKey = new PauseKeyHandler(pauseKeyBinding);
@@ -178,6 +180,11 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.SERVER_CONNECT.register(heightLimit::onServerConnect);
         ModEvents.CHAT.register(heightLimit::onChat);
         ModEvents.CLIENT_TICK.register(mc -> heightLimit.onClientTick());
+        TeamUpgradesWatch teamUpgrades = new TeamUpgradesWatch();
+        ModEvents.SERVER_CONNECT.register(teamUpgrades::onServerConnect);
+        ModEvents.WORLD_LOAD.register(world -> teamUpgrades.onWorldLoad());
+        ModEvents.CHAT.register(EventPriority.HIGHEST, true, teamUpgrades::onChat);
+        ModEvents.CLIENT_TICK.register(mc -> teamUpgrades.onClientTick());
         // Clutch Practice's server-side hooks are called by its own mixins (EntityPlayerMixin,
         // ItemInWorldManagerMixin); they act only once it is enabled here.
         ClutchPractice.enable();

@@ -146,7 +146,7 @@ public final class Bridge {
             case "/size":
                 return size(intParam(q, "w", 0), intParam(q, "h", 0));
             case "/world":
-                return world();
+                return "1".equals(q.get("leave")) ? leaveWorld() : world();
             case "/refresh":
                 return onMain(() -> {
                     mc().refreshResources();
@@ -409,6 +409,26 @@ public final class Bridge {
             opened.put("save", "cobdev");
             return opened;
         }, 90_000);
+    }
+
+    /**
+     * Leaves the singleplayer world for the title screen, as Save and Quit does. Only the smoke's own
+     * save; the integrated server finishes saving on its own thread afterwards, so wait a few seconds
+     * before {@code /world} opens it again.
+     */
+    private static Map<String, Object> leaveWorld() throws Exception {
+        return onMain(() -> {
+            requireLocal();
+            Minecraft m = mc();
+            if (m.theWorld == null) return ok();
+            IntegratedServer server = m.getIntegratedServer();
+            String save = server == null ? null : server.getFolderName();
+            if (!"cobdev".equals(save)) throw new Refused("the open world is save " + save + ", not cobdev; only cobdev's own save is left");
+            m.theWorld.sendQuittingDisconnectingPacket();
+            m.loadWorld(null);
+            m.displayGuiScreen(new GuiMainMenu());
+            return ok();
+        }, 60_000);
     }
 
     private static Map<String, Object> field(String path, String value) throws Exception {

@@ -24,8 +24,9 @@ import java.util.Map;
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
- * the platform that lists the platform-only Zoom and No Hurt Cam and the per-item Background rows, which read and write
- * their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
+ * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV, Team Upgrades, FPS, CPS,
+ * Ping and the per-item Background rows, which read and write their HUD item ({@link SheetSchema#hudItem}) through
+ * {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -59,6 +60,7 @@ final class SettingsBindings implements SheetValues {
         }
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
+        if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(hudId)) return "teamUpgrades";
         if (BedwarsHudRenderer.FPS_HUD.equals(hudId)) return "fps";
         if (BedwarsHudRenderer.CPS_HUD.equals(hudId)) return "cps";
         if (BedwarsHudRenderer.PING_HUD.equals(hudId)) return "ping";
@@ -86,6 +88,7 @@ final class SettingsBindings implements SheetValues {
             case "keystrokes": ids = Collections.singletonList(BedwarsHudRenderer.KEYSTROKES_HUD); break;
             case "mapInfo": ids = Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD); break;
             case "session": ids = Collections.singletonList(BedwarsHudRenderer.SESSION_HUD); break;
+            case "teamUpgrades": ids = Collections.singletonList(BedwarsHudRenderer.TEAM_UPGRADES_HUD); break;
             case "fps": ids = Collections.singletonList(BedwarsHudRenderer.FPS_HUD); break;
             case "cps": ids = Collections.singletonList(BedwarsHudRenderer.CPS_HUD); break;
             case "ping": ids = Collections.singletonList(BedwarsHudRenderer.PING_HUD); break;
@@ -112,6 +115,7 @@ final class SettingsBindings implements SheetValues {
     @Override
     public boolean hasPlatformOnly(String id) {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
+                || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id)
                 || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
@@ -136,6 +140,7 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": return c.sessionStatsHoldKey;
             case "mapInfo": return c.heightLimitEnabled;
             case "mapInfoInGame": return c.heightLimitInGameOnly;
+            case "teamUpgrades": return c.teamUpgradesEnabled;
             case "fps": return c.fpsEnabled;
             case "cps": return c.cpsEnabled;
             case "ping": return c.pingEnabled;
@@ -214,6 +219,7 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": c.sessionStatsHoldKey = v; break;
             case "mapInfo": c.heightLimitEnabled = v; break;
             case "mapInfoInGame": c.heightLimitInGameOnly = v; break;
+            case "teamUpgrades": c.teamUpgradesEnabled = v; break;
             case "fps": c.fpsEnabled = v; break;
             case "cps": c.cpsEnabled = v; break;
             case "ping": c.pingEnabled = v; break;
@@ -275,6 +281,7 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": return String.valueOf(TNT_RADII[nearest(TNT_RADII, c.tntFuseRadius)]);
             case "boStyle": return SheetSchema.row(id).options()[clamp(c.blockOverlayStyle, 0, 2)];
+            case "teamUpgradesLayout": return SheetSchema.row(id).options()[clamp(c.teamUpgradesLayout, 0, 1)];
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
@@ -294,6 +301,7 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": c.tntFuseRadius = TNT_RADII[i]; break;
             case "boStyle": c.blockOverlayStyle = i; break;
+            case "teamUpgradesLayout": c.teamUpgradesLayout = i; break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
             case "guiSize": c.guiSize = i; break;

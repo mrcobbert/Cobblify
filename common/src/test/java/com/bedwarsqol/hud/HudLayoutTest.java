@@ -17,6 +17,8 @@ import static com.bedwarsqol.hud.HudLayout.Vertical.BOTTOM;
 import static com.bedwarsqol.hud.HudLayout.Vertical.MIDDLE;
 import static com.bedwarsqol.hud.HudLayout.Vertical.TOP;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class HudLayoutTest {
 
@@ -127,5 +129,145 @@ public class HudLayoutTest {
                 new Item("wide", 360, 50,
                         new Spot(CENTRE, TOP, HudLayout.Slide.LEFT))), columns);
         assertAt(380 - 2 - 360, 2, out.get("wide"));
+    }
+
+    // ----- fitScale (Team Upgrades' Full panel: review code-1 I2, and HUD Size 2 beside Map Info) -----
+
+    /** The Full panel's measured size: {130 s + 12, 129 s + 12} GUI px. */
+    private static final HudLayout.Sizer FULL_PANEL = s -> new float[]{130f * s + 12f, 129f * s + 12f};
+    private static final Spot[] TEAM_SPOTS = {new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN),
+            new Spot(LEFT, MIDDLE, HudLayout.Slide.UP), new Spot(LEFT, BOTTOM, HudLayout.Slide.UP)};
+    private static final List<Item> NONE_BEFORE = Collections.emptyList();
+
+    /** The hotbar with the health, armour and food bars: 182 x 50, centred on the bottom edge. */
+    private static List<Box> hotbar(float sw, float sh) {
+        return Collections.singletonList(new Box((sw - 182f) / 2f, sh - 50f, 182f, 50f));
+    }
+
+    private static float fit(float sw, float sh, List<Item> before, List<Box> obstacles, float scale) {
+        return new HudLayout(sw, sh, 2, 2).fitScale(before, obstacles, "team", scale, 0.5f, 0.5f, FULL_PANEL, TEAM_SPOTS);
+    }
+
+    @Test
+    public void fitScaleStepsDownUntilThePanelClearsTheHotbar() {
+        // 854x480 at GUI scale 2 (427x240), HUD Size Large: 207 x 205.5 fits neither beside nor above
+        assertEquals(1.0f, fit(427f, 240f, NONE_BEFORE, hotbar(427f, 240f), 1.5f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleStepsDownUntilThePanelClearsTheModulesPlacedBeforeIt() {
+        // 1280x720 at GUI scale 2 (640x360), HUD Size 2: Map Info in the middle of the left edge, Armor,
+        // Potion and Keystrokes above it. At 1.5 the panel fits neither under nor over Map Info; at 1.0 it does.
+        List<Box> obstacles = Arrays.asList(new Box(229f, 310f, 182f, 50f), new Box(2f, 2f, 94f, 148f));
+        List<Item> mapInfo = Collections.singletonList(new Item("map", 112f, 56f, new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)));
+        assertEquals(1.0f, fit(640f, 360f, mapInfo, obstacles, 1.5f), 1e-6f);
+        // without Map Info the configured scale already fits
+        assertEquals(1.5f, fit(640f, 360f, NONE_BEFORE, obstacles, 1.5f), 1e-6f);
+
+        // and the fitted panel is placed clear of everything
+        HudLayout layout = new HudLayout(640f, 360f, 2, 2);
+        float[] size = FULL_PANEL.size(1.0f);
+        Map<String, float[]> out = layout.place(Arrays.asList(mapInfo.get(0), new Item("team", size[0], size[1], TEAM_SPOTS)), obstacles);
+        float[] team = out.get("team"), map = out.get("map");
+        assertFalse(overlaps(team, map));
+        for (Box b : obstacles) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    private static boolean overlaps(float[] a, float[] b) {
+        return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+    }
+
+    @Test
+    public void fitScaleKeepsAScaleThatAlreadyFits() {
+        assertEquals(1.5f, fit(640f, 360f, NONE_BEFORE, hotbar(640f, 360f), 1.5f), 1e-6f);
+        assertEquals(1.0f, fit(427f, 240f, NONE_BEFORE, hotbar(427f, 240f), 1.0f), 1e-6f);
+    }
+
+    @Test
+    public void fitScaleTriesTheMinimumWhenAStepWouldPassIt() {
+        // GUI scale 1 at HUD Size 2: 1.5 draws as 2.0, one font pixel down (1.0) would be 0.5, below the
+        // one-pixel minimum, so the minimum itself is the last try
+        HudLayout.Sizer snapped = s -> FULL_PANEL.size(s >= 1.5f ? 2f : s);
+        List<Box> obstacles = Arrays.asList(new Box(336f, 430f, 182f, 50f));
+        List<Item> mapInfo = Collections.singletonList(new Item("map", 168f, 72f, new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)));
+        assertEquals(1.0f, new HudLayout(854f, 480f, 2, 2).fitScale(mapInfo, obstacles, "team", 1.5f, 1f, 1f, snapped, TEAM_SPOTS), 1e-6f);
+    }
+
+    /** Review code-2 I1: 854x480 at GUI scale 2, HUD Size 1, every module on (recorded smoke boxes). */
+    private static final List<Box> EVERY_MODULE = Arrays.asList(
+            new Box(2, 32, 47, 44), new Box(2, 2, 22, 22), new Box(98.5f, 2, 206, 74), new Box(382, 2, 43, 22),
+            new Box(337, 2, 43, 22), new Box(57, 158, 64, 80), new Box(306, 26, 119, 148), new Box(2, 101, 86, 38),
+            new Box(122.5f, 190, 182, 50));
+    private static final HudLayout.Sizer PADDED = s -> {
+        float pad = Math.max(2f, Math.round(4f * s));
+        return new float[]{130f * s + 2f * pad, 129f * s + 2f * pad};
+    };
+    private static final Spot[] BESIDE = {new Spot(LEFT, MIDDLE, HudLayout.Slide.RIGHT),
+            new Spot(LEFT, TOP, HudLayout.Slide.RIGHT)};
+
+    @Test
+    public void aFullLeftEdgeTriesBesideTheLeftColumnAtTheSmallestSize() {
+        HudLayout layout = new HudLayout(427f, 240f, 2, 2);
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, EVERY_MODULE, "team", 1.0f, 0.5f, 0.5f, PADDED, TEAM_SPOTS, BESIDE);
+        assertEquals(0.5f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        float[] size = PADDED.size(fit.scale);
+        float[] team = layout.place(Collections.singletonList(new Item("team", size[0], size[1], fit.spots)), EVERY_MODULE).get("team");
+        for (Box b : EVERY_MODULE) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    @Test
+    public void aFreeLeftEdgeNeverMovesBesideTheColumn() {
+        // the profile layout: only Map Info and the timers; the left edge has room at full size
+        List<Box> profile = Arrays.asList(new Box(595, 2, 43, 22), new Box(550, 2, 43, 22), new Box(2, 101, 86, 38),
+                new Box(229, 310, 182, 50));
+        HudLayout.Fit fit = new HudLayout(640f, 360f, 2, 2).fit(NONE_BEFORE, profile, "team", 1.0f, 0.5f, 0.5f, PADDED,
+                TEAM_SPOTS, BESIDE);
+        assertEquals(1.0f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        assertEquals(TEAM_SPOTS.length, fit.spots.length);
+    }
+
+    /**
+     * Every module on at HUD Size 2 (prod smoke, 369x447 GUI): the left column is full, and both paths
+     * beside it run into the boxes in the middle, but a gap under the middle box is free.
+     */
+    private static final List<Box> MIDDLE_BLOCKED = Arrays.asList(
+            new Box(2, 2, 40, 216), new Box(120, 2, 78, 216), new Box(44, 40, 74, 100));
+    private static final Spot[] DOWN_THE_LEFT = {new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)};
+
+    @Test
+    public void withEveryPathBlockedItTakesTheFreePlaceNearestItsSpot() {
+        HudLayout layout = new HudLayout(200f, 220f, 2, 2);
+        HudLayout.Sizer square = s -> new float[]{60f * s, 60f * s};
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, MIDDLE_BLOCKED, "team", 1f, 0.5f, 1f, square, DOWN_THE_LEFT, BESIDE);
+        assertTrue(fit.free);
+        float[] team = layout.place(Collections.singletonList(new Item("team", 60f, 60f, fit.spots)), MIDDLE_BLOCKED)
+                .get("team");
+        assertAt(44f, 142f, team); // under the middle box, against the left column: nearest the left-middle start
+        for (Box b : MIDDLE_BLOCKED) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    @Test
+    public void withNoFreePlaceAnywhereFitSaysSo() {
+        HudLayout layout = new HudLayout(200f, 220f, 2, 2);
+        List<Box> full = Arrays.asList(new Box(2, 2, 196, 216));
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, full, "team", 1f, 0.5f, 1f, s -> new float[]{60f, 60f},
+                DOWN_THE_LEFT, BESIDE);
+        assertFalse(fit.free);
+        assertEquals(DOWN_THE_LEFT.length + BESIDE.length, fit.spots.length);
+    }
+
+    @Test
+    public void theFreePlaceSearchIsOnlyALastResort() {
+        // the beside-the-column path is free: fit keeps it, with no fixed place added
+        HudLayout.Fit fit = new HudLayout(427f, 240f, 2, 2).fit(NONE_BEFORE, EVERY_MODULE, "team", 1.0f, 0.5f, 0.5f,
+                PADDED, TEAM_SPOTS, BESIDE);
+        assertEquals(TEAM_SPOTS.length + BESIDE.length, fit.spots.length);
+    }
+
+    @Test
+    public void fitScaleStopsAtTheMinimumWhenNothingFits() {
+        assertEquals(0.5f, fit(100f, 80f, NONE_BEFORE, hotbar(100f, 80f), 1.5f), 1e-6f);
     }
 }
