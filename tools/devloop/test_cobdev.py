@@ -245,6 +245,60 @@ class OverlayScene(unittest.TestCase):
             cobdev.time.sleep = real
 
 
+class OverlaySmokeNoise(unittest.TestCase):
+    """Triage of the first integrated smoke run (2026-11-14): checks that failed on correct rendering."""
+
+    def stray(self, img, pts, rgb=(90, 140, 60)):
+        for x, y in pts:
+            img = paint_fn(img, (x, y, x + 1, y + 1), lambda c, v=rgb: v)
+        return img
+
+    def test_stray_pixels_do_not_stretch_a_drawn_box(self):
+        ref = sky(200, 120)
+        img = paint_fn(ref, (80, 10, 120, 20), black(0x80))          # the tab list
+        img = self.stray(img, [(3, 100), (190, 5), (60, 110), (150, 90)])  # grass shimmer
+        self.assertEqual(cobdev.quiet_bbox(ref, img), (80, 10, 120, 20))
+        self.assertEqual(cobdev.box_width(cobdev.quiet_bbox(ref, img)), 40)
+        self.assertEqual(cobdev.drawn_bbox(ref, img), (3, 5, 191, 111))  # the old box would be ~190 px wide
+        self.assertIsNone(cobdev.quiet_bbox(ref, self.stray(ref, [(3, 100), (190, 5)])))
+
+    def test_frames_match_allows_a_few_shimmering_pixels_only(self):
+        ref = sky(200, 120)
+        same, n = cobdev.frames_match(ref, self.stray(ref, [(3, 100), (190, 5), (60, 110), (150, 90)]))
+        self.assertTrue(same)
+        self.assertEqual(4, n)
+        swirl = paint_fn(ref, (120, 50, 140, 70), lambda c: (90, 120, 140))  # a potion particle
+        same, n = cobdev.frames_match(ref, swirl)
+        self.assertFalse(same)
+        self.assertEqual(400, n)
+
+    def one_row_tab(self, background):
+        """A 1-player tab list at scale 1.5, GUI scale 2: border, head, name text, ping bars."""
+        ref = sky(400, 200)
+        box = {"x": 50.0, "y": 20.0, "w": 138.0, "h": 15.0}
+        rect = cobdev.gui_rect(box, 2)
+        img = ref
+        if background:
+            img = paint_fn(img, rect, black(0x80))
+            img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[2] - 3, rect[3] - 3), black(0x20))
+        img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[0] + 27, rect[1] + 27), lambda c: (120, 80, 60))  # head
+        img = paint_fn(img, (rect[0] + 30, rect[1] + 4, rect[2] - 30, rect[3] - 4), lambda c: (255, 255, 255))  # text
+        img = paint_fn(img, (rect[2] - 26, rect[1] + 8, rect[2] - 4, rect[3] - 4), lambda c: (0, 255, 0))  # ping
+        return ref, img, box
+
+    def test_tab_background_off_on_a_short_list(self):
+        ref, off, box = self.one_row_tab(False)
+        # the old check: most of a one-row list is content, so "80% clear" can never hold
+        self.assertLess(cobdev.ratio_share(off, ref, cobdev.gui_rect(box, 2), 1.0), 0.8)
+        ok, detail = cobdev.tab_background_off(off, ref, box, 1.5, 2)
+        self.assertTrue(ok, detail)
+        ref, on, box = self.one_row_tab(True)
+        ok, detail = cobdev.tab_background_off(on, ref, box, 1.5, 2)
+        self.assertFalse(ok, detail)
+        x = cobdev.tab_border_column(box, 1.5, 2)
+        self.assertTrue(box["x"] * 2 <= x < (box["x"] + 1.5) * 2)
+
+
 class ModList(unittest.TestCase):
     def test_top_level_and_nested_entries(self):
         log = ["[20:00:00] [main/INFO] (FabricLoader) Loading 4 mods:",

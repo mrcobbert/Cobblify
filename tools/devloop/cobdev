@@ -1061,6 +1061,62 @@ def dark_count(img, ref, rect, factor=0.6):
                if all(a < factor * b for a, b in zip(px(img, x, y), px(ref, x, y))))
 
 
+def changed_mask(a, b, rect=None, thresh=24):
+    """Full-resolution changed pixels between two frames inside rect: {(x, y)}."""
+    w, h, _ = a
+    if (w, h) != b[:2]:
+        raise ValueError("frames differ in size")
+    x0, y0, x1, y1 = clip_rect(rect, a) if rect else (0, 0, w, h)
+    out = set()
+    for y in range(y0, y1):
+        ra, rb = a[2][y], b[2][y]
+        if ra[3 * x0:3 * x1] == rb[3 * x0:3 * x1]:
+            continue
+        for x in range(x0, x1):
+            if max(abs(ra[3 * x + i] - rb[3 * x + i]) for i in range(3)) > thresh:
+                out.add((x, y))
+    return out
+
+
+def quiet_bbox(a, b, rect=None, thresh=24, min_run=3):
+    """Like drawn_bbox, but only rows and columns with at least min_run changed pixels count, so a few stray pixels
+    (grass shimmering between frames) cannot stretch the box. (x0, y0, x1, y1) exclusive, or None."""
+    pts = changed_mask(a, b, rect, thresh)
+    cols, rows = {}, {}
+    for x, y in pts:
+        cols[x] = cols.get(x, 0) + 1
+        rows[y] = rows.get(y, 0) + 1
+    xs = [x for x, n in cols.items() if n >= min_run]
+    ys = [y for y, n in rows.items() if n >= min_run]
+    return (min(xs), min(ys), max(xs) + 1, max(ys) + 1) if xs and ys else None
+
+
+# Changed pixels two frames of the same scene may still differ by (grass shimmer: ~4 px per frame pair).
+OV_NOISE_PX = 24
+
+
+def frames_match(a, b, rect=None, noise=OV_NOISE_PX):
+    """(same, changed pixel count): the frames differ in at most `noise` pixels."""
+    n = len(changed_mask(a, b, rect))
+    return n <= noise, n
+
+
+def tab_border_column(box, scale, sf):
+    """The device column through the tab list's 1 px left border (list, header and footer fill, never a cell)."""
+    return int((box["x"] + 0.5 * scale) * sf)
+
+
+def tab_background_off(img, ref, box, scale, sf):
+    """(ok, detail) for a tab list drawn with Background Off: its border column is the backdrop and no pixel in the
+    box sits at the list (0x80) or row (0x80 + 0x20) fill. Text, heads and ping bars may cover most of a short list."""
+    rect = gui_rect(box, sf)
+    x = tab_border_column(box, scale, sf)
+    border = fill_ratio(img, ref, (x, rect[1] + 1, x + 1, rect[3] - 1))
+    lists, rows = ratio_share(img, ref, rect, FILL_80, 0.01), ratio_share(img, ref, rect, ROWS_80_20, 0.01)
+    ok = border is not None and abs(border - 1.0) <= 0.03 and lists < 0.005 and rows < 0.005
+    return ok, "border %s, %.3f at 0x80, %.3f at the row fill" % (border, lists, rows)
+
+
 def rightmost_bright(img, rect, floor=230):
     """Rightmost x in the rect with a near-white pixel (overlay text), or None."""
     x0, y0, x1, y1 = clip_rect(rect, img)
@@ -1358,13 +1414,17 @@ def smoke_overlays(s, cfg):
         return s.unavailable("Cobblify config not found")
     sb, tab = cfg + ".scoreboardHudScale", cfg + ".tabListHudScale"
     sb0, tab0 = s.field(sb).get("value"), s.field(tab).get("value")
+    # Holding Tab hides every Cobblify module, so with modules on the Tab/no-Tab diff spans them, not the list.
+    scene = OvScene(s, cfg)
+    for f in OV_MODULES:
+        scene.set(f, False)
     for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
               "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
               "/scoreboard players set Finals cobsb 12", "/scoreboard objectives setdisplay sidebar",
               "/scoreboard objectives setdisplay list cobsb", "/tp @p 0.5 4 0.5 0 0"):
         s.cmd(c)
     s.call("/close")
-    time.sleep(6)  # command chat fades
+    time.sleep(0.6)  # chat lines no longer fade; both regions below stay clear of the chat
     try:
         _, base = s.shot("overlay-none")
         w, h, _ = base
@@ -1376,7 +1436,7 @@ def smoke_overlays(s, cfg):
             s.field(sb, scale)
             time.sleep(0.4)
             _, img = s.shot("scoreboard-scale%s" % scale)
-            widths[scale] = box_width(diff(base, img, box=right)[1])
+            widths[scale] = box_width(quiet_bbox(base, img, right))
         s.step["scoreboardWidths"] = widths
         s.check("the sidebar scoreboard is drawn", widths[1.0] > 0, widths)
         s.check("scoreboard scale 0.7 draws it ~0.7x as wide as 1.0",
@@ -1393,7 +1453,7 @@ def smoke_overlays(s, cfg):
                 s.field(tab, scale)
                 time.sleep(0.4)
                 _, img = s.shot("tab-scale%s" % scale)
-                widths[scale] = box_width(diff(base2, img, box=top)[1])
+                widths[scale] = box_width(quiet_bbox(base2, img, top))
         finally:
             s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
         s.step["tabWidths"] = widths
@@ -1403,6 +1463,7 @@ def smoke_overlays(s, cfg):
     finally:
         s.field(sb, sb0)
         s.field(tab, tab0)
+        scene.restore()
         s.cmd("/scoreboard objectives remove cobsb")
 
 
@@ -1446,6 +1507,7 @@ class OvScene:
             self.s.cmd(c)
         for f in OV_MODULES:
             self.set(f, False)
+        self.set("tabHideHeaderFooter", False)  # the tab checks include the header and footer
         for item in OV_ITEMS:
             self.background(item, True)  # the On checks start from On, whatever the player chose
         # vanilla's default chat width, scale, heights and opacity (row heights, wrapping and the fill depend on them);
@@ -1630,14 +1692,18 @@ def smoke_ov_tab(s, cfg):
                 row_share = ratio_share(img, ref, rect, ROWS_80_20)
                 s.check("%s: list, header and footer fill 0x80" % tag, list_share > 0.05, "%.3f of the box" % list_share)
                 s.check("%s: rows 0x20 over the list fill" % tag, row_share > 0.02, "%.3f of the box" % row_share)
+                x = tab_border_column(box, where[3], sf)
+                border = fill_ratio(img, ref, (x, rect[1] + 1, x + 1, rect[3] - 1))
+                s.check("%s: the border column is the list fill" % tag, close_enough(border, FILL_80, 0.03), border)
+                if tag == "p1":
+                    # one header line, one player row, one footer line: 1 + 9 + 1 + 9 + 1 + 9 GUI px
+                    s.check("p1: the header and footer are part of the box", box["h"] >= 29.5, box)
             scene.background("tablist", False)
             _, off_img = s.shot("ov-tab-bg-off")
             sf, _, items = ov_boxes(s)
             if items.get("tablist") is not None:
-                rect = gui_rect(items["tablist"], sf)
-                clear, filled = ratio_share(off_img, ref, rect, 1.0), ratio_share(off_img, ref, rect, FILL_80)
-                s.check("Background Off: no list or row fills", clear > 0.8 and filled < 0.01,
-                        "%.3f clear, %.3f at 0x80" % (clear, filled))
+                ok, detail = tab_background_off(off_img, ref, items["tablist"], OV_SB_PLACES[-1][1][3], sf)
+                s.check("Background Off: no list or row fills", ok, detail)
             scene.background("tablist", True)
         finally:
             s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
@@ -1666,7 +1732,8 @@ def smoke_ov_tabhide(s, cfg):
             scene.set(f, False)
         scene.set("sessionStatsHoldKey", False)
         ov_objective(s, sidebar=True, tablist=True)  # the list objective lets singleplayer show the tab list
-        for c in ("/replaceitem entity @p slot.armor.chest minecraft:iron_chestplate", "/effect @p 1 120 1"):
+        # hideParticles: the Speed swirl would float across the sky between the compared frames
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:iron_chestplate", "/effect @p 1 120 1 true"):
             s.cmd(c)
         s.call("/close")
         _, _, free = ov_boxes(s)
@@ -1678,8 +1745,9 @@ def smoke_ov_tabhide(s, cfg):
             _, held_on = s.shot("ov-tabhide-held-on")
             modules(False)
             _, held_off = s.shot("ov-tabhide-held-off")
-            frac, box = diff(held_on, held_off)
-            s.check("Tab held: modules on and off draw the same frame", frac == 0, "diff %.4f in %s" % (frac, box))
+            same, changed = frames_match(held_on, held_off)
+            s.check("Tab held: modules on and off draw the same frame", same,
+                    "%d changed px (noise allowance %d)" % (changed, OV_NOISE_PX))
             _, _, held = ov_boxes(s)
             for item in ("scoreboard", "chat"):
                 s.check("Tab held: the %s still draws in the same box" % item,
