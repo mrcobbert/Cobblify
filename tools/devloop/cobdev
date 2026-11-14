@@ -2291,10 +2291,13 @@ class EditHudRun:
         exact to a screen pixel), in `steps` events; returns the press point and the last pointer (device px)."""
         sc = self.probe()["scale"]
         cx, cy = device_centre(self.box(item), sc)
+        disp = self.display()
         self.s.call("/down", {"x": cx, "y": cy, "device": 1})
         x, y = cx, cy
         for k in range(1, steps + 1):
             x, y = cx + int(round(dx * sc * k / steps)), cy + int(round(dy * sc * k / steps))
+            if disp:  # the pointer stays on the display; the box is clamped on screen anyway
+                x, y = clamp_point(x, y, disp[0], disp[1])
             params = {"x": x, "y": y, "device": 1}
             if mods:
                 params["mods"] = mods
@@ -2382,8 +2385,34 @@ class EditHudRun:
         return ob
 
     def scale(self, n):
+        """Asks for GUI scale `n` and returns the scale the game really uses: vanilla caps it so the GUI stays at least
+        320x240 (a 738x894 window cannot have GUI 3)."""
         self.s.call("/scale", {"n": n})  # the bridge reinits the open screen
         time.sleep(0.3)
+        return self.probe()["scale"]
+
+    def scales(self, wanted):
+        """The distinct scales the game really reaches for `wanted`, as (asked, actual) pairs; a scale the window cannot
+        reach is noted on the step and skipped, never failed."""
+        seen = set()
+        for n in wanted:  # a generator: each scale is set right before its pass runs
+            sc = self.scale(n)
+            if sc in seen:
+                note = "GUI %d is not reachable at this window size (the game uses %d)" % (n, sc)
+                self.s.step.setdefault("notes", []).append(note)
+                print("   n/a  " + note)
+                continue
+            seen.add(sc)
+            yield n, sc
+
+    def display(self):
+        """The game window in display pixels (from /status), or None."""
+        d = (self.s.status() or {}).get("display") or ""
+        try:
+            w, h = d.split("x")
+            return int(w), int(h)
+        except ValueError:
+            return None
 
 
 def visual_x(b):
@@ -2435,6 +2464,37 @@ def others_unchanged(before, after, moving):
         if s0.get("anchor") != s1.get("anchor") and not (s0.get("anchor") == -1 and pinned_anchor(s1)):
             problems.append("%s anchor %s -> %s" % (bid, s0.get("anchor"), s1.get("anchor")))
     return problems
+
+
+def gui_scale(display_w, display_h, wanted):
+    """ScaledResolution's scale factor: `wanted` (0 = auto), lowered until the GUI is at least 320x240."""
+    limit = wanted if wanted > 0 else 1000
+    sc = 1
+    while sc < limit and display_w // (sc + 1) >= 320 and display_h // (sc + 1) >= 240:
+        sc += 1
+    return sc
+
+
+def clamp_point(x, y, w, h):
+    """(x, y) pulled inside a w x h area (pixel coordinates 0..w-1, 0..h-1)."""
+    return max(0, min(int(x), int(w) - 1)), max(0, min(int(y), int(h) - 1))
+
+
+def free_spot(hb, w, h, margin=6):
+    """The top-left (GUI px) nearest the screen centre where a w x h box sits clear of every shown box by `margin` and
+    inside the screen by `margin`; None when there is no such spot."""
+    sw, sh = hb["sw"], hb["sh"]
+    rects = [vis(b) for b in hb["boxes"] if b.get("shown")]
+    best = None
+    for y in range(margin, int(sh - h - margin) + 1, 4):
+        for x in range(margin, int(sw - w - margin) + 1, 4):
+            if any(x < bx + bw + margin and x + w > bx - margin and y < by + bh + margin and y + h > by - margin
+                   for bx, by, bw, bh in rects):
+                continue
+            d = (x + w / 2.0 - sw / 2.0) ** 2 + (y + h / 2.0 - sh / 2.0) ** 2
+            if best is None or d < best[0]:
+                best = (d, x, y)
+    return None if best is None else (best[1], best[2])
 
 
 def text_scale(scale, sc, minecraft_font):
@@ -2518,8 +2578,7 @@ def edithud_e8(run, scales=(2, 3)):
     screen centre a plain drag rightly snaps the centred box onto it (E9 covers snapping)."""
     s = run.s
     run.show_only({"inventory"})
-    for sc in scales:
-        run.scale(sc)
+    for _, sc in run.scales(scales):
         b = run.box("inventory")
         cx, cy = gui_centre(b)
         s.call("/click", {"x": cx, "y": cy})  # select it
@@ -2554,8 +2613,7 @@ def edithud_e9(run, scales=(2, 3), item="heightlimit"):
     shown, sits at the left and its left edge at x 2 is a snap line too)."""
     s = run.s
     run.show_only({item})
-    for sc in scales:
-        run.scale(sc)
+    for _, sc in run.scales(scales):
         hb = run.probe()
         b = run.box(item, hb)
         x, y, w, h = vis(b)
@@ -2609,35 +2667,42 @@ def edithud_e3a(run):
     s.shot("edithud-e3a")
 
 
-def edithud_e3_e4(run):
-    """E3: Inventory dragged left at its own height stops flush at the left column (10 drag steps). E4: 30 GUI px
-    further down in the same drag, it stays flush and follows the pointer down."""
+def edithud_e3_e4(run, depth=6):
+    """E3: Inventory dragged left (10 steps) at Potion's height stops flush at Potion. E4: 30 GUI px further down in
+    the same drag, it stays flush and follows the pointer down. The scene is laid out from the live GUI size (only
+    Potion and Inventory show, tops level, a gap between them), and the push goes `depth` px past Potion's edge, less
+    than the way round it."""
     s = run.s
-    run.show_only(None)
-    before = run.probe()
-    sc = before["scale"]
-    column = left_column(before, "inventory")
-    if not s.check("E3 a module sits left of Inventory at its height", bool(column)):
+    run.show_only({"inventory", "potion"})
+    hb = run.probe()
+    sc, sw = hb["scale"], hb["sw"]
+    px0, py0, pw, ph = vis(run.box("potion", hb))
+    ix0, iy0, iw, ih = vis(run.box("inventory", hb))
+    gap = min(40.0, sw - 4 - pw - iw)
+    if not s.check("E3 the GUI is wide enough for Potion, a gap and Inventory side by side", gap >= 12,
+                   "GUI %s wide" % sw):
         return
+    top = 40.0
+    run.device_drag("potion", 2 - px0, top - py0, mods="alt")
+    run.device_drag("inventory", (2 + pw + gap) - ix0, top - iy0, mods="alt")
+    before = run.probe()
     inv = run.box("inventory", before)
-    col_right = max(vis(o)[0] + vis(o)[2] for o in column)
-    travel = (col_right - 10) - visual_x(inv)  # just past the column: flush is nearer than going around
+    col_right = 2 + pw
+    travel = (col_right - depth) - visual_x(inv)
     press, last = run.device_drag("inventory", travel, 0, steps=10, release=False)
     try:
         mid = run.probe()
         inv1 = run.box("inventory", mid)
-        s.check("E3 Inventory stops flush at the column", close_enough(visual_x(inv1), col_right, 1e-3),
-                "left %.4f, column right %.4f" % (visual_x(inv1), col_right))
+        s.check("E3 Inventory stops flush at Potion", close_enough(visual_x(inv1), col_right, 1e-3),
+                "left %.4f, Potion right %.4f" % (visual_x(inv1), col_right))
         problems = others_unchanged(before, mid, {"inventory"})
         s.check("E3 nothing else moved", not problems, problems or None)
         y0 = vis(inv1)[1]
         s.call("/drag", {"x": last[0], "y": last[1] + int(round(30 * sc)), "device": 1})
         end = run.probe()
         inv2 = run.box("inventory", end)
-        column2 = left_column(end, "inventory")
-        right2 = max(vis(o)[0] + vis(o)[2] for o in column2) if column2 else None
-        s.check("E4 Inventory stays flush with the column 30 px lower", right2 is not None
-                and close_enough(visual_x(inv2), right2, 1e-3), "left %.4f, column right %s" % (visual_x(inv2), right2))
+        s.check("E4 Inventory stays flush with Potion 30 px lower", close_enough(visual_x(inv2), col_right, 1e-3),
+                "left %.4f, Potion right %.4f" % (visual_x(inv2), col_right))
         s.check("E4 its top follows the pointer down", abs(vis(inv2)[1] - (y0 + 30)) <= 4.0 / sc + 1e-3,
                 "%.3f -> %.3f" % (y0, vis(inv2)[1]))
     finally:
@@ -2646,31 +2711,35 @@ def edithud_e3_e4(run):
 
 
 def edithud_e5_e6(run):
-    """E5: Keystrokes in the screen centre is a wall Map Info goes around: dragged 30 px into its left side, Map
-    Info sits flush left of it; 30 px short of its right side, flush right of it. (Deep in the middle the nearest
-    free spot is above or below, so the checks stay 30 px from each side.) E6: with Alt it overlaps Keystrokes;
-    one plain pixel later it is clear again."""
+    """E5: Keystrokes in the screen centre is a wall Map Info goes around: pushed a little into its left side, Map
+    Info sits flush left of it; a little short of its right side, flush right of it. The push stays shallower than
+    half their summed heights, the way round above or below. E6: with Alt it overlaps Keystrokes; one plain pixel
+    later it is clear again. Only the two show, so nothing else is in the way on any window."""
     s = run.s
-    run.show_only(None)
+    run.show_only({"heightlimit", "keystrokes"})
     hb = run.probe()
-    sc, sw, sh = hb["scale"], hb["sw"], hb["sh"]
+    sw, sh = hb["sw"], hb["sh"]
     ks = run.box("keystrokes", hb)
     kx, ky, kw, kh = vis(ks)
     run.device_drag("keystrokes", sw / 2.0 - (kx + kw / 2.0), sh / 2.0 - (ky + kh / 2.0), mods="alt")
     ks = run.box("keystrokes")
     kx, ky, kw, kh = vis(ks)
-    mi = run.box("heightlimit")
-    mx, my, mw, mh = vis(mi)
-    run.device_drag("heightlimit", 0, (ky + kh / 2.0) - (my + mh / 2.0), mods="alt")  # the same height
-    for raw, want, side in ((kx - mw + 30, kx - mw, "left"), (kx + kw - 30, kx + kw, "right")):
+    mx, my, mw, mh = vis(run.box("heightlimit"))
+    depth = min(30.0, (mh + kh) / 4.0)
+    if not s.check("E5 there is room for Map Info on both sides of Keystrokes", kx - mw - 30 >= 0 and kx + kw + mw <= sw,
+                   "GUI %s wide" % sw):
+        return
+    # left of Keystrokes, centred on its height, 30 px clear of it (Alt: free)
+    run.device_drag("heightlimit", (kx - mw - 30) - mx, (ky + kh / 2.0 - mh / 2.0) - my, mods="alt")
+    for raw, want, side in ((kx - mw + depth, kx - mw, "left"), (kx + kw - depth, kx + kw, "right")):
         mi = run.box("heightlimit")
         run.device_drag("heightlimit", raw - visual_x(mi), 0)
         got = visual_x(run.box("heightlimit"))
         s.check("E5 Map Info pushed into Keystrokes sits flush %s of it" % side, close_enough(got, want, 1e-3),
                 "left %.4f, want %.4f" % (got, want))
-    mi = run.box("heightlimit")
-    mx, my, mw, mh = vis(mi)
-    press, last = run.device_drag("heightlimit", (kx + kw / 2.0) - (mx + mw / 2.0), 0, mods="alt", release=False)
+    mx, my, mw, mh = vis(run.box("heightlimit"))
+    press, last = run.device_drag("heightlimit", (kx + kw / 2.0) - (mx + mw / 2.0), (ky + kh / 2.0) - (my + mh / 2.0),
+                                  mods="alt", release=False)
     try:
         hb6 = run.probe()
         s.check("E6 with Alt Map Info overlaps Keystrokes",
@@ -2685,13 +2754,19 @@ def edithud_e5_e6(run):
 
 
 def edithud_corner_grow(run, item, other, corner, gap):
-    """Shared by E7/E7b: `other` is put `gap` GUI px beside `item` at its height (Alt), then `item` is grown by
-    `corner` ('br' or 'tl') well past it. Returns (before, after) probes."""
+    """Shared by E7/E7b: `item` is put where it has room (left part for 'br', right part for 'tl', mid-height),
+    `other` `gap` GUI px beside it at its height (Alt), then `item` is grown by `corner` ('br' or 'tl') well past it,
+    the pointer kept on screen. Returns (before, after) probes."""
     s = run.s
+    hb = run.probe()
+    sw, sh = hb["sw"], hb["sh"]
+    x, y, w, h = vis(run.box(item, hb))
+    ox, oy, ow, oh = vis(run.box(other, hb))
+    nx = 10.0 if corner == "br" else sw - 10.0 - w
+    ny = (sh - h) / 2.0
+    run.device_drag(item, nx - x, ny - y, mods="alt")
     b = run.box(item)
     x, y, w, h = vis(b)
-    o = run.box(other)
-    ox, oy, ow, oh = vis(o)
     target_x = x + w + gap if corner == "br" else x - gap - ow
     run.device_drag(other, target_x - ox, y - oy, mods="alt")
     cx, cy = gui_centre(b)
@@ -2700,12 +2775,13 @@ def edithud_corner_grow(run, item, other, corner, gap):
     b = run.box(item, before)
     x, y, w, h = vis(b)
     gx, gy = (int(x + w - 1), int(y + h - 1)) if corner == "br" else (int(x + 1), int(y + 1))
-    far = 200 if corner == "br" else -200
+    far, _ = clamp_point(gx + (200 if corner == "br" else -200), gy, sw, sh)  # GUI coordinates stay on screen
+    mid = (gx + far) // 2
     s.call("/down", {"x": gx, "y": gy})
-    s.call("/drag", {"x": gx + far // 4, "y": gy})
-    s.call("/drag", {"x": gx + far, "y": gy})
+    s.call("/drag", {"x": mid, "y": gy})
+    s.call("/drag", {"x": far, "y": gy})
     after = run.probe()
-    s.call("/up", {"x": gx + far, "y": gy})
+    s.call("/up", {"x": far, "y": gy})
     return before, after
 
 
@@ -2758,14 +2834,16 @@ def edithud_e15(run):
     s = run.s
     run.show_only(None)
     hb = run.probe()
-    sw, sh = hb["sw"], hb["sh"]
     ks = run.box("keystrokes", hb)
     kx, ky, kw, kh = vis(ks)
-    run.device_drag("keystrokes", sw / 2.0 - (kx + kw / 2.0), sh / 2.0 - (ky + kh / 2.0), mods="alt")
+    others = dict(hb, boxes=[b for b in hb["boxes"] if b["id"] != "keystrokes"])
+    spot = free_spot(others, kw, kh)
+    if not s.check("E15 a clear spot for Keystrokes on this window", spot is not None, "GUI %sx%s" % (hb["sw"], hb["sh"])):
+        return
+    run.device_drag("keystrokes", spot[0] - kx, spot[1] - ky, mods="alt")  # the drag also selects it
     placed = run.probe()
     st0 = run.state("keystrokes", placed)
     cx, cy = gui_centre(run.box("keystrokes", placed))
-    s.call("/click", {"x": cx, "y": cy})
     s.call("/key", {"code": KEYS["delete"]})
     hidden = run.probe()
     s.check("E15 Delete hides it", not run.state("keystrokes", hidden)["enabled"])
@@ -2779,7 +2857,8 @@ def edithud_e15(run):
     shown = run.probe()
     st1, b1 = run.state("keystrokes", shown), run.box("keystrokes", shown)
     s.check("E15 after Show it is on Auto", st1["enabled"] and st1["anchor"] == -1, st1)
-    s.check("E15 not back at the centre spot", abs(vis(b1)[0] - vis(run.box("keystrokes", placed))[0]) > 1,
+    s.check("E15 not back at the clear spot", abs(vis(b1)[0] - vis(run.box("keystrokes", placed))[0]) > 1
+            or abs(vis(b1)[1] - vis(run.box("keystrokes", placed))[1]) > 1,
             "drawn at %s" % (vis(b1),))
     problems = others_unchanged(hidden, shown, {"keystrokes"})
     s.check("E15 nothing else moved", not problems, problems or None)
@@ -2861,8 +2940,7 @@ def edithud_e1_e2(run):
     sizes kept. E2: in the next Edit HUD, Ctrl+Z gives back the layout from before the reset, Ctrl+Y the reset."""
     s = run.s
     run.show_only(None)
-    for sc in (2, 3):
-        run.scale(sc)
+    for _, sc in run.scales((2, 3)):
         run.device_drag("keystrokes", -40, -30, mods="alt")  # off its default spot, so the reset is a change
         before = run.probe()
         run.open_settings()
