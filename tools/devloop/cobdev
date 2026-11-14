@@ -4384,10 +4384,12 @@ def smoke_team_upgrades(s, cfg):
         s.check("no location yet: pending", tu_call(s, "", "pending") is True)
         st = tu_state(s)
         s.check("a new game starts empty", st == TU_EMPTY, st)
-        gw, _, boxes = tu_boxes(s)
         _, off = s.shot("tu-off")
         s.field(en, True)
         time.sleep(0.4)
+        # Measured once it shows: a hidden module only takes the room the shown ones leave (and Team Upgrades
+        # steps its size down to fit it), so its box before the switch is not where it draws.
+        gw, _, boxes = tu_boxes(s)
         _, empty = s.shot("tu-empty")
         frac, box = tu_box_diff(off, empty, boxes[TU_ID], gw)
         s.check("panel drawn in its default spot (Traps / None)", frac > 0.001,
