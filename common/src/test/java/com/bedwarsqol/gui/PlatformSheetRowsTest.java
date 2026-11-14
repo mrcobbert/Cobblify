@@ -7,7 +7,8 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom, No Hurt Cam,
- * Toggle Sprint, Dynamic FOV and Team Upgrades (with its Layout row) are listed on Ornithe and hidden on Lunar and Forge.
+ * Toggle Sprint, Dynamic FOV, Team Upgrades (with its Layout row), FPS, CPS, Ping and the per-item Background rows
+ * are listed on Ornithe and hidden on Lunar and Forge.
  */
 public class PlatformSheetRowsTest {
 
@@ -30,8 +31,23 @@ public class PlatformSheetRowsTest {
 
         SettingsBindings values = new SettingsBindings();
         for (String id : new String[] {"zoom", "noHurtCam", "toggleSprint", "dynamicFov", "teamUpgrades",
-                "teamUpgradesLayout"}) {
+                "teamUpgradesLayout", "teamUpgradesBg",
+                "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
+                "scoreboardBg", "tabListBg", "chatBg",
+                "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
+    }
+
+    /** Ornithe sizes the scoreboard and tab list as HUD items (corner resize), so its Settings page drops the rows. */
+    @Test
+    public void scoreboardAndTabListSizeRowsAreHiddenOnlyOnOrnithe() {
+        boolean ornithe = present("com.bedwarsqol.ornithe.ModEvents");
+        String platform = ornithe ? "ornithe" : present("net.weavemc.api.ModInitializer") ? "lunar" : "forge";
+        SettingsBindings values = new SettingsBindings();
+        for (String id : new String[] {"sbSize", "tabSize"}) {
+            assertEquals(platform + " lists " + id, !ornithe, SheetSchema.shows(values, id));
+        }
+        assertEquals(platform + " lists hudSize", true, SheetSchema.shows(values, "hudSize"));
     }
 }

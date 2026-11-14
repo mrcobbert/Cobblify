@@ -7,14 +7,26 @@ import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.SheetSchema;
 import com.bedwarsqol.gui.sheet.SheetValues;
+import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
+import com.bedwarsqol.hud.HudModuleState;
+import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.stats.StatsCache;
+import net.minecraft.client.Minecraft;
 import org.lwjgl.input.Keyboard;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
- * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV and Team Upgrades.
+ * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV, Team Upgrades, FPS, CPS,
+ * Ping and the per-item Background rows, which read and write their HUD item ({@link SheetSchema#hudItem}) through
+ * {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -49,24 +61,70 @@ final class SettingsBindings implements SheetValues {
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
         if (BedwarsHudRenderer.TEAM_UPGRADES_HUD.equals(hudId)) return "teamUpgrades";
+        if (BedwarsHudRenderer.FPS_HUD.equals(hudId)) return "fps";
+        if (BedwarsHudRenderer.CPS_HUD.equals(hudId)) return "cps";
+        if (BedwarsHudRenderer.PING_HUD.equals(hudId)) return "ping";
+        // the overlays' sheet module is their Background switch (they have no on/off of their own)
+        if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(hudId)) return "scoreboardBg";
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(hudId)) return "tabListBg";
+        if (BedwarsHudRenderer.CHAT_HUD.equals(hudId)) return "chatBg";
         return null;
     }
 
+    /**
+     * The HUD items a sheet switch shows when it goes from off to on, so they take their first free Auto spot: only the
+     * module enable switches, listed here on purpose (not derived from {@link #moduleForHud}). A Background switch, In
+     * Game Only, any other row and the scoreboard, chat and tab list show nothing, so they never move an item.
+     */
+    static List<String> hudIdsShownBy(String rowId) {
+        List<String> ids;
+        switch (rowId == null ? "" : rowId) {
+            case "potion": ids = Collections.singletonList(BedwarsHudRenderer.POTION_HUD); break;
+            case "armor": ids = Collections.singletonList(BedwarsHudRenderer.ARMOR_HUD); break;
+            case "inventory": ids = Collections.singletonList(BedwarsHudRenderer.INVENTORY_HUD); break;
+            case "genTimers":
+                ids = Arrays.asList(BedwarsHudRenderer.DIAMOND_TIMER_HUD, BedwarsHudRenderer.EMERALD_TIMER_HUD);
+                break;
+            case "keystrokes": ids = Collections.singletonList(BedwarsHudRenderer.KEYSTROKES_HUD); break;
+            case "mapInfo": ids = Collections.singletonList(BedwarsHudRenderer.HEIGHT_LIMIT_HUD); break;
+            case "session": ids = Collections.singletonList(BedwarsHudRenderer.SESSION_HUD); break;
+            case "teamUpgrades": ids = Collections.singletonList(BedwarsHudRenderer.TEAM_UPGRADES_HUD); break;
+            case "fps": ids = Collections.singletonList(BedwarsHudRenderer.FPS_HUD); break;
+            case "cps": ids = Collections.singletonList(BedwarsHudRenderer.CPS_HUD); break;
+            case "ping": ids = Collections.singletonList(BedwarsHudRenderer.PING_HUD); break;
+            default: return Collections.emptyList();
+        }
+        List<String> out = new ArrayList<String>();
+        for (String id : ids) {
+            if (HudModules.ids().contains(id)) out.add(id);
+        }
+        return out;
+    }
+
+    /**
+     * Every schema id but Lunar's top-level alerts, and the Scoreboard Size and Tab List Size rows: here the
+     * scoreboard and tab list are HUD items, sized with Edit HUD's corner resize.
+     */
     @Override
     public boolean has(String id) {
         return !"incAlert".equals(id) && !"bedAlert".equals(id) && !"bgAlert".equals(id)
+                && !"sbSize".equals(id) && !"tabSize".equals(id)
                 && (SheetSchema.module(id) != null || SheetSchema.row(id) != null);
     }
 
     @Override
     public boolean hasPlatformOnly(String id) {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
-                || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id);
+                || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id)
+                || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
+                || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
     @Override
     public boolean on(String id) {
         ClientSettings c = settings();
+        String item = SheetSchema.hudItem(id);
+        if (item != null) return HudModules.background(c, item);
         switch (id) {
             case "potion": return c.potionStatusEnabled;
             case "potionInGame": return c.potionInGameOnly;
@@ -83,6 +141,9 @@ final class SettingsBindings implements SheetValues {
             case "mapInfo": return c.heightLimitEnabled;
             case "mapInfoInGame": return c.heightLimitInGameOnly;
             case "teamUpgrades": return c.teamUpgradesEnabled;
+            case "fps": return c.fpsEnabled;
+            case "cps": return c.cpsEnabled;
+            case "ping": return c.pingEnabled;
             case "handPos": return c.handPositionEnabled;
             case "tnt": return c.tntFuseEnabled;
             case "noEsc": return c.suppressEscMenu;
@@ -134,6 +195,15 @@ final class SettingsBindings implements SheetValues {
     @Override
     public void setOn(String id, boolean v) {
         ClientSettings c = settings();
+        String item = SheetSchema.hudItem(id);
+        if (item != null) {
+            HudModules.setBackground(c, item, v);
+            c.save();
+            return;
+        }
+        // A module switched on: its items take their first free Auto spot, nothing else moves.
+        List<String> shown = v && !on(id) ? hudIdsShownBy(id) : Collections.<String>emptyList();
+        if (!shown.isEmpty()) BedwarsHudRenderer.show(Minecraft.getMinecraft(), c, shown);
         switch (id) {
             case "potion": c.potionStatusEnabled = v; break;
             case "potionInGame": c.potionInGameOnly = v; break;
@@ -150,6 +220,9 @@ final class SettingsBindings implements SheetValues {
             case "mapInfo": c.heightLimitEnabled = v; break;
             case "mapInfoInGame": c.heightLimitInGameOnly = v; break;
             case "teamUpgrades": c.teamUpgradesEnabled = v; break;
+            case "fps": c.fpsEnabled = v; break;
+            case "cps": c.cpsEnabled = v; break;
+            case "ping": c.pingEnabled = v; break;
             case "handPos": c.handPositionEnabled = v; break;
             case "tnt": c.tntFuseEnabled = v; break;
             case "noEsc": c.suppressEscMenu = v; break;
@@ -211,8 +284,6 @@ final class SettingsBindings implements SheetValues {
             case "teamUpgradesLayout": return SheetSchema.row(id).options()[clamp(c.teamUpgradesLayout, 0, 1)];
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
-            case "sbSize": return SIZES[clamp(c.scoreboardSize, 0, 2)];
-            case "tabSize": return SIZES[clamp(c.styledTabListSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
             case "font": return c.minecraftFont() ? "Minecraft" : "Modern";
             case "accent": return GuiTheme.fromToken(c.guiAccent).label();
@@ -233,8 +304,6 @@ final class SettingsBindings implements SheetValues {
             case "teamUpgradesLayout": c.teamUpgradesLayout = i; break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
-            case "sbSize": c.scoreboardSize = i; break;
-            case "tabSize": c.styledTabListSize = i; break;
             case "guiSize": c.guiSize = i; break;
             case "font": c.guiFont = "Minecraft".equals(option) ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
             case "accent": c.guiAccent = GuiTheme.Accent.values()[i].token(); break;
@@ -291,6 +360,16 @@ final class SettingsBindings implements SheetValues {
     @Override
     public void run(String id) {
         if ("sessionReset".equals(id)) SessionStatsWatch.reset();
+        else if (SheetLayout.RESET_POSITIONS_ID.equals(id)) resetPositions();
+    }
+
+    /** Reset Positions from the settings menu: the default layout, saved, and undoable in the next Edit HUD (D7). */
+    private static void resetPositions() {
+        ClientSettings c = settings();
+        Map<String, HudModuleState> before = HudModules.snapshot(c);
+        BedwarsHudRenderer.resetPositions(Minecraft.getMinecraft(), c);
+        c.save();
+        EditHudGui.offerUndo(before, HudModules.snapshot(c));
     }
 
     private static int nearest(int[] values, int v) {

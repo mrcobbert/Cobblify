@@ -13,6 +13,7 @@
     "AbstractClientPlayerFovMixin",
     "GuiIngameMixin",
     "GuiNewChatMixin",
+    "GuiNewChatOverlayMixin",
     "MinecraftChatClearMixin",
     "MinecraftEscMixin",
     "GuiPlayerTabOverlayMixin",

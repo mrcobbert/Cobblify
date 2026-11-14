@@ -72,9 +72,26 @@ cobdev shot --at 120 80       # hover first, then capture
 ```
 
 Also: `down`, `up`, `drag`, `scroll X Y N` (positive = down), `hover X Y` / `hover off`,
-`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `size W H` (dev mode only),
+`type TEXT`, `key esc|enter|backspace|…|a-z|0-9|CODE`, `scale 0-4`, `size W H` (dev mode only),
 `reinit`, `close`, `world` (flat creative world "cobdev", clouds and view bobbing off),
 `refresh` (resources), `restart [--prod]`, `log [N]`.
+
+Precise input (Edit HUD checks):
+
+```
+cobdev drag 200 90 --mods alt          # modifier keys held for this one event: alt, shift, ctrl
+cobdev key z --mods ctrl               # ctrl holds Ctrl and Cmd (GuiScreen.isCtrlKeyDown reads Cmd on macOS)
+cobdev down 640 360 --device           # display pixels from the top-left (down, up, drag): one screen pixel
+cobdev drag 641 360 --device           #   per step at any GUI scale
+cobdev keyhold key.playerlist on --raw # hold the key's keyboard state, never the binding
+cobdev keyhold key.playerlist off --raw
+```
+
+`--mods` writes the modifier bytes into `Keyboard.keyDownBuffer` right before the injected event and
+puts them back right after it. A raw hold writes the keyboard state every few ms (and Pylon's SDL-side
+copy that `poll()` reads each frame) and never calls `setKeyBindState`, on or off, so a screen sees
+exactly what a real press and release produce while it is open. Raw holds are for Cobblify's bindings,
+`key.playerlist` and `key.forward/left/back/right/jump`, on keyboard keys only.
 
 State and probes (singleplayer only):
 
@@ -91,24 +108,72 @@ cobdev probe player           # health, motion, hurtResistantTime, position (cli
 cobdev probe block 3 0 1 [minecraft:wool]          # read or place one block near the player
 cobdev probe clutch-blast 3 0 0                    # Clutch Practice's own blast, server thread
 cobdev probe use-item [minecraft:fire_charge]      # server-side right-click with the held item
+cobdev probe hud-boxes        # Edit HUD boxes, module states and the open editor's selection/menu rects
+cobdev probe sheet-node resetPositions             # where the open settings sheet draws a node (GUI + display px)
+cobdev probe sheet-node keystrokes MODULE_TOGGLE   # TYPE picks between nodes sharing an id (header vs switch)
 cobdev probe open-shop full                        # a chest window from bridge/resources/team-upgrades-full.json
-cobdev probe hud-boxes                             # every HUD module's Edit HUD box (GUI px), read-only
 ```
+
+`hud-boxes` returns `{scale, sw, sh, boxes, states, editor}`: every `getEditorBoxes` box (content box
+and `pad`, GUI px, `shown`), every module's stored state (`x, y, fracX, fracY, anchor, scale, enabled,
+background`), and, while `EditHudGui` is open, its `selectedId`, `menuId`, `mode`, `tabHeld`,
+`playerListPressed` (`keyBindPlayerList.isKeyDown()`), `visibleIds` and the menu rows with GUI rects.
+It also reports `gui` (`[sw, sh]`) and `scaleFactor`, which the Team Upgrades steps read.
+It reads Cobblify by reflection, so a field a build does not have yet comes back as null.
+
+Overlay items (the scoreboard, chat and tab list as HUD items), also singleplayer only:
+
+```
+cobdev probe overlay-boxes                  # scoreboard, chat, tablist boxes (GUI px), scale factor, GUI size
+cobdev probe place-item chat 4 4            # put an item's box at GUI (x, y), as Edit HUD does
+cobdev probe chat-fixture overlays          # prints bridge/resources/chat-overlays.json (link, hover, wrap)
+cobdev probe chat-clear
+cobdev probe chat-open                      # vanilla's chat screen
+cobdev probe chat-at 40 300                 # what a click there hits, and what Copy Chat would copy (read-only)
+cobdev probe chat-click 40 300              # a left click in vanilla's chat screen only; reports screenAfter
+cobdev probe tab-header-footer "H" "F"      # or: tab-header-footer clear
+cobdev probe chat-heights 1.0 1.0           # vanilla's chat height sliders this session; or: chat-heights restore
+cobdev probe chat-defaults                  # vanilla's default chat width, scale, heights, opacity (restore as above)
+```
+
+`chat-click` is the one input that reaches a vanilla screen: it is refused unless vanilla's chat screen is
+open, is a left click only (a right click is Copy Chat, which would overwrite the clipboard), and is refused
+while Chat Links Prompt is off (a link click would open the browser).
 
 The smoke also leaves the world through the bridge (`/world` with `leave=1`, its own `cobdev` save only)
 to get a real world load; `cobdev world` opens it again.
 
 ## Smoke checks
 
-`cobdev smoke [--prod] [--boot-only] [--only team-upgrades]` runs PLAN Verification A3-A6, the Clutch
-Practice check and the Team Upgrades steps (synthetic Bed Wars scoreboard, chat lines, titles and shop
-windows, then an Edit HUD sweep over window sizes, GUI scales and HUD Size that checks Team Upgrades' default
-spot against every switched-on module and the hotbar, with the profile's modules and again with all of them
-on, where only a screen whose other modules already overlap one another is a note, not a failure) against the running game and writes every command, status, shot path and pass/fail per check to
+`cobdev smoke [--prod] [--boot-only] [--only overlays|team-upgrades]` runs PLAN Verification A3-A6, the
+Clutch Practice check, the HUD look step `HL`, the overlay steps `OV-*`, the Team Upgrades steps (synthetic
+Bed Wars scoreboard, chat lines, titles and shop windows, then an Edit HUD sweep over window sizes, GUI scales
+and HUD Size that checks Team Upgrades' default spot against every switched-on module and the hotbar, with the
+profile's modules and again with all of them on, where only a screen whose other modules already overlap one
+another is a note, not a failure) and the Edit HUD step `A4-edithud` (its E-checks, from E0: the probe on an
+open editor) against the running game and writes every command, status, shot path and pass/fail per check to
 `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"
 instead of failing. Exit status is 1 if any check failed.
+
+The HUD look step (`HL`, cycle 2026-11-14-hud-look) follows the HUD check in `cobdev smoke`. In the `cobdev`
+world at GUI scale 2, Minecraft font, Pale Blue accent and HUD Size Medium, it turns on one module at a time and finds
+it by diffing frames. With its Background on, each module must draw Lunar's see-through panel: every pixel of a ring
+just inside the panel equals the backdrop darkened by alpha 0x6F (Keystrokes: one pixel in each cap). With it off,
+that ring equals the backdrop and the module's content is still drawn. Sub-checks: `HL-bg` (every module),
+`HL-persist` (an Off survives a restart), `HL-potion` (rows, blink), `HL-mapinfo` (accent labels), `HL-keys`
+(pressed cap in the editor), `HL-text` (FPS/CPS/Ping boxes, divider, bare text, Auto layout), `HL-edit` (drag, resize,
+Delete), `HL-scale` (module scale 0.3 at GUI 1, 0.75 at GUI 2), `HL-font` (Modern font shadows) and the modern
+potion icons, `HL-icons-cold` then `HL-icons-warm`. Those two restart the game and point
+`EffectIconTextures.cacheDirOverride` at a new `/private/tmp/cobblify-smoke-icons-*` directory before the loader
+exists, so the cold run makes one real fetch (NETWORK, 1 request, 23 icons) and the warm run none (CACHE). The real
+icon cache is never used for them. The step saves every setting it touches and restores it at the end.
+
+`cobdev smoke --only overlays` runs the boot and world steps, then only the overlay item checks (OV-scoreboard,
+OV-tab, OV-tabhide, OV-chat, OV-chatclick): drawn bounding boxes against `probe overlay-boxes` at three
+placements, Background fill ratios against the plain-sky backdrop, chat rows closed/open, the Tab-hides-HUD
+frame comparison with `TabHudGate.mismatchFrames`, and scripted chat clicks. The full smoke runs them too.
 
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
@@ -125,8 +190,8 @@ staged by an older cobdev still start with the new `start.sh` (Intel Java 8 and 
   worktree; another worktree gets an error until the lock is released (`cobdev unlock`) or taken
   over (`--steal`, only when that session is finished).
 - Input, `open`, `field`, `invoke` and `keyhold` only reach Cobblify (`com.bedwarsqol.*`, never its
-  mixins, key bindings in the "Cobblify" category), and are refused while the game is connected to
-  a multiplayer server. `command` and `probe` need the singleplayer world. Screenshots and
+  mixins, key bindings in the "Cobblify" category; a raw hold may also set the keyboard state of Tab
+  and the five movement keys), and are refused while the game is connected to a multiplayer server. `command` and `probe` need the singleplayer world. Screenshots and
   hot-swap still work on a server.
 - Input is injected into Pylon's mouse state (not the SDL event queue) and never moves the user's
   real pointer. Real device input, IME and focus behaviour are not exercised.

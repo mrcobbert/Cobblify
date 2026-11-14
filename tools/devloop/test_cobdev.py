@@ -1,6 +1,9 @@
 """Game-free tests for cobdev's pure helpers. Run: python3 -I tools/devloop/test_cobdev.py (or cobdev selftest)."""
+import contextlib
 import importlib.machinery
+import io
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -75,6 +78,251 @@ class Analysis(unittest.TestCase):
         self.assertAlmostEqual(frac, 64 / 4096)
         self.assertEqual(box, (40, 8, 47, 15))
         self.assertEqual(cobdev.diff(a, a, step=1), (0.0, None))
+
+
+def sky(w, h):
+    return w, h, [bytes(SKY * w)] * h
+
+
+def paint_fn(img, rect, fn):
+    """A copy of img with fn(rgb) applied inside rect (x0, y0, x1, y1), through a PNG round trip."""
+    w, h, rows = img
+    rows = [bytearray(r) for r in rows]
+    x0, y0, x1, y1 = rect
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            rows[y][3 * x:3 * x + 3] = bytes(fn(tuple(rows[y][3 * x:3 * x + 3])))
+    return cobdev.png_read(cobdev.png_write(w, h, [bytes(r) for r in rows]))
+
+
+def black(alpha):
+    return lambda c: tuple(int(v * (1 - alpha / 255.0)) for v in c)
+
+
+class OverlayPixels(unittest.TestCase):
+    """The overlay smoke's pixel helpers (OV steps), on synthetic frames."""
+
+    def test_gui_box_to_device_rect(self):
+        self.assertEqual(cobdev.gui_rect({"x": 10, "y": 20.5, "w": 30, "h": 9}, 2), (20, 41, 80, 59))
+        self.assertEqual(cobdev.gui_rect((1.25, 0, 4, 4), 4), (5, 0, 21, 16))
+
+    def test_drawn_bbox_is_exclusive_and_matches_the_box(self):
+        ref = sky(80, 60)
+        img = paint_fn(ref, (12, 8, 40, 30), black(0x50))
+        drawn = cobdev.drawn_bbox(ref, img)
+        self.assertEqual(drawn, (12, 8, 40, 30))
+        self.assertTrue(cobdev.rect_close(drawn, cobdev.gui_rect((6, 4, 14, 11), 2), 2))
+        self.assertFalse(cobdev.rect_close(drawn, (16, 8, 40, 30), 2))
+        self.assertIsNone(cobdev.drawn_bbox(ref, ref))
+
+    def test_fill_ratios_name_the_alpha(self):
+        ref = sky(40, 40)
+        img = paint_fn(ref, (0, 0, 20, 40), black(0x50))
+        self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (2, 2, 18, 38)), 1 - 0x50 / 255.0, delta=0.01)
+        self.assertAlmostEqual(cobdev.fill_ratio(img, ref, (22, 2, 38, 38)), 1.0, delta=0.001)
+        rows = paint_fn(paint_fn(ref, (0, 0, 40, 40), black(0x80)), (0, 10, 40, 20), black(0x20))
+        list_r, row_r = 1 - 0x80 / 255.0, (1 - 0x80 / 255.0) * (1 - 0x20 / 255.0)
+        self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), list_r), 0.75, delta=0.01)
+        self.assertAlmostEqual(cobdev.ratio_share(rows, ref, (0, 0, 40, 40), row_r), 0.25, delta=0.01)
+
+    def test_band_rows_finds_the_longest_fill_run(self):
+        ref = sky(20, 100)
+        img = paint_fn(paint_fn(ref, (0, 40, 20, 76), black(0x7F)), (0, 10, 20, 14), black(0x7F))
+        self.assertEqual(cobdev.band_rows(img, ref, 5, 1 - 0x7F / 255.0), (40, 76))
+        self.assertIsNone(cobdev.band_rows(ref, ref, 5, 0.5))
+        # a band touching the bottom edge still ends there
+        low = paint_fn(ref, (0, 90, 20, 100), black(0x7F))
+        self.assertEqual(cobdev.band_rows(low, ref, 5, 1 - 0x7F / 255.0), (90, 100))
+
+    def test_colour_dark_and_bright_pixels(self):
+        ref = sky(30, 20)
+        img = paint_fn(ref, (3, 3, 5, 10), lambda c: (255, 85, 85))
+        img = paint_fn(img, (10, 3, 12, 10), lambda c: (255, 255, 255))
+        img = paint_fn(img, (12, 4, 14, 11), lambda c: (20, 30, 60))  # a shadow beside the text
+        self.assertEqual(cobdev.color_count(img, (0, 0, 30, 20), (255, 85, 85)), 14)
+        self.assertEqual(cobdev.color_count(img, (6, 0, 30, 20), (255, 85, 85)), 0)
+        self.assertEqual(cobdev.rightmost_bright(img, (0, 0, 30, 20)), 11)
+        self.assertIsNone(cobdev.rightmost_bright(ref, (0, 0, 30, 20)))
+        self.assertEqual(cobdev.dark_count(img, ref, (0, 0, 30, 20)), 14)
+
+
+class OverlayScene(unittest.TestCase):
+    """The OV steps' sample rects and their settings bookkeeping (review round 1, I1 and I2)."""
+
+    def test_scoreboard_samples_are_never_empty(self):
+        # P1-P3 boxes at GUI scale 2, incl. the small one (x 6, scale 0.7) whose old margin rect was empty
+        for box, scale in (({"x": 423.0, "y": 107.0, "w": 56.0, "h": 37.0}, 1.0),
+                           ({"x": 6.0, "y": 40.0, "w": 39.2, "h": 38.5}, 0.7),
+                           ({"x": 390.0, "y": 150.0, "w": 84.0, "h": 55.5}, 1.5),
+                           ({"x": 0.0, "y": 0.0, "w": 12.0, "h": 11.1}, 0.3)):
+            for sf in (1, 2, 3):
+                lines, title = cobdev.scoreboard_samples(box, scale, sf)
+                for rect in (lines, title):
+                    self.assertGreater(rect[2] - rect[0], 0, (box, scale, sf, rect))
+                    self.assertGreater(rect[3] - rect[1], 0, (box, scale, sf, rect))
+                # inside the left margin, left of where the text starts (2 px in)
+                self.assertGreaterEqual(lines[0], int(box["x"] * sf))
+                self.assertLess(lines[0], (box["x"] + 2 * scale) * sf)
+                self.assertLessEqual(title[3], (box["y"] + 9 * scale) * sf + 1)
+                self.assertGreaterEqual(lines[1], title[3])
+
+    def test_a_fill_in_the_sample_measures(self):
+        ref = sky(120, 200)
+        box, scale, sf = {"x": 6.0, "y": 40.0, "w": 39.2, "h": 38.5}, 0.7, 2
+        img = paint_fn(ref, cobdev.gui_rect(box, sf), black(0x50))
+        for rect in cobdev.scoreboard_samples(box, scale, sf):
+            self.assertAlmostEqual(cobdev.fill_ratio(img, ref, rect), 1 - 0x50 / 255.0, delta=0.01)
+
+    def test_large_chat_placement_fits_the_window(self):
+        # review round 2, I2: a 960x540 window at GUI scale 2 is 480 GUI px wide
+        places = dict(cobdev.ov_chat_places(480))
+        self.assertLessEqual(324 * places["p2"][3], 480 - 12)
+        self.assertEqual(places["p1"], cobdev.OV_CHAT_PLACES[0][1])
+        self.assertEqual(places["p3"], cobdev.OV_CHAT_PLACES[2][1])
+        self.assertEqual(dict(cobdev.ov_chat_places(640))["p2"][3], 1.5)  # 1280x720 keeps the planned 1.5
+        box = {"x": 0.0, "y": 162.0, "w": 324 * places["p2"][3], "h": 40.5}
+        self.assertLess(cobdev.chat_margin_column(box, places["p2"][3], 2), 960)
+
+    def test_samples_off_the_image_are_no_answer_not_a_crash(self):
+        ref = sky(40, 30)
+        self.assertIsNone(cobdev.ratio_at(ref, ref, 40, 5))
+        self.assertIsNone(cobdev.ratio_at(ref, ref, 5, -1))
+        self.assertIsNone(cobdev.band_rows(ref, ref, 966, 0.5))
+
+    def fake(self, backgrounds):
+        test = self
+
+        class Fake(object):
+            def __init__(self):
+                self.bg, self.fields = dict(backgrounds), {}
+
+            def call(self, path, params=None, post=None, timeout=60):
+                if path == "/invoke":
+                    name = post["path"].rsplit(".", 1)[1]
+                    args = post["args"].split(cobdev.ARG_SEP)
+                    if name == "hudBackground":
+                        return {"value": self.bg.get(args[0], True)}
+                    test.assertEqual("setHudBackground", name)
+                    self.bg[args[0]] = args[1] == "true"
+                return {"ok": True}
+
+            def try_call(self, path, params=None, post=None, timeout=60):
+                return self.call(path, params, post), None
+
+            def field(self, path, value=None):
+                if value is None:
+                    return {"value": self.fields.get(path, True)}
+                self.fields[path] = value
+                return {"ok": True}
+
+            def status(self):
+                return {"guiScaleSetting": 3}
+
+            def cmd(self, command):
+                pass
+
+            def probe(self, name, *args):
+                self.probes = getattr(self, "probes", []) + [name]
+                return {"ok": True}
+        return Fake()
+
+    def test_backgrounds_start_on_and_come_back_as_they_were(self):
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda _: None
+        try:
+            s = self.fake({"scoreboard": False, "chat": True})
+            scene = cobdev.OvScene(s, "com.bedwarsqol.BedwarsQol.config")
+            scene.setup()
+            self.assertEqual({"scoreboard": True, "tablist": True, "chat": True}, s.bg)
+            # review round 2, I1: vanilla's chat options are normalised for the scene (restored by chat-heights restore)
+            self.assertIn("chat-defaults", s.probes)
+            scene.background("scoreboard", False)
+            scene.background("chat", False)
+            scene.background("scoreboard", True)
+            scene.restore()
+            self.assertEqual({"scoreboard": False, "tablist": True, "chat": True}, s.bg)
+        finally:
+            cobdev.time.sleep = real
+
+
+class OverlaySmokeNoise(unittest.TestCase):
+    """Triage of the first integrated smoke run (2026-11-14): checks that failed on correct rendering."""
+
+    def stray(self, img, pts, rgb=(90, 140, 60)):
+        for x, y in pts:
+            img = paint_fn(img, (x, y, x + 1, y + 1), lambda c, v=rgb: v)
+        return img
+
+    def test_stray_pixels_do_not_stretch_a_drawn_box(self):
+        ref = sky(200, 120)
+        img = paint_fn(ref, (80, 10, 120, 20), black(0x80))          # the tab list
+        img = self.stray(img, [(3, 100), (190, 5), (60, 110), (150, 90)])  # grass shimmer
+        self.assertEqual(cobdev.quiet_bbox(ref, img), (80, 10, 120, 20))
+        self.assertEqual(cobdev.box_width(cobdev.quiet_bbox(ref, img)), 40)
+        self.assertEqual(cobdev.drawn_bbox(ref, img), (3, 5, 191, 111))  # the old box would be ~190 px wide
+        self.assertIsNone(cobdev.quiet_bbox(ref, self.stray(ref, [(3, 100), (190, 5)])))
+
+    def test_frames_match_allows_a_few_shimmering_pixels_only(self):
+        ref = sky(200, 120)
+        same, n = cobdev.frames_match(ref, self.stray(ref, [(3, 100), (190, 5), (60, 110), (150, 90)]))
+        self.assertTrue(same)
+        self.assertEqual(4, n)
+        swirl = paint_fn(ref, (120, 50, 140, 70), lambda c: (90, 120, 140))  # a potion particle
+        same, n = cobdev.frames_match(ref, swirl)
+        self.assertFalse(same)
+        self.assertEqual(400, n)
+
+    def one_row_tab(self, background):
+        """A 1-player tab list at scale 1.5, GUI scale 2: border, head, name text, ping bars."""
+        ref = sky(400, 200)
+        box = {"x": 50.0, "y": 20.0, "w": 138.0, "h": 15.0}
+        rect = cobdev.gui_rect(box, 2)
+        img = ref
+        if background:
+            img = paint_fn(img, rect, black(0x80))
+            img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[2] - 3, rect[3] - 3), black(0x20))
+        img = paint_fn(img, (rect[0] + 3, rect[1] + 3, rect[0] + 27, rect[1] + 27), lambda c: (120, 80, 60))  # head
+        img = paint_fn(img, (rect[0] + 30, rect[1] + 4, rect[2] - 30, rect[3] - 4), lambda c: (255, 255, 255))  # text
+        img = paint_fn(img, (rect[2] - 26, rect[1] + 8, rect[2] - 4, rect[3] - 4), lambda c: (0, 255, 0))  # ping
+        return ref, img, box
+
+    def test_tab_background_off_on_a_short_list(self):
+        ref, off, box = self.one_row_tab(False)
+        # the old check: most of a one-row list is content, so "80% clear" can never hold
+        self.assertLess(cobdev.ratio_share(off, ref, cobdev.gui_rect(box, 2), 1.0), 0.8)
+        ok, detail = cobdev.tab_background_off(off, ref, box, 1.5, 2)
+        self.assertTrue(ok, detail)
+        ref, on, box = self.one_row_tab(True)
+        ok, detail = cobdev.tab_background_off(on, ref, box, 1.5, 2)
+        self.assertFalse(ok, detail)
+        x = cobdev.tab_border_column(box, 1.5, 2)
+        self.assertTrue(box["x"] * 2 <= x < (box["x"] + 1.5) * 2)
+
+
+class ChatBandGaps(unittest.TestCase):
+    """Full smoke 2026-11-14 11:56: at 1280x720 the crosshair's arm crosses the chat's margin column, which cut the
+    open chat's 20-row band to 17 rows."""
+
+    def chat(self, rows, crosshair_at=None):
+        ref = sky(700, 720)
+        box = {"x": 2.0, "y": 332.0 - 9 * rows, "w": 324.0, "h": 9.0 * rows}
+        img = paint_fn(ref, cobdev.gui_rect(box, 2), black(0x7F))
+        if crosshair_at is not None:  # a 1 GUI px crosshair arm (2 device px), inverted over the fill
+            img = paint_fn(img, (630, crosshair_at, 650, crosshair_at + 2), lambda c: (255 - c[0], 255 - c[1], 255 - c[2]))
+        return ref, img, box
+
+    def test_a_crosshair_arm_does_not_split_the_band(self):
+        ref, img, box = self.chat(20, crosshair_at=359)
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertEqual(20, rows)
+        self.assertEqual((304, 664), (top, bottom))
+
+    def test_a_real_gap_still_ends_the_band(self):
+        ref, img, box = self.chat(10)
+        img = paint_fn(img, (0, 500, 700, 520), lambda c: (120, 166, 255))  # 10 GUI px of sky inside the band
+        self.assertIsNotNone(cobdev.band_rows(img, ref, 648, 1 - 0x7F / 255.0))
+        rows, top, bottom = cobdev.ov_chat_rows(None, img, ref, box, 2, 1.0)
+        self.assertLess(rows, 10)
 
 
 class ModList(unittest.TestCase):
@@ -195,6 +443,687 @@ class SmokeSave(unittest.TestCase):
         finally:
             cobdev.api_quiet = real
         self.assertEqual(sent, [])
+
+
+class Flags(unittest.TestCase):
+    """--mods, --device and keyhold --raw reach the bridge as plain parameters (Edit HUD checks)."""
+
+    def parse(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()):  # argparse prints usage before SystemExit
+            return cobdev.build_parser().parse_args(list(argv))
+
+    def test_drag_with_mods_and_device(self):
+        a = self.parse("drag", "10", "20", "--mods", "alt,shift", "--device")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 10, "y": 20, "mods": "alt,shift", "device": 1})
+
+    def test_plain_input_sends_no_extras(self):
+        a = self.parse("click", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0})
+        a = self.parse("drag", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 5, "y": 6})
+
+    def test_down_and_up_take_device_pixels(self):
+        for cmd in ("down", "up"):
+            a = self.parse(cmd, "1279", "0", "--device", "--button", "1")
+            self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 1279, "y": 0, "button": 1, "device": 1})
+
+    def test_ctrl_click(self):
+        a = self.parse("click", "5", "6", "--mods", "ctrl")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0, "mods": "ctrl"})
+
+    def test_click_and_key_have_no_device_flag(self):
+        with self.assertRaises(SystemExit):
+            self.parse("click", "1", "2", "--device")
+        with self.assertRaises(SystemExit):
+            self.parse("key", "z", "--device")
+
+    def test_modifiers_are_whitelisted_and_normalised(self):
+        self.assertEqual(self.parse("up", "1", "2", "--mods", " Shift, alt,shift").mods, "shift,alt")
+        for bad in ("meta", "alt,cmd", "alt,,shift", ""):
+            with self.assertRaises(SystemExit):
+                self.parse("down", "1", "2", "--mods", bad)
+
+    def test_key_letters_and_mods(self):
+        a = self.parse("key", "z", "--mods", "ctrl")
+        self.assertEqual(cobdev.key_params(a), {"code": 44, "mods": "ctrl"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "Y")), {"code": 21})
+        self.assertEqual(cobdev.key_params(self.parse("key", "right", "--mods", "shift")), {"code": 205, "mods": "shift"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "57", "--char", " ")), {"code": 57, "char": " "})
+
+    def test_keyhold_raw(self):
+        a = self.parse("keyhold", "key.playerlist", "on", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.playerlist", "state": "on", "raw": 1})
+        a = self.parse("keyhold", "key.forward", "off", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.forward", "state": "off", "raw": 1})
+
+    def test_keyhold_binding_and_list(self):
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold", "Zoom", "on")), {"name": "Zoom", "state": "on"})
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold")), {})
+
+    def test_keyhold_needs_name_and_state(self):
+        for argv in (("keyhold", "--raw"), ("keyhold", "Zoom"), ("keyhold", "Zoom", "maybe", "--raw")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                cobdev.keyhold_params(self.parse(*argv))
+
+
+class EditHudSmoke(unittest.TestCase):
+    """A4-edithud puts back every field and the GUI scale it touched, whatever happens in between."""
+
+    def run_step(self, probe_error=None, boxes=None):
+        calls, fields = [], {}
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                calls.append((path, params or post or {}))
+                self.step["commands"].append({"call": path})
+                if path == "/field":
+                    if "value" in post:
+                        fields[post["path"]] = post["value"]
+                        return {"ok": True}
+                    return {"ok": True, "value": fields.get(post["path"], False)}
+                if path == "/probe":
+                    if probe_error:
+                        raise cobdev.ApiError(probe_error)
+                    return {"ok": True, "scale": 2, "sw": 640, "sh": 360, "boxes": boxes or [],
+                            "states": [{"id": b["id"]} for b in boxes or []], "editor": {"selectedId": None}}
+                return {"ok": True}
+
+            def has(self, cls, member=None):
+                return True
+
+            def status(self):
+                return {"guiScaleSetting": 3}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        cobdev.smoke_edithud(s, "com.bedwarsqol.BedwarsQol.config", "dev", checks=("E0",))
+        return s, calls, fields
+
+    def test_restores_fields_and_scale_after_a_pass(self):
+        boxes = [{"id": i, "shown": True} for i in ("potion", "armor", "inventory", "diamondtimer", "emeraldtimer",
+                                                    "keystrokes", "sessionstats", "heightlimit", "fps", "cps", "ping")]
+        s, calls, fields = self.run_step(boxes=boxes)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+        self.assertIn(("/size", {"w": 1280, "h": 720}), calls)
+
+    def test_an_older_bridge_without_the_probe_is_not_a_failure(self):
+        s, calls, fields = self.run_step(probe_error="unknown probe hud-boxes (fov, hurt)")
+        self.assertEqual(s.step["status"], "not available yet")
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+
+    def test_a_missing_module_fails_e0(self):
+        s, _, _ = self.run_step(boxes=[{"id": "potion", "shown": True}])
+        self.assertEqual(s.step["status"], "fail")
+
+
+class FakeEditor(cobdev.Smoke):
+    """A tiny model of Edit HUD for the A4-edithud checks: boxes in GUI px, arrows move one screen pixel (Shift
+    ten), a device-pixel drag moves start + travel / scale, and the left screen edge snaps within 4 screen px."""
+
+    def __init__(self, boxes, scale=2, display=(1280, 720)):
+        cobdev.Smoke.__init__(self, "dev", "test")
+        self.begin("A4-edithud", "test")
+        self.boxes = {b["id"]: dict(b) for b in boxes}
+        self.display = display
+        self.sc, self.selected, self.press = cobdev.gui_scale(display[0], display[1], scale), None, None
+
+    @property
+    def sw(self):
+        return -(-self.display[0] // self.sc)  # ScaledResolution rounds up
+
+    @property
+    def sh(self):
+        return -(-self.display[1] // self.sc)
+
+    def status(self):
+        return {"display": "%dx%d" % self.display, "scaleFactor": self.sc}
+
+    def call(self, path, params=None, post=None, timeout=60):
+        q = params or post or {}
+        if path == "/scale":
+            self.sc = cobdev.gui_scale(self.display[0], self.display[1], int(q["n"]))
+        elif path == "/probe":
+            return {"scale": self.sc, "sw": self.sw, "sh": self.sh, "boxes": [dict(b) for b in self.boxes.values()]}
+        elif path == "/click":
+            self.selected = next(i for i, b in self.boxes.items()
+                                 if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
+        elif path == "/key" and self.selected:
+            step = 10 if q.get("mods") == "shift" else 1
+            self.boxes[self.selected]["x"] += step * (1 if q["code"] == cobdev.KEYS["right"] else -1) / float(self.sc)
+        elif path == "/down":
+            b = next(b for b in self.boxes.values() if b["shown"])
+            self.selected, self.press = b["id"], (q["x"], b["x"], q["y"], b["y"])
+        elif path == "/drag":
+            b = self.boxes[self.selected]
+            x = self.press[1] + (q["x"] - self.press[0]) / float(self.sc)
+            y = self.press[3] + (q["y"] - self.press[2]) / float(self.sc)
+            if q.get("mods") != "alt":
+                reach = 4.0 / self.sc
+                if 0 < x - b["pad"] <= reach:
+                    x = b["pad"]
+                right = self.sw - (x + b["w"] + b["pad"])
+                if 0 < right <= reach:
+                    x = self.sw - b["w"] - b["pad"]
+            b["x"], b["y"] = x, y
+        return {"ok": True, "value": False}
+
+    def shot(self, tag, wait=300):
+        return "/dev/null", (1, 1, [b"\0\0\0"])
+
+
+class EditHudChecks(unittest.TestCase):
+    def run_check(self, fn, boxes, display=(1280, 720)):
+        s = FakeEditor(boxes, display=display)
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            fn(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        return s
+
+    def test_e8_passes_on_an_editor_that_moves_one_screen_pixel(self):
+        s = self.run_check(cobdev.edithud_e8, [{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertEqual(len([c for c in s.step["checks"] if c["check"].startswith("E8")]), 8)
+
+    def test_e8_and_e9_on_a_738x894_window_test_gui_2_only(self):
+        # the prod run: 738x894 is GUI 369x447, and GUI 3 is not reachable (738 / 3 < 320): noted, not failed
+        for fn, item in ((cobdev.edithud_e8, "inventory"), (cobdev.edithud_e9, "heightlimit")):
+            box = {"id": item, "x": 120.5, "y": 200, "w": 120, "h": 38, "pad": 1, "shown": True}
+            s = self.run_check(fn, [box], display=(738, 894))
+            self.assertEqual(s.step["status"], "pass", s.step["checks"])
+            self.assertTrue(all("GUI 2" in c["check"] for c in s.step["checks"]), s.step["checks"])
+            self.assertTrue(any("not reachable" in n for n in s.step.get("notes", [])))
+
+    def test_e9_passes_when_only_the_edge_snaps(self):
+        s = self.run_check(cobdev.edithud_e9, [{"id": "heightlimit", "x": 3, "y": 100, "w": 120, "h": 38, "pad": 1,
+                                                "shown": True}])
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+
+    def test_e8_fails_on_an_editor_that_moves_whole_gui_pixels(self):
+        class Coarse(FakeEditor):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = FakeEditor.call(self, path, params, post, timeout)
+                if path == "/key" and self.selected:
+                    b = self.boxes[self.selected]
+                    b["x"] = float(round(b["x"]))
+                return r
+
+        s = Coarse([{"id": "inventory", "x": 110.5, "y": 3, "w": 206, "h": 74, "pad": 1, "shown": True}])
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e8(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        self.assertEqual(s.step["status"], "fail")
+
+
+class EditHudHelpers(unittest.TestCase):
+    @staticmethod
+    def hb(boxes, states):
+        return {"boxes": boxes, "states": states}
+
+    def test_pinning_is_not_a_change_but_a_move_is(self):
+        box = {"id": "potion", "x": 3, "y": 30, "w": 52, "h": 44, "pad": 1, "shown": True}
+        auto = {"id": "potion", "anchor": -1, "scale": 1.0, "enabled": True, "background": True}
+        pinned = dict(auto, anchor=0, x=2, y=29)
+        before = self.hb([box], [auto])
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([box], [pinned]), set()), [])
+        moved = dict(box, x=3.01)
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([moved], [pinned]), set()))
+        self.assertTrue(cobdev.others_unchanged(before, self.hb([box], [dict(auto, scale=1.5)]), set()))
+        self.assertTrue(cobdev.others_unchanged(self.hb([box], [pinned]), self.hb([box], [dict(pinned, anchor=3)]), set()))
+        self.assertEqual(cobdev.others_unchanged(before, self.hb([moved], [pinned]), {"potion"}), [])
+        hidden = dict(box, shown=False)
+        self.assertEqual(cobdev.others_unchanged(self.hb([hidden], [auto]), self.hb([dict(hidden, y=90)], [auto]), set()),
+                         [], "a hidden module's ghost may re-flow")
+
+    def test_left_column_and_overlap(self):
+        inv = {"id": "inventory", "x": 218, "y": 3, "w": 204, "h": 72, "pad": 1, "shown": True}
+        armor = {"id": "armor", "x": 3, "y": 3, "w": 20, "h": 20, "pad": 1, "shown": True}
+        low = {"id": "heightlimit", "x": 3, "y": 160, "w": 118, "h": 36, "pad": 1, "shown": True}
+        ghost = dict(armor, id="potion", shown=False)
+        self.assertEqual([b["id"] for b in cobdev.left_column(self.hb([inv, armor, low, ghost], []), "inventory")],
+                         ["armor"])
+        self.assertEqual(cobdev.overlap_area(inv, armor), 0)
+        self.assertEqual(cobdev.overlap_area(armor, dict(armor, x=13)), 12 * 22)
+        self.assertTrue(cobdev.pinned_anchor({"anchor": 0}))
+        self.assertFalse(cobdev.pinned_anchor({"anchor": -1}))
+        self.assertFalse(cobdev.pinned_anchor({}))
+
+
+class EditHudPixels(unittest.TestCase):
+    def test_cap_and_box_rectangles(self):
+        ks = {"x": 100.0, "y": 50.0, "w": 56.0}
+        # W cap at local (19, 0, 18, 18), box scale 1, GUI 2: middle 60% = (22.6..33.4, 3.6..14.4) local
+        self.assertEqual(cobdev.cap_px(ks, "W", 2), (245, 107, 267, 129))
+        # a box drawn at 1.5: the caps scale with it
+        self.assertEqual(cobdev.cap_px(dict(ks, w=84.0), "W", 2), (268, 111, 300, 143))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 3), (30, 60, 120, 180))
+        self.assertEqual(cobdev.px_box(10, 20, 30, 40, 2, inset=1.0), (22, 42, 78, 118))
+
+
+class DefaultLayoutCheck(unittest.TestCase):
+    """g30_problems over the DefaultHudLayoutTest fixture at 960x540 (visual boxes; content = visual - 2)."""
+    SPOTS = {"fps": (2, 2, 46, 18), "cps": (2, 22, 52, 18), "ping": (2, 42, 40, 18), "armor": (2, 62, 22, 22),
+             "potion": (2, 86, 52, 44), "heightlimit": (2, 251, 120, 38), "diamondtimer": (916, 2, 42, 22),
+             "emeraldtimer": (872, 2, 42, 22), "sessionstats": (820, 26, 138, 148), "inventory": (377, 2, 206, 74),
+             "keystrokes": (894, 458, 64, 80)}
+
+    def hb(self, spots):
+        return {"sw": 960, "sh": 540, "boxes": [{"id": i, "x": x + 1, "y": y + 1, "w": w - 2, "h": h - 2, "pad": 1,
+                                                 "shown": True} for i, (x, y, w, h) in spots.items()]}
+
+    def test_the_default_layout_passes(self):
+        self.assertEqual(cobdev.g30_problems(self.hb(self.SPOTS)), [])
+
+    def test_a_moved_module_is_reported(self):
+        moved = dict(self.SPOTS, keystrokes=(800, 400, 64, 80))
+        self.assertEqual(len(cobdev.g30_problems(self.hb(moved))), 2)
+        gap = dict(self.SPOTS, cps=(2, 23, 52, 18))
+        self.assertTrue(cobdev.g30_problems(self.hb(gap)))
+
+    def test_hidden_and_missing_modules_are_skipped(self):
+        spots = dict(self.SPOTS)
+        del spots["fps"], spots["cps"], spots["ping"]
+        spots["armor"], spots["potion"] = (2, 2, 22, 22), (2, 26, 52, 44)
+        self.assertEqual(cobdev.g30_problems(self.hb(spots)), [])
+
+
+def flat(w, h, rgb):
+    return w, h, [bytes(rgb) * w for _ in range(h)]
+
+
+def paint(img, box, rgb):
+    """A copy of img with box (x0, y0, x1, y1, inclusive) filled with rgb."""
+    w, h, rows = img
+    rows = [bytearray(r) for r in rows]
+    for y in range(box[1], box[3] + 1):
+        for x in range(box[0], box[2] + 1):
+            rows[y][3 * x:3 * x + 3] = bytes(rgb)
+    return w, h, [bytes(r) for r in rows]
+
+
+def see_through(rgb):
+    return tuple(round(c * (1 - 0x6F / 255.0)) for c in rgb)
+
+
+class HudLookHelpers(unittest.TestCase):
+    """The HL step's pure helpers, on synthetic frames."""
+
+    def test_ring_visits_each_edge_pixel_once(self):
+        pts = cobdev.ring((0, 0, 4, 3), 0)
+        self.assertEqual(len(pts), len(set(pts)))
+        self.assertEqual(len(pts), 2 * 5 + 2 * 2)
+        self.assertEqual(set(cobdev.ring((0, 0, 4, 3), 1)), {(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)})
+        self.assertEqual(cobdev.ring((0, 0, 1, 1), 1), [])
+        self.assertEqual(cobdev.ring((2, 2, 2, 2), 0), [(2, 2)])
+
+    def test_see_through_ratio(self):
+        self.assertTrue(cobdev.see_through_ok(see_through(SKY), SKY))
+        self.assertTrue(cobdev.see_through_ok((69, 94, 145), SKY))  # within 2
+        self.assertFalse(cobdev.see_through_ok((26, 26, 26), SKY))  # 0xD0121212 over the sky
+        self.assertFalse(cobdev.see_through_ok(SKY, SKY))           # no panel
+
+    def test_counts(self):
+        img = paint(flat(10, 8, SKY), (2, 2, 4, 3), (63, 63, 63))
+        self.assertEqual(cobdev.count_exact(img, (0, 0, 9, 7), (63, 63, 63)), 6)
+        self.assertEqual(cobdev.count_exact(img, (3, 0, 9, 7), (63, 63, 63)), 4)
+        self.assertEqual(cobdev.count_near(img, (0, 0, 9, 7), (60, 66, 63), 3), 6)
+        self.assertEqual(cobdev.count_near(img, (0, 0, 9, 7), (60, 66, 63), 2), 0)
+        self.assertEqual(cobdev.xs_of(img, (0, 0, 9, 7), (63, 63, 63)), (2, 4))
+        self.assertEqual(cobdev.ys_of(img, (0, 0, 9, 7), (63, 63, 63)), (2, 3))
+        self.assertIsNone(cobdev.xs_of(img, (0, 0, 9, 7), (1, 2, 3)))
+
+    def test_bbox_diff_is_exact(self):
+        a = flat(20, 12, SKY)
+        b = paint(paint(a, (3, 4, 5, 4), GRASS), (11, 9, 11, 10), GRASS)
+        self.assertEqual(cobdev.bbox_diff(a, b), (3, 4, 11, 10))
+        self.assertEqual(cobdev.bbox_diff(a, b, (0, 0, 8, 11)), (3, 4, 5, 4))
+        self.assertIsNone(cobdev.bbox_diff(a, a))
+        self.assertIsNone(cobdev.bbox_diff(a, flat(21, 12, SKY)))
+
+    def test_changed_runs_split_at_unchanged_lines(self):
+        a = flat(30, 20, SKY)
+        b = paint(paint(a, (2, 3, 8, 6), GRASS), (12, 4, 20, 9), GRASS)
+        box = cobdev.bbox_diff(a, b)
+        self.assertEqual(cobdev.changed_runs(a, b, box, "x"), [(2, 3, 8, 6), (12, 4, 20, 9)])
+        self.assertEqual(cobdev.changed_runs(a, b, box, "y"), [(2, 3, 20, 9)])
+        c = paint(paint(a, (2, 1, 8, 4), GRASS), (2, 7, 8, 9), GRASS)
+        self.assertEqual(cobdev.changed_runs(a, c, cobdev.bbox_diff(a, c), "y"), [(2, 1, 8, 4), (2, 7, 8, 9)])
+
+    def test_inside_disjoint_grow(self):
+        self.assertTrue(cobdev.inside((2, 2, 4, 4), (0, 0, 4, 4)))
+        self.assertFalse(cobdev.inside((2, 2, 5, 4), (0, 0, 4, 4)))
+        self.assertFalse(cobdev.inside(None, (0, 0, 4, 4)))
+        self.assertTrue(cobdev.disjoint([(0, 0, 4, 4), (5, 0, 9, 4), (0, 5, 4, 9)]))
+        self.assertFalse(cobdev.disjoint([(0, 0, 4, 4), (4, 4, 9, 9)]))
+        self.assertEqual(cobdev.grow((5, 5, 6, 6), 2), (3, 3, 8, 8))
+        self.assertEqual(cobdev.box_size((3, 4, 5, 9)), (3, 6))
+
+    def test_vanilla_advances_match_the_unit_tests(self):
+        self.assertEqual(cobdev.vanilla_width("Jump Boost V"), 66)
+        self.assertEqual(cobdev.vanilla_width("0:38"), 20)
+        self.assertEqual(cobdev.hl_text_box_width(["150", " FPS"]), 47)
+        self.assertEqual(cobdev.hl_text_box_width(["9", "3", " CPS"], True), 48)
+        self.assertEqual(cobdev.hl_text_box_width(["--", " ms"]), 35)
+        self.assertEqual(cobdev.hl_expected_panel("keystrokes", 2), (112, 134))
+        self.assertEqual(cobdev.hl_expected_panel("armor", 2), (44, 44))
+        self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
+
+
+class HudLookNoise(unittest.TestCase):
+    """The first live run (2026-11-14): world specks, the horizon redrawing far chunks, a camera that turned and a
+    ticking potion timer made frame diffs measure the world instead of the module. The HL boxes must ignore them."""
+
+    W, H = 300, 200
+    HORIZON = 100
+
+    def world(self, horizon_shift=0, specks=()):
+        img = flat(self.W, self.H, SKY)
+        img = paint(img, (0, self.HORIZON + horizon_shift, self.W - 1, self.H - 1), GRASS)
+        for x, y in specks:
+            img = paint(img, (x, y, x, y), (200, 40, 40))
+        return img
+
+    def fps_on(self, base):
+        """An FPS box at (4, 4), 94 x 36 px (47 x 18 GUI px at scale factor 2), white text with a 63 shadow."""
+        img = paint(base, (4, 4, 97, 39), see_through(SKY))
+        img = paint(img, (14, 16, 30, 27), (63, 63, 63))
+        return paint(img, (12, 14, 28, 25), (255, 255, 255))
+
+    def fps_off(self, base):
+        img = paint(base, (12, 12, 30, 23), (63, 63, 63))
+        return paint(img, (10, 10, 28, 21), (255, 255, 255))
+
+    def test_changed_points_skips_identical_rows_and_matches_bbox_diff(self):
+        a = self.world()
+        b = paint(a, (5, 7, 9, 8), GRASS)
+        pts = cobdev.changed_points(a, b)
+        self.assertEqual(len(pts), 10)
+        self.assertEqual(cobdev.bbox_of(pts), (5, 7, 9, 8))
+        self.assertEqual(cobdev.bbox_diff(a, b), (5, 7, 9, 8))
+        self.assertEqual(cobdev.changed_points(a, a), [])
+        self.assertIsNone(cobdev.changed_points(a, flat(10, 10, SKY)))
+
+    def test_specks_and_a_horizon_band_do_not_count(self):
+        before = self.world()
+        frame = self.fps_on(self.world(horizon_shift=1, specks=[(150, 160), (220, 180)]))
+        self.assertEqual(cobdev.bbox_diff(before, frame)[2:], (self.W - 1, 180))  # the old, noisy box
+        self.assertEqual(cobdev.hud_bbox(before, frame), (4, 4, 97, 39))
+
+    def test_a_second_backdrop_removes_a_change_seen_only_in_the_first(self):
+        before = self.world(horizon_shift=-2)          # a transient horizon in the first backdrop only
+        after = self.world()
+        frame = self.fps_on(self.world())
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=after), [(4, 4, 97, 39)])
+
+    def test_two_panels_far_apart_are_two_boxes_biggest_first(self):
+        before = self.world()
+        frame = paint(paint(before, (200, 4, 273, 47), see_through(SKY)), (120, 4, 163, 47), see_through(SKY))
+        self.assertEqual(cobdev.hud_boxes(before, frame), [(200, 4, 273, 47), (120, 4, 163, 47)])
+        self.assertEqual(cobdev.union_box(cobdev.hud_boxes(before, frame)), (120, 4, 273, 47))
+
+    def test_bg_checks_pass_through_noise_and_detect_a_moved_scene(self):
+        before, after = self.world(), self.world()
+        on = self.fps_on(self.world(specks=[(150, 160)]))
+        off = self.fps_off(self.world(horizon_shift=1))
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, after), on, off, 2)
+        self.assertEqual(box, (4, 4, 97, 39))
+        self.assertFalse(moved)
+        self.assertEqual([c for c in checks if not c[1]], [])
+        turned = self.fps_off(self.world(horizon_shift=40))  # the camera looked down between the shots
+        self.assertTrue(cobdev.hl_bg_checks("fps", "textbox", (before, after), on, turned, 2)[2])
+
+    def test_icon_swap_ignores_the_ticking_time_line(self):
+        panel, sf = (4, 4, 139, 51), 2
+        old = paint(self.world(), panel, see_through(SKY))
+        modern = paint(old, (12, 12, 40, 40), (180, 40, 40))           # the icon slot
+        ticked = paint(modern, (60, 34, 80, 42), (170, 170, 170))       # "0:43" became "0:42"
+        self.assertTrue(cobdev.hl_icon_swap(old, ticked, panel, sf)[0])
+        renamed = paint(modern, (60, 14, 80, 20), (255, 255, 255))      # the name line changed: not only the icon
+        self.assertFalse(cobdev.hl_icon_swap(old, renamed, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, old, panel, sf)[0])
+        self.assertFalse(cobdev.hl_icon_swap(old, modern, None, sf)[0])
+
+
+class HudLookProdRun(unittest.TestCase):
+    """The first prod run (2026-11-14): the window changed size inside a module's shots and after a restart, and the
+    potion frames were taken one blink period apart."""
+
+    def test_a_backdrop_of_another_size_is_ignored_not_fatal(self):
+        before = flat(300, 200, SKY)
+        frame = paint(before, (200, 4, 273, 47), see_through(SKY))
+        resized = flat(150, 200, SKY)
+        self.assertEqual(cobdev.hud_boxes(before, frame, also=resized), [(200, 4, 273, 47)])
+
+    def test_frames_of_different_sizes_mean_a_retake(self):
+        before = flat(300, 200, SKY)
+        on = paint(before, (4, 4, 97, 39), see_through(SKY))
+        small = flat(150, 200, SKY)
+        checks, box, moved = cobdev.hl_bg_checks("fps", "textbox", (before, small), on, on, 2)
+        self.assertTrue(moved)
+        self.assertIsNone(box)
+
+    def test_counting_past_the_frame_is_clipped(self):
+        img = paint(flat(20, 10, SKY), (15, 5, 19, 9), (63, 63, 63))
+        self.assertEqual(cobdev.count_exact(img, (10, 0, 112, 134), (63, 63, 63)), 25)
+        self.assertEqual(cobdev.count_near(img, (-5, -5, 40, 40), (63, 63, 63), 0), 25)
+        self.assertEqual(cobdev.xs_of(img, (0, 0, 99, 99), (63, 63, 63)), (15, 19))
+
+    def test_potion_frames_see_both_halves_of_the_blink_from_any_start(self):
+        offsets = cobdev.hl_blink_offsets()
+        for start in [i / 20.0 for i in range(20)]:
+            phases = [((start + t) % 1.0) for t in offsets]  # PotionRows: 0.5 s shown, 0.5 s hidden
+            self.assertTrue(any(p < 0.5 for p in phases) and any(p >= 0.5 for p in phases), (start, phases))
+        self.assertLess(offsets[-1], 4.0)  # all inside a 9 s effect, after the setup
+        # the old spacing (one frame every ~1 s) can stay in one half
+        self.assertFalse(any(((0.1 + t) % 1.0) >= 0.5 for t in (0, 0.99, 1.98, 2.97)))
+
+
+class HudLookPressedCap(unittest.TestCase):
+    """HL-keys reads the W cap through Edit HUD's faint frame fill (0x0DFFFFFF over the preview)."""
+
+    @staticmethod
+    def frame(cap_rgb, letter_rgb=None, sf=2):
+        img = flat(160, 160, SKY)
+        box = (10, 10, 10 + 56 * sf - 1, 10 + 67 * sf - 1)
+        img = paint(img, (10 + 19 * sf, 10, 10 + 37 * sf - 1, 10 + 18 * sf - 1), cap_rgb)
+        if letter_rgb:
+            img = paint(img, (10 + 26 * sf, 10 + 5 * sf, 10 + 28 * sf - 1, 10 + 12 * sf - 1), letter_rgb)
+        return img, box
+
+    def test_tinted_pressed_cap_passes(self):
+        img, box = self.frame((195, 222, 255), (30, 30, 30))  # pale blue and #121212 under 5% white
+        accent, letter = cobdev.hl_pressed_cap(img, box, 2)
+        self.assertGreaterEqual(accent, (16 * 2) ** 2)
+        self.assertGreater(letter, 0)
+
+    def test_exact_colours_pass_and_an_idle_cap_fails(self):
+        img, box = self.frame((192, 220, 255), (18, 18, 18))
+        self.assertGreaterEqual(cobdev.hl_pressed_cap(img, box, 2)[0], (16 * 2) ** 2)
+        idle, box = self.frame(see_through(SKY))
+        self.assertEqual(cobdev.hl_pressed_cap(idle, box, 2), (0, 0))
+
+
+class HudLookDryRun(unittest.TestCase):
+    """The HL step against a fake game: every sub-check runs to the end without raising (its checks fail)."""
+
+    def test_every_sub_check_runs(self):
+        backdrop = flat(160, 120, SKY)
+        drawn = paint(paint(backdrop, (10, 10, 60, 40), see_through(SKY)), (20, 20, 30, 24), (255, 255, 255))
+        calls = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                calls.append(path)
+                if path == "/world":
+                    return {"ok": True, "save": "cobdev"}
+                if path == "/has":
+                    return {"ok": True, "present": True}
+                if path == "/field":
+                    name = post["path"].rsplit(".", 1)[-1]
+                    value = {"state": "READY", "source": "NETWORK"}.get(name)
+                    if value is None:
+                        value = 1.0 if name.endswith("Scale") else 0 if name[-1:] in "XY" else False
+                    return {"ok": True, "value": value}
+                if path == "/invoke":
+                    return {"ok": True, "value": 0 if post["path"].endswith(("requests", "published")) else True}
+                return {"ok": True}
+
+            def shot(self, tag, wait=300):
+                self.step["shots"].append(tag)
+                return tag, backdrop if "none" in tag else drawn
+
+            def status(self):
+                return {"scaleFactor": 2, "guiScaleSetting": 2, "inWorld": True, "responsive": True}
+
+        real_sleep, real_quiet = cobdev.time.sleep, cobdev.api_quiet
+        cobdev.time.sleep = lambda t: None
+        cobdev.api_quiet = lambda *a, **k: {"inWorld": True, "responsive": True, "scaleFactor": 2}
+        restarts = []
+        try:
+            s = Fake("dev", "test")
+            with contextlib.redirect_stdout(io.StringIO()):  # the step prints every check
+                cobdev.smoke_hud_look(s, "com.bedwarsqol.BedwarsQol.config", lambda: restarts.append(1))
+        finally:
+            cobdev.time.sleep, cobdev.api_quiet = real_sleep, real_quiet
+        ids = [st["id"] for st in s.report["steps"]]
+        self.assertEqual(ids, ["HL", "HL-bg", "HL-persist", "HL-potion", "HL-mapinfo", "HL-keys", "HL-text",
+                               "HL-edit", "HL-scale", "HL-font", "HL-icons-cold", "HL-icons-warm"])
+        self.assertEqual([st["id"] for st in s.report["steps"] if "error" in st], [])
+        self.assertEqual(len(restarts), 3)  # persist, icons cold, icons warm
+        self.assertIn("/scale", calls)
+
+
+class EditHudE12Cleanup(unittest.TestCase):
+    """E12's scoreboard fixture is removed and the release is checked even when the overlay boxes are missing."""
+
+    def test_missing_overlay_boxes_still_clean_up(self):
+        sent = []
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                q = params or post or {}
+                sent.append((path, q.get("command") or q.get("name") or q.get("state")))
+                if path == "/probe" and q.get("name") == "overlay-boxes":
+                    return {"items": {}}
+                if path == "/probe":
+                    return {"scale": 2, "boxes": [{"id": "inventory", "x": 200, "y": 3, "w": 200, "h": 70, "pad": 1,
+                                                   "shown": True}], "states": [],
+                            "editor": {"tabHeld": False, "playerListPressed": False, "visibleIds": ["inventory"]}}
+                return {"ok": True, "value": False}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        s.begin("A4-edithud", "test")
+        real = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            cobdev.edithud_e12(cobdev.EditHudRun(s, "cfg"))
+        finally:
+            cobdev.time.sleep = real
+        commands = [c for p, c in sent if p == "/command"]
+        self.assertIn("/scoreboard objectives remove cobtab", commands)
+        self.assertEqual(commands[-1], "/scoreboard objectives remove cobtab")
+        self.assertIn(("/keyhold", "key.playerlist"), sent)
+        names = [c["check"] for c in s.step["checks"]]
+        self.assertTrue(any("released" in n for n in names), names)
+
+
+class EditHudSmokeHelpers(unittest.TestCase):
+    """The robustness helpers behind E7/E7b (sizes in device-pixel steps), E11 (the editor's dim) and the pointer."""
+
+    def test_text_scale_steps_in_device_pixels_in_minecrafts_font(self):
+        self.assertEqual(cobdev.text_scale(1.2499, 2, True), 1.0)
+        self.assertEqual(cobdev.text_scale(1.25, 2, True), 1.5)
+        self.assertAlmostEqual(cobdev.text_scale(1.2, 3, True), 4 / 3.0)
+        self.assertEqual(cobdev.text_scale(0.2, 2, True), 0.5)
+        self.assertEqual(cobdev.text_scale(1.2499, 2, False), 1.2499)
+
+    def test_a_resize_may_stop_one_size_step_short_in_minecrafts_font(self):
+        # the first smoke run: Map Info 82 GUI px of content at scale 1.2499 (text scale 1.0), stopped 19 px short
+        self.assertTrue(cobdev.grow_stopped_ok(19.0, 82.0, 1.2499, 2, True))   # the next step adds 41 px
+        self.assertFalse(cobdev.grow_stopped_ok(45.0, 82.0, 1.2499, 2, True))
+        self.assertFalse(cobdev.grow_stopped_ok(-0.5, 82.0, 1.2499, 2, True))  # overlapping
+        self.assertTrue(cobdev.grow_stopped_ok(0.02, 82.0, 1.2, 2, False))     # modern font: flush
+        self.assertFalse(cobdev.grow_stopped_ok(19.0, 82.0, 1.2, 2, False))
+
+    def test_free_point_avoids_every_box(self):
+        hb = {"sw": 60, "sh": 30, "boxes": [{"x": 1, "y": 1, "w": 30, "h": 28, "pad": 1}]}
+        x, y = cobdev.free_point(hb, margin=2)
+        self.assertGreater(x, 34)
+        self.assertIsNone(cobdev.free_point({"sw": 40, "sh": 30, "boxes": [{"x": 0, "y": 0, "w": 40, "h": 30, "pad": 0}]}))
+
+    def test_changed_frac_allows_the_editors_dim_only(self):
+        play = paint(flat(10, 10, SKY), (0, 0, 9, 4), (40, 40, 40))
+        dimmed = tuple(int(c * (1 - cobdev.DIM_ALPHA)) for c in SKY)
+        editor = paint(paint(flat(10, 10, dimmed), (0, 0, 9, 4), (40, 40, 40)), (9, 9, 9, 9), (255, 255, 255))
+        self.assertEqual(cobdev.changed_frac(play, editor, (0, 0, 9, 9)), 0.0)        # dimmed sky, same HUD
+        self.assertAlmostEqual(cobdev.changed_frac(play, editor, (0, 0, 10, 10)), 0.01)  # one changed pixel
+        self.assertEqual(cobdev.changed_frac(play, editor, (0, 0, 10, 10), [(9, 9, 10, 10)]), 0.0)  # excluded chrome
+        brighter = paint(flat(10, 10, SKY), (0, 0, 9, 4), (200, 200, 200))
+        self.assertGreater(cobdev.changed_frac(play, brighter, (0, 0, 10, 10)), 0.4)  # content changed
+
+
+class EditHudClearOf(unittest.TestCase):
+    """'No overlap' as the editor's walls mean it: flush within HudWalls.EPS (1e-3 GUI px) is not overlap."""
+
+    def test_the_rerun_tab_list_is_flush_with_the_scoreboard(self):
+        # smoke-20261114-115606-dev: right edge 444.99997 + 132.001 = 577.00097 against the scoreboard at 577.0
+        tab = {"x": 444.99997, "y": 168.5, "w": 132.001, "h": 14.347936, "pad": 0}
+        sb = {"x": 577.0, "y": 164.0, "w": 62.0, "h": 19.0, "pad": 0}
+        self.assertTrue(cobdev.clear_of(tab, sb))
+        self.assertTrue(cobdev.clear_of(sb, tab))
+        self.assertFalse(cobdev.clear_of(dict(tab, w=132.01), sb))   # 0.01 px in: overlap
+        self.assertTrue(cobdev.clear_of(dict(tab, y=200), sb))       # beside, not level with it
+        self.assertFalse(cobdev.clear_of(dict(tab, x=500), sb))
+
+
+class EditHudWindowSizes(unittest.TestCase):
+    """Every coordinate comes from the live window: the prod window (738x894) and the dev one (1280x720)."""
+
+    def test_gui_scale_follows_vanilla(self):
+        self.assertEqual(cobdev.gui_scale(738, 894, 2), 2)
+        self.assertEqual(cobdev.gui_scale(738, 894, 3), 2)
+        self.assertEqual(cobdev.gui_scale(738, 894, 0), 2)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 3), 3)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 0), 3)
+        self.assertEqual(cobdev.gui_scale(1280, 720, 2), 2)
+
+    def test_clamp_point(self):
+        self.assertEqual(cobdev.clamp_point(976, 147, 738, 894), (737, 147))
+        self.assertEqual(cobdev.clamp_point(-16, 42, 369, 447), (0, 42))
+
+    def test_free_spot_at_both_window_sizes(self):
+        # the prod layout at 369x447: Inventory sits in the middle; the dev layout at 640x360
+        prod = {"sw": 369, "sh": 447, "boxes": [
+            {"id": "inventory", "x": 83, "y": 175.5, "w": 204, "h": 72, "pad": 1, "shown": True},
+            {"id": "chat", "x": 2, "y": 329, "w": 324, "h": 90, "pad": 0, "shown": True},
+            {"id": "sessionstats", "x": 260, "y": 30, "w": 103, "h": 138, "pad": 4, "shown": True},
+            {"id": "ghost", "x": 150, "y": 100, "w": 50, "h": 50, "pad": 0, "shown": False}]}
+        dev = {"sw": 640, "sh": 360, "boxes": [
+            {"id": "inventory", "x": 218, "y": 3, "w": 204, "h": 72, "pad": 1, "shown": True},
+            {"id": "chat", "x": 2, "y": 242, "w": 324, "h": 90, "pad": 0, "shown": True}]}
+        for hb in (prod, dev):
+            x, y = cobdev.free_spot(hb, 62, 73)
+            box = {"x": x, "y": y, "w": 62, "h": 73, "pad": 0}
+            self.assertTrue(0 <= x and x + 62 <= hb["sw"] and 0 <= y and y + 73 <= hb["sh"])
+            for b in hb["boxes"]:
+                if b["shown"]:
+                    self.assertTrue(cobdev.clear_of(box, b), (hb["sw"], b["id"], x, y))
+        self.assertIsNone(cobdev.free_spot({"sw": 100, "sh": 100, "boxes": [
+            {"id": "all", "x": 0, "y": 0, "w": 100, "h": 100, "pad": 0, "shown": True}]}, 10, 10))
 
 
 class Pins(unittest.TestCase):

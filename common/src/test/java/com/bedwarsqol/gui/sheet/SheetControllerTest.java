@@ -254,4 +254,28 @@ public class SheetControllerTest {
         c.key(' ', SheetController.KEY_SPACE, false, false, false, RSHIFT);
         assertEquals("combat", state.category);
     }
+
+    @Test
+    public void resetPositionsRunsAndToasts() {
+        values.platformOnly.add("resetPositions");
+        Node reset = find(frame(), T.RESET_POSITIONS, null);
+        click(reset);
+        assertEquals(1, values.runs);
+        assertEquals("resetPositions", values.lastRun);
+        assertEquals("HUD positions reset", host.toasts.get(0));
+        assertEquals("not Edit HUD", 0, host.editHud);
+    }
+
+    @Test
+    public void resetPositionsComesAfterEditHudInTheFocusOrder() {
+        values.platformOnly.add("resetPositions");
+        frame();
+        c.key((char) 0, SheetController.KEY_TAB, false, true, false, RSHIFT);
+        assertEquals("RESET_POSITIONS:resetPositions:-1", c.focus());
+        c.key((char) 0, SheetController.KEY_TAB, false, true, false, RSHIFT);
+        assertEquals("HERO:null:-1", c.focus());
+        c.key((char) 0, SheetController.KEY_TAB, false, false, false, RSHIFT);
+        c.key(' ', SheetController.KEY_SPACE, false, false, false, RSHIFT);
+        assertEquals(1, values.runs);
+    }
 }

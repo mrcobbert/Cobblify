@@ -2,12 +2,17 @@ package com.bedwarsqol.config;
 
 import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.hud.HudBackground;
 import com.bedwarsqol.hud.HudPlacement;
+import com.bedwarsqol.hud.OverlayItems;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsBackendUrl;
 import com.bedwarsqol.stats.StatsMode;
 import org.lwjgl.input.Keyboard;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class ClientSettings {
 
@@ -26,7 +31,10 @@ public class ClientSettings {
     public int defaultTextSize = 1;
     /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
     public int guiSize = 2;
-    /** GUI accent color token, pale-blue by default (see {@link GuiTheme.Accent}). Drives only the settings-GUI accent; HUD stays neutral. */
+    /**
+     * GUI accent color token, pale-blue by default (see {@link GuiTheme.Accent}). The settings menu's accent; the HUD
+     * uses it for headers, Map Info labels, units and pressed keys.
+     */
     public String guiAccent = "pale-blue";
     /** Font of the settings menu and the HUD: {@code minecraft} (the game's own, the default) or {@code modern} (Inter). */
     public String guiFont = GuiTheme.FONT_MINECRAFT;
@@ -79,7 +87,7 @@ public class ClientSettings {
     public int keystrokesHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float keystrokesHudScale = 1.0f;
 
-    /** Session Stats: Lunar-layout game + session tally; always drawn on its panel (no Background toggle). */
+    /** Session Stats: Lunar-layout game + session tally, on its panel while its Background is on. */
     public boolean sessionStatsEnabled = false;
     /** Hold Key to Show: the HUD stays hidden until {@link #sessionStatsKeyCode} is held. */
     public boolean sessionStatsHoldKey = false;
@@ -98,7 +106,7 @@ public class ClientSettings {
     public int heightLimitHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float heightLimitHudScale = 1.0f;
 
-    /** Team Upgrades: your team's upgrades and trap queue in a Bed Wars game; always drawn on its panel. */
+    /** Team Upgrades: your team's upgrades and trap queue in a Bed Wars game, on its panel while its Background is on. */
     public static final int TEAM_UPGRADES_COMPACT = 0;
     public static final int TEAM_UPGRADES_FULL = 1;
     public boolean teamUpgradesEnabled = false;
@@ -108,6 +116,46 @@ public class ClientSettings {
     public int teamUpgradesHudY = 0;
     public int teamUpgradesHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float teamUpgradesHudScale = 1.0f;
+
+    /** FPS: the game's frames per second in a small box (Ornithe build). */
+    public boolean fpsEnabled = false;
+    public int fpsHudX = 0;
+    public int fpsHudY = 0;
+    public int fpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float fpsHudScale = 1.0f;
+
+    /** CPS: left and right clicks per second in a small box (Ornithe build). */
+    public boolean cpsEnabled = false;
+    public int cpsHudX = 0;
+    public int cpsHudY = 0;
+    public int cpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float cpsHudScale = 1.0f;
+
+    /** Ping: your own latency from the tab list, in a small box (Ornithe build); "--" in singleplayer. */
+    public boolean pingEnabled = false;
+    public int pingHudX = 0;
+    public int pingHudY = 0;
+    public int pingHudAnchor = HudPlacement.AUTO; // the default layout until moved
+    public float pingHudScale = 1.0f;
+
+    /**
+     * Per-item Background switch of every HUD item (the HUD modules and the scoreboard, chat and tab list), by HUD
+     * item id: only items switched Off are stored, as {@code false}; an absent id is On. Gson leaves an absent member
+     * at its initialiser, so a config saved before this existed loads with every Background On, with no
+     * {@link #settingsVersion} step. The 0.16.3 per-module Background keys stay ignored.
+     * Read and write through {@link #hudBackground} and {@link #setHudBackground}.
+     */
+    public Map<String, Boolean> hudBackgrounds = new LinkedHashMap<String, Boolean>();
+
+    /**
+     * Sub-pixel part of each moved HUD item's stored position, by HUD item id: {@code [fracX, fracY]}, each in
+     * [-0.5, 0.5] GUI px. The int {@code ...HudX/Y} fields keep the rounded position, which is exactly what a build
+     * without this map stores, so an older build (a channel switch or a rollback sharing this file) reads every item
+     * within half a GUI pixel of where it was, ignores this key and drops it on its next save. A config without the
+     * map loads exactly where it was: no {@link #settingsVersion} step. Read and written through
+     * {@code HudModules.get/set}; an item at a whole position has no entry.
+     */
+    public Map<String, float[]> hudSubPixel = new LinkedHashMap<String, float[]>();
 
     /** On by default; every Hypixel-tab feature is inert unless connected to Hypixel. */
     public boolean playerStats = true;
@@ -313,11 +361,30 @@ public class ClientSettings {
     public float handPosZ = 0f;
     public float handScale = 1.0f;
 
-    /** Vanilla scoreboard sidebar size. 0 = small, 1 = medium, 2 = large (the original full size). */
-    public int scoreboardSize = 2;
+    // --- The scoreboard, chat and tab list as HUD items: placed and corner-resized in Edit HUD ---
+    // AUTO keeps vanilla's spot (scaled about vanilla's anchor). HUD Size does not rescale them.
 
-    /** Vanilla tab player list size. 0 = small, 1 = medium, 2 = large (the original full size). */
-    public int styledTabListSize = 2;
+    public int scoreboardHudX = 0;
+    public int scoreboardHudY = 0;
+    public int scoreboardHudAnchor = HudPlacement.AUTO; // vanilla's right-middle until moved
+    public float scoreboardHudScale = OverlayItems.DEFAULT_SCALE;
+    /** Edit HUD's Hide for the sidebar scoreboard: hidden = vanilla's sidebar is not drawn. */
+    public boolean scoreboardHudEnabled = true;
+
+    public int tabListHudX = 0;
+    public int tabListHudY = 0;
+    public int tabListHudAnchor = HudPlacement.AUTO; // vanilla's top centre until moved
+    public float tabListHudScale = OverlayItems.DEFAULT_SCALE;
+
+    public int chatHudX = 0;
+    public int chatHudY = 0;
+    public int chatHudAnchor = HudPlacement.AUTO; // vanilla's bottom left until moved
+    public float chatHudScale = OverlayItems.DEFAULT_SCALE;
+
+    // The Scoreboard Size and Tab List Size rows (0 = small, 1 = medium, 2 = large) saved before the
+    // three became HUD items. migrate() turns a saved one into its item's scale once and nulls it;
+    // Gson never writes a null member, so the key drops on the next save.
+    Integer scoreboardSize, styledTabListSize;
     /** Hide the server-sent header/footer text above and below the tab player list. */
     public boolean tabHideHeaderFooter = false;
 
@@ -364,6 +431,11 @@ public class ClientSettings {
             if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
         }
         if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
+        // Outside the version steps (no settingsVersion bump): a saved Size row becomes the item's scale
+        // whenever it is present, the same on-screen size it drew at.
+        if (scoreboardSize != null) scoreboardHudScale = OverlayItems.legacySizeScale(scoreboardSize);
+        if (styledTabListSize != null) tabListHudScale = OverlayItems.legacySizeScale(styledTabListSize);
+        scoreboardSize = styledTabListSize = null;
         urchinBadgeTab = urchinChatAlert = urchinAlertSound = urchinBadgeNametag = null;
         seraphTags = null;
         seraphBadgeTab = seraphChatAlert = seraphAlertSound = seraphBadgeNametag = null;
@@ -409,11 +481,23 @@ public class ClientSettings {
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();
+        fpsHudAnchor = clamp(fpsHudAnchor, HudPlacement.AUTO, 8);
+        if (fpsHudScale < 0.3f || fpsHudScale > 10.0f) fpsHudScale = defaultTextSizeScale();
+        cpsHudAnchor = clamp(cpsHudAnchor, HudPlacement.AUTO, 8);
+        if (cpsHudScale < 0.3f || cpsHudScale > 10.0f) cpsHudScale = defaultTextSizeScale();
+        pingHudAnchor = clamp(pingHudAnchor, HudPlacement.AUTO, 8);
+        if (pingHudScale < 0.3f || pingHudScale > 10.0f) pingHudScale = defaultTextSizeScale();
+        scoreboardHudAnchor = clamp(scoreboardHudAnchor, HudPlacement.AUTO, 8);
+        scoreboardHudScale = overlayScale(scoreboardHudScale);
+        tabListHudAnchor = clamp(tabListHudAnchor, HudPlacement.AUTO, 8);
+        tabListHudScale = overlayScale(tabListHudScale);
+        chatHudAnchor = clamp(chatHudAnchor, HudPlacement.AUTO, 8);
+        chatHudScale = overlayScale(chatHudScale);
+        hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
+        hudSubPixel = sanitizedSubPixel(hudSubPixel);
         if (teamUpgradesLayout != TEAM_UPGRADES_FULL) teamUpgradesLayout = TEAM_UPGRADES_COMPACT;
         teamUpgradesHudAnchor = clamp(teamUpgradesHudAnchor, HudPlacement.AUTO, 8);
         if (teamUpgradesHudScale < 0.3f || teamUpgradesHudScale > 10.0f) teamUpgradesHudScale = defaultTextSizeScale();
-        scoreboardSize = clamp(scoreboardSize, 0, 2);
-        styledTabListSize = clamp(styledTabListSize, 0, 2);
 
         blockOverlayStyle = clamp(blockOverlayStyle, 0, 2);
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
@@ -435,6 +519,43 @@ public class ClientSettings {
         if (statsBackendToken == null) statsBackendToken = "";
         statsBackendToken = statsBackendToken.trim();
         if (settingsKeyCode < 0) settingsKeyCode = Keyboard.KEY_RSHIFT;
+    }
+
+    /**
+     * A fresh copy of {@code in} without entries Gson or a hand edit could leave broken: a null key or value, not two
+     * values, a value that is not finite (Gson cannot write NaN) or outside [-0.5, 0.5]. Unknown ids are kept, so a
+     * newer build's items survive a round trip.
+     */
+    private static Map<String, float[]> sanitizedSubPixel(Map<String, float[]> in) {
+        Map<String, float[]> out = new LinkedHashMap<String, float[]>();
+        if (in == null) return out;
+        for (Map.Entry<String, float[]> e : in.entrySet()) {
+            float[] f = e.getValue();
+            if (e.getKey() == null || f == null || f.length != 2) continue;
+            if (!subPixelPart(f[0]) || !subPixelPart(f[1])) continue;
+            out.put(e.getKey(), new float[]{f[0], f[1]});
+        }
+        return out;
+    }
+
+    private static boolean subPixelPart(float v) {
+        return v >= -0.5f && v <= 0.5f; // false for NaN
+    }
+
+    /** An overlay item's scale, or its default when out of range (overlays do not follow HUD Size). */
+    private static float overlayScale(float scale) {
+        return scale < 0.3f || scale > 10.0f || Float.isNaN(scale) ? OverlayItems.DEFAULT_SCALE : scale;
+    }
+
+    /** Whether HUD item {@code itemId} draws its background (true unless switched Off). */
+    public boolean hudBackground(String itemId) {
+        return HudBackground.on(hudBackgrounds, itemId);
+    }
+
+    /** Switches HUD item {@code itemId}'s background; On removes its entry. */
+    public void setHudBackground(String itemId, boolean on) {
+        if (hudBackgrounds == null) hudBackgrounds = new LinkedHashMap<String, Boolean>();
+        HudBackground.set(hudBackgrounds, itemId, on);
     }
 
     /** Whether the menu and the HUD use Minecraft's font. */
@@ -466,6 +587,9 @@ public class ClientSettings {
         keystrokesHudScale = rescaled(keystrokesHudScale, factor);
         sessionStatsHudScale = rescaled(sessionStatsHudScale, factor);
         heightLimitHudScale = rescaled(heightLimitHudScale, factor);
+        fpsHudScale = rescaled(fpsHudScale, factor);
+        cpsHudScale = rescaled(cpsHudScale, factor);
+        pingHudScale = rescaled(pingHudScale, factor);
         teamUpgradesHudScale = rescaled(teamUpgradesHudScale, factor);
     }
 

@@ -37,6 +37,8 @@ public final class SheetSchema {
         String unit = "";
         String dep, reason, label;
         boolean confirm;
+        /** The HUD item a Background row switches; null for every other row. */
+        String hudItem;
         Module module;
         Section section;
         Category category;
@@ -63,6 +65,8 @@ public final class SheetSchema {
         public String label() { return label; }
         /** An action that asks for a second press. */
         public boolean confirm() { return confirm; }
+        /** The HUD item id this Background row switches, or null if it is not a Background row. */
+        public String hudItem() { return hudItem; }
         public Module module() { return module; }
         public Section section() { return section; }
         public Category category() { return category; }
@@ -72,6 +76,8 @@ public final class SheetSchema {
         public final String id, name, desc, kw;
         public final List<Row> rows;
         Category category;
+        /** The HUD item a Background module switches with its own toggle; null for every other module. */
+        String hudItem;
 
         Module(String id, String name, String desc, String kw, Row... rows) {
             this.id = id;
@@ -87,6 +93,8 @@ public final class SheetSchema {
         }
 
         public Category category() { return category; }
+        /** The HUD item id this Background module switches, or null if it is not one. */
+        public String hudItem() { return hudItem; }
     }
 
     public static final class Section {
@@ -180,12 +188,34 @@ public final class SheetSchema {
         return new Module(id, name, desc, kw, rows);
     }
 
+    /**
+     * The module-level form of {@link #background}: a leaf module whose toggle is HUD item {@code hudItem}'s
+     * Background, for the items with no on/off of their own to host a sub-row (the scoreboard, tab list and chat;
+     * a module's sub-rows are disabled while its toggle is off). Platform-only like the rows ({@link #platformOnly}).
+     */
+    private static Module backgroundModule(String id, String name, String hudItem, String desc, String kw) {
+        Module m = new Module(id, name, desc, kw);
+        m.hudItem = hudItem;
+        return m;
+    }
+
     private static Category category(String id, String name, Module... modules) {
         return new Category(id, name, modules, new Section[0]);
     }
 
     private static Row inGame(String id, String desc) {
         return toggle(id, "In Game Only", desc);
+    }
+
+    /**
+     * A "Background" toggle row for HUD item {@code hudItem} (a {@code HudModules} id or one of
+     * {@code HudBackground.OVERLAY_IDS}). It is platform-only (see {@link #platformOnly}): Forge's {@code has}
+     * accepts every schema id, so a shared module's Background row would otherwise appear there.
+     */
+    private static Row background(String id, String hudItem, String desc) {
+        Row r = toggle(id, "Background", desc);
+        r.hudItem = hudItem;
+        return r;
     }
 
     private static String[] accentNames() {
@@ -207,10 +237,11 @@ public final class SheetSchema {
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
-     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint and Team Upgrades are the Ornithe build's; Lunar has its own.
+     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint, Team Upgrades and the FPS,
+     * CPS and Ping HUD modules are the Ornithe build's; Lunar has its own.
      */
     private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
-            "teamUpgrades"));
+            "teamUpgrades", "fps", "cps", "ping"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -223,21 +254,35 @@ public final class SheetSchema {
         List<Category> cats = new ArrayList<Category>();
         cats.add(category("hud", "HUD",
                 module("potion", "Potion", "Active effects and timers", "effects speed strength",
+                        background("potionBg", "potion", "See-through panel behind it"),
                         inGame("potionInGame", "Hide it in lobbies")),
                 module("armor", "Armor", "Equipped armor type", "durability",
+                        background("armorBg", "armor", "See-through panel behind it"),
                         inGame("armorInGame", "Hide it in lobbies")),
                 module("inventory", "Inventory", "Stored items at a glance", "items blocks",
+                        background("inventoryBg", "inventory", "See-through panel behind it"),
                         inGame("inventoryInGame", "Hide it in lobbies")),
                 module("genTimers", "Gen Timers", "Diamond and emerald timers", "generator diamond emerald",
+                        background("genTimersBg", "diamondtimer", "See-through panels behind them"),
                         inGame("genTimersInGame", "Hide them in lobbies")),
-                module("keystrokes", "Keystrokes", "WASD, clicks with CPS, spacebar", "cps keys wasd clicks",
+                module("keystrokes", "Keystrokes", "WASD, mouse buttons, spacebar", "keys wasd clicks mouse",
+                        background("keystrokesBg", "keystrokes", "See-through key caps"),
                         inGame("keystrokesInGame", "Hide it in lobbies")),
+                module("fps", "FPS", "Frames per second", "frames performance",
+                        background("fpsBg", "fps", "See-through box behind it")),
+                module("cps", "CPS", "Clicks per second, left and right", "clicks",
+                        background("cpsBg", "cps", "See-through box behind it")),
+                module("ping", "Ping", "Your connection to the server", "latency ms",
+                        background("pingBg", "ping", "See-through box behind it")),
                 module("mapInfo", "Map Info", "Map name, build limit and blocks left", "height limit build",
+                        background("mapInfoBg", "heightlimit", "See-through panel behind it"),
                         inGame("mapInfoInGame", "Hide it in lobbies")),
                 module("teamUpgrades", "Team Upgrades", "Your team's upgrades and trap queue",
                         "traps forge sharpness protection heal pool",
+                        background("teamUpgradesBg", "teamupgrades", "See-through panel behind it"),
                         seg("teamUpgradesLayout", "Layout", "Only what you own, or every upgrade", null, "Compact", "Full")),
                 module("session", "Session Stats", "Kills, finals, beds and W/L", "kills finals beds wins stats",
+                        background("sessionBg", "sessionstats", "See-through panel behind it"),
                         toggle("sessionHold", "Hold Key to Show", "Show the stats only while a key is held"),
                         sessionKey, sessionReset)));
         cats.add(category("combat", "Combat",
@@ -261,7 +306,11 @@ public final class SheetSchema {
                         seg("boStyle", "Style", "How the block is marked", null, "Outline", "Fill", "Both"),
                         seg("boOpacity", "Opacity", "How strong the fill is", null, "Low", "Medium", "High"),
                         toggle("boWhite", "White", "White instead of your accent", "colour color")),
-                module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list")));
+                module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list"),
+                backgroundModule("scoreboardBg", "Scoreboard Background", "scoreboard",
+                        "See-through fill behind the sidebar", "transparent opacity box"),
+                backgroundModule("tabListBg", "Tab List Background", "tablist",
+                        "See-through fills behind the player list", "transparent opacity box")));
         cats.add(category("chat", "Chat",
                 module("chatStack", "Stack Spam Messages", "Collapse repeats into one (xN) line", "spam repeat compact",
                         toggle("stackBlanks", "Ignore Blank Lines", "Never stack empty lines"),
@@ -277,6 +326,7 @@ public final class SheetSchema {
                 module("chatKeep", "Keep Chat History", "Keep chat across server switches", "history"),
                 module("chatCopy", "Copy Chat", "Right-click a message to copy it", "clipboard"),
                 module("chatLong", "Longer Messages", "256-character chat on Hypixel", "length limit"),
+                backgroundModule("chatBg", "Chat Background", "chat", "Fill behind chat lines", "transparent opacity box"),
                 // Lunar has no Chat Notifications module, so there Inc, Bed and BG Alert are modules of their own.
                 module("incAlert", "Inc Alert", "Sound when a teammate says inc", "sound incoming"),
                 module("bedAlert", "Bed Alert", "Sound when a teammate says bed", "sound ping"),
@@ -325,11 +375,23 @@ public final class SheetSchema {
         return ROWS.get(id);
     }
 
-    /** Whether {@code id} is a platform-only module, or a row of one. */
+    /**
+     * Whether {@code id} is a platform-only module, a row of one, a Background row (see {@link #background}) or a
+     * Background module (see {@link #backgroundModule}).
+     */
     public static boolean platformOnly(String id) {
         Row r = ROWS.get(id);
+        if (r != null && r.hudItem != null) return true;
         Module m = r != null ? r.module : MODULES.get(id);
-        return m != null && PLATFORM_ONLY.contains(m.id);
+        return m != null && (PLATFORM_ONLY.contains(m.id) || m.hudItem != null);
+    }
+
+    /** The HUD item Background row or module {@code id} switches, or null if it is neither. */
+    public static String hudItem(String id) {
+        Row r = ROWS.get(id);
+        if (r != null) return r.hudItem;
+        Module m = MODULES.get(id);
+        return m == null ? null : m.hudItem;
     }
 
     /** Whether the sheet lists module or row {@code id} on the platform behind {@code values}. */

@@ -64,6 +64,38 @@ public class SheetLayoutTest {
     }
 
     @Test
+    public void footerWithoutTheOptInIsTodays() {
+        Frame f = layout();
+        Node hero = find(f, T.HERO, null);
+        assertEquals(11f, hero.x, 0f);
+        assertEquals(SheetLayout.WIDTH - 21f, hero.w, 0f);
+        assertEquals("Edit HUD", hero.text);
+        assertNull(find(f, T.RESET_POSITIONS, null));
+    }
+
+    @Test
+    public void resetPositionsSitsRightOfEditHud() {
+        Frame plain = layout();
+        Node before = find(plain, T.HERO, null);
+        values.platformOnly.add("resetPositions");
+        Frame f = layout();
+        Node hero = find(f, T.HERO, null), reset = find(f, T.RESET_POSITIONS, null);
+        assertNotNull(reset);
+        assertEquals("Reset Positions", reset.text);
+        assertEquals("resetPositions", reset.id);
+        assertEquals(hero.y, reset.y, 0f);
+        assertEquals(hero.h, reset.h, 0f);
+        assertEquals(before.y, hero.y, 0f);
+        assertEquals("Edit HUD keeps its left edge", 11f, hero.x, 0f);
+        assertEquals("a 4 su gap", hero.x + hero.w + 4f, reset.x, 1e-4f);
+        assertEquals("it ends where Edit HUD ended", before.x + before.w, reset.x + reset.w, 1e-4f);
+        assertEquals("it hugs its label", new SheetFixtures.Metrics().width("Reset Positions", SheetFont.HERO) + 24f,
+                reset.w, 1e-4f);
+        assertTrue(reset.interactive());
+        assertEquals(f.footerTop, plain.footerTop, 0f);
+    }
+
+    @Test
     public void categoriesShareTheBandWidth() {
         Frame f = layout();
         float left = Float.MAX_VALUE, right = 0f, sum = 0f;
@@ -282,6 +314,32 @@ public class SheetLayoutTest {
         assertNull("no section header", find(f, T.NAME, null));
         assertNull("no divider", find(f, T.DIVIDER, null));
         assertEquals("level with a module name", 7f, find(f, T.LABEL, "hudSize").lineTop, 0f);
+    }
+
+    @Test
+    public void settingsPageLeavesOutRowsThePlatformDoesNotHave() {
+        // Ornithe moved Scoreboard Size and Tab List Size into the items' own corner-resize scale
+        values.missing.add("sbSize");
+        values.missing.add("tabSize");
+        state.category = "settings";
+        Frame f = layout();
+        assertNull(find(f, T.LABEL, "sbSize"));
+        assertNull(find(f, T.LABEL, "tabSize"));
+        assertNull(find(f, T.OPTION, "sbSize"));
+        assertNull(find(f, T.OPTION, "tabSize"));
+        java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (Node n : f.body) if (n.type == T.LABEL) labels.add(n.id);
+        assertEquals(java.util.Arrays.asList("hudSize", "guiSize", "font", "accent"), labels);
+        assertEquals("level with a module name", 7f, find(f, T.LABEL, "hudSize").lineTop, 0f);
+    }
+
+    @Test
+    public void settingsPageListsTheSizeRowsWhereThePlatformHasThem() {
+        state.category = "settings";
+        Frame f = layout();
+        java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (Node n : f.body) if (n.type == T.LABEL) labels.add(n.id);
+        assertEquals(java.util.Arrays.asList("hudSize", "sbSize", "tabSize", "guiSize", "font", "accent"), labels);
     }
 
     @Test

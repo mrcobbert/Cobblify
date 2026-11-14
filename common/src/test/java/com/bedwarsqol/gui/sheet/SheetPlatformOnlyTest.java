@@ -109,6 +109,150 @@ public class SheetPlatformOnlyTest {
         assertEquals("noHurtCam", SheetSearch.search("hurt cam", ornithe).get(0).module.id);
     }
 
+    /** Background row id, its module and the HUD item it switches (Ornithe's per-item Background). */
+    private static final String[][] BACKGROUND_ROWS = {
+            {"potionBg", "potion", "potion"},
+            {"armorBg", "armor", "armor"},
+            {"inventoryBg", "inventory", "inventory"},
+            {"genTimersBg", "genTimers", "diamondtimer"},
+            {"keystrokesBg", "keystrokes", "keystrokes"},
+            {"mapInfoBg", "mapInfo", "heightlimit"},
+            {"sessionBg", "session", "sessionstats"},
+    };
+
+    @Test
+    public void backgroundRowsArePlatformOnlyRowsOfSharedModules() {
+        for (String[] b : BACKGROUND_ROWS) {
+            SheetSchema.Row r = SheetSchema.row(b[0]);
+            assertEquals(b[0], SheetSchema.Kind.TOGGLE, r.kind);
+            assertEquals(b[0], "Background", r.name);
+            assertEquals(b[0], b[1], r.module().id);
+            assertEquals(b[0] + " is the first row of its module", r, SheetSchema.module(b[1]).rows.get(0));
+            assertEquals(b[0], b[2], r.hudItem());
+            assertEquals(b[0], b[2], SheetSchema.hudItem(b[0]));
+            assertTrue(b[0], SheetSchema.platformOnly(b[0]));
+            // the module itself is shared, and so are its other rows
+            assertFalse(b[1], SheetSchema.platformOnly(b[1]));
+            assertEquals(null, SheetSchema.hudItem(b[1]));
+        }
+        assertFalse(SheetSchema.platformOnly("potionInGame"));
+        assertEquals(null, SheetSchema.hudItem("potionInGame"));
+        assertEquals(null, SheetSchema.hudItem("nonsense"));
+        assertEquals(null, SheetSchema.row("potionInGame").hudItem());
+    }
+
+    @Test
+    public void backgroundRowsHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        for (String[] b : BACKGROUND_ROWS) {
+            assertFalse(b[0], SheetSchema.shows(acceptsEverything, b[0]));
+            assertFalse(b[0], SheetSchema.shows(lunar, b[0]));
+            assertTrue(b[0], SheetSchema.shows(ornithe, b[0]));
+        }
+        assertTrue("the shared module still shows on Forge", SheetSchema.shows(acceptsEverything, "potion"));
+        assertTrue(SheetSchema.shows(acceptsEverything, "potionInGame"));
+        assertTrue(SheetSearch.search("background", acceptsEverything).isEmpty());
+        assertTrue(SheetSearch.search("background", lunar).isEmpty());
+        // on Ornithe the search finds exactly the Background rows
+        Set<String> found = new HashSet<String>();
+        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) {
+            for (SheetSchema.Row r : h.rows) found.add(r.id);
+        }
+        Set<String> expected = new HashSet<String>();
+        for (SheetSchema.Category c : SheetSchema.CATS) {
+            for (SheetSchema.Module m : c.modules) for (SheetSchema.Row r : m.rows) if (r.hudItem() != null) expected.add(r.id);
+        }
+        for (String[] b : BACKGROUND_ROWS) assertTrue(b[0], expected.contains(b[0]));
+        assertEquals(expected, found);
+    }
+
+    @Test
+    public void keystrokesNoLongerPromisesCps() {
+        SheetSchema.Module k = SheetSchema.module("keystrokes");
+        assertEquals("WASD, mouse buttons, spacebar", k.desc);
+        assertFalse(k.desc.toLowerCase().contains("cps"));
+        assertFalse(k.kw.toLowerCase().contains("cps"));
+        for (SheetSchema.Row r : k.rows) assertFalse(r.id, r.name.toLowerCase().contains("cps"));
+    }
+
+    @Test
+    public void textModulesArePlatformOnlyHudModules() {
+        List<String> hud = new ArrayList<String>();
+        for (SheetSchema.Module m : SheetSchema.category("hud").modules) hud.add(m.id);
+        int k = hud.indexOf("keystrokes");
+        assertEquals(Arrays.asList("keystrokes", "fps", "cps", "ping", "mapInfo"), hud.subList(k, k + 5));
+        assertEquals("FPS", SheetSchema.module("fps").name);
+        assertEquals("CPS", SheetSchema.module("cps").name);
+        assertEquals("Ping", SheetSchema.module("ping").name);
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        for (String id : new String[]{"fps", "cps", "ping"}) {
+            assertTrue(id, SheetSchema.platformOnly(id));
+            SheetSchema.Row bg = SheetSchema.module(id).rows.get(0);
+            assertEquals(id + "Bg", bg.id);
+            assertEquals(id, bg.hudItem());
+            assertEquals("Background", bg.name);
+            assertEquals("See-through box behind it", bg.desc);
+            for (String row : new String[]{id, id + "Bg"}) {
+                assertFalse(row, SheetSchema.shows(acceptsEverything, row));
+                assertFalse(row, SheetSchema.shows(lunar, row));
+                assertTrue(row, SheetSchema.shows(ornithe, row));
+            }
+        }
+        assertTrue(SheetSearch.search("fps", acceptsEverything).isEmpty());
+        assertTrue(SheetSearch.search("fps", lunar).isEmpty());
+        assertEquals("fps", SheetSearch.search("fps", ornithe).get(0).module.id);
+    }
+
+    /**
+     * Background module id, its name, its category, the module it follows and the HUD item it switches: the
+     * scoreboard, tab list and chat have no on/off of their own, so their Background is a module whose toggle is it.
+     */
+    private static final String[][] OVERLAY_BACKGROUNDS = {
+            {"scoreboardBg", "Scoreboard Background", "visuals", "tabHF", "scoreboard"},
+            {"tabListBg", "Tab List Background", "visuals", "scoreboardBg", "tablist"},
+            {"chatBg", "Chat Background", "chat", "chatLong", "chat"},
+    };
+
+    @Test
+    public void overlayBackgroundsArePlatformOnlyModulesCarryingTheirItem() {
+        for (String[] b : OVERLAY_BACKGROUNDS) {
+            SheetSchema.Module m = SheetSchema.module(b[0]);
+            assertTrue(b[0], m != null);
+            assertEquals(b[0], b[1], m.name);
+            assertEquals(b[0], b[2], m.category().id);
+            List<SheetSchema.Module> mods = m.category().modules;
+            assertEquals(b[0] + " follows " + b[3], mods.indexOf(SheetSchema.module(b[3])) + 1, mods.indexOf(m));
+            assertTrue(b[0] + " is a leaf: its toggle is the Background", m.rows.isEmpty());
+            assertEquals(b[0], b[4], m.hudItem());
+            assertEquals(b[0], b[4], SheetSchema.hudItem(b[0]));
+            assertTrue(b[0], SheetSchema.platformOnly(b[0]));
+        }
+        // the modules they follow are untouched
+        assertFalse(SheetSchema.platformOnly("tabHF"));
+        assertEquals(null, SheetSchema.hudItem("tabHF"));
+        assertEquals(null, SheetSchema.module("chatLong").hudItem());
+    }
+
+    @Test
+    public void overlayBackgroundsHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        Set<String> forgeHits = new HashSet<String>(), lunarHits = new HashSet<String>(), ornitheHits = new HashSet<String>();
+        for (SheetSearch.Hit h : SheetSearch.search("background", acceptsEverything)) if (h.module != null) forgeHits.add(h.module.id);
+        for (SheetSearch.Hit h : SheetSearch.search("background", lunar)) if (h.module != null) lunarHits.add(h.module.id);
+        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) if (h.module != null) ornitheHits.add(h.module.id);
+        for (String[] b : OVERLAY_BACKGROUNDS) {
+            assertFalse(b[0], SheetSchema.shows(acceptsEverything, b[0]));
+            assertFalse(b[0], SheetSchema.shows(lunar, b[0]));
+            assertTrue(b[0], SheetSchema.shows(ornithe, b[0]));
+            assertFalse(b[0], forgeHits.contains(b[0]));
+            assertFalse(b[0], lunarHits.contains(b[0]));
+            assertTrue("search finds " + b[0] + " on Ornithe", ornitheHits.contains(b[0]));
+        }
+    }
+
     @Test
     public void teamUpgradesIsAHudModuleWithALayoutRowMarkedPlatformOnly() {
         SheetSchema.Module m = SheetSchema.module("teamUpgrades");

@@ -79,4 +79,38 @@ public class HudSnapperTest {
         assertTrue(HudSnapper.snap(3, 40, true, 480, NONE, 3).snapped);
         assertFalse(HudSnapper.snap(3.5f, 40, true, 480, NONE, 3).snapped);
     }
+
+    // ----- edit-hud: a gentler snap, 4 screen pixels at every GUI scale -----
+
+    @Test
+    public void thresholdIsFourScreenPixels() {
+        assertEquals(4f, HudSnapper.SNAP_DEVICE_PX, 0f);
+        assertEquals(2f, HudSnapper.threshold(2), 0f);
+        assertEquals(4f / 3f, HudSnapper.threshold(3), EPS);
+    }
+
+    @Test
+    public void snapsWithinFourScreenPixelsAndNotAtFive() {
+        HudSnapper.Target other = new HudSnapper.Target("timer", 300, 50, 60, 20);
+        List<HudSnapper.Target> targets = Collections.singletonList(other);
+        for (int scale : new int[]{2, 3}) {
+            float t = HudSnapper.threshold(scale);
+            float three = 3f / scale, five = 5f / scale;
+            // the left screen edge
+            HudSnapper.Snap edge = HudSnapper.snap(three, 40, true, 480, NONE, t);
+            assertTrue(edge.snapped);
+            assertEquals(0f, edge.position, 0f);
+            assertFalse(HudSnapper.snap(five, 40, true, 480, NONE, t).snapped);
+            // another box's right edge (360)
+            HudSnapper.Snap abut = HudSnapper.snap(360f + three, 40, true, 480, targets, t);
+            assertTrue(abut.snapped);
+            assertEquals(360f, abut.position, 0f);
+            assertFalse(HudSnapper.snap(360f + five, 40, true, 480, targets, t).snapped);
+            // the screen centre (240): a 40-wide box centred there starts at 220
+            HudSnapper.Snap centre = HudSnapper.snap(220f + three, 40, true, 480, NONE, t);
+            assertTrue(centre.snapped);
+            assertEquals(220f, centre.position, 0f);
+            assertFalse(HudSnapper.snap(220f + five, 40, true, 480, NONE, t).snapped);
+        }
+    }
 }

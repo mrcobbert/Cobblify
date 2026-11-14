@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.EntityRenderer;
 import net.minecraft.entity.Entity;
@@ -27,6 +28,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -53,6 +55,16 @@ final class Probes {
     static final String CLUTCH = "com.bedwarsqol.feature.ClutchPractice";
     static final String CLUTCH_FIREBALL = "com.bedwarsqol.feature.ClutchFireball";
     static final String CLUTCH_RULES = "com.bedwarsqol.feature.ClutchRules";
+    static final String CONFIG_HOLDER = "com.bedwarsqol.BedwarsQol";
+    static final String HUD_RENDERER = "com.bedwarsqol.hud.BedwarsHudRenderer";
+    static final String HUD_MODULES = "com.bedwarsqol.hud.HudModules";
+    static final String EDIT_HUD = "com.bedwarsqol.gui.EditHudGui";
+    static final String SETTINGS_GUI = "com.bedwarsqol.gui.SettingsGui";
+    /** HudBox fields as the probe reports them (key, Java field). */
+    private static final String[][] BOX_FIELDS = {{"id", "id"}, {"x", "x"}, {"y", "y"}, {"w", "width"},
+            {"h", "height"}, {"pad", "pad"}, {"shown", "shown"}};
+    /** HudModuleState fields; one a build does not have yet reads as null. */
+    private static final String[] STATE_FIELDS = {"x", "y", "fracX", "fracY", "anchor", "scale", "enabled", "background"};
 
     private Probes() {
     }
@@ -76,11 +88,14 @@ final class Probes {
                 return clutchBlast(args);
             case "use-item":
                 return useItem(args);
-            case "open-shop":
-                return openShop(args);
             case "hud-boxes":
                 return Bridge.onMain(Probes::hudBoxes);
+            case "sheet-node":
+                return Bridge.onMain(() -> sheetNode(args));
+            case "open-shop":
+                return openShop(args);
             default:
+                if (Policy.OVERLAY_PROBES.contains(name)) return OverlayProbes.run(name, args);
                 throw new Refused("unknown probe " + name);
         }
     }
@@ -236,6 +251,228 @@ final class Probes {
     }
 
     /**
+     * {@code hud-boxes}, read-only: every Edit HUD box ({@code BedwarsHudRenderer.getEditorBoxes}: content
+     * box and pad, GUI px), every module's stored state ({@code HudModules.get}) and, while an
+     * {@code EditHudGui} is open, its selection, menu, mode and the menu rows' GUI rects. All of it by
+     * reflection on Cobblify's own (unremapped) names, so it works in dev and prod and against any
+     * build: a field or method a build does not have yet reads as null.
+     */
+    private static Map<String, Object> hudBoxes() throws Exception {
+        Minecraft mc = Bridge.mc();
+        Class<?> renderer = cobblifyClass(HUD_RENDERER, "hud-boxes");
+        Class<?> modules = cobblifyClass(HUD_MODULES, "hud-boxes");
+        Field cfgField = declaredField(cobblifyClass(CONFIG_HOLDER, "hud-boxes"), "config");
+        Object cfg = cfgField == null ? null : cfgField.get(null);
+        if (cfg == null) throw new Refused("hud-boxes: BedwarsQol.config is not loaded yet");
+        ScaledResolution sr = new ScaledResolution(mc);
+        Map<String, Object> out = Bridge.ok();
+        out.put("scale", sr.getScaleFactor());
+        out.put("sw", sr.getScaledWidth());
+        out.put("sh", sr.getScaledHeight());
+        // Team Upgrades' smoke reads the GUI size and the scale factor under these names
+        out.put("gui", Arrays.asList(sr.getScaledWidth(), sr.getScaledHeight()));
+        out.put("scaleFactor", sr.getScaleFactor());
+
+        List<?> boxes = (List<?>) call(method(renderer, "getEditorBoxes", 2, true), null, mc, cfg);
+        List<Object> boxList = new ArrayList<>();
+        for (Object b : boxes) boxList.add(read(b, BOX_FIELDS));
+        out.put("boxes", boxList);
+
+        // HudModules.allIds() once the scoreboard, chat and tab list join it; ids() before.
+        Method ids = method(modules, "allIds", 0, false);
+        if (ids == null) ids = method(modules, "ids", 0, true);
+        Method get = method(modules, "get", 2, true);
+        List<Object> states = new ArrayList<>();
+        for (Object id : (List<?>) call(ids, null)) {
+            Object st = call(get, null, cfg, id);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", id);
+            if (st != null) {
+                for (String f : STATE_FIELDS) m.put(f, fieldValue(st, f));
+            }
+            states.add(m);
+        }
+        out.put("states", states);
+        out.put("editor", editor(mc, boxes));
+        return out;
+    }
+
+    /**
+     * {@code sheet-node ID}, read-only: where the open settings sheet draws its interactive node {@code ID} (the
+     * footer's Reset Positions, a module's switch, a row's control), in GUI px and display px, with the GUI-px centre
+     * a {@code click} can use, and whether a body node is scrolled into view. Reads {@code SettingsGui}'s laid-out
+     * frame, sheet unit, origin and scroll by reflection.
+     */
+    private static Map<String, Object> sheetNode(List<String> args) throws Exception {
+        if (args.size() != 1 && args.size() != 2) throw new Refused("probe sheet-node ID [TYPE]");
+        String id = args.get(0);
+        // A module's header (OPEN) shares its id with its switch: without TYPE the control wins.
+        String type = args.size() == 2 ? args.get(1) : null;
+        Minecraft mc = Bridge.mc();
+        GuiScreen screen = mc.currentScreen;
+        if (screen == null || !screen.getClass().getName().equals(SETTINGS_GUI)) {
+            throw new Refused("sheet-node needs the settings sheet open (cobdev open settings)");
+        }
+        Object frame = raw(screen, "frame");
+        if (frame == null) throw new Refused("the sheet has not drawn a frame yet");
+        float unit = ((Number) raw(screen, "unit")).floatValue();
+        float originX = ((Number) raw(screen, "originX")).floatValue();
+        Object paint = raw(screen, "paint");
+        float scroll = paint == null ? 0f : ((Number) raw(paint, "scroll")).floatValue();
+        float bodyTop = ((Number) raw(frame, "bodyTop")).floatValue();
+        float bodyHeight = ((Number) raw(frame, "bodyHeight")).floatValue();
+        Object node = null, header = null;
+        boolean inBody = false, headerInBody = false;
+        for (String part : new String[]{"chrome", "body"}) {
+            for (Object n : (List<?>) raw(frame, part)) {
+                Method interactive = method(n.getClass(), "interactive", 0, true);
+                if (!id.equals(raw(n, "id")) || !Boolean.TRUE.equals(call(interactive, n))) continue;
+                String t = String.valueOf(raw(n, "type"));
+                if (type != null ? !type.equals(t) : "OPEN".equals(t)) {
+                    if (type == null && header == null) {
+                        header = n;
+                        headerInBody = part.equals("body");
+                    }
+                    continue;
+                }
+                node = n;
+                inBody = part.equals("body");
+                break;
+            }
+            if (node != null) break;
+        }
+        if (node == null && header != null) {
+            node = header;
+            inBody = headerInBody;
+        }
+        if (node == null) throw new Refused("no interactive sheet node " + id + " on this page");
+        float nx = ((Number) raw(node, "x")).floatValue(), ny = ((Number) raw(node, "y")).floatValue();
+        float nw = ((Number) raw(node, "w")).floatValue(), nh = ((Number) raw(node, "h")).floatValue();
+        float sy = inBody ? bodyTop + ny - scroll : ny;
+        float dx = originX + nx * unit, dy = sy * unit, dw = nw * unit, dh = nh * unit;
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        Map<String, Object> out = Bridge.ok();
+        out.put("id", id);
+        out.put("type", String.valueOf(raw(node, "type")));
+        out.put("inBody", inBody);
+        out.put("contentY", finite(ny));
+        out.put("visible", !inBody || (sy >= bodyTop && sy + nh <= bodyTop + bodyHeight));
+        out.put("gui", Arrays.asList(finite(dx / sf), finite(dy / sf), finite(dw / sf), finite(dh / sf)));
+        out.put("device", Arrays.asList(finite(dx), finite(dy), finite(dw), finite(dh)));
+        out.put("centre", Arrays.asList((int) ((dx + dw / 2f) / sf), (int) ((dy + dh / 2f) / sf)));
+        return out;
+    }
+
+    /** A declared field's raw value anywhere up the hierarchy; null when there is no such field. */
+    private static Object raw(Object o, String name) throws Exception {
+        Field f = declaredField(o.getClass(), name);
+        return f == null ? null : f.get(o);
+    }
+
+    /** The open Edit HUD's state, or null when no {@code EditHudGui} is open. */
+    private static Map<String, Object> editor(Minecraft mc, List<?> boxes) throws Exception {
+        GuiScreen screen = mc.currentScreen;
+        if (screen == null || !screen.getClass().getName().equals(EDIT_HUD)) return null;
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("selectedId", fieldValue(screen, "selectedId"));
+        e.put("menuId", fieldValue(screen, "menuId"));
+        e.put("mode", fieldValue(screen, "mode"));
+        e.put("tabHeld", tabHeld(screen));
+        e.put("playerListPressed", mc.gameSettings.keyBindPlayerList.isKeyDown());
+        // visibleBoxes() once the editor filters what it shows (Tab held); until then it shows every box.
+        Method visible = method(screen.getClass(), "visibleBoxes", 0, false);
+        List<?> shown = visible == null ? boxes : (List<?>) call(visible, screen);
+        List<Object> visibleIds = new ArrayList<>();
+        for (Object b : shown) visibleIds.add(fieldValue(b, "id"));
+        e.put("visibleIds", visibleIds);
+        e.put("menu", menu(screen));
+        return e;
+    }
+
+    /** A boolean field {@code tabHeld}, or a {@code tabHold} object with {@code held()}; null before either exists. */
+    private static Object tabHeld(Object screen) throws Exception {
+        Object v = fieldValue(screen, "tabHeld");
+        if (v instanceof Boolean) return v;
+        Field hold = declaredField(screen.getClass(), "tabHold");
+        Object h = hold == null ? null : hold.get(screen);
+        Method held = h == null ? null : method(h.getClass(), "held", 0, false);
+        return held == null ? null : call(held, h);
+    }
+
+    /** The right-click menu: its rect and one GUI rect per row ({@code menuItems/menuRect/menuRowHeight}). */
+    private static Map<String, Object> menu(Object screen) throws Exception {
+        if (fieldValue(screen, "menuId") == null) return null;
+        Method items = method(screen.getClass(), "menuItems", 0, false);
+        Method rect = method(screen.getClass(), "menuRect", 1, false);
+        Method rowHeight = method(screen.getClass(), "menuRowHeight", 0, false);
+        if (items == null || rect == null || rowHeight == null) return null;
+        List<?> labels = (List<?>) call(items, screen);
+        float[] r = (float[]) call(rect, screen, labels);
+        float rowH = ((Number) call(rowHeight, screen)).floatValue();
+        List<Object> rows = new ArrayList<>();
+        for (int i = 0; i < labels.size(); i++) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", String.valueOf(labels.get(i)));
+            row.put("x", finite(r[0]));
+            row.put("y", finite(r[1] + rowH * (i + 1))); // row 0 is the title
+            row.put("w", finite(r[2] - r[0]));
+            row.put("h", finite(rowH));
+            rows.add(row);
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("rect", Arrays.asList(finite(r[0]), finite(r[1]), finite(r[2]), finite(r[3])));
+        m.put("rows", rows);
+        return m;
+    }
+
+    private static Map<String, Object> read(Object o, String[][] fields) throws Exception {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (String[] f : fields) m.put(f[0], fieldValue(o, f[1]));
+        return m;
+    }
+
+    /** A declared field's value anywhere up the hierarchy as JSON-safe data; null when there is no such field. */
+    private static Object fieldValue(Object o, String name) throws Exception {
+        Field f = declaredField(o.getClass(), name);
+        if (f == null) return null;
+        Object v = f.get(o);
+        if (v instanceof Float || v instanceof Double) return finite(((Number) v).doubleValue());
+        return Mods.plain(v);
+    }
+
+    private static Field declaredField(Class<?> c, String name) {
+        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+            try {
+                Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+                // try the superclass
+            }
+        }
+        return null;
+    }
+
+    /** The one declared method {@code name} with {@code params} parameters, or null (or a Refused if required). */
+    private static Method method(Class<?> c, String name, int params, boolean required) {
+        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+            for (Method m : k.getDeclaredMethods()) {
+                if (m.getName().equals(name) && m.getParameterCount() == params) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+        }
+        if (required) throw new Refused("hud-boxes expects " + c.getName() + "." + name + " with " + params + " parameters");
+        return null;
+    }
+
+    /** JSON has no NaN or infinity. */
+    private static Object finite(double v) {
+        return Double.isNaN(v) || Double.isInfinite(v) ? null : (Object) (float) v;
+    }
+
+    /**
      * {@code open-shop FIXTURE}: opens a server-side chest window filled from the bridge resource
      * {@code team-upgrades-FIXTURE.json} ({@code title}, {@code size}, {@code items[]} of {@code slot},
      * {@code id}, {@code damage}, {@code count}, {@code name}, {@code lore[]}), the way Hypixel's
@@ -331,36 +568,6 @@ final class Probes {
         if (get.invoke(null) == null) {
             throw new Refused("Clutch Practice is not enabled yet (ClutchPractice.get() is null until READY)");
         }
-    }
-
-    /**
-     * Read-only: every HUD module's box as Edit HUD lays it out ({@code BedwarsHudRenderer.getEditorBoxes}),
-     * drawn bounds in GUI px, with {@code shown} for the modules switched on, plus the GUI size.
-     */
-    private static Map<String, Object> hudBoxes() throws Exception {
-        Minecraft mc = Bridge.mc();
-        Class<?> renderer = cobblifyClass("com.bedwarsqol.hud.BedwarsHudRenderer", "hud-boxes");
-        Class<?> settings = cobblifyClass("com.bedwarsqol.config.ClientSettings", "hud-boxes");
-        Object cfg = cobblifyClass("com.bedwarsqol.BedwarsQol", "hud-boxes").getField("config").get(null);
-        List<?> boxes = (List<?>) renderer.getMethod("getEditorBoxes", Minecraft.class, settings).invoke(null, mc, cfg);
-        List<Map<String, Object>> list = new ArrayList<>();
-        for (Object b : boxes) {
-            Class<?> c = b.getClass();
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", c.getField("id").get(b));
-            m.put("x", c.getMethod("visualX").invoke(b));
-            m.put("y", c.getMethod("visualY").invoke(b));
-            m.put("w", c.getMethod("visualWidth").invoke(b));
-            m.put("h", c.getMethod("visualHeight").invoke(b));
-            m.put("shown", c.getField("shown").get(b));
-            list.add(m);
-        }
-        ScaledResolution r = new ScaledResolution(mc);
-        Map<String, Object> out = Bridge.ok();
-        out.put("gui", Arrays.asList(r.getScaledWidth(), r.getScaledHeight()));
-        out.put("scaleFactor", r.getScaleFactor());
-        out.put("boxes", list);
-        return out;
     }
 
     private static Class<?> cobblifyClass(String name, String probe) {

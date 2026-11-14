@@ -64,6 +64,40 @@ public final class CornerResize {
     }
 
     /**
+     * Left edge of the box when it measures {@code width} wide, so the opposite corner stays pinned. A module laid
+     * out at its text scale measures in whole device pixels, not base width x raw scale, so the editor places a
+     * resized box from its measured size (cross-cycle finding A-I1).
+     */
+    public float leftFor(float width) {
+        return dirX > 0 ? pinX : pinX - width;
+    }
+
+    /** Top edge of the box when it measures {@code height} tall (see {@link #leftFor}). */
+    public float topFor(float height) {
+        return dirY > 0 ? pinY : pinY - height;
+    }
+
+    /**
+     * The visual rectangle the resize really applies at {@code scale}: the content {@code contentW} x
+     * {@code contentH} as measured at that scale, placed with the opposite corner pinned ({@link #leftFor},
+     * {@link #topFor}), grown by {@code pad} on every side. Walls are checked against this.
+     */
+    public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad) {
+        return new HudWalls.Rect(leftFor(contentW) - pad, topFor(contentH) - pad, contentW + 2f * pad, contentH + 2f * pad);
+    }
+
+    /**
+     * As {@link #visualRectAt(float, float, float, float)}, with the content pulled on screen the way the renderer
+     * draws it ({@link HudPlacement#clamp} with the padding at that scale, which can grow with the scale): near the
+     * screen edge that moves the box, and the wall check must see where it is really drawn (code review R1-I1).
+     */
+    public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad, float screenW, float screenH) {
+        float x = HudPlacement.clamp(leftFor(contentW), contentW, pad, screenW);
+        float y = HudPlacement.clamp(topFor(contentH), contentH, pad, screenH);
+        return new HudWalls.Rect(x - pad, y - pad, contentW + 2f * pad, contentH + 2f * pad);
+    }
+
+    /**
      * The corner of the box (x, y, width, height) within {@code reach} of the mouse, or -1. The
      * nearest corner wins when the box is small enough for several to be in reach.
      */

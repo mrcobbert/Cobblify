@@ -8,6 +8,7 @@ read them and talks to the in-game control API on 127.0.0.1. See tools/devloop/R
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -41,6 +42,12 @@ SCREENS = {
 }
 KEYS = {"esc": 1, "backspace": 14, "tab": 15, "enter": 28, "space": 57, "up": 200, "down": 208,
         "left": 203, "right": 205, "home": 199, "end": 207, "delete": 211}
+# Letters and digits by LWJGL code, so "key z --mods ctrl" reads like the shortcut it sends.
+KEYS.update(zip("qwertyuiop", range(16, 26)))
+KEYS.update(zip("asdfghjkl", range(30, 39)))
+KEYS.update(zip("zxcvbnm", range(44, 51)))
+KEYS.update(zip("1234567890", range(2, 12)))
+MODIFIERS = ("alt", "shift", "ctrl")  # bridge Policy.modifiers: ctrl holds Ctrl and Cmd
 START = SHARED + "/bin/start.sh"
 NOT_RUNNING = ("the dev client is not running. Ask the user to run this in a terminal pane from their"
                " own account (not agent):\n  " + START)
@@ -707,8 +714,30 @@ def cmd_open(args):
 def cmd_simple(path, *names):
     def run(args):
         locked(args)
-        api(path, {n: getattr(args, n) for n in names})
+        api(path, input_params(args, names))
     return run
+
+
+def parse_mods(text):
+    """--mods alt,shift,ctrl: lower-cased, de-duplicated, in the order given; anything else is an error."""
+    mods = []
+    for raw in text.split(","):
+        m = raw.strip().lower()
+        if m not in MODIFIERS:
+            raise argparse.ArgumentTypeError("--mods takes %s (comma-separated), not %r" % (", ".join(MODIFIERS), raw))
+        if m not in mods:
+            mods.append(m)
+    return ",".join(mods)
+
+
+def input_params(args, names):
+    """The bridge parameters of an input command: its named arguments, plus --mods / --device when given."""
+    params = {n: getattr(args, n) for n in names}
+    if getattr(args, "mods", None):
+        params["mods"] = args.mods
+    if getattr(args, "device", False):
+        params["device"] = 1
+    return params
 
 
 def cmd_size(args):
@@ -725,15 +754,21 @@ def cmd_hover(args):
         api("/hover", {"x": int(args.x), "y": args.y})
 
 
-def cmd_key(args):
-    locked(args)
+def key_params(args):
     code = KEYS.get(args.key.lower())
     if code is None:
         code = int(args.key)
     params = {"code": code}
     if args.char:
         params["char"] = args.char
-    api("/key", params)
+    if args.mods:
+        params["mods"] = args.mods
+    return params
+
+
+def cmd_key(args):
+    locked(args)
+    api("/key", key_params(args))
 
 
 def cmd_world(args):
@@ -785,14 +820,22 @@ def cmd_command(args):
     api("/command", post={"command": args.command})
 
 
+def keyhold_params(args):
+    if not args.name:
+        if args.raw:
+            die("keyhold NAME on|off --raw needs a key binding name")
+        return {}
+    if args.state not in ("on", "off"):
+        die("keyhold NAME on|off [--raw] (or no arguments to list Cobblify's key bindings)")
+    params = {"name": args.name, "state": args.state}
+    if args.raw:
+        params["raw"] = 1
+    return params
+
+
 def cmd_keyhold(args):
     locked(args)
-    params = {}
-    if args.name:
-        if args.state not in ("on", "off"):
-            die("keyhold NAME on|off (or no arguments to list Cobblify's key bindings)")
-        params = {"name": args.name, "state": args.state}
-    print(json.dumps(api("/keyhold", params)))
+    print(json.dumps(api("/keyhold", keyhold_params(args))))
 
 
 def cmd_probe(args):
@@ -936,6 +979,156 @@ def tilt(img):
     return None if left is None or right is None else left - right
 
 
+# Overlay items (scoreboard, chat, tab list as HUD items): a black fill of alpha A over the backdrop
+# leaves every channel at 1 - A/255 of it, which is what the ratio helpers below measure.
+
+def gui_rect(box, sf):
+    """A GUI-px box ({x, y, w, h} from probe overlay-boxes, or a tuple) as a device-px rect (x0, y0, x1, y1),
+    x1 and y1 exclusive."""
+    x, y, w, h = (box["x"], box["y"], box["w"], box["h"]) if isinstance(box, dict) else box
+    return int(round(x * sf)), int(round(y * sf)), int(round((x + w) * sf)), int(round((y + h) * sf))
+
+
+def clip_rect(rect, img):
+    w, h, _ = img
+    x0, y0, x1, y1 = rect
+    return max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+
+
+def drawn_bbox(ref, img, rect=None, thresh=24):
+    """Device-px rect (x0, y0, x1, y1), exclusive, of every pixel that differs from the reference frame."""
+    _, bb = diff(ref, img, step=1, thresh=thresh, box=clip_rect(rect, img) if rect else None)
+    return None if bb is None else (bb[0], bb[1], bb[2] + 1, bb[3] + 1)
+
+
+def rect_close(a, b, tol):
+    return a is not None and b is not None and all(abs(p - q) <= tol for p, q in zip(a, b))
+
+
+def ratio_at(img, ref, x, y):
+    """Mean channel ratio of img to the backdrop at one pixel; None off the image or where the backdrop is too dark."""
+    if not (0 <= x < img[0] and 0 <= y < img[1]):
+        return None
+    a, b = px(img, x, y), px(ref, x, y)
+    if min(b) < 16:
+        return None
+    return (a[0] / b[0] + a[1] / b[1] + a[2] / b[2]) / 3
+
+
+def fill_ratio(img, ref, rect):
+    """Mean ratio over a rect that should hold only fill (no text): 1 - alpha/255 of a black fill, 1.0 without."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    vals = [r for y in range(y0, y1) for x in range(x0, x1) for r in [ratio_at(img, ref, x, y)] if r is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def ratio_share(img, ref, rect, want, tol=0.02):
+    """Fraction of the rect's pixels whose ratio is within tol of want (fills show up as a cluster)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    vals = [ratio_at(img, ref, x, y) for y in range(y0, y1) for x in range(x0, x1)]
+    vals = [v for v in vals if v is not None]
+    return sum(1 for v in vals if abs(v - want) <= tol) / len(vals) if vals else 0.0
+
+
+def band_rows(img, ref, x, want, tol=0.05, y0=0, y1=None, gap=0):
+    """The longest run of rows in column x whose ratio is within tol of want: (top, bottom), bottom exclusive.
+    Up to `gap` non-matching rows inside a run do not end it (something 1 GUI px tall drawn over the fill, such as
+    the crosshair's arm at some window sizes)."""
+    h = img[1]
+    y1 = h if y1 is None else min(h, y1)
+    best, start, last = None, None, None
+    for y in range(max(0, y0), y1 + 1):
+        r = ratio_at(img, ref, x, y) if y < y1 else None
+        if r is not None and abs(r - want) <= tol:
+            if start is None:
+                start = y
+            last = y
+        elif start is not None and (y >= y1 or y - last > gap):
+            if best is None or last + 1 - start > best[1] - best[0]:
+                best = (start, last + 1)
+            start = None
+    return best
+
+
+def color_count(img, rect, rgb, tol=12):
+    """Pixels in the rect within tol of an exact colour (e.g. the scoreboard's red score, 0xFF5555)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if max(abs(c - t) for c, t in zip(px(img, x, y), rgb)) <= tol)
+
+
+def dark_count(img, ref, rect, factor=0.6):
+    """Pixels darker than factor x the backdrop in every channel (text shadows over a fill-less overlay)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if all(a < factor * b for a, b in zip(px(img, x, y), px(ref, x, y))))
+
+
+def changed_mask(a, b, rect=None, thresh=24):
+    """Full-resolution changed pixels between two frames inside rect: {(x, y)}."""
+    w, h, _ = a
+    if (w, h) != b[:2]:
+        raise ValueError("frames differ in size")
+    x0, y0, x1, y1 = clip_rect(rect, a) if rect else (0, 0, w, h)
+    out = set()
+    for y in range(y0, y1):
+        ra, rb = a[2][y], b[2][y]
+        if ra[3 * x0:3 * x1] == rb[3 * x0:3 * x1]:
+            continue
+        for x in range(x0, x1):
+            if max(abs(ra[3 * x + i] - rb[3 * x + i]) for i in range(3)) > thresh:
+                out.add((x, y))
+    return out
+
+
+def quiet_bbox(a, b, rect=None, thresh=24, min_run=3):
+    """Like drawn_bbox, but only rows and columns with at least min_run changed pixels count, so a few stray pixels
+    (grass shimmering between frames) cannot stretch the box. (x0, y0, x1, y1) exclusive, or None."""
+    pts = changed_mask(a, b, rect, thresh)
+    cols, rows = {}, {}
+    for x, y in pts:
+        cols[x] = cols.get(x, 0) + 1
+        rows[y] = rows.get(y, 0) + 1
+    xs = [x for x, n in cols.items() if n >= min_run]
+    ys = [y for y, n in rows.items() if n >= min_run]
+    return (min(xs), min(ys), max(xs) + 1, max(ys) + 1) if xs and ys else None
+
+
+# Changed pixels two frames of the same scene may still differ by (grass shimmer: ~4 px per frame pair).
+OV_NOISE_PX = 24
+
+
+def frames_match(a, b, rect=None, noise=OV_NOISE_PX):
+    """(same, changed pixel count): the frames differ in at most `noise` pixels."""
+    n = len(changed_mask(a, b, rect))
+    return n <= noise, n
+
+
+def tab_border_column(box, scale, sf):
+    """The device column through the tab list's 1 px left border (list, header and footer fill, never a cell)."""
+    return int((box["x"] + 0.5 * scale) * sf)
+
+
+def tab_background_off(img, ref, box, scale, sf):
+    """(ok, detail) for a tab list drawn with Background Off: its border column is the backdrop and no pixel in the
+    box sits at the list (0x80) or row (0x80 + 0x20) fill. Text, heads and ping bars may cover most of a short list."""
+    rect = gui_rect(box, sf)
+    x = tab_border_column(box, scale, sf)
+    border = fill_ratio(img, ref, (x, rect[1] + 1, x + 1, rect[3] - 1))
+    lists, rows = ratio_share(img, ref, rect, FILL_80, 0.01), ratio_share(img, ref, rect, ROWS_80_20, 0.01)
+    ok = border is not None and abs(border - 1.0) <= 0.03 and lists < 0.005 and rows < 0.005
+    return ok, "border %s, %.3f at 0x80, %.3f at the row fill" % (border, lists, rows)
+
+
+def rightmost_bright(img, rect, floor=230):
+    """Rightmost x in the rect with a near-white pixel (overlay text), or None."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    for x in range(x1 - 1, x0 - 1, -1):
+        if any(min(px(img, x, y)) >= floor for y in range(y0, y1)):
+            return x
+    return None
+
+
 # ----------------------------------------------------------------------------------- smoke
 
 class Smoke:
@@ -994,7 +1187,7 @@ class Smoke:
         self.step["checks"].append({"check": name, "ok": bool(ok), "detail": detail})
         if not ok:
             self.step["status"] = "fail"
-        print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % detail if detail is not None else ""))
+        print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % (detail,) if detail is not None else ""))
         return ok
 
     def note(self, name, detail=None):
@@ -1227,20 +1420,24 @@ def box_width(b):
 
 
 def smoke_overlays(s, cfg):
-    """Scoreboard Size and Tab List Size change the drawn size. In prod, Argentum's Font Batching draws both
-    overlays after their methods return (the 2026-11-13 regression: neither size applied)."""
-    s.begin("A4-overlays", "Scoreboard Size and Tab List Size shrink the drawn overlay")
+    """The scoreboard and tab list item scales change the drawn size. In prod, Argentum's Font Batching draws
+    both overlays after their methods return (the 2026-11-13 regression: neither size applied)."""
+    s.begin("A4-overlays", "Scoreboard and tab list item scales shrink the drawn overlay")
     if not cfg:
         return s.unavailable("Cobblify config not found")
-    sb, tab = cfg + ".scoreboardSize", cfg + ".styledTabListSize"
+    sb, tab = cfg + ".scoreboardHudScale", cfg + ".tabListHudScale"
     sb0, tab0 = s.field(sb).get("value"), s.field(tab).get("value")
+    # Holding Tab hides every Cobblify module, so with modules on the Tab/no-Tab diff spans them, not the list.
+    scene = OvScene(s, cfg)
+    for f in OV_MODULES:
+        scene.set(f, False)
     for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
               "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
               "/scoreboard players set Finals cobsb 12", "/scoreboard objectives setdisplay sidebar",
               "/scoreboard objectives setdisplay list cobsb", "/tp @p 0.5 4 0.5 0 0"):
         s.cmd(c)
     s.call("/close")
-    time.sleep(6)  # command chat fades
+    time.sleep(0.6)  # chat lines no longer fade; both regions below stay clear of the chat
     try:
         _, base = s.shot("overlay-none")
         w, h, _ = base
@@ -1248,15 +1445,15 @@ def smoke_overlays(s, cfg):
         s.cmd("/scoreboard objectives setdisplay sidebar cobsb")
         s.call("/close")
         widths = {}
-        for size in (2, 0):
-            s.field(sb, size)
+        for scale in (1.0, 0.7):
+            s.field(sb, scale)
             time.sleep(0.4)
-            _, img = s.shot("scoreboard-size%d" % size)
-            widths[size] = box_width(diff(base, img, box=right)[1])
+            _, img = s.shot("scoreboard-scale%s" % scale)
+            widths[scale] = box_width(quiet_bbox(base, img, right))
         s.step["scoreboardWidths"] = widths
-        s.check("the sidebar scoreboard is drawn", widths[2] > 0, widths)
-        s.check("Scoreboard Size Small draws it ~0.7x as wide as Large",
-                0 < widths[0] <= widths[2] * 0.8, "%s px vs %s px" % (widths[0], widths[2]))
+        s.check("the sidebar scoreboard is drawn", widths[1.0] > 0, widths)
+        s.check("scoreboard scale 0.7 draws it ~0.7x as wide as 1.0",
+                0 < widths[0.7] <= widths[1.0] * 0.8, "%s px vs %s px" % (widths[0.7], widths[1.0]))
         s.cmd("/scoreboard objectives setdisplay sidebar")
         s.call("/close")
         time.sleep(0.4)
@@ -1265,21 +1462,517 @@ def smoke_overlays(s, cfg):
         widths = {}
         s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
         try:
-            for size in (2, 0):
-                s.field(tab, size)
+            for scale in (1.0, 0.7):
+                s.field(tab, scale)
                 time.sleep(0.4)
-                _, img = s.shot("tab-size%d" % size)
-                widths[size] = box_width(diff(base2, img, box=top)[1])
+                _, img = s.shot("tab-scale%s" % scale)
+                widths[scale] = box_width(quiet_bbox(base2, img, top))
         finally:
             s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
         s.step["tabWidths"] = widths
-        s.check("the tab list is drawn while Tab is held", widths[2] > 0, widths)
-        s.check("Tab List Size Small draws it narrower than Large",
-                0 < widths[0] <= widths[2] * 0.85, "%s px vs %s px" % (widths[0], widths[2]))
+        s.check("the tab list is drawn while Tab is held", widths[1.0] > 0, widths)
+        s.check("tab list scale 0.7 draws it narrower than 1.0",
+                0 < widths[0.7] <= widths[1.0] * 0.85, "%s px vs %s px" % (widths[0.7], widths[1.0]))
     finally:
         s.field(sb, sb0)
         s.field(tab, tab0)
+        scene.restore()
         s.cmd("/scoreboard objectives remove cobsb")
+
+
+# ------------------------------------------------- overlay items: scoreboard, chat, tab list (HUD parity B)
+# PLAN 2026-11-14-hud-overlays Phase 6. Every shot is the same scene: GUI scale 2, morning, clear sky,
+# the player looking straight up so the backdrop is plain sky, Cobblify modules off unless a step turns
+# them on; every field and setting a step changes is put back in `finally`.
+
+OV_MODULES = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled", "sessionStatsEnabled",
+              "heightLimitEnabled", "inventoryHudEnabled", "genTimersEnabled", "tntFuseEnabled",
+              "fpsEnabled", "cpsEnabled", "pingEnabled"]
+OV_IN_GAME_ONLY = ["armorInGameOnly", "potionInGameOnly", "keystrokesInGameOnly"]
+SCORE_RED = (255, 85, 85)
+FILL_50 = 1 - 0x50 / 255.0                      # scoreboard Background On
+FILL_80 = 1 - 0x80 / 255.0                      # tab list, header, footer; chat typing bar
+ROWS_80_20 = (1 - 0x80 / 255.0) * (1 - 0x20 / 255.0)  # a tab row over the list fill
+CHAT_FILL = 1 - 0x7F / 255.0                    # vanilla chat line fill at full chat opacity
+TAB_HIDE_FIELD = "com.bedwarsqol.hud.TabHudGate.mismatchFrames"
+# (anchor, x, y, scale): P1 never moved, P2 and P3 placed (PLAN OV steps)
+OV_SB_PLACES = [("p1", (-1, 0, 0, 1.0)), ("p2", (0, 6, 40, 0.7)), ("p3", (8, -6, -60, 1.5))]
+OV_CHAT_PLACES = [("p1", (-1, 0, 0, 1.0)), ("p2", (5, -10, 0, 1.5)), ("p3", (0, 4, 4, 0.75))]
+CHAT_FIXTURE_ROWS = {"wrapped": (0, 1), "hover": 2, "link": 3}  # bridge/resources/chat-overlays.json
+OV_ITEMS = ("scoreboard", "tablist", "chat")
+CHAT_LINK = "https://example.com/cobdev"
+CHAT_WRAPPED = "Cobdev wrapped line: a fixture message long enough to wrap onto a second chat row"
+
+
+class OvScene:
+    """The fixed overlay scene, and a record of every Cobblify field it changed so `restore` puts it back."""
+
+    def __init__(self, s, cfg):
+        # backgrounds: each overlay item's Background as it was before the scene first touched it
+        self.s, self.cfg, self.saved, self.scale, self.backgrounds = s, cfg, {}, None, {}
+
+    def setup(self):
+        st = self.s.status()
+        self.scale = st.get("guiScaleSetting")
+        self.s.call("/scale", {"n": 2})
+        for c in ("/gamerule sendCommandFeedback false", "/gamerule doDaylightCycle false", "/time set 1000",
+                  "/weather clear", "/effect @p clear", "/tp @p 0.5 4 0.5 0 -90"):
+            self.s.cmd(c)
+        for f in OV_MODULES:
+            self.set(f, False)
+        self.set("tabHideHeaderFooter", False)  # the tab checks include the header and footer
+        for item in OV_ITEMS:
+            self.background(item, True)  # the On checks start from On, whatever the player chose
+        # vanilla's default chat width, scale, heights and opacity (row heights, wrapping and the fill depend on them);
+        # restore() puts the player's back with chat-heights restore
+        self.s.probe("chat-defaults")
+        self.s.call("/close")
+        self.s.probe("chat-clear")
+        time.sleep(1.5)
+
+    def set(self, name, value):
+        path = self.cfg + "." + name
+        if path not in self.saved:
+            self.saved[path] = self.s.field(path).get("value")
+        self.s.field(path, value)
+
+    def place(self, prefix, where):
+        anchor, x, y, scale = where
+        self.set(prefix + "Anchor", anchor)
+        self.set(prefix + "X", x)
+        self.set(prefix + "Y", y)
+        self.set(prefix + "Scale", scale)
+
+    def background(self, item, on):
+        """An overlay item's Background switch, through the config's own setter; `restore` puts back what it was."""
+        if item not in self.backgrounds:
+            was = self.s.call("/invoke", post={"path": self.cfg + ".hudBackground", "args": item}).get("value")
+            self.backgrounds[item] = was is not False
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudBackground", "args": ARG_SEP.join([item, str(on).lower()])})
+        time.sleep(0.4)
+
+    def restore(self):
+        for item, was in self.backgrounds.items():
+            self.s.try_call("/invoke", post={"path": self.cfg + ".setHudBackground",
+                                             "args": ARG_SEP.join([item, str(was).lower()])})
+        self.backgrounds = {}
+        for path, value in self.saved.items():
+            self.s.try_call("/field", post={"path": path,
+                                            "value": str(value).lower() if isinstance(value, bool) else str(value)})
+        self.saved = {}
+        self.s.try_call("/probe", post={"name": "chat-heights", "args": "restore"})
+        self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
+        if self.scale is not None:
+            self.s.try_call("/scale", {"n": self.scale})
+
+
+def ov_chat_places(gui_w, chat_w=324.0):
+    """OV_CHAT_PLACES with P2's large scale shrunk, if needed, so a vanilla-width chat still fits the GUI width
+    (a 960 px window at GUI scale 2 is 480 GUI px: 324 x 1.5 would not fit and the box would clamp off its margin)."""
+    places = []
+    for tag, (anchor, x, y, scale) in OV_CHAT_PLACES:
+        if chat_w * scale > gui_w - 12:
+            scale = max(0.5, math.floor((gui_w - 12) / chat_w * 100) / 100.0)
+        places.append((tag, (anchor, x, y, scale)))
+    return places
+
+
+def scoreboard_samples(box, scale, sf):
+    """Device-px rects that hold only scoreboard fill: one column in the middle of the 2 px left margin (text starts
+    after it), (lines below the title, the title row). Never empty for any item scale >= 0.3 at GUI scale >= 1."""
+    x = int((box["x"] + scale) * sf)
+    title_bottom = (box["y"] + 9 * scale) * sf
+    lines = (x, int(math.ceil((box["y"] + 10 * scale) * sf)), x + 1, int((box["y"] + box["h"]) * sf))
+    title = (x, int(math.ceil(box["y"] * sf)), x + 1, max(int(math.ceil(box["y"] * sf)) + 1, int(title_bottom)))
+    return lines, title
+
+
+def chat_margin_column(box, scale, sf, chat_scale=1.0):
+    """The device column in the middle of the chat fill's right 4 chat px, where no text reaches."""
+    return int((box["x"] + box["w"] - 2 * scale * chat_scale) * sf)
+
+
+def ov_boxes(s):
+    r = s.probe("overlay-boxes")
+    return r["scaleFactor"], r["gui"], r["items"]
+
+
+def ov_objective(s, sidebar=True, tablist=False):
+    for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
+              "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
+              "/scoreboard players set Finals cobsb 12", "/scoreboard players set Kills cobsb -1",
+              "/scoreboard players set Wins cobsb 0"):
+        s.cmd(c)
+    s.cmd("/scoreboard objectives setdisplay sidebar" + (" cobsb" if sidebar else ""))
+    s.cmd("/scoreboard objectives setdisplay list" + (" cobsb" if tablist else ""))
+
+
+def ov_ready(s, cfg):
+    if not cfg:
+        s.unavailable("Cobblify config not found")
+        return False
+    if not s.has("com.bedwarsqol.hud.BedwarsHudRenderer", "overlayBox"):
+        s.unavailable("this build has no overlay items (BedwarsHudRenderer.overlayBox)")
+        return False
+    return True
+
+
+def smoke_ov_scoreboard(s, cfg):
+    s.begin("OV-scoreboard", "scoreboard item: drawn at its box (3 placements), Lunar fill, numbers hidden")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        ov_objective(s)
+        s.call("/close")
+        scene.set("scoreboardHudEnabled", False)
+        time.sleep(0.4)
+        _, ref = s.shot("ov-sb-ref")
+        scene.set("scoreboardHudEnabled", True)
+        for tag, where in OV_SB_PLACES:
+            scene.place("scoreboardHud", where)
+            time.sleep(0.4)
+            _, img = s.shot("ov-sb-" + tag)
+            sf, _, items = ov_boxes(s)
+            box, scale = items.get("scoreboard"), where[3]
+            if not s.check("%s: the scoreboard has a box" % tag, box is not None, items):
+                continue
+            rect = gui_rect(box, sf)
+            drawn = drawn_bbox(ref, img)
+            s.check("%s: drawn where its box is (1 GUI px)" % tag, rect_close(drawn, rect, sf), "%s vs %s" % (drawn, rect))
+            margin, title = scoreboard_samples(box, scale, sf)
+            lines_r, title_r = fill_ratio(img, ref, margin), fill_ratio(img, ref, title)
+            s.check("%s: Background On fills the lines 0x50" % tag, close_enough(lines_r, FILL_50, 0.03), lines_r)
+            s.check("%s: the title row has the same fill (not vanilla's 0x60)" % tag,
+                    close_enough(title_r, FILL_50, 0.03), title_r)
+            s.check("%s: no red score numbers" % tag, color_count(img, rect, SCORE_RED) == 0)
+            right = rightmost_bright(img, rect)
+            s.check("%s: score column trimmed (text ends near the box's right edge)" % tag,
+                    right is not None and rect[2] - 1 - right <= 4 * scale * sf, "text ends at %s, box at %s" % (right, rect[2]))
+        # Background Off: no fill, text with a shadow (pixels darker than the backdrop appear only then)
+        scene.place("scoreboardHud", OV_SB_PLACES[0][1])
+        time.sleep(0.4)
+        _, on_img = s.shot("ov-sb-bg-on")
+        sf, _, items = ov_boxes(s)
+        box = items.get("scoreboard")
+        if box is not None:
+            rect = gui_rect(box, sf)
+            margin, _ = scoreboard_samples(box, OV_SB_PLACES[0][1][3], sf)
+            scene.background("scoreboard", False)
+            _, off_img = s.shot("ov-sb-bg-off")
+            off_r = fill_ratio(off_img, ref, margin)
+            s.check("Background Off: no fill behind the lines", close_enough(off_r, 1.0, 0.03), off_r)
+            dark_on, dark_off = dark_count(on_img, ref, rect), dark_count(off_img, ref, rect)
+            s.check("Background Off: the text drops a shadow (On has none)", dark_on == 0 and dark_off > 0,
+                    "dark pixels on %s, off %s" % (dark_on, dark_off))
+            scene.background("scoreboard", True)
+        scene.set("scoreboardHudEnabled", False)
+        time.sleep(0.4)
+        _, hidden = s.shot("ov-sb-hidden")
+        s.check("hidden in Edit HUD: nothing drawn", drawn_bbox(ref, hidden) is None)
+    finally:
+        scene.restore()
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def smoke_ov_tab(s, cfg):
+    s.begin("OV-tab", "tab list item: drawn at its box (3 placements) with the Lunar fills")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        ov_objective(s, sidebar=False, tablist=True)
+        s.probe("tab-header-footer", "Cobdev Header", "Cobdev Footer")
+        s.call("/close")
+        time.sleep(0.4)
+        _, ref = s.shot("ov-tab-ref")
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            for tag, where in OV_SB_PLACES:
+                scene.place("tabListHud", where)
+                time.sleep(0.4)
+                _, img = s.shot("ov-tab-" + tag)
+                sf, _, items = ov_boxes(s)
+                box = items.get("tablist")
+                if not s.check("%s: the tab list has a box" % tag, box is not None, items):
+                    continue
+                rect = gui_rect(box, sf)
+                drawn = drawn_bbox(ref, img)
+                s.check("%s: drawn where its box is (1 GUI px)" % tag, rect_close(drawn, rect, sf), "%s vs %s" % (drawn, rect))
+                list_share = ratio_share(img, ref, rect, FILL_80)
+                row_share = ratio_share(img, ref, rect, ROWS_80_20)
+                s.check("%s: list, header and footer fill 0x80" % tag, list_share > 0.05, "%.3f of the box" % list_share)
+                s.check("%s: rows 0x20 over the list fill" % tag, row_share > 0.02, "%.3f of the box" % row_share)
+                x = tab_border_column(box, where[3], sf)
+                border = fill_ratio(img, ref, (x, rect[1] + 1, x + 1, rect[3] - 1))
+                s.check("%s: the border column is the list fill" % tag, close_enough(border, FILL_80, 0.03), border)
+                if tag == "p1":
+                    # one header line, one player row, one footer line: 1 + 9 + 1 + 9 + 1 + 9 GUI px
+                    s.check("p1: the header and footer are part of the box", box["h"] >= 29.5, box)
+            scene.background("tablist", False)
+            _, off_img = s.shot("ov-tab-bg-off")
+            sf, _, items = ov_boxes(s)
+            if items.get("tablist") is not None:
+                ok, detail = tab_background_off(off_img, ref, items["tablist"], OV_SB_PLACES[-1][1][3], sf)
+                s.check("Background Off: no list or row fills", ok, detail)
+            scene.background("tablist", True)
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+    finally:
+        scene.restore()
+        s.try_call("/probe", post={"name": "tab-header-footer", "args": "clear"})
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def smoke_ov_tabhide(s, cfg):
+    s.begin("OV-tabhide", "holding Tab hides every Cobblify HUD element; scoreboard and chat stay")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    on = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled", "sessionStatsEnabled", "tntFuseEnabled",
+          "fpsEnabled", "cpsEnabled", "pingEnabled"]
+
+    def modules(state):
+        for f in on:
+            scene.set(f, state)
+        time.sleep(0.4)
+
+    try:
+        scene.setup()
+        for f in OV_IN_GAME_ONLY:
+            scene.set(f, False)
+        scene.set("sessionStatsHoldKey", False)
+        ov_objective(s, sidebar=True, tablist=True)  # the list objective lets singleplayer show the tab list
+        # hideParticles: the Speed swirl would float across the sky between the compared frames
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:iron_chestplate", "/effect @p 1 120 1 true"):
+            s.cmd(c)
+        s.call("/close")
+        _, _, free = ov_boxes(s)
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            s.cmd("/summon PrimedTnt ~6 ~ ~ {Fuse:120}")
+            s.call("/close")
+            modules(True)
+            _, held_on = s.shot("ov-tabhide-held-on")
+            modules(False)
+            _, held_off = s.shot("ov-tabhide-held-off")
+            same, changed = frames_match(held_on, held_off)
+            s.check("Tab held: modules on and off draw the same frame", same,
+                    "%d changed px (noise allowance %d)" % (changed, OV_NOISE_PX))
+            _, _, held = ov_boxes(s)
+            for item in ("scoreboard", "chat"):
+                s.check("Tab held: the %s still draws in the same box" % item,
+                        held.get(item) is not None and held.get(item) == free.get(item), "%s vs %s" % (held.get(item), free.get(item)))
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+        s.cmd("/summon PrimedTnt ~6 ~ ~ {Fuse:120}")
+        s.call("/close")
+        modules(True)
+        _, free_on = s.shot("ov-tabhide-free-on")
+        modules(False)
+        _, free_off = s.shot("ov-tabhide-free-off")
+        w, h, _ = free_on
+        for name, region in (("left", (0, 0, w // 3, h)), ("right", (2 * w // 3, 0, w, h)),
+                             ("crosshair", (w // 3, h // 3, 2 * w // 3, 2 * h // 3))):
+            frac, box = diff(free_on, free_off, box=region)
+            s.check("released: the modules draw again (%s)" % name, frac > 0, "diff %.4f in %s" % (frac, box))
+        before = s.field(TAB_HIDE_FIELD).get("value")
+        for _ in range(20):
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+            time.sleep(0.3)
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+            time.sleep(0.3)
+        after = s.field(TAB_HIDE_FIELD).get("value")
+        s.check("the HUD's Tab prediction always matched vanilla", after == 0, "mismatchFrames %s -> %s" % (before, after))
+    finally:
+        scene.restore()
+        # the chestplate and Speed set above; armor left on would soften A2-clutch's damage check
+        for c in ("/replaceitem entity @p slot.armor.chest minecraft:air", "/effect @p clear"):
+            s.try_call("/command", post={"command": c})
+        time.sleep(5)  # let the TNT go off before the next step
+        s.try_call("/command", post={"command": "/scoreboard objectives remove cobsb"})
+
+
+def ov_chat_rows(s, img, ref, box, sf, scale, chat_scale=1.0):
+    """(band rows, band top, band bottom) of chat fill in the right margin column (no text reaches it)."""
+    x = chat_margin_column(box, scale, sf, chat_scale)
+    band = band_rows(img, ref, x, CHAT_FILL, tol=0.05, gap=2 * sf)
+    if band is None:
+        return 0, None, None
+    row = 9 * chat_scale * scale * sf
+    return int(round((band[1] - band[0]) / row)), band[0], band[1]
+
+
+def smoke_ov_chat(s, cfg):
+    s.begin("OV-chat", "chat item: never fades, 10 rows closed / 20 open from the bottom, box hugs its lines")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        _, ref = s.shot("ov-chat-ref")  # an empty chat draws nothing
+        places = ov_chat_places(ov_boxes(s)[1][0])
+        s.step["chatPlaces"] = places
+        for tag, where in places:
+            scene.place("chatHud", where)
+            scale = where[3]
+            s.probe("chat-clear")
+            for i in range(3):
+                s.cmd('/tellraw @p {"text":"Cobdev short line %d"}' % (i + 1))
+            s.call("/close")
+            time.sleep(0.4)
+            _, img = s.shot("ov-chat-%s-3" % tag)
+            sf, gui, items = ov_boxes(s)
+            box3 = items["chat"]
+            rows, top, bottom = ov_chat_rows(s, img, ref, box3, sf, scale)
+            s.check("%s: 3 lines: box and fill are 3 rows (no empty rows on top)" % tag,
+                    rows == 3 and close_enough(box3["h"], 3 * 9 * scale, 0.01), "band %s rows, box h %s" % (rows, box3["h"]))
+            s.probe("chat-fixture", "overlays")
+            s.call("/close")
+            if tag == "p1":
+                time.sleep(12)  # past vanilla's 200-tick fade
+            else:
+                time.sleep(0.4)
+            _, img = s.shot("ov-chat-%s-closed" % tag)
+            sf, gui, items = ov_boxes(s)
+            box = items["chat"]
+            rows, top, bottom = ov_chat_rows(s, img, ref, box, sf, scale)
+            s.check("%s: closed chat shows 10 rows%s" % (tag, " after 12 s" if tag == "p1" else ""), rows == 10, rows)
+            s.check("%s: box is 10 rows and the fill ends at its bottom" % tag,
+                    close_enough(box["h"], 10 * 9 * scale, 0.01) and bottom is not None
+                    and abs(bottom - (box["y"] + box["h"]) * sf) <= sf, "box %s, band bottom %s" % (box, bottom))
+            s.check("%s: the bottom stays put while rows grow 3 -> 10" % tag,
+                    close_enough(box3["y"] + box3["h"], box["y"] + box["h"], 0.5), "%s vs %s" % (box3, box))
+            if tag in ("p1", "p2"):
+                s.probe("chat-open")
+                time.sleep(0.4)
+                _, opened = s.shot("ov-chat-%s-open" % tag)
+                orows, otop, obottom = ov_chat_rows(s, opened, ref, box, sf, scale)
+                s.check("%s: open chat grows upward from the same bottom" % tag,
+                        orows > 10 and obottom is not None and abs(obottom - bottom) <= sf, "%s rows, bottom %s vs %s" % (orows, obottom, bottom))
+                sw, sh = gui
+                bar = [fill_ratio(opened, ref, (int(x0 * sf), (sh - 13) * sf, int(x1 * sf), (sh - 11) * sf))
+                       for x0, x1 in ((2, 3.5), (sw - 3.5, sw - 2))]
+                s.check("%s: the typing bar stays full width at the bottom" % tag,
+                        all(close_enough(b, FILL_80, 0.03) for b in bar), bar)
+                s.call("/close")
+        # Background Off: the chat lines draw without their fill.
+        scene.place("chatHud", OV_CHAT_PLACES[0][1])
+        scene.background("chat", False)
+        _, off_img = s.shot("ov-chat-bg-off")
+        sf, gui, items = ov_boxes(s)
+        box = items["chat"]
+        x = chat_margin_column(box, 1.0, sf)
+        off_r = fill_ratio(off_img, ref, (x, int(box["y"] * sf) + 1, x + 1, int((box["y"] + box["h"]) * sf) - 1))
+        s.check("Background Off: no fill behind the chat lines", close_enough(off_r, 1.0, 0.03), off_r)
+        scene.background("chat", True)
+        # The Unfocused Height slider at its maximum still shows 10 closed rows (vanilla would show 20).
+        s.probe("chat-clear")
+        s.probe("chat-heights", 1.0, 1.0)
+        s.probe("chat-fixture", "overlays")
+        s.probe("chat-fixture", "overlays")
+        s.call("/close")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-slider-closed")
+        sf, gui, items = ov_boxes(s)
+        rows, _, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("slider at max: closed chat still 10 rows, 10-row box", rows == 10 and close_enough(items["chat"]["h"], 90, 0.01),
+                "%s rows, box %s" % (rows, items["chat"]))
+        s.probe("chat-open")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-slider-open")
+        rows, _, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("slider at max: open chat 20 rows", rows == 20, rows)
+        s.call("/close")
+        s.probe("chat-defaults")  # back to the scene's vanilla defaults; restore() puts the player's options back
+        # Top edge: a short chat placed at y 4 stays there; grown to 10 rows its top clamps to 0.
+        s.probe("chat-clear")
+        for i in range(3):
+            s.cmd('/tellraw @p {"text":"Cobdev short line %d"}' % (i + 1))
+        s.call("/close")
+        s.probe("place-item", "chat", 4, 4)
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-top-3")
+        sf, gui, items = ov_boxes(s)
+        rows, top, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("top edge: a 3-row chat placed at y 4 stays at y 4", close_enough(items["chat"]["y"], 4, 0.01)
+                and top is not None and abs(top - 4 * sf) <= sf, "box %s, band top %s" % (items["chat"], top))
+        for i in range(7):
+            s.cmd('/tellraw @p {"text":"Cobdev more line %d"}' % (i + 1))
+        s.call("/close")
+        time.sleep(0.4)
+        _, img = s.shot("ov-chat-top-10")
+        sf, gui, items = ov_boxes(s)
+        rows, top, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
+        s.check("top edge: grown to 10 rows the box top clamps to 0", close_enough(items["chat"]["y"], 0, 0.01)
+                and rows == 10 and top is not None and top <= sf, "box %s, %s rows from %s" % (items["chat"], rows, top))
+    finally:
+        scene.restore()
+        s.try_call("/probe", post={"name": "chat-clear"})
+
+
+def smoke_ov_chatclick(s, cfg):
+    s.begin("OV-chatclick", "chat item: links, hover text and Copy Chat at a moved, scaled chat")
+    if not ov_ready(s, cfg):
+        return
+    scene = OvScene(s, cfg)
+    try:
+        scene.setup()
+        places = ov_chat_places(ov_boxes(s)[1][0])
+        s.step["chatPlaces"] = places[:2]
+        for tag, where in places[:2]:
+            scene.place("chatHud", where)
+            scale = where[3]
+            s.probe("chat-clear")
+            s.probe("chat-fixture", "overlays")
+            s.probe("chat-open")
+            time.sleep(0.4)
+            sf, gui, items = ov_boxes(s)
+            box = items["chat"]
+            row = 9 * scale
+
+            def at(chat_x, r):
+                return int(round(box["x"] + chat_x * scale)), int(round(box["y"] + box["h"] - row * (r + 0.5)))
+
+            gx, gy = at(120, CHAT_FIXTURE_ROWS["link"])
+            hit = s.probe("chat-at", gx, gy)
+            comp = hit.get("component") or {}
+            s.check("%s: the link row opens the fixture URL" % tag,
+                    (comp.get("click") or {}).get("action") == "open_url" and (comp.get("click") or {}).get("value") == CHAT_LINK, hit)
+            hx, hy = at(30, CHAT_FIXTURE_ROWS["hover"])
+            hit = s.probe("chat-at", hx, hy)
+            comp = hit.get("component") or {}
+            s.check("%s: the hover row carries its hover text" % tag, (comp.get("hover") or {}).get("action") == "show_text", hit)
+            hit = s.probe("chat-at", int(box["x"]) - 1, gy)
+            s.check("%s: 1 px left of the box is no line" % tag, hit.get("component") is None and hit.get("copy") is None, hit)
+            for r in CHAT_FIXTURE_ROWS["wrapped"]:
+                hit = s.probe("chat-at", *at(30, r))
+                s.check("%s: Copy Chat copies the whole wrapped message (row %d)" % (tag, r),
+                        (hit.get("copy") or {}).get("text") == CHAT_WRAPPED, hit)
+            _, before = s.shot("ov-chatclick-%s-nohover" % tag)
+            s.call("/hover", {"x": hx, "y": hy})
+            _, hovered = s.shot("ov-chatclick-%s-hover" % tag)
+            s.call("/hover", {"off": 1})
+            frac, bb = diff(before, hovered, box=(max(0, (hx - 20) * sf), max(0, (hy - 40) * sf),
+                                                    min(hovered[0], (hx + 160) * sf), min(hovered[1], (hy + 20) * sf)))
+            s.check("%s: hovering the hover row shows its tooltip" % tag, frac > 0, "diff %.4f in %s" % (frac, bb))
+            click = s.probe("chat-click", gx, gy)
+            s.check("%s: clicking the link opens the link prompt" % tag, click.get("screenAfter") == "confirm-open-link", click)
+            s.call("/close")  # never confirms the link
+    finally:
+        s.try_call("/close")
+        scene.restore()
+        s.try_call("/probe", post={"name": "chat-clear"})
+
+
+def overlay_steps(s, cfg_box):
+    return [lambda: smoke_ov_scoreboard(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_tab(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_tabhide(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_chat(s, cfg_box.get("cfg")),
+            lambda: smoke_ov_chatclick(s, cfg_box.get("cfg"))]
 
 
 def smoke_sprint(s, cfg):
@@ -1500,6 +2193,2007 @@ def smoke_clutch(s, cfg):
     heal()
 
 
+# Edit HUD (A4-edithud): each module's position fields in ClientSettings (prefix + X, Y, Anchor, Scale).
+EDIT_HUD_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
+                   "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
+                   "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud", "fps": "fpsHud", "cps": "cpsHud",
+                   "ping": "pingHud", "scoreboard": "scoreboardHud", "chat": "chatHud", "tablist": "tabListHud"}
+# Edit HUD (A4-edithud): each module's switch in ClientSettings and the HudModules ids it shows.
+EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", ("armor",)),
+                    ("inventoryHudEnabled", ("inventory",)), ("genTimersEnabled", ("diamondtimer", "emeraldtimer")),
+                    ("keystrokesEnabled", ("keystrokes",)), ("sessionStatsEnabled", ("sessionstats",)),
+                    ("heightLimitEnabled", ("heightlimit",)), ("fpsEnabled", ("fps",)), ("cpsEnabled", ("cps",)),
+                    ("pingEnabled", ("ping",))]
+
+
+def smoke_edithud(s, cfg, mode, checks=None):
+    """Edit HUD driven precisely through --mods, --device, keyhold --raw and probe hud-boxes (edit-hud PLAN,
+    runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
+    Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
+    limits the run to those ids (all when None)."""
+    s.begin("A4-edithud", "Edit HUD: Reset Positions, walls, fine moves, snap, live preview, menu, show (E0-E15)")
+    if not cfg or not s.has(SCREENS["hud"]):
+        return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
+    run = EditHudRun(s, cfg)
+    old_scale = (s.status() or {}).get("guiScaleSetting")
+    try:
+        for name, _ in EDIT_HUD_MODULES:
+            run.remember(name)
+        run.remember_layout()
+        if mode == "dev":
+            s.call("/size", {"w": 1280, "h": 720})  # size is dev-only (Minecraft.resize by its MCP name)
+        s.call("/scale", {"n": 2})
+        enabled = run.show_only(None)
+        s.call("/open", {"class": SCREENS["hud"]})
+        time.sleep(0.5)
+        try:
+            hb = s.probe("hud-boxes")
+        except ApiError as e:
+            if "unknown probe" in str(e):
+                return s.unavailable("the running bridge has no hud-boxes probe (stage a build with it)")
+            raise
+        edithud_e0(s, hb, enabled)
+        for cid, fn in EDIT_HUD_CHECKS:
+            if checks is not None and cid not in checks:
+                continue
+            try:
+                run.scale(2)  # every check starts at GUI 2; E1, E8 and E9 visit GUI 3 themselves
+                fn(run)
+            except (ApiError, KeyError, TypeError, ValueError, StopIteration) as e:
+                s.check("%s ran to the end" % cid, False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        run.restore()
+        if old_scale is not None:
+            s.try_call("/scale", {"n": old_scale})
+        s.try_call("/close")
+
+
+class EditHudRun:
+    """One A4-edithud run: the fields it touched (restored at the end) and small helpers over probe hud-boxes."""
+
+    def __init__(self, s, cfg):
+        self.s, self.cfg, self.touched = s, cfg, {}
+
+    def remember(self, name):
+        path = self.cfg + "." + name
+        if path not in self.touched:
+            r, _ = self.s.try_call("/field", post={"path": path})
+            if r is not None:
+                self.touched[path] = r.get("value")
+        return path if path in self.touched else None
+
+    def set(self, name, value):
+        path = self.remember(name)
+        if path:
+            self.s.field(path, value)
+        return path
+
+    def restore(self):
+        for path, value in self.touched.items():
+            try:
+                self.s.field(path, value)
+            except ApiError:
+                pass
+
+    def remember_layout(self):
+        """Every module's x, y, anchor and scale field, restored at the end of the run. (The sub-pixel part of a
+        position lives in a map no field setter reaches, so a moved item comes back within half a GUI pixel.)"""
+        for prefix in EDIT_HUD_LAYOUT.values():
+            for suffix in ("X", "Y", "Anchor", "Scale"):
+                self.remember(prefix + suffix)
+
+    def layout_auto(self):
+        """A fresh layout: every module back on Auto (anchor -1), by field, before any pinning."""
+        for prefix in EDIT_HUD_LAYOUT.values():
+            self.set(prefix + "Anchor", -1)
+        time.sleep(0.2)
+
+    def state(self, item, hb):
+        return next(st for st in hb["states"] if st["id"] == item)
+
+    def device_drag(self, item, dx, dy, mods=None, steps=1, release=True):
+        """Presses on `item`'s centre and moves the pointer by (dx, dy) GUI px, in display pixels (so the travel is
+        exact to a screen pixel), in `steps` events; returns the press point and the last pointer (device px)."""
+        sc = self.probe()["scale"]
+        cx, cy = device_centre(self.box(item), sc)
+        disp = self.display()
+        self.s.call("/down", {"x": cx, "y": cy, "device": 1})
+        x, y = cx, cy
+        for k in range(1, steps + 1):
+            x, y = cx + int(round(dx * sc * k / steps)), cy + int(round(dy * sc * k / steps))
+            if disp:  # the pointer stays on the display; the box is clamped on screen anyway
+                x, y = clamp_point(x, y, disp[0], disp[1])
+            params = {"x": x, "y": y, "device": 1}
+            if mods:
+                params["mods"] = mods
+            self.s.call("/drag", params)
+        if release:
+            self.s.call("/up", {"x": x, "y": y, "device": 1})
+        return (cx, cy), (x, y)
+
+    def minecraft_font(self):
+        """Whether the HUD draws in Minecraft's font (ClientSettings.guiFont), whose sizes step in device pixels."""
+        r, _ = self.s.try_call("/field", post={"path": self.cfg + ".guiFont"})
+        return (r or {}).get("value", "minecraft") != "modern"
+
+    def overlay_box(self, item):
+        """The scoreboard's, chat's or tab list's box from cycle B's overlay-boxes probe (pad 0), or None."""
+        b = (self.s.probe("overlay-boxes").get("items") or {}).get(item)
+        return None if b is None else dict(b, pad=0)
+
+    def menu_click(self, item, label, box=None):
+        """Right-clicks `item`'s centre and clicks its menu row `label`; returns the rows seen (labels)."""
+        cx, cy = gui_centre(box or self.box(item))
+        self.s.call("/click", {"x": cx, "y": cy, "button": 1})
+        rows = ((self.probe().get("editor") or {}).get("menu") or {}).get("rows") or []
+        hit = [r for r in rows if r["label"] == label]
+        if hit:
+            r = hit[0]
+            self.s.call("/click", {"x": int(r["x"] + r["w"] / 2), "y": int(r["y"] + r["h"] / 2)})
+        else:
+            self.s.call("/key", {"code": KEYS["esc"]})  # close the menu
+        return [r["label"] for r in rows]
+
+    def remember_path(self, path):
+        """A field outside the config (e.g. the sheet's session state), restored at the end of the run."""
+        if path not in self.touched:
+            r, _ = self.s.try_call("/field", post={"path": path})
+            if r is not None:
+                self.touched[path] = r.get("value")
+
+    def open_settings(self, category="hud"):
+        """The settings sheet on `category`, scrolled to the top, slid in."""
+        for f in ("category", "scroll", "scrollShown"):
+            self.remember_path(SHEET_STATE + "." + f)
+        self.s.field(SHEET_STATE + ".category", category)
+        self.s.field(SHEET_STATE + ".scroll", 0)
+        self.s.field(SHEET_STATE + ".scrollShown", 0)
+        self.s.call("/open", {"class": SCREENS["settings"]})
+        time.sleep(0.8)  # the sheet slides in
+
+    def sheet_click(self, node_id, node_type=None):
+        """Clicks the open sheet's node `node_id` (scrolled into view first); returns the probe."""
+        args = [node_id] + ([node_type] if node_type else [])
+        r = self.s.probe("sheet-node", *args)
+        if not r.get("visible"):
+            top = max(0.0, r["contentY"] - 20)
+            self.s.field(SHEET_STATE + ".scroll", top)
+            self.s.field(SHEET_STATE + ".scrollShown", top)
+            time.sleep(0.3)
+            r = self.s.probe("sheet-node", *args)
+        self.s.call("/click", {"x": r["centre"][0], "y": r["centre"][1]})
+        time.sleep(0.2)
+        return r
+
+    def show_only(self, ids):
+        """Switches every module on (ids None) or only the ones showing an id in `ids`; returns the shown ids."""
+        shown = set()
+        for name, mids in EDIT_HUD_MODULES:
+            on = ids is None or any(i in ids for i in mids)
+            if self.set(name, on) and on:
+                shown.update(mids)
+        time.sleep(0.2)
+        return shown
+
+    def probe(self):
+        return self.s.probe("hud-boxes")
+
+    def box(self, item, hb=None):
+        """`item`'s editor box; the tab list (never an editor box) comes from cycle B's overlay-boxes probe."""
+        hb = hb or self.probe()
+        for b in hb["boxes"]:
+            if b["id"] == item:
+                return b
+        ob = self.overlay_box(item) if item in ("scoreboard", "chat", "tablist") else None
+        if ob is None:
+            raise KeyError(item)
+        return ob
+
+    def scale(self, n):
+        """Asks for GUI scale `n` and returns the scale the game really uses: vanilla caps it so the GUI stays at least
+        320x240 (a 738x894 window cannot have GUI 3)."""
+        self.s.call("/scale", {"n": n})  # the bridge reinits the open screen
+        time.sleep(0.3)
+        return self.probe()["scale"]
+
+    def scales(self, wanted):
+        """The distinct scales the game really reaches for `wanted`, as (asked, actual) pairs; a scale the window cannot
+        reach is noted on the step and skipped, never failed."""
+        seen = set()
+        for n in wanted:  # a generator: each scale is set right before its pass runs
+            sc = self.scale(n)
+            if sc in seen:
+                note = "GUI %d is not reachable at this window size (the game uses %d)" % (n, sc)
+                self.s.step.setdefault("notes", []).append(note)
+                print("   n/a  " + note)
+                continue
+            seen.add(sc)
+            yield n, sc
+
+    def display(self):
+        """The game window in display pixels (from /status), or None."""
+        d = (self.s.status() or {}).get("display") or ""
+        try:
+            w, h = d.split("x")
+            return int(w), int(h)
+        except ValueError:
+            return None
+
+
+def visual_x(b):
+    return b["x"] - b["pad"]
+
+
+def vis(b):
+    """A box as drawn: (x, y, w, h) with its panel padding."""
+    return b["x"] - b["pad"], b["y"] - b["pad"], b["w"] + 2 * b["pad"], b["h"] + 2 * b["pad"]
+
+
+def overlap_area(a, b):
+    ax, ay, aw, ah = vis(a)
+    bx, by, bw, bh = vis(b)
+    return max(0.0, min(ax + aw, bx + bw) - max(ax, bx)) * max(0.0, min(ay + ah, by + bh) - max(ay, by))
+
+
+WALL_EPS = 1e-3  # HudWalls.EPS: flush to within this many GUI px is not overlap
+
+
+def clear_of(a, b, eps=WALL_EPS):
+    """Whether boxes a and b do not overlap, as the editor's walls see it (HudWalls.overlaps: flush within eps)."""
+    ax, ay, aw, ah = vis(a)
+    bx, by, bw, bh = vis(b)
+    return not (ax < bx + bw - eps and ax + aw > bx + eps and ay < by + bh - eps and ay + ah > by + eps)
+
+
+def others_unchanged(before, after, moving):
+    """Problems with 'nothing else moved': every other shown item's drawn box (1e-3), scale, on/off and Background
+    are what they were; a state may differ only by going from Auto to a stored spot (the pinning)."""
+    problems = []
+    states0 = {st["id"]: st for st in before["states"]}
+    states1 = {st["id"]: st for st in after["states"]}
+    boxes1 = {b["id"]: b for b in after["boxes"]}
+    for b0 in before["boxes"]:
+        bid = b0["id"]
+        if bid in moving or not b0["shown"]:
+            continue
+        b1 = boxes1.get(bid)
+        if b1 is None or not b1["shown"]:
+            problems.append(bid + " is gone")
+            continue
+        if any(abs(p - q) > 1e-3 for p, q in zip(vis(b0), vis(b1))):
+            problems.append("%s moved %s -> %s" % (bid, vis(b0), vis(b1)))
+        s0, s1 = states0.get(bid) or {}, states1.get(bid) or {}
+        for k in ("scale", "enabled", "background"):
+            if s0.get(k) != s1.get(k):
+                problems.append("%s %s %s -> %s" % (bid, k, s0.get(k), s1.get(k)))
+        if s0.get("anchor") != s1.get("anchor") and not (s0.get("anchor") == -1 and pinned_anchor(s1)):
+            problems.append("%s anchor %s -> %s" % (bid, s0.get("anchor"), s1.get("anchor")))
+    return problems
+
+
+def gui_scale(display_w, display_h, wanted):
+    """ScaledResolution's scale factor: `wanted` (0 = auto), lowered until the GUI is at least 320x240."""
+    limit = wanted if wanted > 0 else 1000
+    sc = 1
+    while sc < limit and display_w // (sc + 1) >= 320 and display_h // (sc + 1) >= 240:
+        sc += 1
+    return sc
+
+
+def clamp_point(x, y, w, h):
+    """(x, y) pulled inside a w x h area (pixel coordinates 0..w-1, 0..h-1)."""
+    return max(0, min(int(x), int(w) - 1)), max(0, min(int(y), int(h) - 1))
+
+
+def free_spot(hb, w, h, margin=6):
+    """The top-left (GUI px) nearest the screen centre where a w x h box sits clear of every shown box by `margin` and
+    inside the screen by `margin`; None when there is no such spot."""
+    sw, sh = hb["sw"], hb["sh"]
+    rects = [vis(b) for b in hb["boxes"] if b.get("shown")]
+    best = None
+    for y in range(margin, int(sh - h - margin) + 1, 4):
+        for x in range(margin, int(sw - w - margin) + 1, 4):
+            if any(x < bx + bw + margin and x + w > bx - margin and y < by + bh + margin and y + h > by - margin
+                   for bx, by, bw, bh in rects):
+                continue
+            d = (x + w / 2.0 - sw / 2.0) ** 2 + (y + h / 2.0 - sh / 2.0) ** 2
+            if best is None or d < best[0]:
+                best = (d, x, y)
+    return None if best is None else (best[1], best[2])
+
+
+def text_scale(scale, sc, minecraft_font):
+    """BedwarsQolFont.textScale: Minecraft's font draws in whole device pixels per font pixel, the modern font at any
+    scale."""
+    return max(1, int(scale * sc + 0.5)) / float(sc) if minecraft_font else scale  # Java's Math.round: half up
+
+
+def grow_stopped_ok(gap, content_w, scale, sc, minecraft_font):
+    """A corner resize stopped at a wall `gap` GUI px away: flush, or (Minecraft's font) closer than one more size step,
+    since a box laid out at its text scale grows in whole device pixels per font pixel (A's effective-scale rule)."""
+    if gap < -1e-3:
+        return False
+    step = content_w / text_scale(scale, sc, minecraft_font) / sc if minecraft_font else 0.0
+    return gap <= step + 0.05
+
+
+def free_point(hb, margin=4):
+    """A GUI point clear of every box (shown or ghost) by `margin`, for parking the pointer; None if there is none."""
+    rects = [vis(b) for b in hb["boxes"]]
+    for y in range(margin, int(hb["sh"]) - margin, 6):
+        for x in range(margin, int(hb["sw"]) - margin, 6):
+            if all(not (bx - margin <= x <= bx + bw + margin and by - margin <= y <= by + bh + margin)
+                   for bx, by, bw, bh in rects):
+                return x, y
+    return None
+
+
+DIM_ALPHA = 0x26 / 255.0  # EditHudGui.DIM: the editor's dim over the world
+
+
+def changed_frac(play, editor, area, excludes=(), dim=DIM_ALPHA, tol=10, thresh=24):
+    """Fraction of pixels in `area` (x0, y0, x1, y1, screenshot px) that the editor changed beyond its own dim: a
+    pixel passes when every channel differs by less than `thresh`, or lies between the play pixel dimmed by the
+    editor's DIM and the play pixel itself (+/- tol), as the world behind see-through caps and panels does. Pixels
+    inside `excludes` (other items' frames and ghosts) are skipped."""
+    x0, y0, x1, y1 = area
+    n = bad = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if any(ex0 <= x < ex1 and ey0 <= y < ey1 for ex0, ey0, ex1, ey1 in excludes):
+                continue
+            n += 1
+            p, e = px(play, x, y), px(editor, x, y)
+            if all(abs(a - b) < thresh or (b * (1 - dim) - tol <= a <= b + tol) for a, b in zip(e, p)):
+                continue
+            bad += 1
+    return (bad / float(n)) if n else 0.0
+
+
+def pinned_anchor(state):
+    """A stored spot: anchor 0-8 (not Auto, -1)."""
+    a = state.get("anchor")
+    return a is not None and 0 <= a <= 8
+
+
+def left_column(hb, item):
+    """Shown boxes left of `item` that share some of its height."""
+    b = next(x for x in hb["boxes"] if x["id"] == item)
+    x, y, w, h = vis(b)
+    out = []
+    for o in hb["boxes"]:
+        ox, oy, ow, oh = vis(o)
+        if o["id"] != item and o["shown"] and ox + ow <= x + 1e-3 and oy < y + h - 1e-3 and oy + oh > y + 1e-3:
+            out.append(o)
+    return out
+
+
+def gui_centre(b):
+    return int(b["x"] + b["w"] / 2.0), int(b["y"] + b["h"] / 2.0)
+
+
+def device_centre(b, scale):
+    """A box's centre in display pixels from the top-left (for --device)."""
+    return int(round((b["x"] + b["w"] / 2.0) * scale)), int(round((b["y"] + b["h"] / 2.0) * scale))
+
+
+def edithud_e8(run, scales=(2, 3)):
+    """E8: arrows move exactly one screen pixel (Shift ten), and one device pixel of drag moves one screen pixel,
+    from whatever sub-pixel offset the item starts at. Only Inventory shows; the drag holds Alt, because near the
+    screen centre a plain drag rightly snaps the centred box onto it (E9 covers snapping)."""
+    s = run.s
+    run.show_only({"inventory"})
+    for _, sc in run.scales(scales):
+        b = run.box("inventory")
+        cx, cy = gui_centre(b)
+        s.call("/click", {"x": cx, "y": cy})  # select it
+        x0 = b["x"]
+        for _ in range(3):
+            s.call("/key", {"code": KEYS["right"]})
+        x1 = run.box("inventory")["x"]
+        s.call("/key", {"code": KEYS["right"], "mods": "shift"})
+        b2 = run.box("inventory")
+        x2 = b2["x"]
+        s.check("E8 GUI %d: three right arrows move 3 screen px" % sc, close_enough(x1 - x0, 3.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x0, x1))
+        s.check("E8 GUI %d: Shift+right moves 10 screen px" % sc, close_enough(x2 - x1, 10.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x1, x2))
+        dx, dy = device_centre(b2, sc)
+        s.call("/down", {"x": dx, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx + 6, "y": dy, "device": 1, "mods": "alt"})
+        xa = run.box("inventory")["x"]
+        s.call("/drag", {"x": dx + 7, "y": dy, "device": 1, "mods": "alt"})
+        xb = run.box("inventory")["x"]
+        s.call("/up", {"x": dx + 7, "y": dy, "device": 1})
+        s.check("E8 GUI %d: a 6 device px drag moves 6 screen px" % sc, close_enough(xa - x2, 6.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (x2, xa))
+        s.check("E8 GUI %d: one more device px moves exactly 1 screen px" % sc, close_enough(xb - xa, 1.0 / sc, 1e-3),
+                "%.4f -> %.4f" % (xa, xb))
+    s.shot("edithud-e8")
+
+
+def edithud_e9(run, scales=(2, 3), item="heightlimit"):
+    """E9: dragged to 3 screen px from the right screen edge Map Info snaps flush; at about 5 px it stays; with Alt at
+    2 px it stays. Only Map Info shows, near the top, so the screen's right edge is the only line near it (chat, always
+    shown, sits at the left and its left edge at x 2 is a snap line too)."""
+    s = run.s
+    run.show_only({item})
+    for _, sc in run.scales(scales):
+        hb = run.probe()
+        b = run.box(item, hb)
+        x, y, w, h = vis(b)
+        run.device_drag(item, (hb["sw"] - w) / 2.0 - x, 30 - y, mods="alt")  # top middle: clear of every line
+        b = run.box(item)
+        x, y, w, h = vis(b)
+        right, sw = x + w, hb["sw"]
+        dx, dy = device_centre(b, sc)
+        s.call("/down", {"x": dx, "y": dy, "device": 1})
+        s.call("/drag", {"x": dx - 40, "y": dy, "device": 1})  # past the 1 GUI px press-to-drag threshold
+        last = dx
+        for target, mods in ((3, None), (5, None), (2, "alt")):
+            travel = int(round((sw - right) * sc - target))  # device px from the press: right edge near `target`
+            last = dx + travel
+            params = {"x": last, "y": dy, "device": 1}
+            if mods:
+                params["mods"] = mods
+            s.call("/drag", params)
+            nb = run.box(item)
+            got = vis(nb)[0] + vis(nb)[2]
+            want = sw if target == 3 else right + travel / float(sc)
+            what = "snaps flush" if target == 3 else ("stays (Alt)" if mods else "stays")
+            s.check("E9 GUI %d: right edge %d screen px from the edge %s" % (sc, target, what),
+                    close_enough(got, want, 1e-3), "%.4f, want %.4f" % (got, want))
+        s.call("/up", {"x": last, "y": dy, "device": 1})
+    s.shot("edithud-e9")
+
+
+def edithud_e3a(run):
+    """E3a: from a fresh all-Auto layout, dragging Armor moves nothing else (it used to re-flow Potion into the
+    corner); Potion's state is pinned instead."""
+    s = run.s
+    run.layout_auto()
+    run.show_only({"armor", "potion"})
+    before = run.probe()
+    sc = before["scale"]
+    a0 = run.box("armor", before)
+    run.device_drag("armor", 30, 0, steps=3)
+    after = run.probe()
+    a1 = run.box("armor", after)
+    p0, p1 = run.box("potion", before), run.box("potion", after)
+    s.check("E3a Armor moved about 30 GUI px right", abs(visual_x(a1) - visual_x(a0) - 30) <= 4.0 / sc + 1e-3,
+            "%.3f -> %.3f" % (visual_x(a0), visual_x(a1)))
+    s.check("E3a Potion's box is where it was", all(abs(p - q) <= 1e-3 for p, q in zip(vis(p0), vis(p1))),
+            "%s -> %s" % (vis(p0), vis(p1)))
+    problems = others_unchanged(before, after, {"armor"})
+    s.check("E3a nothing else moved", not problems, problems or None)
+    st0, st1 = run.state("potion", before), run.state("potion", after)
+    s.check("E3a Potion went from Auto to a stored spot", st0.get("anchor") == -1 and pinned_anchor(st1),
+            "anchor %s -> %s" % (st0.get("anchor"), st1.get("anchor")))
+    s.shot("edithud-e3a")
+
+
+def edithud_e3_e4(run, depth=6):
+    """E3: Inventory dragged left (10 steps) at Potion's height stops flush at Potion. E4: 30 GUI px further down in
+    the same drag, it stays flush and follows the pointer down. The scene is laid out from the live GUI size (only
+    Potion and Inventory show, tops level, a gap between them), and the push goes `depth` px past Potion's edge, less
+    than the way round it."""
+    s = run.s
+    run.show_only({"inventory", "potion"})
+    hb = run.probe()
+    sc, sw = hb["scale"], hb["sw"]
+    px0, py0, pw, ph = vis(run.box("potion", hb))
+    ix0, iy0, iw, ih = vis(run.box("inventory", hb))
+    gap = min(40.0, sw - 4 - pw - iw)
+    if not s.check("E3 the GUI is wide enough for Potion, a gap and Inventory side by side", gap >= 12,
+                   "GUI %s wide" % sw):
+        return
+    top = 40.0
+    run.device_drag("potion", 2 - px0, top - py0, mods="alt")
+    run.device_drag("inventory", (2 + pw + gap) - ix0, top - iy0, mods="alt")
+    before = run.probe()
+    inv = run.box("inventory", before)
+    col_right = 2 + pw
+    travel = (col_right - depth) - visual_x(inv)
+    press, last = run.device_drag("inventory", travel, 0, steps=10, release=False)
+    try:
+        mid = run.probe()
+        inv1 = run.box("inventory", mid)
+        s.check("E3 Inventory stops flush at Potion", close_enough(visual_x(inv1), col_right, 1e-3),
+                "left %.4f, Potion right %.4f" % (visual_x(inv1), col_right))
+        problems = others_unchanged(before, mid, {"inventory"})
+        s.check("E3 nothing else moved", not problems, problems or None)
+        y0 = vis(inv1)[1]
+        s.call("/drag", {"x": last[0], "y": last[1] + int(round(30 * sc)), "device": 1})
+        end = run.probe()
+        inv2 = run.box("inventory", end)
+        s.check("E4 Inventory stays flush with Potion 30 px lower", close_enough(visual_x(inv2), col_right, 1e-3),
+                "left %.4f, Potion right %.4f" % (visual_x(inv2), col_right))
+        s.check("E4 its top follows the pointer down", abs(vis(inv2)[1] - (y0 + 30)) <= 4.0 / sc + 1e-3,
+                "%.3f -> %.3f" % (y0, vis(inv2)[1]))
+    finally:
+        s.call("/up", {"x": last[0], "y": last[1], "device": 1})
+    s.shot("edithud-e3-e4")
+
+
+def edithud_e5_e6(run):
+    """E5: Keystrokes in the screen centre is a wall Map Info goes around: pushed a little into its left side, Map
+    Info sits flush left of it; a little short of its right side, flush right of it. The push stays shallower than
+    half their summed heights, the way round above or below. E6: with Alt it overlaps Keystrokes; one plain pixel
+    later it is clear again. Only the two show, so nothing else is in the way on any window."""
+    s = run.s
+    run.show_only({"heightlimit", "keystrokes"})
+    hb = run.probe()
+    sw, sh = hb["sw"], hb["sh"]
+    ks = run.box("keystrokes", hb)
+    kx, ky, kw, kh = vis(ks)
+    run.device_drag("keystrokes", sw / 2.0 - (kx + kw / 2.0), sh / 2.0 - (ky + kh / 2.0), mods="alt")
+    ks = run.box("keystrokes")
+    kx, ky, kw, kh = vis(ks)
+    mx, my, mw, mh = vis(run.box("heightlimit"))
+    depth = min(30.0, (mh + kh) / 4.0)
+    if not s.check("E5 there is room for Map Info on both sides of Keystrokes", kx - mw - 30 >= 0 and kx + kw + mw <= sw,
+                   "GUI %s wide" % sw):
+        return
+    # left of Keystrokes, centred on its height, 30 px clear of it (Alt: free)
+    run.device_drag("heightlimit", (kx - mw - 30) - mx, (ky + kh / 2.0 - mh / 2.0) - my, mods="alt")
+    for raw, want, side in ((kx - mw + depth, kx - mw, "left"), (kx + kw - depth, kx + kw, "right")):
+        mi = run.box("heightlimit")
+        run.device_drag("heightlimit", raw - visual_x(mi), 0)
+        got = visual_x(run.box("heightlimit"))
+        s.check("E5 Map Info pushed into Keystrokes sits flush %s of it" % side, close_enough(got, want, 1e-3),
+                "left %.4f, want %.4f" % (got, want))
+    mx, my, mw, mh = vis(run.box("heightlimit"))
+    press, last = run.device_drag("heightlimit", (kx + kw / 2.0) - (mx + mw / 2.0), (ky + kh / 2.0) - (my + mh / 2.0),
+                                  mods="alt", release=False)
+    try:
+        hb6 = run.probe()
+        s.check("E6 with Alt Map Info overlaps Keystrokes",
+                overlap_area(run.box("heightlimit", hb6), run.box("keystrokes", hb6)) > 0)
+        s.call("/drag", {"x": last[0] + 1, "y": last[1], "device": 1})
+        hb7 = run.probe()
+        s.check("E6 one plain pixel later it is clear again",
+                clear_of(run.box("heightlimit", hb7), run.box("keystrokes", hb7)))
+    finally:
+        s.call("/up", {"x": last[0] + 1, "y": last[1], "device": 1})
+    s.shot("edithud-e5-e6")
+
+
+def edithud_corner_grow(run, item, other, corner, gap):
+    """Shared by E7/E7b: `item` is put where it has room (left part for 'br', right part for 'tl', mid-height),
+    `other` `gap` GUI px beside it at its height (Alt), then `item` is grown by `corner` ('br' or 'tl') well past it,
+    the pointer kept on screen. Returns (before, after) probes."""
+    s = run.s
+    hb = run.probe()
+    sw, sh = hb["sw"], hb["sh"]
+    x, y, w, h = vis(run.box(item, hb))
+    ox, oy, ow, oh = vis(run.box(other, hb))
+    nx = 10.0 if corner == "br" else sw - 10.0 - w
+    ny = (sh - h) / 2.0
+    run.device_drag(item, nx - x, ny - y, mods="alt")
+    b = run.box(item)
+    x, y, w, h = vis(b)
+    target_x = x + w + gap if corner == "br" else x - gap - ow
+    run.device_drag(other, target_x - ox, y - oy, mods="alt")
+    cx, cy = gui_centre(b)
+    s.call("/click", {"x": cx, "y": cy})  # select it, so its corner handles take the press
+    before = run.probe()
+    b = run.box(item, before)
+    x, y, w, h = vis(b)
+    gx, gy = (int(x + w - 1), int(y + h - 1)) if corner == "br" else (int(x + 1), int(y + 1))
+    far, _ = clamp_point(gx + (200 if corner == "br" else -200), gy, sw, sh)  # GUI coordinates stay on screen
+    mid = (gx + far) // 2
+    s.call("/down", {"x": gx, "y": gy})
+    s.call("/drag", {"x": mid, "y": gy})
+    s.call("/drag", {"x": far, "y": gy})
+    after = run.probe()
+    s.call("/up", {"x": far, "y": gy})
+    return before, after
+
+
+def edithud_e7(run):
+    """E7: Map Info's bottom-right corner, dragged well past Keystrokes 20 px to its right, grows it only until
+    its right edge is flush with Keystrokes."""
+    s = run.s
+    run.show_only({"heightlimit", "keystrokes"})
+    before, after = edithud_corner_grow(run, "heightlimit", "keystrokes", "br", 20)
+    mi, ks = run.box("heightlimit", after), run.box("keystrokes", after)
+    right = vis(mi)[0] + vis(mi)[2]
+    scale = run.state("heightlimit", after)["scale"]
+    s.check("E7 Map Info grew", scale > run.state("heightlimit", before)["scale"])
+    s.check("E7 and stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
+            grow_stopped_ok(vis(ks)[0] - right, mi["w"], scale, after["scale"], run.minecraft_font()),
+            "right %.4f, Keystrokes left %.4f, scale %.4f" % (right, vis(ks)[0], scale))
+    s.check("E7 no overlap", clear_of(mi, ks))
+    problems = others_unchanged(before, after, {"heightlimit"})
+    s.check("E7 nothing else moved", not problems, problems or None)
+    s.shot("edithud-e7")
+
+
+def edithud_e7b(run):
+    """E7b: Session Stats' top-left corner (bottom-right pinned), dragged well past Keystrokes 20 px to its left,
+    grows it only until its left edge is flush with Keystrokes (review I2: the probe uses the pinned corner)."""
+    s = run.s
+    run.show_only({"sessionstats", "keystrokes"})
+    hb = run.probe()
+    ss = run.box("sessionstats", hb)
+    run.device_drag("sessionstats", 0, (hb["sh"] - vis(ss)[3]) / 2.0 - vis(ss)[1], mods="alt")  # room to grow up
+    before, after = edithud_corner_grow(run, "sessionstats", "keystrokes", "tl", 20)
+    s0, s1 = run.box("sessionstats", before), run.box("sessionstats", after)
+    ks = run.box("keystrokes", after)
+    corner0, corner1 = (s0["x"] + s0["w"], s0["y"] + s0["h"]), (s1["x"] + s1["w"], s1["y"] + s1["h"])
+    s.check("E7b Session Stats grew", run.state("sessionstats", after)["scale"] > run.state("sessionstats", before)["scale"])
+    s.check("E7b its bottom-right corner stayed put", all(abs(p - q) <= 0.05 for p, q in zip(corner0, corner1)),
+            "%s -> %s" % (corner0, corner1))
+    scale = run.state("sessionstats", after)["scale"]
+    s.check("E7b its left edge stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
+            grow_stopped_ok(vis(s1)[0] - (vis(ks)[0] + vis(ks)[2]), s1["w"], scale, after["scale"], run.minecraft_font()),
+            "left %.4f, Keystrokes right %.4f, scale %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2], scale))
+    s.check("E7b no overlap", clear_of(s1, ks))
+    s.shot("edithud-e7b")
+
+
+def edithud_e15(run):
+    """E15: a module hidden at a clear manual spot and shown again from its right-click menu takes its first free
+    Auto spot, not the old one; nothing else moves; undo brings the old spot back. (The settings-row half needs
+    the sheet-node probe.)"""
+    s = run.s
+    run.show_only(None)
+    hb = run.probe()
+    ks = run.box("keystrokes", hb)
+    kx, ky, kw, kh = vis(ks)
+    others = dict(hb, boxes=[b for b in hb["boxes"] if b["id"] != "keystrokes"])
+    spot = free_spot(others, kw, kh)
+    if not s.check("E15 a clear spot for Keystrokes on this window", spot is not None, "GUI %sx%s" % (hb["sw"], hb["sh"])):
+        return
+    run.device_drag("keystrokes", spot[0] - kx, spot[1] - ky, mods="alt")  # the drag also selects it
+    placed = run.probe()
+    st0 = run.state("keystrokes", placed)
+    cx, cy = gui_centre(run.box("keystrokes", placed))
+    s.call("/key", {"code": KEYS["delete"]})
+    hidden = run.probe()
+    s.check("E15 Delete hides it", not run.state("keystrokes", hidden)["enabled"])
+    s.call("/click", {"x": cx, "y": cy, "button": 1})  # its ghost's menu
+    menu = ((run.probe().get("editor") or {}).get("menu") or {}).get("rows") or []
+    show = [r for r in menu if r["label"] == "Show"]
+    if not s.check("E15 the ghost's menu lists Show", bool(show), [r["label"] for r in menu]):
+        return
+    r = show[0]
+    s.call("/click", {"x": int(r["x"] + r["w"] / 2), "y": int(r["y"] + r["h"] / 2)})
+    shown = run.probe()
+    st1, b1 = run.state("keystrokes", shown), run.box("keystrokes", shown)
+    s.check("E15 after Show it is on Auto", st1["enabled"] and st1["anchor"] == -1, st1)
+    s.check("E15 not back at the clear spot", abs(vis(b1)[0] - vis(run.box("keystrokes", placed))[0]) > 1
+            or abs(vis(b1)[1] - vis(run.box("keystrokes", placed))[1]) > 1,
+            "drawn at %s" % (vis(b1),))
+    problems = others_unchanged(hidden, shown, {"keystrokes"})
+    s.check("E15 nothing else moved", not problems, problems or None)
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    undone = run.state("keystrokes", run.probe())
+    s.check("E15 undo brings the centre spot back", all(undone.get(k) == st0.get(k)
+                                                         for k in ("x", "y", "fracX", "fracY", "anchor")), undone)
+    s.shot("edithud-e15")
+    # Keystrokes is hidden at the centre again: its switch in the settings sheet shows it at the same Auto spot.
+    run.open_settings()
+    run.sheet_click("keystrokes", "MODULE_TOGGLE")
+    via = run.probe()
+    st2, b2 = run.state("keystrokes", via), run.box("keystrokes", via)
+    s.check("E15 the settings switch shows it on Auto", st2["enabled"] and st2["anchor"] == -1, st2)
+    s.check("E15 ... at the same Auto spot as the menu's Show", all(abs(p - q) <= 1e-3 for p, q in zip(vis(b1), vis(b2))),
+            "%s vs %s" % (vis(b1), vis(b2)))
+    s.call("/open", {"class": SCREENS["hud"]})
+
+
+HUD_SIZE_SCALES = {0: 0.75, 1: 1.0, 2: 1.5}  # ClientSettings.defaultTextSizeScale()
+SHEET_STATE = "com.bedwarsqol.gui.sheet.SheetState.SESSION"
+LEFT_COLUMN = ("fps", "cps", "ping", "armor", "potion")
+POSITION_KEYS = ("x", "y", "fracX", "fracY", "anchor")
+
+
+def g30_problems(hb):
+    """What differs from the default layout (G30) among the shown boxes of a hud-boxes probe; [] when none."""
+    sw, sh = hb["sw"], hb["sh"]
+    boxes = {b["id"]: vis(b) for b in hb["boxes"] if b["shown"]}
+    problems = []
+
+    def near(name, got, want, tol=1e-3):
+        if abs(got - want) > tol:
+            problems.append("%s %.3f, want %.3f" % (name, got, want))
+
+    y = 2.0
+    for i in LEFT_COLUMN:
+        if i in boxes:
+            x0, y0, w0, h0 = boxes[i]
+            near(i + " x", x0, 2)
+            near(i + " y", y0, y)
+            y = y0 + h0 + 2
+    timers_bottom = None
+    if "diamondtimer" in boxes:
+        x0, y0, w0, h0 = boxes["diamondtimer"]
+        near("diamondtimer right", x0 + w0, sw - 2)
+        near("diamondtimer y", y0, 2)
+        timers_bottom = y0 + h0
+        if "emeraldtimer" in boxes:
+            x1, y1, w1, h1 = boxes["emeraldtimer"]
+            near("emeraldtimer right", x1 + w1, x0 - 2)
+            near("emeraldtimer y", y1, 2)
+            timers_bottom = max(timers_bottom, y1 + h1)
+    if "sessionstats" in boxes:
+        x0, y0, w0, h0 = boxes["sessionstats"]
+        near("sessionstats right", x0 + w0, sw - 2)
+        near("sessionstats y", y0, 2 if timers_bottom is None else timers_bottom + 2)
+    if "inventory" in boxes:
+        x0, y0, w0, h0 = boxes["inventory"]
+        near("inventory centre", x0 + w0 / 2.0, sw / 2.0, 0.5)
+        near("inventory y", y0, 2)
+    if "keystrokes" in boxes:
+        x0, y0, w0, h0 = boxes["keystrokes"]
+        near("keystrokes right", x0 + w0, sw - 2)
+        near("keystrokes bottom", y0 + h0, sh - 2)
+    if "heightlimit" in boxes:
+        x0, y0, w0, h0 = boxes["heightlimit"]
+        near("heightlimit x", x0, 2)
+        near("heightlimit centre", y0 + h0 / 2.0, sh / 2.0, 0.5)
+    return problems
+
+
+def positions(hb):
+    return {st["id"]: tuple(st.get(k) for k in POSITION_KEYS) for st in hb["states"]}
+
+
+def edithud_e1_e2(run):
+    """E1: the settings sheet's Reset Positions puts every shown module on the default layout (GUI 2 and 3),
+    sizes kept. E2: in the next Edit HUD, Ctrl+Z gives back the layout from before the reset, Ctrl+Y the reset."""
+    s = run.s
+    run.show_only(None)
+    for _, sc in run.scales((2, 3)):
+        run.device_drag("keystrokes", -40, -30, mods="alt")  # off its default spot, so the reset is a change
+        before = run.probe()
+        run.open_settings()
+        node = run.sheet_click("resetPositions")
+        s.check("E1 GUI %d: the footer has Reset Positions" % sc, node.get("type") == "RESET_POSITIONS", node)
+        after = run.probe()
+        s.shot("edithud-e1-gui%d" % sc)
+        problems = g30_problems(after)
+        s.check("E1 GUI %d: every shown module is on its default spot" % sc, not problems, problems or None)
+        scales0 = {st["id"]: st.get("scale") for st in before["states"]}
+        scales1 = {st["id"]: st.get("scale") for st in after["states"]}
+        s.check("E1 GUI %d: sizes unchanged" % sc, scales0 == scales1)
+        s.call("/open", {"class": SCREENS["hud"]})
+        time.sleep(0.3)
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        s.check("E2 GUI %d: Ctrl+Z in Edit HUD gives back the layout before the reset" % sc,
+                positions(run.probe()) == positions(before))
+        s.call("/key", {"code": KEYS["y"], "mods": "ctrl"})
+        s.check("E2 GUI %d: Ctrl+Y puts the reset back" % sc, positions(run.probe()) == positions(after))
+    run.scale(2)
+IN_GAME_ONLY = ("potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "keystrokesInGameOnly")
+# Live data that differs from the editor's samples (2 potions, diamond leggings, an empty inventory).
+LIVE_DATA = ("/effect @p regeneration 600 0 true", "/effect @p strength 600 0 true",  # no particles over the HUD
+             "/replaceitem entity @p slot.armor.legs iron_leggings", "/replaceitem entity @p slot.inventory.0 wool 64 11")
+LIVE_DATA_CLEAR = ("/effect @p clear", "/replaceitem entity @p slot.armor.legs air",
+                   "/replaceitem entity @p slot.inventory.0 air")
+POTION_ICON = 18.0  # BedwarsHudRenderer.POTION_ICON_SIZE
+# Keystrokes caps in local units (KeystrokesLayout: CAP 18, GAP 1, 56 x 67, mouse row above the space bar): x, y, w, h.
+KS_WIDTH = 56.0
+KS_CAPS = {"W": (19, 0, 18, 18), "A": (0, 19, 18, 18), "S": (19, 19, 18, 18), "D": (38, 19, 18, 18),
+           "Space": (0, 57, 56, 10), "LMB": (0, 38, 27.5, 18), "RMB": (28.5, 38, 27.5, 18)}
+
+
+def px_box(x, y, w, h, sc, inset=0.0):
+    """A GUI rectangle in screenshot pixels, shrunk by `inset` GUI px on every side."""
+    return (int(round((x + inset) * sc)), int(round((y + inset) * sc)),
+            int(round((x + w - inset) * sc)), int(round((y + h - inset) * sc)))
+
+
+def cap_px(ks_box, cap, sc):
+    """The middle 60% of a Keystrokes cap, in screenshot pixels; the caps are laid out at the box's own scale."""
+    e = ks_box["w"] / KS_WIDTH
+    x, y, w, h = KS_CAPS[cap]
+    gx, gy = ks_box["x"] + (x + 0.2 * w) * e, ks_box["y"] + (y + 0.2 * h) * e
+    return px_box(gx, gy, 0.6 * w * e, 0.6 * h * e, sc)
+
+
+def edithud_e11(run):
+    """E11: opening Edit HUD changes no item's content or size: inside the potion icon column, Armor, Inventory and
+    Keystrokes (1 px border excluded), 99% of pixels differ by less than 24 levels between play and the editor (the
+    editor's 15% dim behind translucent panels). Live data chosen to differ from the samples; timers and Map Info
+    show their samples in singleplayer (reviewed shot)."""
+    s = run.s
+    ids = ("potion", "armor", "inventory", "keystrokes")
+    for name in IN_GAME_ONLY:
+        run.set(name, False)
+    run.show_only(set(ids))
+    for c in LIVE_DATA:
+        s.cmd(c)
+    try:
+        hb = run.probe()
+        sc = hb["scale"]
+        park = free_point(hb)  # the editor would frame and label a hovered item
+        s.call("/close")
+        if park:
+            s.call("/hover", {"x": park[0], "y": park[1]})
+        else:
+            s.call("/hover", {"off": 1})
+        time.sleep(1.0)
+        _, play = s.shot("edithud-e11-play", wait=500)
+        s.call("/open", {"class": SCREENS["hud"]})
+        _, editor = s.shot("edithud-e11-editor", wait=600)
+        hb2 = run.probe()
+        for item in ids:
+            b0, b1 = run.box(item, hb), run.box(item, hb2)
+            s.check("E11 %s has the same box in play and in the editor" % item,
+                    all(abs(p - q) <= 1e-3 for p, q in zip(vis(b0), vis(b1))), "%s vs %s" % (vis(b0), vis(b1)))
+            w = POTION_ICON * run.state(item, hb)["scale"] if item == "potion" else b1["w"]
+            area = px_box(b1["x"], b1["y"], w, b1["h"], sc, inset=1.0)
+            # other items' frames and ghosts (hidden modules, chat) are editor chrome, not this item's content
+            others = [px_box(o["x"] - o["pad"] - 1, o["y"] - o["pad"] - 1, o["w"] + 2 * o["pad"] + 2,
+                             o["h"] + 2 * o["pad"] + 2, sc) for o in hb2["boxes"] if o["id"] != item]
+            frac = changed_frac(play, editor, area, others)
+            s.check("E11 %s: 99%% of pixels unchanged but for the editor's dim, play vs editor" % item, frac <= 0.01,
+                    "%.4f changed" % frac)
+    finally:
+        s.try_call("/hover", {"off": 1})
+        for c in LIVE_DATA_CLEAR:
+            s.try_call("/command", post={"command": c})
+
+
+def edithud_e11k(run):
+    """E11k: in the editor, a held movement key lights its Keystrokes cap (keyboard state, held raw so the editor
+    sees a real press and release); released, every movement cap is idle; the mouse caps stay unlit while the left
+    button is down in the editor (D12); the player does not move."""
+    s = run.s
+    run.set("keystrokesInGameOnly", False)
+    run.show_only({"keystrokes", "inventory"})
+    hb = run.probe()
+    sc = hb["scale"]
+    ks = run.box("keystrokes", hb)
+    pos0 = s.probe("player")["client"]["pos"]
+    _, idle = s.shot("edithud-e11k-idle")
+
+    def lit(img, cap):
+        return diff(idle, img, step=1, thresh=23, box=cap_px(ks, cap, sc))[0] > 0.5
+
+    try:
+        s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+        _, w = s.shot("edithud-e11k-w")
+        s.check("E11k holding W lights the W cap", lit(w, "W"))
+        s.check("E11k ... and not Space", not lit(w, "Space"))
+        s.call("/keyhold", {"name": "key.jump", "state": "on", "raw": 1})
+        _, wj = s.shot("edithud-e11k-w-space")
+        s.check("E11k W and Space held light both caps", lit(wj, "W") and lit(wj, "Space"))
+    finally:
+        s.try_call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+        s.try_call("/keyhold", {"name": "key.jump", "state": "off", "raw": 1})
+    _, off = s.shot("edithud-e11k-released")
+    s.check("E11k after release every movement cap is idle", not any(lit(off, c) for c in ("W", "A", "S", "D", "Space")))
+    cx, cy = gui_centre(run.box("inventory", hb))
+    s.call("/down", {"x": cx, "y": cy})
+    try:
+        _, down = s.shot("edithud-e11k-lmb")
+        s.check("E11k the mouse caps stay unlit with the left button down", not lit(down, "LMB") and not lit(down, "RMB"))
+    finally:
+        s.call("/up", {"x": cx, "y": cy})
+    pos1 = s.probe("player")["client"]["pos"]
+    s.check("E11k the player did not move", all(abs(p - q) < 1e-6 for p, q in zip(pos0, pos1)), "%s -> %s" % (pos0, pos1))
+
+
+def edithud_e10(run, item="potion"):
+    """E10 (the Cobblify modules; chat and the tab list join with cycle B): the right-click menu lists EditHudMenu's
+    rows with Background: On|Off; clicking it flips the item's Background, the setting its settings row reads
+    (ClientSettings.hudBackground); undo restores it."""
+    s = run.s
+    run.show_only(None)
+    st0 = run.state(item, run.probe())
+    on0 = bool(st0["background"])
+    label = "Background: " + ("On" if on0 else "Off")
+    try:
+        rows = run.menu_click(item, label)
+        s.check("E10 the menu lists its rows", rows == ["Reset Position", "Reset Size", label, "Settings", "Hide"], rows)
+        st1 = run.state(item, run.probe())
+        row = s.call("/invoke", post={"path": run.cfg + ".hudBackground", "args": item}).get("value")
+        s.check("E10 the Background row flips the item's Background", st1["background"] == (not on0), st1)
+        s.check("E10 ... the same setting its settings row reads", row == (not on0), row)
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        s.check("E10 undo restores it", run.state(item, run.probe())["background"] == on0)
+    finally:
+        s.try_call("/invoke", post={"path": run.cfg + ".setHudBackground",
+                                    "args": ARG_SEP.join([item, "true" if on0 else "false"])})
+
+
+def edithud_e10_overlays(run):
+    """E10, cycle B's items: the chat and tab list menus have no Show or Hide, and Delete leaves chat on."""
+    s = run.s
+    run.show_only(None)
+    chat = run.box("chat")
+    rows = run.menu_click("chat", "-", box=chat)
+    s.check("E10 chat's menu has no Show or Hide", "Show" not in rows and "Hide" not in rows and rows, rows)
+    cx, cy = gui_centre(chat)
+    s.call("/click", {"x": cx, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    s.check("E10 Delete leaves chat on", run.state("chat", run.probe())["enabled"])
+    s.call("/keyhold", {"name": "key.playerlist", "state": "on", "raw": 1})
+    try:
+        time.sleep(0.3)
+        tab = run.overlay_box("tablist")
+        if not s.check("E10 the tab list has a box while Tab is held", tab is not None):
+            return
+        rows = run.menu_click("tablist", "-", box=tab)
+        s.check("E10 the tab list's menu has no Show or Hide", "Show" not in rows and "Hide" not in rows and rows, rows)
+    finally:
+        s.try_call("/keyhold", {"name": "key.playerlist", "state": "off", "raw": 1})
+
+
+TAB_SCOREBOARD = ("/scoreboard objectives remove cobtab", "/scoreboard objectives add cobtab dummy Cobblify",
+                  "/scoreboard players set CobblifyDev cobtab 1", "/scoreboard objectives setdisplay list cobtab",
+                  "/scoreboard objectives setdisplay sidebar cobtab")
+
+
+def edithud_e12(run):
+    """E12: holding Tab (its keyboard state, held raw, so the release is the editor's own path) shows only the tab
+    list, scoreboard and chat; the tab list stops flush at the scoreboard, its corner resize stops there too, and it
+    passes over Inventory's spot (the Cobblify items are no walls then); on release the editor lets go of the binding
+    and the items are back."""
+    s = run.s
+    run.show_only(None)
+    try:
+        for c in TAB_SCOREBOARD:
+            s.cmd(c)
+        edithud_e12_held(run)
+    finally:  # the fixture never outlives the check, whatever fails
+        for c in ("/scoreboard objectives setdisplay list", "/scoreboard objectives setdisplay sidebar",
+                  "/scoreboard objectives remove cobtab"):
+            s.try_call("/command", post={"command": c})
+
+
+def edithud_e12_held(run):
+    s = run.s
+    s.call("/close")
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.4)
+    inventory = run.box("inventory")
+    s.call("/keyhold", {"name": "key.playerlist", "state": "on", "raw": 1})
+    try:
+        time.sleep(0.4)
+        ed = run.probe().get("editor") or {}
+        s.check("E12 held: tabHeld and the player-list binding pressed", ed.get("tabHeld") is True
+                and ed.get("playerListPressed") is True, ed)
+        s.check("E12 held: only the tab list, scoreboard and chat", set(ed.get("visibleIds") or []) == {"tablist", "scoreboard", "chat"},
+                ed.get("visibleIds"))
+        s.shot("edithud-e12-held")
+        sb, tab = run.overlay_box("scoreboard"), run.overlay_box("tablist")
+        if s.check("E12 the scoreboard and tab list have boxes", sb is not None and tab is not None, (sb, tab)):
+            edithud_e12_moves(run, sb, tab, inventory)
+    finally:
+        s.try_call("/keyhold", {"name": "key.playerlist", "state": "off", "raw": 1})
+    time.sleep(0.4)
+    ed = run.probe().get("editor") or {}
+    s.check("E12 released: the editor let go of the binding", ed.get("tabHeld") is False
+            and ed.get("playerListPressed") is False, ed)
+    s.check("E12 released: the Cobblify items are back", "inventory" in (ed.get("visibleIds") or []), ed.get("visibleIds"))
+    s.shot("edithud-e12-released")
+
+
+def edithud_e12_moves(run, sb, tab, inventory):
+    """E12's moves while Tab is held: flush at the scoreboard, a corner resize stopped by it, over Inventory's spot."""
+    s = run.s
+    tx, ty, tw, th = vis(tab)
+    bx, by, bw, bh = vis(sb)
+    # beside the scoreboard, centred on its height, 30 GUI px short of it (Alt: free), then 3 px into it (walls):
+    # pushed deeper than half their summed heights, the nearest free spot is above or below it, not flush beside it
+    run.device_drag("tablist", (bx - 30 - tw) - tx, (by + bh / 2.0 - th / 2.0) - ty, mods="alt")
+    tab = run.overlay_box("tablist")
+    run.device_drag("tablist", 33, 0)
+    tab = run.overlay_box("tablist")
+    tx, ty, tw, th = vis(tab)
+    s.check("E12 the tab list stops flush at the scoreboard", close_enough(tx + tw, bx, 1e-3),
+            "right %.4f, scoreboard left %.4f" % (tx + tw, bx))
+    # its bottom-right corner, dragged well past the scoreboard: it grows only up to it
+    run.device_drag("tablist", -40, 0)
+    tab = run.overlay_box("tablist")
+    tx, ty, tw, th = vis(tab)
+    cx, cy = gui_centre(tab)
+    s.call("/click", {"x": cx, "y": cy})
+    gx, gy = int(tx + tw - 1), int(ty + th - 1)
+    far = min(gx + 150, int(run.probe()["sw"]) - 1)  # GUI coordinates must stay on screen
+    s.call("/down", {"x": gx, "y": gy})
+    s.call("/drag", {"x": gx + 20, "y": gy})
+    s.call("/drag", {"x": far, "y": gy})
+    s.call("/up", {"x": far, "y": gy})
+    tab = run.overlay_box("tablist")
+    s.check("E12 the corner resize stops at the scoreboard", clear_of(tab, sb)
+            and close_enough(vis(tab)[0] + vis(tab)[2], bx, 0.05), "%s vs scoreboard %s" % (vis(tab), vis(sb)))
+    # Inventory is hidden while Tab is held, so it is no wall
+    ix, iy, iw, ih = vis(inventory)
+    tx, ty, tw, th = vis(tab)
+    run.device_drag("tablist", ix - tx, iy - ty)
+    tab = run.overlay_box("tablist")
+    s.check("E12 the tab list passes over Inventory's spot", overlap_area(tab, inventory) > 0,
+            "%s vs Inventory %s" % (vis(tab), vis(inventory)))
+
+
+def edithud_e13(run, item="potion"):
+    """E13: no Reset All (the field and method are gone, shot under the crosshair); Delete hides and undo brings it
+    back; Reset Position puts it on Auto and undo restores; Reset Size gives the HUD Size default."""
+    s = run.s
+    s.check("E13 the editor has no Reset All", not s.has(SCREENS["hud"], "resetRect")
+            and not s.has(SCREENS["hud"], "resetAll"))
+    run.show_only(None)
+    s.shot("edithud-e13-no-reset-all")
+    run.device_drag(item, 0, 12, mods="alt")  # a stored spot, so Reset Position is a change
+    st0 = run.state(item, run.probe())
+    cx, cy = gui_centre(run.box(item))
+    s.call("/click", {"x": cx, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    s.check("E13 Delete hides it", not run.state(item, run.probe())["enabled"])
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    back = run.state(item, run.probe())
+    s.check("E13 undo shows it again where it was", back["enabled"] and all(back.get(k) == st0.get(k)
+                                                                            for k in ("x", "y", "anchor")), back)
+    rows = run.menu_click(item, "Reset Position")
+    s.check("E13 Reset Position puts it on Auto", run.state(item, run.probe())["anchor"] == -1, rows)
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    s.check("E13 undo restores its spot", run.state(item, run.probe()).get("anchor") == st0.get("anchor"))
+    size = run.s.field(run.cfg + ".defaultTextSize").get("value")
+    want = HUD_SIZE_SCALES.get(size, 1.0)
+    run.set(EDIT_HUD_LAYOUT[item] + "Scale", want * 1.5)
+    run.menu_click(item, "Reset Size")
+    got = run.state(item, run.probe())["scale"]
+    s.check("E13 Reset Size gives the HUD Size default", close_enough(got, want, 1e-4), "%s, want %s" % (got, want))
+
+
+# Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
+EDIT_HUD_CHECKS = [("E1", edithud_e1_e2), ("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
+                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E11", edithud_e11),
+                   ("E11k", edithud_e11k), ("E10", edithud_e10), ("E10o", edithud_e10_overlays),
+                   ("E12", edithud_e12), ("E13", edithud_e13), ("E15", edithud_e15)]
+
+
+def edithud_e0(s, hb, enabled):
+    """E0: the probe reads the open editor: every enabled module is a shown box with a stored state."""
+    s.check("hud-boxes: GUI scale 2", hb.get("scale") == 2, hb.get("scale"))
+    shown = {b.get("id") for b in hb.get("boxes") or [] if b.get("shown")}
+    s.check("E0 every enabled module is a shown editor box", enabled <= shown, sorted(enabled - shown) or None)
+    stated = {st.get("id") for st in hb.get("states") or []}
+    s.check("E0 every enabled module has a stored state", enabled <= stated, sorted(enabled - stated) or None)
+    s.check("E0 the editor part is filled while Edit HUD is open", hb.get("editor") is not None)
+    s.shot("edithud-e0")
+
+
+# ------------------------------------------------------------------- HUD look (HL, cycle 2026-11-14-hud-look)
+# Lunar see-through backgrounds with a per-item Background switch, potion rows with modern icons, Map Info labels in
+# the accent, Lunar Keystrokes caps, and the FPS / CPS / Ping modules. Boxes are found from frame diffs (no bridge
+# change); every box below is (x0, y0, x1, y1) in screenshot px, both ends inclusive, as diff() reports them.
+
+HL_FILL_ALPHA = 0x6F                       # HudBackground.FILL = 0x6F000000
+HL_SHADOW = (63, 63, 63)                   # vanilla shadow of white text
+HL_WHITE = (255, 255, 255)
+HL_GRAY = (170, 170, 170)                  # potion time, CPS divider
+HL_DIVIDER_SHADOW = (42, 42, 42)
+HL_PRESSED_TEXT = (18, 18, 18)             # KeyCapStyle: dark letter on a pale accent
+HL_ACCENT = "pale-blue"
+HL_ACCENT_RGB = (192, 220, 255)            # GuiTheme PALE_BLUE 0xFFC0DCFF
+HL_PAD = 3                                 # HudBackground.pad(1) = CONTENT_MARGIN, GUI px
+HL_TIME_DY = 10                            # PotionRows.TIME_DY: the time line's top in a potion row
+ICONS = "com.bedwarsqol.hud.EffectIconTextures"
+
+# Vanilla 1.8.9 font advances (glyph + 1 px column), as the unit tests use them.
+_NARROW = {" ": 4, "!": 2, "\"": 5, "'": 3, "(": 5, ")": 5, "*": 5, ",": 2, ".": 2, ":": 2, ";": 2, "<": 5,
+           ">": 5, "@": 7, "I": 4, "[": 4, "]": 4, "`": 3, "f": 5, "i": 2, "k": 5, "l": 3, "t": 4, "{": 5,
+           "|": 2, "}": 5, "~": 7}
+
+
+def vanilla_width(text):
+    return sum(_NARROW.get(c, 6) for c in text)
+
+
+def ring(box, inset):
+    """Points on the rectangle `inset` px inside box, each once; [] when the box is too small."""
+    x0, y0, x1, y1 = box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset
+    if x1 < x0 or y1 < y0:
+        return []
+    pts = [(x, y0) for x in range(x0, x1 + 1)]
+    if y1 > y0:
+        pts += [(x, y1) for x in range(x0, x1 + 1)]
+    pts += [(x0, y) for y in range(y0 + 1, y1)]
+    if x1 > x0:
+        pts += [(x1, y) for y in range(y0 + 1, y1)]
+    return pts
+
+
+def see_through_ok(on_px, off_px, alpha=HL_FILL_ALPHA, tol=2):
+    """Is on_px the backdrop off_px under black at `alpha`? (each channel round(c * (1 - alpha/255)) +- tol)"""
+    return all(abs(a - round(b * (1 - alpha / 255.0))) <= tol for a, b in zip(on_px, off_px))
+
+
+def clip(img, box):
+    """box cut to the frame (a box from another window size must not index past it)."""
+    w, h, _ = img
+    return max(0, box[0]), max(0, box[1]), min(w - 1, box[2]), min(h - 1, box[3])
+
+
+def count_exact(img, box, rgb):
+    x0, y0, x1, y1 = clip(img, box)
+    return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb))
+
+
+def count_near(img, box, rgb, tol):
+    x0, y0, x1, y1 = clip(img, box)
+    return sum(1 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)
+               if max(abs(c - t) for c, t in zip(px(img, x, y), rgb)) <= tol)
+
+
+def xs_of(img, box, rgb):
+    """(min x, max x) of the pixels exactly rgb in box, or None."""
+    x0, y0, x1, y1 = clip(img, box)
+    xs = [x for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb)]
+    return (min(xs), max(xs)) if xs else None
+
+
+def ys_of(img, box, rgb):
+    x0, y0, x1, y1 = clip(img, box)
+    ys = [y for y in range(y0, y1 + 1) for x in range(x0, x1 + 1) if px(img, x, y) == tuple(rgb)]
+    return (min(ys), max(ys)) if ys else None
+
+
+def changed_points(a, b, box=None, thresh=6):
+    """Pixels (x, y) inside box that differ by more than thresh in a channel; rows that are identical are skipped
+    whole, so a frame where only the HUD changed is scanned quickly. None when the frames differ in size."""
+    w, h, ra = a
+    if (w, h) != b[:2]:
+        return None
+    rb = b[2]
+    x0, y0, x1, y1 = box or (0, 0, w - 1, h - 1)
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w - 1, x1), min(h - 1, y1)
+    out = []
+    for y in range(y0, y1 + 1):
+        sa, sb = ra[y][3 * x0:3 * x1 + 3], rb[y][3 * x0:3 * x1 + 3]
+        if sa == sb:
+            continue
+        for i in range(0, len(sa), 3):
+            if sa[i:i + 3] != sb[i:i + 3] and max(abs(sa[i] - sb[i]), abs(sa[i + 1] - sb[i + 1]),
+                                                  abs(sa[i + 2] - sb[i + 2])) > thresh:
+                out.append((x0 + i // 3, y))
+    return out
+
+
+def bbox_of(points):
+    if not points:
+        return None
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def bbox_diff(a, b, box=None, thresh=6):
+    """Exact bounding box of the pixels that differ between two frames (every pixel, unlike diff())."""
+    pts = changed_points(a, b, box, thresh)
+    return bbox_of(pts) if pts is not None else None
+
+
+def hud_clusters(a, b, box=None, thresh=6, cell=4, join=3, also=None):
+    """The changed pixels grouped into clusters: cells of `cell` px, joined across gaps of up to `join` cells.
+    `also` is a second backdrop (taken after the frame): a pixel counts only if b differs from both, so a world
+    pixel that changed once, before or after the frame, does not. Returns [(points, bbox)], biggest first."""
+    pts = changed_points(a, b, box, thresh) or []
+    if also is not None and also[:2] == b[:2]:  # a backdrop from a resized window says nothing about b
+        other = set(changed_points(also, b, box, thresh) or [])
+        pts = [p for p in pts if p in other]
+    cells = {}
+    for p in pts:
+        cells.setdefault((p[0] // cell, p[1] // cell), []).append(p)
+    seen, out = set(), []
+    for start in cells:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack, members = [start], []
+        while stack:
+            c = stack.pop()
+            members.extend(cells[c])
+            for dx in range(-join, join + 1):
+                for dy in range(-join, join + 1):
+                    n = (c[0] + dx, c[1] + dy)
+                    if n in cells and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        out.append((members, bbox_of(members)))
+    return sorted(out, key=lambda m: -len(m[0]))
+
+
+def hud_boxes(a, b, box=None, thresh=6, min_px=12, max_frac=0.75, also=None):
+    """Bounding boxes of the HUD changes between two frames, biggest first: the clusters of changed pixels, without
+    specks (under min_px: a world pixel that flickered) and bands wider than max_frac of the frame (the horizon and
+    far chunks redrawing, a camera that moved)."""
+    w = a[0]
+    return [bb for members, bb in hud_clusters(a, b, box, thresh, also=also)
+            if len(members) >= min_px and box_size(bb)[0] < max_frac * w]
+
+
+def hud_bbox(a, b, box=None, thresh=6, min_px=12, max_frac=0.75, also=None):
+    """The biggest HUD change (hud_boxes), or None."""
+    found = hud_boxes(a, b, box, thresh, min_px, max_frac, also)
+    return found[0] if found else None
+
+
+def union_box(boxes):
+    boxes = [b for b in boxes if b]
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def world_changes(a, b, keep, thresh=6):
+    """Changed pixels outside the box `keep` (the module and its margin): the scene itself moved when this is big."""
+    pts = changed_points(a, b, None, thresh) or []
+    return sum(1 for p in pts if not inside((p[0], p[1], p[0], p[1]), keep))
+
+
+def changed_runs(a, b, box, axis, thresh=6):
+    """Sub-boxes of box split at the columns (axis "x") or rows ("y") where nothing changed."""
+    x0, y0, x1, y1 = box
+    lines = range(x0, x1 + 1) if axis == "x" else range(y0, y1 + 1)
+
+    def hit(i):
+        cells = ((i, y) for y in range(y0, y1 + 1)) if axis == "x" else ((x, i) for x in range(x0, x1 + 1))
+        return any(max(abs(p - q) for p, q in zip(px(a, x, y), px(b, x, y))) > thresh for x, y in cells)
+    runs, start = [], None
+    for i in lines:
+        if hit(i):
+            start = i if start is None else start
+        elif start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, lines[-1]))
+    out = []
+    for lo, hi in runs:
+        sub = (lo, y0, hi, y1) if axis == "x" else (x0, lo, x1, hi)
+        tight = bbox_diff(a, b, sub, thresh)
+        if tight:
+            out.append(tight)
+    return out
+
+
+def inside(inner, outer):
+    return (inner is not None and outer is not None and inner[0] >= outer[0] and inner[1] >= outer[1]
+            and inner[2] <= outer[2] and inner[3] <= outer[3])
+
+
+def disjoint(boxes):
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            if a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]:
+                return False
+    return True
+
+
+def grow(box, d):
+    return (box[0] - d, box[1] - d, box[2] + d, box[3] + d)
+
+
+def box_size(box):
+    return (box[2] - box[0] + 1, box[3] - box[1] + 1) if box else (0, 0)
+
+
+def hl_text_box_width(segments, divider=False):
+    """TextModules.boxWidth with vanilla advances: text minus its trailing column, plus 4 px each side."""
+    return sum(vanilla_width(t) for t in segments) + (7 if divider else 0) - 1 + 8
+
+
+# Module groups for the per-item checks: name, enable field, Background ids it switches, content kind.
+HL_GROUPS = [
+    ("potion", "potionStatusEnabled", ["potion"], "text"),
+    ("armor", "armorTypeEnabled", ["armor"], "armor"),
+    ("inventory", "inventoryHudEnabled", ["inventory"], "inventory"),
+    ("timers", "genTimersEnabled", ["diamondtimer", "emeraldtimer"], "text"),
+    ("sessionstats", "sessionStatsEnabled", ["sessionstats"], "text"),
+    ("heightlimit", "heightLimitEnabled", ["heightlimit"], "text"),
+    ("fps", "fpsEnabled", ["fps"], "textbox"),
+    ("cps", "cpsEnabled", ["cps"], "textbox"),
+    ("ping", "pingEnabled", ["ping"], "textbox"),
+    ("keystrokes", "keystrokesEnabled", ["keystrokes"], "keys"),
+]
+HL_TEAM_UPGRADES = ("teamupgrades", "teamUpgradesEnabled", ["teamupgrades"], "text")
+HL_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventoryHud",
+             "diamondtimer": "diamondTimerHud", "emeraldtimer": "emeraldTimerHud", "keystrokes": "keystrokesHud",
+             "sessionstats": "sessionStatsHud", "heightlimit": "heightLimitHud", "fps": "fpsHud", "cps": "cpsHud",
+             "ping": "pingHud", "teamupgrades": "teamUpgradesHud"}
+HL_OTHER_FIELDS = ["potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "genTimersInGameOnly",
+                   "keystrokesInGameOnly", "heightLimitInGameOnly", "sessionStatsHoldKey", "guiFont", "guiAccent",
+                   "defaultTextSize"]
+# Keystrokes caps (KeystrokesLayout.CAPS), GUI px from the module's top-left at scale 1.
+HL_CAPS = [(19, 0, 18, 18), (0, 19, 18, 18), (19, 19, 18, 18), (38, 19, 18, 18), (0, 57, 56, 10),
+           (0, 38, 27.5, 18), (28.5, 38, 27.5, 18)]
+
+
+class HudLook:
+    """State for the HL step: the config paths it touches, their values before it ran, the scale factor."""
+
+    def __init__(self, s, cfg, restart_game):
+        self.s, self.cfg, self.restart_game = s, cfg, restart_game
+        self.groups = list(HL_GROUPS)
+        if find_field(s, cfg, ["teamUpgradesEnabled"]):
+            self.groups.append(HL_TEAM_UPGRADES)
+        self.ids = [i for g in self.groups for i in g[2]]
+        self.fields = [g[1] for g in self.groups] + HL_OTHER_FIELDS
+        for i in self.ids:
+            self.fields += [HL_LAYOUT[i] + k for k in ("X", "Y", "Anchor", "Scale")]
+        self.saved, self.saved_bg, self.saved_gui = {}, {}, None
+        self.sf = 2
+
+    def f(self, name, value=None):
+        return self.s.field(self.cfg + "." + name, value)
+
+    def bg(self, item, on=None):
+        if on is None:
+            return self.s.call("/invoke", post={"path": self.cfg + ".hudBackground", "args": item}).get("value")
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudBackground", "args": ARG_SEP.join([item, str(on).lower()])})
+
+    def group_bg(self, group, on):
+        for item in group[2]:
+            self.bg(item, on)
+
+    def save_config(self):
+        self.s.try_call("/invoke", post={"path": self.cfg + ".save", "args": ""})
+
+    def snapshot(self):
+        for name in self.fields:
+            r, _ = self.s.try_call("/field", post={"path": self.cfg + "." + name})
+            if r is not None:
+                self.saved[name] = r.get("value")
+        for i in self.ids:
+            self.saved_bg[i] = self.bg(i)
+        self.saved_gui = (self.s.status() or {}).get("guiScaleSetting")
+
+    def restore(self):
+        for name, value in self.saved.items():
+            self.s.try_call("/field", post={"path": self.cfg + "." + name, "value": str(value).lower()
+                                            if isinstance(value, bool) else str(value)})
+        for i, on in self.saved_bg.items():
+            if on is not None:
+                self.bg(i, bool(on))
+        if self.saved_gui is not None:
+            self.s.try_call("/scale", {"n": self.saved_gui})
+        self.s.try_call("/field", post={"path": ICONS + ".cacheDirOverride", "value": ""})
+        # setup() equips leggings and fills slots 9-10; armor left on would soften A2-clutch's damage check
+        for c in ("/effect @p clear", "/replaceitem entity @p slot.armor.legs minecraft:air",
+                  "/replaceitem entity @p slot.inventory.0 minecraft:air",
+                  "/replaceitem entity @p slot.inventory.1 minecraft:air"):
+            self.s.try_call("/command", post={"command": c})
+        self.save_config()
+        self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
+
+    def setup(self, gui_scale=2):
+        """The fixed scene: noon, clear, looking north from a known spot, one item stack each in main slots 9-10."""
+        for c in ("/gamerule sendCommandFeedback false", "/gamerule doDaylightCycle false", "/time set 6000",
+                  "/weather clear", "/tp @p 0.5 4 0.5 0 0", "/effect @p clear",
+                  "/replaceitem entity @p slot.armor.legs minecraft:diamond_leggings",
+                  "/replaceitem entity @p slot.inventory.0 minecraft:diamond 4",
+                  "/replaceitem entity @p slot.inventory.1 minecraft:arrow 8"):
+            self.s.cmd(c)
+        self.s.call("/scale", {"n": gui_scale})
+        self.f("guiFont", "minecraft")
+        self.f("guiAccent", HL_ACCENT)
+        for name in HL_OTHER_FIELDS[:7]:
+            self.f(name, False)
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudSize", "args": "1"})
+        for i in self.ids:
+            self.f(HL_LAYOUT[i] + "Anchor", -1)
+            self.f(HL_LAYOUT[i] + "Scale", 1.0)
+            self.bg(i, True)
+        self.all_off()
+        self.s.call("/close")
+        time.sleep(10.5)  # command lines in chat fade
+        self.sf = (self.s.status() or {}).get("scaleFactor") or gui_scale
+
+    def all_off(self):
+        for g in self.groups:
+            self.f(g[1], False)
+
+    def only(self, group):
+        self.all_off()
+        self.f(group[1], True)
+
+    def shot(self, tag):
+        time.sleep(0.35)
+        return self.s.shot("hl-" + tag)[1]
+
+    def enter_world(self):
+        require_smoke_save(self.s.call("/world", timeout=120))
+        for _ in range(90):
+            st = api_quiet("/status") or {}
+            if st.get("inWorld") and st.get("responsive"):
+                break
+            time.sleep(1)
+        self.s.call("/close")
+        time.sleep(2)
+
+
+def hl_ring_ok(on, none, box, inset=1):
+    pts = ring(box, inset)
+    bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
+    return pts and not bad, "%d/%d ring px off the 0x6F ratio" % (len(bad), len(pts))
+
+
+def hl_bare_ok(img, none, pts, tol=1):
+    bad = [p for p in pts if max(abs(a - b) for a, b in zip(px(img, *p), px(none, *p))) > tol]
+    return not bad, "%d/%d px differ from the backdrop" % (len(bad), len(pts))
+
+
+def hl_cap_points(box, sf):
+    """One pixel inside each Keystrokes cap's top-left corner (no letter there), kept only if inside box."""
+    pts = [(box[0] + int(round(c[0] * sf)) + 1, box[1] + int(round(c[1] * sf)) + 1) for c in HL_CAPS]
+    return [p for p in pts if inside((p[0], p[1], p[0], p[1]), box)]
+
+
+def hl_expected_panel(group, sf):
+    """Panel size in screenshot px for the modules whose content size is fixed here, else None."""
+    pad2 = 2 * HL_PAD
+    if group == "armor":
+        return ((16 + pad2) * sf, (16 + pad2) * sf)
+    if group == "inventory":
+        return ((9 * 22 + 2 + pad2) * sf, (3 * 22 + 2 + pad2) * sf)
+    if group == "potion":  # Speed II, 0:45
+        return ((18 + 3 + max(vanilla_width("Speed II"), vanilla_width("0:45")) - 1 + pad2) * sf, (18 + pad2) * sf)
+    if group == "keystrokes":
+        return (56 * sf, 67 * sf)
+    if group == "cps":  # no clicks
+        return (hl_text_box_width(["0", "0", " CPS"], True) * sf, 18 * sf)
+    if group == "ping":  # singleplayer
+        return (hl_text_box_width(["--", " ms"]) * sf, 18 * sf)
+    return None
+
+
+HL_ARMOR_ICON_MIN = 0.3   # diamond leggings cover ~44% of their 16 x 16 slot
+HL_ITEM_MIN = 0.1         # an arrow covers ~17% of its tile
+
+
+def hl_scene_moved(none, img, box, sf):
+    """Did the world change outside the module (camera turned, a screen opened, the window resized)?"""
+    if box is None or img[:2] != none[:2]:
+        return img[:2] != none[:2]
+    w, hgt, _ = none
+    return world_changes(none, img, grow(box, 8 * sf)) > max(400, 0.002 * w * hgt)
+
+
+def hl_backdrop(img, backdrops, box, sf):
+    """Of the backdrops (module off, taken before and after), the one that matches img best outside the module."""
+    if box is None:
+        return backdrops[0]
+    same = [n for n in backdrops if n[:2] == img[:2]] or [backdrops[0]]
+    return min(same, key=lambda n: world_changes(n, img, grow(box, 8 * sf)))
+
+
+def hl_bg_boxes(name, backdrops, on, off, sf):
+    """(On box, its panels, Off box): the module's change in each frame, as clusters of the pixels that differ from
+    both backdrops, so world specks, the horizon and far chunks redrawing do not count. The gen timers are two
+    panels; the Off content is looked for around the On box."""
+    before, after = backdrops
+    found = hud_boxes(before, on, also=after)
+    panels = found[:2] if name == "timers" else found[:1]
+    on_box = union_box(panels)
+    off_box = union_box(hud_boxes(before, off, grow(on_box, 8 * sf), also=after)) if on_box else None
+    return on_box, sorted(panels), off_box
+
+
+def hl_bg_checks(name, kind, backdrops, on, off, sf):
+    """Every HL-bg check for one module from its frames, as (check, ok, detail); its On box; and whether the scene
+    moved (then the frames say nothing about the module)."""
+    out = []
+    sizes = [f[:2] for f in (backdrops[0], backdrops[1], on, off)]
+    if len(set(sizes)) > 1:  # the window changed size between the frames
+        return [(name + ": its frames are one size", False, sizes)], None, True
+    on_box, panels, off_box = hl_bg_boxes(name, backdrops, on, off, sf)
+    out.append((name + ": drawn with its Background on", on_box is not None, on_box))
+    if on_box is None:
+        return out, None, False
+    none, none_off = hl_backdrop(on, backdrops, on_box, sf), hl_backdrop(off, backdrops, on_box, sf)
+    moved = hl_scene_moved(none, on, on_box, sf) or hl_scene_moved(none_off, off, on_box, sf)
+    if name == "timers":
+        out.append(("timers: two panels", len(panels) == 2, panels))
+    want = hl_expected_panel(name, sf)
+    if want:
+        got = box_size(on_box)
+        out.append((name + ": panel/box %sx%s px (+-1)" % want,
+                    abs(got[0] - want[0]) <= 1 and abs(got[1] - want[1]) <= 1, got))
+    if kind == "keys":
+        pts = hl_cap_points(on_box, sf)
+        bad = [p for p in pts if not see_through_ok(px(on, *p), px(none, *p))]
+        out.append(("keystrokes: every idle cap is 0x6F black", len(pts) == 7 and not bad, (len(pts), bad)))
+        ok, why = hl_bare_ok(off, none_off, pts)
+        out.append(("keystrokes Off: no cap fill", ok, why))
+        out.append(("keystrokes On: letters have no shadow", count_exact(on, on_box, HL_SHADOW) == 0, None))
+        out.append(("keystrokes Off: letters have a shadow", count_exact(off, on_box, HL_SHADOW) >= 10, None))
+        return out, on_box, moved
+    for p in panels:
+        ok, why = hl_ring_ok(on, none, p)
+        out.append((name + ": panel ring is see-through black (not 0xD0121212)", ok, why))
+        if kind != "textbox":
+            ok, why = hl_bare_ok(off, none_off, ring(p, 1))
+            out.append((name + " Off: no fill on that ring", ok, why))
+    if kind != "textbox":
+        out.append((name + " Off: drawn inside the On panel only", inside(off_box, grow(on_box, 1)), off_box))
+        if off_box and name not in ("armor", "inventory"):
+            margins = (off_box[0] - on_box[0], off_box[1] - on_box[1], on_box[2] - off_box[2], on_box[3] - off_box[3])
+            out.append((name + ": the panel pads the content", min(margins) >= (HL_PAD - 1) * sf, margins))
+    content = (on_box[0] + HL_PAD * sf, on_box[1] + HL_PAD * sf, on_box[2] - HL_PAD * sf, on_box[3] - HL_PAD * sf)
+    if kind in ("text", "textbox"):
+        for tag, img, box in (("On", on, on_box), ("Off", off, off_box or on_box)):
+            n = count_exact(img, box, HL_SHADOW)
+            out.append(("%s %s: white text with its shadow" % (name, tag), n >= 10, n))
+    elif kind == "armor":
+        icon = (content[0], content[1], content[0] + 16 * sf - 1, content[1] + 16 * sf - 1)
+        area = (16 * sf) ** 2
+        for tag, img, back, least in (("On", on, none, 0.5), ("Off", off, none_off, HL_ARMOR_ICON_MIN)):
+            frac = len(changed_points(back, img, icon)) / float(area)
+            out.append(("armor %s: leggings icon drawn" % tag, frac >= least, "%.2f of %d px" % (frac, area)))
+    elif kind == "inventory":
+        for slot, count in ((0, "4"), (1, "8")):
+            tile = (content[0] + (2 + 22 * slot) * sf, content[1] + 2 * sf,
+                    content[0] + (2 + 22 * slot + 20) * sf - 1, content[1] + 22 * sf - 1)
+            area = (20 * sf) ** 2
+            for tag, img, back in (("On", on, none), ("Off", off, none_off)):
+                frac = len(changed_points(back, img, tile)) / float(area)
+                out.append(("inventory %s: item in slot %d" % (tag, slot + 1), frac > HL_ITEM_MIN, "%.2f" % frac))
+                n = count_exact(img, tile, HL_SHADOW)
+                out.append(("inventory %s: stack count %s with its shadow" % (tag, count), n >= 4, n))
+    return out, on_box, moved
+
+
+def hl_bg(h):
+    s = h.s
+    s.begin("HL-bg", "Background On: Lunar 0x6F panel; Off: no fill, content still drawn (per module)")
+    h.boxes = {}
+    for g in h.groups:
+        name, _, _, kind = g
+        for attempt in range(3):
+            # A fixed view, no screen open, a backdrop before and after: real input reaching the window (a turned
+            # camera, an opened chat, a resize) changes the whole frame, and then this module's shots are retaken.
+            h.all_off()
+            s.cmd("/effect @p clear")
+            if name == "potion":
+                s.cmd("/effect @p 1 45 1 true")
+            if name == "teamupgrades":
+                tu_board(s, True, True)  # an active game (sidebar + below-name): Team Upgrades draws only then
+            s.cmd("/tp @p 0.5 4 0.5 0 0")
+            s.call("/close")
+            time.sleep(0.6)  # the FOV settles after an effect change
+            before = h.shot(name + "-none")
+            h.only(g)
+            on = h.shot(name + "-on")
+            h.group_bg(g, False)
+            off = h.shot(name + "-off")
+            h.group_bg(g, True)
+            h.all_off()
+            after = h.shot(name + "-none-after")
+            if name == "teamupgrades":
+                tu_clear_board(s)
+            checks, on_box, moved = hl_bg_checks(name, kind, (before, after), on, off, h.sf)
+            if not moved:
+                break
+        h.boxes[name] = on_box
+        if not s.check(name + ": the scene held still for its shots (else real input reached the game)", not moved):
+            continue
+        for check, ok, detail in checks:
+            s.check(check, ok, detail)
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def hl_persist(h):
+    s = h.s
+    s.begin("HL-persist", "a Background Off survives a restart")
+    h.bg("potion", False)
+    h.save_config()
+    h.restart_game()
+    h.enter_world()
+    after = h.bg("potion")
+    s.check("potion Background still Off after the restart", after is False, after)
+    h.bg("potion", True)
+    h.save_config()
+    h.setup()
+
+
+def hl_blink_offsets():
+    """When the HL-potion frames are taken, in s from the first: 0.625 s apart, so the 1 s blink's phase steps 5/8 of
+    a period per frame and the six frames see both halves whatever the start (frames ~1 s apart can all land in
+    one half, as in the first prod run)."""
+    return [0.625 * i for i in range(6)]
+
+
+def hl_potion(h):
+    s = h.s
+    s.begin("HL-potion", "Lunar potion rows: 20 px pitch, white name, gray m:ss, under 10 s blinks")
+    g = HL_GROUPS[0]
+    h.all_off()
+    s.cmd("/effect @p clear")
+    # The effects first, then the backdrop: Speed widens the field of view and Invisibility hides the hand, so a
+    # backdrop taken before them differs from every later frame across the whole screen.
+    for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 9 0 true"):
+        s.cmd(c)
+    s.cmd("/tp @p 0.5 4 0.5 0 0")
+    s.call("/close")
+    time.sleep(0.6)  # the FOV settles
+    none = h.shot("potion-none")
+    h.only(g)
+    time.sleep(0.35)
+    frames, t0 = [], time.time()
+    for i, at in enumerate(hl_blink_offsets()):
+        delay = t0 + at - time.time()
+        if delay > 0:
+            time.sleep(delay)
+        frames.append(s.shot("hl-potion-rows-%d" % i, wait=50)[1])
+    h.all_off()
+    after = h.shot("potion-none-after")
+    box = union_box([hud_bbox(none, f, also=after) for f in frames])
+    if not s.check("potion panel drawn", box is not None, box):
+        return
+    sf = h.sf
+    s.check("panel height (58 + 6) x sf", abs(box_size(box)[1] - 64 * sf) <= 1, box_size(box))
+    x0 = box[0] + (HL_PAD + 21) * sf
+    top = box[1] + HL_PAD * sf
+
+    def band(row, dy0, dy1):
+        return (x0, top + (row * 20 + dy0) * sf, box[2], top + (row * 20 + dy1) * sf - 1)
+    third = [count_exact(f, band(2, 1, 10), HL_WHITE) for f in frames]
+    s.check("row 3 (9 s left) blinks: present and absent across shots", max(third) > 0 and min(third) == 0, third)
+    for row in (0, 1):
+        names = [count_exact(f, band(row, 1, 10), HL_WHITE) for f in frames]
+        times = [count_exact(f, band(row, 10, 19), HL_GRAY) for f in frames]
+        s.check("row %d: white name in every shot" % (row + 1), min(names) > 0, names)
+        s.check("row %d: gray time in every shot" % (row + 1), min(times) > 0, times)
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def hl_measure(h, group, tag):
+    """(On box, On frame) of one module measured now, alone with its Background on, between a backdrop before and
+    after; the scale factor is read again. HL-bg's boxes go stale when a restart or the window changes the size (the
+    first prod run came back 363 x 427 at scale 1). Retaken when the window changes size between the frames."""
+    for attempt in range(3):
+        h.sf = (h.s.status() or {}).get("scaleFactor") or h.sf
+        h.all_off()
+        h.s.call("/close")
+        before = h.shot(tag + "-none")
+        h.only(group)
+        on = h.shot(tag + "-on")
+        h.all_off()
+        after = h.shot(tag + "-none-after")
+        if before[:2] == on[:2] == after[:2]:
+            return hud_bbox(before, on, also=after), on
+    return None, None
+
+
+def hl_mapinfo(h):
+    s = h.s
+    s.begin("HL-mapinfo", "Map Info: labels in the accent, values white")
+    g = [x for x in h.groups if x[0] == "heightlimit"][0]
+    box, img = hl_measure(h, g, "mapinfo")
+    if not s.check("Map Info measured", box is not None, box):
+        return
+    sf = h.sf
+    top = box[1] + HL_PAD * sf
+    for row, label in enumerate(("Map", "Height Limit", "Distance")):
+        band = (box[0], top + row * 11 * sf, box[2], top + (row * 11 + 9) * sf - 1)
+        accent, white = xs_of(img, band, HL_ACCENT_RGB), xs_of(img, band, HL_WHITE)
+        s.check("%s: label in the accent" % label, accent is not None, accent)
+        s.check("%s: value white, right of the label" % label,
+                white is not None and accent is not None and white[0] > accent[1], (accent, white))
+    h.all_off()
+
+
+def hl_pressed_cap(img, box, sf):
+    """(accent px, dark-letter px) inside the W cap of the Keystrokes box. Edit HUD paints its faint frame fill over
+    the preview, which tints both colours a little, so they are matched with a tolerance, inside the cap only."""
+    c = HL_CAPS[0]
+    cap = (box[0] + int(round(c[0] * sf)), box[1] + int(round(c[1] * sf)),
+           box[0] + int(round((c[0] + c[2]) * sf)) - 1, box[1] + int(round((c[1] + c[3]) * sf)) - 1)
+    return count_near(img, cap, HL_ACCENT_RGB, 8), count_near(img, cap, HL_PRESSED_TEXT, 16)
+
+
+def hl_keys(h):
+    s = h.s
+    s.begin("HL-keys", "Keystrokes: pressed cap = solid accent + contrast letter (W held raw in the editor)")
+    g = [x for x in h.groups if x[0] == "keystrokes"][0]
+    # The caps' box measured in game: the editor preview draws them in the same spot, but its frames and the other
+    # modules' ghosts change around them, so a frame diff in the editor would measure editor chrome.
+    box, _ = hl_measure(h, g, "keys")
+    if not s.check("Keystrokes measured in game", box is not None, box):
+        return
+    sf = h.sf
+    got = box_size(box)
+    s.check("in game: 56 x 67 px x sf, no CPS line under the space bar",
+            abs(got[0] - 56 * sf) <= 1 and abs(got[1] - 67 * sf) <= 1, got)
+    h.only(g)
+    s.try_call("/hover", {"off": 1})
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    # The editor shows live keys (edit-hud live preview): hold W's keyboard state, never its binding (edit-hud X6).
+    s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+    try:
+        on = h.shot("keys-editor")
+    finally:
+        s.try_call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+    s.call("/close")
+    accent, letter = hl_pressed_cap(on, box, sf)
+    s.check("the W cap is solid accent (W held)", accent >= (16 * sf) ** 2, accent)
+    s.check("its letter in the contrast colour", letter > 0, letter)
+    h.all_off()
+
+
+def hl_text(h):
+    s = h.s
+    s.begin("HL-text", "FPS, CPS, Ping: 18 px boxes hugging the text, units in the accent, CPS divider, [bare] Off")
+    sf = h.sf
+    by = {g[0]: g for g in h.groups}
+    h.all_off()
+    none = h.shot("text-none")
+    for name in ("fps", "cps", "ping"):
+        h.only(by[name])
+        on = h.shot(name + "-on")
+        h.group_bg(by[name], False)
+        off = h.shot(name + "-off")
+        h.group_bg(by[name], True)
+        h.all_off()
+        after = h.shot(name + "-none-after")
+        box, bare = hud_bbox(none, on, also=after), hud_bbox(none, off, also=after)
+        if not s.check(name + ": drawn", box is not None and bare is not None, (box, bare)):
+            continue
+        w, hgt = box_size(box)
+        s.check(name + ": box 18 px tall", hgt == 18 * sf, hgt)
+        if name == "fps":
+            s.check("fps: width for 1-4 digits", w in [hl_text_box_width(["9" * d, " FPS"]) * sf for d in (1, 2, 3, 4)], w)
+        s.check(name + ": unit in the accent", count_exact(on, box, HL_ACCENT_RGB) > 0)
+        s.check(name + ": number white", count_exact(on, box, HL_WHITE) > 0)
+        if name == "cps":
+            gray = xs_of(on, box, HL_GRAY)
+            col = (gray[0], box[1], gray[0], box[3]) if gray else None
+            s.check("cps: divider 1 x 8 px column of gray", col is not None and count_exact(on, col, HL_GRAY) == 8 * sf,
+                    col and count_exact(on, col, HL_GRAY))
+            sh = (gray[0] + sf, box[1], gray[0] + sf, box[3]) if gray else None
+            s.check("cps: divider shadow one px right and down", sh is not None and count_exact(on, sh, HL_DIVIDER_SHADOW) > 0)
+        if name == "ping":
+            ys = ys_of(on, box, HL_WHITE)
+            s.check("ping: '--' (white on one font row)", ys is not None and ys[1] - ys[0] + 1 == sf, ys)
+        s.check(name + " Off: bare text at most 9 px tall", box_size(bare)[1] <= 9 * sf, box_size(bare))
+    # The Auto layout follows a Background switch: CPS moves up by FPS's height change (18 -> 9 + 2 x 3).
+    h.all_off()
+    h.f(by["fps"][1], True)
+    h.f(by["cps"][1], True)
+    a = h.shot("fps-cps-on")
+    h.group_bg(by["fps"], False)
+    b = h.shot("fps-cps-fpsoff")
+    h.group_bg(by["fps"], True)
+    h.all_off()
+    after = h.shot("fps-cps-none-after")
+    ra = changed_runs(none, a, union_box(hud_boxes(none, a, also=after)) or (0, 0, 0, 0), "y")
+    rb = changed_runs(none, b, union_box(hud_boxes(none, b, also=after)) or (0, 0, 0, 0), "y")
+    moved = (ra[1][1] - rb[1][1]) if len(ra) == 2 and len(rb) == 2 else None
+    s.check("CPS's Auto box moves with FPS's Background (3 GUI px)", moved is not None and abs(moved - 3 * sf) <= 1,
+            (ra, rb))
+    h.all_off()
+
+
+def hl_edit(h):
+    s = h.s
+    s.begin("HL-edit", "FPS in Edit HUD: drag moves it, a corner resizes it, Delete hides it")
+    p = HL_LAYOUT["fps"]
+    h.all_off()
+    h.f("fpsEnabled", True)
+    h.f(p + "Anchor", 0)
+    h.f(p + "X", 40)
+    h.f(p + "Y", 60)
+    x0 = h.f(p + "X").get("value")
+    sc0 = h.f(p + "Scale").get("value")
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    w = hl_text_box_width(["150", " FPS"])  # the editor's example value
+    cx, cy = 40 + w // 2, 60 + 9
+    s.call("/down", {"x": cx, "y": cy})
+    s.call("/drag", {"x": cx + 50, "y": cy})
+    s.call("/up", {"x": cx + 50, "y": cy})
+    time.sleep(0.3)
+    x1 = h.f(p + "X").get("value")
+    s.check("fpsHudX moved by ~50 (snap allowed)", x1 is not None and abs((x1 - x0) - 50) <= 8, (x0, x1))
+    rx, ry = (x1 or 90) + w - 1, 60 + 17
+    s.call("/down", {"x": rx, "y": ry})
+    s.call("/drag", {"x": rx + 20, "y": ry + 20})
+    s.call("/up", {"x": rx + 20, "y": ry + 20})
+    time.sleep(0.3)
+    sc1 = h.f(p + "Scale").get("value")
+    s.check("fpsHudScale grew", sc1 is not None and sc0 is not None and sc1 > sc0, (sc0, sc1))
+    s.call("/click", {"x": cx + 50, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    time.sleep(0.3)
+    s.check("Delete hid FPS", h.f("fpsEnabled").get("value") is False)
+    s.call("/close")
+    h.f(p + "Anchor", -1)
+    h.f(p + "Scale", 1.0)
+    h.all_off()
+
+
+def hl_scale_checks(gui, scale, sf, names, backdrops, frames):
+    """HL-scale's checks for one GUI scale, from its frames {(background, name or "column"): image}, as
+    (check, ok, detail). Boxes are clusters of the pixels that differ from both backdrops (before and after), so
+    the horizon redrawing far chunks in one backdrop does not count."""
+    before, after = backdrops
+    out, on_boxes = [], {}
+    for bg in (True, False):
+        for name in names:
+            img = frames[(bg, name)]
+            near = on_boxes.get(name)
+            box = (union_box(hud_boxes(before, img, grow(near, (HL_PAD + 6) * sf), also=after))
+                   if not bg and near else hud_bbox(before, img, also=after))
+            label = "GUI %d, %.2f, %s, Background %s" % (gui, scale, name, "On" if bg else "Off")
+            if box is None:
+                out.append((label + ": drawn", False, None))
+            elif bg:
+                on_boxes[name] = box
+                if name != "keystrokes":
+                    none = hl_backdrop(img, backdrops, box, sf)
+                    edge = ring(box, 0)
+                    bad = sum(1 for p in edge if not see_through_ok(px(img, *p), px(none, *p)))
+                    out.append((label + ": text inside its panel", bad <= len(edge) // 20,
+                                "%d/%d edge px are not panel" % (bad, len(edge))))
+            else:
+                # bare: the margin replaces the panel's padding, so the text stays near where the panel was
+                out.append((label + ": text where its panel was", inside(box, grow(on_boxes.get(name, box), (HL_PAD + 2) * sf)),
+                            (box, on_boxes.get(name))))
+        img = frames[(bg, "column")]
+        col = union_box(hud_boxes(before, img, also=after))  # bare modules are separate clusters
+        runs = changed_runs(hl_backdrop(img, backdrops, col, sf), img, col, "y") if col else []
+        # bare potion rows have a gap between them (3 effects: 3 runs), a panel does not
+        want = 5 if bg else 7
+        out.append(("GUI %d, %.2f, Background %s: armor, fps, cps, ping, potion stacked without overlap (%d runs)"
+                    % (gui, scale, "On" if bg else "Off", want), len(runs) == want and disjoint(runs), runs))
+    return out
+
+
+def hl_scale(h):
+    s = h.s
+    s.begin("HL-scale", "small and fractional module scales: text stays in its box, Auto boxes never overlap")
+    by = {g[0]: g for g in h.groups}
+    names = ["potion", "fps", "cps", "ping", "keystrokes"]
+    for gui, scale in ((1, 0.3), (2, 0.75)):
+        s.call("/scale", {"n": gui})
+        sf = (s.status() or {}).get("scaleFactor") or gui
+        for i in ("potion", "fps", "cps", "ping", "keystrokes", "armor"):
+            h.f(HL_LAYOUT[i] + "Scale", scale)
+        s.cmd("/effect @p clear")
+        for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 45 0 true"):
+            s.cmd(c)
+        s.cmd("/tp @p 0.5 4 0.5 0 0")
+        s.call("/close")
+        h.all_off()
+        time.sleep(0.6)  # the FOV settles after the effects
+        before = h.shot("scale-%d-none" % gui)
+        frames = {}
+        for bg in (True, False):
+            for name in names:
+                h.group_bg(by[name], bg)
+            for name in names:
+                h.only(by[name])
+                frames[(bg, name)] = h.shot("scale-%d-%s-%s" % (gui, name, "on" if bg else "off"))
+            h.all_off()
+            for name in ("armor", "fps", "cps", "ping", "potion"):
+                h.f(by[name][1], True)
+            frames[(bg, "column")] = h.shot("scale-%d-column-%s" % (gui, "on" if bg else "off"))
+            h.all_off()
+        for name in names:
+            h.group_bg(by[name], True)
+        after = h.shot("scale-%d-none-after" % gui)
+        for check, ok, detail in hl_scale_checks(gui, scale, sf, names, (before, after), frames):
+            s.check(check, ok, detail)
+    for i in ("potion", "fps", "cps", "ping", "keystrokes", "armor"):
+        h.f(HL_LAYOUT[i] + "Scale", 1.0)
+    s.call("/scale", {"n": 2})
+    s.cmd("/effect @p clear")
+
+
+def hl_font(h):
+    s = h.s
+    s.begin("HL-font", "Modern font: potion and FPS/CPS/Ping text keeps a shadow with the Background off")
+    by = {g[0]: g for g in h.groups}
+    h.f("guiFont", "modern")
+    try:
+        s.cmd("/effect @p clear")
+        h.all_off()
+        none = h.shot("font-none")
+        for c in ("/effect @p 1 45 1 true", "/effect @p 8 45 4 true", "/effect @p 14 45 0 true"):
+            s.cmd(c)
+        s.call("/close")
+        for name in ("potion", "fps", "cps", "ping"):
+            h.group_bg(by[name], False)
+            h.only(by[name])
+            img = h.shot("font-" + name)
+            box = bbox_diff(none, img)
+            n = count_near(img, box, HL_SHADOW, 8) if box else 0
+            s.check(name + ": Inter shadow pixels", n >= 10, n)
+            h.group_bg(by[name], True)
+    finally:
+        h.f("guiFont", "minecraft")
+        s.cmd("/effect @p clear")
+        h.all_off()
+
+
+def hl_icon_swap(old, modern, panel, sf):
+    """Did switching the modern icons off change the icon slot and nothing else of the row? The time line under the
+    name is left out: it ticks between the two frames."""
+    if not panel:
+        return False, "no potion panel from HL-bg"
+    slot = (panel[0] + HL_PAD * sf, panel[1] + HL_PAD * sf, panel[0] + (HL_PAD + 18) * sf - 1,
+            panel[1] + (HL_PAD + 18) * sf - 1)
+    above_time = (panel[0], panel[1], panel[2], panel[1] + (HL_PAD + HL_TIME_DY) * sf - 1)
+    swapped, elsewhere = bbox_diff(old, modern, slot), bbox_diff(old, modern, above_time)
+    return swapped is not None and (elsewhere is None or inside(elsewhere, slot)), (swapped, elsewhere, slot)
+
+
+def hl_icons(h, cold):
+    s = h.s
+    tag = "cold" if cold else "warm"
+    s.begin("HL-icons-" + tag, "modern potion icons, %s cache: %s" % (
+        tag, "one real fetch from Mojang through the production path" if cold else "no request"))
+    if cold:
+        h.icon_dir = "/private/tmp/cobblify-smoke-icons-" + time.strftime("%Y%m%d-%H%M%S")
+    elif not h.icon_dir:
+        return s.unavailable("the cold check did not run, so there is no cache directory to reuse")
+    h.restart_game()
+    s.field(ICONS + ".cacheDirOverride", h.icon_dir)  # before the loader exists (fresh JVM, title screen)
+    h.enter_world()
+    h.setup()
+    g = HL_GROUPS[0]
+    s.cmd("/effect @p 1 45 1 true")
+    s.call("/close")
+    h.only(g)
+    state = None
+    for _ in range(40):
+        r, _ = s.try_call("/field", post={"path": ICONS + ".LOADER.state"})
+        state = r and r.get("value")
+        if state in ("READY", "FAILED"):
+            break
+        time.sleep(0.5)
+    src = s.field(ICONS + ".LOADER.source").get("value")
+    req = s.call("/invoke", post={"path": ICONS + ".LOADER.requests", "args": ""}).get("value")
+    pub = s.call("/invoke", post={"path": ICONS + ".LOADER.published", "args": ""}).get("value")
+    s.check("loader READY", state == "READY", state)
+    s.check("source " + ("NETWORK" if cold else "CACHE"), src == ("NETWORK" if cold else "CACHE"), src)
+    s.check("requests == %d" % (1 if cold else 0), req == (1 if cold else 0), req)
+    s.check("23 icons published", pub == 23, pub)
+    if cold:
+        panel, _ = hl_measure(h, g, "icons-panel")
+        h.only(g)
+        modern = h.shot("icons-modern")
+        s.field(ICONS + ".enabled", False)
+        old = h.shot("icons-1.8.9")
+        s.field(ICONS + ".enabled", True)
+        ok, detail = hl_icon_swap(old, modern, panel if modern[:2] == old[:2] else None, h.sf)
+        s.check("the modern icon differs from the 1.8.9 one, only in the 18 x 18 icon slot", ok, detail)
+    s.cmd("/effect @p clear")
+    h.all_off()
+
+
+def smoke_hud_look(s, cfg, restart_game):
+    s.begin("HL", "HUD look: setup (singleplayer, scale 2, Minecraft font, pale blue, HUD Size Medium, all Auto)")
+    if not cfg or not s.has("com.bedwarsqol.hud.HudBackground"):
+        return s.unavailable("the per-item Background (HudBackground) is not in this build")
+    h = HudLook(s, cfg, restart_game)
+    h.snapshot()
+    h.icon_dir = None
+    try:
+        h.setup()
+        s.check("setup done", True, {"scaleFactor": h.sf, "modules": [g[0] for g in h.groups]})
+        subs = [hl_bg, hl_persist, hl_potion, hl_mapinfo, hl_keys, hl_text, hl_edit, hl_scale, hl_font,
+                lambda x: hl_icons(x, True), lambda x: hl_icons(x, False)]  # icons last: they restart the game
+        for sub in subs:
+            try:
+                sub(h)
+            except ForeignSave:
+                raise
+            except (ApiError, KeyError, TypeError, ValueError, IndexError) as e:
+                s.error(e)
+    finally:
+        h.restore()
+
+
 # Team Upgrades (cycle 2026-11-13-team-upgrades, PLAN Phase 4). Real names: ornithe/src TeamUpgradesWatch
 # (static LIFECYCLE), common/src TeamUpgradeLifecycle (field live, pending(), ingestionAllowed(), visible())
 # and TeamUpgradeState (keys(), tier(key), traps()); ClientSettings teamUpgradesEnabled, teamUpgradesLayout
@@ -1585,10 +4279,15 @@ HOTBAR_W, HOTBAR_ZONE_H = 182, 50  # BedwarsHudRenderer's reserved hotbar/health
 
 
 def tu_boxes(s):
-    """probe hud-boxes: (gui width, gui height, {id: box}) with every module's Edit HUD box in GUI px."""
+    """probe hud-boxes: (gui width, gui height, {id: box}) with every module's Edit HUD box in GUI px, panel
+    included. The merged probe (Edit HUD's) reports each content box with its pad, and the GUI size as sw, sh."""
     r = s.probe("hud-boxes")
-    gw, gh = r["gui"]
-    return gw, gh, {b["id"]: b for b in r["boxes"]}
+    gw, gh = r["gui"] if r.get("gui") else (r["sw"], r["sh"])
+    out = {}
+    for b in r["boxes"]:
+        pad = b.get("pad") or 0
+        out[b["id"]] = dict(b, x=b["x"] - pad, y=b["y"] - pad, w=b["w"] + 2 * pad, h=b["h"] + 2 * pad)
+    return gw, gh, out
 
 
 def tu_box_diff(a, b, box, gw):
@@ -1685,10 +4384,12 @@ def smoke_team_upgrades(s, cfg):
         s.check("no location yet: pending", tu_call(s, "", "pending") is True)
         st = tu_state(s)
         s.check("a new game starts empty", st == TU_EMPTY, st)
-        gw, _, boxes = tu_boxes(s)
         _, off = s.shot("tu-off")
         s.field(en, True)
         time.sleep(0.4)
+        # Measured once it shows: a hidden module only takes the room the shown ones leave (and Team Upgrades
+        # steps its size down to fit it), so its box before the switch is not where it draws.
+        gw, _, boxes = tu_boxes(s)
         _, empty = s.shot("tu-empty")
         frac, box = tu_box_diff(off, empty, boxes[TU_ID], gw)
         s.check("panel drawn in its default spot (Traps / None)", frac > 0.001,
@@ -1843,7 +4544,7 @@ def tu_sweep(s, hud_size, which, sizes, scales):
 
 def tu_move_keeps_size(s, cfg, mode):
     """Review code-2 I2: at 854x480, GUI scale 2, HUD Size 2 the default panel is stepped down to fit; select
-    it in Edit HUD and press Right once: it moves one pixel and keeps its size, clear of the hotbar."""
+    it in Edit HUD and press Right once: it moves one screen pixel and keeps its size, clear of the hotbar."""
     scale_path = cfg + ".teamUpgradesHudScale"
     configured = s.field(scale_path).get("value")
     if mode == "dev":
@@ -1854,6 +4555,25 @@ def tu_move_keeps_size(s, cfg, mode):
     time.sleep(0.6)
     gw, gh, boxes = tu_boxes(s)
     before = boxes[TU_ID]
+    # Outcome review (edit-hud, round 1): moving ANOTHER item pins every shown Auto module where it is drawn; the
+    # stepped-down panel must keep its drawn size then too. Nudge the chat one step, compare, undo.
+    chat = boxes.get("chat")
+    if chat and chat.get("shown"):
+        s.call("/click", {"x": int(chat["x"] + chat["w"] - 6), "y": int(chat["y"] + chat["h"] / 2)})
+        s.call("/key", {"code": KEYS["right"]})
+        time.sleep(0.3)
+        _, _, moved = tu_boxes(s)
+        other = moved[TU_ID]
+        s.check("moving another item keeps the stepped-down panel's size and spot",
+                abs(other["w"] - before["w"]) < 0.01 and abs(other["h"] - before["h"]) < 0.01
+                and abs(other["x"] - before["x"]) < 0.01 and abs(other["y"] - before["y"]) < 0.01,
+                {"before": before, "after": other, "chat": chat})
+        s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+        time.sleep(0.3)
+        gw, gh, boxes = tu_boxes(s)
+        before = boxes[TU_ID]
+    else:
+        s.note("chat not shown in the editor: the pin-by-another-item check did not run")
     s.call("/click", {"x": int(before["x"] + before["w"] / 2), "y": int(before["y"] + 4)})
     s.call("/key", {"code": KEYS["right"]})
     time.sleep(0.3)
@@ -1861,10 +4581,12 @@ def tu_move_keeps_size(s, cfg, mode):
     after = boxes[TU_ID]
     s.shot("tu-moved")
     mine, _ = tu_layout_overlaps(gw, gh, {TU_ID: after})
+    # Edit HUD moves one screen pixel per arrow press (cycle 2026-11-14-edit-hud): 1 / scale factor GUI px
+    step = 1.0 / ((s.status() or {}).get("scaleFactor") or 1)
     s.check("moving the stepped-down panel keeps its size, clear of the hotbar",
             abs(after["w"] - before["w"]) < 0.01 and abs(after["h"] - before["h"]) < 0.01
-            and abs(after["x"] - before["x"] - 1) < 0.01 and not mine,
-            {"before": before, "after": after, "gui": [gw, gh], "overlaps": mine})
+            and abs(after["x"] - before["x"] - step) < 0.01 and not mine,
+            {"before": before, "after": after, "step": step, "gui": [gw, gh], "overlaps": mine})
     s.call("/close")
     s.field(cfg + ".teamUpgradesHudAnchor", -1)  # back to the default spot, at the configured size
     s.field(cfg + ".teamUpgradesHudX", 0)
@@ -1941,7 +4663,9 @@ def cmd_smoke(args):
     s = Smoke(mode, source_of(os.path.realpath(os.path.join(SHARED, "current"))))
     steps = [lambda: smoke_boot(s, mode, fresh)]
     cfg_box = {}
-    if not args.boot_only:
+    if args.only == "overlays" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s))] + overlay_steps(s, cfg_box)
+    elif not args.boot_only:
         steps += [lambda: smoke_screen(s, "A4-settings", "settings screen", "settings"),
                   lambda: smoke_screen(s, "A4-hudeditor", "HUD editor", "hud"),
                   lambda: smoke_world(s),
@@ -1950,10 +4674,12 @@ def cmd_smoke(args):
                   lambda: smoke_zoom(s, cfg_box.get("cfg")),
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
-                  lambda: smoke_overlays(s, cfg_box.get("cfg")),
+                  lambda: smoke_hud_look(s, cfg_box.get("cfg"), lambda: restart(wt, args, stage=False)),
+                  lambda: smoke_overlays(s, cfg_box.get("cfg"))] + overlay_steps(s, cfg_box) + [
                   lambda: smoke_clutch(s, cfg_box.get("cfg")),
                   lambda: smoke_team_upgrades(s, cfg_box.get("cfg")),
-                  lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode)]
+                  lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode),
+                  lambda: smoke_edithud(s, cfg_box.get("cfg"), mode)]
         if args.only == "team-upgrades":
             steps = steps[:1] + [lambda: smoke_world(s),
                                  lambda: cfg_box.setdefault("cfg", find_config(s)),
@@ -2009,7 +4735,7 @@ def cmd_selftest(args):
     print("selftest passed")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(prog="cobdev", description=__doc__.split("\n\n")[0])
     ap.add_argument("--worktree", help="checkout to use (default: the one containing the cwd)")
     ap.add_argument("--steal", action="store_true", help="take the dev client from another worktree")
@@ -2034,6 +4760,14 @@ def main():
     p.add_argument("--arg", type=int, help="int constructor argument (SettingsGui section)")
     add("close", cmd_simple("/close"), "close the current screen")
     add("reinit", cmd_simple("/reinit"), "rerun the current screen's initGui")
+    def mods_flag(p):
+        p.add_argument("--mods", type=parse_mods, help="hold modifier keys for this input: alt,shift,ctrl"
+                                                       " (ctrl is Ctrl and Cmd)")
+
+    def device_flag(p):
+        p.add_argument("--device", action="store_true", help="X Y are display pixels from the top-left, not GUI"
+                                                             " coords (one screen pixel per step)")
+
     for name, path, help_text in (("click", "/click", "click at GUI coords"),
                                   ("down", "/down", "press a mouse button at GUI coords"),
                                   ("up", "/up", "release a mouse button at GUI coords")):
@@ -2041,9 +4775,14 @@ def main():
         p.add_argument("x", type=int)
         p.add_argument("y", type=int)
         p.add_argument("--button", type=int, default=0)
+        mods_flag(p)
+        if name != "click":
+            device_flag(p)
     p = add("drag", cmd_simple("/drag", "x", "y"), "move the held button to GUI coords")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
+    mods_flag(p)
+    device_flag(p)
     p = add("scroll", cmd_simple("/scroll", "x", "y", "amount"), "scroll at GUI coords; positive = down")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
@@ -2053,9 +4792,11 @@ def main():
     p.add_argument("y", nargs="?", type=int)
     p = add("type", cmd_simple("/type", "text"), "type text into the current Cobblify screen")
     p.add_argument("text")
-    p = add("key", cmd_key, "press a key: " + ", ".join(KEYS) + ", or an LWJGL key code")
+    p = add("key", cmd_key, "press a key: a letter, a digit, " + ", ".join(k for k in KEYS if len(k) > 1)
+            + ", or an LWJGL key code")
     p.add_argument("key")
     p.add_argument("--char", help="character to send with the key code")
+    mods_flag(p)
     p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
     p.add_argument("n", type=int)
     p = add("size", cmd_size, "resize the game window to W x H display px (dev mode)")
@@ -2083,23 +4824,34 @@ def main():
     p = add("keyhold", cmd_keyhold, "hold or release a Cobblify key binding (no arguments: list them)")
     p.add_argument("name", nargs="?")
     p.add_argument("state", nargs="?")
+    p.add_argument("--raw", action="store_true", help="hold the key's keyboard state, never the binding (also"
+                                                      " key.forward/left/back/right/jump)")
     p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
-                                " clutch-blast DX DY DZ, use-item [ITEM]")
+                                " clutch-blast DX DY DZ, use-item [ITEM], open-shop FIXTURE, hud-boxes, sheet-node ID [TYPE];"
+                                " overlay items: overlay-boxes,"
+                                " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
+                                " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore,"
+                                " chat-defaults")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
-    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, Clutch, Team Upgrades), report in ~/.cache/cobdev/smoke")
+    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch, Team Upgrades, Edit HUD),"
+                                " report in ~/.cache/cobdev/smoke")
     p.add_argument("--prod", action="store_true", help="boot the release jar in the production layout")
-    p.add_argument("--only", choices=["team-upgrades"], help="boot, world, then only these steps")
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
+    p.add_argument("--only", choices=["overlays", "team-upgrades"],
+                   help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")
     add("lock", cmd_lock, "claim the dev client for this worktree")
     add("unlock", cmd_unlock, "release the dev client")
+    return ap
 
-    args = ap.parse_args()
+
+def main():
+    args = build_parser().parse_args()
     args.fn(args)
 
 

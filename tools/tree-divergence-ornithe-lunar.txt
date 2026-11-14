@@ -95,6 +95,11 @@ divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
 divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
 divergent main com/bedwarsqol/mixin/MinecraftEscMixin.java
 
+# Edit HUD of the HUD parity work (Ornithe only): one-screen-pixel moves, a 4 px snap,
+# walls instead of pushing, the menu rule, Tab-held tab list editing. Lunar keeps the
+# old editor.
+divergent main com/bedwarsqol/gui/EditHudGui.java
+
 # ---------------------------------------------------------------------------
 # one-sided: exists in one tree only
 # ---------------------------------------------------------------------------
@@ -140,10 +145,34 @@ one-sided main ornithe com/bedwarsqol/hud/OverlayScale.java
 one-sided main ornithe com/bedwarsqol/hud/TabOverlayScale.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiIngameOverlayScaleMixin.java
 
+# HUD parity (Ornithe only): the scoreboard, chat and tab list as HUD items, and holding Tab
+# hides the Cobblify HUD (TabHudGate asks vanilla's tab-list question at the Text layer).
+one-sided main ornithe com/bedwarsqol/hud/TabHudGate.java
+one-sided main ornithe com/bedwarsqol/hud/ChatItemAccess.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatOverlayMixin.java
+one-sided test ornithe com/bedwarsqol/config/OverlayItemSettingsTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsOverlayBackgroundTest.java
+
 # Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
 one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
+
+# Per-item HUD Background (Ornithe only): its persistence, HudModules and sheet-row tests.
+one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
+
+# Edit HUD sub-pixel positions (Ornithe only): ClientSettings.hudSubPixel with HudModules and Gson.
+one-sided test ornithe com/bedwarsqol/config/HudSubPixelConfigTest.java
+# Edit HUD: a module switched on in the settings takes its first free Auto spot (Ornithe only).
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsShowRuleTest.java
+
+# FPS, CPS and Ping HUD modules (Ornithe only): their settings and sheet-row test.
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTextModulesTest.java
+
+# Modern potion effect icons (Ornithe only): the GL upload of the icons common/'s loader fetches.
+one-sided main ornithe com/bedwarsqol/hud/EffectIconTextures.java
 
 # Team Upgrades: Ornithe-only HUD (Lunar has its own Upgrades & Traps HUD), its watcher and sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/TeamUpgradesWatch.java
