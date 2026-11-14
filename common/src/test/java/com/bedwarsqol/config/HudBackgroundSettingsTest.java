@@ -8,8 +8,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * The per-HUD Background toggles are gone (Potion, Inventory, Gen Timers): only Session Stats and
- * Height Limit draw a panel, and always. Gen Timers show everywhere unless In Game Only is set.
+ * The 0.16.3 per-HUD Background keys (Potion, Inventory, Gen Timers) stay dropped: a saved one is
+ * ignored and never written again. Ornithe's per-item Background lives in {@code hudBackgrounds}
+ * instead (see HudBackgroundConfigTest). Gen Timers show everywhere unless In Game Only is set.
  */
 public class HudBackgroundSettingsTest {
 
