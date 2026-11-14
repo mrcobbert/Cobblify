@@ -964,7 +964,9 @@ def rect_close(a, b, tol):
 
 
 def ratio_at(img, ref, x, y):
-    """Mean channel ratio of img to the backdrop at one pixel; None where the backdrop is too dark to tell."""
+    """Mean channel ratio of img to the backdrop at one pixel; None off the image or where the backdrop is too dark."""
+    if not (0 <= x < img[0] and 0 <= y < img[1]):
+        return None
     a, b = px(img, x, y), px(ref, x, y)
     if min(b) < 16:
         return None
@@ -1404,6 +1406,9 @@ class OvScene:
             self.set(f, False)
         for item in OV_ITEMS:
             self.background(item, True)  # the On checks start from On, whatever the player chose
+        # vanilla's default chat width, scale, heights and opacity (row heights, wrapping and the fill depend on them);
+        # restore() puts the player's back with chat-heights restore
+        self.s.probe("chat-defaults")
         self.s.call("/close")
         self.s.probe("chat-clear")
         time.sleep(1.5)
@@ -1442,6 +1447,17 @@ class OvScene:
         self.s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
         if self.scale is not None:
             self.s.try_call("/scale", {"n": self.scale})
+
+
+def ov_chat_places(gui_w, chat_w=324.0):
+    """OV_CHAT_PLACES with P2's large scale shrunk, if needed, so a vanilla-width chat still fits the GUI width
+    (a 960 px window at GUI scale 2 is 480 GUI px: 324 x 1.5 would not fit and the box would clamp off its margin)."""
+    places = []
+    for tag, (anchor, x, y, scale) in OV_CHAT_PLACES:
+        if chat_w * scale > gui_w - 12:
+            scale = max(0.5, math.floor((gui_w - 12) / chat_w * 100) / 100.0)
+        places.append((tag, (anchor, x, y, scale)))
+    return places
 
 
 def scoreboard_samples(box, scale, sf):
@@ -1671,7 +1687,9 @@ def smoke_ov_chat(s, cfg):
     try:
         scene.setup()
         _, ref = s.shot("ov-chat-ref")  # an empty chat draws nothing
-        for tag, where in OV_CHAT_PLACES:
+        places = ov_chat_places(ov_boxes(s)[1][0])
+        s.step["chatPlaces"] = places
+        for tag, where in places:
             scene.place("chatHud", where)
             scale = where[3]
             s.probe("chat-clear")
@@ -1742,7 +1760,7 @@ def smoke_ov_chat(s, cfg):
         rows, _, _ = ov_chat_rows(s, img, ref, items["chat"], sf, 1.0)
         s.check("slider at max: open chat 20 rows", rows == 20, rows)
         s.call("/close")
-        s.probe("chat-heights", "restore")
+        s.probe("chat-defaults")  # back to the scene's vanilla defaults; restore() puts the player's options back
         # Top edge: a short chat placed at y 4 stays there; grown to 10 rows its top clamps to 0.
         s.probe("chat-clear")
         for i in range(3):
@@ -1776,7 +1794,9 @@ def smoke_ov_chatclick(s, cfg):
     scene = OvScene(s, cfg)
     try:
         scene.setup()
-        for tag, where in OV_CHAT_PLACES[:2]:
+        places = ov_chat_places(ov_boxes(s)[1][0])
+        s.step["chatPlaces"] = places[:2]
+        for tag, where in places[:2]:
             scene.place("chatHud", where)
             scale = where[3]
             s.probe("chat-clear")
@@ -2929,7 +2949,8 @@ def main():
     p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
                                 " clutch-blast DX DY DZ, use-item [ITEM]; overlay items: overlay-boxes,"
                                 " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
-                                " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore")
+                                " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore,"
+                                " chat-defaults")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
     p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch), report in ~/.cache/cobdev/smoke")

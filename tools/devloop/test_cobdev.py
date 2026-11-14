@@ -172,6 +172,22 @@ class OverlayScene(unittest.TestCase):
         for rect in cobdev.scoreboard_samples(box, scale, sf):
             self.assertAlmostEqual(cobdev.fill_ratio(img, ref, rect), 1 - 0x50 / 255.0, delta=0.01)
 
+    def test_large_chat_placement_fits_the_window(self):
+        # review round 2, I2: a 960x540 window at GUI scale 2 is 480 GUI px wide
+        places = dict(cobdev.ov_chat_places(480))
+        self.assertLessEqual(324 * places["p2"][3], 480 - 12)
+        self.assertEqual(places["p1"], cobdev.OV_CHAT_PLACES[0][1])
+        self.assertEqual(places["p3"], cobdev.OV_CHAT_PLACES[2][1])
+        self.assertEqual(dict(cobdev.ov_chat_places(640))["p2"][3], 1.5)  # 1280x720 keeps the planned 1.5
+        box = {"x": 0.0, "y": 162.0, "w": 324 * places["p2"][3], "h": 40.5}
+        self.assertLess(cobdev.chat_margin_column(box, places["p2"][3], 2), 960)
+
+    def test_samples_off_the_image_are_no_answer_not_a_crash(self):
+        ref = sky(40, 30)
+        self.assertIsNone(cobdev.ratio_at(ref, ref, 40, 5))
+        self.assertIsNone(cobdev.ratio_at(ref, ref, 5, -1))
+        self.assertIsNone(cobdev.band_rows(ref, ref, 966, 0.5))
+
     def fake(self, backgrounds):
         test = self
 
@@ -205,6 +221,7 @@ class OverlayScene(unittest.TestCase):
                 pass
 
             def probe(self, name, *args):
+                self.probes = getattr(self, "probes", []) + [name]
                 return {"ok": True}
         return Fake()
 
@@ -216,6 +233,8 @@ class OverlayScene(unittest.TestCase):
             scene = cobdev.OvScene(s, "com.bedwarsqol.BedwarsQol.config")
             scene.setup()
             self.assertEqual({"scoreboard": True, "tablist": True, "chat": True}, s.bg)
+            # review round 2, I1: vanilla's chat options are normalised for the scene (restored by chat-heights restore)
+            self.assertIn("chat-defaults", s.probes)
             scene.background("scoreboard", False)
             scene.background("chat", False)
             scene.background("scoreboard", True)

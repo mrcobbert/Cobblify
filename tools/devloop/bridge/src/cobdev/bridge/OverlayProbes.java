@@ -38,8 +38,13 @@ final class OverlayProbes {
     static final String MOD = "com.bedwarsqol.BedwarsQol";
     static final String COPY_CHAT = "bedwarsqol$fullComponentAt";
 
-    /** Vanilla's chat heights before the first {@code chat-heights}, restored by {@code chat-heights restore}. */
-    private static float[] savedHeights;
+    /**
+     * Vanilla's chat options before the first {@code chat-heights} or {@code chat-defaults}: width, scale, focused
+     * height, unfocused height, opacity. {@code chat-heights restore} puts them all back.
+     */
+    private static float[] savedChat;
+    /** Vanilla 1.8.9's defaults, in {@link #savedChat}'s order (GameSettings field initialisers). */
+    private static final float[] VANILLA_CHAT = {1.0F, 1.0F, 1.0F, 0.44366196F, 1.0F};
 
     private OverlayProbes() {
     }
@@ -71,6 +76,8 @@ final class OverlayProbes {
                 return placeItem(args);
             case "chat-heights":
                 return chatHeights(args);
+            case "chat-defaults":
+                return chatDefaults();
             default:
                 throw new Refused("unknown probe " + name);
         }
@@ -235,22 +242,56 @@ final class OverlayProbes {
         return Bridge.onMain(() -> {
             GameSettings gs = Bridge.mc().gameSettings;
             if (h == null) {
-                if (savedHeights != null) {
-                    gs.chatHeightFocused = savedHeights[0];
-                    gs.chatHeightUnfocused = savedHeights[1];
-                    savedHeights = null;
+                if (savedChat != null) {
+                    setChat(gs, savedChat);
+                    savedChat = null;
                 }
             } else {
-                if (savedHeights == null) savedHeights = new float[]{gs.chatHeightFocused, gs.chatHeightUnfocused};
+                saveChat(gs);
                 gs.chatHeightFocused = h[0];
                 gs.chatHeightUnfocused = h[1];
             }
-            chat().refreshChat();
-            Map<String, Object> out = Bridge.ok();
-            out.put("focused", gs.chatHeightFocused);
-            out.put("unfocused", gs.chatHeightUnfocused);
-            return out;
+            return chatOptions(gs);
         });
+    }
+
+    /**
+     * {@code chat-defaults}: vanilla's default chat width, scale, heights and opacity for this session, so the overlay
+     * checks measure the same rows whatever the player saved; {@code chat-heights restore} puts the player's back.
+     */
+    private static Map<String, Object> chatDefaults() throws Exception {
+        return Bridge.onMain(() -> {
+            GameSettings gs = Bridge.mc().gameSettings;
+            saveChat(gs);
+            setChat(gs, VANILLA_CHAT);
+            return chatOptions(gs);
+        });
+    }
+
+    private static void saveChat(GameSettings gs) {
+        if (savedChat == null) {
+            savedChat = new float[]{gs.chatWidth, gs.chatScale, gs.chatHeightFocused, gs.chatHeightUnfocused,
+                    gs.chatOpacity};
+        }
+    }
+
+    private static void setChat(GameSettings gs, float[] v) {
+        gs.chatWidth = v[0];
+        gs.chatScale = v[1];
+        gs.chatHeightFocused = v[2];
+        gs.chatHeightUnfocused = v[3];
+        gs.chatOpacity = v[4];
+    }
+
+    private static Map<String, Object> chatOptions(GameSettings gs) {
+        chat().refreshChat();
+        Map<String, Object> out = Bridge.ok();
+        out.put("width", gs.chatWidth);
+        out.put("scale", gs.chatScale);
+        out.put("focused", gs.chatHeightFocused);
+        out.put("unfocused", gs.chatHeightUnfocused);
+        out.put("opacity", gs.chatOpacity);
+        return out;
     }
 
     // ------------------------------------------------------------------------------------------

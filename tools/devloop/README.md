@@ -105,6 +105,7 @@ cobdev probe chat-at 40 300                 # what a click there hits, and what 
 cobdev probe chat-click 40 300              # a left click in vanilla's chat screen only; reports screenAfter
 cobdev probe tab-header-footer "H" "F"      # or: tab-header-footer clear
 cobdev probe chat-heights 1.0 1.0           # vanilla's chat height sliders this session; or: chat-heights restore
+cobdev probe chat-defaults                  # vanilla's default chat width, scale, heights, opacity (restore as above)
 ```
 
 `chat-click` is the one input that reaches a vanilla screen: it is refused unless vanilla's chat screen is
