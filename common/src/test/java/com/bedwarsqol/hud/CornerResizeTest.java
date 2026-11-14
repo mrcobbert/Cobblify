@@ -179,4 +179,40 @@ public class CornerResizeTest {
         rect(61, 81, 82, 42, new CornerResize(CornerResize.TOP_LEFT, 102, 102, 40, 20, 1f)
                 .visualRectAt(2f, 80, 40, 1, 480, 270));
     }
+
+    // ----- cross-cycle A-I1: the box is placed from its measured size -----
+
+    @Test
+    public void aMeasuredSizeKeepsTheOppositeCornerPinned() {
+        // A module laid out at its text scale measures in whole device pixels: at raw scale 0.75 in Minecraft's font at
+        // GUI 2 it still measures 56 x 67, not 42 x 50.25. Placing it from base x raw scale moved it instead.
+        float[][] sizes = {{56f, 67f}, {84f, 100.5f}, {28f, 33.5f}};
+        for (float[] m : sizes) {
+            CornerResize tl = new CornerResize(CornerResize.TOP_LEFT, 100, 100, 56, 67, 1f);
+            assertEquals(156f, tl.leftFor(m[0]) + m[0], EPS);
+            assertEquals(167f, tl.topFor(m[1]) + m[1], EPS);
+            CornerResize tr = new CornerResize(CornerResize.TOP_RIGHT, 100, 100, 56, 67, 1f);
+            assertEquals(100f, tr.leftFor(m[0]), EPS);
+            assertEquals(167f, tr.topFor(m[1]) + m[1], EPS);
+            CornerResize bl = new CornerResize(CornerResize.BOTTOM_LEFT, 100, 100, 56, 67, 1f);
+            assertEquals(156f, bl.leftFor(m[0]) + m[0], EPS);
+            assertEquals(100f, bl.topFor(m[1]), EPS);
+            CornerResize br = new CornerResize(CornerResize.BOTTOM_RIGHT, 100, 100, 56, 67, 1f);
+            assertEquals(100f, br.leftFor(m[0]), EPS);
+            assertEquals(100f, br.topFor(m[1]), EPS);
+        }
+        // with the size base x scale, the measured placement is today's
+        CornerResize tl = new CornerResize(CornerResize.TOP_LEFT, 100, 100, 56, 67, 1f);
+        assertEquals(tl.left(1.5f), tl.leftFor(84f), EPS);
+        assertEquals(tl.top(1.5f), tl.topFor(100.5f), EPS);
+    }
+
+    @Test
+    public void theProbePlacesTheMeasuredBoxAtThePinnedCorner() {
+        // top-left corner, raw scale 0.5, but the box still measures 56 x 67: the probe's rectangle keeps the
+        // bottom-right corner (156, 167) where the screen will draw it, not 28 px to the right
+        CornerResize r = new CornerResize(CornerResize.TOP_LEFT, 100, 100, 56, 67, 1f);
+        rect(99, 99, 58, 69, r.visualRectAt(0.5f, 56, 67, 1));
+        rect(99, 99, 58, 69, r.visualRectAt(0.5f, 56, 67, 1, 480, 270));
+    }
 }

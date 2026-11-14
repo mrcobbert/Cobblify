@@ -474,7 +474,8 @@ public class EditHudGui extends GuiScreen {
         // Measure at the new scale, then keep the opposite corner where it was.
         HudBox scaled = selectedBox();
         if (scaled == null) return;
-        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.left(scale), resize.top(scale),
+        // Placed from its measured size: a box laid out at its text scale steps in whole device pixels (A-I1).
+        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.leftFor(scaled.width), resize.topFor(scaled.height),
                 scaled.width, scaled.height, width, height);
     }
 
