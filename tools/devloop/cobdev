@@ -1614,6 +1614,27 @@ def tu_layout_overlaps(gw, gh, boxes):
     return mine, others
 
 
+LAYOUT_EDGE, LAYOUT_GAP = 2.0, 2.0  # BedwarsHudRenderer's HudLayout edge and gap, GUI px
+
+
+def tu_free_place(gw, gh, boxes, w, h):
+    """A free, on-screen place for a w x h box clear of every switched-on module but Team Upgrades and of the
+    hotbar zone (with HudLayout's edge and gap), or None: the same left/top-edge search as HudLayout.fit."""
+    zone = {"id": "hotbar", "x": (gw - HOTBAR_W) / 2.0, "y": gh - HOTBAR_ZONE_H, "w": HOTBAR_W, "h": HOTBAR_ZONE_H}
+    taken = [b for b in boxes.values() if b.get("shown") and b["id"] != TU_ID] + [zone]
+    e, g = LAYOUT_EDGE, LAYOUT_GAP
+    xs = [e, gw - e - w] + [b["x"] + b["w"] + g for b in taken] + [b["x"] - g - w for b in taken]
+    ys = [e, gh - e - h] + [b["y"] + b["h"] + g for b in taken] + [b["y"] - g - h for b in taken]
+    for x in xs:
+        for y in ys:
+            if x < e - 0.01 or y < e - 0.01 or x + w > gw - e + 0.01 or y + h > gh - e + 0.01:
+                continue
+            if not any(x < b["x"] + b["w"] + g and b["x"] < x + w + g and y < b["y"] + b["h"] + g
+                       and b["y"] < y + h + g for b in taken):
+                return [x, y]
+    return None
+
+
 def tu_save(s, cfg):
     """Write the restored settings to disk: closing Edit HUD saves the config, so values switched on for a
     check would otherwise outlive the step (the next restart loads them)."""
@@ -1808,11 +1829,14 @@ def tu_sweep(s, hud_size, which, sizes, scales):
             s.check("frame " + tag, spread(img) > 8)
             gw, gh, boxes = tu_boxes(s)
             mine, others = tu_layout_overlaps(gw, gh, boxes)
-            detail = {"overlaps": mine, "box": boxes.get(TU_ID), "gui": [gw, gh], "others (not Team Upgrades)": others}
-            if which == "profile" or not mine or not others:
+            tu = boxes.get(TU_ID)
+            room = tu_free_place(gw, gh, boxes, tu["w"], tu["h"]) if tu and mine else None
+            detail = {"overlaps": mine, "box": tu, "gui": [gw, gh], "others (not Team Upgrades)": others,
+                      "free place": room, "boxes": [boxes[k] for k in sorted(boxes)]}
+            if which == "profile" or not mine or room:
                 s.check("clear of modules and hotbar " + tag, not mine, detail)
             else:
-                # every module on and the others already overlap one another: the screen is full
+                # every module on and no free place of the panel's size anywhere: the screen is full
                 s.note("screen full with every module on " + tag, detail)
             s.call("/close")
 

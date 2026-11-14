@@ -228,6 +228,44 @@ public class HudLayoutTest {
         assertEquals(TEAM_SPOTS.length, fit.spots.length);
     }
 
+    /**
+     * Every module on at HUD Size 2 (prod smoke, 369x447 GUI): the left column is full, and both paths
+     * beside it run into the boxes in the middle, but a gap under the middle box is free.
+     */
+    private static final List<Box> MIDDLE_BLOCKED = Arrays.asList(
+            new Box(2, 2, 40, 216), new Box(120, 2, 78, 216), new Box(44, 40, 74, 100));
+    private static final Spot[] DOWN_THE_LEFT = {new Spot(LEFT, MIDDLE, HudLayout.Slide.DOWN)};
+
+    @Test
+    public void withEveryPathBlockedItTakesTheFreePlaceNearestItsSpot() {
+        HudLayout layout = new HudLayout(200f, 220f, 2, 2);
+        HudLayout.Sizer square = s -> new float[]{60f * s, 60f * s};
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, MIDDLE_BLOCKED, "team", 1f, 0.5f, 1f, square, DOWN_THE_LEFT, BESIDE);
+        assertTrue(fit.free);
+        float[] team = layout.place(Collections.singletonList(new Item("team", 60f, 60f, fit.spots)), MIDDLE_BLOCKED)
+                .get("team");
+        assertAt(44f, 142f, team); // under the middle box, against the left column: nearest the left-middle start
+        for (Box b : MIDDLE_BLOCKED) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    @Test
+    public void withNoFreePlaceAnywhereFitSaysSo() {
+        HudLayout layout = new HudLayout(200f, 220f, 2, 2);
+        List<Box> full = Arrays.asList(new Box(2, 2, 196, 216));
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, full, "team", 1f, 0.5f, 1f, s -> new float[]{60f, 60f},
+                DOWN_THE_LEFT, BESIDE);
+        assertFalse(fit.free);
+        assertEquals(DOWN_THE_LEFT.length + BESIDE.length, fit.spots.length);
+    }
+
+    @Test
+    public void theFreePlaceSearchIsOnlyALastResort() {
+        // the beside-the-column path is free: fit keeps it, with no fixed place added
+        HudLayout.Fit fit = new HudLayout(427f, 240f, 2, 2).fit(NONE_BEFORE, EVERY_MODULE, "team", 1.0f, 0.5f, 0.5f,
+                PADDED, TEAM_SPOTS, BESIDE);
+        assertEquals(TEAM_SPOTS.length + BESIDE.length, fit.spots.length);
+    }
+
     @Test
     public void fitScaleStopsAtTheMinimumWhenNothingFits() {
         assertEquals(0.5f, fit(100f, 80f, NONE_BEFORE, hotbar(100f, 80f), 1.5f), 1e-6f);
