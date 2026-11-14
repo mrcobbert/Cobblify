@@ -59,6 +59,9 @@ final class SettingsBindings implements SheetValues {
         }
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
+        if (BedwarsHudRenderer.FPS_HUD.equals(hudId)) return "fps";
+        if (BedwarsHudRenderer.CPS_HUD.equals(hudId)) return "cps";
+        if (BedwarsHudRenderer.PING_HUD.equals(hudId)) return "ping";
         return null;
     }
 
@@ -97,6 +100,7 @@ final class SettingsBindings implements SheetValues {
     @Override
     public boolean hasPlatformOnly(String id) {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
+                || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -120,6 +124,9 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": return c.sessionStatsHoldKey;
             case "mapInfo": return c.heightLimitEnabled;
             case "mapInfoInGame": return c.heightLimitInGameOnly;
+            case "fps": return c.fpsEnabled;
+            case "cps": return c.cpsEnabled;
+            case "ping": return c.pingEnabled;
             case "handPos": return c.handPositionEnabled;
             case "tnt": return c.tntFuseEnabled;
             case "noEsc": return c.suppressEscMenu;
@@ -195,6 +202,9 @@ final class SettingsBindings implements SheetValues {
             case "sessionHold": c.sessionStatsHoldKey = v; break;
             case "mapInfo": c.heightLimitEnabled = v; break;
             case "mapInfoInGame": c.heightLimitInGameOnly = v; break;
+            case "fps": c.fpsEnabled = v; break;
+            case "cps": c.cpsEnabled = v; break;
+            case "ping": c.pingEnabled = v; break;
             case "handPos": c.handPositionEnabled = v; break;
             case "tnt": c.tntFuseEnabled = v; break;
             case "noEsc": c.suppressEscMenu = v; break;

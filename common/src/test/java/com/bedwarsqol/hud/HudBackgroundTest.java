@@ -71,6 +71,23 @@ public class HudBackgroundTest {
     }
 
     @Test
+    public void fillIsLunarSeeThroughBlack() {
+        assertEquals(0x6F000000, HudBackground.FILL);
+        assertEquals(0x6F, HudBackground.FILL >>> 24);
+        assertEquals(0, HudBackground.FILL & 0xFFFFFF);
+    }
+
+    @Test
+    public void padIsThreeAtMediumAndScales() {
+        assertEquals(3, HudBackground.pad(1f));
+        assertEquals(2, HudBackground.pad(0.75f));
+        assertEquals(2, HudBackground.pad(0.5f));
+        assertEquals("never under 2", 2, HudBackground.pad(0.3f));
+        assertEquals(5, HudBackground.pad(1.5f));
+        assertEquals(6, HudBackground.pad(2f));
+    }
+
+    @Test
     public void overlayIdsAreTheScoreboardChatAndTabList() {
         assertEquals(Arrays.asList("scoreboard", "chat", "tablist"), HudBackground.OVERLAY_IDS);
         try {
