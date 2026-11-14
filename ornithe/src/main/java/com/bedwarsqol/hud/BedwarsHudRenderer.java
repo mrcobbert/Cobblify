@@ -92,7 +92,7 @@ public class BedwarsHudRenderer {
     private static final int KS_TEXT_OFF = 0xFFFFFFFF;
     private static final int KS_TEXT_ON = 0xFFFFFFFF;
     private static final int KS_TEXT_ON_LIGHT = 0xFF121212; // on an accent too light for white to read
-    private static final int KS_CPS_OFF = 0xFFAAAAAA;    // STAT_LABEL_COLOR
+    private static final int KS_CPS_OFF = 0xFFAAAAAA;    // StatRowColors.LABEL_NEUTRAL
 
     /** Cap order everywhere below: W, A, S, D, Space, LMB, RMB. */
     private static final int KS_W = 0, KS_A = 1, KS_S = 2, KS_D = 3, KS_SPACE = 4, KS_LMB = 5, KS_RMB = 6;
@@ -103,12 +103,10 @@ public class BedwarsHudRenderer {
     private static final ClickCounter LEFT_CLICKS = new ClickCounter();
     private static final ClickCounter RIGHT_CLICKS = new ClickCounter();
 
-    // ----- HUD panel (Height Limit and Session Stats, always on) -----
-    // A flat, square-cornered translucent dark panel behind a HUD element (no border, no corner
-    // radius). One consistent grayscale treatment, built on Theme.PANEL_HUD — the
-    // HUD-overlay fill the mod's palette reserves for over-the-world panels (scoreboard/tab list).
+    // ----- HUD panel (every module with its Background switch on) -----
+    // Lunar's flat, square see-through panel behind a HUD element (no border, no corner radius).
     // Padding scales with the element so it stays proportionate.
-    private static final int HUD_BG_FILL = 0xD0121212;   // darker than Theme.PANEL_HUD (0xB01A1A1A): more opaque (alpha 0xB0->0xD0) + lower RGB
+    private static final int HUD_BG_FILL = HudBackground.FILL;
 
     public void onRenderText() {
         ClientSettings cfg = hudSettings();
@@ -200,8 +198,8 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * The always-on panel behind Height Limit and Session Stats: a flat, square translucent panel (no
-     * corner radius, no border) behind a HUD element's content box expanded by a scale-aware padding.
+     * The panel behind a module whose Background is on: a flat, square see-through panel (no corner
+     * radius, no border) behind a HUD element's content box expanded by a scale-aware padding.
      * Drawn in GUI space BEFORE the element's content (and before any {@code pushMatrix}/scale used for
      * item rendering).
      * {@code GuiRender.rect} is self-contained for GL state, so the content draw that follows gets a
@@ -215,7 +213,21 @@ public class BedwarsHudRenderer {
 
     /** Padding of the panel around a HUD element's content box: it grows with the element. */
     private static float panelPad(float scale) {
-        return Math.max(2, Math.round(4f * scale));
+        return HudBackground.pad(scale);
+    }
+
+    /**
+     * Space around module {@code id}'s content box: its panel's padding while its Background is on, else the plain
+     * margin. Keystrokes keeps the margin either way: its caps are its background.
+     */
+    private static float padFor(ClientSettings cfg, String id, float scale) {
+        if (KEYSTROKES_HUD.equals(id)) return CONTENT_MARGIN;
+        return HudModules.background(cfg, id) ? panelPad(scale) : CONTENT_MARGIN;
+    }
+
+    /** Module {@code id}'s panel, if its Background is on. */
+    private static void drawPanel(ClientSettings cfg, String id, HudBox box, float scale, boolean example) {
+        if (HudModules.background(cfg, id)) drawHudBackground(box, scale, example);
     }
 
     /**
@@ -234,6 +246,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         List<PotionEntry> entries = potionEntries(mc, example);
         if (entries.isEmpty()) return;
+        drawPanel(cfg, POTION_HUD, box, cfg.potionHudScale, example);
         drawPotionImages(mc, cfg, entries, box.x, box.y);
     }
 
@@ -242,6 +255,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         ItemStack leggings = currentLeggings(mc, example);
         if (leggings == null) return;
+        drawPanel(cfg, ARMOR_HUD, box, cfg.armorHudScale, example);
         drawArmorIcon(mc, cfg, leggings, box.x, box.y);
     }
 
@@ -379,8 +393,9 @@ public class BedwarsHudRenderer {
         Size size = potionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float[] at = place(mc, cfg, POTION_HUD, cfg.potionHudX, cfg.potionHudY, cfg.potionHudAnchor, size.width, size.height, CONTENT_MARGIN, resolution);
-        return new HudBox(POTION_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+        float pad = padFor(cfg, POTION_HUD, cfg.potionHudScale);
+        float[] at = place(mc, cfg, POTION_HUD, cfg.potionHudX, cfg.potionHudY, cfg.potionHudAnchor, size.width, size.height, pad, resolution);
+        return new HudBox(POTION_HUD, at[0], at[1], size.width, size.height, pad);
     }
 
     private static HudBox armorBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -389,8 +404,9 @@ public class BedwarsHudRenderer {
         Size size = armorSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution resolution = new ScaledResolution(mc);
-        float[] at = place(mc, cfg, ARMOR_HUD, cfg.armorHudX, cfg.armorHudY, cfg.armorHudAnchor, size.width, size.height, CONTENT_MARGIN, resolution);
-        return new HudBox(ARMOR_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+        float pad = padFor(cfg, ARMOR_HUD, cfg.armorHudScale);
+        float[] at = place(mc, cfg, ARMOR_HUD, cfg.armorHudX, cfg.armorHudY, cfg.armorHudAnchor, size.width, size.height, pad, resolution);
+        return new HudBox(ARMOR_HUD, at[0], at[1], size.width, size.height, pad);
     }
 
     /**
@@ -486,7 +502,7 @@ public class BedwarsHudRenderer {
         for (String id : DEFAULT_SPOTS.keySet()) {
             HudModuleState s = HudModules.get(cfg, id);
             if (s != null) b.append('|').append(s.x).append(',').append(s.y).append(',').append(s.anchor)
-                    .append(',').append(s.scale).append(',').append(s.enabled);
+                    .append(',').append(s.scale).append(',').append(s.enabled).append(',').append(s.background);
         }
         return b.toString();
     }
@@ -504,9 +520,8 @@ public class BedwarsHudRenderer {
     }
 
     private static float layoutPad(ClientSettings cfg, String id) {
-        if (SESSION_HUD.equals(id)) return panelPad(cfg.sessionStatsHudScale);
-        if (HEIGHT_LIMIT_HUD.equals(id)) return panelPad(cfg.heightLimitHudScale);
-        return CONTENT_MARGIN;
+        HudModuleState s = HudModules.get(cfg, id);
+        return s == null ? CONTENT_MARGIN : padFor(cfg, id, s.scale);
     }
 
     /** A module's box for layout purposes: example data, whether or not it is switched on. */
@@ -604,8 +619,9 @@ public class BedwarsHudRenderer {
         if (!all && cfg.inventoryInGameOnly && !bedwarsActive(example)) return null;
         Size size = inventorySize(cfg);
         ScaledResolution r = new ScaledResolution(mc);
-        float[] at = place(mc, cfg, INVENTORY_HUD, cfg.inventoryHudX, cfg.inventoryHudY, cfg.inventoryHudAnchor, size.width, size.height, CONTENT_MARGIN, r);
-        return new HudBox(INVENTORY_HUD, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+        float pad = padFor(cfg, INVENTORY_HUD, cfg.inventoryHudScale);
+        float[] at = place(mc, cfg, INVENTORY_HUD, cfg.inventoryHudX, cfg.inventoryHudY, cfg.inventoryHudAnchor, size.width, size.height, pad, r);
+        return new HudBox(INVENTORY_HUD, at[0], at[1], size.width, size.height, pad);
     }
 
     private static Size inventorySize(ClientSettings cfg) {
@@ -615,6 +631,7 @@ public class BedwarsHudRenderer {
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = inventoryBox(mc, cfg, example, false);
         if (box == null) return;
+        drawPanel(cfg, INVENTORY_HUD, box, cfg.inventoryHudScale, example);
         drawMiniInventory(mc, cfg, box.x, box.y, example);
     }
 
@@ -684,8 +701,9 @@ public class BedwarsHudRenderer {
         int storedY = diamond ? cfg.diamondTimerHudY : cfg.emeraldTimerHudY;
         int anchor = diamond ? cfg.diamondTimerHudAnchor : cfg.emeraldTimerHudAnchor;
         String id = diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD;
-        float[] at = place(mc, cfg, id, storedX, storedY, anchor, size.width, size.height, CONTENT_MARGIN, r);
-        return new HudBox(id, at[0], at[1], size.width, size.height, CONTENT_MARGIN);
+        float pad = padFor(cfg, id, diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale);
+        float[] at = place(mc, cfg, id, storedX, storedY, anchor, size.width, size.height, pad, r);
+        return new HudBox(id, at[0], at[1], size.width, size.height, pad);
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
@@ -697,6 +715,7 @@ public class BedwarsHudRenderer {
         HudBox box = timerBox(mc, cfg, example, diamond, false);
         if (box == null) return;
         float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
+        drawPanel(cfg, box.id, box, scale, example);
         drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), box.x, box.y, scale);
     }
 
@@ -713,7 +732,7 @@ public class BedwarsHudRenderer {
 
     // ----- Height Limit (Lunar-style Map / Height Limit / Distance rows) -----
 
-    /** Rows are Inter Regular like the Session Stats rows; the panel is always drawn. */
+    /** Rows are Inter Regular like the Session Stats rows; labels in the accent, values white. */
     private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -721,7 +740,7 @@ public class BedwarsHudRenderer {
         Size size = heightLimitSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float pad = panelPad(cfg.heightLimitHudScale);
+        float pad = padFor(cfg, HEIGHT_LIMIT_HUD, cfg.heightLimitHudScale);
         float[] at = place(mc, cfg, HEIGHT_LIMIT_HUD, cfg.heightLimitHudX, cfg.heightLimitHudY, cfg.heightLimitHudAnchor, size.width, size.height, pad, r);
         return new HudBox(HEIGHT_LIMIT_HUD, at[0], at[1], size.width, size.height, pad);
     }
@@ -739,28 +758,25 @@ public class BedwarsHudRenderer {
         HudBox box = heightLimitBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.heightLimitHudScale;
-        drawHudBackground(box, scale, example);
+        drawPanel(cfg, HEIGHT_LIMIT_HUD, box, scale, example);
         scale = ts(scale);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
+        int label = GuiTheme.fromToken(cfg.guiAccent).base();
         List<String> rows = heightLimitRows(mc, example);
         for (int i = 0; i < rows.size(); i++) {
             String row = rows.get(i);
-            drawStatRow(row, alignedX(mc, box, row, scale, HEIGHT_ROW_WEIGHT), box.y + i * step, scale, HEIGHT_ROW_WEIGHT);
+            drawStatRow(row, alignedX(mc, box, row, scale, HEIGHT_ROW_WEIGHT), box.y + i * step, scale, HEIGHT_ROW_WEIGHT, label);
         }
     }
 
-    /** Neutral stat colours that sit with any accent: values white, labels light gray, {@code " / "} dark gray. */
-    private static final int STAT_VALUE_COLOR = 0xFFFFFFFF;
-    private static final int STAT_LABEL_COLOR = 0xFFAAAAAA;
-    private static final int STAT_SLASH_COLOR = 0xFF666666;
-
-    /** One {@code Label: value [/ Label: value]} row, coloured run by run. */
-    private static void drawStatRow(String row, float x, float y, float scale, BedwarsQolFont.Weight weight) {
+    /**
+     * One {@code Label: value [/ Label: value]} row, coloured run by run ({@link StatRowColors}): values white,
+     * {@code " / "} dark gray, labels in {@code labelColor}.
+     */
+    private static void drawStatRow(String row, float x, float y, float scale, BedwarsQolFont.Weight weight, int labelColor) {
         float cx = x;
         for (StatRowSegments.Segment seg : StatRowSegments.split(row)) {
-            int color = seg.kind == StatRowSegments.Kind.VALUE ? STAT_VALUE_COLOR
-                    : seg.kind == StatRowSegments.Kind.SEPARATOR ? STAT_SLASH_COLOR : STAT_LABEL_COLOR;
-            cx = drawSegment(seg.text, cx, y, scale, color, weight);
+            cx = drawSegment(seg.text, cx, y, scale, StatRowColors.of(seg.kind, labelColor), weight);
         }
     }
 
@@ -806,7 +822,7 @@ public class BedwarsHudRenderer {
         Size size = sessionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
-        float pad = panelPad(cfg.sessionStatsHudScale);
+        float pad = padFor(cfg, SESSION_HUD, cfg.sessionStatsHudScale);
         float[] at = place(mc, cfg, SESSION_HUD, cfg.sessionStatsHudX, cfg.sessionStatsHudY, cfg.sessionStatsHudAnchor, size.width, size.height, pad, r);
         return new HudBox(SESSION_HUD, at[0], at[1], size.width, size.height, pad);
     }
@@ -819,7 +835,7 @@ public class BedwarsHudRenderer {
         HudBox box = sessionBox(mc, cfg, example, false);
         if (box == null) return;
         float scale = cfg.sessionStatsHudScale;
-        drawHudBackground(box, scale, example); // always on: the 13-row panel is unreadable over the world without it
+        drawPanel(cfg, SESSION_HUD, box, scale, example);
         scale = ts(scale);
         // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
@@ -830,7 +846,7 @@ public class BedwarsHudRenderer {
             float lx = alignedX(mc, box, line.primary, scale, line.weight);
             float ly = box.y + i * step;
             if (line.weight == SESSION_HEADER_WEIGHT) fontDraw(line.primary, lx, ly, scale, header, line.weight);
-            else drawStatRow(line.primary, lx, ly, scale, line.weight);
+            else drawStatRow(line.primary, lx, ly, scale, line.weight, StatRowColors.LABEL_NEUTRAL);
         }
     }
 

@@ -30,7 +30,10 @@ public class ClientSettings {
     public int defaultTextSize = 1;
     /** Size of the settings GUI panel. 0 = small, 1 = medium, 2 = large. */
     public int guiSize = 2;
-    /** GUI accent color token, pale-blue by default (see {@link GuiTheme.Accent}). Drives only the settings-GUI accent; HUD stays neutral. */
+    /**
+     * GUI accent color token, pale-blue by default (see {@link GuiTheme.Accent}). The settings menu's accent; the HUD
+     * uses it for headers, Map Info labels, units and pressed keys.
+     */
     public String guiAccent = "pale-blue";
     /** Font of the settings menu and the HUD: {@code minecraft} (the game's own, the default) or {@code modern} (Inter). */
     public String guiFont = GuiTheme.FONT_MINECRAFT;
@@ -83,7 +86,7 @@ public class ClientSettings {
     public int keystrokesHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float keystrokesHudScale = 1.0f;
 
-    /** Session Stats: Lunar-layout game + session tally; always drawn on its panel (no Background toggle). */
+    /** Session Stats: Lunar-layout game + session tally, on its panel while its Background is on. */
     public boolean sessionStatsEnabled = false;
     /** Hold Key to Show: the HUD stays hidden until {@link #sessionStatsKeyCode} is held. */
     public boolean sessionStatsHoldKey = false;
