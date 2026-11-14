@@ -978,8 +978,10 @@ public class BedwarsHudRenderer {
 
     /** A {@link MouseKeyLabel} with its top left at device px (x, y), {@code p} device px per pixel, in GUI space. */
     private static void drawPixelLabel(String label, final int x, final int y, final int p, final int sf, final int color) {
+        GuiRender.beginRects(); // EXPERIMENT (perf bench): one draw per label instead of one per pixel run
         MouseKeyLabel.runs(label, (rx, ry, w) -> GuiRender.rect((x + rx * p) / (float) sf, (y + ry * p) / (float) sf,
                 (x + (rx + w) * p) / (float) sf, (y + (ry + 1) * p) / (float) sf, color));
+        GuiRender.endRects();
     }
 
     /** One cap: {@code level} 0 is idle, 1 fully pressed (accent fill). */

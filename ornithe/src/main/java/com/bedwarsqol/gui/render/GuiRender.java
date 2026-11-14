@@ -50,10 +50,37 @@ public final class GuiRender {
         GlStateManager.color(1f, 1f, 1f, 1f);
     }
 
+    // EXPERIMENT (perf bench): rect batching. Between beginRects() and endRects(), rect() only appends its
+    // quad; the batch is one GL state setup and one draw. Nothing but rect() may draw inside a batch.
+    private static int rectBatch;
+
+    public static void beginRects() {
+        if (rectBatch++ == 0) {
+            beginShapes();
+            Tessellator.getInstance().getWorldRenderer().begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_COLOR);
+        }
+    }
+
+    public static void endRects() {
+        if (--rectBatch == 0) {
+            Tessellator.getInstance().draw();
+            endShapes();
+        }
+    }
+
     /** Filled rectangle (the workhorse). Color carries its own alpha in the high byte. */
     public static void rect(float x1, float y1, float x2, float y2, int color) {
         if (x1 > x2) { float t = x1; x1 = x2; x2 = t; }
         if (y1 > y2) { float t = y1; y1 = y2; y2 = t; }
+        if (rectBatch > 0) {
+            WorldRenderer bw = Tessellator.getInstance().getWorldRenderer();
+            float rr = r(color), gg = g(color), bb = b(color), aa = a(color);
+            bw.pos(x1, y2, 0).color(rr, gg, bb, aa).endVertex();
+            bw.pos(x2, y2, 0).color(rr, gg, bb, aa).endVertex();
+            bw.pos(x2, y1, 0).color(rr, gg, bb, aa).endVertex();
+            bw.pos(x1, y1, 0).color(rr, gg, bb, aa).endVertex();
+            return;
+        }
         beginShapes();
         Tessellator tess = Tessellator.getInstance();
         WorldRenderer wr = tess.getWorldRenderer();
