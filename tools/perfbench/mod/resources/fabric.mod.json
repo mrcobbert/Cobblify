@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "cobbench",
+  "version": "1.0.0",
+  "name": "cobbench (benchmark only)",
+  "description": "Frame-time benchmark for comparing 1.8.9 Ornithe clients. Loaded only by tools/perfbench (fabric.addMods); never shipped. Inert unless -Dcobbench.mode is set.",
+  "environment": "client",
+  "mixins": [
+    "cobbench.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "1.8.9"
+  }
+}

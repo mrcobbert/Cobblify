@@ -1,0 +1,11 @@
+ofFastRender:true
+ofFastMath:true
+ofSmoothFps:false
+ofRenderRegions:true
+ofSmartAnimations:true
+ofChunkUpdates:1
+ofChunkUpdatesDynamic:false
+ofLazyChunkLoading:true
+ofDynamicLights:3
+ofAaLevel:0
+ofAfLevel:1
