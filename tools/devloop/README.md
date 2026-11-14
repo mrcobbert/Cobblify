@@ -72,9 +72,26 @@ cobdev shot --at 120 80       # hover first, then capture
 ```
 
 Also: `down`, `up`, `drag`, `scroll X Y N` (positive = down), `hover X Y` / `hover off`,
-`type TEXT`, `key esc|enter|backspace|…|CODE`, `scale 0-4`, `size W H` (dev mode only),
+`type TEXT`, `key esc|enter|backspace|…|a-z|0-9|CODE`, `scale 0-4`, `size W H` (dev mode only),
 `reinit`, `close`, `world` (flat creative world "cobdev", clouds and view bobbing off),
 `refresh` (resources), `restart [--prod]`, `log [N]`.
+
+Precise input (Edit HUD checks):
+
+```
+cobdev drag 200 90 --mods alt          # modifier keys held for this one event: alt, shift, ctrl
+cobdev key z --mods ctrl               # ctrl holds Ctrl and Cmd (GuiScreen.isCtrlKeyDown reads Cmd on macOS)
+cobdev down 640 360 --device           # display pixels from the top-left (down, up, drag): one screen pixel
+cobdev drag 641 360 --device           #   per step at any GUI scale
+cobdev keyhold key.playerlist on --raw # hold the key's keyboard state, never the binding
+cobdev keyhold key.playerlist off --raw
+```
+
+`--mods` writes the modifier bytes into `Keyboard.keyDownBuffer` right before the injected event and
+puts them back right after it. A raw hold writes the keyboard state every few ms (and Pylon's SDL-side
+copy that `poll()` reads each frame) and never calls `setKeyBindState`, on or off, so a screen sees
+exactly what a real press and release produce while it is open. Raw holds are for Cobblify's bindings,
+`key.playerlist` and `key.forward/left/back/right/jump`, on keyboard keys only.
 
 State and probes (singleplayer only):
 
@@ -91,12 +108,20 @@ cobdev probe player           # health, motion, hurtResistantTime, position (cli
 cobdev probe block 3 0 1 [minecraft:wool]          # read or place one block near the player
 cobdev probe clutch-blast 3 0 0                    # Clutch Practice's own blast, server thread
 cobdev probe use-item [minecraft:fire_charge]      # server-side right-click with the held item
+cobdev probe hud-boxes        # Edit HUD boxes, module states and the open editor's selection/menu rects
 ```
+
+`hud-boxes` returns `{scale, sw, sh, boxes, states, editor}`: every `getEditorBoxes` box (content box
+and `pad`, GUI px, `shown`), every module's stored state (`x, y, fracX, fracY, anchor, scale, enabled,
+background`), and, while `EditHudGui` is open, its `selectedId`, `menuId`, `mode`, `tabHeld`,
+`playerListPressed` (`keyBindPlayerList.isKeyDown()`), `visibleIds` and the menu rows with GUI rects.
+It reads Cobblify by reflection, so a field a build does not have yet comes back as null.
 
 ## Smoke checks
 
 `cobdev smoke [--prod] [--boot-only]` runs PLAN Verification A3-A6 plus the Clutch Practice check
-against the running game and writes every command, status, shot path and pass/fail per check to
+and the Edit HUD step `A4-edithud` (its E-checks, from E0: the probe on an open editor) against the
+running game and writes every command, status, shot path and pass/fail per check to
 `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"
@@ -117,8 +142,8 @@ staged by an older cobdev still start with the new `start.sh` (Intel Java 8 and 
   worktree; another worktree gets an error until the lock is released (`cobdev unlock`) or taken
   over (`--steal`, only when that session is finished).
 - Input, `open`, `field`, `invoke` and `keyhold` only reach Cobblify (`com.bedwarsqol.*`, never its
-  mixins, key bindings in the "Cobblify" category), and are refused while the game is connected to
-  a multiplayer server. `command` and `probe` need the singleplayer world. Screenshots and
+  mixins, key bindings in the "Cobblify" category; a raw hold may also set the keyboard state of Tab
+  and the five movement keys), and are refused while the game is connected to a multiplayer server. `command` and `probe` need the singleplayer world. Screenshots and
   hot-swap still work on a server.
 - Input is injected into Pylon's mouse state (not the SDL event queue) and never moves the user's
   real pointer. Real device input, IME and focus behaviour are not exercised.

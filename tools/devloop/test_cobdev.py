@@ -1,5 +1,7 @@
 """Game-free tests for cobdev's pure helpers. Run: python3 -I tools/devloop/test_cobdev.py (or cobdev selftest)."""
+import contextlib
 import importlib.machinery
+import io
 import importlib.util
 import os
 import tempfile
@@ -195,6 +197,122 @@ class SmokeSave(unittest.TestCase):
         finally:
             cobdev.api_quiet = real
         self.assertEqual(sent, [])
+
+
+class Flags(unittest.TestCase):
+    """--mods, --device and keyhold --raw reach the bridge as plain parameters (Edit HUD checks)."""
+
+    def parse(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()):  # argparse prints usage before SystemExit
+            return cobdev.build_parser().parse_args(list(argv))
+
+    def test_drag_with_mods_and_device(self):
+        a = self.parse("drag", "10", "20", "--mods", "alt,shift", "--device")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 10, "y": 20, "mods": "alt,shift", "device": 1})
+
+    def test_plain_input_sends_no_extras(self):
+        a = self.parse("click", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0})
+        a = self.parse("drag", "5", "6")
+        self.assertEqual(cobdev.input_params(a, ("x", "y")), {"x": 5, "y": 6})
+
+    def test_down_and_up_take_device_pixels(self):
+        for cmd in ("down", "up"):
+            a = self.parse(cmd, "1279", "0", "--device", "--button", "1")
+            self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 1279, "y": 0, "button": 1, "device": 1})
+
+    def test_ctrl_click(self):
+        a = self.parse("click", "5", "6", "--mods", "ctrl")
+        self.assertEqual(cobdev.input_params(a, ("x", "y", "button")), {"x": 5, "y": 6, "button": 0, "mods": "ctrl"})
+
+    def test_click_and_key_have_no_device_flag(self):
+        with self.assertRaises(SystemExit):
+            self.parse("click", "1", "2", "--device")
+        with self.assertRaises(SystemExit):
+            self.parse("key", "z", "--device")
+
+    def test_modifiers_are_whitelisted_and_normalised(self):
+        self.assertEqual(self.parse("up", "1", "2", "--mods", " Shift, alt,shift").mods, "shift,alt")
+        for bad in ("meta", "alt,cmd", "alt,,shift", ""):
+            with self.assertRaises(SystemExit):
+                self.parse("down", "1", "2", "--mods", bad)
+
+    def test_key_letters_and_mods(self):
+        a = self.parse("key", "z", "--mods", "ctrl")
+        self.assertEqual(cobdev.key_params(a), {"code": 44, "mods": "ctrl"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "Y")), {"code": 21})
+        self.assertEqual(cobdev.key_params(self.parse("key", "right", "--mods", "shift")), {"code": 205, "mods": "shift"})
+        self.assertEqual(cobdev.key_params(self.parse("key", "57", "--char", " ")), {"code": 57, "char": " "})
+
+    def test_keyhold_raw(self):
+        a = self.parse("keyhold", "key.playerlist", "on", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.playerlist", "state": "on", "raw": 1})
+        a = self.parse("keyhold", "key.forward", "off", "--raw")
+        self.assertEqual(cobdev.keyhold_params(a), {"name": "key.forward", "state": "off", "raw": 1})
+
+    def test_keyhold_binding_and_list(self):
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold", "Zoom", "on")), {"name": "Zoom", "state": "on"})
+        self.assertEqual(cobdev.keyhold_params(self.parse("keyhold")), {})
+
+    def test_keyhold_needs_name_and_state(self):
+        for argv in (("keyhold", "--raw"), ("keyhold", "Zoom"), ("keyhold", "Zoom", "maybe", "--raw")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                cobdev.keyhold_params(self.parse(*argv))
+
+
+class EditHudSmoke(unittest.TestCase):
+    """A4-edithud puts back every field and the GUI scale it touched, whatever happens in between."""
+
+    def run_step(self, probe_error=None, boxes=None):
+        calls, fields = [], {}
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                calls.append((path, params or post or {}))
+                self.step["commands"].append({"call": path})
+                if path == "/field":
+                    if "value" in post:
+                        fields[post["path"]] = post["value"]
+                        return {"ok": True}
+                    return {"ok": True, "value": fields.get(post["path"], False)}
+                if path == "/probe":
+                    if probe_error:
+                        raise cobdev.ApiError(probe_error)
+                    return {"ok": True, "scale": 2, "sw": 640, "sh": 360, "boxes": boxes or [],
+                            "states": [{"id": b["id"]} for b in boxes or []], "editor": {"selectedId": None}}
+                return {"ok": True}
+
+            def has(self, cls, member=None):
+                return True
+
+            def status(self):
+                return {"guiScaleSetting": 3}
+
+            def shot(self, tag, wait=300):
+                return "/dev/null", (1, 1, [b"\0\0\0"])
+
+        s = Fake("dev", "test")
+        cobdev.smoke_edithud(s, "com.bedwarsqol.BedwarsQol.config", "dev")
+        return s, calls, fields
+
+    def test_restores_fields_and_scale_after_a_pass(self):
+        boxes = [{"id": i, "shown": True} for i in ("potion", "armor", "inventory", "diamondtimer", "emeraldtimer",
+                                                    "keystrokes", "sessionstats", "heightlimit")]
+        s, calls, fields = self.run_step(boxes=boxes)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+        self.assertIn(("/size", {"w": 1280, "h": 720}), calls)
+
+    def test_an_older_bridge_without_the_probe_is_not_a_failure(self):
+        s, calls, fields = self.run_step(probe_error="unknown probe hud-boxes (fov, hurt)")
+        self.assertEqual(s.step["status"], "not available yet")
+        self.assertTrue(all(v == "false" for v in fields.values()), fields)
+        self.assertEqual(calls[-2:], [("/scale", {"n": 3}), ("/close", {})])
+
+    def test_a_missing_module_fails_e0(self):
+        s, _, _ = self.run_step(boxes=[{"id": "potion", "shown": True}])
+        self.assertEqual(s.step["status"], "fail")
 
 
 class Pins(unittest.TestCase):

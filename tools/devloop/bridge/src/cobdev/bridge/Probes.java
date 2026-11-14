@@ -3,6 +3,8 @@ package cobdev.bridge;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.EntityRenderer;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -15,6 +17,7 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -40,6 +43,15 @@ final class Probes {
     static final String CLUTCH = "com.bedwarsqol.feature.ClutchPractice";
     static final String CLUTCH_FIREBALL = "com.bedwarsqol.feature.ClutchFireball";
     static final String CLUTCH_RULES = "com.bedwarsqol.feature.ClutchRules";
+    static final String CONFIG_HOLDER = "com.bedwarsqol.BedwarsQol";
+    static final String HUD_RENDERER = "com.bedwarsqol.hud.BedwarsHudRenderer";
+    static final String HUD_MODULES = "com.bedwarsqol.hud.HudModules";
+    static final String EDIT_HUD = "com.bedwarsqol.gui.EditHudGui";
+    /** HudBox fields as the probe reports them (key, Java field). */
+    private static final String[][] BOX_FIELDS = {{"id", "id"}, {"x", "x"}, {"y", "y"}, {"w", "width"},
+            {"h", "height"}, {"pad", "pad"}, {"shown", "shown"}};
+    /** HudModuleState fields; one a build does not have yet reads as null. */
+    private static final String[] STATE_FIELDS = {"x", "y", "fracX", "fracY", "anchor", "scale", "enabled", "background"};
 
     private Probes() {
     }
@@ -63,6 +75,8 @@ final class Probes {
                 return clutchBlast(args);
             case "use-item":
                 return useItem(args);
+            case "hud-boxes":
+                return Bridge.onMain(Probes::hudBoxes);
             default:
                 throw new Refused("unknown probe " + name);
         }
@@ -216,6 +230,153 @@ final class Probes {
             out.put("clutchReady", ready);
             return out;
         });
+    }
+
+    /**
+     * {@code hud-boxes}, read-only: every Edit HUD box ({@code BedwarsHudRenderer.getEditorBoxes}: content
+     * box and pad, GUI px), every module's stored state ({@code HudModules.get}) and, while an
+     * {@code EditHudGui} is open, its selection, menu, mode and the menu rows' GUI rects. All of it by
+     * reflection on Cobblify's own (unremapped) names, so it works in dev and prod and against any
+     * build: a field or method a build does not have yet reads as null.
+     */
+    private static Map<String, Object> hudBoxes() throws Exception {
+        Minecraft mc = Bridge.mc();
+        Class<?> renderer = cobblifyClass(HUD_RENDERER, "hud-boxes");
+        Class<?> modules = cobblifyClass(HUD_MODULES, "hud-boxes");
+        Field cfgField = declaredField(cobblifyClass(CONFIG_HOLDER, "hud-boxes"), "config");
+        Object cfg = cfgField == null ? null : cfgField.get(null);
+        if (cfg == null) throw new Refused("hud-boxes: BedwarsQol.config is not loaded yet");
+        ScaledResolution sr = new ScaledResolution(mc);
+        Map<String, Object> out = Bridge.ok();
+        out.put("scale", sr.getScaleFactor());
+        out.put("sw", sr.getScaledWidth());
+        out.put("sh", sr.getScaledHeight());
+
+        List<?> boxes = (List<?>) call(method(renderer, "getEditorBoxes", 2, true), null, mc, cfg);
+        List<Object> boxList = new ArrayList<>();
+        for (Object b : boxes) boxList.add(read(b, BOX_FIELDS));
+        out.put("boxes", boxList);
+
+        // HudModules.allIds() once the scoreboard, chat and tab list join it; ids() before.
+        Method ids = method(modules, "allIds", 0, false);
+        if (ids == null) ids = method(modules, "ids", 0, true);
+        Method get = method(modules, "get", 2, true);
+        List<Object> states = new ArrayList<>();
+        for (Object id : (List<?>) call(ids, null)) {
+            Object st = call(get, null, cfg, id);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", id);
+            if (st != null) {
+                for (String f : STATE_FIELDS) m.put(f, fieldValue(st, f));
+            }
+            states.add(m);
+        }
+        out.put("states", states);
+        out.put("editor", editor(mc, boxes));
+        return out;
+    }
+
+    /** The open Edit HUD's state, or null when no {@code EditHudGui} is open. */
+    private static Map<String, Object> editor(Minecraft mc, List<?> boxes) throws Exception {
+        GuiScreen screen = mc.currentScreen;
+        if (screen == null || !screen.getClass().getName().equals(EDIT_HUD)) return null;
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("selectedId", fieldValue(screen, "selectedId"));
+        e.put("menuId", fieldValue(screen, "menuId"));
+        e.put("mode", fieldValue(screen, "mode"));
+        e.put("tabHeld", tabHeld(screen));
+        e.put("playerListPressed", mc.gameSettings.keyBindPlayerList.isKeyDown());
+        // visibleBoxes() once the editor filters what it shows (Tab held); until then it shows every box.
+        Method visible = method(screen.getClass(), "visibleBoxes", 0, false);
+        List<?> shown = visible == null ? boxes : (List<?>) call(visible, screen);
+        List<Object> visibleIds = new ArrayList<>();
+        for (Object b : shown) visibleIds.add(fieldValue(b, "id"));
+        e.put("visibleIds", visibleIds);
+        e.put("menu", menu(screen));
+        return e;
+    }
+
+    /** A boolean field {@code tabHeld}, or a {@code tabHold} object with {@code held()}; null before either exists. */
+    private static Object tabHeld(Object screen) throws Exception {
+        Object v = fieldValue(screen, "tabHeld");
+        if (v instanceof Boolean) return v;
+        Field hold = declaredField(screen.getClass(), "tabHold");
+        Object h = hold == null ? null : hold.get(screen);
+        Method held = h == null ? null : method(h.getClass(), "held", 0, false);
+        return held == null ? null : call(held, h);
+    }
+
+    /** The right-click menu: its rect and one GUI rect per row ({@code menuItems/menuRect/menuRowHeight}). */
+    private static Map<String, Object> menu(Object screen) throws Exception {
+        if (fieldValue(screen, "menuId") == null) return null;
+        Method items = method(screen.getClass(), "menuItems", 0, false);
+        Method rect = method(screen.getClass(), "menuRect", 1, false);
+        Method rowHeight = method(screen.getClass(), "menuRowHeight", 0, false);
+        if (items == null || rect == null || rowHeight == null) return null;
+        List<?> labels = (List<?>) call(items, screen);
+        float[] r = (float[]) call(rect, screen, labels);
+        float rowH = ((Number) call(rowHeight, screen)).floatValue();
+        List<Object> rows = new ArrayList<>();
+        for (int i = 0; i < labels.size(); i++) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", String.valueOf(labels.get(i)));
+            row.put("x", finite(r[0]));
+            row.put("y", finite(r[1] + rowH * (i + 1))); // row 0 is the title
+            row.put("w", finite(r[2] - r[0]));
+            row.put("h", finite(rowH));
+            rows.add(row);
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("rect", Arrays.asList(finite(r[0]), finite(r[1]), finite(r[2]), finite(r[3])));
+        m.put("rows", rows);
+        return m;
+    }
+
+    private static Map<String, Object> read(Object o, String[][] fields) throws Exception {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (String[] f : fields) m.put(f[0], fieldValue(o, f[1]));
+        return m;
+    }
+
+    /** A declared field's value anywhere up the hierarchy as JSON-safe data; null when there is no such field. */
+    private static Object fieldValue(Object o, String name) throws Exception {
+        Field f = declaredField(o.getClass(), name);
+        if (f == null) return null;
+        Object v = f.get(o);
+        if (v instanceof Float || v instanceof Double) return finite(((Number) v).doubleValue());
+        return Mods.plain(v);
+    }
+
+    private static Field declaredField(Class<?> c, String name) {
+        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+            try {
+                Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+                // try the superclass
+            }
+        }
+        return null;
+    }
+
+    /** The one declared method {@code name} with {@code params} parameters, or null (or a Refused if required). */
+    private static Method method(Class<?> c, String name, int params, boolean required) {
+        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+            for (Method m : k.getDeclaredMethods()) {
+                if (m.getName().equals(name) && m.getParameterCount() == params) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+        }
+        if (required) throw new Refused("hud-boxes expects " + c.getName() + "." + name + " with " + params + " parameters");
+        return null;
+    }
+
+    /** JSON has no NaN or infinity. */
+    private static Object finite(double v) {
+        return Double.isNaN(v) || Double.isInfinite(v) ? null : (Object) (float) v;
     }
 
     // ------------------------------------------------------------------------------------------

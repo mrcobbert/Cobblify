@@ -41,6 +41,12 @@ SCREENS = {
 }
 KEYS = {"esc": 1, "backspace": 14, "tab": 15, "enter": 28, "space": 57, "up": 200, "down": 208,
         "left": 203, "right": 205, "home": 199, "end": 207, "delete": 211}
+# Letters and digits by LWJGL code, so "key z --mods ctrl" reads like the shortcut it sends.
+KEYS.update(zip("qwertyuiop", range(16, 26)))
+KEYS.update(zip("asdfghjkl", range(30, 39)))
+KEYS.update(zip("zxcvbnm", range(44, 51)))
+KEYS.update(zip("1234567890", range(2, 12)))
+MODIFIERS = ("alt", "shift", "ctrl")  # bridge Policy.modifiers: ctrl holds Ctrl and Cmd
 START = SHARED + "/bin/start.sh"
 NOT_RUNNING = ("the dev client is not running. Ask the user to run this in a terminal pane from their"
                " own account (not agent):\n  " + START)
@@ -707,8 +713,30 @@ def cmd_open(args):
 def cmd_simple(path, *names):
     def run(args):
         locked(args)
-        api(path, {n: getattr(args, n) for n in names})
+        api(path, input_params(args, names))
     return run
+
+
+def parse_mods(text):
+    """--mods alt,shift,ctrl: lower-cased, de-duplicated, in the order given; anything else is an error."""
+    mods = []
+    for raw in text.split(","):
+        m = raw.strip().lower()
+        if m not in MODIFIERS:
+            raise argparse.ArgumentTypeError("--mods takes %s (comma-separated), not %r" % (", ".join(MODIFIERS), raw))
+        if m not in mods:
+            mods.append(m)
+    return ",".join(mods)
+
+
+def input_params(args, names):
+    """The bridge parameters of an input command: its named arguments, plus --mods / --device when given."""
+    params = {n: getattr(args, n) for n in names}
+    if getattr(args, "mods", None):
+        params["mods"] = args.mods
+    if getattr(args, "device", False):
+        params["device"] = 1
+    return params
 
 
 def cmd_size(args):
@@ -725,15 +753,21 @@ def cmd_hover(args):
         api("/hover", {"x": int(args.x), "y": args.y})
 
 
-def cmd_key(args):
-    locked(args)
+def key_params(args):
     code = KEYS.get(args.key.lower())
     if code is None:
         code = int(args.key)
     params = {"code": code}
     if args.char:
         params["char"] = args.char
-    api("/key", params)
+    if args.mods:
+        params["mods"] = args.mods
+    return params
+
+
+def cmd_key(args):
+    locked(args)
+    api("/key", key_params(args))
 
 
 def cmd_world(args):
@@ -785,14 +819,22 @@ def cmd_command(args):
     api("/command", post={"command": args.command})
 
 
+def keyhold_params(args):
+    if not args.name:
+        if args.raw:
+            die("keyhold NAME on|off --raw needs a key binding name")
+        return {}
+    if args.state not in ("on", "off"):
+        die("keyhold NAME on|off [--raw] (or no arguments to list Cobblify's key bindings)")
+    params = {"name": args.name, "state": args.state}
+    if args.raw:
+        params["raw"] = 1
+    return params
+
+
 def cmd_keyhold(args):
     locked(args)
-    params = {}
-    if args.name:
-        if args.state not in ("on", "off"):
-            die("keyhold NAME on|off (or no arguments to list Cobblify's key bindings)")
-        params = {"name": args.name, "state": args.state}
-    print(json.dumps(api("/keyhold", params)))
+    print(json.dumps(api("/keyhold", keyhold_params(args))))
 
 
 def cmd_probe(args):
@@ -1499,6 +1541,66 @@ def smoke_clutch(s, cfg):
     heal()
 
 
+# Edit HUD (A4-edithud): each module's switch in ClientSettings and the HudModules ids it shows.
+EDIT_HUD_MODULES = [("potionStatusEnabled", ("potion",)), ("armorTypeEnabled", ("armor",)),
+                    ("inventoryHudEnabled", ("inventory",)), ("genTimersEnabled", ("diamondtimer", "emeraldtimer")),
+                    ("keystrokesEnabled", ("keystrokes",)), ("sessionStatsEnabled", ("sessionstats",)),
+                    ("heightLimitEnabled", ("heightlimit",))]
+
+
+def smoke_edithud(s, cfg, mode):
+    """Edit HUD driven precisely through --mods, --device, keyhold --raw and probe hud-boxes (edit-hud PLAN,
+    runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks here. Every touched
+    field and the GUI scale go back to what they were, whatever happens in between."""
+    s.begin("A4-edithud", "Edit HUD: hud-boxes probe on an open editor (E0)")
+    if not cfg or not s.has(SCREENS["hud"]):
+        return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
+    touched = {}  # field path -> value before the step
+    old_scale = (s.status() or {}).get("guiScaleSetting")
+    try:
+        for name, _ in EDIT_HUD_MODULES:
+            path = find_field(s, cfg, [name])
+            if path:
+                touched[path] = s.field(path).get("value")
+        if mode == "dev":
+            s.call("/size", {"w": 1280, "h": 720})  # size is dev-only (Minecraft.resize by its MCP name)
+        s.call("/scale", {"n": 2})
+        enabled = set()
+        for name, ids in EDIT_HUD_MODULES:
+            if cfg + "." + name in touched:
+                s.field(cfg + "." + name, True)
+                enabled.update(ids)
+        s.call("/open", {"class": SCREENS["hud"]})
+        time.sleep(0.5)
+        try:
+            hb = s.probe("hud-boxes")
+        except ApiError as e:
+            if "unknown probe" in str(e):
+                return s.unavailable("the running bridge has no hud-boxes probe (stage a build with it)")
+            raise
+        edithud_e0(s, hb, enabled)
+    finally:
+        for path, value in touched.items():
+            try:
+                s.field(path, value)
+            except ApiError:
+                pass
+        if old_scale is not None:
+            s.try_call("/scale", {"n": old_scale})
+        s.try_call("/close")
+
+
+def edithud_e0(s, hb, enabled):
+    """E0: the probe reads the open editor: every enabled module is a shown box with a stored state."""
+    s.check("hud-boxes: GUI scale 2", hb.get("scale") == 2, hb.get("scale"))
+    shown = {b.get("id") for b in hb.get("boxes") or [] if b.get("shown")}
+    s.check("E0 every enabled module is a shown editor box", enabled <= shown, sorted(enabled - shown) or None)
+    stated = {st.get("id") for st in hb.get("states") or []}
+    s.check("E0 every enabled module has a stored state", enabled <= stated, sorted(enabled - stated) or None)
+    s.check("E0 the editor part is filled while Edit HUD is open", hb.get("editor") is not None)
+    s.shot("edithud-e0")
+
+
 def cmd_smoke(args):
     wt = worktree(args)
     take_lock(wt, args.steal)
@@ -1524,7 +1626,8 @@ def cmd_smoke(args):
                   lambda: smoke_sprint(s, cfg_box.get("cfg")),
                   lambda: smoke_hud(s, cfg_box.get("cfg")),
                   lambda: smoke_overlays(s, cfg_box.get("cfg")),
-                  lambda: smoke_clutch(s, cfg_box.get("cfg"))]
+                  lambda: smoke_clutch(s, cfg_box.get("cfg")),
+                  lambda: smoke_edithud(s, cfg_box.get("cfg"), mode)]
     for step in steps:
         try:
             step()
@@ -1575,7 +1678,7 @@ def cmd_selftest(args):
     print("selftest passed")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(prog="cobdev", description=__doc__.split("\n\n")[0])
     ap.add_argument("--worktree", help="checkout to use (default: the one containing the cwd)")
     ap.add_argument("--steal", action="store_true", help="take the dev client from another worktree")
@@ -1600,6 +1703,14 @@ def main():
     p.add_argument("--arg", type=int, help="int constructor argument (SettingsGui section)")
     add("close", cmd_simple("/close"), "close the current screen")
     add("reinit", cmd_simple("/reinit"), "rerun the current screen's initGui")
+    def mods_flag(p):
+        p.add_argument("--mods", type=parse_mods, help="hold modifier keys for this input: alt,shift,ctrl"
+                                                       " (ctrl is Ctrl and Cmd)")
+
+    def device_flag(p):
+        p.add_argument("--device", action="store_true", help="X Y are display pixels from the top-left, not GUI"
+                                                             " coords (one screen pixel per step)")
+
     for name, path, help_text in (("click", "/click", "click at GUI coords"),
                                   ("down", "/down", "press a mouse button at GUI coords"),
                                   ("up", "/up", "release a mouse button at GUI coords")):
@@ -1607,9 +1718,14 @@ def main():
         p.add_argument("x", type=int)
         p.add_argument("y", type=int)
         p.add_argument("--button", type=int, default=0)
+        mods_flag(p)
+        if name != "click":
+            device_flag(p)
     p = add("drag", cmd_simple("/drag", "x", "y"), "move the held button to GUI coords")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
+    mods_flag(p)
+    device_flag(p)
     p = add("scroll", cmd_simple("/scroll", "x", "y", "amount"), "scroll at GUI coords; positive = down")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
@@ -1619,9 +1735,11 @@ def main():
     p.add_argument("y", nargs="?", type=int)
     p = add("type", cmd_simple("/type", "text"), "type text into the current Cobblify screen")
     p.add_argument("text")
-    p = add("key", cmd_key, "press a key: " + ", ".join(KEYS) + ", or an LWJGL key code")
+    p = add("key", cmd_key, "press a key: a letter, a digit, " + ", ".join(k for k in KEYS if len(k) > 1)
+            + ", or an LWJGL key code")
     p.add_argument("key")
     p.add_argument("--char", help="character to send with the key code")
+    mods_flag(p)
     p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
     p.add_argument("n", type=int)
     p = add("size", cmd_size, "resize the game window to W x H display px (dev mode)")
@@ -1649,8 +1767,10 @@ def main():
     p = add("keyhold", cmd_keyhold, "hold or release a Cobblify key binding (no arguments: list them)")
     p.add_argument("name", nargs="?")
     p.add_argument("state", nargs="?")
+    p.add_argument("--raw", action="store_true", help="hold the key's keyboard state, never the binding (also"
+                                                      " key.forward/left/back/right/jump)")
     p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
-                                " clutch-blast DX DY DZ, use-item [ITEM]")
+                                " clutch-blast DX DY DZ, use-item [ITEM], hud-boxes")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
     p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")
@@ -1663,8 +1783,11 @@ def main():
     p.add_argument("jar", nargs="?")
     add("lock", cmd_lock, "claim the dev client for this worktree")
     add("unlock", cmd_unlock, "release the dev client")
+    return ap
 
-    args = ap.parse_args()
+
+def main():
+    args = build_parser().parse_args()
     args.fn(args)
 
 
