@@ -29,6 +29,7 @@ import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.client.renderer.entity.RenderItem;
+import net.minecraft.client.resources.I18n;
 import net.minecraft.init.Items;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -72,7 +73,6 @@ public class BedwarsHudRenderer {
     private static final float LINE_GAP = 2f;
     private static final float SECONDARY_SCALE = 0.75f;
     private static final float SECONDARY_GAP = 2f;
-    private static final float POTION_ICON_SIZE = 18f;
     private static final float POTION_ICON_TIMER_GAP = 3f;
     private static final float ARMOR_ICON_SIZE = 16f;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
@@ -259,34 +259,35 @@ public class BedwarsHudRenderer {
         drawArmorIcon(mc, cfg, leggings, box.x, box.y);
     }
 
+    /**
+     * Lunar's potion rows ({@link PotionRows}): icon, then the name with its level in white over the time in gray.
+     * Everything is laid out at the text's own scale, so the text always fits its box. A row with under 10 s left
+     * blinks; the rows under it keep their place.
+     */
     private static void drawPotionImages(Minecraft mc, ClientSettings cfg, List<PotionEntry> entries, float x, float y) {
-        float scale = cfg.potionHudScale;
-        float iconSize = POTION_ICON_SIZE * scale;
-        float lineStep = iconSize + LINE_GAP * scale;
-        float timerScale = ts(scale); // match the gen-timer numbers (full scale, not the smaller secondary)
-        float gap = POTION_ICON_TIMER_GAP * scale;
-
-        mc.getTextureManager().bindTexture(INVENTORY_TEXTURE);
-        GlStateManager.color(1f, 1f, 1f, 1f);
-        GlStateManager.enableTexture2D();
+        float e = ts(cfg.potionHudScale);
+        float textX = x + (PotionRows.ICON + PotionRows.GAP) * e;
+        long now = Minecraft.getSystemTime();
         for (int i = 0; i < entries.size(); i++) {
             PotionEntry entry = entries.get(i);
+            if (PotionRows.blinkHidden(entry.durationTicks, entry.max, now)) continue;
+            float rowY = y + i * PotionRows.ROW * e;
             int idx = entry.potion.getStatusIconIndex();
-            if (idx < 0) continue;
-
-            GlStateManager.pushMatrix();
-            GlStateManager.translate(x, y + i * lineStep, 0f);
-            GlStateManager.scale(scale, scale, 1f);
-            Gui.drawModalRectWithCustomSizedTexture(0, 0, idx % 8 * 18, 198 + idx / 8 * 18, 18, 18, 256f, 256f);
-            GlStateManager.popMatrix();
-        }
-
-        FontRenderer fr = mc.fontRendererObj;
-        if (fr != null) {
-            for (int i = 0; i < entries.size(); i++) {
-                float ty = y + i * lineStep + (iconSize - TEXT_HEIGHT * timerScale) / 2f + inkTrim(timerScale) / 2f;
-                drawScaledString(fr, entries.get(i).timer, x + iconSize + gap, ty, timerScale);
+            if (idx >= 0) {
+                mc.getTextureManager().bindTexture(INVENTORY_TEXTURE);
+                GlStateManager.color(1f, 1f, 1f, 1f);
+                GlStateManager.enableTexture2D();
+                GlStateManager.enableBlend();
+                GlStateManager.pushMatrix();
+                GlStateManager.translate(x, rowY, 0f);
+                GlStateManager.scale(e, e, 1f);
+                Gui.drawModalRectWithCustomSizedTexture(0, 0, idx % 8 * 18, 198 + idx / 8 * 18, 18, 18, 256f, 256f);
+                GlStateManager.popMatrix();
             }
+            BedwarsQolFont.draw(entry.label, textX, rowY + PotionRows.NAME_DY * e, e, PotionRows.NAME_COLOR, true,
+                    BedwarsQolFont.Weight.BOLD);
+            BedwarsQolFont.draw(entry.time, textX, rowY + PotionRows.TIME_DY * e, e, PotionRows.TIME_COLOR, true,
+                    BedwarsQolFont.Weight.BOLD);
         }
         resetGlState();
     }
@@ -366,18 +367,14 @@ public class BedwarsHudRenderer {
     private static Size potionSize(Minecraft mc, ClientSettings cfg, boolean example) {
         List<PotionEntry> entries = potionEntries(mc, example);
         if (entries.isEmpty()) return Size.EMPTY;
-
-        float maxTextWidth = 0f;
-        FontRenderer fr = mc.fontRendererObj;
-        if (fr != null) {
-            for (PotionEntry entry : entries) {
-                maxTextWidth = Math.max(maxTextWidth, fontWidth(entry.timer) * ts(cfg.potionHudScale));
-            }
+        float e = ts(cfg.potionHudScale);
+        float name = 0f, time = 0f;
+        for (PotionEntry entry : entries) {
+            name = Math.max(name, fontWidth(entry.label));
+            time = Math.max(time, fontWidth(entry.time));
         }
-        float width = POTION_ICON_SIZE * cfg.potionHudScale + POTION_ICON_TIMER_GAP * cfg.potionHudScale + maxTextWidth;
-        float height = entries.size() * (POTION_ICON_SIZE * cfg.potionHudScale)
-                + Math.max(0, entries.size() - 1) * (LINE_GAP * cfg.potionHudScale);
-        return new Size(width, height);
+        float trail = BedwarsQolFont.minecraft() ? 1f : 0f; // Minecraft's font ends every string on an empty column
+        return new Size(PotionRows.width(name, time, trail) * e, PotionRows.height(entries.size()) * e);
     }
 
     private static Size armorSize(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -552,8 +549,8 @@ public class BedwarsHudRenderer {
     private static List<PotionEntry> potionEntries(Minecraft mc, boolean example) {
         if (example) {
             List<PotionEntry> out = new ArrayList<>(2);
-            out.add(new PotionEntry(Potion.jump, "0:38"));
-            out.add(new PotionEntry(Potion.moveSpeed, "1:24"));
+            out.add(new PotionEntry(Potion.moveSpeed, 1, 1680, false)); // Speed II 1:24
+            out.add(new PotionEntry(Potion.jump, 4, 760, false));       // Jump Boost V 0:38
             return out;
         }
 
@@ -564,8 +561,7 @@ public class BedwarsHudRenderer {
         for (PotionEffect eff : active) {
             Potion potion = potionFor(eff);
             if (potion == null) continue;
-            String timer = eff.getIsPotionDurationMax() ? "**:**" : formatTimer(eff.getDuration());
-            entries.add(new PotionEntry(potion, timer));
+            entries.add(new PotionEntry(potion, eff.getAmplifier(), eff.getDuration(), eff.getIsPotionDurationMax()));
         }
         return entries;
     }
@@ -590,12 +586,6 @@ public class BedwarsHudRenderer {
             width += SECONDARY_GAP + fontWidth(line.secondary, line.weight) * SECONDARY_SCALE;
         }
         return width;
-    }
-
-    private static String formatTimer(int durationTicks) {
-        int seconds = durationTicks / 20;
-        if (seconds < 60) return seconds + "s";
-        return (seconds / 60) + ":" + String.format("%02d", seconds % 60);
     }
 
     private static String materialName(Item item) {
@@ -1231,11 +1221,18 @@ public class BedwarsHudRenderer {
 
     private static final class PotionEntry {
         final Potion potion;
-        final String timer;
+        final int durationTicks;
+        final boolean max;
+        /** The name with its level, e.g. "Speed II", and the time left, e.g. "1:24". */
+        final String label;
+        final String time;
 
-        PotionEntry(Potion potion, String timer) {
+        PotionEntry(Potion potion, int amplifier, int durationTicks, boolean max) {
             this.potion = potion;
-            this.timer = timer;
+            this.durationTicks = durationTicks;
+            this.max = max;
+            this.label = PotionRows.label(I18n.format(potion.getName()), amplifier);
+            this.time = PotionRows.time(durationTicks, max);
         }
     }
 
