@@ -158,6 +158,54 @@ public class SheetPlatformOnlyTest {
         assertEquals(BACKGROUND_ROWS.length, rows);
     }
 
+    /**
+     * Background module id, its name, its category, the module it follows and the HUD item it switches: the
+     * scoreboard, tab list and chat have no on/off of their own, so their Background is a module whose toggle is it.
+     */
+    private static final String[][] OVERLAY_BACKGROUNDS = {
+            {"scoreboardBg", "Scoreboard Background", "visuals", "tabHF", "scoreboard"},
+            {"tabListBg", "Tab List Background", "visuals", "scoreboardBg", "tablist"},
+            {"chatBg", "Chat Background", "chat", "chatLong", "chat"},
+    };
+
+    @Test
+    public void overlayBackgroundsArePlatformOnlyModulesCarryingTheirItem() {
+        for (String[] b : OVERLAY_BACKGROUNDS) {
+            SheetSchema.Module m = SheetSchema.module(b[0]);
+            assertTrue(b[0], m != null);
+            assertEquals(b[0], b[1], m.name);
+            assertEquals(b[0], b[2], m.category().id);
+            List<SheetSchema.Module> mods = m.category().modules;
+            assertEquals(b[0] + " follows " + b[3], mods.indexOf(SheetSchema.module(b[3])) + 1, mods.indexOf(m));
+            assertTrue(b[0] + " is a leaf: its toggle is the Background", m.rows.isEmpty());
+            assertEquals(b[0], b[4], m.hudItem());
+            assertEquals(b[0], b[4], SheetSchema.hudItem(b[0]));
+            assertTrue(b[0], SheetSchema.platformOnly(b[0]));
+        }
+        // the modules they follow are untouched
+        assertFalse(SheetSchema.platformOnly("tabHF"));
+        assertEquals(null, SheetSchema.hudItem("tabHF"));
+        assertEquals(null, SheetSchema.module("chatLong").hudItem());
+    }
+
+    @Test
+    public void overlayBackgroundsHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        Set<String> forgeHits = new HashSet<String>(), lunarHits = new HashSet<String>(), ornitheHits = new HashSet<String>();
+        for (SheetSearch.Hit h : SheetSearch.search("background", acceptsEverything)) if (h.module != null) forgeHits.add(h.module.id);
+        for (SheetSearch.Hit h : SheetSearch.search("background", lunar)) if (h.module != null) lunarHits.add(h.module.id);
+        for (SheetSearch.Hit h : SheetSearch.search("background", ornithe)) if (h.module != null) ornitheHits.add(h.module.id);
+        for (String[] b : OVERLAY_BACKGROUNDS) {
+            assertFalse(b[0], SheetSchema.shows(acceptsEverything, b[0]));
+            assertFalse(b[0], SheetSchema.shows(lunar, b[0]));
+            assertTrue(b[0], SheetSchema.shows(ornithe, b[0]));
+            assertFalse(b[0], forgeHits.contains(b[0]));
+            assertFalse(b[0], lunarHits.contains(b[0]));
+            assertTrue("search finds " + b[0] + " on Ornithe", ornitheHits.contains(b[0]));
+        }
+    }
+
     /** The module toggles the Combat page draws, in order. */
     private static List<String> combatModules(SheetValues values) {
         SheetState state = new SheetState();

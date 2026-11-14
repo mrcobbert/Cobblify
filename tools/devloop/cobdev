@@ -1387,7 +1387,7 @@ class OvScene:
     """The fixed overlay scene, and a record of every Cobblify field it changed so `restore` puts it back."""
 
     def __init__(self, s, cfg):
-        self.s, self.cfg, self.saved, self.scale = s, cfg, {}, None
+        self.s, self.cfg, self.saved, self.scale, self.backgrounds = s, cfg, {}, None, set()
 
     def setup(self):
         st = self.s.status()
@@ -1415,7 +1415,17 @@ class OvScene:
         self.set(prefix + "Y", y)
         self.set(prefix + "Scale", scale)
 
+    def background(self, item, on):
+        """An overlay item's Background switch, through the config's own setter (restored to On afterwards)."""
+        self.s.call("/invoke", post={"path": self.cfg + ".setHudBackground", "args": ARG_SEP.join([item, str(on).lower()])})
+        if not on:
+            self.backgrounds.add(item)
+        time.sleep(0.4)
+
     def restore(self):
+        for item in self.backgrounds:
+            self.s.try_call("/invoke", post={"path": self.cfg + ".setHudBackground", "args": ARG_SEP.join([item, "true"])})
+        self.backgrounds = set()
         for path, value in self.saved.items():
             self.s.try_call("/field", post={"path": path,
                                             "value": str(value).lower() if isinstance(value, bool) else str(value)})
@@ -1485,6 +1495,23 @@ def smoke_ov_scoreboard(s, cfg):
             right = rightmost_bright(img, rect)
             s.check("%s: score column trimmed (text ends near the box's right edge)" % tag,
                     right is not None and rect[2] - 1 - right <= 4 * scale * sf, "text ends at %s, box at %s" % (right, rect[2]))
+        # Background Off: no fill, text with a shadow (pixels darker than the backdrop appear only then)
+        scene.place("scoreboardHud", OV_SB_PLACES[0][1])
+        time.sleep(0.4)
+        _, on_img = s.shot("ov-sb-bg-on")
+        sf, _, items = ov_boxes(s)
+        box = items.get("scoreboard")
+        if box is not None:
+            rect = gui_rect(box, sf)
+            margin = (rect[0] + 1, int((box["y"] + 10) * sf) + 1, int((box["x"] + 2) * sf) - 1, rect[3] - 1)
+            scene.background("scoreboard", False)
+            _, off_img = s.shot("ov-sb-bg-off")
+            off_r = fill_ratio(off_img, ref, margin)
+            s.check("Background Off: no fill behind the lines", close_enough(off_r, 1.0, 0.03), off_r)
+            dark_on, dark_off = dark_count(on_img, ref, rect), dark_count(off_img, ref, rect)
+            s.check("Background Off: the text drops a shadow (On has none)", dark_on == 0 and dark_off > 0,
+                    "dark pixels on %s, off %s" % (dark_on, dark_off))
+            scene.background("scoreboard", True)
         scene.set("scoreboardHudEnabled", False)
         time.sleep(0.4)
         _, hidden = s.shot("ov-sb-hidden")
@@ -1523,6 +1550,15 @@ def smoke_ov_tab(s, cfg):
                 row_share = ratio_share(img, ref, rect, ROWS_80_20)
                 s.check("%s: list, header and footer fill 0x80" % tag, list_share > 0.05, "%.3f of the box" % list_share)
                 s.check("%s: rows 0x20 over the list fill" % tag, row_share > 0.02, "%.3f of the box" % row_share)
+            scene.background("tablist", False)
+            _, off_img = s.shot("ov-tab-bg-off")
+            sf, _, items = ov_boxes(s)
+            if items.get("tablist") is not None:
+                rect = gui_rect(items["tablist"], sf)
+                clear, filled = ratio_share(off_img, ref, rect, 1.0), ratio_share(off_img, ref, rect, FILL_80)
+                s.check("Background Off: no list or row fills", clear > 0.8 and filled < 0.01,
+                        "%.3f clear, %.3f at 0x80" % (clear, filled))
+            scene.background("tablist", True)
         finally:
             s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
     finally:
@@ -1655,8 +1691,17 @@ def smoke_ov_chat(s, cfg):
                 s.check("%s: the typing bar stays full width at the bottom" % tag,
                         all(close_enough(b, FILL_80, 0.03) for b in bar), bar)
                 s.call("/close")
-        # The Unfocused Height slider at its maximum still shows 10 closed rows (vanilla would show 20).
+        # Background Off: the chat lines draw without their fill.
         scene.place("chatHud", OV_CHAT_PLACES[0][1])
+        scene.background("chat", False)
+        _, off_img = s.shot("ov-chat-bg-off")
+        sf, gui, items = ov_boxes(s)
+        box = items["chat"]
+        x = int((box["x"] + box["w"] - 2) * sf)
+        off_r = fill_ratio(off_img, ref, (x, int(box["y"] * sf) + 1, x + 1, int((box["y"] + box["h"]) * sf) - 1))
+        s.check("Background Off: no fill behind the chat lines", close_enough(off_r, 1.0, 0.03), off_r)
+        scene.background("chat", True)
+        # The Unfocused Height slider at its maximum still shows 10 closed rows (vanilla would show 20).
         s.probe("chat-clear")
         s.probe("chat-heights", 1.0, 1.0)
         s.probe("chat-fixture", "overlays")

@@ -173,6 +173,7 @@ one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatOverlayMixin.java
 # GuiNewChatMixin also maps the mouse for the moved chat item and exposes its rows (ChatItemAccess).
 divergent main com/bedwarsqol/mixin/GuiNewChatMixin.java
 one-sided test ornithe com/bedwarsqol/config/OverlayItemSettingsTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsOverlayBackgroundTest.java
 
 # Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java

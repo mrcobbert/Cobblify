@@ -50,6 +50,10 @@ final class SettingsBindings implements SheetValues {
         }
         if (BedwarsHudRenderer.SESSION_HUD.equals(hudId)) return "session";
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(hudId)) return "mapInfo";
+        // the overlays' sheet module is their Background switch (they have no on/off of their own)
+        if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(hudId)) return "scoreboardBg";
+        if (BedwarsHudRenderer.TAB_LIST_HUD.equals(hudId)) return "tabListBg";
+        if (BedwarsHudRenderer.CHAT_HUD.equals(hudId)) return "chatBg";
         return null;
     }
 

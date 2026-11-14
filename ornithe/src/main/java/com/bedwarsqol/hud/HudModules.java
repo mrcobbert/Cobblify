@@ -110,14 +110,14 @@ public final class HudModules {
             return new HudModuleState(c.heightLimitHudX, c.heightLimitHudY, c.heightLimitHudAnchor, c.heightLimitHudScale, c.heightLimitEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
-            return new HudModuleState(c.scoreboardHudX, c.scoreboardHudY, c.scoreboardHudAnchor, c.scoreboardHudScale, c.scoreboardHudEnabled);
+            return new HudModuleState(c.scoreboardHudX, c.scoreboardHudY, c.scoreboardHudAnchor, c.scoreboardHudScale, c.scoreboardHudEnabled, c.hudBackground(id));
         }
         // chat and the tab list have no Hide: always enabled
         if (BedwarsHudRenderer.CHAT_HUD.equals(id)) {
-            return new HudModuleState(c.chatHudX, c.chatHudY, c.chatHudAnchor, c.chatHudScale, true);
+            return new HudModuleState(c.chatHudX, c.chatHudY, c.chatHudAnchor, c.chatHudScale, true, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) {
-            return new HudModuleState(c.tabListHudX, c.tabListHudY, c.tabListHudAnchor, c.tabListHudScale, true);
+            return new HudModuleState(c.tabListHudX, c.tabListHudY, c.tabListHudAnchor, c.tabListHudScale, true, c.hudBackground(id));
         }
         return null;
     }
@@ -159,10 +159,13 @@ public final class HudModules {
         } else if (BedwarsHudRenderer.SCOREBOARD_HUD.equals(id)) {
             c.scoreboardHudX = s.x; c.scoreboardHudY = s.y; c.scoreboardHudAnchor = s.anchor; c.scoreboardHudScale = s.scale;
             c.scoreboardHudEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.CHAT_HUD.equals(id)) {
             c.chatHudX = s.x; c.chatHudY = s.y; c.chatHudAnchor = s.anchor; c.chatHudScale = s.scale;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.TAB_LIST_HUD.equals(id)) {
             c.tabListHudX = s.x; c.tabListHudY = s.y; c.tabListHudAnchor = s.anchor; c.tabListHudScale = s.scale;
+            c.setHudBackground(id, s.background);
         }
     }
 

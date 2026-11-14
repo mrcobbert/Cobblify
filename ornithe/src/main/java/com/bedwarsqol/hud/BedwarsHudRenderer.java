@@ -196,9 +196,9 @@ public class BedwarsHudRenderer {
         return null;
     }
 
-    /** Whether overlay {@code id} draws its Background (fill behind its lines). On until the switches exist. */
+    /** Whether overlay {@code id} draws its Background (fill behind its lines): its Background switch, On without a config. */
     public static boolean overlayBackground(ClientSettings cfg, String id) {
-        return true;
+        return cfg == null || HudModules.background(cfg, id);
     }
 
     /** The sidebar scoreboard's box: vanilla's sidebar for the shown objective, moved and scaled; null without one. */
