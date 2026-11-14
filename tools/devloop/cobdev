@@ -1680,6 +1680,19 @@ def smoke_team_upgrades(s, cfg):
                 and tiers.get("Forge") == 2 and tiers.get("Heal Pool") == 0, tiers)
         s.check("shop window: trap queue", st.get("traps") == ["Miner Fatigue Trap", "Blindness Trap"], st.get("traps"))
         s.shot("tu-after-shop")
+        # Events while the same window stays open survive its rereads every 5 ticks (review code-1 I1).
+        time.sleep(TU_DEDUPE)  # clear of the last trap fire's dedupe window
+        s.probe("open-shop", "full")
+        time.sleep(0.6)
+        tu_purchase(s, "Heal Pool")
+        tu_title(s, "subtitle", "Your Miner Fatigue Trap has been set off!", "white")
+        time.sleep(0.8)  # several rereads of the unchanged window
+        st = tu_state(s) or {}
+        s.call("/close")
+        tu_try(s, "/title @p clear")
+        s.check("purchase with the window open survives its rereads", (st.get("tiers") or {}).get("Heal Pool") == 1,
+                st.get("tiers"))
+        s.check("trap fired with the window open stays fired", st.get("traps") == ["Blindness Trap"], st.get("traps"))
         s.probe("open-shop", "unknown")
         time.sleep(0.8)
         s.call("/close")
