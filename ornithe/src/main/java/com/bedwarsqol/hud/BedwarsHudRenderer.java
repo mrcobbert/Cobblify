@@ -262,26 +262,35 @@ public class BedwarsHudRenderer {
     /**
      * Lunar's potion rows ({@link PotionRows}): icon, then the name with its level in white over the time in gray.
      * Everything is laid out at the text's own scale, so the text always fits its box. A row with under 10 s left
-     * blinks; the rows under it keep their place.
+     * blinks; the rows under it keep their place. The icon is the modern one once {@link EffectIconTextures} has it,
+     * else the 1.8.9 one.
      */
     private static void drawPotionImages(Minecraft mc, ClientSettings cfg, List<PotionEntry> entries, float x, float y) {
         float e = ts(cfg.potionHudScale);
         float textX = x + (PotionRows.ICON + PotionRows.GAP) * e;
         long now = Minecraft.getSystemTime();
+        boolean requested = false;
         for (int i = 0; i < entries.size(); i++) {
             PotionEntry entry = entries.get(i);
             if (PotionRows.blinkHidden(entry.durationTicks, entry.max, now)) continue;
+            if (!requested) {
+                EffectIconTextures.request(); // once per session, and only once the HUD draws a row
+                requested = true;
+            }
             float rowY = y + i * PotionRows.ROW * e;
             int idx = entry.potion.getStatusIconIndex();
-            if (idx >= 0) {
-                mc.getTextureManager().bindTexture(INVENTORY_TEXTURE);
+            boolean modern = EffectIconTextures.bind(entry.potion.id);
+            if (modern || idx >= 0) {
+                if (!modern) mc.getTextureManager().bindTexture(INVENTORY_TEXTURE);
                 GlStateManager.color(1f, 1f, 1f, 1f);
                 GlStateManager.enableTexture2D();
                 GlStateManager.enableBlend();
+                GlStateManager.blendFunc(770, 771);
                 GlStateManager.pushMatrix();
                 GlStateManager.translate(x, rowY, 0f);
                 GlStateManager.scale(e, e, 1f);
-                Gui.drawModalRectWithCustomSizedTexture(0, 0, idx % 8 * 18, 198 + idx / 8 * 18, 18, 18, 256f, 256f);
+                if (modern) Gui.drawModalRectWithCustomSizedTexture(0, 0, 0, 0, 18, 18, 18f, 18f);
+                else Gui.drawModalRectWithCustomSizedTexture(0, 0, idx % 8 * 18, 198 + idx / 8 * 18, 18, 18, 256f, 256f);
                 GlStateManager.popMatrix();
             }
             BedwarsQolFont.draw(entry.label, textX, rowY + PotionRows.NAME_DY * e, e, PotionRows.NAME_COLOR, true,
