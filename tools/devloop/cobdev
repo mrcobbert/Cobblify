@@ -1557,7 +1557,7 @@ def smoke_edithud(s, cfg, mode, checks=None):
     runtime scenarios). E0 is the setup and the probe; each later phase adds its E-checks to EDIT_HUD_CHECKS.
     Every touched field and the GUI scale go back to what they were, whatever happens in between. `checks`
     limits the run to those ids (all when None)."""
-    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, show (E0, E3a-E9, E15)")
+    s.begin("A4-edithud", "Edit HUD: probe, walls, fine moves, snap, menu, show (E0, E3a-E9, E13, E15)")
     if not cfg or not s.has(SCREENS["hud"]):
         return s.unavailable("Cobblify config or %s not found" % SCREENS["hud"])
     run = EditHudRun(s, cfg)
@@ -1652,6 +1652,19 @@ class EditHudRun:
         if release:
             self.s.call("/up", {"x": x, "y": y, "device": 1})
         return (cx, cy), (x, y)
+
+    def menu_click(self, item, label):
+        """Right-clicks `item`'s centre and clicks its menu row `label`; returns the rows seen (labels)."""
+        cx, cy = gui_centre(self.box(item))
+        self.s.call("/click", {"x": cx, "y": cy, "button": 1})
+        rows = ((self.probe().get("editor") or {}).get("menu") or {}).get("rows") or []
+        hit = [r for r in rows if r["label"] == label]
+        if hit:
+            r = hit[0]
+            self.s.call("/click", {"x": int(r["x"] + r["w"] / 2), "y": int(r["y"] + r["h"] / 2)})
+        else:
+            self.s.call("/key", {"code": KEYS["esc"]})  # close the menu
+        return [r["label"] for r in rows]
 
     def show_only(self, ids):
         """Switches every module on (ids None) or only the ones showing an id in `ids`; returns the shown ids."""
@@ -2007,9 +2020,43 @@ def edithud_e15(run):
     s.shot("edithud-e15")
 
 
+HUD_SIZE_SCALES = {0: 0.75, 1: 1.0, 2: 1.5}  # ClientSettings.defaultTextSizeScale()
+
+
+def edithud_e13(run, item="potion"):
+    """E13: no Reset All (the field and method are gone, shot under the crosshair); Delete hides and undo brings it
+    back; Reset Position puts it on Auto and undo restores; Reset Size gives the HUD Size default."""
+    s = run.s
+    s.check("E13 the editor has no Reset All", not s.has(SCREENS["hud"], "resetRect")
+            and not s.has(SCREENS["hud"], "resetAll"))
+    run.show_only(None)
+    s.shot("edithud-e13-no-reset-all")
+    run.device_drag(item, 0, 12, mods="alt")  # a stored spot, so Reset Position is a change
+    st0 = run.state(item, run.probe())
+    cx, cy = gui_centre(run.box(item))
+    s.call("/click", {"x": cx, "y": cy})
+    s.call("/key", {"code": KEYS["delete"]})
+    s.check("E13 Delete hides it", not run.state(item, run.probe())["enabled"])
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    back = run.state(item, run.probe())
+    s.check("E13 undo shows it again where it was", back["enabled"] and all(back.get(k) == st0.get(k)
+                                                                            for k in ("x", "y", "anchor")), back)
+    rows = run.menu_click(item, "Reset Position")
+    s.check("E13 Reset Position puts it on Auto", run.state(item, run.probe())["anchor"] == -1, rows)
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    s.check("E13 undo restores its spot", run.state(item, run.probe()).get("anchor") == st0.get("anchor"))
+    size = run.s.field(run.cfg + ".defaultTextSize").get("value")
+    want = HUD_SIZE_SCALES.get(size, 1.0)
+    run.set(EDIT_HUD_LAYOUT[item] + "Scale", want * 1.5)
+    run.menu_click(item, "Reset Size")
+    got = run.state(item, run.probe())["scale"]
+    s.check("E13 Reset Size gives the HUD Size default", close_enough(got, want, 1e-4), "%s, want %s" % (got, want))
+
+
 # Runtime checks of the A4-edithud step, in order (edit-hud PLAN, Verification "Runtime scenarios").
 EDIT_HUD_CHECKS = [("E3a", edithud_e3a), ("E3", edithud_e3_e4), ("E5", edithud_e5_e6), ("E7", edithud_e7),
-                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E15", edithud_e15)]
+                   ("E7b", edithud_e7b), ("E8", edithud_e8), ("E9", edithud_e9), ("E13", edithud_e13),
+                   ("E15", edithud_e15)]
 
 
 def edithud_e0(s, hb, enabled):

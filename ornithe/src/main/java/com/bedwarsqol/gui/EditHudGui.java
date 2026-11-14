@@ -5,10 +5,6 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
-import com.bedwarsqol.gui.sheet.EditHudChrome;
-import com.bedwarsqol.gui.sheet.McCanvas;
-import com.bedwarsqol.gui.sheet.SheetColors;
-import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.BedwarsHudRenderer.HudBox;
 import com.bedwarsqol.hud.CornerResize;
@@ -66,18 +62,10 @@ public class EditHudGui extends GuiScreen {
     private static final float HOTBAR_W = HudWalls.HOTBAR_W; // the vanilla hotbar, a snap target
     private static final float HOTBAR_H = HudWalls.HOTBAR_H;
 
-    private static final String SHOW = "Show";
-    private static final String HIDE = "Hide";
-    private static final String RESET_POSITION = "Reset Position";
-    private static final String RESET_SIZE = "Reset Size";
-    private static final String OPEN_SETTINGS = "Settings";
-
     private enum Mode { NONE, DRAG, RESIZE }
 
     private final EditHistory<Map<String, HudModuleState>> history = new EditHistory<Map<String, HudModuleState>>(100);
     private final Map<String, HoverFade> hoverFades = new HashMap<String, HoverFade>();
-    private final HoverFade resetFade = new HoverFade(120L, 240L);
-    private final McCanvas canvas = new McCanvas();
 
     private String selectedId;
     private String hoverId;
@@ -103,13 +91,6 @@ public class EditHudGui extends GuiScreen {
     private String menuId;          // the module the right-click menu is for; null when closed
     private float menuX;
     private float menuY;
-    // Reset All as last drawn, in sheet units of resetUnit device px; whether the left button went down on it.
-    private float[] resetRect;
-    private float resetUnit = 2f;
-    private boolean resetCovered;
-    private boolean resetPressed;
-    private SheetColors.Shades shades;
-    private int shadesOf;
     private float badgeX;
     private float badgeY;
 
@@ -180,7 +161,6 @@ public class EditHudGui extends GuiScreen {
         }
 
         if (mode == Mode.RESIZE && selectedId != null) drawResizeBadge(cfg, open);
-        drawResetAll(now, accent, open);
         if (menuId != null) drawMenu(mouseX, mouseY, accent);
 
         super.drawScreen(mouseX, mouseY, partialTicks);
@@ -280,31 +260,6 @@ public class EditHudGui extends GuiScreen {
         GuiRender.text(text, x + 4f, y + 2.5f, MENU_SCALE, fade(TEXT, open), BedwarsQolFont.Weight.BOLD);
     }
 
-    /** Reset All just under the crosshair, a spot no HUD module or vanilla bar uses: the sheet's accent button. */
-    private void drawResetAll(long now, int accent, float open) {
-        int sf = new ScaledResolution(mc).getScaleFactor();
-        boolean minecraftFont = settings().minecraftFont();
-        float u = SheetLayout.unit(sf, settings().guiSize, minecraftFont);
-        resetUnit = u;
-        // the canvas measures the label, so it starts the frame first
-        canvas.begin(u, 0f, 0f, mc.displayHeight, sf, minecraftFont);
-        resetRect = EditHudChrome.resetAll(canvas, mc.displayWidth / u, mc.displayHeight / u, u);
-        resetCovered = resetCovered(resetRect, sf / u);
-        if (shades == null || shadesOf != accent) {
-            shades = SheetColors.Shades.of(accent & 0xFFFFFF);
-            shadesOf = accent;
-        }
-        boolean busy = (mode != Mode.NONE && moved) || menuId != null;
-        float alpha = (1f - 0.75f * resetFade.update(busy || resetCovered, now)) * open;
-        float[] m = mouseUnits(Mouse.getX(), Mouse.getY(), u);
-        boolean over = !busy && !resetCovered && EditHudChrome.hit(resetRect, m[0], m[1]);
-        canvas.pushAlpha(alpha);
-        // a press shows only while the pointer stays on the button, as in the sheet
-        EditHudChrome.paintResetAll(canvas, resetRect, shades, over, resetPressed && over);
-        canvas.popAlpha();
-        canvas.end();
-    }
-
     private void drawMenu(int mouseX, int mouseY, int accent) {
         List<String> items = menuItems();
         float[] r = menuRect(items);
@@ -344,14 +299,6 @@ public class EditHudGui extends GuiScreen {
             return;
         }
         if (mouseButton != 0) return;
-
-        if (resetRect != null && !resetCovered) {
-            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
-            if (EditHudChrome.hit(resetRect, m[0], m[1])) {
-                resetPressed = true; // it acts on release, over the button
-                return;
-            }
-        }
 
         // Grab offsets and the press point to a fraction of a GUI pixel, so every step can be one screen pixel.
         float[] p = eventPointer();
@@ -408,14 +355,6 @@ public class EditHudGui extends GuiScreen {
     @Override
     protected void mouseReleased(int mouseX, int mouseY, int state) {
         super.mouseReleased(mouseX, mouseY, state);
-        if (resetPressed && state == 0) {
-            resetPressed = false;
-            float[] m = mouseUnits(Mouse.getEventX(), Mouse.getEventY(), resetUnit);
-            if (resetCovered || !EditHudChrome.hit(resetRect, m[0], m[1])) return;
-            playClick();
-            resetAll();
-            return;
-        }
         if (mode != Mode.NONE) endChange();
     }
 
@@ -446,7 +385,9 @@ public class EditHudGui extends GuiScreen {
         else if (keyCode == Keyboard.KEY_DOWN) nudge(0, step);
         else if (keyCode == Keyboard.KEY_LEFT) nudge(-step, 0);
         else if (keyCode == Keyboard.KEY_RIGHT) nudge(step, 0);
-        else if (keyCode == Keyboard.KEY_DELETE || keyCode == Keyboard.KEY_BACK) setShown(selectedId, false);
+        else if ((keyCode == Keyboard.KEY_DELETE || keyCode == Keyboard.KEY_BACK) && EditHudMenu.hideable(selectedId)) {
+            setShown(selectedId, false);
+        }
     }
 
     /** Esc backs out one step: the menu, then a drag in progress, then the selection, then the editor. */
@@ -614,16 +555,6 @@ public class EditHudGui extends GuiScreen {
         }
     }
 
-    private void resetAll() {
-        edit(null, new Runnable() {
-            @Override
-            public void run() {
-                ClientSettings cfg = settings();
-                for (String id : HudModules.ids()) HudModules.set(cfg, id, HudModules.defaults(cfg, id));
-            }
-        });
-    }
-
     private void resetPosition(final String id) {
         edit(id, new Runnable() {
             @Override
@@ -700,13 +631,7 @@ public class EditHudGui extends GuiScreen {
     private List<String> menuItems() {
         HudModuleState s = HudModules.get(settings(), menuId);
         boolean shown = s != null && s.enabled;
-        List<String> items = new ArrayList<String>();
-        if (!shown) items.add(SHOW);
-        items.add(RESET_POSITION);
-        items.add(RESET_SIZE);
-        items.add(OPEN_SETTINGS);
-        if (shown) items.add(HIDE);
-        return items;
+        return EditHudMenu.items(shown, EditHudMenu.hideable(menuId), null);
     }
 
     private static float menuRowHeight() {
@@ -733,11 +658,11 @@ public class EditHudGui extends GuiScreen {
             String item = items.get(i);
             String id = menuId;
             playClick();
-            if (SHOW.equals(item)) setShown(id, true);
-            else if (HIDE.equals(item)) setShown(id, false);
-            else if (RESET_POSITION.equals(item)) resetPosition(id);
-            else if (RESET_SIZE.equals(item)) resetSize(id);
-            else if (OPEN_SETTINGS.equals(item)) {
+            if (EditHudMenu.SHOW.equals(item)) setShown(id, true);
+            else if (EditHudMenu.HIDE.equals(item)) setShown(id, false);
+            else if (EditHudMenu.RESET_POSITION.equals(item)) resetPosition(id);
+            else if (EditHudMenu.RESET_SIZE.equals(item)) resetSize(id);
+            else if (EditHudMenu.OPEN_SETTINGS.equals(item)) {
                 settings().save();
                 mc.displayGuiScreen(SettingsGui.forHudModule(id));
             }
@@ -814,21 +739,6 @@ public class EditHudGui extends GuiScreen {
     private static String topmostAt(List<HudBox> boxes, float x, float y) {
         List<String> stack = stackAt(boxes, x, y);
         return stack.isEmpty() ? null : stack.get(0);
-    }
-
-    /** Whether a module sits over Reset All, which then fades and stops taking clicks. {@code k}: su per GUI px. */
-    private boolean resetCovered(float[] r, float k) {
-        float left = r[0], top = r[1], right = r[0] + r[2], bottom = r[1] + r[3];
-        for (HudBox box : BedwarsHudRenderer.getEditorBoxes(mc, settings())) {
-            if (box.visualX() * k < right && box.visualRight() * k > left
-                    && box.visualY() * k < bottom && box.visualBottom() * k > top) return true;
-        }
-        return false;
-    }
-
-    /** A mouse position as LWJGL gives it (from the bottom-left, device px) in sheet units of {@code u} px. */
-    private float[] mouseUnits(int x, int y, float u) {
-        return new float[]{(x + 0.5f) / u, (mc.displayHeight - y - 0.5f) / u};
     }
 
     private HudBox selectedBox() {
