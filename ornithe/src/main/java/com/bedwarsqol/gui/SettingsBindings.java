@@ -8,13 +8,15 @@ import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.SheetSchema;
 import com.bedwarsqol.gui.sheet.SheetValues;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
+import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.stats.StatsCache;
 import org.lwjgl.input.Keyboard;
 
 /**
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
- * the platform that lists the platform-only Zoom and No Hurt Cam.
+ * the platform that lists the platform-only Zoom and No Hurt Cam and the per-item Background rows, which read and write
+ * their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -59,12 +61,15 @@ final class SettingsBindings implements SheetValues {
 
     @Override
     public boolean hasPlatformOnly(String id) {
-        return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id);
+        return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
+                || SheetSchema.hudItem(id) != null;
     }
 
     @Override
     public boolean on(String id) {
         ClientSettings c = settings();
+        String item = SheetSchema.hudItem(id);
+        if (item != null) return HudModules.background(c, item);
         switch (id) {
             case "potion": return c.potionStatusEnabled;
             case "potionInGame": return c.potionInGameOnly;
@@ -131,6 +136,12 @@ final class SettingsBindings implements SheetValues {
     @Override
     public void setOn(String id, boolean v) {
         ClientSettings c = settings();
+        String item = SheetSchema.hudItem(id);
+        if (item != null) {
+            HudModules.setBackground(c, item, v);
+            c.save();
+            return;
+        }
         switch (id) {
             case "potion": c.potionStatusEnabled = v; break;
             case "potionInGame": c.potionInGameOnly = v; break;

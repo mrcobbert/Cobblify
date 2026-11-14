@@ -2,6 +2,7 @@ package com.bedwarsqol.hud;
 
 import com.bedwarsqol.config.ClientSettings;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -10,7 +11,7 @@ import java.util.Map;
 
 /**
  * Every HUD module the editor can move, by id: its name and its layout fields in
- * {@link ClientSettings}. The two gen timers share one toggle, so showing or hiding one does both.
+ * {@link ClientSettings}. The two gen timers share one toggle and one Background, so switching one does both.
  */
 public final class HudModules {
 
@@ -23,6 +24,14 @@ public final class HudModules {
             BedwarsHudRenderer.KEYSTROKES_HUD,
             BedwarsHudRenderer.SESSION_HUD,
             BedwarsHudRenderer.HEIGHT_LIMIT_HUD));
+
+    private static final List<String> BACKGROUND_IDS;
+
+    static {
+        List<String> all = new ArrayList<String>(IDS);
+        all.addAll(HudBackground.OVERLAY_IDS);
+        BACKGROUND_IDS = Collections.unmodifiableList(all);
+    }
 
     private HudModules() {
     }
@@ -46,28 +55,28 @@ public final class HudModules {
 
     public static HudModuleState get(ClientSettings c, String id) {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) {
-            return new HudModuleState(c.potionHudX, c.potionHudY, c.potionHudAnchor, c.potionHudScale, c.potionStatusEnabled);
+            return new HudModuleState(c.potionHudX, c.potionHudY, c.potionHudAnchor, c.potionHudScale, c.potionStatusEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.ARMOR_HUD.equals(id)) {
-            return new HudModuleState(c.armorHudX, c.armorHudY, c.armorHudAnchor, c.armorHudScale, c.armorTypeEnabled);
+            return new HudModuleState(c.armorHudX, c.armorHudY, c.armorHudAnchor, c.armorHudScale, c.armorTypeEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.INVENTORY_HUD.equals(id)) {
-            return new HudModuleState(c.inventoryHudX, c.inventoryHudY, c.inventoryHudAnchor, c.inventoryHudScale, c.inventoryHudEnabled);
+            return new HudModuleState(c.inventoryHudX, c.inventoryHudY, c.inventoryHudAnchor, c.inventoryHudScale, c.inventoryHudEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.DIAMOND_TIMER_HUD.equals(id)) {
-            return new HudModuleState(c.diamondTimerHudX, c.diamondTimerHudY, c.diamondTimerHudAnchor, c.diamondTimerHudScale, c.genTimersEnabled);
+            return new HudModuleState(c.diamondTimerHudX, c.diamondTimerHudY, c.diamondTimerHudAnchor, c.diamondTimerHudScale, c.genTimersEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(id)) {
-            return new HudModuleState(c.emeraldTimerHudX, c.emeraldTimerHudY, c.emeraldTimerHudAnchor, c.emeraldTimerHudScale, c.genTimersEnabled);
+            return new HudModuleState(c.emeraldTimerHudX, c.emeraldTimerHudY, c.emeraldTimerHudAnchor, c.emeraldTimerHudScale, c.genTimersEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.KEYSTROKES_HUD.equals(id)) {
-            return new HudModuleState(c.keystrokesHudX, c.keystrokesHudY, c.keystrokesHudAnchor, c.keystrokesHudScale, c.keystrokesEnabled);
+            return new HudModuleState(c.keystrokesHudX, c.keystrokesHudY, c.keystrokesHudAnchor, c.keystrokesHudScale, c.keystrokesEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.SESSION_HUD.equals(id)) {
-            return new HudModuleState(c.sessionStatsHudX, c.sessionStatsHudY, c.sessionStatsHudAnchor, c.sessionStatsHudScale, c.sessionStatsEnabled);
+            return new HudModuleState(c.sessionStatsHudX, c.sessionStatsHudY, c.sessionStatsHudAnchor, c.sessionStatsHudScale, c.sessionStatsEnabled, c.hudBackground(id));
         }
         if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
-            return new HudModuleState(c.heightLimitHudX, c.heightLimitHudY, c.heightLimitHudAnchor, c.heightLimitHudScale, c.heightLimitEnabled);
+            return new HudModuleState(c.heightLimitHudX, c.heightLimitHudY, c.heightLimitHudAnchor, c.heightLimitHudScale, c.heightLimitEnabled, c.hudBackground(id));
         }
         return null;
     }
@@ -77,35 +86,43 @@ public final class HudModules {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) {
             c.potionHudX = s.x; c.potionHudY = s.y; c.potionHudAnchor = s.anchor; c.potionHudScale = s.scale;
             c.potionStatusEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.ARMOR_HUD.equals(id)) {
             c.armorHudX = s.x; c.armorHudY = s.y; c.armorHudAnchor = s.anchor; c.armorHudScale = s.scale;
             c.armorTypeEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.INVENTORY_HUD.equals(id)) {
             c.inventoryHudX = s.x; c.inventoryHudY = s.y; c.inventoryHudAnchor = s.anchor; c.inventoryHudScale = s.scale;
             c.inventoryHudEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.DIAMOND_TIMER_HUD.equals(id)) {
             c.diamondTimerHudX = s.x; c.diamondTimerHudY = s.y; c.diamondTimerHudAnchor = s.anchor; c.diamondTimerHudScale = s.scale;
             c.genTimersEnabled = s.enabled;
+            setTimersBackground(c, s.background);
         } else if (BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(id)) {
             c.emeraldTimerHudX = s.x; c.emeraldTimerHudY = s.y; c.emeraldTimerHudAnchor = s.anchor; c.emeraldTimerHudScale = s.scale;
             c.genTimersEnabled = s.enabled;
+            setTimersBackground(c, s.background);
         } else if (BedwarsHudRenderer.KEYSTROKES_HUD.equals(id)) {
             c.keystrokesHudX = s.x; c.keystrokesHudY = s.y; c.keystrokesHudAnchor = s.anchor; c.keystrokesHudScale = s.scale;
             c.keystrokesEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.SESSION_HUD.equals(id)) {
             c.sessionStatsHudX = s.x; c.sessionStatsHudY = s.y; c.sessionStatsHudAnchor = s.anchor; c.sessionStatsHudScale = s.scale;
             c.sessionStatsEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         } else if (BedwarsHudRenderer.HEIGHT_LIMIT_HUD.equals(id)) {
             c.heightLimitHudX = s.x; c.heightLimitHudY = s.y; c.heightLimitHudAnchor = s.anchor; c.heightLimitHudScale = s.scale;
             c.heightLimitEnabled = s.enabled;
+            c.setHudBackground(id, s.background);
         }
     }
 
-    /** The module reset: back in the default layout at the current HUD Size; it keeps its on/off state. */
+    /** The module reset: back in the default layout at the current HUD Size; it keeps its on/off and Background. */
     public static HudModuleState defaults(ClientSettings c, String id) {
         HudModuleState now = get(c, id);
         if (now == null) return null;
-        return new HudModuleState(0, 0, HudPlacement.AUTO, c.defaultTextSizeScale(), now.enabled);
+        return new HudModuleState(0, 0, HudPlacement.AUTO, c.defaultTextSizeScale(), now.enabled, now.background);
     }
 
     /** Every module's state, for undo. */
@@ -117,5 +134,35 @@ public final class HudModules {
 
     public static void restore(ClientSettings c, Map<String, HudModuleState> snapshot) {
         for (Map.Entry<String, HudModuleState> e : snapshot.entrySet()) set(c, e.getKey(), e.getValue());
+    }
+
+    /**
+     * Every id with a Background switch: the modules, then {@link HudBackground#OVERLAY_IDS} (the scoreboard, chat and
+     * tab list, which are not Edit HUD modules).
+     */
+    public static List<String> backgroundIds() {
+        return BACKGROUND_IDS;
+    }
+
+    /** Whether HUD item {@code id} draws its background; On for an id without a Background switch. */
+    public static boolean background(ClientSettings c, String id) {
+        if (IDS.contains(id)) return get(c, id).background;
+        if (HudBackground.OVERLAY_IDS.contains(id)) return c.hudBackground(id);
+        return true;
+    }
+
+    /**
+     * Switches HUD item {@code id}'s background: a module through {@link #set} (both gen timers together), an overlay
+     * straight in {@link ClientSettings}; any other id is ignored. The caller saves.
+     */
+    public static void setBackground(ClientSettings c, String id, boolean on) {
+        if (IDS.contains(id)) set(c, id, get(c, id).withBackground(on));
+        else if (HudBackground.OVERLAY_IDS.contains(id)) c.setHudBackground(id, on);
+    }
+
+    /** The two gen timers share one Background, as they share their on/off toggle. */
+    private static void setTimersBackground(ClientSettings c, boolean on) {
+        c.setHudBackground(BedwarsHudRenderer.DIAMOND_TIMER_HUD, on);
+        c.setHudBackground(BedwarsHudRenderer.EMERALD_TIMER_HUD, on);
     }
 }

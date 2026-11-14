@@ -92,6 +92,10 @@ divergent main com/bedwarsqol/feature/ClutchPractice.java
 divergent main com/bedwarsqol/config/ClientSettings.java
 divergent main com/bedwarsqol/gui/SettingsBindings.java
 
+# Per-item HUD Background (Ornithe only): HudModules carries each module's Background
+# flag in its state. Team Upgrades adds the same line; keep one on merge.
+divergent main com/bedwarsqol/hud/HudModules.java
+
 # Forge-patched GuiScreen.mouseClicked/keyTyped throw IOException; vanilla's do not.
 # The Ornithe copy is Lunar's (byte-identical to lunar/).
 divergent main com/bedwarsqol/gui/EditHudGui.java
@@ -164,6 +168,11 @@ divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
 one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
 one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
+
+# Per-item HUD Background (Ornithe only): its persistence, HudModules and sheet-row tests.
+one-sided test ornithe com/bedwarsqol/config/HudBackgroundConfigTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudModulesBackgroundTest.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsBackgroundTest.java
 
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
