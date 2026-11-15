@@ -160,23 +160,31 @@ public final class HudLayout {
     }
 
     /**
-     * {@link #fitScale} over {@code spots}; when none of them is free even at the smallest size, the
-     * {@code crowded} spots are tried after them at that size (never larger), so a full edge moves the
-     * module aside before it covers another one. When those are taken too, any free place on screen at
-     * that size, the one nearest the first spot's start (review code-2 I1: every module on, HUD Size 2).
+     * The largest of {@code scale}, {@code scale - step}, ..., {@code min} at which module {@code id} finds one of
+     * {@code spots} or, after them, one of the {@code crowded} spots free, and the spots that find it. Both are tried
+     * at each size before the next size down, so a full edge moves the module aside at full size rather than shrinking
+     * it (HUD tweaks: Team Upgrades drew at half size beside free room). Only when nothing is free even at {@code min}
+     * does it take any free place on screen at that size, nearest the first spot's start (review code-2 I1): a place
+     * out in the open, possibly by the crosshair, stays the last resort. With none, {@link Fit#free} is false.
      */
     public Fit fit(List<Item> before, List<Box> obstacles, String id, float scale, float step, float min,
                    Sizer sizer, Spot[] spots, Spot[] crowded) {
-        float s = fitScale(before, obstacles, id, scale, step, min, sizer, spots);
-        float[] size = sizer.size(s);
         List<Box> taken = placed(before, obstacles);
-        if (placeOne(new Item(id, size[0], size[1], spots), taken)[2] > 0f) return new Fit(s, spots, true);
-        Spot[] all = Arrays.copyOf(spots, spots.length + crowded.length + 1);
-        System.arraycopy(crowded, 0, all, spots.length, crowded.length);
-        Item item = new Item(id, size[0], size[1], Arrays.copyOf(all, all.length - 1));
-        if (placeOne(item, taken)[2] > 0f) return new Fit(s, Arrays.copyOf(all, all.length - 1), true);
+        Spot[] withCrowded = Arrays.copyOf(spots, spots.length + crowded.length);
+        System.arraycopy(crowded, 0, withCrowded, spots.length, crowded.length);
+        float s = scale;
+        while (true) {
+            float[] size = sizer.size(s);
+            if (placeOne(new Item(id, size[0], size[1], spots), taken)[2] > 0f) return new Fit(s, spots, true);
+            if (placeOne(new Item(id, size[0], size[1], withCrowded), taken)[2] > 0f) return new Fit(s, withCrowded, true);
+            if (s <= min + 1e-4f) break;
+            s = Math.max(min, s - step); // a step past the minimum tries the minimum itself
+        }
+        float[] size = sizer.size(s);
+        Item item = new Item(id, size[0], size[1], withCrowded);
         float[] free = freePlace(item, taken, spots.length > 0 ? start(item, spots[0]) : new float[]{edge, edge});
-        if (free == null) return new Fit(s, Arrays.copyOf(all, all.length - 1), false);
+        if (free == null) return new Fit(s, withCrowded, false);
+        Spot[] all = Arrays.copyOf(withCrowded, withCrowded.length + 1);
         all[all.length - 1] = Spot.at(free[0], free[1]);
         return new Fit(s, all, true);
     }

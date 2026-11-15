@@ -217,6 +217,32 @@ public class HudLayoutTest {
     }
 
     @Test
+    public void aFullLeftEdgeMovesBesideTheColumnAtFullSizeBeforeShrinking() {
+        // HUD tweaks: the left column runs the whole screen height, so no left-edge spot is free at any size, but
+        // the room beside the column is. The panel goes there at the player's scale instead of at half size.
+        List<Box> column = Arrays.asList(new Box(2, 2, 94, 356), new Box(229, 310, 182, 50));
+        HudLayout layout = new HudLayout(640f, 360f, 2, 2);
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, column, "team", 1.0f, 0.5f, 0.5f, PADDED, TEAM_SPOTS, BESIDE);
+        assertEquals(1.0f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        float[] size = PADDED.size(fit.scale);
+        float[] team = layout.place(Collections.singletonList(new Item("team", size[0], size[1], fit.spots)), column).get("team");
+        for (Box b : column) assertFalse(overlaps(team, new float[]{b.x, b.y, b.width, b.height}));
+    }
+
+    @Test
+    public void aPlaceOutInTheOpenIsTheLastResortEvenAtFullSize() {
+        // at full size only a free place under the middle box exists; half size fits beside the column at the top,
+        // so the panel shrinks there rather than standing out in the open (which can be by the crosshair)
+        HudLayout layout = new HudLayout(200f, 220f, 2, 2);
+        HudLayout.Sizer square = s -> new float[]{60f * s, 60f * s};
+        HudLayout.Fit fit = layout.fit(NONE_BEFORE, MIDDLE_BLOCKED, "team", 1f, 0.5f, 0.5f, square, DOWN_THE_LEFT, BESIDE);
+        assertEquals(0.5f, fit.scale, 1e-6f);
+        assertTrue(fit.free);
+        assertEquals(DOWN_THE_LEFT.length + BESIDE.length, fit.spots.length);
+    }
+
+    @Test
     public void aFreeLeftEdgeNeverMovesBesideTheColumn() {
         // the profile layout: only Map Info and the timers; the left edge has room at full size
         List<Box> profile = Arrays.asList(new Box(595, 2, 43, 22), new Box(550, 2, 43, 22), new Box(2, 101, 86, 38),

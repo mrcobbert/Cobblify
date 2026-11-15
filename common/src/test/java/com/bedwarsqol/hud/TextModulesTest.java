@@ -57,9 +57,23 @@ public class TextModulesTest {
     }
 
     @Test
-    public void bareTextInBrackets() {
-        assertEquals(48f, TextModules.bareWidth(TextModules.fps(150), VANILLA), 0f);
+    public void bareTextWithAndWithoutBrackets() {
+        assertEquals(40f, TextModules.bareWidth(TextModules.fps(150), VANILLA), 0f);
+        assertEquals(48f, TextModules.bareWidth(TextModules.bracketed(TextModules.fps(150)), VANILLA), 0f);
         assertEquals(9, TextModules.BARE_H);
+    }
+
+    @Test
+    public void bracketsAreWhiteRunsAroundTheText() {
+        assertEquals(Arrays.asList("BRACKET:[", "NUMBER:9", "DIVIDER:", "NUMBER:3", "UNIT: CPS", "BRACKET:]"),
+                described(TextModules.bracketed(TextModules.cps(9, 3))));
+        // the box grows by the brackets' advance; the divider keeps its place after "[9"
+        assertEquals(56f, TextModules.boxWidth(TextModules.bracketed(TextModules.cps(9, 3)), VANILLA, 1f), 0f);
+        List<TextModules.Placed> p = TextModules.layout(TextModules.bracketed(TextModules.cps(9, 3)), VANILLA);
+        assertEquals(0f, p.get(0).x, 0f);
+        assertArrayEquals(new float[]{12, 0, 13, 8}, p.get(2).rect, 0f);
+        assertEquals(45f, p.get(5).x, 0f);
+        assertEquals(0xFFFFFFFF, TextModules.BRACKET);
     }
 
     @Test

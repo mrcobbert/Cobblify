@@ -117,6 +117,7 @@ final class SettingsBindings implements SheetValues {
         return "zoom".equals(id) || "noHurtCam".equals(id) || "toggleSprint".equals(id) || "dynamicFov".equals(id)
                 || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id)
                 || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
+                || "fpsBrackets".equals(id) || "cpsBrackets".equals(id) || "pingBrackets".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -144,6 +145,9 @@ final class SettingsBindings implements SheetValues {
             case "fps": return c.fpsEnabled;
             case "cps": return c.cpsEnabled;
             case "ping": return c.pingEnabled;
+            case "fpsBrackets": return c.fpsBrackets;
+            case "cpsBrackets": return c.cpsBrackets;
+            case "pingBrackets": return c.pingBrackets;
             case "handPos": return c.handPositionEnabled;
             case "tnt": return c.tntFuseEnabled;
             case "noEsc": return c.suppressEscMenu;
@@ -223,6 +227,9 @@ final class SettingsBindings implements SheetValues {
             case "fps": c.fpsEnabled = v; break;
             case "cps": c.cpsEnabled = v; break;
             case "ping": c.pingEnabled = v; break;
+            case "fpsBrackets": c.fpsBrackets = v; break;
+            case "cpsBrackets": c.cpsBrackets = v; break;
+            case "pingBrackets": c.pingBrackets = v; break;
             case "handPos": c.handPositionEnabled = v; break;
             case "tnt": c.tntFuseEnabled = v; break;
             case "noEsc": c.suppressEscMenu = v; break;

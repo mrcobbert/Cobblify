@@ -2238,6 +2238,11 @@ def smoke_edithud(s, cfg, mode, checks=None):
                 continue
             try:
                 run.scale(2)  # every check starts at GUI 2; E1, E8 and E9 visit GUI 3 themselves
+                ed = run.probe().get("editor") or {}
+                if ed.get("selectedId") and not ed.get("menuId") and ed.get("mode") == "NONE":
+                    # and with nothing selected: a press inside the selected item's box (a ghost under another item
+                    # included) keeps it selected and drags it, so one check's selection must not steer the next
+                    s.call("/key", {"code": KEYS["esc"]})
                 fn(run)
             except (ApiError, KeyError, TypeError, ValueError, StopIteration) as e:
                 s.check("%s ran to the end" % cid, False, "%s: %s" % (type(e).__name__, e))
@@ -2584,8 +2589,12 @@ def edithud_e8(run, scales=(2, 3)):
     s = run.s
     run.show_only({"inventory"})
     for _, sc in run.scales(scales):
-        b = run.box("inventory")
+        hb = run.probe()
+        b = run.box("inventory", hb)
         cx, cy = gui_centre(b)
+        if (hb.get("editor") or {}).get("selectedId"):
+            # nothing selected first (Esc clears a selection): a click on the selected item picks the one under it
+            s.call("/key", {"code": KEYS["esc"]})
         s.call("/click", {"x": cx, "y": cy})  # select it
         x0 = b["x"]
         for _ in range(3):
@@ -2790,16 +2799,43 @@ def edithud_corner_grow(run, item, other, corner, gap):
     return before, after
 
 
+def edithud_grow_gap(run, item):
+    """The gap E7/E7b leave beside `item`: 20 GUI px with the modern font. With Minecraft's font a box laid out at its
+    text scale grows only in whole device pixels per font pixel (+50% at GUI 2) and Edit HUD resizes in those steps,
+    so the gap is room for exactly one more step (its panel padding grows too) and less than two: the item must grow
+    one step and stop there, never park a scale between steps (HUD tweaks scaling report)."""
+    if not run.minecraft_font():
+        return 20
+    hb = run.probe()
+    b = run.box(item, hb)
+    sc = hb["scale"]
+    step = b["w"] / text_scale(run.state(item, hb)["scale"], sc, True) / sc
+    return step + 6
+
+
+def edithud_put_back(run, hb, ids):
+    """Puts `ids` back to their stored spot and size in probe `hb` (to the GUI px: the sub-pixel part is not a field),
+    so a check that moved or grew them leaves the later checks the layout they expect."""
+    for i in ids:
+        st, pre = run.state(i, hb), HL_LAYOUT[i]
+        for suffix, key in (("Anchor", "anchor"), ("X", "x"), ("Y", "y"), ("Scale", "scale")):
+            run.s.field(run.cfg + "." + pre + suffix, st[key])
+
+
 def edithud_e7(run):
-    """E7: Map Info's bottom-right corner, dragged well past Keystrokes 20 px to its right, grows it only until
-    its right edge is flush with Keystrokes."""
+    """E7: Map Info's bottom-right corner, dragged well past Keystrokes beside it, grows it only until its right edge
+    is flush with Keystrokes (Minecraft's font: until one more size step would not fit)."""
     s = run.s
     run.show_only({"heightlimit", "keystrokes"})
-    before, after = edithud_corner_grow(run, "heightlimit", "keystrokes", "br", 20)
+    start = run.probe()
+    before, after = edithud_corner_grow(run, "heightlimit", "keystrokes", "br", edithud_grow_gap(run, "heightlimit"))
     mi, ks = run.box("heightlimit", after), run.box("keystrokes", after)
     right = vis(mi)[0] + vis(mi)[2]
     scale = run.state("heightlimit", after)["scale"]
     s.check("E7 Map Info grew", scale > run.state("heightlimit", before)["scale"])
+    if run.minecraft_font():
+        s.check("E7 its scale is a size step, not a value between steps", abs(scale * after["scale"]
+                - round(scale * after["scale"])) < 1e-3, scale)
     s.check("E7 and stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
             grow_stopped_ok(vis(ks)[0] - right, mi["w"], scale, after["scale"], run.minecraft_font()),
             "right %.4f, Keystrokes left %.4f, scale %.4f" % (right, vis(ks)[0], scale))
@@ -2807,6 +2843,7 @@ def edithud_e7(run):
     problems = others_unchanged(before, after, {"heightlimit"})
     s.check("E7 nothing else moved", not problems, problems or None)
     s.shot("edithud-e7")
+    edithud_put_back(run, start, ("heightlimit", "keystrokes"))
 
 
 def edithud_e7b(run):
@@ -2815,9 +2852,10 @@ def edithud_e7b(run):
     s = run.s
     run.show_only({"sessionstats", "keystrokes"})
     hb = run.probe()
+    start = hb
     ss = run.box("sessionstats", hb)
     run.device_drag("sessionstats", 0, (hb["sh"] - vis(ss)[3]) / 2.0 - vis(ss)[1], mods="alt")  # room to grow up
-    before, after = edithud_corner_grow(run, "sessionstats", "keystrokes", "tl", 20)
+    before, after = edithud_corner_grow(run, "sessionstats", "keystrokes", "tl", edithud_grow_gap(run, "sessionstats"))
     s0, s1 = run.box("sessionstats", before), run.box("sessionstats", after)
     ks = run.box("keystrokes", after)
     corner0, corner1 = (s0["x"] + s0["w"], s0["y"] + s0["h"]), (s1["x"] + s1["w"], s1["y"] + s1["h"])
@@ -2830,6 +2868,7 @@ def edithud_e7b(run):
             "left %.4f, Keystrokes right %.4f, scale %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2], scale))
     s.check("E7b no overlap", clear_of(s1, ks))
     s.shot("edithud-e7b")
+    edithud_put_back(run, start, ("sessionstats", "keystrokes"))
 
 
 def edithud_e15(run):
@@ -3273,6 +3312,9 @@ HL_PRESSED_TEXT = (18, 18, 18)             # KeyCapStyle: dark letter on a pale 
 HL_ACCENT = "pale-blue"
 HL_ACCENT_RGB = (192, 220, 255)            # GuiTheme PALE_BLUE 0xFFC0DCFF
 HL_PAD = 3                                 # HudBackground.pad(1) = CONTENT_MARGIN, GUI px
+HL_BOX_H = 18                              # TextModules.BOX_H: FPS, CPS, Ping, Armor and the gen timers
+HL_BOX_HPAD = 4                            # TextModules.HPAD
+HL_ICON_BOXES = ("armor", "timers")        # one-line boxes that are their own panel, with an item icon
 HL_TIME_DY = 10                            # PotionRows.TIME_DY: the time line's top in a potion row
 ICONS = "com.bedwarsqol.hud.EffectIconTextures"
 
@@ -3628,8 +3670,8 @@ def hl_cap_points(box, sf):
 def hl_expected_panel(group, sf):
     """Panel size in screenshot px for the modules whose content size is fixed here, else None."""
     pad2 = 2 * HL_PAD
-    if group == "armor":
-        return ((16 + pad2) * sf, (16 + pad2) * sf)
+    if group == "armor":  # the FPS-style one-line box: 4 px sides, 18 px tall
+        return ((16 + 2 * HL_BOX_HPAD) * sf, HL_BOX_H * sf)
     if group == "inventory":
         return ((9 * 22 + 2 + pad2) * sf, (3 * 22 + 2 + pad2) * sf)
     if group == "potion":  # Speed II, 0:45
@@ -3708,14 +3750,20 @@ def hl_bg_checks(name, kind, backdrops, on, off, sf):
         ok, why = hl_ring_ok(on, none, p)
         out.append((name + ": panel ring is see-through black (not 0xD0121212)", ok, why))
         if kind != "textbox":
-            ok, why = hl_bare_ok(off, none_off, ring(p, 1))
+            pts = ring(p, 1)
+            if name in HL_ICON_BOXES and off_box:
+                # the box is the panel: with it Off the content sits at the box's corner, over part of that ring
+                pts = [q for q in pts if not inside((q[0], q[1], q[0], q[1]), grow(off_box, 1))]
+            ok, why = hl_bare_ok(off, none_off, pts)
             out.append((name + " Off: no fill on that ring", ok, why))
     if kind != "textbox":
         out.append((name + " Off: drawn inside the On panel only", inside(off_box, grow(on_box, 1)), off_box))
-        if off_box and name not in ("armor", "inventory"):
+        if off_box and name not in ("armor", "inventory") + HL_ICON_BOXES:
             margins = (off_box[0] - on_box[0], off_box[1] - on_box[1], on_box[2] - off_box[2], on_box[3] - off_box[3])
             out.append((name + ": the panel pads the content", min(margins) >= (HL_PAD - 1) * sf, margins))
     content = (on_box[0] + HL_PAD * sf, on_box[1] + HL_PAD * sf, on_box[2] - HL_PAD * sf, on_box[3] - HL_PAD * sf)
+    if name in HL_ICON_BOXES:  # the icon sits 4 px in from the side and 1 px down in its 18 px box
+        content = (on_box[0] + HL_BOX_HPAD * sf, on_box[1] + (HL_BOX_H - 16) // 2 * sf, on_box[2], on_box[3])
     if kind in ("text", "textbox"):
         for tag, img, box in (("On", on, on_box), ("Off", off, off_box or on_box)):
             n = count_exact(img, box, HL_SHADOW)
@@ -4394,6 +4442,7 @@ def smoke_team_upgrades(s, cfg):
         frac, box = tu_box_diff(off, empty, boxes[TU_ID], gw)
         s.check("panel drawn in its default spot (Traps / None)", frac > 0.001,
                 "diff %.4f in %s, spot %s" % (frac, box, boxes[TU_ID]))
+        tu_pin_by_other_keeps_live_panel(s, cfg, off, empty, boxes, gw)
 
         # Purchases in both component shapes, then two spoofs that must change nothing.
         for item in ("Sharpened Swords", "Reinforced Armor I", "Reinforced Armor II", "Iron Forge", "Heal Pool",
@@ -4540,6 +4589,50 @@ def tu_sweep(s, hud_size, which, sizes, scales):
                 # every module on and no free place of the panel's size anywhere: the screen is full
                 s.note("screen full with every module on " + tag, detail)
             s.call("/close")
+
+
+def tu_pin_by_other_keeps_live_panel(s, cfg, off, empty, boxes, gw):
+    """Outcome review (edit-hud) round 1, I1: moving another item in Edit HUD pins the untouched panel by its Full
+    box; the live panel, shorter than that box, must still be drawn where it was. Nudge the chat, close, compare the
+    drawn panel with the one before, then undo in the next editor."""
+    full, chat = boxes[TU_ID], boxes.get("chat")
+    if not (chat and chat.get("shown")):
+        return s.note("chat not shown in the editor: the live pin-by-another-item check did not run")
+    k = empty[0] / float(gw)
+    region = (int((full["x"] - 4) * k), int((full["y"] - 4) * k),
+              int(math.ceil((full["x"] + full["w"] + 4) * k)), int(math.ceil((full["y"] + full["h"] + 4) * k)))
+    before = quiet_bbox(off, empty, region)
+    anchor_path = cfg + ".teamUpgradesHudAnchor"
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    s.call("/click", {"x": int(chat["x"] + chat["w"] - 6), "y": int(chat["y"] + chat["h"] / 2)})
+    s.call("/key", {"code": KEYS["right"]})
+    time.sleep(0.3)
+    s.call("/close")
+    time.sleep(0.4)
+    anchor = s.field(anchor_path).get("value")
+    _, pinned = s.shot("tu-empty-pinned")
+    after = quiet_bbox(off, pinned, region)
+    s.check("moving another item keeps the live panel where it is drawn",
+            anchor != -1 and rect_close(before, after, max(1, int(round(k)))),
+            {"before": before, "after": after, "anchor": anchor, "region": region})
+    # Undo belongs to the editor that made the change (EditHudGui keeps its history per screen): from the default
+    # spot again, nudge the chat, then undo in that same editor.
+    for f, v in (("teamUpgradesHudAnchor", -1), ("teamUpgradesHudX", 0), ("teamUpgradesHudY", 0)):
+        s.field(cfg + "." + f, v)
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    s.call("/click", {"x": int(chat["x"] + chat["w"] - 6), "y": int(chat["y"] + chat["h"] / 2)})
+    s.call("/key", {"code": KEYS["right"]})
+    time.sleep(0.3)
+    pinned_again = s.field(anchor_path).get("value")
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    time.sleep(0.3)
+    s.call("/close")
+    s.check("undo in the same editor puts the panel back on Auto",
+            pinned_again != -1 and s.field(anchor_path).get("value") == -1, {"pinned": pinned_again})
+    for f, v in (("teamUpgradesHudAnchor", -1), ("teamUpgradesHudX", 0), ("teamUpgradesHudY", 0)):
+        s.field(cfg + "." + f, v)  # whatever undo did, the rest of the run starts from the default spot
 
 
 def tu_move_keeps_size(s, cfg, mode):

@@ -47,10 +47,15 @@ public final class CornerResize {
         float dy = (mouseY - pinY) * dirY;
         float scale = (dx * baseWidth + dy * baseHeight) / (baseWidth * baseWidth + baseHeight * baseHeight);
         if (snap && Math.abs(scale - 1f) <= SNAP_TO_ONE) scale = 1f;
+        float max = Math.max(MIN_SCALE, Math.min(MAX_SCALE, roomScale(screenWidth, screenHeight, pad)));
+        return Math.max(MIN_SCALE, Math.min(max, scale));
+    }
+
+    /** The largest scale at which the box, plus {@code pad} on each side, stays on screen from the pinned corner. */
+    public float roomScale(float screenWidth, float screenHeight, float pad) {
         float roomX = (dirX > 0 ? screenWidth - pad - pinX : pinX - pad) / baseWidth;
         float roomY = (dirY > 0 ? screenHeight - pad - pinY : pinY - pad) / baseHeight;
-        float max = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.min(roomX, roomY)));
-        return Math.max(MIN_SCALE, Math.min(max, scale));
+        return Math.min(roomX, roomY);
     }
 
     /** Left edge of the box at {@code scale}. */

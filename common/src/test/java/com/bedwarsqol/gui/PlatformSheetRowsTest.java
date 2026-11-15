@@ -34,7 +34,7 @@ public class PlatformSheetRowsTest {
                 "teamUpgradesLayout", "teamUpgradesBg",
                 "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
                 "scoreboardBg", "tabListBg", "chatBg",
-                "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {
+                "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg", "fpsBrackets", "cpsBrackets", "pingBrackets"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }

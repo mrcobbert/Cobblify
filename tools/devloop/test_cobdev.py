@@ -590,8 +590,8 @@ class FakeEditor(cobdev.Smoke):
         elif path == "/probe":
             return {"scale": self.sc, "sw": self.sw, "sh": self.sh, "boxes": [dict(b) for b in self.boxes.values()]}
         elif path == "/click":
-            self.selected = next(i for i, b in self.boxes.items()
-                                 if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"])
+            self.selected = next((i for i, b in self.boxes.items()  # empty space clears it, as in Edit HUD
+                                  if b["x"] <= q["x"] <= b["x"] + b["w"] and b["y"] <= q["y"] <= b["y"] + b["h"]), None)
         elif path == "/key" and self.selected:
             step = 10 if q.get("mods") == "shift" else 1
             self.boxes[self.selected]["x"] += step * (1 if q["code"] == cobdev.KEYS["right"] else -1) / float(self.sc)
@@ -816,7 +816,7 @@ class HudLookHelpers(unittest.TestCase):
         self.assertEqual(cobdev.hl_text_box_width(["9", "3", " CPS"], True), 48)
         self.assertEqual(cobdev.hl_text_box_width(["--", " ms"]), 35)
         self.assertEqual(cobdev.hl_expected_panel("keystrokes", 2), (112, 134))
-        self.assertEqual(cobdev.hl_expected_panel("armor", 2), (44, 44))
+        self.assertEqual(cobdev.hl_expected_panel("armor", 2), (48, 36))  # the 24 x 18 FPS-style box
         self.assertIsNone(cobdev.hl_expected_panel("sessionstats", 2))
 
 
