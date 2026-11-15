@@ -123,6 +123,8 @@ public class ClientSettings {
     public int fpsHudY = 0;
     public int fpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float fpsHudScale = 1.0f;
+    /** Draw the text in brackets ([150 FPS]), with or without its Background. */
+    public boolean fpsBrackets = false;
 
     /** CPS: left and right clicks per second in a small box (Ornithe build). */
     public boolean cpsEnabled = false;
@@ -130,6 +132,7 @@ public class ClientSettings {
     public int cpsHudY = 0;
     public int cpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float cpsHudScale = 1.0f;
+    public boolean cpsBrackets = false;
 
     /** Ping: your own latency from the tab list, in a small box (Ornithe build); "--" in singleplayer. */
     public boolean pingEnabled = false;
@@ -137,6 +140,7 @@ public class ClientSettings {
     public int pingHudY = 0;
     public int pingHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float pingHudScale = 1.0f;
+    public boolean pingBrackets = false;
 
     /**
      * Per-item Background switch of every HUD item (the HUD modules and the scoreboard, chat and tab list), by HUD

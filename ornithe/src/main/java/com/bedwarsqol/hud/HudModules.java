@@ -255,6 +255,14 @@ public final class HudModules {
         return BACKGROUND_IDS;
     }
 
+    /** Whether text module {@code id} (FPS, CPS, Ping) draws its text in brackets; false for any other id. */
+    public static boolean brackets(ClientSettings c, String id) {
+        if (BedwarsHudRenderer.FPS_HUD.equals(id)) return c.fpsBrackets;
+        if (BedwarsHudRenderer.CPS_HUD.equals(id)) return c.cpsBrackets;
+        if (BedwarsHudRenderer.PING_HUD.equals(id)) return c.pingBrackets;
+        return false;
+    }
+
     /** Whether HUD item {@code id} draws its background; On for an id without a Background switch. */
     public static boolean background(ClientSettings c, String id) {
         if (IDS.contains(id)) return get(c, id).background;

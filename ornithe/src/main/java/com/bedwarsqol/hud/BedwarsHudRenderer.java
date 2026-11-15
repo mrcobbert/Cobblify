@@ -901,7 +901,7 @@ public class BedwarsHudRenderer {
         if (EMERALD_TIMER_HUD.equals(id)) return timerSize(mc, cfg, true, false);
         if (SESSION_HUD.equals(id)) return sessionSize(mc, cfg, true);
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
-        if (isTextModule(id)) return textModuleSize(cfg, id, textSegs(mc, id, true));
+        if (isTextModule(id)) return textModuleSize(cfg, id, textSegs(mc, cfg, id, true));
         // Team Upgrades: the Full example at its drawn scale (Reset Positions); the Auto layout fits it itself (fitTeamUpgrades)
         if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample());
         return Size.EMPTY;
@@ -1420,7 +1420,13 @@ public class BedwarsHudRenderer {
         }
     };
 
-    private static List<TextModules.Seg> textSegs(Minecraft mc, String id, boolean example) {
+    /** The module's runs, between brackets when its Brackets switch is on (with or without its Background). */
+    private static List<TextModules.Seg> textSegs(Minecraft mc, ClientSettings cfg, String id, boolean example) {
+        List<TextModules.Seg> segs = textRuns(mc, id, example);
+        return HudModules.brackets(cfg, id) ? TextModules.bracketed(segs) : segs;
+    }
+
+    private static List<TextModules.Seg> textRuns(Minecraft mc, String id, boolean example) {
         if (FPS_HUD.equals(id)) return TextModules.fps(example ? TextModules.EXAMPLE_FPS : Minecraft.getDebugFPS());
         if (CPS_HUD.equals(id)) {
             if (example) return TextModules.cps(TextModules.EXAMPLE_CPS_LEFT, TextModules.EXAMPLE_CPS_RIGHT);
@@ -1439,7 +1445,7 @@ public class BedwarsHudRenderer {
 
     /**
      * The text module's box, laid out at its text's own scale {@code e} so the text always fits: an 18 px box hugging
-     * the text with its Background on, else the bare text in brackets.
+     * the text with its Background on, else the bare text (brackets, if on, are part of the runs).
      */
     private static Size textModuleSize(ClientSettings cfg, String id, List<TextModules.Seg> segs) {
         float e = ts(HudModules.get(cfg, id).scale);
@@ -1451,7 +1457,7 @@ public class BedwarsHudRenderer {
     }
 
     private static HudBox textBox(Minecraft mc, ClientSettings cfg, String id, boolean example, boolean all) {
-        return textBox(mc, cfg, id, textSegs(mc, id, example), all);
+        return textBox(mc, cfg, id, textSegs(mc, cfg, id, example), all);
     }
 
     private static HudBox textBox(Minecraft mc, ClientSettings cfg, String id, List<TextModules.Seg> segs, boolean all) {
@@ -1463,9 +1469,12 @@ public class BedwarsHudRenderer {
         return new HudBox(id, at[0], at[1], size.width, size.height, pad);
     }
 
-    /** One text module: numbers white, the unit in the accent, CPS's divider and its shadow as rects; text shadowed. */
+    /**
+     * One text module: numbers and brackets white, the unit in the accent, CPS's divider and its shadow as rects; text
+     * shadowed.
+     */
     private static void drawTextModule(Minecraft mc, ClientSettings cfg, String id, boolean example) {
-        List<TextModules.Seg> segs = textSegs(mc, id, example);
+        List<TextModules.Seg> segs = textSegs(mc, cfg, id, example);
         HudBox box = textBox(mc, cfg, id, segs, false);
         if (box == null) return;
         float e = ts(HudModules.get(cfg, id).scale);
@@ -1483,10 +1492,6 @@ public class BedwarsHudRenderer {
             ox = Math.round(ox * sf) / (float) sf;
             oy = Math.round(oy * sf) / (float) sf;
         }
-        if (!background) {
-            drawShadowed("[", ox, oy, e, TextModules.BRACKET);
-            ox += fontWidth("[") * e;
-        }
         for (TextModules.Placed p : TextModules.layout(segs, HUD_ADVANCE)) {
             if (p.rect != null) {
                 GuiRender.rect(ox + p.shadow[0] * e, oy + p.shadow[1] * e, ox + p.shadow[2] * e, oy + p.shadow[3] * e,
@@ -1494,11 +1499,11 @@ public class BedwarsHudRenderer {
                 GuiRender.rect(ox + p.rect[0] * e, oy + p.rect[1] * e, ox + p.rect[2] * e, oy + p.rect[3] * e,
                         TextModules.DIVIDER);
             } else {
-                int color = p.seg.role == TextModules.Role.UNIT ? accent : TextModules.NUMBER;
+                int color = p.seg.role == TextModules.Role.UNIT ? accent
+                        : p.seg.role == TextModules.Role.BRACKET ? TextModules.BRACKET : TextModules.NUMBER;
                 drawShadowed(p.seg.text, ox + p.x * e, oy, e, color);
             }
         }
-        if (!background) drawShadowed("]", ox + TextModules.segWidth(segs, HUD_ADVANCE) * e, oy, e, TextModules.BRACKET);
         resetGlState();
     }
 

@@ -8,7 +8,8 @@ import java.util.List;
 /**
  * The FPS, CPS and Ping modules, as the approved sandbox draws them: the number in white, the unit in the accent, CPS
  * as {@code left | right} with a 1 px gray divider that casts a shadow like text. With its Background on, a module is
- * an 18 px tall box that hugs the text with 4 px either side; off, it is the bare text in brackets ({@code [150 FPS]}).
+ * an 18 px tall box that hugs the text with 4 px either side; off, it is the bare text. Brackets ({@code [150 FPS]}) are
+ * the module's own switch, independent of its Background ({@link #bracketed}).
  * Geometry is in module units (multiply by the draw scale); widths come from the font through {@link Advance}.
  */
 public final class TextModules {
@@ -33,7 +34,7 @@ public final class TextModules {
     public static final int EXAMPLE_CPS_RIGHT = 3;
     public static final String EXAMPLE_PING = "27";
 
-    public enum Role { NUMBER, UNIT, DIVIDER }
+    public enum Role { NUMBER, UNIT, DIVIDER, BRACKET }
 
     /** One run of a module's text: a number, a unit, or the CPS divider (no text). */
     public static final class Seg {
@@ -82,6 +83,15 @@ public final class TextModules {
         return segs(new Seg(ms, Role.NUMBER), new Seg(" ms", Role.UNIT));
     }
 
+    /** The runs between white brackets: {@code [150 FPS]}. */
+    public static List<Seg> bracketed(List<Seg> segs) {
+        List<Seg> out = new ArrayList<Seg>(segs.size() + 2);
+        out.add(new Seg("[", Role.BRACKET));
+        out.addAll(segs);
+        out.add(new Seg("]", Role.BRACKET));
+        return Collections.unmodifiableList(out);
+    }
+
     private static List<Seg> segs(Seg... s) {
         return Collections.unmodifiableList(Arrays.asList(s));
     }
@@ -106,9 +116,9 @@ public final class TextModules {
         return segWidth(segs, adv) - trailing + 2 * HPAD;
     }
 
-    /** Width of the bare text in brackets (Background off). */
+    /** Width of the bare text (Background off), brackets included when the runs have them. */
     public static float bareWidth(List<Seg> segs, Advance adv) {
-        return adv.of("[]") + segWidth(segs, adv);
+        return segWidth(segs, adv);
     }
 
     /**

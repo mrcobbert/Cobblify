@@ -20,9 +20,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * FPS, CPS and Ping: HUD modules of the Ornithe sheet, each with its Background row; off by default with the Background
- * on (also for a config saved before they existed); their rows write the settings; Edit HUD knows them; their layout
- * fields round-trip, sanitize and follow HUD Size like every module's.
+ * FPS, CPS and Ping: HUD modules of the Ornithe sheet, each with its Background and Brackets rows; off by default with
+ * the Background on and Brackets off (also for a config saved before they existed); their rows write the settings,
+ * Brackets independent of the Background; Edit HUD knows them; their layout fields round-trip, sanitize and follow HUD
+ * Size like every module's.
  */
 public class SettingsBindingsTextModulesTest {
 
@@ -50,7 +51,8 @@ public class SettingsBindingsTextModulesTest {
     @Test
     public void listedOnOrnithe() {
         SettingsBindings values = new SettingsBindings();
-        for (String id : new String[]{"fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg"}) {
+        for (String id : new String[]{"fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg", "fpsBrackets", "cpsBrackets",
+                "pingBrackets"}) {
             assertTrue(id, SheetSchema.shows(values, id));
         }
     }
@@ -69,11 +71,13 @@ public class SettingsBindingsTextModulesTest {
                 assertEquals(id, HudPlacement.AUTO, s.anchor);
                 assertEquals(id, 1.0f, s.scale, 0f);
                 assertTrue(id, s.background);
+                assertFalse(id, HudModules.brackets(c, id));
             }
         }
         for (String id : new String[]{"fps", "cps", "ping"}) {
             assertFalse(id, values.on(id));
             assertTrue(id, values.on(id + "Bg"));
+            assertFalse(id, values.on(id + "Brackets"));
         }
     }
 
@@ -91,6 +95,31 @@ public class SettingsBindingsTextModulesTest {
         assertTrue(BedwarsQol.config.hudBackground(BedwarsHudRenderer.FPS_HUD));
         values.setOn("ping", false);
         assertFalse(values.on("ping"));
+    }
+
+    @Test
+    public void bracketsAreTheirOwnSwitch() {
+        SettingsBindings values = new SettingsBindings();
+        // Background off no longer brings brackets with it
+        values.setOn("fpsBg", false);
+        assertFalse(HudModules.brackets(BedwarsQol.config, BedwarsHudRenderer.FPS_HUD));
+        // and brackets go on with the Background on or off
+        values.setOn("cpsBrackets", true);
+        assertTrue(BedwarsQol.config.cpsBrackets);
+        assertTrue(HudModules.brackets(BedwarsQol.config, BedwarsHudRenderer.CPS_HUD));
+        assertTrue(HudModules.background(BedwarsQol.config, BedwarsHudRenderer.CPS_HUD));
+        values.setOn("pingBrackets", true);
+        values.setOn("pingBg", false);
+        assertTrue(values.on("pingBrackets"));
+        assertFalse(values.on("pingBg"));
+        assertFalse(values.on("fpsBrackets"));
+        values.setOn("cpsBrackets", false);
+        assertFalse(BedwarsQol.config.cpsBrackets);
+        assertFalse(HudModules.brackets(BedwarsQol.config, "potion"));
+        // saved and read back
+        ClientSettings back = new Gson().fromJson(new Gson().toJson(BedwarsQol.config), ClientSettings.class);
+        assertTrue(back.pingBrackets);
+        assertFalse(back.cpsBrackets);
     }
 
     @Test

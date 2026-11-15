@@ -194,7 +194,11 @@ public class SheetPlatformOnlyTest {
             assertEquals(id, bg.hudItem());
             assertEquals("Background", bg.name);
             assertEquals("See-through box behind it", bg.desc);
-            for (String row : new String[]{id, id + "Bg"}) {
+            SheetSchema.Row brackets = SheetSchema.module(id).rows.get(1);
+            assertEquals(id + "Brackets", brackets.id);
+            assertEquals("Brackets", brackets.name);
+            assertEquals(null, brackets.hudItem());
+            for (String row : new String[]{id, id + "Bg", id + "Brackets"}) {
                 assertFalse(row, SheetSchema.shows(acceptsEverything, row));
                 assertFalse(row, SheetSchema.shows(lunar, row));
                 assertTrue(row, SheetSchema.shows(ornithe, row));
