@@ -4394,6 +4394,7 @@ def smoke_team_upgrades(s, cfg):
         frac, box = tu_box_diff(off, empty, boxes[TU_ID], gw)
         s.check("panel drawn in its default spot (Traps / None)", frac > 0.001,
                 "diff %.4f in %s, spot %s" % (frac, box, boxes[TU_ID]))
+        tu_pin_by_other_keeps_live_panel(s, cfg, off, empty, boxes, gw)
 
         # Purchases in both component shapes, then two spoofs that must change nothing.
         for item in ("Sharpened Swords", "Reinforced Armor I", "Reinforced Armor II", "Iron Forge", "Heal Pool",
@@ -4540,6 +4541,41 @@ def tu_sweep(s, hud_size, which, sizes, scales):
                 # every module on and no free place of the panel's size anywhere: the screen is full
                 s.note("screen full with every module on " + tag, detail)
             s.call("/close")
+
+
+def tu_pin_by_other_keeps_live_panel(s, cfg, off, empty, boxes, gw):
+    """Outcome review (edit-hud) round 1, I1: moving another item in Edit HUD pins the untouched panel by its Full
+    box; the live panel, shorter than that box, must still be drawn where it was. Nudge the chat, close, compare the
+    drawn panel with the one before, then undo in the next editor."""
+    full, chat = boxes[TU_ID], boxes.get("chat")
+    if not (chat and chat.get("shown")):
+        return s.note("chat not shown in the editor: the live pin-by-another-item check did not run")
+    k = empty[0] / float(gw)
+    region = (int((full["x"] - 4) * k), int((full["y"] - 4) * k),
+              int(math.ceil((full["x"] + full["w"] + 4) * k)), int(math.ceil((full["y"] + full["h"] + 4) * k)))
+    before = quiet_bbox(off, empty, region)
+    anchor_path = cfg + ".teamUpgradesHudAnchor"
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    s.call("/click", {"x": int(chat["x"] + chat["w"] - 6), "y": int(chat["y"] + chat["h"] / 2)})
+    s.call("/key", {"code": KEYS["right"]})
+    time.sleep(0.3)
+    s.call("/close")
+    time.sleep(0.4)
+    anchor = s.field(anchor_path).get("value")
+    _, pinned = s.shot("tu-empty-pinned")
+    after = quiet_bbox(off, pinned, region)
+    s.check("moving another item keeps the live panel where it is drawn",
+            anchor != -1 and rect_close(before, after, max(1, int(round(k)))),
+            {"before": before, "after": after, "anchor": anchor, "region": region})
+    s.call("/open", {"class": SCREENS["hud"]})
+    time.sleep(0.6)
+    s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
+    time.sleep(0.3)
+    s.call("/close")
+    s.check("undo in the next editor puts the panel back on Auto", s.field(anchor_path).get("value") == -1)
+    for f, v in (("teamUpgradesHudAnchor", -1), ("teamUpgradesHudX", 0), ("teamUpgradesHudY", 0)):
+        s.field(cfg + "." + f, v)  # whatever undo did, the rest of the run starts from the default spot
 
 
 def tu_move_keeps_size(s, cfg, mode):

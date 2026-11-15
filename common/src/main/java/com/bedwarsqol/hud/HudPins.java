@@ -28,6 +28,17 @@ public final class HudPins {
                 HudPlacement.exactStoredY(y, anchor, h, sh), anchor);
     }
 
+    /**
+     * As {@link #pinned}, but anchored to the top third's column: the anchor the Auto layout gives an item that grows
+     * down from its top edge (Team Upgrades). Pinned the same way, its live panel, smaller than the editor's box, stays
+     * at the box's top edge rather than moving to the box's middle or bottom.
+     */
+    public static HudModuleState pinnedHoldingTop(HudModuleState state, float x, float y, float w, float h, float sw, float sh) {
+        int anchor = HudPlacement.anchorFor(x, y, w, h, sw, sh) % 3;
+        return state.withExactPosition(HudPlacement.exactStoredX(x, anchor, w, sw),
+                HudPlacement.exactStoredY(y, anchor, h, sh), anchor);
+    }
+
     /** A newly shown item: switched on and back on Auto, so it takes the first free Auto spot (whatever spot it had). */
     public static HudModuleState shown(HudModuleState state) {
         return state.withEnabled(true).withPosition(0, 0, HudPlacement.AUTO);

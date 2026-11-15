@@ -409,7 +409,13 @@ public class BedwarsHudRenderer {
             if (!HudModules.ids().contains(b.id)) continue;
             HudModuleState s = HudModules.get(cfg, b.id);
             if (s != null && HudPins.shouldPin(b.id, b.shown, s.anchor, changingIds)) {
-                if (TEAM_UPGRADES_HUD.equals(b.id)) cfg.teamUpgradesHudScale = teamScale;
+                if (TEAM_UPGRADES_HUD.equals(b.id)) {
+                    cfg.teamUpgradesHudScale = teamScale;
+                    // the Auto layout holds its top edge (place); pinned the same way, the live panel, smaller than
+                    // the Full box pinned here, stays put (outcome review round 1, I1)
+                    HudModules.set(cfg, b.id, HudPins.pinnedHoldingTop(HudModules.get(cfg, b.id), b.x, b.y, b.width, b.height, sw, sh));
+                    continue;
+                }
                 setHudAbsolutePosition(cfg, b.id, b.x, b.y, b.width, b.height, sw, sh);
             }
         }
