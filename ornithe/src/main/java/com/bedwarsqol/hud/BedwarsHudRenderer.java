@@ -502,8 +502,9 @@ public class BedwarsHudRenderer {
     private static final float CONTENT_MARGIN = 3f;
 
     /** Padding of the panel around a HUD element's content box: it grows with the element. */
+    /** Panel padding at module scale {@code scale}, from the scale the module is really drawn at (its text scale). */
     private static float panelPad(float scale) {
-        return HudBackground.pad(scale);
+        return HudBackground.pad(ts(scale));
     }
 
     /**
@@ -513,8 +514,9 @@ public class BedwarsHudRenderer {
      */
     private static float padFor(ClientSettings cfg, String id, float scale) {
         if (KEYSTROKES_HUD.equals(id)) return CONTENT_MARGIN;
-        // FPS, CPS and Ping: the box is the panel, so no padding around it; bare text keeps the margin
-        if (isTextModule(id)) return HudModules.background(cfg, id) ? 0f : CONTENT_MARGIN;
+        // FPS, CPS, Ping, Armor and the gen timers: the box is the panel, so no padding around it; bare content keeps
+        // the margin
+        if (isTextModule(id) || isIconBox(id)) return HudModules.background(cfg, id) ? 0f : CONTENT_MARGIN;
         return HudModules.background(cfg, id) ? panelPad(scale) : CONTENT_MARGIN;
     }
 
@@ -548,8 +550,14 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         ItemStack leggings = currentLeggings(mc, example);
         if (leggings == null) return;
-        drawPanel(cfg, ARMOR_HUD, box, cfg.armorHudScale, example);
-        drawArmorIcon(mc, cfg, leggings, box.x, box.y);
+        float e = ts(cfg.armorHudScale);
+        float ix = box.x, iy = box.y;
+        if (HudModules.background(cfg, ARMOR_HUD)) {
+            GuiRender.rect(box.x, box.y, box.right(), box.bottom(), HudBackground.FILL);
+            ix += TextModules.HPAD * e;
+            iy += ICON_BOX_DY * e;
+        }
+        drawArmorIcon(mc, leggings, onDeviceGrid(mc, ix), onDeviceGrid(mc, iy), e);
     }
 
     /**
@@ -594,7 +602,7 @@ public class BedwarsHudRenderer {
         resetGlState();
     }
 
-    private static void drawArmorIcon(Minecraft mc, ClientSettings cfg, ItemStack stack, float x, float y) {
+    private static void drawArmorIcon(Minecraft mc, ItemStack stack, float x, float y, float scale) {
         RenderItem renderItem = mc.getRenderItem();
         if (renderItem == null) return;
 
@@ -603,7 +611,7 @@ public class BedwarsHudRenderer {
         GlStateManager.enableRescaleNormal();
         RenderHelper.enableGUIStandardItemLighting();
         GlStateManager.translate(x, y, 0f);
-        GlStateManager.scale(cfg.armorHudScale, cfg.armorHudScale, 1f);
+        GlStateManager.scale(scale, scale, 1f);
         float prevZ = renderItem.zLevel;
         renderItem.zLevel = 200f;
         renderItem.renderItemIntoGUI(stack, 0, 0);
@@ -677,8 +685,12 @@ public class BedwarsHudRenderer {
     private static Size armorSize(Minecraft mc, ClientSettings cfg, boolean example) {
         ItemStack leggings = currentLeggings(mc, example);
         if (leggings == null) return Size.EMPTY;
-        float size = ARMOR_ICON_SIZE * cfg.armorHudScale;
-        return new Size(size, size);
+        // the icon follows the text scale (whole device px per texel), like every text item's size
+        float e = ts(cfg.armorHudScale);
+        if (HudModules.background(cfg, ARMOR_HUD)) {
+            return new Size((ARMOR_ICON_SIZE + 2f * TextModules.HPAD) * e, TextModules.BOX_H * e);
+        }
+        return new Size(ARMOR_ICON_SIZE * e, ARMOR_ICON_SIZE * e);
     }
 
     private static HudBox potionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -779,6 +791,9 @@ public class BedwarsHudRenderer {
 
         List<HudLayout.Box> obstacles = new ArrayList<HudLayout.Box>();
         obstacles.add(new HudLayout.Box((sw - HOTBAR_W) / 2f, sh - HOTBAR_ZONE_H, HOTBAR_W, HOTBAR_ZONE_H));
+        // nothing Auto lands on or right by the crosshair (a full-size Team Upgrades at half width did)
+        float kw = sw * CROSSHAIR_KEEP_OUT, kh = sh * CROSSHAIR_KEEP_OUT;
+        obstacles.add(new HudLayout.Box((sw - kw) / 2f, (sh - kh) / 2f, kw, kh));
         for (float[] o : overlays) obstacles.add(new HudLayout.Box(o[0], o[1], o[2], o[3]));
         List<HudLayout.Item> shown = new ArrayList<HudLayout.Item>();
         List<HudLayout.Item> hidden = new ArrayList<HudLayout.Item>();
@@ -850,9 +865,8 @@ public class BedwarsHudRenderer {
         float px = 1f / new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
         float step = mcFont ? px : 0.125f;
         float min = Math.min(scale, mcFont ? px : 0.5f);
-        final List<TeamUpgradeRows.Row> full = teamUpgradesFullExample();
         HudLayout.Sizer sizer = s -> {
-            Size size = teamUpgradesSize(s, full);
+            Size size = teamUpgradesReserve(s);
             float pad = padFor(cfg, TEAM_UPGRADES_HUD, s);
             return new float[]{size.width + 2f * pad, size.height + 2f * pad};
         };
@@ -863,9 +877,38 @@ public class BedwarsHudRenderer {
         items.set(at, new HudLayout.Item(TEAM_UPGRADES_HUD, size[0], size[1], fit.spots));
     }
 
-    /** With the left edge full even at the smallest size: beside the left column (review code-2 I1). */
+    /**
+     * With the left edge full: beside the left column (review code-2 I1), the top first. Beside it in the middle
+     * runs into the crosshair on a narrow window (half width: 369 GUI px), and sliding on past the crosshair's
+     * keep-out puts the panel right next to it.
+     */
     private static final HudLayout.Spot[] TEAM_UPGRADES_CROWDED_SPOTS = {
-            new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.RIGHT), new Spot(Horizontal.LEFT, Vertical.TOP, Slide.RIGHT)};
+            new Spot(Horizontal.LEFT, Vertical.TOP, Slide.RIGHT), new Spot(Horizontal.LEFT, Vertical.MIDDLE, Slide.RIGHT)};
+
+    /** The default layout keeps out of the middle fifth of the screen (each way), around the crosshair. */
+    private static final float CROSSHAIR_KEEP_OUT = 0.2f;
+
+    /**
+     * Whether HUD item {@code id} is drawn only at whole steps of its scale ({@link ScaleSteps}): in Minecraft's font
+     * every HUD module lays out at its text scale, so Edit HUD resizes it step by step; the scoreboard, chat and tab
+     * list scale smoothly.
+     */
+    public static boolean stepsScale(String id) {
+        return BedwarsQolFont.minecraft() && HudModules.ids().contains(id);
+    }
+
+    /**
+     * The scale HUD item {@code id} is drawn at now: Team Upgrades in its default spot at the layout's fitted scale,
+     * the tab list shrunk to the screen width, and a stepped item ({@link #stepsScale}) at its step. What the Edit HUD
+     * badge shows and a corner resize starts from.
+     */
+    public static float drawnScale(ClientSettings cfg, String id) {
+        HudModuleState state = HudModules.get(cfg, id);
+        if (state == null) return 1f;
+        float s = TEAM_UPGRADES_HUD.equals(id) ? teamUpgradesScale(cfg) : state.scale;
+        if (TAB_LIST_HUD.equals(id)) s = Math.min(s, tabListFitScale(Minecraft.getMinecraft(), cfg));
+        return stepsScale(id) ? ts(s) : s;
+    }
 
     /**
      * Edit HUD calls this before it moves or resizes module {@code id}: a Team Upgrades panel the default
@@ -903,7 +946,7 @@ public class BedwarsHudRenderer {
         if (HEIGHT_LIMIT_HUD.equals(id)) return heightLimitSize(mc, cfg, true);
         if (isTextModule(id)) return textModuleSize(cfg, id, textSegs(mc, cfg, id, true));
         // Team Upgrades: the Full example at its drawn scale (Reset Positions); the Auto layout fits it itself (fitTeamUpgrades)
-        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample());
+        if (TEAM_UPGRADES_HUD.equals(id)) return teamUpgradesReserve(teamUpgradesScale(cfg));
         return Size.EMPTY;
     }
 
@@ -1008,7 +1051,8 @@ public class BedwarsHudRenderer {
     }
 
     private static Size inventorySize(ClientSettings cfg) {
-        return new Size(invPanelWidth() * cfg.inventoryHudScale, invPanelHeight() * cfg.inventoryHudScale);
+        float e = ts(cfg.inventoryHudScale); // icons at the text scale, like every other item
+        return new Size(invPanelWidth() * e, invPanelHeight() * e);
     }
 
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
@@ -1019,7 +1063,7 @@ public class BedwarsHudRenderer {
     }
 
     private static void drawMiniInventory(Minecraft mc, ClientSettings cfg, float x, float y, boolean example) {
-        float scale = cfg.inventoryHudScale;
+        float scale = ts(cfg.inventoryHudScale);
         ItemStack[] slots = miniInventorySlots(mc, example);
 
         RenderItem ri = mc.getRenderItem();
@@ -1090,16 +1134,27 @@ public class BedwarsHudRenderer {
     }
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
-        float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
-        return iconCountsSize(mc, Collections.singletonList(timerEntry(example, diamond)), scale);
+        float e = ts(diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale); // icon and number at the text scale
+        IconCount entry = timerEntry(example, diamond);
+        Size inner = iconCountsSize(mc, Collections.singletonList(entry), e);
+        if (!HudModules.background(cfg, diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD)) return inner;
+        // Minecraft's font ends every string on an empty column: drop it so both sides keep HPAD, as FPS does
+        float trail = BedwarsQolFont.minecraft() && !entry.count.isEmpty() ? e : 0f;
+        return new Size(inner.width - trail + 2f * TextModules.HPAD * e, TextModules.BOX_H * e);
     }
 
     private static void drawTimerHud(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
         HudBox box = timerBox(mc, cfg, example, diamond, false);
         if (box == null) return;
-        float scale = diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale;
-        drawPanel(cfg, box.id, box, scale, example);
-        drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), box.x, box.y, scale);
+        float e = ts(diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale);
+        float ix = box.x, iy = box.y;
+        if (HudModules.background(cfg, box.id)) {
+            GuiRender.rect(box.x, box.y, box.right(), box.bottom(), HudBackground.FILL);
+            ix += TextModules.HPAD * e;
+            iy += ICON_BOX_DY * e;
+        }
+        drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), onDeviceGrid(mc, ix),
+                onDeviceGrid(mc, iy), e);
     }
 
     private static IconCount timerEntry(boolean example, boolean diamond) {
@@ -1217,6 +1272,16 @@ public class BedwarsHudRenderer {
         return TeamUpgradeRows.example(TeamUpgradeRows.Layout.FULL);
     }
 
+    /**
+     * The room Team Upgrades takes at module scale {@code scale}, whichever layout is chosen: the larger of the two
+     * layouts' full-height examples, so switching layout never runs into a neighbour and either one fills it.
+     */
+    private static Size teamUpgradesReserve(float scale) {
+        Size full = teamUpgradesSize(scale, teamUpgradesFullExample());
+        Size compact = teamUpgradesSize(scale, TeamUpgradeRows.example(TeamUpgradeRows.Layout.COMPACT));
+        return new Size(Math.max(full.width, compact.width), Math.max(full.height, compact.height));
+    }
+
     /** The rows to draw: the example in the editor; in game the visible state's, empty outside an active game. */
     private static List<TeamUpgradeRows.Row> teamUpgradesRows(ClientSettings cfg, boolean example) {
         if (example) return TeamUpgradeRows.example(teamUpgradesLayout(cfg));
@@ -1240,7 +1305,7 @@ public class BedwarsHudRenderer {
     /** The editor's and the layout's box: the Full example's size, whichever layout is chosen. */
     private static HudBox teamUpgradesEditorBox(Minecraft mc, ClientSettings cfg, boolean all) {
         if (!all && !cfg.teamUpgradesEnabled) return null;
-        return teamUpgradesBox(mc, cfg, teamUpgradesSize(teamUpgradesScale(cfg), teamUpgradesFullExample()));
+        return teamUpgradesBox(mc, cfg, teamUpgradesReserve(teamUpgradesScale(cfg)));
     }
 
     private static HudBox teamUpgradesBox(Minecraft mc, ClientSettings cfg, Size size) {
@@ -1407,6 +1472,24 @@ public class BedwarsHudRenderer {
     }
 
     // ----- FPS, CPS and Ping (TextModules) -----
+
+    /**
+     * Armor and the gen timers: one line of icon (and number), drawn in an FPS-sized box ({@link TextModules#BOX_H} tall,
+     * {@link TextModules#HPAD} at the sides) while the Background is on, so every one-line item is the same height.
+     */
+    private static boolean isIconBox(String id) {
+        return ARMOR_HUD.equals(id) || DIAMOND_TIMER_HUD.equals(id) || EMERALD_TIMER_HUD.equals(id);
+    }
+
+    /** Top of a 16 px icon centred in a one-line box, in font pixels of the box's scale. */
+    private static final float ICON_BOX_DY = (TextModules.BOX_H - ARMOR_ICON_SIZE) / 2f;
+
+    /** {@code v} on the device-pixel grid in Minecraft's font, so an item icon drawn at a text step stays crisp. */
+    private static float onDeviceGrid(Minecraft mc, float v) {
+        if (!BedwarsQolFont.minecraft()) return v;
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        return Math.round(v * sf) / (float) sf;
+    }
 
     private static boolean isTextModule(String id) {
         return FPS_HUD.equals(id) || CPS_HUD.equals(id) || PING_HUD.equals(id);

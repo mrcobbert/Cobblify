@@ -119,16 +119,22 @@ public final class TeamUpgradeRows {
 
     /**
      * Example rows for Edit HUD: Sharpened Swords Max, Reinforced Armor II 8, Iron Forge 4, Heal Pool
-     * Max; traps Blindness, Counter-Offensive; Next 4 (two traps queued, so the real next cost).
+     * Max; traps Blindness, Counter-Offensive; Next 4 (two traps queued, so the real next cost). Compact
+     * grows with what the team owns, so its example is the panel at full height, as Edit HUD reserves it:
+     * Maniac Miner and Cushioned Boots owned too and a third trap queued (Next Full). The frame is then
+     * filled instead of part empty (HUD tweaks).
      */
     public static List<Row> example(Layout layout) {
         TeamUpgradeState s = new TeamUpgradeState();
         s.purchase("Sharpened Swords", 0);
         s.purchase("Reinforced Armor II", 0);
+        if (layout == Layout.COMPACT) s.purchase("Maniac Miner I", 0);
         s.purchase("Iron Forge", 0);
         s.purchase("Heal Pool", 0);
+        if (layout == Layout.COMPACT) s.purchase("Cushioned Boots I", 0);
         s.purchase(TeamUpgradeCatalog.BLINDNESS_TRAP, 0);
         s.purchase(TeamUpgradeCatalog.COUNTER_OFFENSIVE_TRAP, 0);
+        if (layout == Layout.COMPACT) s.purchase(TeamUpgradeCatalog.REVEAL_TRAP, 0);
         return rows(s, layout, TeamUpgradeCatalog.Bracket.EIGHT_TEAM, 0);
     }
 

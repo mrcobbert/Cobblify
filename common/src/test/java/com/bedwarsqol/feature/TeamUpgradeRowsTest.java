@@ -265,13 +265,18 @@ public class TeamUpgradeRowsTest {
                 "HEADER|Upgrades|||NORMAL",
                 "UPGRADE|Sharpened Swords||Max|NORMAL",
                 "UPGRADE|Reinforced Armor|II|8|NORMAL",
+                "UPGRADE|Maniac Miner|I|4|NORMAL",
                 "UPGRADE|Iron Forge||4|NORMAL",
                 "UPGRADE|Heal Pool||Max|NORMAL",
+                "UPGRADE|Cushioned Boots|I|2|NORMAL",
                 "HEADER|Traps|||NORMAL",
                 "TRAP|1 Blindness|||NORMAL",
                 "TRAP|2 Counter-Offensive|||NORMAL",
-                "NEXT|Next||4|NORMAL"),
+                "TRAP|3 Reveal|||NORMAL",
+                "NEXT|Next||Full|NORMAL"),
                 fmt(TeamUpgradeRows.example(Layout.COMPACT)));
+        // full height, as Edit HUD reserves it: as many rows as the Full example
+        assertEquals(TeamUpgradeRows.example(Layout.FULL).size(), TeamUpgradeRows.example(Layout.COMPACT).size());
     }
 
     @Test

@@ -73,6 +73,13 @@ public final class HudModules {
         return OVERLAY_IDS.contains(id);
     }
 
+    /** The name on a hidden item's placeholder in Edit HUD: {@link #title}, with the gen timers shortened to fit. */
+    public static String ghostTitle(String id) {
+        if (BedwarsHudRenderer.DIAMOND_TIMER_HUD.equals(id)) return "Dia Timer";
+        if (BedwarsHudRenderer.EMERALD_TIMER_HUD.equals(id)) return "Em Timer";
+        return title(id);
+    }
+
     public static String title(String id) {
         if (BedwarsHudRenderer.POTION_HUD.equals(id)) return "Potion";
         if (BedwarsHudRenderer.ARMOR_HUD.equals(id)) return "Armor";

@@ -14,6 +14,7 @@ import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.HudSnapper;
 import com.bedwarsqol.hud.HudWalls;
+import com.bedwarsqol.hud.ScaleSteps;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiScreen;
@@ -244,7 +245,7 @@ public class EditHudGui extends GuiScreen {
         float x1 = box.visualX(), y1 = box.visualY(), x2 = box.visualRight(), y2 = box.visualBottom();
         GuiRender.rect(x1, y1, x2, y2, fade(GHOST_FILL, open));
         dashedBorder(x1, y1, x2, y2, fade(outline, open));
-        String name = HudModules.title(box.id);
+        String name = HudModules.ghostTitle(box.id);
         float fit = (x2 - x1 - 4f) / Math.max(1f, GuiRender.textWidth(name, 1f, BedwarsQolFont.Weight.BOLD));
         float scale = Math.min(LABEL_SCALE, fit);
         if (scale < 0.35f) return;
@@ -318,7 +319,7 @@ public class EditHudGui extends GuiScreen {
     private void drawResizeBadge(ClientSettings cfg, float open) {
         HudModuleState s = HudModules.get(cfg, selectedId);
         if (s == null) return;
-        String text = String.format("%.2fx", s.scale);
+        String text = String.format("%.2fx", BedwarsHudRenderer.drawnScale(cfg, selectedId)); // the size drawn
         float w = GuiRender.textWidth(text, MENU_SCALE, BedwarsQolFont.Weight.BOLD) + 8f;
         float h = BedwarsQolFont.height(MENU_SCALE) + 5f;
         float x = clamp(badgeX + 8f, 1f, width - w - 1f);
@@ -376,16 +377,18 @@ public class EditHudGui extends GuiScreen {
             int corner = CornerResize.cornerAt(mouseX, mouseY, grabbed.visualX(), grabbed.visualY(),
                     grabbed.visualWidth(), grabbed.visualHeight(), HANDLE_REACH);
             selectedId = grabbed.id;
-            BedwarsHudRenderer.pinDrawnScale(cfg, grabbed.id); // start from the size it is drawn at
+            // The snapshot comes first, so Esc and undo put back everything the resize changes, Team Upgrades' size
+            // included (it is pinned at the first move, in resizeTo); a click with no move changes nothing.
+            beginChange(Mode.RESIZE);
+            // From the size it is drawn at: a stepped item's step, Team Upgrades' fitted size in its default spot.
             resize = new CornerResize(corner, grabbed.x, grabbed.y, grabbed.width, grabbed.height,
-                    resizeStartScale(cfg, grabbed.id));
+                    BedwarsHudRenderer.drawnScale(cfg, grabbed.id));
             // The handle sits on the drawn frame, outside the content; keep that offset so the size
             // does not jump on the first move.
             grabX = p[0] - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
             grabY = p[1] - CornerResize.cornerY(corner, grabbed.y, grabbed.height);
             badgeX = mouseX;
             badgeY = mouseY;
-            beginChange(Mode.RESIZE);
             return;
         }
 
@@ -517,6 +520,7 @@ public class EditHudGui extends GuiScreen {
     private void resizeTo(float cornerX, float cornerY) {
         ClientSettings cfg = settings();
         pinOnce();
+        BedwarsHudRenderer.pinDrawnScale(cfg, selectedId); // Team Upgrades leaves its default spot at the size drawn
         HudModuleState s = HudModules.get(cfg, selectedId);
         List<HudBox> boxes = visibleBoxes();
         HudBox box = boxById(boxes, selectedId);
@@ -526,10 +530,22 @@ public class EditHudGui extends GuiScreen {
         if (BedwarsHudRenderer.TAB_LIST_HUD.equals(selectedId)) {
             scale = Math.min(scale, BedwarsHudRenderer.tabListFitScale(mc, cfg));
         }
-        // Growing stops at the first wall (Alt: freely); shrinking is always allowed.
+        // A HUD module in Minecraft's font is drawn only at whole steps (ScaleSteps): resize in those steps, so the
+        // size follows the pointer to the nearest one and the badge never moves without the box (HUD tweaks scaling).
+        boolean stepped = BedwarsHudRenderer.stepsScale(selectedId);
+        int sf = scaleFactor();
+        if (stepped) {
+            float room = ScaleSteps.atMost(resize.roomScale(width, height, box.pad), sf);
+            scale = Math.min(ScaleSteps.nearest(scale, sf), room);
+        }
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed. A stepped item keeps the last
+        // step that fits instead of creeping to the wall's edge.
         if (snapping()) {
-            scale = HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, resizeProbe(cfg, selectedId, s),
-                    wallRects(boxes, selectedId));
+            HudWalls.ScaleProbe probe = resizeProbe(cfg, selectedId, s);
+            List<HudWalls.Rect> walls = wallRects(boxes, selectedId);
+            scale = stepped
+                    ? HudWalls.largestFreeStep(BedwarsHudRenderer.drawnScale(cfg, selectedId), scale, sf, probe, walls)
+                    : HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, probe, walls);
         }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.
