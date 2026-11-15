@@ -534,18 +534,16 @@ public class EditHudGui extends GuiScreen {
         // size follows the pointer to the nearest one and the badge never moves without the box (HUD tweaks scaling).
         boolean stepped = BedwarsHudRenderer.stepsScale(selectedId);
         int sf = scaleFactor();
-        if (stepped) {
-            float room = ScaleSteps.atMost(resize.roomScale(width, height, box.pad), sf);
-            scale = Math.min(ScaleSteps.nearest(scale, sf), room);
+        if (stepped && snapping()) {
+            // PROTOTYPE (Sharp): any size draws crisp now; the whole steps catch the pointer nearby, like 1.00x
+            float k = Math.round(scale * sf);
+            if (k >= 1f && Math.abs(scale * sf - k) <= CornerResize.SNAP_TO_ONE * sf) scale = k / sf;
         }
-        // Growing stops at the first wall (Alt: freely); shrinking is always allowed. A stepped item keeps the last
-        // step that fits instead of creeping to the wall's edge.
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed.
         if (snapping()) {
             HudWalls.ScaleProbe probe = resizeProbe(cfg, selectedId, s);
             List<HudWalls.Rect> walls = wallRects(boxes, selectedId);
-            scale = stepped
-                    ? HudWalls.largestFreeStep(BedwarsHudRenderer.drawnScale(cfg, selectedId), scale, sf, probe, walls)
-                    : HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, probe, walls);
+            scale = HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, probe, walls);
         }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.

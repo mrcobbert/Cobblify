@@ -594,9 +594,9 @@ public class BedwarsHudRenderer {
                 else Gui.drawModalRectWithCustomSizedTexture(0, 0, idx % 8 * 18, 198 + idx / 8 * 18, 18, 18, 256f, 256f);
                 GlStateManager.popMatrix();
             }
-            BedwarsQolFont.draw(entry.label, textX, rowY + PotionRows.NAME_DY * e, e, PotionRows.NAME_COLOR, true,
+            BedwarsQolFont.drawHud(entry.label, textX, rowY + PotionRows.NAME_DY * e, e, PotionRows.NAME_COLOR, true,
                     BedwarsQolFont.Weight.BOLD);
-            BedwarsQolFont.draw(entry.time, textX, rowY + PotionRows.TIME_DY * e, e, PotionRows.TIME_COLOR, true,
+            BedwarsQolFont.drawHud(entry.time, textX, rowY + PotionRows.TIME_DY * e, e, PotionRows.TIME_COLOR, true,
                     BedwarsQolFont.Weight.BOLD);
         }
         resetGlState();
@@ -642,7 +642,7 @@ public class BedwarsHudRenderer {
      * pixels per font pixel (see {@link BedwarsQolFont#textScale}). Measure with it wherever text is drawn with it.
      */
     private static float ts(float scale) {
-        return BedwarsQolFont.textScale(scale);
+        return BedwarsQolFont.hudScale(scale);
     }
 
     /**
@@ -656,7 +656,7 @@ public class BedwarsHudRenderer {
 
     /** Draw {@code text} with its top-left at (x,y), scaled about that origin, in the HUD font. */
     private static void fontDraw(String text, float x, float y, float scale, int color, BedwarsQolFont.Weight weight) {
-        BedwarsQolFont.draw(text, x, y, scale, color, false, weight);
+        BedwarsQolFont.drawHud(text, x, y, scale, color, false, weight);
     }
 
     private static void drawScaledString(FontRenderer fr, String text, float x, float y, float scale) {
@@ -1592,7 +1592,7 @@ public class BedwarsHudRenderer {
 
     /** HUD text with its shadow in either font (Minecraft's own shadow, or the modern font's). */
     private static void drawShadowed(String text, float x, float y, float e, int color) {
-        BedwarsQolFont.draw(text, x, y, e, color, true, BedwarsQolFont.Weight.BOLD);
+        BedwarsQolFont.drawHud(text, x, y, e, color, true, BedwarsQolFont.Weight.BOLD);
     }
 
     // ----- Keystrokes (WASD, mouse buttons, spacebar) -----
@@ -1652,8 +1652,8 @@ public class BedwarsHudRenderer {
             } else {
                 float lx = ox + KeystrokesLayout.labelX(r, fontWidth(label), trail) * e;
                 float ly = oy + KeystrokesLayout.labelY(r) * e;
-                if (shadow) BedwarsQolFont.draw(label, lx, ly, e, text, true, BedwarsQolFont.Weight.BOLD);
-                else BedwarsQolFont.drawFlat(label, lx, ly, e, text);
+                if (shadow) BedwarsQolFont.drawHud(label, lx, ly, e, text, true, BedwarsQolFont.Weight.BOLD);
+                else BedwarsQolFont.drawHudFlat(label, lx, ly, e, text);
             }
         }
         resetGlState();
