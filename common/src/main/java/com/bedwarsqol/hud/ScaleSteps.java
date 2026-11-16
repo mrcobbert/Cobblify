@@ -10,6 +10,12 @@ public final class ScaleSteps {
     private ScaleSteps() {
     }
 
+    /**
+     * How close a whole step catches a resize, in device pixels per font pixel (divide by {@code sf} for a scale): 0.3
+     * of the way to the next step either side, so six tenths of every gap land on a crisp size at any GUI scale.
+     */
+    public static final float REACH = 0.3f;
+
     /** The step nearest {@code scale} when it is within {@code reach} of it, else {@code scale}. */
     public static float snap(float scale, int sf, float reach) {
         float step = Math.max(1, Math.round(scale * sf)) / (float) sf;

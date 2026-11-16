@@ -531,13 +531,13 @@ public class EditHudGui extends GuiScreen {
             scale = Math.min(scale, BedwarsHudRenderer.tabListFitScale(mc, cfg));
         }
         // A HUD module in Minecraft's font draws at any size (SharpText) and is crispest at whole steps (ScaleSteps):
-        // a step catches the pointer nearby, as 1.00x does (Alt: freely).
+        // a step catches the pointer within ScaleSteps.REACH (Alt: freely).
         boolean stepped = BedwarsHudRenderer.stepsScale(selectedId);
         int sf = scaleFactor();
         if (stepped && snapping()) {
             // never past the screen room scaleFor already kept it within
             float room = resize.roomScale(width, height, box.pad);
-            scale = Math.min(ScaleSteps.snap(scale, sf, CornerResize.SNAP_TO_ONE), Math.max(scale, room));
+            scale = Math.min(ScaleSteps.snap(scale, sf, ScaleSteps.REACH / sf), Math.max(scale, room));
         }
         // Growing stops at the first wall (Alt: freely); shrinking is always allowed. Stopped just past a step, a
         // module rests on that step.

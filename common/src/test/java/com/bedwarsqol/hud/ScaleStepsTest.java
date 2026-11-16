@@ -15,6 +15,16 @@ public class ScaleStepsTest {
     }
 
     @Test
+    public void theReachIsTheSameShareOfAGapAtEveryGuiScale() {
+        assertEquals(1.5f, ScaleSteps.snap(1.36f, 2, ScaleSteps.REACH / 2), 0f);
+        assertEquals(1.3f, ScaleSteps.snap(1.3f, 2, ScaleSteps.REACH / 2), 0f);
+        assertEquals(4f / 3f, ScaleSteps.snap(1.25f, 3, ScaleSteps.REACH / 3), 1e-6f);
+        assertEquals(1.2f, ScaleSteps.snap(1.2f, 3, ScaleSteps.REACH / 3), 0f);
+        assertEquals(2f, ScaleSteps.snap(1.75f, 1, ScaleSteps.REACH), 0f);
+        assertEquals(1.5f, ScaleSteps.snap(1.5f, 1, ScaleSteps.REACH), 0f);
+    }
+
+    @Test
     public void sizesBetweenStepsStayAsTheyAre() {
         assertEquals(1.25f, ScaleSteps.snap(1.25f, 2, 0.05f), 0f);
         assertEquals(1.44f, ScaleSteps.snap(1.44f, 2, 0.05f), 0f);
