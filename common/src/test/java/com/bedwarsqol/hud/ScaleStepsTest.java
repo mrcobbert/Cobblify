@@ -3,29 +3,38 @@ package com.bedwarsqol.hud;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class ScaleStepsTest {
 
     @Test
-    public void aStepCatchesASizeWithinReach() {
-        assertEquals(1.5f, ScaleSteps.snap(1.46f, 2, 0.05f), 0f);
-        assertEquals(1.5f, ScaleSteps.snap(1.55f, 2, 0.05f), 0f);
-        assertEquals(2f / 3f, ScaleSteps.snap(0.7f, 3, 0.05f), 1e-6f);
-        assertEquals(1f, ScaleSteps.snap(1.03f, 1, 0.05f), 0f);
+    public void aStepPullsNearbySizesWithoutHoldingThem() {
+        assertEquals(1.5f, ScaleSteps.magnet(1.5f, 2), 0f);
+        float near = ScaleSteps.magnet(1.45f, 2);              // 0.1 device px per font px under 1.5
+        assertTrue(near > 1.45f && near < 1.5f);                // pulled towards the step, not onto it
+        assertEquals(1.5f, ScaleSteps.magnet(1.49f, 2), 0f);    // right at it: the step itself
+        assertEquals(1.25f, ScaleSteps.magnet(1.25f, 2), 0f);   // halfway: out of reach, as it is
     }
 
     @Test
-    public void sizesBetweenStepsStayAsTheyAre() {
-        assertEquals(1.25f, ScaleSteps.snap(1.25f, 2, 0.05f), 0f);
-        assertEquals(1.44f, ScaleSteps.snap(1.44f, 2, 0.05f), 0f);
-        assertEquals(1.2f, ScaleSteps.snap(1.2f, 3, 0.05f), 0f); // GUI 3: steps at 1.0 and 1.333
+    public void theMagnetNeverJumps() {
+        for (int sf = 1; sf <= 4; sf++) {
+            float prev = ScaleSteps.magnet(0.3f, sf);
+            for (float s = 0.3f; s <= 4f; s += 0.0005f) {
+                float m = ScaleSteps.magnet(s, sf);
+                assertTrue("monotonic at " + s + " GUI " + sf, m >= prev - 1e-6f);
+                assertTrue("continuous at " + s + " GUI " + sf, m - prev <= 0.012f / sf + 0.002f);
+                prev = m;
+            }
+        }
     }
 
     @Test
-    public void nothingSnapsBelowOneDevicePixelPerFontPixel() {
-        assertEquals(0.5f, ScaleSteps.snap(0.47f, 2, 0.05f), 0f);
-        assertEquals(0.3f, ScaleSteps.snap(0.3f, 2, 0.05f), 0f); // far from 0.5: left alone
-        assertEquals(0.25f, ScaleSteps.atMost(0.1f, 4), 0f);
+    public void theReachIsTheSameShareOfAGapAtEveryGuiScale() {
+        // at the edge of the reach the size is the pointer's own
+        assertEquals(1.35f, ScaleSteps.magnet(1.35f, 2), 1e-6f);   // 0.3 under 1.5 at GUI 2
+        assertEquals(1.1f, ScaleSteps.magnet(1.1f, 3), 1e-6f);     // 0.3 over 1.0 at GUI 3
+        assertEquals(1.7f, ScaleSteps.magnet(1.7f, 1), 1e-6f);     // 0.3 under 2.0 at GUI 1
     }
 
     @Test

@@ -15,12 +15,14 @@ import org.lwjgl.opengl.GL12;
 
 import java.awt.image.BufferedImage;
 import java.io.InputStream;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
- * Minecraft's font at a fractional number of device pixels per font pixel, drawn "sharp bilinear": from a copy of the
- * font texture enlarged a whole number of times with nearest-neighbour and sampled with linear filtering, so every
- * glyph edge gets the share of a device pixel it covers instead of a whole pixel or none. At whole steps callers keep
- * vanilla's own drawing.
+ * Minecraft's font at a fractional number of device pixels per font pixel, drawn with exact area coverage: every
+ * device pixel gets the share of it a glyph's square pixels cover, the way a vector font of the same glyphs would draw
+ * them. A copy of the font texture is box-filtered for the size (one device pixel wide) on a fine grid and sampled with
+ * linear filtering at pixel centres. At whole steps callers keep vanilla's own drawing.
  *
  * <p>Cobblify draws the glyph quads itself, one batch per string, from the game's font texture (resource packs
  * included) and {@link FontRenderer}'s own glyph widths, so layout matches {@link FontRenderer#getStringWidth}. Each
@@ -51,26 +53,31 @@ final class SharpText {
         return code == 6 ? 0x2A2A00 : (CODE_RGB[code] & 0xFCFCFC) >> 2;
     }
 
-    /** Largest copy built: a bigger one (a 4096 px resource-pack font) is left to vanilla. */
-    private static final int MAX_TEXTURE = 4096;
+    /**
+     * Texels per font pixel in every copy. Bilinear between grid points this fine stays within ~0.7/255 of exact
+     * coverage at every size (Java sim against the real Map Info and FPS pixels, 2026-11-15); sampling a whole-number
+     * enlargement instead spread edges over two pixels just above a whole step, which read as blur.
+     */
+    private static final int GRID = 8;
 
-    /** GL texture per enlargement (index = texels per font pixel in the copy), 0 = not built. */
-    private static final int[] TEX = new int[(int) MAX_SCALE + 1];
-    private static int[] source;
+    /** Sizes are matched to 1/16 device pixel per font pixel: the filter width then differs by at most 3 %. */
+    private static final int SIZE_KEY = 16;
+
+    /** Copies kept, most recently used first; each is 1280 px square (6.5 MB). */
+    private static final int CACHE = 8;
+
+    /** GL texture per size key (-1 = cannot be built), least recently used first; evicted copies are deleted. */
+    private static final Map<Integer, Integer> COPIES = new LinkedHashMap<Integer, Integer>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Integer, Integer> eldest) {
+            if (size() <= CACHE) return false;
+            if (eldest.getValue() > 0) TextureUtil.deleteTexture(eldest.getValue());
+            return true;
+        }
+    };
+    private static int[] source; // premultiplied
     private static int sourceW;
     private static boolean sourceTried, listening;
-
-    /**
-     * The texels per font pixel to sample from at {@code t} device pixels per font pixel: the whole number just below
-     * {@code t} when {@code t} is little over it, else the one above. Measured against exact area coverage, plain
-     * bilinear from the next whole multiple under-samples just above a whole step (6/255 mean at 1.06x), where the one
-     * below is nearly exact (0.5/255); from a third of a step on, the one above wins.
-     */
-    static int texelsPerFontPixel(float t) {
-        int below = (int) Math.floor(t);
-        int n = t - below < 0.34f ? below : below + 1;
-        return Math.max(1, Math.min((int) MAX_SCALE, n));
-    }
 
     /**
      * Draws {@code s} at the current origin, {@code t} device pixels per font pixel (the caller has scaled the matrix
@@ -79,8 +86,7 @@ final class SharpText {
      */
     static boolean draw(FontRenderer fr, String s, float t, int argb, boolean shadow, boolean ownShadow, int shadowArgb) {
         if (fr.getUnicodeFlag() || fr.getBidiFlag() || !supported(s)) return false;
-        int n = texelsPerFontPixel(t);
-        int tex = texture(n);
+        int tex = texture(Math.round(t * SIZE_KEY));
         if (tex == 0) return false;
         boolean alphaTest = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
         GlStateManager.disableAlpha(); // keep the faint edge pixels vanilla's alpha test would drop
@@ -168,32 +174,84 @@ final class SharpText {
     }
 
     /**
-     * The copy at {@code n} texels per font pixel, built on first use; 0 if the font texture cannot be read or the copy
-     * would be too big (then -1 is cached, so it is not tried every frame).
+     * The copy for size key {@code key} ({@code key / SIZE_KEY} device px per font px), built on first use; 0 if the
+     * font texture cannot be read (then -1 is cached, so it is not tried every frame).
      */
-    private static int texture(int n) {
+    private static int texture(int key) {
         listen();
-        if (TEX[n] != 0) return Math.max(0, TEX[n]);
+        Integer have = COPIES.get(key);
+        if (have != null) return Math.max(0, have);
         if (!loadSource()) return 0;
-        int c = sourceW / 128;                  // texels per font pixel in the source (HD resource packs: more)
-        int m = Math.max(1, (n + c - 1) / c);   // whole enlargement of the source
-        int cellSrc = 8 * c, pad = c * m, cellOut = cellSrc * m + 2 * pad, size = 16 * cellOut;
-        if (size > Math.min(MAX_TEXTURE, GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE))) {
-            TEX[n] = -1;
+        int c = sourceW / 128;                       // texels per font pixel in the source (HD resource packs: more)
+        int cellSrc = 8 * c, cellOut = 10 * GRID, size = 16 * cellOut; // each cell with a one-font-pixel border
+        if (size > GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE)) {
+            COPIES.put(key, -1);
             return 0;
         }
+        // Box filter one device pixel wide, separable: for output column X (a grid point, in font px from the cell's
+        // border) the source texels its box overlaps and how much of the box each covers. Outside the cell is clear.
+        float half = 0.5f * SIZE_KEY / key;          // half a device pixel, in font px
+        int[][] taps = new int[cellOut][];
+        float[][] weights = new float[cellOut][];
+        for (int x = 0; x < cellOut; x++) {
+            float centre = (x + 0.5f) / GRID - 1f;
+            float lo = (centre - half) * c, hi = (centre + half) * c;
+            int j0 = Math.max(0, (int) Math.floor(lo)), j1 = Math.min(cellSrc, (int) Math.ceil(hi));
+            int n = Math.max(0, j1 - j0);
+            taps[x] = new int[n];
+            weights[x] = new float[n];
+            for (int k = 0; k < n; k++) {
+                int j = j0 + k;
+                taps[x][k] = j;
+                weights[x][k] = (Math.min(j + 1, hi) - Math.max(j, lo)) / (hi - lo);
+            }
+        }
         int[] out = new int[size * size];
+        float[] rows = new float[cellSrc * cellOut * 4];
         for (int cy = 0; cy < 16; cy++) {
             for (int cx = 0; cx < 16; cx++) {
-                for (int sy = 0; sy < cellSrc; sy++) {
+                int base = cy * cellSrc * sourceW + cx * cellSrc;
+                boolean empty = true;
+                for (int sy = 0; sy < cellSrc && empty; sy++) {
                     for (int sx = 0; sx < cellSrc; sx++) {
-                        int p = premultiply(source[(cy * cellSrc + sy) * sourceW + cx * cellSrc + sx]);
-                        if (p == 0) continue;
-                        int ox = cx * cellOut + pad + sx * m, oy = cy * cellOut + pad + sy * m;
-                        for (int dy = 0; dy < m; dy++) {
-                            int row = (oy + dy) * size + ox;
-                            for (int dx = 0; dx < m; dx++) out[row + dx] = p;
+                        if (source[base + sy * sourceW + sx] != 0) {
+                            empty = false;
+                            break;
                         }
+                    }
+                }
+                if (empty) continue;
+                for (int sy = 0; sy < cellSrc; sy++) {         // across: source rows onto the grid's columns
+                    for (int x = 0; x < cellOut; x++) {
+                        float a = 0, r = 0, g = 0, b = 0;
+                        for (int k = 0; k < taps[x].length; k++) {
+                            int p = source[base + sy * sourceW + taps[x][k]];
+                            float w = weights[x][k];
+                            a += w * (p >>> 24);
+                            r += w * ((p >> 16) & 255);
+                            g += w * ((p >> 8) & 255);
+                            b += w * (p & 255);
+                        }
+                        int o = (sy * cellOut + x) * 4;
+                        rows[o] = a;
+                        rows[o + 1] = r;
+                        rows[o + 2] = g;
+                        rows[o + 3] = b;
+                    }
+                }
+                for (int y = 0; y < cellOut; y++) {            // down: those rows onto the grid's rows
+                    int row = (cy * cellOut + y) * size + cx * cellOut;
+                    for (int x = 0; x < cellOut; x++) {
+                        float a = 0, r = 0, g = 0, b = 0;
+                        for (int k = 0; k < taps[y].length; k++) {
+                            int o = (taps[y][k] * cellOut + x) * 4;
+                            float w = weights[y][k];
+                            a += w * rows[o];
+                            r += w * rows[o + 1];
+                            g += w * rows[o + 2];
+                            b += w * rows[o + 3];
+                        }
+                        out[row + x] = channel(a) << 24 | channel(r) << 16 | channel(g) << 8 | channel(b);
                     }
                 }
             }
@@ -206,8 +264,12 @@ final class SharpText {
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        TEX[n] = id;
+        COPIES.put(key, id);
         return id;
+    }
+
+    private static int channel(float v) {
+        return Math.max(0, Math.min(255, Math.round(v)));
     }
 
     private static int premultiply(int argb) {
@@ -226,6 +288,7 @@ final class SharpText {
             int w = img.getWidth(), h = img.getHeight();
             if (w < 128 || w % 128 != 0 || h != w) return false;
             source = img.getRGB(0, 0, w, h, null, 0, w);
+            for (int i = 0; i < source.length; i++) source[i] = premultiply(source[i]);
             sourceW = w;
             return true;
         } catch (Exception e) {
@@ -244,10 +307,10 @@ final class SharpText {
     }
 
     private static void clear() {
-        for (int i = 0; i < TEX.length; i++) {
-            if (TEX[i] > 0) TextureUtil.deleteTexture(TEX[i]);
-            TEX[i] = 0;
+        for (int id : COPIES.values()) {
+            if (id > 0) TextureUtil.deleteTexture(id);
         }
+        COPIES.clear();
         source = null;
         sourceTried = false;
     }
