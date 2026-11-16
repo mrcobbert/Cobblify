@@ -25,6 +25,7 @@
     "KeyBindingAccessor",
     "EntityRendererCameraMixin",
     "EntityRendererMixin",
+    "EntityRendererLightmapMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHudMixin",
     "GuiIngameOverlayScaleMixin",

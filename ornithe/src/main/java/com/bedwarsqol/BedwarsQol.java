@@ -79,6 +79,8 @@ public class BedwarsQol implements ClientModInitializer {
     public static KeyBinding zoomKeyBinding;
     /** Press to toggle sprint (default G; options.txt {@code key_Toggle Sprint}) — see {@link com.bedwarsqol.feature.ToggleSprint}. */
     public static KeyBinding toggleSprintKeyBinding;
+    /** Press to toggle Fullbright (unbound; options.txt {@code key_Toggle Fullbright}) — see {@link com.bedwarsqol.feature.Fullbright}. */
+    public static KeyBinding fullbrightKeyBinding;
 
     @Override
     public void initClient() {
@@ -104,6 +106,8 @@ public class BedwarsQol implements ClientModInitializer {
         toggleSprintKeyBinding = KeybindRegistry.register(new KeyBinding(
                 com.bedwarsqol.feature.SprintRules.TOGGLE_SPRINT_KEY_NAME,
                 com.bedwarsqol.feature.SprintRules.DEFAULT_TOGGLE_SPRINT_KEY, "Cobblify"));
+        fullbrightKeyBinding = KeybindRegistry.register(new KeyBinding(
+                com.bedwarsqol.feature.FullbrightRules.TOGGLE_KEY_NAME, Keyboard.KEY_NONE, "Cobblify"));
     }
 
     private static void onReady() {
@@ -119,6 +123,7 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.CLIENT_TICK.register(mc -> pauseKey.onClientTick());
         ToggleSprint toggleSprint = new ToggleSprint(toggleSprintKeyBinding);
         ModEvents.CLIENT_TICK.register(mc -> toggleSprint.onClientTick());
+        ModEvents.CLIENT_TICK.register(mc -> com.bedwarsqol.feature.Fullbright.onClientTick(fullbrightKeyBinding));
         IncSender incSender = new IncSender(incKeyBinding);
         ModEvents.CLIENT_TICK.register(mc -> incSender.onKeyInput());
         ChatNotifications chatNotifications = new ChatNotifications();
