@@ -10,7 +10,10 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-/** FPS, CPS and Ping: their text runs, Ping's dashes, and boxes that hug the text (the approved sandbox's numbers). */
+/**
+ * FPS, CPS and Ping: their text runs, Ping's dashes, boxes that hug the text (the approved sandbox's numbers), and the
+ * word after the number, before it or left out.
+ */
 public class TextModulesTest {
 
     /** Vanilla advances: digits 6, space 4, F P S C m s - 6, brackets 4; a trailing 1 px column is included. */
@@ -74,6 +77,49 @@ public class TextModulesTest {
         assertArrayEquals(new float[]{12, 0, 13, 8}, p.get(2).rect, 0f);
         assertEquals(45f, p.get(5).x, 0f);
         assertEquals(0xFFFFFFFF, TextModules.BRACKET);
+    }
+
+    @Test
+    public void labelAfterBeforeOrOff() {
+        // After is the runs as built
+        assertEquals(described(TextModules.fps(150)),
+                described(TextModules.labelled(TextModules.fps(150), TextModules.Label.AFTER)));
+        assertEquals(Arrays.asList("UNIT:FPS ", "NUMBER:150"),
+                described(TextModules.labelled(TextModules.fps(150), TextModules.Label.BEFORE)));
+        assertEquals(Arrays.asList("UNIT:CPS ", "NUMBER:9", "DIVIDER:", "NUMBER:3"),
+                described(TextModules.labelled(TextModules.cps(9, 3), TextModules.Label.BEFORE)));
+        // "ms 27" would not read; in front it is "Ping 27"
+        assertEquals(Arrays.asList("UNIT:Ping ", "NUMBER:27"),
+                described(TextModules.labelled(TextModules.ping("27"), TextModules.Label.BEFORE)));
+        assertEquals(Arrays.asList("NUMBER:150"),
+                described(TextModules.labelled(TextModules.fps(150), TextModules.Label.OFF)));
+        assertEquals(Arrays.asList("NUMBER:9", "DIVIDER:", "NUMBER:3"),
+                described(TextModules.labelled(TextModules.cps(9, 3), TextModules.Label.OFF)));
+        assertEquals(Arrays.asList("NUMBER:--"),
+                described(TextModules.labelled(TextModules.ping("--"), TextModules.Label.OFF)));
+        // brackets go around whatever is left: [FPS 150], [150]
+        assertEquals(Arrays.asList("BRACKET:[", "UNIT:FPS ", "NUMBER:150", "BRACKET:]"),
+                described(TextModules.bracketed(TextModules.labelled(TextModules.fps(150), TextModules.Label.BEFORE))));
+        assertEquals(Arrays.asList("BRACKET:[", "NUMBER:150", "BRACKET:]"),
+                described(TextModules.bracketed(TextModules.labelled(TextModules.fps(150), TextModules.Label.OFF))));
+        // the same width either side; without the word the box hugs the number alone
+        assertEquals(47f, TextModules.boxWidth(TextModules.labelled(TextModules.fps(150), TextModules.Label.BEFORE), VANILLA, 1f), 0f);
+        assertEquals(25f, TextModules.boxWidth(TextModules.labelled(TextModules.fps(150), TextModules.Label.OFF), VANILLA, 1f), 0f);
+        // CPS in front: the divider moves right by "CPS "
+        List<TextModules.Placed> p = TextModules.layout(TextModules.labelled(TextModules.cps(9, 3), TextModules.Label.BEFORE), VANILLA);
+        assertArrayEquals(new float[]{30, 0, 31, 8}, p.get(2).rect, 0f);
+    }
+
+    @Test
+    public void labelStoredAsItsOrdinal() {
+        assertEquals(TextModules.Label.AFTER, TextModules.Label.of(0));
+        assertEquals(TextModules.Label.BEFORE, TextModules.Label.of(1));
+        assertEquals(TextModules.Label.OFF, TextModules.Label.of(2));
+        assertEquals(TextModules.Label.AFTER, TextModules.Label.of(3));
+        assertEquals(TextModules.Label.AFTER, TextModules.Label.of(-1));
+        assertEquals(TextModules.Label.BEFORE, TextModules.Label.named("Before"));
+        assertEquals(TextModules.Label.OFF, TextModules.Label.named("Off"));
+        assertNull(TextModules.Label.named("Hidden"));
     }
 
     @Test

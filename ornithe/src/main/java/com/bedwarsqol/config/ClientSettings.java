@@ -5,6 +5,7 @@ import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.hud.HudBackground;
 import com.bedwarsqol.hud.HudPlacement;
 import com.bedwarsqol.hud.OverlayItems;
+import com.bedwarsqol.hud.TextModules;
 import com.bedwarsqol.stats.BackendDefaults;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.StatsBackendUrl;
@@ -125,6 +126,8 @@ public class ClientSettings {
     public float fpsHudScale = 1.0f;
     /** Draw the text in brackets ([150 FPS]), with or without its Background. */
     public boolean fpsBrackets = false;
+    /** Where the word goes, a {@link TextModules.Label} ordinal: 0 After (150 FPS), 1 Before (FPS 150), 2 Off (150). */
+    public int fpsLabel = 0;
 
     /** CPS: left and right clicks per second in a small box (Ornithe build). */
     public boolean cpsEnabled = false;
@@ -133,6 +136,7 @@ public class ClientSettings {
     public int cpsHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float cpsHudScale = 1.0f;
     public boolean cpsBrackets = false;
+    public int cpsLabel = 0;
 
     /** Ping: your own latency from the tab list, in a small box (Ornithe build); "--" in singleplayer. */
     public boolean pingEnabled = false;
@@ -141,6 +145,7 @@ public class ClientSettings {
     public int pingHudAnchor = HudPlacement.AUTO; // the default layout until moved
     public float pingHudScale = 1.0f;
     public boolean pingBrackets = false;
+    public int pingLabel = 0;
 
     /**
      * Per-item Background switch of every HUD item (the HUD modules and the scoreboard, chat and tab list), by HUD
@@ -500,6 +505,9 @@ public class ClientSettings {
         hudBackgrounds = HudBackground.sanitized(hudBackgrounds);
         hudSubPixel = sanitizedSubPixel(hudSubPixel);
         if (teamUpgradesLayout != TEAM_UPGRADES_FULL) teamUpgradesLayout = TEAM_UPGRADES_COMPACT;
+        fpsLabel = TextModules.Label.of(fpsLabel).ordinal();
+        cpsLabel = TextModules.Label.of(cpsLabel).ordinal();
+        pingLabel = TextModules.Label.of(pingLabel).ordinal();
         teamUpgradesHudAnchor = clamp(teamUpgradesHudAnchor, HudPlacement.AUTO, 8);
         if (teamUpgradesHudScale < 0.3f || teamUpgradesHudScale > 10.0f) teamUpgradesHudScale = defaultTextSizeScale();
 

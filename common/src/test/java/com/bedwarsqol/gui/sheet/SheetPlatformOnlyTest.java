@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -198,7 +199,12 @@ public class SheetPlatformOnlyTest {
             assertEquals(id + "Brackets", brackets.id);
             assertEquals("Brackets", brackets.name);
             assertEquals(null, brackets.hudItem());
-            for (String row : new String[]{id, id + "Bg", id + "Brackets"}) {
+            SheetSchema.Row label = SheetSchema.module(id).rows.get(2);
+            assertEquals(id + "Label", label.id);
+            assertEquals("Label", label.name);
+            assertEquals(SheetSchema.Kind.SEG, label.kind);
+            assertArrayEquals(new String[]{"Before", "After", "Off"}, label.options());
+            for (String row : new String[]{id, id + "Bg", id + "Brackets", id + "Label"}) {
                 assertFalse(row, SheetSchema.shows(acceptsEverything, row));
                 assertFalse(row, SheetSchema.shows(lunar, row));
                 assertTrue(row, SheetSchema.shows(ornithe, row));

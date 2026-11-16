@@ -9,7 +9,8 @@ import java.util.List;
  * The FPS, CPS and Ping modules, as the approved sandbox draws them: the number in white, the unit in the accent, CPS
  * as {@code left | right} with a 1 px gray divider that casts a shadow like text. With its Background on, a module is
  * an 18 px tall box that hugs the text with 4 px either side; off, it is the bare text. Brackets ({@code [150 FPS]}) are
- * the module's own switch, independent of its Background ({@link #bracketed}).
+ * the module's own switch, independent of its Background ({@link #bracketed}), and so is where its word goes: after
+ * the number, before it, or nowhere ({@link #labelled}).
  * Geometry is in module units (multiply by the draw scale); widths come from the font through {@link Advance}.
  */
 public final class TextModules {
@@ -36,14 +37,44 @@ public final class TextModules {
 
     public enum Role { NUMBER, UNIT, DIVIDER, BRACKET }
 
+    /** Where a module's word goes: after the number (the default), before it, or nowhere. Stored as its ordinal. */
+    public enum Label {
+        AFTER("After"), BEFORE("Before"), OFF("Off");
+
+        public final String text;
+
+        Label(String text) {
+            this.text = text;
+        }
+
+        /** The label stored as {@code ordinal}; After for anything else. */
+        public static Label of(int ordinal) {
+            Label[] all = values();
+            return ordinal >= 0 && ordinal < all.length ? all[ordinal] : AFTER;
+        }
+
+        /** The label whose {@link #text} is {@code text}, or null. */
+        public static Label named(String text) {
+            for (Label l : values()) if (l.text.equals(text)) return l;
+            return null;
+        }
+    }
+
     /** One run of a module's text: a number, a unit, or the CPS divider (no text). */
     public static final class Seg {
         public final String text;
         public final Role role;
+        /** A unit's text in front of the number ({@code "FPS "}, Ping's {@code "Ping "}); null for other runs. */
+        final String front;
 
         Seg(String text, Role role) {
+            this(text, role, null);
+        }
+
+        Seg(String text, Role role, String front) {
             this.text = text;
             this.role = role;
+            this.front = front;
         }
     }
 
@@ -71,16 +102,30 @@ public final class TextModules {
     }
 
     public static List<Seg> fps(int fps) {
-        return segs(new Seg(Integer.toString(fps), Role.NUMBER), new Seg(" FPS", Role.UNIT));
+        return segs(new Seg(Integer.toString(fps), Role.NUMBER), new Seg(" FPS", Role.UNIT, "FPS "));
     }
 
     public static List<Seg> cps(int left, int right) {
         return segs(new Seg(Integer.toString(left), Role.NUMBER), new Seg("", Role.DIVIDER),
-                new Seg(Integer.toString(right), Role.NUMBER), new Seg(" CPS", Role.UNIT));
+                new Seg(Integer.toString(right), Role.NUMBER), new Seg(" CPS", Role.UNIT, "CPS "));
     }
 
     public static List<Seg> ping(String ms) {
-        return segs(new Seg(ms, Role.NUMBER), new Seg(" ms", Role.UNIT));
+        return segs(new Seg(ms, Role.NUMBER), new Seg(" ms", Role.UNIT, "Ping "));
+    }
+
+    /**
+     * The runs with their word where {@code label} puts it: after the number as built ({@code 150 FPS}), in front
+     * ({@code FPS 150}; Ping reads {@code Ping 27}, as {@code ms 27} would not), or left out ({@code 150}).
+     */
+    public static List<Seg> labelled(List<Seg> segs, Label label) {
+        if (label == null || label == Label.AFTER) return segs;
+        List<Seg> out = new ArrayList<Seg>(segs.size());
+        for (Seg s : segs) {
+            if (s.role != Role.UNIT) out.add(s);
+            else if (label == Label.BEFORE) out.add(0, new Seg(s.front != null ? s.front : s.text.trim() + " ", Role.UNIT));
+        }
+        return Collections.unmodifiableList(out);
     }
 
     /** The runs between white brackets: {@code [150 FPS]}. */

@@ -7,6 +7,7 @@ import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.HudPlacement;
+import com.bedwarsqol.hud.TextModules;
 import com.google.gson.Gson;
 import org.junit.After;
 import org.junit.Before;
@@ -20,10 +21,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * FPS, CPS and Ping: HUD modules of the Ornithe sheet, each with its Background and Brackets rows; off by default with
- * the Background on and Brackets off (also for a config saved before they existed); their rows write the settings,
- * Brackets independent of the Background; Edit HUD knows them; their layout fields round-trip, sanitize and follow HUD
- * Size like every module's.
+ * FPS, CPS and Ping: HUD modules of the Ornithe sheet, each with its Background, Brackets and Label rows; off by default
+ * with the Background on, Brackets off and the word after the number (also for a config saved before they existed);
+ * their rows write the settings, Brackets independent of the Background; Edit HUD knows them; their layout fields
+ * round-trip, sanitize and follow HUD Size like every module's.
  */
 public class SettingsBindingsTextModulesTest {
 
@@ -52,7 +53,7 @@ public class SettingsBindingsTextModulesTest {
     public void listedOnOrnithe() {
         SettingsBindings values = new SettingsBindings();
         for (String id : new String[]{"fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg", "fpsBrackets", "cpsBrackets",
-                "pingBrackets"}) {
+                "pingBrackets", "fpsLabel", "cpsLabel", "pingLabel"}) {
             assertTrue(id, SheetSchema.shows(values, id));
         }
     }
@@ -72,12 +73,14 @@ public class SettingsBindingsTextModulesTest {
                 assertEquals(id, 1.0f, s.scale, 0f);
                 assertTrue(id, s.background);
                 assertFalse(id, HudModules.brackets(c, id));
+                assertEquals(id, TextModules.Label.AFTER, HudModules.label(c, id));
             }
         }
         for (String id : new String[]{"fps", "cps", "ping"}) {
             assertFalse(id, values.on(id));
             assertTrue(id, values.on(id + "Bg"));
             assertFalse(id, values.on(id + "Brackets"));
+            assertEquals(id, "After", values.choice(id + "Label"));
         }
     }
 
@@ -120,6 +123,34 @@ public class SettingsBindingsTextModulesTest {
         ClientSettings back = new Gson().fromJson(new Gson().toJson(BedwarsQol.config), ClientSettings.class);
         assertTrue(back.pingBrackets);
         assertFalse(back.cpsBrackets);
+    }
+
+    @Test
+    public void labelRowsPickWhereTheWordGoes() {
+        SettingsBindings values = new SettingsBindings();
+        values.setChoice("fpsLabel", "Before");
+        values.setChoice("cpsLabel", "Off");
+        assertEquals("Before", values.choice("fpsLabel"));
+        assertEquals("Off", values.choice("cpsLabel"));
+        assertEquals("After", values.choice("pingLabel"));
+        assertEquals(TextModules.Label.BEFORE, HudModules.label(BedwarsQol.config, BedwarsHudRenderer.FPS_HUD));
+        assertEquals(TextModules.Label.OFF, HudModules.label(BedwarsQol.config, BedwarsHudRenderer.CPS_HUD));
+        assertEquals(TextModules.Label.AFTER, HudModules.label(BedwarsQol.config, BedwarsHudRenderer.PING_HUD));
+        assertEquals(TextModules.Label.AFTER, HudModules.label(BedwarsQol.config, "potion"));
+        // an unknown option changes nothing
+        values.setChoice("fpsLabel", "Hidden");
+        assertEquals("Before", values.choice("fpsLabel"));
+        values.setChoice("pingLabel", "After");
+        assertEquals(TextModules.Label.AFTER.ordinal(), BedwarsQol.config.pingLabel);
+        // saved and read back; out-of-range values sanitize to After
+        ClientSettings back = new Gson().fromJson(new Gson().toJson(BedwarsQol.config), ClientSettings.class);
+        assertEquals(TextModules.Label.BEFORE.ordinal(), back.fpsLabel);
+        assertEquals(TextModules.Label.OFF.ordinal(), back.cpsLabel);
+        ClientSettings bad = new Gson().fromJson("{\"fpsLabel\":7,\"cpsLabel\":-2,\"pingLabel\":2}", ClientSettings.class);
+        bad.sanitize();
+        assertEquals(TextModules.Label.AFTER.ordinal(), bad.fpsLabel);
+        assertEquals(TextModules.Label.AFTER.ordinal(), bad.cpsLabel);
+        assertEquals(TextModules.Label.OFF.ordinal(), bad.pingLabel);
     }
 
     @Test
