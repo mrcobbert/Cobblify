@@ -24,9 +24,20 @@ public final class CornerResize {
     private final float baseHeight;
     private final int dirX;
     private final int dirY;
+    /** The padding around the content when the resize started: the drawn frame's corner is what stays put. */
+    private final float startPad;
 
-    /** Starts a resize of the box (x, y, width, height), currently at {@code scale}, by {@code corner}. */
+    /** Starts a resize of the box (x, y, width, height), currently at {@code scale}, by {@code corner}, no padding. */
     public CornerResize(int corner, float x, float y, float width, float height, float scale) {
+        this(corner, x, y, width, height, scale, 0f);
+    }
+
+    /**
+     * Starts a resize of the content box (x, y, width, height), drawn with {@code pad} around it and currently at
+     * {@code scale}, by {@code corner}. The drawn frame's opposite corner stays put, even as the padding grows.
+     */
+    public CornerResize(int corner, float x, float y, float width, float height, float scale, float pad) {
+        this.startPad = pad;
         boolean right = corner == TOP_RIGHT || corner == BOTTOM_RIGHT;
         boolean bottom = corner == BOTTOM_LEFT || corner == BOTTOM_RIGHT;
         this.dirX = right ? 1 : -1;
@@ -74,12 +85,26 @@ public final class CornerResize {
      * resized box from its measured size (cross-cycle finding A-I1).
      */
     public float leftFor(float width) {
-        return dirX > 0 ? pinX : pinX - width;
+        return leftFor(width, startPad);
     }
 
     /** Top edge of the box when it measures {@code height} tall (see {@link #leftFor}). */
     public float topFor(float height) {
-        return dirY > 0 ? pinY : pinY - height;
+        return topFor(height, startPad);
+    }
+
+    /**
+     * Left edge of the content when it measures {@code width} wide with {@code pad} around it, so the drawn frame's
+     * opposite corner stays pinned: a panel whose padding grows with its scale keeps its frame's edge, and the content
+     * moves in by the extra padding.
+     */
+    public float leftFor(float width, float pad) {
+        return dirX > 0 ? pinX - startPad + pad : pinX + startPad - pad - width;
+    }
+
+    /** Top edge of the content when it measures {@code height} tall with {@code pad} around it (see above). */
+    public float topFor(float height, float pad) {
+        return dirY > 0 ? pinY - startPad + pad : pinY + startPad - pad - height;
     }
 
     /**
@@ -88,7 +113,8 @@ public final class CornerResize {
      * {@link #topFor}), grown by {@code pad} on every side. Walls are checked against this.
      */
     public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad) {
-        return new HudWalls.Rect(leftFor(contentW) - pad, topFor(contentH) - pad, contentW + 2f * pad, contentH + 2f * pad);
+        return new HudWalls.Rect(leftFor(contentW, pad) - pad, topFor(contentH, pad) - pad, contentW + 2f * pad,
+                contentH + 2f * pad);
     }
 
     /**
@@ -97,8 +123,8 @@ public final class CornerResize {
      * screen edge that moves the box, and the wall check must see where it is really drawn (code review R1-I1).
      */
     public HudWalls.Rect visualRectAt(float scale, float contentW, float contentH, float pad, float screenW, float screenH) {
-        float x = HudPlacement.clamp(leftFor(contentW), contentW, pad, screenW);
-        float y = HudPlacement.clamp(topFor(contentH), contentH, pad, screenH);
+        float x = HudPlacement.clamp(leftFor(contentW, pad), contentW, pad, screenW);
+        float y = HudPlacement.clamp(topFor(contentH, pad), contentH, pad, screenH);
         return new HudWalls.Rect(x - pad, y - pad, contentW + 2f * pad, contentH + 2f * pad);
     }
 

@@ -382,7 +382,7 @@ public class EditHudGui extends GuiScreen {
             beginChange(Mode.RESIZE);
             // From the size it is drawn at: a stepped item's step, Team Upgrades' fitted size in its default spot.
             resize = new CornerResize(corner, grabbed.x, grabbed.y, grabbed.width, grabbed.height,
-                    BedwarsHudRenderer.drawnScale(cfg, grabbed.id));
+                    BedwarsHudRenderer.drawnScale(cfg, grabbed.id), grabbed.pad);
             // The handle sits on the drawn frame, outside the content; keep that offset so the size
             // does not jump on the first move.
             grabX = p[0] - CornerResize.cornerX(corner, grabbed.x, grabbed.width);
@@ -554,7 +554,9 @@ public class EditHudGui extends GuiScreen {
         HudBox scaled = selectedBox();
         if (scaled == null) return;
         // Placed from its measured size: a box laid out at its text scale steps in whole device pixels (A-I1).
-        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.leftFor(scaled.width), resize.topFor(scaled.height),
+        // The drawn frame's opposite corner stays put: a panel's padding grows with its size, the content moves in.
+        BedwarsHudRenderer.setHudAbsolutePosition(cfg, selectedId, resize.leftFor(scaled.width, scaled.pad),
+                resize.topFor(scaled.height, scaled.pad),
                 scaled.width, scaled.height, width, height);
     }
 

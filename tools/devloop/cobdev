@@ -2850,7 +2850,9 @@ def edithud_e7b(run):
     before, after = edithud_corner_grow(run, "sessionstats", "keystrokes", "tl", edithud_grow_gap(run, "sessionstats"))
     s0, s1 = run.box("sessionstats", before), run.box("sessionstats", after)
     ks = run.box("keystrokes", after)
-    corner0, corner1 = (s0["x"] + s0["w"], s0["y"] + s0["h"]), (s1["x"] + s1["w"], s1["y"] + s1["h"])
+    # the drawn frame's corner: a panel's padding grows with its size and the content moves in
+    corner0 = (vis(s0)[0] + vis(s0)[2], vis(s0)[1] + vis(s0)[3])
+    corner1 = (vis(s1)[0] + vis(s1)[2], vis(s1)[1] + vis(s1)[3])
     s.check("E7b Session Stats grew", run.state("sessionstats", after)["scale"] > run.state("sessionstats", before)["scale"])
     s.check("E7b its bottom-right corner stayed put", all(abs(p - q) <= 0.05 for p, q in zip(corner0, corner1)),
             "%s -> %s" % (corner0, corner1))
