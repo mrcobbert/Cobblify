@@ -214,6 +214,19 @@ one-sided main ornithe com/bedwarsqol/mixin/EffectRendererParticlesMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityLivingBaseParticlesMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerParticlesMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/RenderGlobalParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/feature/OldAnimations.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityLivingBaseSwingAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererSneakCameraMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameHeartsMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerArmorBaseOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerCustomHeadOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerHeldItemOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ModelBipedOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ModelPlayerOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderPlayerOldAnimMixin.java
+# 1.7 Animations shares ItemRendererMixin with Hand Position so the two keep a fixed order.
+divergent main com/bedwarsqol/mixin/ItemRendererMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
 
 # ---------------------------------------------------------------------------
