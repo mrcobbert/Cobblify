@@ -26,6 +26,9 @@
     "EntityRendererCameraMixin",
     "EntityRendererMixin",
     "EntityRendererLightmapMixin",
+    "EffectRendererParticlesMixin",
+    "EntityLivingBaseParticlesMixin",
+    "EntityPlayerParticlesMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHudMixin",
     "GuiIngameOverlayScaleMixin",
@@ -35,6 +38,7 @@
     "NetHandlerPlayClientMixin",
     "NetworkManagerAccessor",
     "RenderEntityItemMixin",
+    "RenderGlobalParticlesMixin",
     "RendererLivingEntityMixin",
     "WorldClientMixin"
   ],

@@ -209,6 +209,11 @@ one-sided main ornithe com/bedwarsqol/feature/Fullbright.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererLightmapMixin.java
 one-sided main ornithe com/bedwarsqol/feature/ItemPhysics.java
 one-sided main ornithe com/bedwarsqol/mixin/RenderEntityItemMixin.java
+one-sided main ornithe com/bedwarsqol/feature/ParticleOptions.java
+one-sided main ornithe com/bedwarsqol/mixin/EffectRendererParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityLivingBaseParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderGlobalParticlesMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
 
 # ---------------------------------------------------------------------------
