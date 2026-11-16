@@ -30,7 +30,8 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>With the Font setting on Minecraft, text is the game's own {@link FontRenderer} (resource packs included)
  * instead, at whole device pixels per font pixel ({@link #textScale}) on whole device pixels, shadowed as vanilla
- * shadows light text.
+ * shadows light text. HUD modules draw at any size ({@link #hudScale}): between whole steps {@link SharpText} draws
+ * them.
  */
 public final class BedwarsQolFont {
 
@@ -85,6 +86,17 @@ public final class BedwarsQolFont {
         return Math.max(1, (int) Math.floor(scale * sf + 1e-3f)) / (float) sf;
     }
 
+    /**
+     * The scale a HUD module's text is laid out and drawn at: {@code scale} itself, in Minecraft's font at least one
+     * device pixel per font pixel. Between whole steps it is drawn sharp ({@link SharpText}); draw it with
+     * {@link #drawHud} and {@link #drawHudFlat}, which do not snap.
+     */
+    public static float hudScale(float scale) {
+        if (!minecraft()) return scale;
+        int sf = scaleFactor();
+        return Math.max(1f, scale * sf) / sf;
+    }
+
     private static int scaleFactor() {
         return new ScaledResolution(Minecraft.getMinecraft()).getScaleFactor();
     }
@@ -101,22 +113,38 @@ public final class BedwarsQolFont {
      */
     public static void drawMinecraftOver(String s, float x, float y, float scale, int color, int shadow) {
         FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-        if (minecraft() && fr != null) drawMinecraft(fr, s, x, y, scale, color, true, shadow, false);
+        if (minecraft() && fr != null) drawMinecraft(fr, s, x, y, snapped(scale), color, true, shadow, false);
+    }
+
+    /** Device pixels per font pixel for {@code scale} snapped to a whole step ({@link #textScale}). */
+    private static float snapped(float scale) {
+        return Math.round(textScale(scale) * scaleFactor());
+    }
+
+    /** Device pixels per font pixel for a {@link #hudScale}, unsnapped. */
+    private static float exact(float scale) {
+        return Math.max(1f, scale * scaleFactor());
     }
 
     /** {@code s} in Minecraft's font with its top-left on the device pixel nearest (x, y), in the GUI's space. */
-    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color) {
-        drawMinecraft(fr, s, x, y, scale, color, false, 0, false);
+    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float device, int color) {
+        drawMinecraft(fr, s, x, y, device, color, false, 0, false);
     }
 
-    /** {@code flat}: no shadow at all (else light text gets Minecraft's own, or {@code shadow} with {@code ownShadow}). */
-    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float scale, int color,
+    /**
+     * {@code device}: device pixels per font pixel. A whole number draws through vanilla; between whole steps
+     * {@link SharpText} draws it, or vanilla scaled when it cannot. {@code flat}: no shadow at all (else light text gets
+     * Minecraft's own, or {@code shadow} with {@code ownShadow}).
+     */
+    private static void drawMinecraft(FontRenderer fr, String s, float x, float y, float device, int color,
                                       boolean ownShadow, int shadow, boolean flat) {
         int a = color >>> 24;
         // FontRenderer draws under 4/255 alpha opaque and alpha-tests away 0.1 and under; no alpha means opaque here
         if (a != 0 && a <= 25) return;
         int sf = scaleFactor();
-        int k = Math.round(textScale(scale) * sf);
+        int whole = Math.round(device);
+        boolean sharp = Math.abs(device - whole) > 1e-3f && device <= SharpText.MAX_SCALE;
+        float k = sharp ? device : (Math.abs(device - whole) <= 1e-3f ? whole : device);
         boolean alphaTest = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
         GlStateManager.enableTexture2D(); // FontRenderer assumes texturing on
         GlStateManager.enableBlend();
@@ -126,7 +154,10 @@ public final class BedwarsQolFont {
         GlStateManager.translate(Math.round(x * sf), Math.round(y * sf), 0f);
         GlStateManager.scale(k, k, 1f);
         int argb = a == 0 ? color | 0xFF000000 : color;
-        if (ownShadow) {
+        if (sharp && SharpText.draw(fr, s, k, argb, !flat && shadowed(color), ownShadow,
+                (argb & 0xFF000000) | (shadow & 0xFFFFFF))) {
+            // drawn
+        } else if (ownShadow) {
             fr.drawString(s, 1f, 1f, (argb & 0xFF000000) | (shadow & 0xFFFFFF), false);
             fr.drawString(s, 0f, 0f, argb, false);
         } else {
@@ -197,9 +228,33 @@ public final class BedwarsQolFont {
     public static void draw(String s, float x, float y, float scale, int color, boolean shadow, Weight weight) {
         if (minecraft()) {
             FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-            if (fr != null) drawMinecraft(fr, s, x, y, scale, color);
+            if (fr != null) drawMinecraft(fr, s, x, y, snapped(scale), color);
             return;
         }
+        drawModern(s, x, y, scale, color, shadow, weight);
+    }
+
+    /** As {@link #draw}, at exactly {@code scale} (a {@link #hudScale}): in Minecraft's font, sharp between steps. */
+    public static void drawHud(String s, float x, float y, float scale, int color, boolean shadow, Weight weight) {
+        if (minecraft()) {
+            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+            if (fr != null) drawMinecraft(fr, s, x, y, exact(scale), color);
+            return;
+        }
+        drawModern(s, x, y, scale, color, shadow, weight);
+    }
+
+    /** As {@link #drawFlat}, at exactly {@code scale} (a {@link #hudScale}). */
+    public static void drawHudFlat(String s, float x, float y, float scale, int color) {
+        if (minecraft()) {
+            FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
+            if (fr != null) drawMinecraft(fr, s, x, y, exact(scale), color, false, 0, true);
+            return;
+        }
+        drawModern(s, x, y, scale, color, false, Weight.BOLD);
+    }
+
+    private static void drawModern(String s, float x, float y, float scale, int color, boolean shadow, Weight weight) {
         Face f = face(weight);
         f.ensure();
         if (!f.ready) {
@@ -228,7 +283,7 @@ public final class BedwarsQolFont {
     public static void drawFlat(String s, float x, float y, float scale, int color) {
         if (minecraft()) {
             FontRenderer fr = Minecraft.getMinecraft().fontRendererObj;
-            if (fr != null) drawMinecraft(fr, s, x, y, scale, color, false, 0, true);
+            if (fr != null) drawMinecraft(fr, s, x, y, snapped(scale), color, false, 0, true);
             return;
         }
         draw(s, x, y, scale, color, false, Weight.BOLD);

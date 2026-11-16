@@ -1042,22 +1042,22 @@ class EditHudE12Cleanup(unittest.TestCase):
 
 
 class EditHudSmokeHelpers(unittest.TestCase):
-    """The robustness helpers behind E7/E7b (sizes in device-pixel steps), E11 (the editor's dim) and the pointer."""
+    """The robustness helpers behind E7/E7b (size steps), E11 (the editor's dim) and the pointer."""
 
-    def test_text_scale_steps_in_device_pixels_in_minecrafts_font(self):
-        self.assertEqual(cobdev.text_scale(1.2499, 2, True), 1.0)
-        self.assertEqual(cobdev.text_scale(1.25, 2, True), 1.5)
-        self.assertAlmostEqual(cobdev.text_scale(1.2, 3, True), 4 / 3.0)
-        self.assertEqual(cobdev.text_scale(0.2, 2, True), 0.5)
-        self.assertEqual(cobdev.text_scale(1.2499, 2, False), 1.2499)
+    def test_on_step_means_whole_device_pixels_per_font_pixel(self):
+        self.assertTrue(cobdev.on_step(1.5, 2))
+        self.assertTrue(cobdev.on_step(4 / 3.0, 3))
+        self.assertFalse(cobdev.on_step(1.25, 2))
 
-    def test_a_resize_may_stop_one_size_step_short_in_minecrafts_font(self):
-        # the first smoke run: Map Info 82 GUI px of content at scale 1.2499 (text scale 1.0), stopped 19 px short
-        self.assertTrue(cobdev.grow_stopped_ok(19.0, 82.0, 1.2499, 2, True))   # the next step adds 41 px
-        self.assertFalse(cobdev.grow_stopped_ok(45.0, 82.0, 1.2499, 2, True))
-        self.assertFalse(cobdev.grow_stopped_ok(-0.5, 82.0, 1.2499, 2, True))  # overlapping
+    def test_a_resize_stops_flush_or_rests_on_a_step_just_short_in_minecrafts_font(self):
+        # a 90 GUI px box at 1.5: resting on the step may leave up to 90 * 0.05 / 1.5 = 3 px
+        self.assertTrue(cobdev.grow_stopped_ok(0.02, 90.0, 1.37, 2, True))     # flush, between steps
+        self.assertTrue(cobdev.grow_stopped_ok(2.5, 90.0, 1.5, 2, True))       # on the step, just short
+        self.assertFalse(cobdev.grow_stopped_ok(2.5, 90.0, 1.37, 2, True))     # short, but not on a step
+        self.assertFalse(cobdev.grow_stopped_ok(8.0, 90.0, 1.5, 2, True))      # a step, but too far short
+        self.assertFalse(cobdev.grow_stopped_ok(-0.5, 90.0, 1.5, 2, True))     # overlapping
         self.assertTrue(cobdev.grow_stopped_ok(0.02, 82.0, 1.2, 2, False))     # modern font: flush
-        self.assertFalse(cobdev.grow_stopped_ok(19.0, 82.0, 1.2, 2, False))
+        self.assertFalse(cobdev.grow_stopped_ok(2.5, 82.0, 1.5, 2, False))
 
     def test_free_point_avoids_every_box(self):
         hb = {"sw": 60, "sh": 30, "boxes": [{"x": 1, "y": 1, "w": 30, "h": 28, "pad": 1}]}

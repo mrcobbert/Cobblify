@@ -215,3 +215,7 @@ one-sided res ornithe fabric.mod.json
 # Mod version: Forge substitutes it into the @Mod VERSION constant at build time;
 # Ornithe reads it at runtime from this file, filled by processResources.
 one-sided res ornithe com/bedwarsqol/version.properties
+
+# Sharp HUD text (Ornithe only): HUD module text in Minecraft's font at in-between sizes, drawn sharp
+# bilinear from the game's own font texture.
+one-sided main ornithe com/bedwarsqol/gui/render/SharpText.java

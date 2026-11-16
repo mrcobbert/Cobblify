@@ -530,22 +530,24 @@ public class EditHudGui extends GuiScreen {
         if (BedwarsHudRenderer.TAB_LIST_HUD.equals(selectedId)) {
             scale = Math.min(scale, BedwarsHudRenderer.tabListFitScale(mc, cfg));
         }
-        // A HUD module in Minecraft's font is drawn only at whole steps (ScaleSteps): resize in those steps, so the
-        // size follows the pointer to the nearest one and the badge never moves without the box (HUD tweaks scaling).
+        // A HUD module in Minecraft's font draws at any size (SharpText) and is crispest at whole steps (ScaleSteps):
+        // a step catches the pointer nearby, as 1.00x does (Alt: freely).
         boolean stepped = BedwarsHudRenderer.stepsScale(selectedId);
         int sf = scaleFactor();
-        if (stepped) {
-            float room = ScaleSteps.atMost(resize.roomScale(width, height, box.pad), sf);
-            scale = Math.min(ScaleSteps.nearest(scale, sf), room);
+        if (stepped && snapping()) {
+            // never past the screen room scaleFor already kept it within
+            float room = resize.roomScale(width, height, box.pad);
+            scale = Math.min(ScaleSteps.snap(scale, sf, CornerResize.SNAP_TO_ONE), Math.max(scale, room));
         }
-        // Growing stops at the first wall (Alt: freely); shrinking is always allowed. A stepped item keeps the last
-        // step that fits instead of creeping to the wall's edge.
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed. Stopped just past a step, a
+        // module rests on that step.
         if (snapping()) {
             HudWalls.ScaleProbe probe = resizeProbe(cfg, selectedId, s);
             List<HudWalls.Rect> walls = wallRects(boxes, selectedId);
-            scale = stepped
-                    ? HudWalls.largestFreeStep(BedwarsHudRenderer.drawnScale(cfg, selectedId), scale, sf, probe, walls)
-                    : HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, probe, walls);
+            float from = resizeStartScale(cfg, selectedId);
+            float free = HudWalls.largestFreeScale(from, scale, probe, walls);
+            if (stepped && free < scale) free = Math.max(from, ScaleSteps.restOnStep(free, sf, CornerResize.SNAP_TO_ONE));
+            scale = free;
         }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.

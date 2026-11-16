@@ -151,23 +151,6 @@ public final class HudWalls {
         return lo;
     }
 
-    /**
-     * As {@link #largestFreeScale}, for an item drawn only at whole steps {@code k / sf} ({@link ScaleSteps}):
-     * {@code target} when shrinking or when it is clear, else the largest step between {@code from} and {@code target}
-     * whose {@code probe} rectangle is clear, else {@code from}. It never returns a value between two steps, so the
-     * scale shown is the size drawn and a later rescale cannot tip a value parked under a step edge into the wall
-     * (HUD tweaks scaling report, cause b). {@code from} and {@code target} are steps.
-     */
-    public static float largestFreeStep(float from, float target, int sf, ScaleProbe probe, List<Rect> walls) {
-        if (target <= from || fits(probe.at(target), walls)) return target;
-        int lo = Math.round(from * sf);
-        for (int k = Math.round(target * sf) - 1; k > lo; k--) {
-            float s = k / (float) sf;
-            if (fits(probe.at(s), walls)) return s;
-        }
-        return from;
-    }
-
     private static boolean fits(Rect r, List<Rect> walls) {
         return r == null || free(r.x, r.y, r.w, r.h, walls);
     }
