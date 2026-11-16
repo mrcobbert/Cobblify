@@ -530,20 +530,20 @@ public class EditHudGui extends GuiScreen {
         if (BedwarsHudRenderer.TAB_LIST_HUD.equals(selectedId)) {
             scale = Math.min(scale, BedwarsHudRenderer.tabListFitScale(mc, cfg));
         }
-        // A HUD module in Minecraft's font is drawn only at whole steps (ScaleSteps): resize in those steps, so the
-        // size follows the pointer to the nearest one and the badge never moves without the box (HUD tweaks scaling).
+        // A HUD module in Minecraft's font draws at any size (SharpText) and is crispest at whole steps (ScaleSteps):
+        // a step catches the pointer nearby, as 1.00x does (Alt: freely).
         boolean stepped = BedwarsHudRenderer.stepsScale(selectedId);
         int sf = scaleFactor();
-        if (stepped && snapping()) {
-            // PROTOTYPE (Sharp): any size draws crisp now; the whole steps catch the pointer nearby, like 1.00x
-            float k = Math.round(scale * sf);
-            if (k >= 1f && Math.abs(scale * sf - k) <= CornerResize.SNAP_TO_ONE * sf) scale = k / sf;
-        }
-        // Growing stops at the first wall (Alt: freely); shrinking is always allowed.
+        if (stepped && snapping()) scale = ScaleSteps.snap(scale, sf, CornerResize.SNAP_TO_ONE);
+        // Growing stops at the first wall (Alt: freely); shrinking is always allowed. Stopped just past a step, a
+        // module rests on that step.
         if (snapping()) {
             HudWalls.ScaleProbe probe = resizeProbe(cfg, selectedId, s);
             List<HudWalls.Rect> walls = wallRects(boxes, selectedId);
-            scale = HudWalls.largestFreeScale(resizeStartScale(cfg, selectedId), scale, probe, walls);
+            float from = resizeStartScale(cfg, selectedId);
+            float free = HudWalls.largestFreeScale(from, scale, probe, walls);
+            if (stepped && free < scale) free = Math.max(from, ScaleSteps.restOnStep(free, sf, CornerResize.SNAP_TO_ONE));
+            scale = free;
         }
         HudModules.set(cfg, selectedId, s.withScale(scale));
         // Measure at the new scale, then keep the opposite corner where it was.

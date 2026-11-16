@@ -30,7 +30,8 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>With the Font setting on Minecraft, text is the game's own {@link FontRenderer} (resource packs included)
  * instead, at whole device pixels per font pixel ({@link #textScale}) on whole device pixels, shadowed as vanilla
- * shadows light text.
+ * shadows light text. HUD modules draw at any size ({@link #hudScale}): between whole steps {@link SharpText} draws
+ * them.
  */
 public final class BedwarsQolFont {
 

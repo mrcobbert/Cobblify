@@ -1,18 +1,28 @@
 package com.bedwarsqol.hud;
 
 /**
- * The sizes Minecraft's pixel font can be drawn at while staying crisp: whole device pixels per font pixel, so
- * {@code k / sf} GUI px per font pixel for a GUI scale factor {@code sf} and {@code k >= 1}. HUD modules lay out at
- * these steps, so Edit HUD resizes them in the same steps (HUD tweaks scaling report, cause a).
+ * The sizes where Minecraft's pixel font is crispest: whole device pixels per font pixel, so {@code k / sf} GUI px per
+ * font pixel for a GUI scale factor {@code sf} and {@code k >= 1}. HUD modules draw at any size (sharp between steps);
+ * Edit HUD lets these steps catch a resize nearby.
  */
 public final class ScaleSteps {
 
     private ScaleSteps() {
     }
 
-    /** The step nearest {@code scale}, never below one device pixel per font pixel ({@code 1 / sf}). */
-    public static float nearest(float scale, int sf) {
-        return Math.max(1, Math.round(scale * sf)) / (float) sf;
+    /** The step nearest {@code scale} when it is within {@code reach} of it, else {@code scale}. */
+    public static float snap(float scale, int sf, float reach) {
+        float step = Math.max(1, Math.round(scale * sf)) / (float) sf;
+        return Math.abs(scale - step) <= reach ? step : scale;
+    }
+
+    /**
+     * For a size a wall stopped: the step at or below {@code scale} when {@code scale} is at most {@code reach} past it,
+     * else {@code scale}. It never rounds up, so the result still fits.
+     */
+    public static float restOnStep(float scale, int sf, float reach) {
+        float step = atMost(scale, sf);
+        return scale - step <= reach ? step : scale;
     }
 
     /** The largest step at or below {@code scale}, never below {@code 1 / sf}: for a size that must fit a space. */

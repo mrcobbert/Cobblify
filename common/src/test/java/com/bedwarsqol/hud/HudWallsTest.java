@@ -126,28 +126,6 @@ public class HudWallsTest {
     private static final List<HudWalls.Rect> WALL_AT_190 = Collections.singletonList(new HudWalls.Rect(190, 0, 50, 270));
 
     @Test
-    public void aSteppedItemStopsOnTheLastStepThatFits() {
-        // room up to 2.25; the smooth search parks just under it, the stepped one keeps the 2.0 step (GUI 2)
-        assertEquals(2.25f, HudWalls.largestFreeScale(1f, 3f, GROW_RIGHT, WALL_AT_190), 1e-3f);
-        assertEquals(2f, HudWalls.largestFreeStep(1f, 3f, 2, GROW_RIGHT, WALL_AT_190), 0f);
-        // GUI 3: steps of a third, the last one under 2.25 is 2.0 as well; GUI 4: 2.25 itself fits
-        assertEquals(2f, HudWalls.largestFreeStep(1f, 3f, 3, GROW_RIGHT, WALL_AT_190), 1e-6f);
-        assertEquals(2.25f, HudWalls.largestFreeStep(1f, 3f, 4, GROW_RIGHT, WALL_AT_190), 0f);
-    }
-
-    @Test
-    public void aSteppedItemThatCannotGrowKeepsItsStep() {
-        assertEquals(2f, HudWalls.largestFreeStep(2f, 3f, 2, GROW_RIGHT, WALL_AT_190), 0f); // next step 2.5 hits
-        assertEquals(3f, HudWalls.largestFreeStep(3f, 4f, 2, GROW_RIGHT, WALL_AT_190), 0f); // already in the wall
-    }
-
-    @Test
-    public void aSteppedItemCanAlwaysShrinkOrGrowIntoFreeRoom() {
-        assertEquals(1f, HudWalls.largestFreeStep(3f, 1f, 2, GROW_RIGHT, WALL_AT_190), 0f);
-        assertEquals(1.5f, HudWalls.largestFreeStep(1f, 1.5f, 2, GROW_RIGHT, WALL_AT_190), 0f);
-    }
-
-    @Test
     public void theHotbarZoneIs182By50AtTheBottomCentre() {
         HudWalls.Rect z = HudWalls.hotbarZone(480, 270);
         assertEquals(149f, z.x, 0f);

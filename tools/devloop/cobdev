@@ -2507,19 +2507,23 @@ def free_spot(hb, w, h, margin=6):
     return None if best is None else (best[1], best[2])
 
 
-def text_scale(scale, sc, minecraft_font):
-    """BedwarsQolFont.textScale: Minecraft's font draws in whole device pixels per font pixel, the modern font at any
-    scale."""
-    return max(1, int(scale * sc + 0.5)) / float(sc) if minecraft_font else scale  # Java's Math.round: half up
+STEP_SNAP = 0.05  # CornerResize.SNAP_TO_ONE: how close a whole size step catches a resize (ScaleSteps)
 
 
-def grow_stopped_ok(gap, content_w, scale, sc, minecraft_font):
-    """A corner resize stopped at a wall `gap` GUI px away: flush, or (Minecraft's font) closer than one more size step,
-    since a box laid out at its text scale grows in whole device pixels per font pixel (A's effective-scale rule)."""
+def on_step(scale, sc):
+    """Whether `scale` is a whole size step: whole device pixels per font pixel (ScaleSteps)."""
+    return abs(scale * sc - round(scale * sc)) < 1e-3
+
+
+def grow_stopped_ok(gap, box_w, scale, sc, minecraft_font):
+    """A corner resize stopped at a wall `gap` GUI px away: flush, or (Minecraft's font) resting on a whole size step
+    at most STEP_SNAP below the flush size (ScaleSteps.restOnStep), so at most STEP_SNAP / scale of the box's width
+    short. HUD text draws at any size (SharpText), so nothing else may stop short."""
     if gap < -1e-3:
         return False
-    step = content_w / text_scale(scale, sc, minecraft_font) / sc if minecraft_font else 0.0
-    return gap <= step + 0.05
+    if gap <= 0.05:
+        return True
+    return minecraft_font and on_step(scale, sc) and gap <= box_w * STEP_SNAP / scale + 0.05
 
 
 def free_point(hb, margin=4):
@@ -2800,17 +2804,8 @@ def edithud_corner_grow(run, item, other, corner, gap):
 
 
 def edithud_grow_gap(run, item):
-    """The gap E7/E7b leave beside `item`: 20 GUI px with the modern font. With Minecraft's font a box laid out at its
-    text scale grows only in whole device pixels per font pixel (+50% at GUI 2) and Edit HUD resizes in those steps,
-    so the gap is room for exactly one more step (its panel padding grows too) and less than two: the item must grow
-    one step and stop there, never park a scale between steps (HUD tweaks scaling report)."""
-    if not run.minecraft_font():
-        return 20
-    hb = run.probe()
-    b = run.box(item, hb)
-    sc = hb["scale"]
-    step = b["w"] / text_scale(run.state(item, hb)["scale"], sc, True) / sc
-    return step + 6
+    """The gap E7/E7b leave beside `item`: 20 GUI px in either font, since HUD text draws at any size (SharpText)."""
+    return 20
 
 
 def edithud_put_back(run, hb, ids):
@@ -2824,7 +2819,7 @@ def edithud_put_back(run, hb, ids):
 
 def edithud_e7(run):
     """E7: Map Info's bottom-right corner, dragged well past Keystrokes beside it, grows it only until its right edge
-    is flush with Keystrokes (Minecraft's font: until one more size step would not fit)."""
+    is flush with Keystrokes (Minecraft's font: or rests on a whole size step just short of it)."""
     s = run.s
     run.show_only({"heightlimit", "keystrokes"})
     start = run.probe()
@@ -2833,11 +2828,8 @@ def edithud_e7(run):
     right = vis(mi)[0] + vis(mi)[2]
     scale = run.state("heightlimit", after)["scale"]
     s.check("E7 Map Info grew", scale > run.state("heightlimit", before)["scale"])
-    if run.minecraft_font():
-        s.check("E7 its scale is a size step, not a value between steps", abs(scale * after["scale"]
-                - round(scale * after["scale"])) < 1e-3, scale)
-    s.check("E7 and stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
-            grow_stopped_ok(vis(ks)[0] - right, mi["w"], scale, after["scale"], run.minecraft_font()),
+    s.check("E7 and stopped at Keystrokes (flush, or on a size step just short in Minecraft's font)",
+            grow_stopped_ok(vis(ks)[0] - right, vis(mi)[2], scale, after["scale"], run.minecraft_font()),
             "right %.4f, Keystrokes left %.4f, scale %.4f" % (right, vis(ks)[0], scale))
     s.check("E7 no overlap", clear_of(mi, ks))
     problems = others_unchanged(before, after, {"heightlimit"})
@@ -2863,8 +2855,8 @@ def edithud_e7b(run):
     s.check("E7b its bottom-right corner stayed put", all(abs(p - q) <= 0.05 for p, q in zip(corner0, corner1)),
             "%s -> %s" % (corner0, corner1))
     scale = run.state("sessionstats", after)["scale"]
-    s.check("E7b its left edge stopped at Keystrokes (flush, or one size step short in Minecraft's font)",
-            grow_stopped_ok(vis(s1)[0] - (vis(ks)[0] + vis(ks)[2]), s1["w"], scale, after["scale"], run.minecraft_font()),
+    s.check("E7b its left edge stopped at Keystrokes (flush, or on a size step just short in Minecraft's font)",
+            grow_stopped_ok(vis(s1)[0] - (vis(ks)[0] + vis(ks)[2]), vis(s1)[2], scale, after["scale"], run.minecraft_font()),
             "left %.4f, Keystrokes right %.4f, scale %.4f" % (vis(s1)[0], vis(ks)[0] + vis(ks)[2], scale))
     s.check("E7b no overlap", clear_of(s1, ks))
     s.shot("edithud-e7b")

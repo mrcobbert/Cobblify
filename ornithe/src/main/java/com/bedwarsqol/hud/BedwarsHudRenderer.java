@@ -638,8 +638,8 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * The scale a module's text is laid out and drawn at: its own, or in Minecraft's font snapped to whole device
-     * pixels per font pixel (see {@link BedwarsQolFont#textScale}). Measure with it wherever text is drawn with it.
+     * The scale a module's text is laid out and drawn at: its own, in Minecraft's font at least one device pixel per
+     * font pixel (see {@link BedwarsQolFont#hudScale}). Measure with it wherever text is drawn with it.
      */
     private static float ts(float scale) {
         return BedwarsQolFont.hudScale(scale);
@@ -889,9 +889,9 @@ public class BedwarsHudRenderer {
     private static final float CROSSHAIR_KEEP_OUT = 0.2f;
 
     /**
-     * Whether HUD item {@code id} is drawn only at whole steps of its scale ({@link ScaleSteps}): in Minecraft's font
-     * every HUD module lays out at its text scale, so Edit HUD resizes it step by step; the scoreboard, chat and tab
-     * list scale smoothly.
+     * Whether HUD item {@code id} has whole steps of its scale ({@link ScaleSteps}), where Minecraft's font is crispest:
+     * every HUD module in Minecraft's font, so Edit HUD lets the steps catch a resize; the scoreboard, chat and tab
+     * list have none.
      */
     public static boolean stepsScale(String id) {
         return BedwarsQolFont.minecraft() && HudModules.ids().contains(id);
@@ -899,8 +899,8 @@ public class BedwarsHudRenderer {
 
     /**
      * The scale HUD item {@code id} is drawn at now: Team Upgrades in its default spot at the layout's fitted scale,
-     * the tab list shrunk to the screen width, and a stepped item ({@link #stepsScale}) at its step. What the Edit HUD
-     * badge shows and a corner resize starts from.
+     * the tab list shrunk to the screen width, and a HUD module in Minecraft's font at its text scale ({@link #ts}). What
+     * the Edit HUD badge shows and a corner resize starts from.
      */
     public static float drawnScale(ClientSettings cfg, String id) {
         HudModuleState state = HudModules.get(cfg, id);

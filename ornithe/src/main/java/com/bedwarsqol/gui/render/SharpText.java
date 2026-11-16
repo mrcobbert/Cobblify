@@ -48,9 +48,8 @@ final class SharpText {
 
     /** GL texture per enlargement (index = texels per font pixel in the copy), 0 = not built. */
     private static final int[] TEX = new int[(int) MAX_SCALE + 1];
-    private static final int[] TEX_SIZE = new int[(int) MAX_SCALE + 1];
     private static int[] source;
-    private static int sourceW, sourceH;
+    private static int sourceW;
     private static boolean sourceTried, listening;
 
     /**
@@ -120,8 +119,9 @@ final class SharpText {
             char c = s.charAt(i);
             if (c == '§' && i + 1 < s.length()) {
                 char code = Character.toLowerCase(s.charAt(++i));
-                int ci = "0123456789abcdef".indexOf(code);
-                if (ci >= 0) {
+                int ci = "0123456789abcdefklmnor".indexOf(code);
+                if (ci < 16) { // a colour, or as vanilla, an unknown code means white
+                    if (ci < 0) ci = 15;
                     bold = false;
                     italic = false;
                     rgb = darken ? (CODE_RGB[ci] & 0xFCFCFC) >> 2 : CODE_RGB[ci];
@@ -192,7 +192,6 @@ final class SharpText {
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
         TEX[n] = id;
-        TEX_SIZE[n] = size;
         return id;
     }
 
@@ -213,7 +212,6 @@ final class SharpText {
             if (w < 128 || w % 128 != 0 || h != w) return false;
             source = img.getRGB(0, 0, w, h, null, 0, w);
             sourceW = w;
-            sourceH = h;
             return true;
         } catch (Exception e) {
             return false;
@@ -234,7 +232,6 @@ final class SharpText {
         for (int i = 0; i < TEX.length; i++) {
             if (TEX[i] != 0) TextureUtil.deleteTexture(TEX[i]);
             TEX[i] = 0;
-            TEX_SIZE[i] = 0;
         }
         source = null;
         sourceTried = false;
