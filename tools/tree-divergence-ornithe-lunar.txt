@@ -182,6 +182,8 @@ one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTeamUpgradesTest.java
 # sheet-row test.
 one-sided main ornithe com/bedwarsqol/feature/Fullbright.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererLightmapMixin.java
+one-sided main ornithe com/bedwarsqol/feature/ItemPhysics.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderEntityItemMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
 
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
