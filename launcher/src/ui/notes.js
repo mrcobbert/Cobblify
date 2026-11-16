@@ -26,6 +26,31 @@ export function noteFor(notes, version) {
   return notes.find((n) => n.version === version) ?? notes.find((n) => n.version === baseVersion(version)) ?? null;
 }
 
+/** "0.19.0-dev.93" -> { base: "0.19.0", word: "dev", n: 93 }; null for a release or any other shape. */
+function build(v) {
+  const m = /^(\d+\.\d+\.\d+)-([a-z]+)\.(\d+)$/i.exec(String(v ?? ""));
+  return m ? { base: m[1], word: m[2].toLowerCase(), n: Number(m[3]) } : null;
+}
+
+/**
+ * What's New's notes for the first open of `version` after `previous` (the highest version opened before, or null),
+ * newest first. A dev or next build that follows a build of its own line gets that line's notes after `previous`, up
+ * to itself, and none when there are none: the release's note is never shown again on every build of the line.
+ * Every other update (a release, the first build of a line, no previous) reads noteFor's note.
+ */
+export function whatsNewNotes(notes, version, previous) {
+  const now = build(version), was = build(previous);
+  if (now && was && was.base === now.base && was.word === now.word) {
+    const line = (n) => {
+      const b = build(n.version);
+      return b && b.base === now.base && b.word === now.word ? b.n : null;
+    };
+    return notes.filter((n) => line(n) != null && line(n) > was.n && line(n) <= now.n).sort((a, b) => line(b) - line(a));
+  }
+  const n = noteFor(notes, version);
+  return n ? [n] : [];
+}
+
 /** What's New's list: every item of the first section, then the next section's first two. */
 export function whatsNewItems(note) {
   if (!note) return [];

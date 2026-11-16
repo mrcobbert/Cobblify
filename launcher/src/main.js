@@ -56,7 +56,7 @@ const connAnnounce = el("conn-announce");
  *   ?ctx=preexisting_game|session_ended|session_changed|launch_aborted (+ _resetting)|join|manual
  *   ?ctx=queueSolo|queueDoubles|queueThrees|queueFours
  *   ?ctx=gameSolo|gameDoubles|gameThrees|gameFours|game4v4
- *   ?open=updated|fresh&version=…  what open_info answers
+ *   ?open=updated|fresh&version=…&previous=…  what open_info answers
  *   ?accent=<token>&font=minecraft|modern  what game_theme answers
  *   ?setup=signin|game|fail  a preview setup stops at sign-in / Close Minecraft, or fails once at check 5
  */
@@ -267,6 +267,7 @@ function previewInvoke(command, args) {
       version: q.get("version") || "0.18.0-next.1",
       updated: q.get("open") === "updated",
       fresh: q.get("open") === "fresh",
+      previous: q.get("previous"),
     });
   }
 

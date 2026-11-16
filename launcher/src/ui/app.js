@@ -13,7 +13,7 @@
  */
 import { KEY_WHITE, keyVars, shade, wordmark } from "./kit.js";
 import { ART, CL, T, esc, pix, pixSh, quarter, trimArt } from "./art.js";
-import { channelOf, fmtDate, noteFor, whatsNewItems } from "./notes.js";
+import { channelOf, fmtDate, whatsNewItems, whatsNewNotes } from "./notes.js";
 import NOTES from "../release-notes.json";
 import * as I3 from "./island3d.js";
 import fallbackSrc from "./island-fallback.png";
@@ -34,7 +34,8 @@ export function createApp(app, actions) {
 
   let H = null; // home model
   let S = null; // sheet model
-  let version = "", devTag = false;
+  /* previous: the highest version opened before this update (open_info), which What's New lists the notes after */
+  let version = "", previous = null, devTag = false;
   let view = "home";
   let menuOpen = false, sheetOpen = false, historyFromSheet = false, modal = null, histSel = NOTES[0]?.version ?? null;
   let active = true;
@@ -362,19 +363,20 @@ export function createApp(app, actions) {
   /* ---------- What's New: Ore's update pop-up ---------- */
   function modalHTML() {
     if (modal !== "whatsnew") return "";
-    const n = noteFor(NOTES, version);
-    if (!n) return "";
+    const list = whatsNewNotes(NOTES, version, previous);
+    if (!list.length) return "";
+    const n = list[0];
     const title = `What's new in ${n.version}`;
     return `<div class="scrim" data-act="close-modal"></div>
       <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}" data-center>
         <div class="sh-hdr">${T(title, "sh nm")}<span class="grow"></span><button class="key xkey" data-act="close-modal" aria-label="Close">${pix(ART.x, "var(--hi)")}</button></div>
-        <div class="wn">${T(`${fmtDate(n.date)} · ${channelOf(version)}`, "mid")}<ul>${whatsNewItems(n).map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+        <div class="wn">${T(`${fmtDate(n.date)} · ${channelOf(version)}`, "mid")}<ul>${list.flatMap(whatsNewItems).map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
           <button class="lnk" data-act="history">${T("All release notes")}</button></div>
         <div class="mfoot-band"><button class="key acc" data-act="close-modal">${T("Continue")}</button></div>
       </div>`;
   }
   function openWhatsNew() {
-    if (!noteFor(NOTES, version)) return;
+    if (!whatsNewNotes(NOTES, version, previous).length) return;
     toggleMenu(false);
     closeSheet({ quiet: true });
     modal = "whatsnew";
@@ -751,6 +753,7 @@ export function createApp(app, actions) {
      * client (spec 1.10), so the caller offers it again on the next home until one is ready. */
     open(info) {
       if (H?.hero?.kind !== "play" || !active || view !== "home" || doc.hidden) return false;
+      previous = info?.previous ?? null;
       const after = info?.updated ? openWhatsNew : () => {};
       playIntro().then(after, after);
       return true;

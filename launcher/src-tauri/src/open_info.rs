@@ -23,6 +23,9 @@ pub struct OpenInfo {
     pub updated: bool,
     /// No launcher of this generation has opened here before, and this is not an update.
     pub fresh: bool,
+    /// On an update, the highest version opened before it, when the record had one: What's New lists the notes
+    /// after it, so a dev build never repeats its release's note.
+    pub previous: Option<String>,
 }
 
 enum LastSeen {
@@ -66,26 +69,27 @@ pub fn capture(home: &Path, running: &str, pending_version: Option<&str>) -> Ope
         version: running.to_string(),
         updated: false,
         fresh: false,
+        previous: None,
     };
     let Ok(current) = Version::parse(running) else {
         return quiet;
     };
     let path = last_seen_path(home);
-    let (updated, fresh, store) = match read_last_seen(&path) {
+    let (updated, fresh, store, previous) = match read_last_seen(&path) {
         // Unreadable: show the island still and leave the record alone.
         LastSeen::Unreadable => return quiet,
         LastSeen::Absent => {
             let updated = pending_version.map(str::trim) == Some(running);
-            (updated, !updated, current.clone())
+            (updated, !updated, current.clone(), None)
         }
         // A record we cannot read as a version is never a first install, and never a reason
         // to replay; it is replaced.
-        LastSeen::Unparseable => (false, false, current.clone()),
-        LastSeen::Seen(seen) => {
-            let updated = current > seen;
-            // Keep the highest: opening an older build must not make the newer one replay.
-            (updated, false, if updated { current.clone() } else { seen })
+        LastSeen::Unparseable => (false, false, current.clone(), None),
+        // Keep the highest: opening an older build must not make the newer one replay.
+        LastSeen::Seen(seen) if current > seen => {
+            (true, false, current.clone(), Some(seen.to_string()))
         }
+        LastSeen::Seen(seen) => (false, false, seen, None),
     };
     // An update is only "the first open" if the record of it sticks: when it cannot be written, every later
     // open would replay too, so this one stays quiet instead.
@@ -96,6 +100,7 @@ pub fn capture(home: &Path, running: &str, pending_version: Option<&str>) -> Ope
         version: running.to_string(),
         updated,
         fresh,
+        previous,
     }
 }
 
@@ -108,10 +113,13 @@ pub fn pending_version(home: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The counter keeps parallel tests apart: two started in the same clock tick got the same folder.
     fn temp_home() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "cobblify-open-info-{}-{}",
+            "cobblify-open-info-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -163,6 +171,24 @@ mod tests {
         set_seen(&home, "0.18.0-dev.3");
         assert!(capture(&home, "0.18.0-dev.4", None).updated);
         assert!(capture(&home, "0.18.0", None).updated);
+    }
+
+    #[test]
+    fn an_update_names_the_version_opened_before_it() {
+        let home = temp_home();
+        set_seen(&home, "0.19.0-dev.88");
+        let info = capture(&home, "0.19.0-dev.92", None);
+        assert_eq!(info.previous.as_deref(), Some("0.19.0-dev.88"));
+        // Reopening is no update and names nothing; neither does an older build.
+        assert_eq!(capture(&home, "0.19.0-dev.92", None).previous, None);
+        assert_eq!(capture(&home, "0.19.0-dev.90", None).previous, None);
+    }
+
+    #[test]
+    fn an_update_without_a_record_names_no_previous_version() {
+        let home = temp_home();
+        let info = capture(&home, "0.18.0", Some("0.18.0"));
+        assert_eq!((info.updated, info.previous), (true, None));
     }
 
     #[test]

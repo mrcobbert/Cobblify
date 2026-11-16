@@ -42,6 +42,13 @@ def runner_ids():
     return api(f'repos/{REPO}/actions/runners')['runners']
 
 
+def missing_dev_note(notes, version, runs):
+    """The dev build this dispatch gets (`<version>-dev.<next run number>`), or None when release-notes.json has
+    its What's New note. `runs` is the newest launcher-update run, if any (the API lists newest first)."""
+    build = f"{version}-dev.{(runs[0]['run_number'] if runs else 0) + 1}"
+    return None if any(n.get('version') == build for n in notes) else build
+
+
 def validate_run(record, commit, title):
     if not (record['head_sha'] == commit and record['event'] == 'workflow_dispatch'
             and record['actor']['login'] == 'mrcobbert' and record['display_title'] == title
@@ -99,6 +106,13 @@ def main():
     if not remote or remote[0] != commit:
         raise RuntimeError('Push this exact commit before dispatch')
     version = next(line.split('=', 1)[1] for line in (ROOT / 'gradle.properties').read_text().splitlines() if line.startswith('mod_version='))
+    if options.publish_dev:
+        # Every dev build says what it adds: without its own note, What's New on it would stay shut.
+        runs = api(f'repos/{REPO}/actions/workflows/launcher-update.yml/runs?per_page=1')['workflow_runs']
+        notes = json.loads((ROOT / 'launcher/src/release-notes.json').read_text())
+        build = missing_dev_note(notes, version, runs)
+        if build:
+            raise RuntimeError(f"Add {build}'s What's New note to launcher/src/release-notes.json, then push and rerun")
     nonce = secrets.token_hex(16)
     title = f'Launcher {version} local {nonce}'
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
