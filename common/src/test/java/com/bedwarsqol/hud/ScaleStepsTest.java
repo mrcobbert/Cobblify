@@ -34,6 +34,8 @@ public class ScaleStepsTest {
         assertEquals(1.5f, ScaleSteps.restOnStep(1.5f, 2, 0.05f), 0f);
         assertEquals(1.62f, ScaleSteps.restOnStep(1.62f, 2, 0.05f), 0f); // too far past the step: flush with the wall
         assertEquals(1.497f, ScaleSteps.restOnStep(1.497f, 2, 0.05f), 0f); // never rounds up into the wall
+        assertEquals(1.4999f, ScaleSteps.restOnStep(1.4999f, 2, 0.05f), 0f); // not even by float noise
+        assertEquals(0.4f, ScaleSteps.restOnStep(0.4f, 2, 0.05f), 0f); // under the smallest step: as it is
     }
 
     @Test

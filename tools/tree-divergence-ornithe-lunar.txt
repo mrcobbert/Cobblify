@@ -256,3 +256,7 @@ one-sided res ornithe com/bedwarsqol/version.properties
 # C01PacketChatMessageMixin), the server-side Clutch mixins, and the event, command
 # and camera mixins above.
 divergent res mixins.bedwarsqol.json
+
+# Sharp HUD text (Ornithe only): HUD module text in Minecraft's font at in-between sizes, drawn sharp
+# bilinear from the game's own font texture.
+one-sided main ornithe com/bedwarsqol/gui/render/SharpText.java

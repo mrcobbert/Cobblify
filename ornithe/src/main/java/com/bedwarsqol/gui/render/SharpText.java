@@ -46,6 +46,14 @@ final class SharpText {
             0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xFFAA00, 0xAAAAAA,
             0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF};
 
+    /** Their shadows: a quarter of each, but gold's without its extra red, as vanilla's table has it. */
+    private static int shadowOf(int code) {
+        return code == 6 ? 0x2A2A00 : (CODE_RGB[code] & 0xFCFCFC) >> 2;
+    }
+
+    /** Largest copy built: a bigger one (a 4096 px resource-pack font) is left to vanilla. */
+    private static final int MAX_TEXTURE = 4096;
+
     /** GL texture per enlargement (index = texels per font pixel in the copy), 0 = not built. */
     private static final int[] TEX = new int[(int) MAX_SCALE + 1];
     private static int[] source;
@@ -124,7 +132,7 @@ final class SharpText {
                     if (ci < 0) ci = 15;
                     bold = false;
                     italic = false;
-                    rgb = darken ? (CODE_RGB[ci] & 0xFCFCFC) >> 2 : CODE_RGB[ci];
+                    rgb = darken ? shadowOf(ci) : CODE_RGB[ci];
                 } else if (code == 'l') {
                     bold = true;
                 } else if (code == 'o') {
@@ -159,14 +167,21 @@ final class SharpText {
         wr.pos(x0 + top, y0, 0).tex(u0, v0).color(r, g, b, a).endVertex();
     }
 
-    /** The copy at {@code n} texels per font pixel, built on first use; 0 if the font texture cannot be read. */
+    /**
+     * The copy at {@code n} texels per font pixel, built on first use; 0 if the font texture cannot be read or the copy
+     * would be too big (then -1 is cached, so it is not tried every frame).
+     */
     private static int texture(int n) {
         listen();
-        if (TEX[n] != 0) return TEX[n];
+        if (TEX[n] != 0) return Math.max(0, TEX[n]);
         if (!loadSource()) return 0;
         int c = sourceW / 128;                  // texels per font pixel in the source (HD resource packs: more)
         int m = Math.max(1, (n + c - 1) / c);   // whole enlargement of the source
         int cellSrc = 8 * c, pad = c * m, cellOut = cellSrc * m + 2 * pad, size = 16 * cellOut;
+        if (size > Math.min(MAX_TEXTURE, GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE))) {
+            TEX[n] = -1;
+            return 0;
+        }
         int[] out = new int[size * size];
         for (int cy = 0; cy < 16; cy++) {
             for (int cx = 0; cx < 16; cx++) {
@@ -230,7 +245,7 @@ final class SharpText {
 
     private static void clear() {
         for (int i = 0; i < TEX.length; i++) {
-            if (TEX[i] != 0) TextureUtil.deleteTexture(TEX[i]);
+            if (TEX[i] > 0) TextureUtil.deleteTexture(TEX[i]);
             TEX[i] = 0;
         }
         source = null;

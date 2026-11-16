@@ -21,8 +21,8 @@ public final class ScaleSteps {
      * else {@code scale}. It never rounds up, so the result still fits.
      */
     public static float restOnStep(float scale, int sf, float reach) {
-        float step = atMost(scale, sf);
-        return scale - step <= reach ? step : scale;
+        float step = Math.max(1, (int) Math.floor(scale * sf)) / (float) sf;
+        return step <= scale && scale - step <= reach ? step : scale;
     }
 
     /** The largest step at or below {@code scale}, never below {@code 1 / sf}: for a size that must fit a space. */
