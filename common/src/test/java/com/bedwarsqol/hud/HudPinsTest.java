@@ -64,14 +64,21 @@ public class HudPinsTest {
     }
 
     @Test
-    public void showingPutsTheItemOnAutoFromAnyPreviousSpot() {
+    public void showingKeepsTheSpotTheItemWasHiddenAt() {
+        // moved, then hidden: shown again exactly where it was, to the fraction, size and Background kept
         HudModuleState hidden = new HudModuleState(120, -30, 8, 2f, false, false, 0.25f, -0.5f);
         HudModuleState s = HudPins.shown(hidden);
         assertTrue(s.enabled);
-        assertEquals(HudPlacement.AUTO, s.anchor);
-        assertEquals(0f, s.fracX, 0f);
-        assertEquals(0f, s.fracY, 0f);
+        assertEquals(120, s.x);
+        assertEquals(-30, s.y);
+        assertEquals(8, s.anchor);
+        assertEquals(0.25f, s.fracX, 0f);
+        assertEquals(-0.5f, s.fracY, 0f);
         assertEquals(2f, s.scale, 0f);
         assertFalse(s.background);
+        // never moved: still on Auto, so it takes the first free Auto spot
+        HudModuleState auto = HudPins.shown(new HudModuleState(0, 0, HudPlacement.AUTO, 1f, false, true, 0f, 0f));
+        assertTrue(auto.enabled);
+        assertEquals(HudPlacement.AUTO, auto.anchor);
     }
 }

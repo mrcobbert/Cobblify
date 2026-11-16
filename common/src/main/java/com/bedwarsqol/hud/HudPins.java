@@ -39,8 +39,12 @@ public final class HudPins {
                 HudPlacement.exactStoredY(y, anchor, h, sh), anchor);
     }
 
-    /** A newly shown item: switched on and back on Auto, so it takes the first free Auto spot (whatever spot it had). */
+    /**
+     * A newly shown item: switched on, everything else kept. One the player moved comes back on the spot it had when it
+     * was hidden (the caller moves it to the nearest free spot if something covers that now); one still on Auto takes
+     * the first free Auto spot.
+     */
     public static HudModuleState shown(HudModuleState state) {
-        return state.withEnabled(true).withPosition(0, 0, HudPlacement.AUTO);
+        return state.withEnabled(true);
     }
 }

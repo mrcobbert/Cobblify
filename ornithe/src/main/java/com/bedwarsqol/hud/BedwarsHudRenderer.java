@@ -446,23 +446,58 @@ public class BedwarsHudRenderer {
     }
 
     /**
-     * Shows modules {@code ids}: the other shown Auto modules are pinned first, then each goes on Auto and takes the
-     * first free Auto spot, whatever spot it had before it was hidden. A module that comes on with them (the two gen
+     * Shows modules {@code ids}, moving nothing else: the other shown Auto modules are pinned first. A module the player
+     * moved comes back on the spot it had when it was hidden, or the nearest free spot if another item or the hotbar
+     * covers that now; one still on Auto takes the first free Auto spot. A module that comes on with them (the two gen
      * timers share one switch) is newly shown too.
      */
     public static void show(Minecraft mc, ClientSettings cfg, Collection<String> ids) {
         Map<String, HudModuleState> before = HudModules.snapshot(cfg);
         pinShownAuto(mc, cfg, ids);
+        List<String> shown = new ArrayList<String>();
         for (String id : ids) {
             HudModuleState s = HudModules.get(cfg, id);
-            if (s != null) HudModules.set(cfg, id, HudPins.shown(s));
+            if (s == null) continue;
+            HudModules.set(cfg, id, HudPins.shown(s));
+            shown.add(id);
         }
         for (String id : HudModules.ids()) {
             HudModuleState was = before.get(id), now = HudModules.get(cfg, id);
-            if (was != null && now != null && !was.enabled && now.enabled && !ids.contains(id)) {
+            if (was != null && now != null && !was.enabled && now.enabled && !shown.contains(id)) {
                 HudModules.set(cfg, id, HudPins.shown(now));
+                shown.add(id);
             }
         }
+        for (String id : shown) moveClearOfWalls(mc, cfg, id);
+    }
+
+    /**
+     * Module {@code id} on a stored spot that overlaps a wall ({@link HudWalls#isWall}: another shown item, the
+     * scoreboard and chat included, and the hotbar zone) moves to the nearest free spot, as Edit HUD does after a
+     * resize; its size stays. A module on Auto is left to the Auto layout.
+     */
+    private static void moveClearOfWalls(Minecraft mc, ClientSettings cfg, String id) {
+        HudModuleState s = mc == null ? null : HudModules.get(cfg, id);
+        if (s == null || s.anchor == HudPlacement.AUTO) return;
+        ScaledResolution r = new ScaledResolution(mc);
+        float sw = r.getScaledWidth(), sh = r.getScaledHeight();
+        HudBox box = null;
+        List<HudWalls.Rect> walls = new ArrayList<HudWalls.Rect>();
+        for (HudBox b : getEditorBoxes(mc, cfg)) {
+            if (id.equals(b.id)) box = b;
+            else if (HudWalls.isWall(id, b.id, b.shown, false)) {
+                walls.add(new HudWalls.Rect(b.visualX(), b.visualY(), b.visualWidth(), b.visualHeight()));
+            }
+        }
+        if (box == null) return;
+        walls.add(HudWalls.hotbarWall(id, sw, sh));
+        float vx = box.visualX(), vy = box.visualY(), vw = box.visualWidth(), vh = box.visualHeight();
+        if (HudWalls.free(vx, vy, vw, vh, walls)) return;
+        float[] at = HudWalls.resolve(vx, vy, vw, vh, sw, sh, walls, vx, vy);
+        pinDrawnScale(cfg, id);
+        float x = Math.max(box.pad, Math.min(at[0] + box.pad, sw - box.width - box.pad));
+        float y = Math.max(box.pad, Math.min(at[1] + box.pad, sh - box.height - box.pad));
+        setHudAbsolutePosition(cfg, id, x, y, box.width, box.height, sw, sh);
     }
 
     /**

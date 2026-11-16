@@ -707,8 +707,9 @@ public class EditHudGui extends GuiScreen {
     }
 
     /**
-     * Shows or hides module {@code id} as one undoable step, moving nothing else. A shown Cobblify module takes its
-     * first free Auto spot, whatever spot it had before it was hidden (undo brings that spot back).
+     * Shows or hides module {@code id} as one undoable step, moving nothing else. A shown Cobblify module comes back on
+     * the spot it had, or the nearest free spot if something covers that now; one never moved takes its first free Auto
+     * spot.
      */
     private void setShown(final String id, final boolean shown) {
         edit(id, new Runnable() {

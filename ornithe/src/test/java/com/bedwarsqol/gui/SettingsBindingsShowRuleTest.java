@@ -15,9 +15,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Switching a module on in the settings shows its HUD items, which then take their first free Auto spot. Only the
- * module enable switches count: never a Background switch (an item keeps its spot when its Background changes), never
- * In Game Only, never the scoreboard, chat or tab list.
+ * Switching a module on or off in the settings shows or hides its HUD items: shown, a moved item comes back on its spot
+ * (the nearest free one if that is covered now) and a never-moved one takes its first free Auto spot; either way the
+ * other Auto items are pinned so nothing else moves. Only the module enable switches count: never a Background switch
+ * (an item keeps its spot when its Background changes), never In Game Only, never the scoreboard, chat or tab list.
  */
 public class SettingsBindingsShowRuleTest {
 
