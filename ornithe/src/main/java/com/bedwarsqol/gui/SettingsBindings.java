@@ -207,9 +207,15 @@ final class SettingsBindings implements SheetValues {
             c.save();
             return;
         }
-        // A module switched on: its items take their first free Auto spot, nothing else moves.
-        List<String> shown = v && !on(id) ? hudIdsShownBy(id) : Collections.<String>emptyList();
-        if (!shown.isEmpty()) BedwarsHudRenderer.show(Minecraft.getMinecraft(), c, shown);
+        // A module switched on: its items come back where they were (the nearest free spot if that is covered now), or
+        // take their first free Auto spot if never moved. Switched off: the other Auto items are pinned first, as Edit
+        // HUD's Hide does, so they don't close up the gap. Either way nothing else moves.
+        boolean change = v != on(id);
+        List<String> items = change ? hudIdsShownBy(id) : Collections.<String>emptyList();
+        if (!items.isEmpty()) {
+            if (v) BedwarsHudRenderer.show(Minecraft.getMinecraft(), c, items);
+            else BedwarsHudRenderer.pinShownAuto(Minecraft.getMinecraft(), c, items);
+        }
         switch (id) {
             case "potion": c.potionStatusEnabled = v; break;
             case "potionInGame": c.potionInGameOnly = v; break;

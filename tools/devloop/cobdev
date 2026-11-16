@@ -2866,12 +2866,13 @@ def edithud_e7b(run):
 
 
 def edithud_e15(run):
-    """E15: a module hidden at a clear manual spot and shown again from its right-click menu takes its first free
-    Auto spot, not the old one; nothing else moves; undo brings the old spot back. (The settings-row half needs
-    the sheet-node probe.)"""
+    """E15: a module hidden at a clear manual spot and shown again, from its right-click menu or its settings switch,
+    comes back on that spot and nothing else moves; undo hides it again. Shown while another module covers the spot,
+    it goes to the nearest free spot instead."""
     s = run.s
     run.show_only(None)
     hb = run.probe()
+    start = hb
     ks = run.box("keystrokes", hb)
     kx, ky, kw, kh = vis(ks)
     others = dict(hb, boxes=[b for b in hb["boxes"] if b["id"] != "keystrokes"])
@@ -2880,8 +2881,12 @@ def edithud_e15(run):
         return
     run.device_drag("keystrokes", spot[0] - kx, spot[1] - ky, mods="alt")  # the drag also selects it
     placed = run.probe()
-    st0 = run.state("keystrokes", placed)
+    st0, at0 = run.state("keystrokes", placed), vis(run.box("keystrokes", placed))
     cx, cy = gui_centre(run.box("keystrokes", placed))
+
+    def on_spot(st):
+        return all(st.get(k) == st0.get(k) for k in POSITION_KEYS)
+
     s.call("/key", {"code": KEYS["delete"]})
     hidden = run.probe()
     s.check("E15 Delete hides it", not run.state("keystrokes", hidden)["enabled"])
@@ -2894,26 +2899,45 @@ def edithud_e15(run):
     s.call("/click", {"x": int(r["x"] + r["w"] / 2), "y": int(r["y"] + r["h"] / 2)})
     shown = run.probe()
     st1, b1 = run.state("keystrokes", shown), run.box("keystrokes", shown)
-    s.check("E15 after Show it is on Auto", st1["enabled"] and st1["anchor"] == -1, st1)
-    s.check("E15 not back at the clear spot", abs(vis(b1)[0] - vis(run.box("keystrokes", placed))[0]) > 1
-            or abs(vis(b1)[1] - vis(run.box("keystrokes", placed))[1]) > 1,
-            "drawn at %s" % (vis(b1),))
+    s.check("E15 after Show it is back on its spot", st1["enabled"] and on_spot(st1), st1)
+    s.check("E15 ... drawn where it was", all(abs(p - q) <= 1e-3 for p, q in zip(vis(b1), at0)),
+            "%s vs %s" % (vis(b1), at0))
     problems = others_unchanged(hidden, shown, {"keystrokes"})
     s.check("E15 nothing else moved", not problems, problems or None)
     s.call("/key", {"code": KEYS["z"], "mods": "ctrl"})
     undone = run.state("keystrokes", run.probe())
-    s.check("E15 undo brings the centre spot back", all(undone.get(k) == st0.get(k)
-                                                         for k in ("x", "y", "fracX", "fracY", "anchor")), undone)
+    s.check("E15 undo hides it again on its spot", not undone["enabled"] and on_spot(undone), undone)
     s.shot("edithud-e15")
-    # Keystrokes is hidden at the centre again: its switch in the settings sheet shows it at the same Auto spot.
+    # Keystrokes is hidden at the clear spot again: its switch in the settings sheet shows it there too.
     run.open_settings()
+    before = run.probe()
     run.sheet_click("keystrokes", "MODULE_TOGGLE")
     via = run.probe()
     st2, b2 = run.state("keystrokes", via), run.box("keystrokes", via)
-    s.check("E15 the settings switch shows it on Auto", st2["enabled"] and st2["anchor"] == -1, st2)
-    s.check("E15 ... at the same Auto spot as the menu's Show", all(abs(p - q) <= 1e-3 for p, q in zip(vis(b1), vis(b2))),
-            "%s vs %s" % (vis(b1), vis(b2)))
+    s.check("E15 the settings switch shows it on its spot", st2["enabled"] and on_spot(st2), st2)
+    s.check("E15 ... drawn where it was", all(abs(p - q) <= 1e-3 for p, q in zip(vis(b2), at0)),
+            "%s vs %s" % (vis(b2), at0))
+    problems = others_unchanged(before, via, {"keystrokes"})
+    s.check("E15 ... and moves nothing else", not problems, problems or None)
+    # Hidden from the settings, then Session Stats moved over its spot: shown again, it takes the nearest free spot.
+    run.sheet_click("keystrokes", "MODULE_TOGGLE")
+    s.check("E15 the settings switch hides it", not run.state("keystrokes", run.probe())["enabled"])
     s.call("/open", {"class": SCREENS["hud"]})
+    ss = run.box("sessionstats", run.probe())
+    run.device_drag("sessionstats", at0[0] - vis(ss)[0], at0[1] - vis(ss)[1], mods="alt")
+    covered = run.probe()
+    ss1 = run.box("sessionstats", covered)
+    if s.check("E15 Session Stats now covers the spot", not clear_of({"x": at0[0], "y": at0[1], "w": at0[2], "h": at0[3], "pad": 0}, ss1), vis(ss1)):
+        run.open_settings()
+        run.sheet_click("keystrokes", "MODULE_TOGGLE")
+        moved = run.probe()
+        b3 = run.box("keystrokes", moved)
+        s.check("E15 shown over a covered spot, it is clear of Session Stats", run.state("keystrokes", moved)["enabled"]
+                and clear_of(b3, run.box("sessionstats", moved)), "%s vs %s" % (vis(b3), vis(run.box("sessionstats", moved))))
+        problems = others_unchanged(covered, moved, {"keystrokes"})
+        s.check("E15 ... and moves nothing else", not problems, problems or None)
+    s.call("/open", {"class": SCREENS["hud"]})
+    edithud_put_back(run, start, ("sessionstats", "keystrokes"))
 
 
 HUD_SIZE_SCALES = {0: 0.75, 1: 1.0, 2: 1.5}  # ClientSettings.defaultTextSizeScale()
