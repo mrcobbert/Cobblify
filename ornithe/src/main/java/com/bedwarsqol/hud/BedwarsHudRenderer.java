@@ -1503,9 +1503,12 @@ public class BedwarsHudRenderer {
         }
     };
 
-    /** The module's runs, between brackets when its Brackets switch is on (with or without its Background). */
+    /**
+     * The module's runs, its word where its Label puts it, between brackets when its Brackets switch is on (with or
+     * without its Background).
+     */
     private static List<TextModules.Seg> textSegs(Minecraft mc, ClientSettings cfg, String id, boolean example) {
-        List<TextModules.Seg> segs = textRuns(mc, id, example);
+        List<TextModules.Seg> segs = TextModules.labelled(textRuns(mc, id, example), HudModules.label(cfg, id));
         return HudModules.brackets(cfg, id) ? TextModules.bracketed(segs) : segs;
     }
 

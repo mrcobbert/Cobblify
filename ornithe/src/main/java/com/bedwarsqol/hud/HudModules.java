@@ -270,6 +270,14 @@ public final class HudModules {
         return false;
     }
 
+    /** Where text module {@code id} (FPS, CPS, Ping) puts its word; After for any other id. */
+    public static TextModules.Label label(ClientSettings c, String id) {
+        if (BedwarsHudRenderer.FPS_HUD.equals(id)) return TextModules.Label.of(c.fpsLabel);
+        if (BedwarsHudRenderer.CPS_HUD.equals(id)) return TextModules.Label.of(c.cpsLabel);
+        if (BedwarsHudRenderer.PING_HUD.equals(id)) return TextModules.Label.of(c.pingLabel);
+        return TextModules.Label.AFTER;
+    }
+
     /** Whether HUD item {@code id} draws its background; On for an id without a Background switch. */
     public static boolean background(ClientSettings c, String id) {
         if (IDS.contains(id)) return get(c, id).background;

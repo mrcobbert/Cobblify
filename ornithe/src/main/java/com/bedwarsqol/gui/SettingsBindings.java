@@ -11,6 +11,7 @@ import com.bedwarsqol.gui.sheet.SheetLayout;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
+import com.bedwarsqol.hud.TextModules;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.Minecraft;
 import org.lwjgl.input.Keyboard;
@@ -118,6 +119,7 @@ final class SettingsBindings implements SheetValues {
                 || "teamUpgrades".equals(id) || "teamUpgradesLayout".equals(id)
                 || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
                 || "fpsBrackets".equals(id) || "cpsBrackets".equals(id) || "pingBrackets".equals(id)
+                || "fpsLabel".equals(id) || "cpsLabel".equals(id) || "pingLabel".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -289,6 +291,9 @@ final class SettingsBindings implements SheetValues {
             case "tntRadius": return String.valueOf(TNT_RADII[nearest(TNT_RADII, c.tntFuseRadius)]);
             case "boStyle": return SheetSchema.row(id).options()[clamp(c.blockOverlayStyle, 0, 2)];
             case "teamUpgradesLayout": return SheetSchema.row(id).options()[clamp(c.teamUpgradesLayout, 0, 1)];
+            case "fpsLabel": return TextModules.Label.of(c.fpsLabel).text;
+            case "cpsLabel": return TextModules.Label.of(c.cpsLabel).text;
+            case "pingLabel": return TextModules.Label.of(c.pingLabel).text;
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
@@ -309,6 +314,9 @@ final class SettingsBindings implements SheetValues {
             case "tntRadius": c.tntFuseRadius = TNT_RADII[i]; break;
             case "boStyle": c.blockOverlayStyle = i; break;
             case "teamUpgradesLayout": c.teamUpgradesLayout = i; break;
+            case "fpsLabel": c.fpsLabel = TextModules.Label.named(option).ordinal(); break;
+            case "cpsLabel": c.cpsLabel = TextModules.Label.named(option).ordinal(); break;
+            case "pingLabel": c.pingLabel = TextModules.Label.named(option).ordinal(); break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
             case "guiSize": c.guiSize = i; break;
