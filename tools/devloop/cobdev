@@ -3560,6 +3560,10 @@ HL_LAYOUT = {"potion": "potionHud", "armor": "armorHud", "inventory": "inventory
 HL_OTHER_FIELDS = ["potionInGameOnly", "armorInGameOnly", "inventoryInGameOnly", "genTimersInGameOnly",
                    "keystrokesInGameOnly", "heightLimitInGameOnly", "sessionStatsHoldKey", "guiFont", "guiAccent",
                    "defaultTextSize"]
+# FPS/CPS/Ping text switches the HL checks assume at their defaults (word after the number, no brackets); a build
+# without them skips them. Saved and put back like the fields above.
+HL_TEXT_DEFAULTS = [("fpsLabel", 0), ("cpsLabel", 0), ("pingLabel", 0),
+                    ("fpsBrackets", False), ("cpsBrackets", False), ("pingBrackets", False)]
 # Keystrokes caps (KeystrokesLayout.CAPS), GUI px from the module's top-left at scale 1.
 HL_CAPS = [(19, 0, 18, 18), (0, 19, 18, 18), (19, 19, 18, 18), (38, 19, 18, 18), (0, 57, 56, 10),
            (0, 38, 27.5, 18), (28.5, 38, 27.5, 18)]
@@ -3577,6 +3581,8 @@ class HudLook:
         self.fields = [g[1] for g in self.groups] + HL_OTHER_FIELDS
         for i in self.ids:
             self.fields += [HL_LAYOUT[i] + k for k in ("X", "Y", "Anchor", "Scale")]
+        self.text_defaults = [(n, v) for n, v in HL_TEXT_DEFAULTS if find_field(s, cfg, [n])]
+        self.fields += [n for n, _ in self.text_defaults]
         self.saved, self.saved_bg, self.saved_gui = {}, {}, None
         self.sf = 2
 
@@ -3636,6 +3642,8 @@ class HudLook:
         for name in HL_OTHER_FIELDS[:7]:
             self.f(name, False)
         self.s.call("/invoke", post={"path": self.cfg + ".setHudSize", "args": "1"})
+        for name, value in self.text_defaults:
+            self.f(name, value)
         for i in self.ids:
             self.f(HL_LAYOUT[i] + "Anchor", -1)
             self.f(HL_LAYOUT[i] + "Scale", 1.0)
