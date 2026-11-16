@@ -237,11 +237,12 @@ public final class SheetSchema {
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
-     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint, Team Upgrades and the FPS,
-     * CPS and Ping HUD modules are the Ornithe build's; Lunar has its own.
+     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint, Team Upgrades, the FPS,
+     * CPS and Ping HUD modules and the Fullbright, Item Physics, 1.7 Animations and Particles Visuals modules are the
+     * Ornithe build's; Lunar has its own.
      */
     private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
-            "teamUpgrades", "fps", "cps", "ping"));
+            "teamUpgrades", "fps", "cps", "ping", "fullbright", "itemPhysics", "oldAnimations", "particles"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -312,6 +313,20 @@ public final class SheetSchema {
                         seg("boStyle", "Style", "How the block is marked", null, "Outline", "Fill", "Both"),
                         seg("boOpacity", "Opacity", "How strong the fill is", null, "Low", "Medium", "High"),
                         toggle("boWhite", "White", "White instead of your accent", "colour color")),
+                module("fullbright", "Fullbright", "See clearly in caves and at night; key in Controls",
+                        "brightness gamma night vision light dark"),
+                module("itemPhysics", "Item Physics", "Dropped items lie flat and tumble", "drops ground physic"),
+                module("oldAnimations", "1.7 Animations", "Old sword, sneak and hit animations", "old animations legacy 1.7",
+                        toggle("oaBlockHit", "Block Hit", "1.7 sword block, and swing while blocking", "blockhit sword"),
+                        toggle("oaItemPosition", "Item Position", "Held items where 1.7 put them", "first person third person"),
+                        toggle("oaSmoothSneak", "Smooth Sneak", "Camera glides down and up when you sneak", "crouch shift"),
+                        toggle("oaHearts", "Hearts", "Hearts flash only when you take damage", "health blink"),
+                        toggle("oaRedArmor", "Red Armor", "Armor turns red when a player is hit", "armour hurt")),
+                module("particles", "Particles", "Crit, potion and block particle options", "effects sharpness",
+                        toggle("ptAlwaysCrit", "Always Crit", "Crit and sharpness particles on every hit", "sharpness"),
+                        toggle("ptHideOwnPotion", "Hide Own Potion", "No swirls from your own effects in first person", "effects swirls"),
+                        toggle("ptHideBlockBreak", "Hide Block Break", "No pieces when blocks are hit or broken", "mining"),
+                        seg("ptMultiplier", "Multiplier", "More crit and sharpness particles", "amount", "1x", "2x", "3x")),
                 module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list"),
                 backgroundModule("scoreboardBg", "Scoreboard Background", "scoreboard",
                         "See-through fill behind the sidebar", "transparent opacity box"),

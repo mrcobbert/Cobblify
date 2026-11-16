@@ -289,6 +289,76 @@ public class SheetPlatformOnlyTest {
         assertEquals("teamUpgrades", SheetSearch.search("traps", new Tree(null, true)).get(0).module.id);
     }
 
+    /** Visuals modules of the Ornithe build, in sheet order, each with its rows in order (id, name, kind). */
+    private static final String[][][] VISUAL_MODULES = {
+            {{"fullbright", "Fullbright"}},
+            {{"itemPhysics", "Item Physics"}},
+            {{"oldAnimations", "1.7 Animations"},
+                    {"oaBlockHit", "Block Hit", "TOGGLE"},
+                    {"oaItemPosition", "Item Position", "TOGGLE"},
+                    {"oaSmoothSneak", "Smooth Sneak", "TOGGLE"},
+                    {"oaHearts", "Hearts", "TOGGLE"},
+                    {"oaRedArmor", "Red Armor", "TOGGLE"}},
+            {{"particles", "Particles"},
+                    {"ptAlwaysCrit", "Always Crit", "TOGGLE"},
+                    {"ptHideOwnPotion", "Hide Own Potion", "TOGGLE"},
+                    {"ptHideBlockBreak", "Hide Block Break", "TOGGLE"},
+                    {"ptMultiplier", "Multiplier", "SEG"}},
+    };
+
+    @Test
+    public void visualModulesFollowBlockOverlayWithTheirRowsInOrder() {
+        List<String> visuals = modules(new Tree(null, true), "visuals");
+        int b = visuals.indexOf("blockOverlay");
+        assertEquals(Arrays.asList("blockOverlay", "fullbright", "itemPhysics", "oldAnimations", "particles"),
+                visuals.subList(b, b + 5));
+        for (String[][] spec : VISUAL_MODULES) {
+            SheetSchema.Module m = SheetSchema.module(spec[0][0]);
+            assertEquals(spec[0][0], spec[0][1], m.name);
+            assertEquals(spec[0][0], "visuals", m.category().id);
+            assertTrue(spec[0][0], SheetSchema.platformOnly(spec[0][0]));
+            assertTrue(spec[0][0] + " has a description", m.desc != null && !m.desc.isEmpty());
+            assertTrue(spec[0][0] + " has search keywords", m.kw != null && !m.kw.isEmpty());
+            assertEquals(spec[0][0] + " rows", spec.length - 1, m.rows.size());
+            for (int i = 1; i < spec.length; i++) {
+                SheetSchema.Row r = m.rows.get(i - 1);
+                assertEquals(spec[0][0] + " row " + i, spec[i][0], r.id);
+                assertEquals(r.id, spec[i][1], r.name);
+                assertEquals(r.id, SheetSchema.Kind.valueOf(spec[i][2]), r.kind);
+                assertTrue(r.id + " has a description", r.desc != null && !r.desc.isEmpty());
+                assertTrue(r.id, SheetSchema.platformOnly(r.id));
+                assertEquals(r.id, null, r.hudItem());
+            }
+        }
+        SheetSchema.Module particles = SheetSchema.module("particles");
+        SheetSchema.Row last = particles.rows.get(particles.rows.size() - 1);
+        assertEquals("Multiplier is the last Particles row", "ptMultiplier", last.id);
+        assertArrayEquals(new String[]{"1x", "2x", "3x"}, last.options());
+        assertFalse(SheetSchema.platformOnly("blockOverlay"));
+    }
+
+    @Test
+    public void visualModulesHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        for (String[][] spec : VISUAL_MODULES) {
+            for (String[] row : spec) {
+                assertFalse(row[0], SheetSchema.shows(acceptsEverything, row[0]));
+                assertFalse(row[0], SheetSchema.shows(lunar, row[0]));
+                assertTrue(row[0], SheetSchema.shows(ornithe, row[0]));
+            }
+            assertFalse(modules(acceptsEverything, "visuals").contains(spec[0][0]));
+            assertFalse(modules(lunar, "visuals").contains(spec[0][0]));
+        }
+        for (String q : new String[]{"fullbright", "item physics", "1.7 animations", "multiplier"}) {
+            assertTrue(q, SheetSearch.search(q, acceptsEverything).isEmpty());
+            assertTrue(q, SheetSearch.search(q, lunar).isEmpty());
+            assertFalse(q, SheetSearch.search(q, ornithe).isEmpty());
+        }
+        assertEquals("fullbright", SheetSearch.search("fullbright", ornithe).get(0).module.id);
+        assertEquals("particles", SheetSearch.search("multiplier", ornithe).get(0).module.id);
+    }
+
     /** The module toggles a page draws, in order. */
     private static List<String> modules(SheetValues values, String category) {
         SheetState state = new SheetState();
