@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.19.0-dev.93",
+    "channel": "dev",
+    "date": "2026-11-16",
+    "sections": [
+      ["New", [
+        "Fullbright (Prism): full brightness with a fade and an optional toggle key. Off by default.",
+        "Item Physics (Prism): dropped items lie flat and tumble as they fall. Off by default.",
+        "1.7 Animations (Prism): Block Hit, Item Position, Smooth Sneak, Hearts and Red Armor. Off by default.",
+        "Particles (Prism): always show crits, hide your own potion swirls, hide block-break particles, and a 1x to 3x crit multiplier. Off by default."
+      ]],
+      ["Fixes", ["What's New on a dev build shows only what's new since the version you had."]]
+    ]
+  },
+  {
     "version": "0.19.0",
     "channel": "stable",
     "date": "2026-11-12",
