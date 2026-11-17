@@ -20,7 +20,11 @@ import java.nio.charset.StandardCharsets;
  * {@code dtUs} measured from the previous record; the first record of a block is measured from the
  * block's {@code firstTimeUs}. So record 0 is at {@code firstTimeUs + dt0} and record i at
  * {@code t(i-1) + dt_i}. A writer that starts a block mid-chunk sets {@code firstTimeUs} to the time
- * of the record just before it, which lets it copy chunk bytes unchanged.
+ * of the record just before it, which lets it copy chunk bytes unchanged. No {@code dtUs} is ever larger
+ * than {@link #MAX_DT_US}: a record that comes later than that after the previous one (an idle of about
+ * 71 minutes) starts a new block whose {@code firstTimeUs} is the record's time and whose first
+ * {@code dtUs} is 0 (the producer starts a chunk there, and blocks never span chunks). Times are never
+ * clamped. This is a writer guarantee, not an encoding change: every v1 reader already handles it.
  *
  * <p><b>Segment invariant.</b> The first NET record of every segment is that segment's own S01, or its
  * dimension-changing S07.
@@ -66,7 +70,7 @@ public final class RewindFormat {
     public static final int CHUNK_CAPACITY = MAX_PACKET_LENGTH + 16;
     /** Largest record prefix: varint dtUs (5) + varint len (5), or varint dtUs (5) + u8 tag (1). */
     public static final int MAX_RECORD_PREFIX = 10;
-    /** Largest dtUs a record can carry (unsigned 32-bit varint); longer gaps are clamped. */
+    /** Largest dtUs a record can carry (unsigned 32-bit varint); a longer gap starts a new block instead. */
     public static final long MAX_DT_US = 0xFFFFFFFFL;
 
     // ---- TRACK tags ----
@@ -74,6 +78,10 @@ public final class RewindFormat {
     public static final int TAG_CAMERA = 0x02;
     public static final int TAG_EQUIP = 0x03;
     public static final int TAG_MARKER = 0x04;
+    /**
+     * Body: u8 key ({@code INFO_*}) + string. Written when the game opens for every value then known, and again
+     * whenever a value is learned or changes later in the game; the latest record of a key wins (code review 2, I4).
+     */
     public static final int TAG_INFO = 0x05;
     /**
      * Body: varint64 {@code backUs}. The record is written when the game is opened; the logical game start

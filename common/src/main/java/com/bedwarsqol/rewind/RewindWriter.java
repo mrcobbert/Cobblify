@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -51,9 +52,16 @@ import java.util.concurrent.locks.LockSupport;
  * submitting the commands of {@code RewindGameRules.onConnect}, so those commands (the previous
  * connection's CLOSE and DROPs) are routed under the previous generation.
  *
- * <p><b>Errors.</b> A disk error fails the open game only: its valid prefix stays on disk, later
- * blocks are dropped, {@link #gameFailures} counts it, and nothing is thrown to any caller. The
- * wiring reports it to the rules ({@code onFailure}), whose CLOSE then tries to finalize the prefix.
+ * <p><b>Errors.</b> A disk error fails that game's file only: its valid prefix stays on disk, later
+ * blocks are dropped, {@link #gameFailures} counts it, and nothing is thrown to any caller. Each failed
+ * file is reported once with its game id ({@link #pollFailedGame}, the id of the rules' OPEN), so the
+ * wiring tells only the rules visit that owns that game ({@code onWriterFailure}); a failure that
+ * happens while a game is being closed (its END or {@code force()}) marks that file failed and touches
+ * no other game (code review 2, I3).
+ *
+ * <p><b>Metadata updates.</b> An INFO command (mode or map learned after OPEN) updates the open
+ * game's metadata and rewrites its {@code .json}; the wiring writes matching TRACK INFO records, so
+ * END and a recovery without the {@code .json} use the latest values (code review 2, I4).
  */
 public final class RewindWriter {
 
@@ -151,6 +159,10 @@ public final class RewindWriter {
         String infoMode;
         String infoMap;
         String infoLabel;
+        /** Time of the INFO record each value came from: the latest one wins, also across merges. */
+        long infoModeUs = Long.MIN_VALUE;
+        long infoMapUs = Long.MIN_VALUE;
+        long infoLabelUs = Long.MIN_VALUE;
         long gameStartUs = Long.MIN_VALUE;
         int gameEnd = -1;
         long firstUs = Long.MAX_VALUE;
@@ -165,9 +177,18 @@ public final class RewindWriter {
             stats.merge(o.stats);
             markers.addAll(o.markers);
             keySeen |= o.keySeen;
-            if (infoMode == null) infoMode = o.infoMode;
-            if (infoMap == null) infoMap = o.infoMap;
-            if (infoLabel == null) infoLabel = o.infoLabel;
+            if (o.infoMode != null && o.infoModeUs >= infoModeUs) {
+                infoMode = o.infoMode;
+                infoModeUs = o.infoModeUs;
+            }
+            if (o.infoMap != null && o.infoMapUs >= infoMapUs) {
+                infoMap = o.infoMap;
+                infoMapUs = o.infoMapUs;
+            }
+            if (o.infoLabel != null && o.infoLabelUs >= infoLabelUs) {
+                infoLabel = o.infoLabel;
+                infoLabelUs = o.infoLabelUs;
+            }
             if (o.gameStartUs != Long.MIN_VALUE && (gameStartUs == Long.MIN_VALUE || o.gameStartUs < gameStartUs)) {
                 gameStartUs = o.gameStartUs;
             }
@@ -193,6 +214,8 @@ public final class RewindWriter {
     }
 
     private static final class Game {
+        /** The rules' game id from OPEN (code review 2, I3). */
+        long gameId;
         String id;
         RecordingStore.Handle handle;
         long pos;
@@ -255,6 +278,8 @@ public final class RewindWriter {
     // published counters (single writer)
     private volatile long pendingBytes;
     private volatile int gameFailures;
+    /** Game ids of failed files, in order, for the wiring (written by the writer thread only). */
+    private final ConcurrentLinkedQueue<Long> failedGames = new ConcurrentLinkedQueue<Long>();
     private volatile Throwable lastFailure;
     private volatile long lateBytes;
     private volatile long lateRanges;
@@ -325,7 +350,7 @@ public final class RewindWriter {
         enqueue(it);
     }
 
-    /** One rules command: OPEN, JOIN, DROP, CLOSE and MARKER are executed; the rest are not the writer's. */
+    /** One rules command: OPEN, JOIN, DROP, CLOSE, MARKER and INFO are executed; the rest are not the writer's. */
     public void submit(Command c) {
         if (c == null) {
             return;
@@ -336,6 +361,7 @@ public final class RewindWriter {
             case DROP:
             case CLOSE:
             case MARKER:
+            case INFO:
                 Item it = new Item(ITEM_COMMAND);
                 it.command = c;
                 enqueue(it);
@@ -398,9 +424,19 @@ public final class RewindWriter {
         return pendingBytes;
     }
 
-    /** Games failed by a writer error (disk, folder); the wiring reports each to the rules. */
+    /** Games failed by a writer error (disk, folder), cumulative. */
     public int gameFailures() {
         return gameFailures;
+    }
+
+    /**
+     * The game id of the next file failed by a writer error, each reported once and in order, or -1 when there is
+     * none. The wiring hands each to the rules ({@code onWriterFailure}), which fail only that game if it is still
+     * open (code review 2, I3). Non-blocking; any thread.
+     */
+    public long pollFailedGame() {
+        Long id = failedGames.poll();
+        return id == null ? -1L : id;
     }
 
     /** The last writer error, for a counts-only log line (class name). */
@@ -580,6 +616,9 @@ public final class RewindWriter {
                 finish(game, c.endedBy != null ? c.endedBy.json : "unknown", c.result, c.failed, c.timeUs,
                         c.keyMarked, c.stats);
                 break;
+            case INFO:
+                info(c);
+                break;
             case MARKER:
                 // The TRACK MARKER record itself comes through the client thread's producer.
                 if (game != null && (c.keyMarked || c.marker == MarkerRules.Marker.KEY)) {
@@ -594,11 +633,26 @@ public final class RewindWriter {
         }
     }
 
+    /** INFO: the open game's mode, map or server type learned after OPEN; present values replace, absent ones stay. */
+    private void info(Command c) {
+        Game g = game;
+        RewindGameRules.GameInfo info = c.info;
+        if (g == null || g.gameId != c.gameId || info == null) {
+            return; // not the open game (already closed): nothing to update
+        }
+        RecordingMeta m = g.meta;
+        if (info.mode != null) m.mode = info.mode;
+        if (info.map != null) m.map = info.map;
+        if (info.serverType != null) m.serverType = info.serverType;
+        writeMetaQuietly(g);
+    }
+
     private void open(Command c) {
         if (game != null) {
             finish(game, "replaced", RewindGameRules.Result.UNKNOWN, false, c.timeUs, false, null);
         }
         Game g = new Game();
+        g.gameId = c.gameId;
         game = g;
         long now = clock.nowUs();
         g.baseEpochMs = clock.wallMs() - Math.floorDiv(now, 1000L);
@@ -891,7 +945,9 @@ public final class RewindWriter {
         if (to <= from) {
             return;
         }
-        long base = src.consumedTimeUs;
+        // A range from offset 0 is measured from the chunk's start time, which a long gap before its first record
+        // may have moved forward after this chunk was first seen (RecordChunk.Producer, code review 2, I6).
+        long base = from == 0 ? c.startTimeUs() : src.consumedTimeUs;
         long last;
         try {
             last = walk(src.net, c.data(), from, to, base, target(seg));
@@ -989,6 +1045,7 @@ public final class RewindWriter {
         if (!g.failed) {
             g.failed = true;
             g.meta.failed = true;
+            failedGames.offer(g.gameId); // before the count: a reader that sees the count finds the id
             gameFailures = gameFailures + 1;
         }
     }
@@ -1045,12 +1102,15 @@ public final class RewindWriter {
                 RewindFormat.Cursor c = new RewindFormat.Cursor(buf, off, off + len);
                 int key = c.u8();
                 String value = c.string(RewindFormat.MAX_STRING_BYTES);
-                if (key == RewindFormat.INFO_MODE) {
+                if (key == RewindFormat.INFO_MODE && timeUs >= a.infoModeUs) {
                     a.infoMode = value;
-                } else if (key == RewindFormat.INFO_MAP) {
+                    a.infoModeUs = timeUs;
+                } else if (key == RewindFormat.INFO_MAP && timeUs >= a.infoMapUs) {
                     a.infoMap = value;
-                } else if (key == RewindFormat.INFO_MODE_LABEL) {
+                    a.infoMapUs = timeUs;
+                } else if (key == RewindFormat.INFO_MODE_LABEL && timeUs >= a.infoLabelUs) {
                     a.infoLabel = value;
+                    a.infoLabelUs = timeUs;
                 }
                 break;
             }
@@ -1237,6 +1297,9 @@ public final class RewindWriter {
             if (!store.hasCbr(id) || store.isOpenHere(id)) {
                 continue;
             }
+            if (!store.supportedCbr(id)) {
+                continue; // another format version or an unreadable header: never recovered or deleted (I5)
+            }
             RecordingMeta old = store.readMeta(id);
             if (old != null && old.complete) {
                 continue;
@@ -1259,8 +1322,8 @@ public final class RewindWriter {
         try {
             RecordingReader r = new RecordingReader(new BufferedInputStream(new HandleInput(h), 1 << 16), h.size());
             try {
-                if (r.unsupportedVersion()) {
-                    return; // a newer format: leave it alone, uncounted
+                if (r.unsupportedVersion() || r.header() == null) {
+                    return; // another format, or a header we cannot read: leave it alone, uncounted (I5)
                 }
                 Acc acc = new Acc();
                 List<RecordingReader.IndexEntry> index = new ArrayList<RecordingReader.IndexEntry>();
@@ -1310,8 +1373,8 @@ public final class RewindWriter {
                     recovered = recovered + 1;
                     return;
                 }
-                if (fh == null || !hasNet) {
-                    delete = true;
+                if (!hasNet) {
+                    delete = true; // a v1 header and not one packet: nothing to replay
                     return;
                 }
                 RecordingMeta m = build(id, old, acc, fh, segments, raw);
@@ -1380,9 +1443,10 @@ public final class RewindWriter {
         Collections.sort(markers, BY_TIME);
         m.markers = markers;
         m.segments = segments.size();
-        if (m.mode == null) m.mode = acc.infoMode;
-        if (m.map == null) m.map = acc.infoMap;
-        if (m.modeLabel == null) m.modeLabel = acc.infoLabel;
+        // The stream's latest INFO wins over the cache: INFO records are written with every update (I4).
+        if (acc.infoMode != null) m.mode = acc.infoMode;
+        if (acc.infoMap != null) m.map = acc.infoMap;
+        if (acc.infoLabel != null) m.modeLabel = acc.infoLabel;
         m.rawBytes = raw;
         return m;
     }

@@ -9,6 +9,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Field;
@@ -80,8 +81,12 @@ public class RewindIntegrationTest {
         int netSegment;
 
         Harness(File dir) {
+            this(dir, new RecordingStore(dir));
+        }
+
+        Harness(File dir, RecordingStore store) {
             this.dir = dir;
-            this.writer = new RewindWriter(new RecordingStore(dir), "0.0.0-test", clock, new Random(7));
+            this.writer = new RewindWriter(store, "0.0.0-test", clock, new Random(7));
             this.rewind = new Rewind(clock, new java.util.concurrent.Executor() {
                 @Override
                 public void execute(Runnable task) {
@@ -553,14 +558,19 @@ public class RewindIntegrationTest {
             }
         });
         h.game(10, 42);
+        // The failure is segment 2's, an undecided candidate (code review 2, I2): the game fails once its location
+        // shows segment 2 is this game's, and keeps it.
+        assertTrue(h.rewind.rules().gameOpen());
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
         assertFalse("the game closed as failed", h.rewind.rules().gameOpen());
         h.step();
         RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
         assertTrue(fc.complete);
         assertTrue(fc.endMeta.failed);
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
 
         // The next game on the same connection is recorded again, from its own boundary.
-        h.rewind.onGameLine(SessionChatLine.Kind.LOSS); // the failed game provably ended: rearm
+        h.rewind.onGameLine(SessionChatLine.Kind.LOSS); // the failed game provably ended
         h.boundary(s01(402, 0), -1);
         h.location("fakeGameServer2B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
         h.game(10, 43);
@@ -950,6 +960,476 @@ public class RewindIntegrationTest {
             }
         }
         assertEquals(2, infos);
+    }
+
+    // ------------------------------------------------------------------ code review 2: shared helpers
+
+    /** The client thread applies the boundary the capture handler already saw (WORLD_LOAD), after its queued tasks. */
+    static void worldLoad(Harness h, final int snapshotDimension) {
+        h.runClient();
+        h.rewind.onWorldLoad(new Rewind.SnapshotSource() {
+            @Override
+            public CarryOverEncoder.Snapshot capture() {
+                return snapshot(snapshotDimension);
+            }
+        });
+    }
+
+    static List<String> metaModes(File dir) throws IOException {
+        List<String> out = new ArrayList<String>();
+        for (String id : RewindWriterTest.ids(dir)) {
+            out.add(RewindWriterTest.jsonOf(new File(dir, id + ".cbr")).mode);
+        }
+        return out;
+    }
+
+    static RecordingMeta metaOfSegments(File dir, Set<Integer> wanted) throws IOException {
+        for (String id : RewindWriterTest.ids(dir)) {
+            File cbr = new File(dir, id + ".cbr");
+            if (segments(RewindWriterTest.read(cbr)).equals(wanted)) {
+                return RewindWriterTest.jsonOf(cbr);
+            }
+        }
+        throw new AssertionError("no recording with segments " + wanted + " in " + RewindWriterTest.names(dir));
+    }
+
+    static int count(RewindWriterTest.FileContents fc, int tag) {
+        int n = 0;
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (t.tag == tag) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // ------------------------------------------------------------------ code review 2, I1: the client runs behind Netty
+
+    /**
+     * WIN, then Netty reads a same-server S07 one second before the 15 s result close, but the client thread's tick at
+     * +15 s runs before that S07's WORLD_LOAD task. The segment is the game's and must be in its file.
+     */
+    @Test
+    public void aRespawnTheClientHasNotLoadedWhenTheResultCloseIsDueStaysInTheGame() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(20, 81);
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(RewindGameRules.RESULT_CLOSE_US - 1_000_000L);
+        h.net(s07(-1));                                                         // Netty: segment 2 starts
+        h.net(other(0x30, 70), other(0x31, 80));
+        h.advance(1_000_000L);
+        h.tick(false, true);                                                    // due, before WORLD_LOAD
+        h.step();
+        worldLoad(h, 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(false, false);
+        h.step();
+        assertFalse(h.rewind.rules().gameOpen());
+
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
+        assertSameRecords(h.netSent.get(2), netOf(fc, 2));
+        assertEquals("result", fc.endMeta.endedBy);
+        assertEquals(RecordingMeta.RESULT_WIN, fc.endMeta.result);
+    }
+
+    /** As above, but the connection ends before the client ever loads the respawn: it is still the game's. */
+    @Test
+    public void aRespawnTheClientNeverLoadedBeforeTheDisconnectStaysInTheGame() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(20, 82);
+        h.net(s07(-1));
+        h.net(other(0x30, 70), other(0x31, 80));
+        h.ch.close();
+        h.tick(false, false);                                                   // disconnect, WORLD_LOAD never ran
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
+        assertSameRecords(h.netSent.get(2), netOf(fc, 2));
+        assertEquals("disconnect", fc.endMeta.endedBy);
+    }
+
+    // ------------------------------------------------------------------ code review 2, I2: failure ownership by segment
+
+    /**
+     * After attach, Netty reads S01 and the session latches a failure in segment 1; the client ticks ({@code
+     * tickFirst}) before or after that S01's WORLD_LOAD. The failed run must never open, the latch must survive the
+     * same-server S07, and only the game's result rearms capture; the next game is then recorded.
+     */
+    private void earlyFailureOwnsItsSegment(String name, boolean beforeAttach, boolean tickFirst) throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), name));
+        CaptureSession session = h.rewind.onServerConnect(h.ch, null, false, "mc.hypixel.net", true, true);
+        assertNotNull(session);
+        if (!beforeAttach) {
+            h.runClient();                                                      // the connect task ran
+        }
+        h.advance(1_000);
+        h.net(s01(1101, 0), other(0x21, 300), other(0x22, 40));
+        session.fail(new IllegalStateException("fake capture failure"));
+        h.net(other(0x23, 50));
+        h.runClient();
+        if (tickFirst) {
+            h.tick(false, false);                                               // before the S01's WORLD_LOAD
+        }
+        worldLoad(h, 0);
+        if (!tickFirst) {
+            h.tick(false, false);
+        }
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertFalse("the failed run never opens", h.rewind.rules().gameOpen());
+        h.game(10, 111);
+        // Same server, new dimension: still the failed game. The latch must hold.
+        h.advance(1_000_000L);
+        h.boundary(s07(-1), 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.game(10, 112);
+        h.advance(6_000_000L);
+        h.tick(false, true);
+        h.step();
+        assertTrue("capture stays latched inside the failed game", session.failed());
+        assertFalse(h.rewind.rules().gameOpen());
+        assertTrue("nothing recorded for the failed game", h.ids().isEmpty());
+
+        // Its result ends it: rearm; Play Again to another server is recorded.
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(2_000_000L);
+        h.boundary(s01(1102, 0), -1);
+        assertFalse("copying restarted at the boundary after the rearm", session.failed());
+        h.location("fakeGameServer11B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.game(10, 113);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(10, 114);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertFalse(fc.endMeta.failed);
+        assertEquals(Collections.singleton(3), segments(fc));
+        assertSameRecords(h.netSent.get(3), netOf(fc, 3));
+        h.ch.checkException();
+        assertEquals(h.fired, h.rx.messages.size());
+    }
+
+    /** The reviewer's sequence: attached, failure in segment 1, a tick before its WORLD_LOAD. */
+    @Test
+    public void aFailureAfterAttachWithATickBeforeTheWorldLoadIsOwnedByItsGame() throws Exception {
+        earlyFailureOwnsItsSegment("attached-tick-first", false, true);
+    }
+
+    @Test
+    public void aFailureAfterAttachWithTheWorldLoadBeforeATickIsOwnedByItsGame() throws Exception {
+        earlyFailureOwnsItsSegment("attached-load-first", false, false);
+    }
+
+    @Test
+    public void aFailureBeforeAttachWithATickBeforeTheWorldLoadIsOwnedByItsGame() throws Exception {
+        earlyFailureOwnsItsSegment("unattached-tick-first", true, true);
+    }
+
+    @Test
+    public void aFailureBeforeAttachWithTheWorldLoadBeforeATickIsOwnedByItsGame() throws Exception {
+        earlyFailureOwnsItsSegment("unattached-load-first", true, false);
+    }
+
+    /**
+     * A game is open in segment 1; Netty reads a dimension-changing S07 (segment 2) and latches a failure there before
+     * the client loads it. With the same server, segment 2's prefix is the game's: the file keeps it and is failed.
+     * With another server, the open game is healthy and closes normally; the new run owns the failure.
+     */
+    private void failureInASegmentTheClientHasNotReached(String name, boolean sameServer, boolean tickFirst)
+            throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), name));
+        CaptureSession session = RewindCapture.get(h.ch).session();
+        h.game(20, 121);
+        h.advance(1_000_000L);
+        h.net(sameServer ? s07(-1) : s01(1201, 0), other(0x24, 90), other(0x25, 60));
+        session.fail(new IllegalStateException("fake capture failure"));
+        h.net(other(0x26, 70));
+        h.runClient();
+        if (tickFirst) {
+            h.tick(false, true);
+        }
+        worldLoad(h, 0);
+        h.tick(false, sameServer);
+        if (sameServer) {
+            h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        } else {
+            h.location("fakeGameServer12B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        }
+        h.tick(false, false);
+        h.step();
+        assertFalse(h.rewind.rules().gameOpen());
+        assertTrue("the latch holds until the owner provably ends", session.failed());
+        File cbr = RewindWriterTest.onlyCbr(h.dir);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        if (sameServer) {
+            assertTrue(fc.endMeta.failed);
+            assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
+            assertSameRecords(h.netSent.get(2).subList(0, 3), netOf(fc, 2));   // the prefix before the latch
+        } else {
+            assertFalse("the open game did not fail", fc.endMeta.failed);
+            assertEquals("server", fc.endMeta.endedBy);
+            assertEquals(Collections.singleton(1), segments(fc));
+            // The failed run's game starts and ends: the result rearms, nothing more is written.
+            h.advance(300_000);
+            h.tick(false, true);
+            assertFalse(h.rewind.rules().gameOpen());
+            h.rewind.onGameLine(SessionChatLine.Kind.LOSS);
+            h.boundary(s01(1202, 0), 0);
+            assertFalse(session.failed());
+            h.step();
+            assertEquals(1, h.ids().size());
+        }
+    }
+
+    @Test
+    public void aFailureInAnUnloadedSameServerSegmentTickFirstKeepsItsPrefixInTheFailedGame() throws Exception {
+        failureInASegmentTheClientHasNotReached("same-tick", true, true);
+    }
+
+    @Test
+    public void aFailureInAnUnloadedSameServerSegmentLoadFirstKeepsItsPrefixInTheFailedGame() throws Exception {
+        failureInASegmentTheClientHasNotReached("same-load", true, false);
+    }
+
+    @Test
+    public void aFailureInAnUnloadedOtherServerSegmentTickFirstLeavesTheOpenGameHealthy() throws Exception {
+        failureInASegmentTheClientHasNotReached("other-tick", false, true);
+    }
+
+    @Test
+    public void aFailureInAnUnloadedOtherServerSegmentLoadFirstLeavesTheOpenGameHealthy() throws Exception {
+        failureInASegmentTheClientHasNotReached("other-load", false, false);
+    }
+
+    // ------------------------------------------------------------------ code review 2, I3: writer failures per game
+
+    /** FILE_LOCKS, with {@code force()} failing on the first file this store creates (game A) only. */
+    static RecordingStore.Locker forceFailsForTheFirstFile(final int[] forceFailures) {
+        return new RecordingStore.Locker() {
+            int created;
+
+            @Override
+            public RecordingStore.Handle open(File cbr, boolean create) throws IOException {
+                final RecordingStore.Handle real = RecordingStore.FILE_LOCKS.open(cbr, create);
+                final boolean failing = create && created++ == 0;
+                if (real == null || !failing) {
+                    return real;
+                }
+                return new RecordingStore.Handle() {
+                    @Override
+                    public long size() throws IOException {
+                        return real.size();
+                    }
+
+                    @Override
+                    public int read(long position, byte[] dst, int off, int len) throws IOException {
+                        return real.read(position, dst, off, len);
+                    }
+
+                    @Override
+                    public void write(long position, byte[] src, int off, int len) throws IOException {
+                        real.write(position, src, off, len);
+                    }
+
+                    @Override
+                    public void truncate(long size) throws IOException {
+                        real.truncate(size);
+                    }
+
+                    @Override
+                    public void force() throws IOException {
+                        forceFailures[0]++;
+                        throw new IOException("fsync failed (test)");
+                    }
+
+                    @Override
+                    public void close() throws IOException {
+                        real.close();
+                    }
+                };
+            }
+        };
+    }
+
+    /** The reviewer's sequence: A's force() fails during its CLOSE while B is already open on the client. */
+    @Test
+    public void aLateWriterFailureOfAClosedGameLeavesTheNextGameHealthy() throws Exception {
+        File dir = new File(tmp.getRoot(), "rewind");
+        int[] forceFailures = {0};
+        Harness h = new Harness(dir, new RecordingStore(dir, forceFailsForTheFirstFile(forceFailures)));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.boundary(s01(1301, 0), 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.game(10, 131);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.step();                                                                // A is on disk
+        h.game(10, 132);
+        // B: another server; the client closes A and opens B before the writer runs either command.
+        h.advance(1_000_000L);
+        h.boundary(s01(1302, 0), -1);
+        h.location("fakeGameServer13B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.game(10, 133);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue("B open before the writer ran", h.rewind.rules().gameOpen());
+        h.step();                                                                // CLOSE A fails at force(), OPEN B
+        assertEquals(1, forceFailures[0]);
+        assertEquals(1, h.writer.gameFailures());
+        h.tick(false, true);                                                     // the client polls the failure
+        assertTrue("A's failure never closes B", h.rewind.rules().gameOpen());
+        h.game(10, 134);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        assertEquals(2, h.ids().size());
+        RecordingMeta b = metaOfSegments(dir, Collections.singleton(2));
+        assertTrue(b.complete);
+        assertFalse("B is healthy", b.failed);
+        assertEquals("disconnect", b.endedBy);
+        RecordingMeta a = metaOfSegments(dir, Collections.singleton(1));
+        assertTrue("A's file is marked failed", a.failed);
+    }
+
+    /** Neighbour: A's late failure arrives while B is still a pending run (before its active edge). */
+    @Test
+    public void aLateWriterFailureOfAClosedGameLeavesAPendingRunAlone() throws Exception {
+        File dir = new File(tmp.getRoot(), "rewind");
+        int[] forceFailures = {0};
+        Harness h = new Harness(dir, new RecordingStore(dir, forceFailsForTheFirstFile(forceFailures)));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.boundary(s01(1401, 0), 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.game(10, 141);
+        h.advance(300_000);
+        h.tick(false, true);
+        h.step();
+        h.advance(1_000_000L);
+        h.boundary(s01(1402, 0), -1);
+        h.location("fakeGameServer14B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.tick(true, false);                                                     // B pending (queue)
+        h.step();                                                                // CLOSE A fails
+        assertEquals(1, h.writer.gameFailures());
+        h.game(10, 142);                                                         // ticks poll the failure
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue("B still opens", h.rewind.rules().gameOpen());
+        h.game(10, 143);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        RecordingMeta b = metaOfSegments(dir, Collections.singleton(2));
+        assertFalse(b.failed);
+        assertTrue(b.complete);
+    }
+
+    // ------------------------------------------------------------------ code review 2, I4: metadata after OPEN
+
+    /** The reviewer's sequence: sidebar fallback OPEN at 11 s, the same segment's location with mode and map at 21 s. */
+    @Test
+    public void aLocationAfterTheSidebarOpenReachesTheJsonEndAndTrack() throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), "rewind"));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.boundary(s01(1501, 0), 0);
+        for (int i = 0; i < 10; i++) {
+            h.advance(1_000_000L);
+            h.tick(true, false);
+        }
+        h.advance(1_000_000L);
+        h.tick(false, true);                                                     // 11 s: opened by the sidebar
+        assertTrue(h.rewind.rules().gameOpen());
+        h.step();
+        h.game(10, 151);
+        h.advance(10_000_000L);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");      // 21 s
+        h.step();
+        RecordingMeta live = RewindWriterTest.jsonOf(RewindWriterTest.onlyCbr(h.dir));
+        assertEquals("the .json is updated while recording", "FakeMap", live.map);
+        h.game(10, 152);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        File cbr = RewindWriterTest.onlyCbr(h.dir);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        for (RecordingMeta m : Arrays.asList(RewindWriterTest.jsonOf(cbr), fc.endMeta)) {
+            assertEquals("BEDWARS_EIGHT_ONE", m.mode);
+            assertEquals("FakeMap", m.map);
+        }
+        assertEquals("mode and map INFO records after the open", 2, count(fc, RewindFormat.TAG_INFO));
+    }
+
+    /** A same-server location that names another map later in the game: the latest map wins everywhere. */
+    @Test
+    public void aMapChangeMidGameIsTheMapSaved() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(10, 161);
+        h.advance(1_000_000L);
+        h.boundary(s07(-1), 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMapTwo");
+        h.game(10, 162);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        File cbr = RewindWriterTest.onlyCbr(h.dir);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        for (RecordingMeta m : Arrays.asList(RewindWriterTest.jsonOf(cbr), fc.endMeta)) {
+            assertEquals("FakeMapTwo", m.map);
+            assertEquals("BEDWARS_EIGHT_ONE", m.mode);
+        }
+        // Recovery without the .json reads the same map from TRACK: the last INFO wins.
+        File after = new File(tmp.getRoot(), "after");
+        assertTrue(after.mkdirs());
+        byte[] bytes = Files.readAllBytes(cbr.toPath());
+        int cut = (int) fc.blocks.get(fc.blocks.size() - 2).fileOffset;         // drop INDEX + END: a crash
+        assertEquals(RewindFormat.BLOCK_INDEX, fc.blocks.get(fc.blocks.size() - 2).type);
+        Files.write(new File(after, cbr.getName()).toPath(), Arrays.copyOf(bytes, cut));
+        RewindWriter fresh = new RewindWriter(new RecordingStore(after), "0.0.0-test", h.clock, new Random(9));
+        fresh.recoverAndPrune();
+        assertEquals(1, fresh.recovered());
+        assertEquals("FakeMapTwo", RewindWriterTest.jsonOf(new File(after, cbr.getName())).map);
+    }
+
+    /** No location for the second game: its mode and map stay absent, never the first game's. */
+    @Test
+    public void noLocationLeavesModeAndMapAbsentNotTheLastServers() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(10, 171);
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(RewindGameRules.RESULT_CLOSE_US);
+        h.tick(false, false);
+        h.step();
+        h.advance(1_000_000L);
+        h.boundary(s01(1701, 0), -1);                                           // another game, no location
+        for (int i = 0; i < 11; i++) {
+            h.advance(1_000_000L);
+            h.tick(true, false);
+        }
+        h.advance(1_000_000L);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(10, 172);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        RecordingMeta second = metaOfSegments(h.dir, Collections.singleton(2));
+        assertNull(second.mode);
+        assertNull(second.map);
+        assertEquals(0, count(RewindWriterTest.read(new File(h.dir, second.id + ".cbr")), RewindFormat.TAG_INFO));
     }
 
     // ------------------------------------------------------------------ A10: off

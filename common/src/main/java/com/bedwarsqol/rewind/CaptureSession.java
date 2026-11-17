@@ -34,7 +34,10 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * {@link #failed()}, keeps the reason for the client thread and stops copying. A boundary never clears it;
  * only {@link #rearm()} does, and copying then restarts at the next boundary that gets a chunk (the rearm
  * stays pending through boundaries that find none). {@link #failureCount()} counts latches, so the client
- * thread can tell a new failure from the old one while a rearm is pending.
+ * thread can tell a new failure from the old one while a rearm is pending. Each latch records the segment it
+ * happened in ({@link #failureSegment()}) and each restart the segment copying resumed in
+ * ({@link #resumedSegment()}, counted by {@link #resumeCount()}), so the rules attach a failure to the game that
+ * owns that segment, not to whatever the client thread is tracking when it looks (code review 2, I2).
  *
  * <p><b>Threads.</b> {@link #onFrame}, {@link #localWants}, {@link #onLocalCustomPayload}, {@link #fail} and
  * {@link #close} run on the connection's Netty thread only. {@link #rearm} and {@link #skipSegment} are
@@ -108,6 +111,11 @@ public final class CaptureSession {
     private volatile int failureReason;
     private volatile Throwable failureCause;
     private volatile int failureCount;
+    /** Segment of the latest latch; written before {@link #failureCount} is incremented. */
+    private volatile int failureSegment;
+    /** Segment copying resumed in after the latest rearm; written before {@link #resumeCount} is incremented. */
+    private volatile int resumedSegment;
+    private volatile int resumeCount;
     private volatile boolean restrictSeen;
     /** count, bytes for S00, S3F, S46; single writer (Netty), ordered stores. */
     private final AtomicLongArray skipped = new AtomicLongArray(6);
@@ -216,6 +224,8 @@ public final class CaptureSession {
                 failureReason = FAIL_NONE;
                 failureCause = null;
                 failed = false;
+                resumedSegment = seg;
+                resumeCount++;
             }
             // Otherwise the segment-k chunk was handed off at the latch (or by the failed start above).
             return;
@@ -299,6 +309,7 @@ public final class CaptureSession {
                 failureReason = reason;
                 failureCause = t;
                 rearmSeen = rearmRequests.get(); // a rearm asked for before this failure does not clear it
+                failureSegment = segment;
                 failureCount++;
                 failed = true;
             }
@@ -360,6 +371,21 @@ public final class CaptureSession {
     /** Number of failures latched so far (a pending rearm does not count a new one). */
     public int failureCount() {
         return failureCount;
+    }
+
+    /** The segment the latest failure latched in (read after {@link #failureCount()}). */
+    public int failureSegment() {
+        return failureSegment;
+    }
+
+    /** Times copying restarted after a rearm. */
+    public int resumeCount() {
+        return resumeCount;
+    }
+
+    /** The segment copying last restarted in (read after {@link #resumeCount()}). */
+    public int resumedSegment() {
+        return resumedSegment;
     }
 
     public boolean closed() {

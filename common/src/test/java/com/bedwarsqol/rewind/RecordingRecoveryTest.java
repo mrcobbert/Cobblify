@@ -270,6 +270,141 @@ public class RecordingRecoveryTest {
                 Files.readAllBytes(new File(dir, lockedId + ".cbr").toPath()));
     }
 
+    // ------------------------------------------------------------------ code review 2, I5: unsupported formats
+
+    /** A closed recording whose {@code .cbr} header says {@code cbrVersion} (-1: an unreadable header). */
+    private static byte[] writeClosedVersion(File dir, String id, long startedAtMs, int cbrVersion, int jsonFormat)
+            throws IOException {
+        RewindWriterTest.writeClosed(dir, id, startedAtMs, false, false);
+        File cbr = new File(dir, id + ".cbr");
+        byte[] bytes = Files.readAllBytes(cbr.toPath());
+        if (cbrVersion < 0) {
+            for (int i = 0; i < RewindFormat.FILE_HEADER_LENGTH; i++) {
+                bytes[i] = (byte) (0x5A ^ i);                                // not our magic, no valid CRC
+            }
+        } else {
+            System.arraycopy(fileHeader(startedAtMs, cbrVersion), 0, bytes, 0, RewindFormat.FILE_HEADER_LENGTH);
+        }
+        Files.write(cbr.toPath(), bytes);
+        if (jsonFormat != RewindFormat.FORMAT_VERSION) {
+            RecordingMeta m = RecordingMeta.fromUtf8(Files.readAllBytes(new File(dir, id + ".json").toPath()));
+            m.format = jsonFormat;
+            Files.write(new File(dir, id + ".json").toPath(), m.toUtf8());
+        }
+        return bytes;
+    }
+
+    private static String closedId(int i) {
+        return String.format("202105%02d-120000-%04x", i + 1, 0xd000 + i);
+    }
+
+    private static long closedStart(int i) {
+        return 1_620_000_000_000L + i * 86_400_000L;
+    }
+
+    /** The reviewer's sequence: eleven complete future-version recordings, none may be pruned. */
+    @Test
+    public void elevenCompleteFutureVersionRecordingsAreNeverPrunedOrRecovered() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        List<byte[]> bytes = new ArrayList<byte[]>();
+        for (int i = 0; i < 11; i++) {
+            bytes.add(writeClosedVersion(dir, closedId(i), closedStart(i), 2, 2));
+        }
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(0, f.writer.pruned());
+        assertEquals(0, f.writer.recovered());
+        assertEquals(11, ids(dir).size());
+        for (int i = 0; i < 11; i++) {
+            assertArrayEquals(bytes.get(i), Files.readAllBytes(new File(dir, closedId(i) + ".cbr").toPath()));
+        }
+    }
+
+    /** An older v2 recording among ten newer v1 ones: it is not counted, so nothing is deleted; later closes keep it. */
+    @Test
+    public void anOlderUnsupportedRecordingIsNotCountedAndNeverDeleted() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), 2, 2);
+        for (int i = 1; i <= 10; i++) {
+            writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
+        }
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(0, f.writer.pruned());
+        assertEquals(11, ids(dir).size());
+        // One more v1 game closes: the oldest v1 goes, the v2 stays.
+        f.connect(true, 512, 16);
+        f.advance(1_000);
+        f.netBoundary(0, null, s01(9, 0));
+        f.clientBoundary(0, snapshot(0));
+        f.tick(1);
+        f.step();
+        f.advance(3_000_000L);
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+        assertEquals(1, f.writer.pruned());
+        List<String> left = ids(dir);
+        assertEquals(11 + 1 - 1, left.size());
+        assertTrue("the v2 recording stays", left.contains(closedId(0)));
+        assertFalse("the oldest v1 recording went", left.contains(closedId(1)));
+        assertArrayEquals(v2, Files.readAllBytes(new File(dir, closedId(0) + ".cbr").toPath()));
+    }
+
+    /** A v1 {@code .cbr} with a v2 {@code .json}: the header decides, it is an ordinary v1 recording. */
+    @Test
+    public void aV2JsonNextToAV1CbrIsAnOrdinaryRecording() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        writeClosedVersion(dir, closedId(0), closedStart(0), RewindFormat.FORMAT_VERSION, 2);
+        for (int i = 1; i <= 10; i++) {
+            writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
+        }
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(1, f.writer.pruned());
+        assertFalse(ids(dir).contains(closedId(0)));
+    }
+
+    /** A v2 {@code .cbr} with a v1 {@code .json} that says complete: the header decides, it is left alone. */
+    @Test
+    public void aV1JsonNextToAV2CbrIsLeftAlone() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), 2, RewindFormat.FORMAT_VERSION);
+        for (int i = 1; i <= 10; i++) {
+            writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
+        }
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(0, f.writer.pruned());
+        assertEquals(11, ids(dir).size());
+        assertArrayEquals(v2, Files.readAllBytes(new File(dir, closedId(0) + ".cbr").toPath()));
+    }
+
+    /** An unreadable header is left alone, whatever its {@code .json} says, and never deleted by recovery. */
+    @Test
+    public void anUnreadableHeaderIsLeftAloneNotPrunedOrDeleted() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        byte[] garbage = writeClosedVersion(dir, closedId(0), closedStart(0), -1, RewindFormat.FORMAT_VERSION);
+        for (int i = 1; i <= 10; i++) {
+            writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
+        }
+        // No .json at all: a crashed file whose header cannot be read, and an empty one.
+        String noJson = "20200104-120000-4444";
+        byte[] noJsonBytes = new byte[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33};
+        Files.write(new File(dir, noJson + ".cbr").toPath(), noJsonBytes);
+        String empty = "20200105-120000-5555";
+        Files.write(new File(dir, empty + ".cbr").toPath(), new byte[0]);
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(0, f.writer.pruned());
+        assertEquals(0, f.writer.recoveryDeleted());
+        assertEquals(0, f.writer.recovered());
+        assertEquals(13, ids(dir).size());
+        assertArrayEquals(garbage, Files.readAllBytes(new File(dir, closedId(0) + ".cbr").toPath()));
+        assertArrayEquals(noJsonBytes, Files.readAllBytes(new File(dir, noJson + ".cbr").toPath()));
+        assertTrue(new File(dir, empty + ".cbr").isFile());
+    }
+
     @Test
     public void startUpPrunesRecoveredGamesBeyondTheKeepCount() throws IOException {
         File dir = new File(tmp.getRoot(), "rewind");

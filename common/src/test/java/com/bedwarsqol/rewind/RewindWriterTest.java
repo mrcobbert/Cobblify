@@ -840,7 +840,10 @@ public class RewindWriterTest {
         }
         f.step();
         assertEquals("the disk error failed the game", 1, f.writer.gameFailures());
-        f.submit(f.rules.onFailure(f.clock.nowUs));
+        long failedGame;
+        while ((failedGame = f.writer.pollFailedGame()) >= 0) {
+            f.submit(f.rules.onWriterFailure(f.clock.nowUs, failedGame));
+        }
         f.step();
 
         File cbr = onlyCbr(dir);
@@ -853,6 +856,39 @@ public class RewindWriterTest {
         RecordingMeta m = jsonOf(cbr);
         assertTrue(m.failed);
         assertFalse(m.complete);
+    }
+
+    // ------------------------------------------------------------------ code review 2, I6: a long idle
+
+    /** A single-player game idle for 75 minutes: every NET and TRACK time in the file is exact. */
+    @Test
+    public void aSeventyFiveMinuteIdleKeepsEveryRecordTimeExact() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 2_000_000L);
+        f.connect(true, 4096, 16);
+        f.advance(1_000);
+        f.netBoundary(1, null, s01(9, 0));
+        f.clientBoundary(1, snapshot(0));
+        for (int i = 0; i < 5; i++) {
+            f.advance(50_000);
+            f.net(packet(0x15, 20, i));
+            f.tick(i);
+        }
+        f.step();
+        f.advance(75L * 60 * 1_000_000);                                     // paused, nothing changes
+        for (int i = 0; i < 5; i++) {
+            f.net(packet(0x16, 20, 10 + i));
+            f.tick(100 + i);
+            f.advance(50_000);
+            f.step();
+        }
+        f.advance(RewindWriter.SYNC_INTERVAL_US);
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+        FileContents fc = read(onlyCbr(dir));
+        assertTrue(fc.complete);
+        assertNetEquals(f.netSent, fc.net);
+        assertTrackEquals(f.trackSent, fc.track);
     }
 
     // ------------------------------------------------------------------ helpers used by other tests

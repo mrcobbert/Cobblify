@@ -5,6 +5,7 @@ import com.bedwarsqol.config.AtomicFileWrite;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -316,6 +317,39 @@ public final class RecordingStore {
         }
     }
 
+    /**
+     * The format version in {@code id.cbr}'s file header, or -1 if the file is missing, a link, open here, or its
+     * header is short or damaged. Reads 28 bytes through a plain stream; never called for a file open here (closing a
+     * second channel would drop this process's lock on it).
+     */
+    public int cbrVersion(String id) {
+        File f = cbrFile(id);
+        if (!PruneRules.isValidId(id) || openHere.contains(id) || !isRegular(f)) {
+            return -1;
+        }
+        byte[] h = new byte[RewindFormat.FILE_HEADER_LENGTH];
+        int n = 0;
+        try (InputStream in = Files.newInputStream(f.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            while (n < h.length) {
+                int r = in.read(h, n, h.length - n);
+                if (r < 0) {
+                    break;
+                }
+                n += r;
+            }
+        } catch (IOException e) {
+            return -1;
+        } catch (RuntimeException e) {
+            return -1;
+        }
+        return RecordingReader.headerVersion(h, n);
+    }
+
+    /** Whether {@code id.cbr} is in the format this build reads and writes (and so may recover or delete it). */
+    public boolean supportedCbr(String id) {
+        return cbrVersion(id) == RewindFormat.FORMAT_VERSION;
+    }
+
     public void writeMeta(String id, RecordingMeta meta) throws IOException {
         AtomicFileWrite.write(jsonFile(id), meta.toUtf8());
     }
@@ -355,15 +389,18 @@ public final class RecordingStore {
 
     /**
      * Pruning (G15, A5): describes every recording for {@link PruneRules} and deletes the ids it
-     * returns. Only CLOSED recordings that are not starred, key-marked or open here are probed for the
-     * lock; nothing else is opened. Returns the number of recordings deleted.
+     * returns. A complete recording not open here has its 28-byte file header read; only CLOSED ones that
+     * are not starred or key-marked are then probed for the lock. A recording whose {@code .cbr} header is not this build's format (a newer
+     * or older version, or an unreadable header) is never a candidate, whatever its {@code .json} says: it is
+     * not counted toward the {@link PruneRules#KEEP} and never deleted (code review 2, I5). Returns the number
+     * of recordings deleted.
      */
     public int prune() {
         List<PruneRules.Recording> all = new ArrayList<PruneRules.Recording>();
         for (String id : listIds()) {
             boolean open = openHere.contains(id);
             RecordingMeta m = readMeta(id);
-            boolean closed = m != null && m.complete && hasCbr(id);
+            boolean closed = m != null && m.complete && hasCbr(id) && !open && supportedCbr(id);
             boolean starred = m != null && m.starred;
             boolean keyMarked = m != null && m.keyMarked;
             boolean lockable = closed && !open && !starred && !keyMarked && lockable(id);

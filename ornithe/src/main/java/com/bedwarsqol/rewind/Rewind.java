@@ -3,7 +3,6 @@ package com.bedwarsqol.rewind;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.event.EventPriority;
-import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.HypixelLocationCodec;
 import com.bedwarsqol.feature.SessionChatLine;
 import com.bedwarsqol.feature.SessionHoldKey;
@@ -49,14 +48,18 @@ import java.util.function.Supplier;
  *       queue as the packets around it.</li>
  *   <li>{@code CLIENT_TICK}: disconnect and settings checks, new capture failures ({@code failureCount} changes),
  *       new writer failures, pending bytes, the Bed Wars sidebar state, the self track and the Marker Key.</li>
+ *   <li>Before and after every rules event the wiring settles what changed elsewhere: the capture handler's segment
+ *       and restarts, a capture failure with the segment it latched in, writer failures by game id and TRACK
+ *       failures with their segment (code review 2, I2/I3). A failure thus reaches the game that owns it, whatever
+ *       the rules are tracking when the client thread looks.</li>
  *   <li>{@code GAME_LINE}: the player's own classified game lines (results and automatic markers).</li>
  *   <li>A CAMERA sample from {@code EntityRenderer.renderWorld} HEAD, at most every 4 ms and only on change.</li>
  *   <li>{@code HUD_POST}: the Marker Key flash, the only thing Rewind ever draws.</li>
  * </ul>
  *
  * <p><b>Failures.</b> The event dispatcher does not catch, so every listener here catches Throwable: a recorder bug
- * never breaks the connection, the tick or world loading. A failure ends recording for that game through the rules
- * ({@code onFailure}) and is logged with ids and counts only, written by the writer thread (no file I/O here). No
+ * never breaks the connection, the tick or world loading. A failure ends recording for the game that owns it through
+ * the rules and is logged with ids and counts only, written by the writer thread (no file I/O here). No
  * packet is ever sent or changed; with Rewind or Record Games off nothing is installed, no writer exists and no file
  * is written.
  *
@@ -99,13 +102,16 @@ public final class Rewind {
         int droppedThrough;
         /** Capture failures already reported to the rules; starts at 0 (code review 1, I2). */
         int seenCaptureFailures;
+        /** Capture restarts already reported to the rules. */
+        int seenResumes;
         final long[] seenSkippedCount = new long[SKIPPED_IDS.length];
         final long[] seenSkippedBytes = new long[SKIPPED_IDS.length];
         boolean restrictReported;
         boolean gameOpen;
         int gameFirst;
         int gameLast;
-        boolean trackFailed;
+        /** The TRACK segment a TRACK record failed in (0: none since the last settle). */
+        int trackFailedSeg;
         boolean ended;
         /** The rules themselves threw: nothing more is done for this connection. */
         boolean dead;
@@ -129,7 +135,6 @@ public final class Rewind {
     private final RewindFlash flash = new RewindFlash();
     private RewindWriter writer;
     private Conn conn;
-    private int seenWriterFailures;
     /** Log lines from before the writer existed (client thread). */
     private final List<String> earlyLog = new ArrayList<String>();
     private long lastCameraNs;
@@ -246,7 +251,8 @@ public final class Rewind {
             if (recording) {
                 c.track = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, TRACK_INITIAL_CHUNKS, MAX_CHUNKS, now);
                 // seenCaptureFailures stays 0: a capture failure latched on Netty before this task ran (initial
-                // world data, chunks exhausted before attach) is reported to the rules by the first settle.
+                // world data, chunks exhausted before attach) is reported to the rules by the first settle, with
+                // the segment it latched in (code review 2, I2).
                 writer.attach(c.session.producer(), c.track, c.feed);
                 log("rewind: connect local=" + c.local + " recording=true");
             }
@@ -264,9 +270,10 @@ public final class Rewind {
         Throwable snapshotError = null;
         try {
             long now = clock.nowUs();
+            settle(c, now); // failures and restarts the capture handler saw before this boundary come first
             int segment = ++c.boundaries;
             if (!c.track.startSegment(segment, null, 0, 0)) {
-                c.trackFailed = true;
+                trackFailed(c);
             }
             sampler.resetSegment();
             cameraSampled = false;
@@ -296,6 +303,7 @@ public final class Rewind {
         }
         try {
             long now = clock.nowUs();
+            settle(c, now);
             execute(c, rules.onLocation(now, segment, HypixelLocationCodec.decodeLocation(payload)));
             settle(c, now);
         } catch (Throwable t) {
@@ -321,6 +329,9 @@ public final class Rewind {
             long now = clock.nowUs();
             if (c.channel == null || !c.channel.isOpen()) {
                 if (!c.dead) {
+                    if (recording(c)) {
+                        settle(c, now); // segments the client never loaded are still this game's (code review 2, I1)
+                    }
                     execute(c, rules.onDisconnect(now, false)); // GAME_END is still committed before CLOSE
                 }
                 c.ended = true;
@@ -330,6 +341,7 @@ public final class Rewind {
                 return;
             }
             if (!recordSetting) {
+                settle(c, now);
                 execute(c, rules.onRecordSetting(now, false));
                 log("rewind: record games off");
                 return;
@@ -353,7 +365,7 @@ public final class Rewind {
         try {
             long t0 = System.nanoTime();
             if (!work.sample(sampler, c.track, clock.nowUs())) {
-                c.trackFailed = true;
+                trackFailed(c);
             }
             c.feed.track.add(System.nanoTime() - t0);
         } catch (Throwable t) {
@@ -371,7 +383,7 @@ public final class Rewind {
             lastCameraNs = nanoTime;
             cameraSampled = true;
             if (!sampler.camera(c.track, clock.nowUs(), yaw, pitch)) {
-                c.trackFailed = true;
+                trackFailed(c);
             }
             c.feed.camera.add(System.nanoTime() - nanoTime);
         } catch (Throwable t) {
@@ -461,15 +473,23 @@ public final class Rewind {
                 if (trackInGame(c) && c.track != null) {
                     // The logical start from the rules (visit start or active edge), so recovery without the
                     // .json rebuilds the same start, date and length (code review 1, I6).
-                    c.trackFailed |= !sampler.gameStart(c.track, now, cmd.timeUs);
-                    RewindGameRules.GameInfo info = cmd.info;
-                    c.trackFailed |= !sampler.info(c.track, now, RewindFormat.INFO_MODE,
-                            info != null && info.mode != null ? info.mode : liveMode());
-                    c.trackFailed |= !sampler.info(c.track, now, RewindFormat.INFO_MAP,
-                            info != null && info.map != null ? info.map : liveMap());
+                    if (!sampler.gameStart(c.track, now, cmd.timeUs)) {
+                        trackFailed(c);
+                    }
+                    // Only what the rules know for this visit: never another server's live mode or map (code
+                    // review 2, I4). A later location updates them through INFO.
+                    writeInfo(c, now, cmd.info);
                 }
                 log("rewind: open segments=" + cmd.firstSegment + ".." + cmd.lastSegment + " source="
                         + (cmd.startSource == null ? 0 : cmd.startSource.code) + " markers=" + cmd.markers.size());
+                break;
+            case INFO:
+                // Mode or map learned after OPEN (code review 2, I4): TRACK INFO records for recovery, then the
+                // writer updates the .json and END.
+                if (trackInGame(c) && c.track != null && !c.ended) {
+                    writeInfo(c, now, cmd.info);
+                }
+                submit(cmd);
                 break;
             case JOIN:
                 if (c.gameOpen) {
@@ -489,7 +509,9 @@ public final class Rewind {
             case CLOSE:
                 // Terminal TRACK records are committed before CLOSE is queued (PLAN "Close protocol").
                 if (trackInGame(c) && c.track != null && !c.ended) {
-                    c.trackFailed |= !sampler.gameEnd(c.track, now, gameEnd(cmd.result));
+                    if (!sampler.gameEnd(c.track, now, gameEnd(cmd.result))) {
+                        trackFailed(c);
+                    }
                 }
                 c.gameOpen = false;
                 submit(cmd);
@@ -499,7 +521,9 @@ public final class Rewind {
             case MARKER:
                 // Every MARKER becomes a TRACK record, pending runs included: the .json markers come from them.
                 if (c.track != null && c.boundaries > 0 && !c.ended) {
-                    c.trackFailed |= !sampler.marker(c.track, now, cmd.marker.code);
+                    if (!sampler.marker(c.track, now, cmd.marker.code)) {
+                        trackFailed(c);
+                    }
                 }
                 submit(cmd);
                 break;
@@ -531,27 +555,59 @@ public final class Rewind {
         return RewindFormat.GAME_END_UNKNOWN;
     }
 
-    /** New capture, writer or TRACK failures since the last look, each reported to the rules once. */
+    /** Mode and map INFO records for {@code info}; absent values write nothing. */
+    private void writeInfo(Conn c, long now, RewindGameRules.GameInfo info) {
+        if (info == null) {
+            return;
+        }
+        if (!sampler.info(c.track, now, RewindFormat.INFO_MODE, info.mode)
+                || !sampler.info(c.track, now, RewindFormat.INFO_MAP, info.map)) {
+            trackFailed(c);
+        }
+    }
+
+    /** A TRACK record found no room: a failure of the current TRACK segment, reported by the next settle. */
+    private static void trackFailed(Conn c) {
+        if (c.trackFailedSeg == 0) {
+            c.trackFailedSeg = Math.max(1, c.boundaries);
+        }
+    }
+
+    /**
+     * What changed outside the client thread since the last look, each reported to the rules once (code review 2,
+     * I2/I3): the capture handler's segment and restarts; a new capture failure with the segment it latched in; each
+     * writer failure with the id of the game whose file failed; a TRACK failure with its segment.
+     */
     private void settle(Conn c, long now) {
         if (c.session != null) {
-            int f = c.session.failureCount();
+            CaptureSession s = c.session;
+            rules.onCaptureProgress(now, s.segment());
+            int r = s.resumeCount();
+            if (r != c.seenResumes) {
+                c.seenResumes = r;
+                rules.onCaptureResumed(s.resumedSegment());
+            }
+            int f = s.failureCount();
             if (f != c.seenCaptureFailures) {
                 c.seenCaptureFailures = f;
-                log("rewind: capture failure reason=" + c.session.failureReason() + " count=" + f);
-                execute(c, rules.onFailure(now));
+                int segment = s.failureSegment();
+                log("rewind: capture failure reason=" + s.failureReason() + " count=" + f + " segment=" + segment);
+                execute(c, rules.onCaptureFailure(now, segment));
             }
         }
-        int w = writer == null ? 0 : writer.gameFailures();
-        if (w != seenWriterFailures) {
-            seenWriterFailures = w;
-            Throwable cause = writer.lastFailure();
-            log("rewind: writer failure count=" + w + (cause == null ? "" : " " + name(cause)));
-            execute(c, rules.onFailure(now));
+        if (writer != null) {
+            long id;
+            while ((id = writer.pollFailedGame()) >= 0) {
+                Throwable cause = writer.lastFailure();
+                log("rewind: writer failure game=" + id + (cause == null ? "" : " " + name(cause)));
+                execute(c, rules.onWriterFailure(now, id));
+            }
         }
-        if (c.trackFailed) {
-            c.trackFailed = false;
-            log("rewind: track failure");
-            execute(c, rules.onFailure(now));
+        if (c.trackFailedSeg > 0) {
+            int segment = c.trackFailedSeg;
+            c.trackFailedSeg = 0;
+            log("rewind: track failure segment=" + segment);
+            execute(c, rules.onClientFailure(now, segment));
         }
     }
 
@@ -588,7 +644,7 @@ public final class Rewind {
             return;
         }
         try {
-            execute(c, rules.onFailure(clock.nowUs()));
+            execute(c, rules.onClientFailure(clock.nowUs(), c.boundaries));
         } catch (Throwable again) {
             c.dead = true;
             log("rewind: recorder stopped for this connection " + name(again));
@@ -623,20 +679,9 @@ public final class Rewind {
         }
     }
 
-    /** Mode and map from the existing location tracking (read only), for an INFO record. */
-    private static String liveMode() {
-        return wired ? Game.liveMode() : null;
-    }
-
-    private static String liveMap() {
-        return wired ? Game.liveMap() : null;
-    }
-
     // ================================================================== production wiring
 
     private static volatile Rewind instance;
-    /** True once {@link #register} ran in the game (tests never load {@link Game}). */
-    private static volatile boolean wired;
 
     /** Registers Rewind's listeners (Ornithe client, {@code onReady}). */
     public static void register(String version) {
@@ -706,7 +751,6 @@ public final class Rewind {
                     return createWriter(version);
                 }
             });
-            wired = true;
             ModEvents.SERVER_CONNECT.register(Game::onServerConnect);
             ModEvents.WORLD_LOAD.register(EventPriority.HIGHEST, false, Game::onWorldLoad);
             ModEvents.CLIENT_TICK.register(Game::onClientTick);
@@ -838,14 +882,6 @@ public final class Rewind {
             float yaw = p.prevRotationYaw + (p.rotationYaw - p.prevRotationYaw) * partialTicks;
             float pitch = p.prevRotationPitch + (p.rotationPitch - p.prevRotationPitch) * partialTicks;
             r.camera(System.nanoTime(), yaw, pitch);
-        }
-
-        static String liveMode() {
-            return HeightLimitWatch.core().mode();
-        }
-
-        static String liveMap() {
-            return HeightLimitWatch.core().map();
         }
     }
 }

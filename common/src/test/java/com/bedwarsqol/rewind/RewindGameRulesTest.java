@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -45,26 +46,44 @@ public class RewindGameRulesTest {
     private static final Location SKYBLOCK = new Location("mega3X", "SKYBLOCK", null, "hub", null);
     private static final Location HOUSING = new Location("housing2", "HOUSING", null, null, null);
 
-    /** A rules instance plus every command it emitted, in order. */
+    /**
+     * A rules instance plus every command it emitted, in order. It stands in for the capture handler too: a failure
+     * latches in the latest boundary's segment, and after a REARM copying resumes at the next boundary.
+     */
     private static final class Script {
         final RewindGameRules rules = new RewindGameRules();
         final List<Command> all = new ArrayList<Command>();
         List<Command> last = new ArrayList<Command>();
+        int lastSeg;
+        boolean rearmPending;
 
         Script take(List<Command> c) {
             last = c;
             all.addAll(c);
+            for (Command x : c) if (x.type == CommandType.REARM) rearmPending = true;
             return this;
         }
 
         Script connect(long t) { return take(rules.onConnect(t, false, true)); }
         Script connectSinglePlayer(long t) { return take(rules.onConnect(t, true, true)); }
-        Script boundary(long t, int seg) { return take(rules.onBoundary(t, seg)); }
+        Script boundary(long t, int seg) {
+            if (rearmPending) {
+                rules.onCaptureResumed(seg);
+                rearmPending = false;
+            }
+            lastSeg = seg;
+            return take(rules.onBoundary(t, seg));
+        }
         Script location(long t, int seg, Location l) { return take(rules.onLocation(t, seg, l)); }
         Script tick(long t, boolean queue, boolean active) { return take(rules.tick(t, queue, active)); }
         Script idle(long t) { return tick(t, false, false); }
         Script line(long t, Kind k) { return take(rules.onGameLine(t, k)); }
-        Script fail(long t) { return take(rules.onFailure(t)); }
+        /** A capture failure latched in the latest boundary's segment. */
+        Script fail(long t) { return take(rules.onCaptureFailure(t, lastSeg)); }
+        Script captureFail(long t, int seg) { return take(rules.onCaptureFailure(t, seg)); }
+        Script clientFail(long t, int seg) { return take(rules.onClientFailure(t, seg)); }
+        Script writerFail(long t, long gameId) { return take(rules.onWriterFailure(t, gameId)); }
+        Script progress(long t, int seg) { rules.onCaptureProgress(t, seg); return this; }
         Script disconnect(long t) { return take(rules.onDisconnect(t, false)); }
         Script quit(long t) { return take(rules.onDisconnect(t, true)); }
         Script record(long t, boolean on) { return take(rules.onRecordSetting(t, on)); }
@@ -674,6 +693,422 @@ public class RewindGameRulesTest {
         assertEquals(EndReason.SETTINGS, off.last.get(1).endedBy);
     }
 
+    // ------------------------------------------------------------------ timed closes with a candidate (code review 2, I1)
+
+    /** A Bed Wars game on BW_A open in segment 1, then WIN at 100 s and a dimension-changing S07 (segment 2) at 114 s. */
+    private static Script winThenRespawnAt114() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.line(100 * S, Kind.WIN);
+        s.ticks(101 * S, 113 * S, false, true);
+        s.boundary(114 * S, 2);
+        return s;
+    }
+
+    private static int indexOf(Script s, CommandType type) {
+        for (int i = 0; i < s.all.size(); i++) if (s.all.get(i).type == type) return i;
+        return -1;
+    }
+
+    /** Segment 2 is JOINed to the game before its one CLOSE, and nothing is dropped. */
+    private static Command assertJoinedThenClosed(Script s) {
+        assertEquals(s.all.toString(), 0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        Command close = s.one(CommandType.CLOSE);
+        assertTrue("JOIN before CLOSE: " + s.all, indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+        assertEquals(Result.WIN, close.result);
+        return close;
+    }
+
+    /** The reviewer's sequence: WIN 100 s, same-server S07 114 s, tick 115 s, its location 116 s. */
+    @Test
+    public void aSameServerRespawnInsideTheResultWaitIsJoinedBeforeTheResultClose() {
+        Script s = winThenRespawnAt114();
+        s.tick(115 * S, false, true);
+        assertEquals("the result close waits for the undecided segment", 0, s.count(CommandType.CLOSE));
+        s.location(116 * S, 2, BW_A);
+        Command close = assertJoinedThenClosed(s);
+        assertEquals(EndReason.RESULT, close.endedBy);
+        assertFalse(close.failed);
+    }
+
+    /** The reviewer's disconnect variant: the timer is already due when the disconnect comes. */
+    @Test
+    public void aDisconnectWhileTheResultCloseIsDueJoinsTheRespawnFirst() {
+        Script s = winThenRespawnAt114();
+        s.disconnect(115 * S);
+        assertJoinedThenClosed(s);
+    }
+
+    @Test
+    public void aQuitWhileTheResultCloseIsDueJoinsTheRespawnFirst() {
+        Script s = winThenRespawnAt114();
+        s.quit(115 * S);
+        assertJoinedThenClosed(s);
+    }
+
+    @Test
+    public void recordOffWhileTheResultCloseIsDueJoinsTheRespawnFirst() {
+        Script s = winThenRespawnAt114();
+        s.record(115 * S, false);
+        Command close = assertJoinedThenClosed(s);
+        assertEquals(EndReason.SETTINGS, close.endedBy);
+    }
+
+    @Test
+    public void aRespawnWithNoLocationIsJoinedFiveSecondsLaterThenTheResultCloses() {
+        Script s = winThenRespawnAt114();
+        s.ticks(115 * S, 118 * S, false, true);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.tick(119 * S, false, true);                                     // 5 s after the boundary
+        Command close = assertJoinedThenClosed(s);
+        assertEquals(EndReason.RESULT, close.endedBy);
+        assertEquals(119 * S, close.timeUs);
+    }
+
+    @Test
+    public void aSameServerLocationBeforeTheDueTickJoinsThenTheResultCloses() {
+        Script s = winThenRespawnAt114();
+        s.location(114 * S + 500_000, 2, BW_A);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        s.tick(115 * S, false, true);
+        assertEquals(EndReason.RESULT, assertJoinedThenClosed(s).endedBy);
+    }
+
+    @Test
+    public void anotherServerAfterTheDueTickClosesTheGameAndTheRespawnStartsTheNextRun() {
+        Script s = winThenRespawnAt114();
+        s.tick(115 * S, false, true);
+        s.location(116 * S, 2, BW_B);                                     // Play Again: another server
+        assertEquals(0, s.count(CommandType.JOIN));
+        assertEquals(0, s.count(CommandType.DROP));
+        Command close = s.one(CommandType.CLOSE);
+        assertEquals(EndReason.SERVER, close.endedBy);
+        assertEquals(Result.WIN, close.result);
+        s.ticks(117 * S, 140 * S, true, false).tick(141 * S, false, true);
+        List<Command> opens = s.of(CommandType.OPEN);
+        assertEquals(2, opens.size());
+        assertRange(opens.get(1), 2, 2);
+        assertEquals("BEDWARS_FOUR_FOUR", opens.get(1).info.mode);
+    }
+
+    @Test
+    public void aLobbyAfterTheDueTickClosesTheGameAndTheRespawnIsTheLobbyRun() {
+        Script s = winThenRespawnAt114();
+        s.tick(115 * S, false, false);                                    // the lobby world: no Bed Wars sidebar
+        s.location(116 * S, 2, MAIN);
+        assertEquals(0, s.count(CommandType.JOIN));
+        assertEquals(EndReason.LOBBY, s.one(CommandType.CLOSE).endedBy);
+        s.ticks(117 * S, 130 * S, false, false);
+        assertRange(s.one(CommandType.DROP), 2, 2);                       // the lobby verdict, not the game's
+        assertEquals(1, s.count(CommandType.OPEN));
+    }
+
+    @Test
+    public void aCaptureFailureInTheRespawnSegmentJoinsItsPrefixBeforeTheFailedClose() {
+        Script s = winThenRespawnAt114();
+        s.fail(114 * S + 500_000);                                        // latched in segment 2
+        s.tick(115 * S, false, true);
+        s.location(116 * S, 2, BW_A);                                     // segment 2 is this game's
+        assertEquals(s.all.toString(), 0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        Command close = s.one(CommandType.CLOSE);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+        assertTrue(close.failed);
+        assertEquals("the game had its result: the failure's owner ended", 1, s.count(CommandType.REARM));
+    }
+
+    /** A game on SKYBLOCK open since 1 s, a same-server S07 one second before the 2 h cap. */
+    private static Script respawnBeforeTheCap() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, SKYBLOCK);
+        s.ticks(2 * S, 61 * S, false, false);
+        assertEquals(S, s.one(CommandType.OPEN).timeUs);
+        s.boundary(S + RewindGameRules.GAME_CAP_US - S, 2);
+        return s;
+    }
+
+    @Test
+    public void theCapCloseWaitsForARespawnSegmentAndJoinsIt() {
+        Script s = respawnBeforeTheCap();
+        s.idle(S + RewindGameRules.GAME_CAP_US);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.location(S + RewindGameRules.GAME_CAP_US + S, 2, SKYBLOCK);
+        assertEquals(0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertEquals(EndReason.CAP, s.one(CommandType.CLOSE).endedBy);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    @Test
+    public void aDisconnectWhileTheCapCloseIsDueJoinsTheRespawnFirst() {
+        Script s = respawnBeforeTheCap();
+        s.disconnect(S + RewindGameRules.GAME_CAP_US);
+        assertEquals(0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertEquals(EndReason.DISCONNECT, s.one(CommandType.CLOSE).endedBy);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    // ------------------------------------------------------------------ the capture handler runs ahead (code review 2, I1)
+
+    /** Netty started segment 2 at 114 s; the client's tick at 115 s runs before its WORLD_LOAD. */
+    private static Script winThenUnloadedRespawn() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.line(100 * S, Kind.WIN).ticks(101 * S, 113 * S, false, true);
+        s.progress(114 * S, 2);
+        return s;
+    }
+
+    @Test
+    public void aRespawnCapturedButNotLoadedHoldsTheResultCloseUntilItIsDecided() {
+        Script s = winThenUnloadedRespawn();
+        s.tick(115 * S, false, true);
+        assertEquals("the close waits for the segment the client has not loaded", 0, s.count(CommandType.CLOSE));
+        s.boundary(115 * S + 500_000, 2).location(116 * S, 2, BW_A);
+        Command close = assertJoinedThenClosed(s);
+        assertEquals(EndReason.RESULT, close.endedBy);
+    }
+
+    @Test
+    public void aStalledClientHoldsTheResultCloseAtMostFiveSeconds() {
+        Script s = winThenUnloadedRespawn();
+        s.ticks(115 * S, 118 * S, false, true);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.tick(119 * S, false, true);                                     // 5 s after Netty got ahead
+        assertEquals(EndReason.RESULT, s.one(CommandType.CLOSE).endedBy);
+        assertEquals(0, s.count(CommandType.JOIN));
+        s.boundary(130 * S, 2).location(130 * S + 100_000, 2, BW_A);       // loaded at last: same server, closed game
+        assertRange(s.one(CommandType.DROP), 2, 2);
+    }
+
+    @Test
+    public void aDisconnectJoinsSegmentsTheClientNeverLoaded() {
+        Script s = winThenUnloadedRespawn();
+        s.progress(114 * S + 300_000, 3);                                 // and a second one
+        s.disconnect(115 * S);
+        assertEquals(0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 3);
+        assertFalse(s.one(CommandType.CLOSE).failed);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    @Test
+    public void aDisconnectJoinsAnUnloadedSegmentAndItsFailureFailsTheGame() {
+        Script s = winThenUnloadedRespawn();
+        s.captureFail(114 * S + 300_000, 2);                              // latched in segment 2, not loaded
+        s.tick(115 * S, false, true);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.disconnect(116 * S);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertTrue(s.one(CommandType.CLOSE).failed);
+    }
+
+    @Test
+    public void recordOffJoinsSegmentsTheClientNeverLoaded() {
+        Script s = winThenUnloadedRespawn();
+        s.record(115 * S, false);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertEquals(EndReason.SETTINGS, s.one(CommandType.CLOSE).endedBy);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    @Test
+    public void theCapCloseWaitsForASegmentTheClientHasNotLoaded() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, SKYBLOCK);
+        s.ticks(2 * S, 61 * S, false, false);
+        s.progress(RewindGameRules.GAME_CAP_US, 2);
+        s.idle(S + RewindGameRules.GAME_CAP_US);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.boundary(S + RewindGameRules.GAME_CAP_US + 100_000, 2);
+        s.location(S + RewindGameRules.GAME_CAP_US + 200_000, 2, SKYBLOCK);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertEquals(EndReason.CAP, s.one(CommandType.CLOSE).endedBy);
+    }
+
+    // ------------------------------------------------------------------ failure ownership by segment (code review 2, I2)
+
+    /** A failure latched in segment 1 before the client loaded it: no REARM until its game provably ends. */
+    @Test
+    public void aCaptureFailureInAnUnloadedSegmentWaitsForItsBoundaryAndNeverRearmsEarly() {
+        Script s = new Script().connect(0);
+        s.progress(S, 1).captureFail(S + 100_000, 1);
+        s.tick(S + 200_000, false, false);                                // a tick before the WORLD_LOAD
+        assertEquals(0, s.count(CommandType.REARM));
+        s.boundary(S + 300_000, 1);
+        assertRange(s.one(CommandType.DROP), 1, 1);                       // its run failed
+        s.location(S + 400_000, 1, BW_A).tick(2 * S, true, false).tick(30 * S, false, true);
+        assertEquals("the failed game never opens", 0, s.count(CommandType.OPEN));
+        s.boundary(60 * S, 2).location(60 * S + 100_000, 2, BW_A);        // same server: still that game
+        assertEquals(2, s.count(CommandType.DROP));
+        assertEquals(0, s.count(CommandType.REARM));
+        s.line(300 * S, Kind.WIN);                                        // it ended
+        assertEquals(1, s.count(CommandType.REARM));
+        s.boundary(320 * S, 3).location(320 * S + 100_000, 3, BW_B).tick(321 * S, true, false).tick(350 * S, false, true);
+        assertRange(s.one(CommandType.OPEN), 3, 3);
+    }
+
+    @Test
+    public void aCaptureFailureLoadedBeforeATickIsOwnedTheSameWay() {
+        Script s = new Script().connect(0);
+        s.progress(S, 1).captureFail(S + 100_000, 1).boundary(S + 300_000, 1);
+        s.tick(S + 400_000, false, false);
+        assertRange(s.one(CommandType.DROP), 1, 1);
+        assertEquals(0, s.count(CommandType.REARM));
+    }
+
+    @Test
+    public void aCaptureFailureBeforeTheFirstBoundaryRearmsAtOnce() {
+        Script s = new Script().connect(0).captureFail(S / 2, 0);
+        assertEquals(1, s.count(CommandType.REARM));
+        s.boundary(S, 1).location(S + 100_000, 1, BW_A).tick(2 * S, true, false).tick(30 * S, false, true);
+        assertRange(s.one(CommandType.OPEN), 1, 1);
+    }
+
+    /** Segment 0 failed, but Netty had already read segment 1's boundary: segment 1 holds no packets. */
+    @Test
+    public void aRunWhoseBoundaryPassedBeforeTheRearmIsSkipped() {
+        RewindGameRules r = new RewindGameRules();
+        List<Command> all = new ArrayList<Command>(r.onConnect(0, false, true));
+        r.onCaptureProgress(S, 1);
+        all.addAll(r.onCaptureFailure(S, 0));
+        assertEquals(CommandType.REARM, all.get(all.size() - 1).type);
+        all.addAll(r.onBoundary(S + 100_000, 1));                         // capture resumes only at segment 2
+        all.addAll(r.onLocation(S + 200_000, 1, BW_A));
+        all.addAll(r.tick(2 * S, true, false));
+        all.addAll(r.tick(30 * S, false, true));
+        assertEquals(1, r.skippedAfterFailure());
+        for (Command c : all) assertFalse(all.toString(), c.type == CommandType.OPEN);
+        r.onCaptureResumed(2);
+        all.addAll(r.onBoundary(40 * S, 2));
+        all.addAll(r.onLocation(40 * S + 100_000, 2, BW_B));
+        all.addAll(r.tick(41 * S, true, false));
+        all.addAll(r.tick(60 * S, false, true));
+        assertTrue("the next game is recorded", r.gameOpen());
+    }
+
+    @Test
+    public void aCandidateFailureWithNoLocationJoinsItAfterFiveSecondsThenFails() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.boundary(100 * S, 2).captureFail(101 * S, 2);
+        s.ticks(102 * S, 104 * S, false, true);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.tick(105 * S, false, true);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertTrue(s.one(CommandType.CLOSE).failed);
+        assertEquals("no result yet: no rearm", 0, s.count(CommandType.REARM));
+    }
+
+    @Test
+    public void aCandidateFailureOnAnotherServerLeavesTheOpenGameHealthyAndFailsTheNewRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.boundary(100 * S, 2).captureFail(100 * S + 50_000, 2);
+        s.location(100 * S + 100_000, 2, BW_B);
+        Command close = s.one(CommandType.CLOSE);
+        assertFalse(close.failed);
+        assertEquals(EndReason.SERVER, close.endedBy);
+        assertRange(s.one(CommandType.DROP), 2, 2);                       // the new run failed
+        assertEquals(0, s.count(CommandType.REARM));
+        s.tick(101 * S, true, false).tick(120 * S, false, true);
+        assertEquals(1, s.count(CommandType.OPEN));
+        s.line(300 * S, Kind.LOSS);                                       // the failed run's game ended
+        assertEquals(1, s.count(CommandType.REARM));
+    }
+
+    @Test
+    public void aFailureDuringALobbyVerdictWaitsForIt() {
+        Script lobby = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        lobby.fail(2 * S);
+        assertEquals(0, lobby.count(CommandType.DROP));
+        assertEquals(0, lobby.count(CommandType.REARM));
+        lobby.ticks(3 * S, 12 * S, false, false);                         // a lobby: nothing to wait for
+        assertRange(lobby.one(CommandType.DROP), 1, 1);
+        assertEquals(1, lobby.count(CommandType.REARM));
+
+        Script queue = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, LOBBY_NAME_ONLY);
+        queue.fail(2 * S).tick(3 * S, true, false);                       // the Bed Wars queue: a game after all
+        assertRange(queue.one(CommandType.DROP), 1, 1);
+        assertEquals(0, queue.count(CommandType.REARM));
+        queue.tick(30 * S, false, true);
+        assertEquals(0, queue.count(CommandType.OPEN));
+        queue.line(300 * S, Kind.WIN);
+        assertEquals(1, queue.count(CommandType.REARM));
+    }
+
+    /** A client-thread failure fails its game but never latches capture: no REARM, and the next run is not skipped. */
+    @Test
+    public void aClientFailureFailsTheGameButNeverSkipsTheNextRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).clientFail(50 * S, 1);
+        assertTrue(s.one(CommandType.CLOSE).failed);
+        s.boundary(60 * S, 2).location(60 * S + 100_000, 2, BW_B);        // Play Again mid-game, another server
+        assertEquals(0, s.count(CommandType.REARM));
+        assertEquals(0, s.rules.skippedAfterFailure());
+        s.tick(61 * S, true, false).tick(90 * S, false, true);
+        assertEquals(2, s.count(CommandType.OPEN));
+        assertRange(s.of(CommandType.OPEN).get(1), 2, 2);
+    }
+
+    // ------------------------------------------------------------------ writer failures by game (code review 2, I3)
+
+    @Test
+    public void aWriterFailureReachesOnlyTheGameWhoseFileFailed() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        long a = s.one(CommandType.OPEN).gameId;
+        s.boundary(50 * S, 2).location(50 * S + 100_000, 2, BW_B);        // A closes, B is pending
+        s.writerFail(51 * S, a);                                          // A's file failed late
+        assertEquals(0, s.count(CommandType.DROP));
+        s.tick(52 * S, true, false).tick(60 * S, false, true);
+        List<Command> opens = s.of(CommandType.OPEN);
+        assertEquals(2, opens.size());
+        long b = opens.get(1).gameId;
+        assertNotEquals(a, b);
+        s.writerFail(61 * S, a);                                          // again, while B is open
+        assertTrue(s.rules.gameOpen());
+        s.writerFail(62 * S, b);                                          // B's own file
+        assertFalse(s.rules.gameOpen());
+        List<Command> closes = s.of(CommandType.CLOSE);
+        assertEquals(2, closes.size());
+        assertFalse(closes.get(0).failed);
+        assertTrue(closes.get(1).failed);
+        assertEquals(b, closes.get(1).gameId);
+        assertEquals(0, s.count(CommandType.REARM));
+    }
+
+    @Test
+    public void aWriterFailureWaitsForTheCandidateAndNeverSkipsTheNextRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        long a = s.one(CommandType.OPEN).gameId;
+        s.boundary(50 * S, 2).writerFail(50 * S + 100_000, a);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.location(50 * S + 200_000, 2, BW_B);                           // Play Again on another server
+        assertTrue(s.one(CommandType.CLOSE).failed);
+        assertEquals(0, s.count(CommandType.JOIN));
+        s.tick(51 * S, true, false).tick(70 * S, false, true);
+        assertRange(s.of(CommandType.OPEN).get(1), 2, 2);
+        assertEquals(0, s.rules.skippedAfterFailure());
+    }
+
+    /** A failed close after the result: the game provably ended, so the next unlocated run is not merged into it. */
+    @Test
+    public void aFailedCloseAfterTheResultEndsTheGameForTheNextUnlocatedRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        long a = s.one(CommandType.OPEN).gameId;
+        s.line(100 * S, Kind.WIN).boundary(110 * S, 2).writerFail(111 * S, a);
+        s.location(112 * S, 2, BW_A);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertTrue(s.one(CommandType.CLOSE).failed);
+        s.boundary(200 * S, 3).ticks(201 * S, 215 * S, true, false).tick(216 * S, false, true); // no location
+        assertEquals(2, s.count(CommandType.OPEN));
+        assertRange(s.of(CommandType.OPEN).get(1), 3, 3);
+        assertEquals(0, s.count(CommandType.REARM));
+    }
+
     // ------------------------------------------------------------------ failure ownership
 
     private static Script failedBedwarsGame() {
@@ -842,6 +1277,61 @@ public class RewindGameRulesTest {
         RewindGameRules sp = new RewindGameRules();
         assertTrue(sp.onConnect(0, true, false).isEmpty());
         assertTrue(sp.onBoundary(S, 1).isEmpty());
+    }
+
+    // ------------------------------------------------------------------ metadata after OPEN (code review 2, I4)
+
+    private static List<Command> infos(Script s) {
+        return s.of(CommandType.valueOf("INFO"));
+    }
+
+    @Test
+    public void aLocationAfterASidebarOpenUpdatesTheGamesModeAndMap() {
+        Script s = new Script().connect(0).boundary(S, 1);
+        s.ticks(2 * S, 10 * S, true, false).tick(11 * S, false, true);   // the sidebar fallback opens it
+        Command open = s.one(CommandType.OPEN);
+        assertNull(open.info.mode);
+        assertNull(open.info.map);
+        s.location(21 * S, 1, BW_A);                                      // the same segment's location, late
+        List<Command> info = infos(s);
+        assertEquals(s.all.toString(), 1, info.size());
+        assertEquals("BEDWARS_EIGHT_ONE", info.get(0).info.mode);
+        assertEquals("Lighthouse", info.get(0).info.map);
+        assertEquals("BEDWARS", info.get(0).info.serverType);
+        s.location(30 * S, 1, BW_A);                                      // unchanged: no second update
+        assertEquals(1, infos(s).size());
+        assertEquals(0, s.count(CommandType.CLOSE));
+    }
+
+    @Test
+    public void aSameServerLocationWithAnotherMapUpdatesTheGameLatestWins() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        assertEquals("Lighthouse", s.one(CommandType.OPEN).info.map);
+        Location moved = new Location("mini12A", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "Fakeport");
+        s.boundary(50 * S, 2).location(50 * S + 100_000, 2, moved);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        List<Command> info = infos(s);
+        assertEquals(1, info.size());
+        assertEquals("Fakeport", info.get(0).info.map);
+        assertEquals("BEDWARS_EIGHT_ONE", info.get(0).info.mode);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.valueOf("INFO")));
+        Location partial = new Location("mini12A", "BEDWARS", null, null, null);
+        s.boundary(60 * S, 3).location(60 * S + 100_000, 3, partial);   // absent fields never erase
+        assertEquals(1, infos(s).size());
+    }
+
+    @Test
+    public void noLocationAtAllLeavesModeAndMapAbsent() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_B);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).line(50 * S, Kind.WIN).ticks(51 * S, 70 * S, false, false);
+        s.boundary(80 * S, 2).ticks(81 * S, 90 * S, true, false).tick(91 * S, false, true); // next game, no location
+        List<Command> opens = s.of(CommandType.OPEN);
+        assertEquals(2, opens.size());
+        assertNull("never the previous server's mode", opens.get(1).info.mode);
+        assertNull(opens.get(1).info.map);
+        s.disconnect(100 * S);
+        assertEquals(0, infos(s).size());
     }
 
     @Test

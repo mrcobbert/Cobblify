@@ -59,7 +59,11 @@ public final class RecordChunk {
         return segment;
     }
 
-    /** Producer clock (µs) the first record's {@code dtUs} is measured from. */
+    /**
+     * Producer clock (µs) the first record's {@code dtUs} is measured from. Final once the chunk's first record is
+     * committed (a long gap before that record moves it forward); readers take it as a block's base only for a range
+     * that starts at offset 0 of a chunk with committed records.
+     */
     public long startTimeUs() {
         return startTimeUs;
     }
@@ -142,6 +146,11 @@ public final class RecordChunk {
      * <p>A failed roll (no free chunk at the cap) leaves no live chunk; the watermark keeps naming the
      * handed-off chunk, so the writer still finds it at the ring head. The next append or segment start
      * tries again.
+     *
+     * <p><b>Long gaps.</b> A record more than {@link RewindFormat#MAX_DT_US} (about 71 minutes) after the
+     * previous one starts its chunk: an empty live chunk's start time moves to the record's time, a
+     * non-empty one is handed off and a fresh chunk starts there. Every record keeps its exact time (code
+     * review 2, I6).
      */
     public static final class Producer {
         private final int chunkCapacity;
@@ -206,7 +215,7 @@ public final class RecordChunk {
                 throw new IllegalArgumentException("carry");
             }
             this.segment = segment;
-            return roll(true, carry, carryOff, carryLen);
+            return roll(true, carry, carryOff, carryLen, lastTimeUs);
         }
 
         /** Hands off the live chunk and leaves none (channel inactive, handler removed). */
@@ -228,7 +237,7 @@ public final class RecordChunk {
             if (len < 0 || len + RewindFormat.MAX_RECORD_PREFIX > chunkCapacity) {
                 return -1;
             }
-            if (!ensureRoom(len + RewindFormat.MAX_RECORD_PREFIX)) {
+            if (!ensureRoom(len + RewindFormat.MAX_RECORD_PREFIX, nowUs)) {
                 return -1;
             }
             int pos = writeDt(nowUs);
@@ -242,7 +251,7 @@ public final class RecordChunk {
             if (len < 0 || len + RewindFormat.MAX_RECORD_PREFIX > chunkCapacity) {
                 return -1;
             }
-            if (!ensureRoom(len + RewindFormat.MAX_RECORD_PREFIX)) {
+            if (!ensureRoom(len + RewindFormat.MAX_RECORD_PREFIX, nowUs)) {
                 return -1;
             }
             int pos = writeDt(nowUs);
@@ -293,26 +302,41 @@ public final class RecordChunk {
         private int writeDt(long nowUs) {
             long dt = nowUs - lastTimeUs;
             if (dt < 0) {
-                dt = 0;
+                dt = 0; // a clock that went back: the record keeps the previous time
             } else if (dt > RewindFormat.MAX_DT_US) {
+                // Unreachable: ensureRoom started a new chunk at nowUs for any longer gap (code review 2, I6).
                 dt = RewindFormat.MAX_DT_US;
             }
-            // Reconstructed time is always lastTimeUs + dt, so a clamp shifts later records, never splits them.
             pendingTimeUs = lastTimeUs + dt;
             return RewindFormat.putVarInt(cur.data, cur.committed, (int) dt);
         }
 
-        private boolean ensureRoom(int need) {
+        /**
+         * Makes room for a record of up to {@code need} bytes at {@code nowUs}. A gap longer than {@link
+         * RewindFormat#MAX_DT_US} since the last record cannot be a {@code dtUs} (code review 2, I6). If the live
+         * chunk has no record yet, its start time simply moves to {@code nowUs} (the change is published with the
+         * record's commit); otherwise it is handed off and a fresh chunk starts at {@code nowUs}. Either way the writer
+         * starts a block there whose {@code firstTimeUs} is that time, and the record's own {@code dtUs} is 0.
+         * Ordinary records are encoded exactly as before.
+         */
+        private boolean ensureRoom(int need, long nowUs) {
+            boolean gap = nowUs - lastTimeUs > RewindFormat.MAX_DT_US;
             if (cur != null) {
                 cur.writePos = cur.committed;
-                if (chunkCapacity - cur.committed >= need) {
+                if (gap && cur.committed == 0) {
+                    cur.startTimeUs = nowUs;
+                    lastTimeUs = nowUs;
+                    pendingTimeUs = nowUs;
+                    gap = false;
+                }
+                if (!gap && chunkCapacity - cur.committed >= need) {
                     return true;
                 }
             }
-            return roll(false, null, 0, 0);
+            return roll(false, null, 0, 0, gap ? nowUs : lastTimeUs);
         }
 
-        private boolean roll(boolean boundary, byte[] carry, int carryOff, int carryLen) {
+        private boolean roll(boolean boundary, byte[] carry, int carryOff, int carryLen, long startUs) {
             // (1) hand off chunk s.
             if (cur != null) {
                 abort();
@@ -327,6 +351,10 @@ public final class RecordChunk {
             if (next == null) {
                 live.lazySet(null);
                 return false;
+            }
+            if (startUs > lastTimeUs) {
+                lastTimeUs = startUs; // a long gap: the new chunk's base is the next record's time
+                pendingTimeUs = startUs;
             }
             next.reset(nextSeq++, segment, lastTimeUs, boundary, carry, carryOff, boundary ? carryLen : 0);
             cur = next;

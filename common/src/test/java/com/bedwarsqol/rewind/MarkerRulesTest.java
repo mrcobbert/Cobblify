@@ -170,7 +170,7 @@ public class MarkerRulesTest {
     @Test
     public void aFailedGameIgnoresMarkers() {
         RewindGameRules r = openBedwarsGame();
-        r.onFailure(70 * S);
+        r.onCaptureFailure(70 * S, 1);
         assertTrue(r.onMarkerKey(71 * S).isEmpty());
         assertTrue(r.onGameLine(72 * S, Kind.FINAL_KILL).isEmpty());
     }

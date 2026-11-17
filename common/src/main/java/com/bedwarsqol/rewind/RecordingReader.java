@@ -183,6 +183,29 @@ public final class RecordingReader implements Closeable {
         validLength = pos;
     }
 
+    /**
+     * The format version named by a file header in {@code h[0, len)}, or -1 if it is short, has another magic or a
+     * bad CRC (an unreadable header). Callers that may delete or rewrite a recording act only on
+     * {@link RewindFormat#FORMAT_VERSION}; anything else is left alone (code review 2, I5).
+     */
+    public static int headerVersion(byte[] h, int len) {
+        if (h == null || len < RewindFormat.FILE_HEADER_LENGTH || h.length < RewindFormat.FILE_HEADER_LENGTH) {
+            return -1;
+        }
+        byte[] magic = RewindFormat.fileMagic();
+        for (int i = 0; i < magic.length; i++) {
+            if (h[i] != magic[i]) {
+                return -1;
+            }
+        }
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(h, 0, 24);
+        if ((int) crc.getValue() != RewindFormat.getInt(h, 24)) {
+            return -1;
+        }
+        return RewindFormat.getU16(h, 8);
+    }
+
     /** The file header, or null if it is missing, short or damaged. */
     public FileHeader header() {
         return header;

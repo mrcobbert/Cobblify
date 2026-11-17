@@ -41,13 +41,28 @@ import java.util.Locale;
  * dropped) does a candidate with no location within {@link #CONTINUE_WAIT_US} continue the visit by
  * itself. Otherwise it stays pending until its location arrives, the visit ends, the Bed Wars sidebar
  * of its own world decides it (after a dropped visit), or the next boundary comes 5 s later with still
- * no location (then it was a continuation). A disconnect or Record Games off joins an open game's
- * candidate before the close: its captured records are that game's.
+ * no location (then it was a continuation).
  *
- * <p><b>Failure ownership.</b> A failure closes the open game as failed (or drops a pending run).
- * Its later same-visit segments are dropped and nothing rearms capture until the failed game
- * provably ended: its result, a lobby or other-server run, or a new connection ({@code REARM}). A
- * run whose boundary passed before that rearm was not captured, so it is skipped.
+ * <p><b>Closing (code review 2, I1).</b> One routine emits every CLOSE, and no CLOSE leaves a segment of
+ * the game behind. A segment is <i>undecided</i> while it is a candidate, or while the capture handler
+ * has started it and the client has not loaded it yet ({@link #onCaptureProgress}, at most
+ * {@link #CONTINUE_WAIT_US}). The result close (15 s after WIN/LOSS), the 2 h cap and a failure close
+ * wait while anything is undecided; the candidate is then decided by the plan's rules: a same-server
+ * location or 5 s without one JOINs it (then the close follows), and a different-server or lobby
+ * location closes the game without it (it starts the next run). A disconnect, quit or Record Games off
+ * cannot learn more, so it JOINs the candidate and the unloaded segments before its CLOSE. So a WIN at
+ * 100 s, a same-server S07 at 114 s, a tick at 115 s and its location at 116 s give JOIN then CLOSE
+ * (result) at 116 s; a disconnect at 115 s gives JOIN then CLOSE (disconnect).
+ *
+ * <p><b>Failure ownership (code review 2, I2/I3).</b> A failure belongs to a segment: the capture
+ * handler's latch to the segment it latched in ({@link #onCaptureFailure}, applied when the client has
+ * loaded that segment), a client-thread failure to the current TRACK segment, a writer failure to the
+ * game whose file failed ({@link #onWriterFailure}, by game id). The visit (or undecided candidate)
+ * that owns the segment fails: an open game closes as failed once nothing is undecided, a pending run
+ * is dropped. Its later same-visit segments are dropped. Only a capture latch needs a {@code REARM},
+ * and only once the failed visit provably ended: its result, a lobby or other-server run, a lobby
+ * verdict, or a new connection. A run whose first boundary passed while capture was latched holds no
+ * packets and is skipped; other failures never skip the next run.
  *
  * <p><b>Settings.</b> Record off closes the game, drops pending segments and removes the handler;
  * recording resumes only at a connection started with it on.
@@ -93,6 +108,8 @@ public final class RewindGameRules {
         DROP,
         /** Finalize the open game. */
         CLOSE,
+        /** The open game's mode, map or server type changed after OPEN: its metadata is updated (INFO records). */
+        INFO,
         /** Write a TRACK marker record now. */
         MARKER,
         /** Show the Marker Key flash. */
@@ -153,7 +170,7 @@ public final class RewindGameRules {
         }
     }
 
-    /** Gallery metadata known at open. Never holds the server name or address. */
+    /** Gallery metadata known at OPEN, or at a later INFO update. Never holds the server name or address. */
     public static final class GameInfo {
         /** Hypixel mode id, or {@code SINGLEPLAYER}; null when unknown. */
         public final String mode;
@@ -267,7 +284,7 @@ public final class RewindGameRules {
         public final long timeUs;
         /** OPEN. */
         public final StartSource startSource;
-        /** OPEN. */
+        /** OPEN, INFO: the game's metadata as now known. */
         public final GameInfo info;
         /** OPEN: markers accepted while the run was pending, in order. */
         public final List<MarkerEvent> markers;
@@ -280,10 +297,15 @@ public final class RewindGameRules {
         public final Result result;
         public final boolean failed;
         public final RunStats stats;
+        /**
+         * OPEN, INFO, CLOSE: the game's id, unique per rules instance (code review 2, I3). The writer reports a file
+         * failure with it, so a failure reaches only the game whose file failed.
+         */
+        public final long gameId;
 
         private Command(CommandType type, int firstSegment, int lastSegment, long timeUs, StartSource startSource,
                         GameInfo info, List<MarkerEvent> markers, boolean keyMarked, Marker marker,
-                        EndReason endedBy, Result result, boolean failed, RunStats stats) {
+                        EndReason endedBy, Result result, boolean failed, RunStats stats, long gameId) {
             this.type = type;
             this.firstSegment = firstSegment;
             this.lastSegment = lastSegment;
@@ -297,16 +319,17 @@ public final class RewindGameRules {
             this.result = result;
             this.failed = failed;
             this.stats = stats;
+            this.gameId = gameId;
         }
 
         static Command simple(CommandType type) {
             return new Command(type, -1, -1, 0L, null, null, Collections.<MarkerEvent>emptyList(), false, null,
-                    null, null, false, null);
+                    null, null, false, null, 0L);
         }
 
         static Command range(CommandType type, int first, int last) {
             return new Command(type, first, last, 0L, null, null, Collections.<MarkerEvent>emptyList(), false, null,
-                    null, null, false, null);
+                    null, null, false, null, 0L);
         }
 
         @Override
@@ -315,14 +338,19 @@ public final class RewindGameRules {
             if (firstSegment >= 0) sb.append(" [").append(firstSegment).append("..").append(lastSegment).append(']');
             switch (type) {
                 case OPEN:
-                    sb.append(" start=").append(timeUs).append(' ').append(startSource).append(' ').append(info)
-                            .append(" markers=").append(markers).append(" keyMarked=").append(keyMarked);
+                    sb.append(" game=").append(gameId).append(" start=").append(timeUs).append(' ').append(startSource)
+                            .append(' ').append(info).append(" markers=").append(markers).append(" keyMarked=")
+                            .append(keyMarked);
+                    break;
+                case INFO:
+                    sb.append(" game=").append(gameId).append(' ').append(info);
                     break;
                 case MARKER:
                     sb.append(' ').append(marker).append('@').append(timeUs).append(" keyMarked=").append(keyMarked);
                     break;
                 case CLOSE:
-                    sb.append(" at=").append(timeUs).append(' ').append(endedBy).append(' ').append(result)
+                    sb.append(" game=").append(gameId).append(" at=").append(timeUs).append(' ').append(endedBy)
+                            .append(' ').append(result)
                             .append(failed ? " failed" : "").append(' ').append(stats);
                     break;
                 default:
@@ -362,11 +390,24 @@ public final class RewindGameRules {
         String mode;
         String map;
         String serverType;
+        /** Mode, map or server type changed since the game's OPEN or last INFO. */
+        boolean infoChanged;
         long gameStartUs;
+        /** The OPEN's game id (0 before OPEN). */
+        long gameId;
         StartSource source;
         Result result;
         long resultAtUs;
         boolean keyMarked;
+        /**
+         * A failure belongs to this visit but is not applied yet: an open game closes as failed once none of its
+         * segments is undecided; a lobby verdict decides first whether there is a game to fail.
+         */
+        boolean failPending;
+        /** A capture failure (the latch) belongs to this visit: its end rearms capture. */
+        boolean captureLatched;
+        /** Its first boundary passed while capture was latched: nothing of it is ever recorded. */
+        boolean skip;
         final List<MarkerEvent> pendingMarkers = new ArrayList<MarkerEvent>();
 
         Visit(int seg, long startUs) {
@@ -382,6 +423,9 @@ public final class RewindGameRules {
         int lastSeg;
         final long firstUs;
         long lastUs;
+        /** A failure in one of these segments, applied to whichever visit they turn out to be. */
+        boolean failed;
+        boolean captureLatched;
 
         Candidate(int seg, long nowUs) {
             this.firstSeg = seg;
@@ -391,6 +435,8 @@ public final class RewindGameRules {
         }
     }
 
+    private static final int NONE = Integer.MAX_VALUE;
+
     private final List<Command> out = new ArrayList<Command>();
 
     private boolean connected;
@@ -399,6 +445,7 @@ public final class RewindGameRules {
     private Visit visit;
     private Candidate cand;
     private boolean awaitingRearm;
+    private long nextGameId = 1;
 
     private boolean sidebarValid;
     private boolean bwQueue;
@@ -411,6 +458,17 @@ public final class RewindGameRules {
     private final int[] boundarySegs = new int[BOUNDARY_RING];
     private final long[] boundaryTimes = new long[BOUNDARY_RING];
     private int boundaryCount;
+
+    /** The capture handler's latest segment (it runs ahead of the client thread's WORLD_LOADs). */
+    private int captureSeg;
+    /** When the capture handler got ahead of the last loaded boundary. */
+    private long aheadSinceUs;
+    /** The earliest failure in a segment the client has not loaded yet ({@link #NONE}: none). */
+    private int pendingFailSeg = NONE;
+    private boolean pendingFailLatched;
+    /** Segments {@code [uncapturedFrom, resumeAt)} started while capture was latched: they hold no packets. */
+    private int uncapturedFrom = NONE;
+    private int resumeAt = NONE;
 
     private Location earlyLoc;
     private int earlySeg;
@@ -432,7 +490,7 @@ public final class RewindGameRules {
     public List<Command> onConnect(long nowUs, boolean singlePlayerWorld, boolean recording) {
         if (connected && active) {
             advance(nowUs);
-            endConnection(nowUs, EndReason.DISCONNECT);
+            endConnection(nowUs, EndReason.DISCONNECT, true);
         }
         resetConnection();
         connected = true;
@@ -447,7 +505,7 @@ public final class RewindGameRules {
     public List<Command> onDisconnect(long nowUs, boolean quit) {
         if (active) {
             advance(nowUs);
-            endConnection(nowUs, quit ? EndReason.QUIT : EndReason.DISCONNECT);
+            endConnection(nowUs, quit ? EndReason.QUIT : EndReason.DISCONNECT, true);
         }
         resetConnection();
         connected = false;
@@ -459,13 +517,29 @@ public final class RewindGameRules {
     public List<Command> onRecordSetting(long nowUs, boolean on) {
         if (on || !active) return flush();
         advance(nowUs);
-        settleCandidateAtEnd();
-        if (visit != null) endVisit(nowUs, EndReason.SETTINGS, false);
-        visit = null;
+        endConnection(nowUs, EndReason.SETTINGS, false);
         out.add(Command.simple(CommandType.REMOVE_HANDLER));
         active = false;
         awaitingRearm = false;
         return flush();
+    }
+
+    /**
+     * How far the capture handler has got: {@code segment} is its current segment (it may be ahead of the
+     * boundaries the client thread applied). Gives no commands; a timed close waits for segments the capture
+     * handler started and the client has not loaded yet (code review 2, I1).
+     */
+    public void onCaptureProgress(long nowUs, int segment) {
+        if (!active || segment <= captureSeg) return;
+        boolean wasAhead = captureSeg > lastBoundarySeg;
+        captureSeg = segment;
+        if (!wasAhead && captureSeg > lastBoundarySeg) aheadSinceUs = nowUs;
+    }
+
+    /** Capture copies again from segment {@code segment} on (after a REARM). */
+    public void onCaptureResumed(int segment) {
+        if (!active) return;
+        if (uncapturedFrom != NONE && segment >= uncapturedFrom) resumeAt = Math.min(resumeAt, segment);
     }
 
     /** The world boundary that starts segment {@code segment} was applied (WORLD_LOAD). */
@@ -473,14 +547,22 @@ public final class RewindGameRules {
         if (!active) return flush();
         advance(nowUs);
         recordBoundary(segment, nowUs);
+        if (captureSeg < segment) {
+            captureSeg = segment;
+        } else if (captureSeg > segment) {
+            aheadSinceUs = nowUs;                               // the next one is still ahead: wait for it anew
+        }
         sidebarValid = false;
         if (singlePlayer) {
             singlePlayerBoundary(nowUs, segment);
+            applyPendingFailure(nowUs, segment);
+            advance(nowUs);
             return flush();
         }
         if (visit == null || (visit.state == State.DROPPED && visit.server == null)) {
-            if (cand != null) mergeCandidate();                  // no server to compare: it was that visit's
+            if (cand != null) mergeCandidate(nowUs);           // no server to compare: it was that visit's
             visit = new Visit(segment, nowUs);
+            visit.skip = isUncaptured(segment);
         } else if (visit.state == State.UNCLASSIFIED) {
             visit.lastSeg = segment;
         } else if (cand == null) {
@@ -488,12 +570,13 @@ public final class RewindGameRules {
         } else if (presumedSameServer(nowUs)) {
             // The previous run went 5 s without a location before this boundary: a same-server
             // continuation (open and failed games merged it in advance() already).
-            mergeCandidate();
+            mergeCandidate(nowUs);
             cand = new Candidate(segment, nowUs);
         } else {
             cand.lastSeg = segment;
             cand.lastUs = nowUs;
         }
+        applyPendingFailure(nowUs, segment);
         if (earlyLoc != null && earlySeg <= segment) {
             Location l = earlyLoc;
             earlyLoc = null;
@@ -543,7 +626,7 @@ public final class RewindGameRules {
                 visit.result = r;
                 visit.resultAtUs = nowUs;
             } else if (visit.state == State.FAILED) {
-                emitRearm();                                    // the failed game provably ended
+                if (visit.captureLatched) emitRearm();          // the failed game provably ended
                 visit.state = State.DROPPED;
             }
         }
@@ -561,39 +644,34 @@ public final class RewindGameRules {
         return flush();
     }
 
-    /** A recorder failure: capture latch, writer error or client-thread exception. */
-    public List<Command> onFailure(long nowUs) {
+    /**
+     * The capture handler latched a failure while it was in segment {@code segment} (code review 2, I2). The failure
+     * belongs to the visit that owns that segment, decided when the client has loaded it; capture is rearmed only
+     * once that visit provably ended. Segments started while latched hold no packets: a run that begins in one is
+     * skipped.
+     */
+    public List<Command> onCaptureFailure(long nowUs, int segment) {
+        return failure(nowUs, segment, true);
+    }
+
+    /**
+     * A client-thread failure (the TRACK producer, or an exception) in segment {@code segment}, the current TRACK
+     * segment: the owning game fails, capture itself is untouched.
+     */
+    public List<Command> onClientFailure(long nowUs, int segment) {
+        return failure(nowUs, segment, false);
+    }
+
+    /**
+     * The writer failed the file of game {@code gameId} (the id of its OPEN; code review 2, I3). Only that game, if
+     * it is still open, closes as failed; a failure of an earlier, already closed game changes nothing here.
+     */
+    public List<Command> onWriterFailure(long nowUs, long gameId) {
         if (!active) return flush();
         advance(nowUs);
-        if (visit == null) {
-            emitRearm();
-            return flush();
-        }
-        switch (visit.state) {
-            case OPEN:
-                closeGame(nowUs, EndReason.FAILED, true);
-                awaitingRearm = true;
-                break;
-            case UNCLASSIFIED:
-            case BEDWARS_PENDING:
-            case SERVER_PENDING:
-                emitDrop(visit.firstSeg, visit.lastSeg);
-                visit.pendingMarkers.clear();
-                visit.keyMarked = false;
-                visit.state = State.FAILED;
-                awaitingRearm = true;
-                break;
-            case LOBBY_WAIT:
-                emitDrop(visit.firstSeg, visit.lastSeg);       // a lobby is not a game: nothing to wait for
-                visit.state = State.DROPPED;
-                emitRearm();
-                break;
-            case DROPPED:
-                emitRearm();
-                break;
-            case FAILED:
-            default:
-                break;
+        if (visit != null && visit.state == State.OPEN && visit.gameId == gameId) {
+            failVisit(nowUs, false);
+            advance(nowUs);
         }
         return flush();
     }
@@ -606,7 +684,7 @@ public final class RewindGameRules {
             if (isPending(visit.state)) {
                 capDrop();
             } else if (cand != null && visit.state == State.DROPPED) {
-                mergeCandidate();                                // an unlocated run after a dropped visit
+                mergeCandidate(nowUs);                           // an unlocated run after a dropped visit
             }
         }
         return flush();
@@ -692,8 +770,15 @@ public final class RewindGameRules {
         prevActive = false;
         activeEdgeUs = Long.MIN_VALUE;
         anyBoundary = false;
+        lastBoundarySeg = 0;
         boundaryCount = 0;
         earlyLoc = null;
+        captureSeg = 0;
+        aheadSinceUs = 0;
+        pendingFailSeg = NONE;
+        pendingFailLatched = false;
+        uncapturedFrom = NONE;
+        resumeAt = NONE;
     }
 
     private void singlePlayerBoundary(long nowUs, int segment) {
@@ -701,6 +786,7 @@ public final class RewindGameRules {
             visit = new Visit(segment, nowUs);
             visit.classification = Classification.SINGLEPLAYER;
             visit.mode = "SINGLEPLAYER";
+            visit.skip = isUncaptured(segment);
             open(nowUs, StartSource.SINGLEPLAYER);
             return;
         }
@@ -708,28 +794,133 @@ public final class RewindGameRules {
         out.add(Command.range(visit.state == State.OPEN ? CommandType.JOIN : CommandType.DROP, segment, segment));
     }
 
+    // ---- failures (code review 2, I2/I3)
+
+    private List<Command> failure(long nowUs, int segment, boolean latched) {
+        if (!active) return flush();
+        advance(nowUs);
+        if (latched) {
+            uncapturedFrom = segment + 1;                         // the latch outlives boundaries until a rearm
+            resumeAt = NONE;
+        }
+        if (segment > lastBoundarySeg) {
+            // The client has not loaded this segment yet: its owner is decided at its boundary.
+            pendingFailSeg = Math.min(pendingFailSeg, segment);
+            pendingFailLatched |= latched;
+            return flush();
+        }
+        applyFailure(nowUs, segment, latched);
+        advance(nowUs);
+        return flush();
+    }
+
+    private void applyPendingFailure(long nowUs, int segment) {
+        if (pendingFailSeg == NONE || pendingFailSeg > segment) return;
+        int f = pendingFailSeg;
+        boolean latched = pendingFailLatched;
+        pendingFailSeg = NONE;
+        pendingFailLatched = false;
+        applyFailure(nowUs, f, latched);
+    }
+
+    /** Attaches a failure in loaded segment {@code segment} to its owner: the undecided candidate, or the visit. */
+    private void applyFailure(long nowUs, int segment, boolean latched) {
+        if (visit == null) {
+            // Before the first boundary (segment 0): no run owns it; copying restarts at the first boundary.
+            if (latched) emitRearm();
+            return;
+        }
+        if (cand != null && segment >= cand.firstSeg) {
+            cand.failed = true;                                    // decided with the candidate
+            cand.captureLatched |= latched;
+            return;
+        }
+        failVisit(nowUs, latched);
+    }
+
+    /** The current visit owns a failure. */
+    private void failVisit(long nowUs, boolean latched) {
+        Visit v = visit;
+        switch (v.state) {
+            case OPEN:
+            case LOBBY_WAIT:
+                v.failPending = true;                              // closed (or decided) by advance()
+                v.captureLatched |= latched;
+                break;
+            case UNCLASSIFIED:
+            case BEDWARS_PENDING:
+            case SERVER_PENDING:
+                failPendingRun(v, latched);
+                break;
+            case FAILED:
+                v.captureLatched |= latched;
+                if (latched) awaitingRearm = true;
+                break;
+            case DROPPED:
+            default:
+                if (latched) emitRearm();                          // its owner already ended
+                break;
+        }
+    }
+
+    private void failPendingRun(Visit v, boolean latched) {
+        emitDrop(v.firstSeg, v.lastSeg);
+        v.pendingMarkers.clear();
+        v.keyMarked = false;
+        v.state = State.FAILED;
+        v.failPending = false;
+        v.captureLatched |= latched;
+        if (v.captureLatched) awaitingRearm = true;
+    }
+
+    /** Whether segment {@code segment} started while capture was latched (no packets until a rearm resumed it). */
+    private boolean isUncaptured(int segment) {
+        return uncapturedFrom != NONE && segment >= uncapturedFrom && segment < resumeAt;
+    }
+
+    // ---- time
+
+    /**
+     * Segments of this connection that may still belong to the open game and are not decided yet: a candidate, or
+     * boundaries the capture handler started that the client has not loaded (bounded by {@link #CONTINUE_WAIT_US}).
+     */
+    private boolean undecided(long nowUs) {
+        return cand != null || captureAhead(nowUs);
+    }
+
+    private boolean captureAhead(long nowUs) {
+        return captureSeg > lastBoundarySeg && nowUs - aheadSinceUs < CONTINUE_WAIT_US;
+    }
+
     /** Time-driven transitions and sidebar checks; idempotent for an unchanged time and input. */
     private void advance(long nowUs) {
         if (!active || visit == null) return;
-        if (visit.state == State.OPEN) {
-            if (visit.result != null && nowUs - visit.resultAtUs >= RESULT_CLOSE_US) {
-                closeGame(nowUs, EndReason.RESULT, false);
-            } else if (nowUs - visit.gameStartUs >= GAME_CAP_US) {
-                closeGame(nowUs, EndReason.CAP, false);
-            }
-        }
         if (cand != null) {
             if (visit.state == State.OPEN || visit.state == State.FAILED) {
                 // PLAN "Continue" (while a game is open) and failure ownership: no location within 5 s.
-                if (presumedSameServer(nowUs)) mergeCandidate();
+                if (presumedSameServer(nowUs)) mergeCandidate(nowUs);
             } else if (visit.state == State.DROPPED) {
                 // Nothing to continue: the run stays pending until its location (or visit end), unless
                 // the Bed Wars sidebar of its own world decides it first (PLAN "No location within 10 s").
                 if (candidateSidebarBedwars(nowUs)) {
-                    startSidebarRunFromCandidate();
+                    startSidebarRunFromCandidate(nowUs);
                 } else if (nowUs - cand.firstUs >= PENDING_MAX_US) {
-                    mergeCandidate();
+                    mergeCandidate(nowUs);
                 }
+            }
+        }
+        // Code review 2, I1: a timed or failure close waits until no segment that may be this game's is undecided.
+        if (visit.state == State.OPEN && !undecided(nowUs)) {
+            if (visit.failPending) {
+                closeGame(nowUs, EndReason.FAILED, true, false);
+                if (visit.result != null) {
+                    if (visit.captureLatched) emitRearm();           // its result already came: the owner ended
+                    visit.state = State.DROPPED;
+                }
+            } else if (visit.result != null && nowUs - visit.resultAtUs >= RESULT_CLOSE_US) {
+                closeGame(nowUs, EndReason.RESULT, false, false);
+            } else if (nowUs - visit.gameStartUs >= GAME_CAP_US) {
+                closeGame(nowUs, EndReason.CAP, false, false);
             }
         }
 
@@ -747,9 +938,12 @@ public final class RewindGameRules {
                     lobbyOverridden++;
                     visit.state = State.BEDWARS_PENDING;
                     visit.classification = Classification.SIDEBAR;
+                    if (visit.failPending) failPendingRun(visit, visit.captureLatched);
                 } else if (nowUs - visit.lobbyAtUs >= LOBBY_VERDICT_WAIT_US) {
                     emitDrop(visit.firstSeg, visit.lastSeg);
                     visit.state = State.DROPPED;
+                    if (visit.failPending && visit.captureLatched) emitRearm(); // a lobby: no game to wait for
+                    visit.failPending = false;
                 }
                 break;
             case SERVER_PENDING:
@@ -762,16 +956,20 @@ public final class RewindGameRules {
         // and when it opens the candidate is part of it (for a pending visit the merge only extends it).
         boolean visitIsCurrent = cand == null || presumedSameServer(nowUs);
         if (visit.state == State.BEDWARS_PENDING && sidebarValid && bwActive && visitIsCurrent) {
-            if (cand != null) mergeCandidate();
-            // The rising edge; if the game was already active when the visit began, its start.
-            visit.gameStartUs = activeEdgeUs >= visit.startUs ? activeEdgeUs : visit.startUs;
-            open(nowUs, StartSource.BEDWARS);
+            if (cand != null) mergeCandidate(nowUs);
+            if (visit.state == State.BEDWARS_PENDING) {          // a failure in the merged candidate fails it
+                // The rising edge; if the game was already active when the visit began, its start.
+                visit.gameStartUs = activeEdgeUs >= visit.startUs ? activeEdgeUs : visit.startUs;
+                open(nowUs, StartSource.BEDWARS);
+            }
         } else if (visit.state == State.SERVER_PENDING) {
             long liveUntil = visitIsCurrent ? nowUs : cand.firstUs; // a pending switch may have ended it
             if (liveUntil - visit.startUs >= MIN_VISIT_US) {
-                if (cand != null) mergeCandidate();
-                visit.gameStartUs = visit.startUs;
-                open(nowUs, StartSource.VISIT);
+                if (cand != null) mergeCandidate(nowUs);
+                if (visit.state == State.SERVER_PENDING) {
+                    visit.gameStartUs = visit.startUs;
+                    open(nowUs, StartSource.VISIT);
+                }
             }
         }
         if (isPending(visit.state) && nowUs - visit.startUs >= PENDING_MAX_US) capDrop();
@@ -781,6 +979,8 @@ public final class RewindGameRules {
         return s == State.UNCLASSIFIED || s == State.LOBBY_WAIT || s == State.BEDWARS_PENDING
                 || s == State.SERVER_PENDING;
     }
+
+    // ---- locations
 
     private void applyLocation(long nowUs, int segment, Location loc, long receivedUs) {
         int verdict = verdictOf(loc);
@@ -798,28 +998,38 @@ public final class RewindGameRules {
         // A late or repeated location for an already classified visit.
         if (visit.server == null) {
             if (verdict != VERDICT_LOBBY) {
-                adopt(loc);
+                updateInfo(loc);
+                emitInfoIfChanged();
             } else if (visit.state == State.FAILED) {
-                emitRearm();                                     // the failed run was a lobby
+                if (visit.captureLatched) emitRearm();           // the failed run was a lobby
                 visit.state = State.DROPPED;
                 visit.server = loc.serverName;
             }
+        } else if (visit.server.equals(loc.serverName) && verdict != VERDICT_LOBBY) {
+            updateInfo(loc);                                     // latest wins (code review 2, I4)
+            emitInfoIfChanged();
         }
     }
 
     private void resolveCandidate(long nowUs, Location loc, int verdict) {
         boolean same = visit.server != null ? visit.server.equals(loc.serverName) : verdict != VERDICT_LOBBY;
         if (same) {
-            if (visit.server == null) adopt(loc);
-            mergeCandidate();
+            updateInfo(loc);
+            mergeCandidate(nowUs);
+            emitInfoIfChanged();
             return;
         }
+        // Evidence that the candidate is not this visit's: the visit ends without it.
         Candidate c = cand;
         cand = null;
-        if (visit.state == State.FAILED) {
-            // The failed game provably ended. This run's boundary passed while the latch was set,
-            // so it was not captured: skip it, and its same-server segments with it.
-            emitRearm();
+        Visit old = visit;
+        endVisit(nowUs, verdict == VERDICT_LOBBY ? EndReason.LOBBY : EndReason.SERVER, true, false);
+        if (old.captureLatched && (old.state == State.FAILED || old.failPending)) {
+            emitRearm();                                         // the failed game provably ended
+        }
+        if (isUncaptured(c.firstSeg)) {
+            // This run's boundary passed while capture was latched: it holds no packets. Skip it, and its
+            // same-server segments with it.
             emitDrop(c.firstSeg, c.lastSeg);
             if (verdict != VERDICT_LOBBY) skippedAfterFailure++;
             Visit skipped = new Visit(c.firstSeg, c.firstUs);
@@ -827,15 +1037,16 @@ public final class RewindGameRules {
             skipped.server = loc.serverName;
             skipped.state = State.DROPPED;
             visit = skipped;
-            return;
+        } else {
+            visit = new Visit(c.firstSeg, c.firstUs);
+            visit.lastSeg = c.lastSeg;
+            classify(nowUs, loc, verdict);
         }
-        endVisit(nowUs, verdict == VERDICT_LOBBY ? EndReason.LOBBY : EndReason.SERVER, true);
-        visit = new Visit(c.firstSeg, c.firstUs);
-        visit.lastSeg = c.lastSeg;
-        classify(nowUs, loc, verdict);
+        if (c.failed) failVisit(nowUs, c.captureLatched);
     }
 
-    private void mergeCandidate() {
+    /** The candidate is this visit's: JOIN (open), DROP (failed, dropped) or extend (pending), then its failure. */
+    private void mergeCandidate(long nowUs) {
         Candidate c = cand;
         cand = null;
         switch (visit.state) {
@@ -850,6 +1061,7 @@ public final class RewindGameRules {
                 break;                                           // pending: stays pending with its visit
         }
         visit.lastSeg = c.lastSeg;
+        if (c.failed) failVisit(nowUs, c.captureLatched);
     }
 
     private void classify(long nowUs, Location loc, int verdict) {
@@ -862,19 +1074,59 @@ public final class RewindGameRules {
             visit.lobbyAtUs = nowUs;
             return;
         }
+        if (visit.skip) {
+            skipRun();
+            return;
+        }
         visit.classification = verdict == VERDICT_UNCLASSIFIED ? Classification.UNCLASSIFIED : Classification.CLASSIFIED;
         visit.state = isBedwarsLocation(loc) ? State.BEDWARS_PENDING : State.SERVER_PENDING;
     }
 
-    private void adopt(Location loc) {
-        visit.server = loc.serverName;
-        if (visit.mode == null) visit.mode = loc.mode;
-        if (visit.map == null) visit.map = loc.map;
-        if (visit.serverType == null) visit.serverType = loc.serverType;
+    /** A game run whose first boundary passed while capture was latched: dropped whole, counted. */
+    private void skipRun() {
+        emitDrop(visit.firstSeg, visit.lastSeg);
+        visit.pendingMarkers.clear();
+        visit.keyMarked = false;
+        visit.state = State.DROPPED;
+        skippedAfterFailure++;
     }
 
-    /** The visit ends (switch, disconnect, quit, settings): close or drop it, counting natural ends. */
-    private void endVisit(long nowUs, EndReason reason, boolean count) {
+    /** A location for this visit: present fields replace what is known (the latest wins), absent ones never erase. */
+    private void updateInfo(Location loc) {
+        if (visit.server == null) visit.server = loc.serverName;
+        if (loc.mode != null && !loc.mode.equals(visit.mode)) {
+            visit.mode = loc.mode;
+            visit.infoChanged = true;
+        }
+        if (loc.map != null && !loc.map.equals(visit.map)) {
+            visit.map = loc.map;
+            visit.infoChanged = true;
+        }
+        if (loc.serverType != null && !loc.serverType.equals(visit.serverType)) {
+            visit.serverType = loc.serverType;
+            visit.infoChanged = true;
+        }
+    }
+
+    /** INFO for the open game when its mode, map or server type changed after OPEN (code review 2, I4). */
+    private void emitInfoIfChanged() {
+        if (visit.state != State.OPEN || !visit.infoChanged) return;
+        visit.infoChanged = false;
+        out.add(new Command(CommandType.INFO, -1, -1, 0L, null, info(), Collections.<MarkerEvent>emptyList(), false,
+                null, null, null, false, null, visit.gameId));
+    }
+
+    private GameInfo info() {
+        return new GameInfo(visit.mode, visit.map, visit.serverType, visit.classification, singlePlayer);
+    }
+
+    // ---- visit ends and closes
+
+    /**
+     * The visit ends (switch, disconnect, quit, settings): close or drop it, counting natural ends. {@code ending}:
+     * the connection ends, so no more evidence about undecided segments can come.
+     */
+    private void endVisit(long nowUs, EndReason reason, boolean count, boolean ending) {
         switch (visit.state) {
             case UNCLASSIFIED:
                 emitDrop(visit.firstSeg, visit.lastSeg);
@@ -892,33 +1144,65 @@ public final class RewindGameRules {
                 if (count) shortVisitsDropped++;
                 break;
             case OPEN:
-                closeGame(nowUs, reason, false);
+                closeGame(nowUs, reason, false, ending);
                 break;
             default:
                 break;
         }
     }
 
-    private void endConnection(long nowUs, EndReason reason) {
-        settleCandidateAtEnd();
-        if (visit != null) endVisit(nowUs, reason, true);
+    /**
+     * The connection ends or Record Games goes off. An open game first takes every segment of this connection that
+     * is still undecided (its candidate, and boundaries the client never loaded): they were captured after the
+     * game's last segment and no later location can name another server. Otherwise they are dropped.
+     */
+    private void endConnection(long nowUs, EndReason reason, boolean count) {
+        if (visit != null && visit.state == State.OPEN) {
+            endVisit(nowUs, reason, count, true);
+        } else {
+            if (cand != null) {
+                emitDrop(cand.firstSeg, cand.lastSeg);
+                cand = null;
+            }
+            if (visit != null) endVisit(nowUs, reason, count, true);
+        }
         visit = null;
     }
 
     /**
-     * The connection ends or Record Games goes off with a candidate still undecided. With a game open, the
-     * candidate's records up to the close cutoff were captured on this connection after the game's last
-     * boundary, and no later location can name another server (nothing more is processed), so they are the
-     * game's: JOIN before the CLOSE. Otherwise there is nothing to continue and the candidate is dropped.
+     * The only place a CLOSE is emitted (code review 2, I1). An undecided candidate is joined first, so a CLOSE can
+     * never leave a segment of this game routed elsewhere: callers that can still learn otherwise (timers, failures)
+     * wait in {@link #advance} until nothing is undecided, and a different-server or lobby location resolves the
+     * candidate before calling this. With {@code ending} (disconnect, quit, settings) boundaries the capture handler
+     * started but the client never loaded are joined too, with any failure pending in them.
      */
-    private void settleCandidateAtEnd() {
-        if (cand == null) return;
-        if (visit != null && visit.state == State.OPEN) {
-            mergeCandidate();
-            return;
+    private void closeGame(long nowUs, EndReason reason, boolean failed, boolean ending) {
+        if (cand != null) mergeCandidate(nowUs);
+        if (ending && captureSeg > lastBoundarySeg) {
+            out.add(Command.range(CommandType.JOIN, lastBoundarySeg + 1, captureSeg));
+            visit.lastSeg = captureSeg;
+            if (pendingFailSeg != NONE) {
+                visit.failPending = true;
+                visit.captureLatched |= pendingFailLatched;
+                pendingFailSeg = NONE;
+                pendingFailLatched = false;
+            }
         }
-        emitDrop(cand.firstSeg, cand.lastSeg);
-        cand = null;
+        boolean f = failed || visit.failPending;
+        EndReason why = f ? EndReason.FAILED : reason;
+        RunStats stats = new RunStats(new ArrayList<LocationLogEntry>(log), lobbyOverridden, visitsWithoutLocation,
+                bedwarsVisitsWithoutStart, shortVisitsDropped, visit.source);
+        out.add(new Command(CommandType.CLOSE, -1, -1, nowUs, null, null, Collections.<MarkerEvent>emptyList(),
+                visit.keyMarked, null, why, visit.result != null ? visit.result : Result.UNKNOWN, f, stats,
+                visit.gameId));
+        log.clear();
+        lobbyOverridden = 0;
+        visitsWithoutLocation = 0;
+        bedwarsVisitsWithoutStart = 0;
+        shortVisitsDropped = 0;
+        visit.failPending = false;
+        visit.state = f ? State.FAILED : State.DROPPED;
+        if (f && visit.captureLatched) awaitingRearm = true;
     }
 
     /** The candidate has had no location for {@link #CONTINUE_WAIT_US} since its last boundary. */
@@ -937,13 +1221,15 @@ public final class RewindGameRules {
     }
 
     /** A candidate after a dropped visit becomes a new Bed Wars run decided by the sidebar. */
-    private void startSidebarRunFromCandidate() {
+    private void startSidebarRunFromCandidate(long nowUs) {
         Candidate c = cand;
         cand = null;
         visit = new Visit(c.firstSeg, c.firstUs);
         visit.lastSeg = c.lastSeg;
         visit.state = State.BEDWARS_PENDING;
         visit.classification = Classification.SIDEBAR;
+        visit.skip = isUncaptured(c.firstSeg);
+        if (c.failed) failVisit(nowUs, c.captureLatched);
     }
 
     private void capDrop() {
@@ -954,40 +1240,32 @@ public final class RewindGameRules {
     }
 
     private void open(long nowUs, StartSource source) {
+        if (visit.skip) {
+            skipRun();
+            return;
+        }
         if (source == StartSource.SINGLEPLAYER) visit.gameStartUs = nowUs;
         visit.state = State.OPEN;
         visit.source = source;
+        visit.gameId = nextGameId++;
+        visit.infoChanged = false;
         List<MarkerEvent> markers = visit.pendingMarkers.isEmpty()
                 ? Collections.<MarkerEvent>emptyList()
                 : Collections.unmodifiableList(new ArrayList<MarkerEvent>(visit.pendingMarkers));
         visit.pendingMarkers.clear();
-        GameInfo info = new GameInfo(visit.mode, visit.map, visit.serverType, visit.classification, singlePlayer);
-        out.add(new Command(CommandType.OPEN, visit.firstSeg, visit.lastSeg, visit.gameStartUs, source, info,
-                markers, visit.keyMarked, null, null, null, false, null));
-    }
-
-    private void closeGame(long nowUs, EndReason reason, boolean failed) {
-        RunStats stats = new RunStats(new ArrayList<LocationLogEntry>(log), lobbyOverridden, visitsWithoutLocation,
-                bedwarsVisitsWithoutStart, shortVisitsDropped, visit.source);
-        out.add(new Command(CommandType.CLOSE, -1, -1, nowUs, null, null, Collections.<MarkerEvent>emptyList(),
-                visit.keyMarked, null, reason, visit.result != null ? visit.result : Result.UNKNOWN, failed, stats));
-        log.clear();
-        lobbyOverridden = 0;
-        visitsWithoutLocation = 0;
-        bedwarsVisitsWithoutStart = 0;
-        shortVisitsDropped = 0;
-        visit.state = failed ? State.FAILED : State.DROPPED;
+        out.add(new Command(CommandType.OPEN, visit.firstSeg, visit.lastSeg, visit.gameStartUs, source, info(),
+                markers, visit.keyMarked, null, null, null, false, null, visit.gameId));
     }
 
     private void acceptMarker(long nowUs, Marker m) {
         boolean open = visit != null && visit.state == State.OPEN;
-        boolean pendingServer = visit != null
+        boolean pendingServer = visit != null && !visit.skip
                 && (visit.state == State.BEDWARS_PENDING || visit.state == State.SERVER_PENDING);
         if (!MarkerRules.accepts(open, pendingServer)) return;
         if (MarkerRules.keepsForever(m)) visit.keyMarked = true;
         if (pendingServer) visit.pendingMarkers.add(new MarkerEvent(m, nowUs));
         out.add(new Command(CommandType.MARKER, -1, -1, nowUs, null, null, Collections.<MarkerEvent>emptyList(),
-                visit.keyMarked, m, null, null, false, null));
+                visit.keyMarked, m, null, null, false, null, 0L));
         if (m == Marker.KEY) out.add(Command.simple(CommandType.FLASH));
     }
 

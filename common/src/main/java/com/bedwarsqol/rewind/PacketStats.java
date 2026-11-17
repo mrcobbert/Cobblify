@@ -150,7 +150,12 @@ public final class PacketStats {
         }
     }
 
-    /** Adds {@code o} (a segment's stats as it joins a game) to this one. */
+    /**
+     * Adds {@code o} (a segment's stats as it joins a game) to this one. Every accumulated field is carried: counts
+     * and bytes, boundaries, headers, peaks, the restrict flag, writer work, raw and stored bytes and the pending
+     * peak (code review 2, O1). The game-level values that {@code finish} sets once for the whole file (length,
+     * start, segments, timings, rules stats) are not merged.
+     */
     public void merge(PacketStats o) {
         for (int i = 0; i < IDS; i++) {
             count[i] += o.count[i];
@@ -186,6 +191,11 @@ public final class PacketStats {
         peakPackets = Math.max(peakPackets, Math.max(o.peakPackets, o.secondPackets));
         peakBytes = Math.max(peakBytes, Math.max(o.peakBytes, o.secondBytes));
         restrictChannelSeen |= o.restrictChannelSeen;
+        writerNs += o.writerNs;
+        writerRawBytes += o.writerRawBytes;
+        rawBytes += o.rawBytes;
+        storedBytes += o.storedBytes;
+        peakPendingBytes = Math.max(peakPendingBytes, o.peakPendingBytes);
     }
 
     public void setGame(long gameStartUs, long lengthUs) {

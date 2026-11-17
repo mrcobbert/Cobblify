@@ -328,6 +328,28 @@ public class CaptureSessionTest {
         assertRecords(drain.segment(4), back, y);
     }
 
+    /** Code review 2, I2: each latch says which segment it happened in, each restart which segment copying resumed in. */
+    @Test
+    public void aLatchRecordsItsSegmentAndARestartRecordsWhereCopyingResumed() {
+        assertEquals(0, session.resumeCount());
+        feed(s01(1, 0), other(0x20, 10), s07(-1));
+        session.fail(new IllegalStateException("fake"));
+        assertEquals(1, session.failureCount());
+        assertEquals(2, session.failureSegment());
+        feed(s01(2, 0));                                               // segment 3 starts while latched
+        assertEquals(3, session.segment());
+        session.rearm();
+        assertEquals("a rearm alone restarts nothing", 0, session.resumeCount());
+        feed(other(0x21, 10), s07(-1));                                // segment 4: copying resumes here
+        assertFalse(session.failed());
+        assertEquals(1, session.resumeCount());
+        assertEquals(4, session.resumedSegment());
+        session.fail(new IllegalStateException("fake again"));
+        assertEquals(2, session.failureCount());
+        assertEquals(4, session.failureSegment());
+        assertEquals(1, session.resumeCount());
+    }
+
     @Test
     public void rearmBeforeTheFailureDoesNotClearIt() {
         feed(s01(1, 0));

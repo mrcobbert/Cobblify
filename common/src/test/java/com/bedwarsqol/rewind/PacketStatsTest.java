@@ -247,4 +247,48 @@ public class PacketStatsTest {
         // The .json gallery cache does carry the map (it is not private); the stats file does not.
         assertEquals(MAP, RewindWriterTest.jsonOf(cbr).map);
     }
+
+    // ------------------------------------------------------------------ code review 2, O1: merge conserves everything
+
+    private static double writerMsPerMiB(PacketStats s) {
+        return new JsonParser().parse(s.toJson()).getAsJsonObject().get("writerMsPerMiB").getAsDouble();
+    }
+
+    /** A pending segment's stats fed through every accumulating method. */
+    private static PacketStats everyAdditiveField() {
+        PacketStats p = new PacketStats();
+        p.addNet(1_000_000L, s01(5, 0), 0, s01(5, 0).length);
+        p.addNet(1_100_000L, packet(0x21, 40, 1), 0, 41);
+        p.addNet(2_300_000L, s07(-1), 0, s07(-1).length);
+        byte[] odd = {(byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80};
+        p.addNet(2_400_000L, odd, 0, odd.length);                           // not a valid id: "other"
+        p.addHeader(3, RewindFormat.SOURCE_CLIENT_SNAPSHOT, 4);
+        p.addHeader(3, RewindFormat.SOURCE_CAPTURE_CARRY, 1);
+        p.addSkipped(0x00, 3, 30);
+        p.setRestrictChannelSeen(true);
+        p.addWriterWork(1_000_000L, 1_048_576L);
+        p.setPeakPendingBytes(12_345L);
+        return p;
+    }
+
+    /** The reviewer's case: pending writer work survives the join (1.0 ms/MiB, not 0.0). */
+    @Test
+    public void mergeCarriesPendingWriterWork() {
+        PacketStats pending = new PacketStats();
+        pending.addWriterWork(1_000_000L, 1_048_576L);
+        PacketStats game = new PacketStats();
+        game.merge(pending);
+        assertEquals(1.0, writerMsPerMiB(game), 1e-9);
+        game.addWriterWork(3_000_000L, 1_048_576L);
+        assertEquals("work before and after the join both count", 2.0, writerMsPerMiB(game), 1e-9);
+    }
+
+    /** Merging into an empty game writes exactly what the pending stats would: no field is left behind. */
+    @Test
+    public void mergeIntoAnEmptyGameConservesEveryField() {
+        PacketStats pending = everyAdditiveField();
+        PacketStats game = new PacketStats();
+        game.merge(pending);
+        assertEquals(pending.toJson(), game.toJson());
+    }
 }

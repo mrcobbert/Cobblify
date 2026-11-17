@@ -514,4 +514,87 @@ public class RecordingFormatTest {
             // a torn varint is a format error, never an index exception
         }
     }
+
+    // ------------------------------------------------------------------ code review 2, I6: long gaps
+
+    /** Every record time of a producer as the writer reads it: each handed-off chunk, then the live one. */
+    static List<Long> walkTimes(RecordChunk.Producer p, final boolean net) {
+        final List<Long> out = new ArrayList<Long>();
+        p.handOff();
+        RecordChunk c;
+        while ((c = p.pollFull()) != null) {
+            if (net) {
+                RecordingReader.walkNet(c.data(), 0, c.committedLength(), c.startTimeUs(),
+                        new RecordingReader.NetVisitor() {
+                            @Override
+                            public void net(long timeUs, byte[] buf, int off, int len) {
+                                out.add(timeUs);
+                            }
+                        });
+            } else {
+                RecordingReader.walkTrack(c.data(), 0, c.committedLength(), c.startTimeUs(),
+                        new RecordingReader.TrackVisitor() {
+                            @Override
+                            public void track(long timeUs, int tag, byte[] buf, int off, int len) {
+                                out.add(timeUs);
+                            }
+                        });
+            }
+            p.release(c);
+        }
+        return out;
+    }
+
+    private static final byte[] CAMERA_BODY = new byte[8];
+
+    /** The reviewer's three CAMERA times: the one after a 75-minute idle keeps its exact time. */
+    @Test
+    public void aGapLongerThanTheDeltaLimitKeepsTheExactTrackTime() {
+        RecordChunk.Producer p = new RecordChunk.Producer(4096, 2, 4, 0L);
+        assertTrue(p.startSegment(1, null, 0, 0));
+        long[] times = {1_000_000L, 4_501_000_000L, 4_501_050_000L};
+        for (long t : times) {
+            assertTrue(p.appendTrack(t, RewindFormat.TAG_CAMERA, CAMERA_BODY, 0, CAMERA_BODY.length));
+        }
+        assertEquals(Arrays.asList(times[0], times[1], times[2]), walkTimes(p, false));
+    }
+
+    @Test
+    public void aGapLongerThanTheDeltaLimitKeepsTheExactNetTimeAndOrdinaryGapsStayInTheChunk() {
+        RecordChunk.Producer p = new RecordChunk.Producer(4096, 2, 4, 0L);
+        assertTrue(p.startSegment(1, null, 0, 0));
+        byte[] pk = respawn(-1);
+        long t0 = 5_000_000L;
+        long[] times = {t0, t0 + RewindFormat.MAX_DT_US, t0 + RewindFormat.MAX_DT_US + 1 + RewindFormat.MAX_DT_US + 1,
+                t0 + 3 * RewindFormat.MAX_DT_US + 7};
+        List<Long> want = new ArrayList<Long>();
+        for (int i = 0; i < times.length; i++) {
+            assertTrue(p.appendNet(times[i], pk, 0, pk.length));
+            want.add(times[i]);
+            if (i == 1) {
+                assertEquals("the largest delta still fits the record", 1, p.current().seq());
+            }
+        }
+        assertEquals(want, walkTimes(p, true));
+    }
+
+    @Test
+    public void theFirstRecordAfterASegmentStartKeepsItsTimeAfterALongGap() {
+        RecordChunk.Producer p = new RecordChunk.Producer(4096, 2, 4, 0L);
+        assertTrue(p.startSegment(1, null, 0, 0));
+        byte[] pk = respawn(-1);
+        assertTrue(p.appendNet(1_000_000L, pk, 0, pk.length));
+        byte[] carry = packet(0x47, "FakeCarry");
+        assertTrue(p.startSegment(2, carry, 0, carry.length));               // the boundary, then 75 min
+        long late = 1_000_000L + 75L * 60 * 1_000_000;
+        assertTrue(p.appendNet(late, pk, 0, pk.length));
+        assertTrue(p.appendNet(late + 10, pk, 0, pk.length));
+        assertEquals(Arrays.asList(1_000_000L, late, late + 10), walkTimes(p, true));
+
+        // A fresh producer whose origin is far behind its first record.
+        RecordChunk.Producer q = new RecordChunk.Producer(4096, 2, 4, 0L);
+        assertTrue(q.startSegment(1, null, 0, 0));
+        assertTrue(q.appendTrack(late, RewindFormat.TAG_CAMERA, CAMERA_BODY, 0, CAMERA_BODY.length));
+        assertEquals(Arrays.asList(late), walkTimes(q, false));
+    }
 }
