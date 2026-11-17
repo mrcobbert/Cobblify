@@ -238,11 +238,12 @@ public final class SheetSchema {
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
      * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint, Team Upgrades, the FPS,
-     * CPS and Ping HUD modules and the Fullbright, Item Physics, 1.7 Animations and Particles Visuals modules are the
-     * Ornithe build's; Lunar has its own.
+     * CPS and Ping HUD modules and the Fullbright, Item Physics, 1.7 Animations, Particles and Motion Blur Visuals
+     * modules are the Ornithe build's; Lunar has its own.
      */
     private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
-            "teamUpgrades", "fps", "cps", "ping", "fullbright", "itemPhysics", "oldAnimations", "particles"));
+            "teamUpgrades", "fps", "cps", "ping", "fullbright", "itemPhysics", "oldAnimations", "particles",
+            "motionBlur"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -327,6 +328,8 @@ public final class SheetSchema {
                         toggle("ptHideOwnPotion", "Hide Own Potion", "No swirls from your own effects in first person", "effects swirls"),
                         toggle("ptHideBlockBreak", "Hide Block Break", "No pieces when blocks are hit or broken", "mining"),
                         seg("ptMultiplier", "Multiplier", "More crit and sharpness particles", "amount", "1x", "2x", "3x")),
+                module("motionBlur", "Motion Blur", "The world smears as you turn", "blur smooth polyblur camera",
+                        slider("mbStrength", "Strength", "How far the smear reaches", 1, 9, 1, 0, "")),
                 module("tabHF", "Hide Tab Header/Footer", "Hide tab header and footer", "tab list"),
                 backgroundModule("scoreboardBg", "Scoreboard Background", "scoreboard",
                         "See-through fill behind the sidebar", "transparent opacity box"),
