@@ -235,6 +235,12 @@ one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
 # Rewind: Ornithe-only Hypixel module, its sheet-row test.
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsRewindTest.java
 
+# Rewind capture (Ornithe only): the Netty handler that copies the connection's packets into the
+# recording, its embedded-channel tests and its opt-in timing bench. The pure logic is in common/.
+one-sided main ornithe com/bedwarsqol/rewind/RewindCapture.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindCaptureBench.java
+
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
 # ---------------------------------------------------------------------------
