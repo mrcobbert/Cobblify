@@ -181,10 +181,83 @@ final class Policy {
             case "sheet-node":
                 return null;
             default:
-                return OVERLAY_PROBES.contains(name) ? null
+                return OVERLAY_PROBES.contains(name) || MOTION_BLUR_PROBES.contains(name) ? null
                         : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
-                        + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ")";
+                        + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ", "
+                        + String.join(", ", MOTION_BLUR_PROBES) + ")";
         }
+    }
+
+    // ------------------------------------------------------------------ Motion Blur (cycle 2026-11-17)
+
+    /** The Motion Blur probes (step MB): the record, a scripted turn, an exact pose, a frame with its record. */
+    static final java.util.List<String> MOTION_BLUR_PROBES = java.util.Arrays.asList("mb-record", "mb-turn", "mb-pose",
+            "mb-shot");
+    /** The fastest scripted turn, deg/s, and the longest one, s: a turn always ends on its own. */
+    static final double MB_MAX_RATE = 3600;
+    static final double MB_MAX_TURN_SECONDS = 10;
+    /** Yaw is unbounded in Minecraft; the probes keep it to a few turns either way. */
+    static final double MB_MAX_YAW = 3600;
+
+    /** {@code mb-record} (the last frame now), {@code mb-record watch} (start a frame log), {@code mb-record log}. */
+    static String mbRecordMode(java.util.List<String> args) {
+        if (args.isEmpty()) return "now";
+        if (args.size() == 1 && ("watch".equals(args.get(0)) || "log".equals(args.get(0)))) return args.get(0);
+        throw new Refused("probe mb-record [watch|log]");
+    }
+
+    /** {@code mb-turn FROM TO DEG/S}: {from, to, rate}. */
+    static double[] mbTurn(java.util.List<String> args) {
+        if (args.size() != 3) throw new Refused("probe mb-turn FROM_YAW TO_YAW DEG_PER_S");
+        double[] t = numbers(args, "mb-turn");
+        if (Math.abs(t[0]) > MB_MAX_YAW || Math.abs(t[1]) > MB_MAX_YAW) {
+            throw new Refused("mb-turn yaws are within " + (int) MB_MAX_YAW + " degrees of 0");
+        }
+        if (!(t[2] > 0 && t[2] <= MB_MAX_RATE)) throw new Refused("mb-turn rate is above 0 and at most " + (int) MB_MAX_RATE + " deg/s");
+        if (Math.abs(t[1] - t[0]) / t[2] > MB_MAX_TURN_SECONDS) {
+            throw new Refused("mb-turn lasts at most " + (int) MB_MAX_TURN_SECONDS + " s");
+        }
+        return t;
+    }
+
+    /**
+     * The scripted turn's yaw {@code seconds} after it started: from FROM toward TO at {@code rate} deg/s, held at TO once
+     * reached. A function of the time alone, so every frame shows where the turn is, whatever the frame rate.
+     */
+    static double turnYaw(double from, double to, double rate, double seconds) {
+        double travelled = rate * Math.max(0, seconds);
+        double span = Math.abs(to - from);
+        if (travelled >= span) return to;
+        return from + Math.signum(to - from) * travelled;
+    }
+
+    /** {@code mb-pose YAW PITCH}: {yaw, pitch} as the floats the entity stores; pitch within vanilla's -90..90. */
+    static float[] mbPose(java.util.List<String> args) {
+        if (args.size() != 2) throw new Refused("probe mb-pose YAW PITCH");
+        double[] p = numbers(args, "mb-pose");
+        if (Math.abs(p[0]) > MB_MAX_YAW) throw new Refused("mb-pose yaw is within " + (int) MB_MAX_YAW + " degrees of 0");
+        if (Math.abs(p[1]) > 90) throw new Refused("mb-pose pitch is from -90 to 90");
+        return new float[]{Float.parseFloat(args.get(0)), Float.parseFloat(args.get(1))};
+    }
+
+    /** {@code mb-shot} or {@code mb-shot stopTurn}: whether to stop the scripted turn first. */
+    static boolean mbShotStop(java.util.List<String> args) {
+        if (args.isEmpty()) return false;
+        if (args.size() == 1 && "stopTurn".equals(args.get(0))) return true;
+        throw new Refused("probe mb-shot [stopTurn]");
+    }
+
+    private static double[] numbers(java.util.List<String> args, String probe) {
+        double[] out = new double[args.size()];
+        for (int i = 0; i < out.length; i++) {
+            try {
+                out[i] = Double.parseDouble(args.get(i));
+            } catch (NumberFormatException e) {
+                throw new Refused(probe + " takes numbers: " + args.get(i));
+            }
+            if (Double.isNaN(out[i]) || Double.isInfinite(out[i])) throw new Refused(probe + " takes finite numbers");
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ overlay items (HUD parity B)
