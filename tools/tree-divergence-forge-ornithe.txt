@@ -203,6 +203,32 @@ divergent main com/bedwarsqol/gui/render/BedwarsQolFont.java
 one-sided main ornithe com/bedwarsqol/feature/TeamUpgradesWatch.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsTeamUpgradesTest.java
 
+# Fullbright, Item Physics, 1.7 Animations and Particles: Ornithe-only Visuals modules, their hooks and
+# sheet-row test.
+one-sided main ornithe com/bedwarsqol/feature/Fullbright.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererLightmapMixin.java
+one-sided main ornithe com/bedwarsqol/feature/ItemPhysics.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderEntityItemMixin.java
+one-sided main ornithe com/bedwarsqol/feature/ParticleOptions.java
+one-sided main ornithe com/bedwarsqol/mixin/EffectRendererParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityLivingBaseParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderGlobalParticlesMixin.java
+one-sided main ornithe com/bedwarsqol/feature/OldAnimations.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityLivingBaseSwingAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererSneakCameraMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameHeartsMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerArmorBaseOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerCustomHeadOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/LayerHeldItemOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ModelBipedOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ModelPlayerOldAnimMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/RenderPlayerOldAnimMixin.java
+# 1.7 Animations shares ItemRendererMixin with Hand Position so the two keep a fixed order.
+divergent main com/bedwarsqol/mixin/ItemRendererMixin.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
+
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
 # ---------------------------------------------------------------------------

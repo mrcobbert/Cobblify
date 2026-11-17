@@ -2,6 +2,7 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.ParticleRules;
 import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.render.GuiTheme;
@@ -26,8 +27,8 @@ import java.util.Map;
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
  * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV, Team Upgrades, FPS, CPS,
- * Ping and the per-item Background rows, which read and write their HUD item ({@link SheetSchema#hudItem}) through
- * {@link HudModules}.
+ * Ping, Fullbright, Item Physics, 1.7 Animations, Particles and the per-item Background rows, which read and write
+ * their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -120,6 +121,11 @@ final class SettingsBindings implements SheetValues {
                 || "fps".equals(id) || "cps".equals(id) || "ping".equals(id)
                 || "fpsBrackets".equals(id) || "cpsBrackets".equals(id) || "pingBrackets".equals(id)
                 || "fpsLabel".equals(id) || "cpsLabel".equals(id) || "pingLabel".equals(id)
+                || "fullbright".equals(id) || "itemPhysics".equals(id) || "oldAnimations".equals(id) || "particles".equals(id)
+                || "oaBlockHit".equals(id) || "oaItemPosition".equals(id) || "oaSmoothSneak".equals(id)
+                || "oaHearts".equals(id) || "oaRedArmor".equals(id)
+                || "ptAlwaysCrit".equals(id) || "ptHideOwnPotion".equals(id) || "ptHideBlockBreak".equals(id)
+                || "ptMultiplier".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -162,6 +168,18 @@ final class SettingsBindings implements SheetValues {
             case "blockOverlay": return c.blockOverlayEnabled;
             case "boSee": return c.blockOverlaySeeThrough;
             case "boWhite": return c.blockOverlayWhite;
+            case "fullbright": return c.fullbright;
+            case "itemPhysics": return c.itemPhysics;
+            case "oldAnimations": return c.oldAnimations;
+            case "oaBlockHit": return c.oaBlockHit;
+            case "oaItemPosition": return c.oaItemPosition;
+            case "oaSmoothSneak": return c.oaSmoothSneak;
+            case "oaHearts": return c.oaHearts;
+            case "oaRedArmor": return c.oaRedArmor;
+            case "particles": return c.particles;
+            case "ptAlwaysCrit": return c.ptAlwaysCrit;
+            case "ptHideOwnPotion": return c.ptHideOwnPotion;
+            case "ptHideBlockBreak": return c.ptHideBlockBreak;
             case "tabHF": return c.tabHideHeaderFooter;
             case "chatStack": return c.chatStackSpam;
             case "stackTime": return c.chatStackTimeBased;
@@ -250,6 +268,18 @@ final class SettingsBindings implements SheetValues {
             case "blockOverlay": c.blockOverlayEnabled = v; break;
             case "boSee": c.blockOverlaySeeThrough = v; break;
             case "boWhite": c.blockOverlayWhite = v; break;
+            case "fullbright": c.fullbright = v; break;
+            case "itemPhysics": c.itemPhysics = v; break;
+            case "oldAnimations": c.oldAnimations = v; break;
+            case "oaBlockHit": c.oaBlockHit = v; break;
+            case "oaItemPosition": c.oaItemPosition = v; break;
+            case "oaSmoothSneak": c.oaSmoothSneak = v; break;
+            case "oaHearts": c.oaHearts = v; break;
+            case "oaRedArmor": c.oaRedArmor = v; break;
+            case "particles": c.particles = v; break;
+            case "ptAlwaysCrit": c.ptAlwaysCrit = v; break;
+            case "ptHideOwnPotion": c.ptHideOwnPotion = v; break;
+            case "ptHideBlockBreak": c.ptHideBlockBreak = v; break;
             case "tabHF": c.tabHideHeaderFooter = v; break;
             case "chatStack": c.chatStackSpam = v; break;
             case "stackTime": c.chatStackTimeBased = v; break;
@@ -300,6 +330,7 @@ final class SettingsBindings implements SheetValues {
             case "fpsLabel": return TextModules.Label.of(c.fpsLabel).text;
             case "cpsLabel": return TextModules.Label.of(c.cpsLabel).text;
             case "pingLabel": return TextModules.Label.of(c.pingLabel).text;
+            case "ptMultiplier": return SheetSchema.row(id).options()[ParticleRules.clampMultiplier(c.ptMultiplier) - 1];
             case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
@@ -323,6 +354,7 @@ final class SettingsBindings implements SheetValues {
             case "fpsLabel": c.fpsLabel = TextModules.Label.named(option).ordinal(); break;
             case "cpsLabel": c.cpsLabel = TextModules.Label.named(option).ordinal(); break;
             case "pingLabel": c.pingLabel = TextModules.Label.named(option).ordinal(); break;
+            case "ptMultiplier": c.ptMultiplier = ParticleRules.MIN_MULTIPLIER + i; break;
             case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
             case "guiSize": c.guiSize = i; break;

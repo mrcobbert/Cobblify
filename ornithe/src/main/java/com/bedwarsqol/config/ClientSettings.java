@@ -335,6 +335,25 @@ public class ClientSettings {
     public boolean blockOverlaySeeThrough = false;
     public float blockOverlayLineWidth = 2.0f;
 
+    /** Fullbright (Ornithe build): the world drawn at full brightness. */
+    public boolean fullbright = com.bedwarsqol.feature.FullbrightRules.DEFAULT_ENABLED;
+    /** Item Physics (Ornithe build): dropped items lie flat and tumble. */
+    public boolean itemPhysics = com.bedwarsqol.feature.ItemPhysicsRules.DEFAULT_ENABLED;
+    /** 1.7 Animations (Ornithe build) and its rows; a row applies only while the module is on. */
+    public boolean oldAnimations = com.bedwarsqol.feature.OldAnimRules.DEFAULT_ENABLED;
+    public boolean oaBlockHit = com.bedwarsqol.feature.OldAnimRules.DEFAULT_BLOCK_HIT;
+    public boolean oaItemPosition = com.bedwarsqol.feature.OldAnimRules.DEFAULT_ITEM_POSITION;
+    public boolean oaSmoothSneak = com.bedwarsqol.feature.OldAnimRules.DEFAULT_SMOOTH_SNEAK;
+    public boolean oaHearts = com.bedwarsqol.feature.OldAnimRules.DEFAULT_HEARTS;
+    public boolean oaRedArmor = com.bedwarsqol.feature.OldAnimRules.DEFAULT_RED_ARMOR;
+    /** Particles (Ornithe build) and its rows; a row applies only while the module is on. */
+    public boolean particles = com.bedwarsqol.feature.ParticleRules.DEFAULT_ENABLED;
+    public boolean ptAlwaysCrit = com.bedwarsqol.feature.ParticleRules.DEFAULT_ALWAYS_CRIT;
+    public boolean ptHideOwnPotion = com.bedwarsqol.feature.ParticleRules.DEFAULT_HIDE_OWN_POTION;
+    public boolean ptHideBlockBreak = com.bedwarsqol.feature.ParticleRules.DEFAULT_HIDE_BLOCK_BREAK;
+    /** Crit and sharpness particles per hit, 1 to 3. */
+    public int ptMultiplier = com.bedwarsqol.feature.ParticleRules.DEFAULT_MULTIPLIER;
+
     /** Center-screen countdown for nearby primed TNT. */
     public boolean tntFuseEnabled = false;
     public int tntFuseRadius = 10;
@@ -514,6 +533,7 @@ public class ClientSettings {
         blockOverlayStyle = clamp(blockOverlayStyle, 0, 2);
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
         tntFuseRadius = clamp(tntFuseRadius, 1, 64);
+        ptMultiplier = com.bedwarsqol.feature.ParticleRules.clampMultiplier(ptMultiplier);
         chatStackWindowSec = clampf(chatStackWindowSec, 1.0f, 30.0f);
 
         handPosX = clampf(handPosX, -1.0f, 1.0f);

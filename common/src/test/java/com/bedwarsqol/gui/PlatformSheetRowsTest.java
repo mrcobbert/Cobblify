@@ -7,8 +7,8 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * Runs in every build that compiles common/, against that tree's own {@link SettingsBindings}: Zoom, No Hurt Cam,
- * Toggle Sprint, Dynamic FOV, Team Upgrades (with its Layout row), FPS, CPS, Ping and the per-item Background rows
- * are listed on Ornithe and hidden on Lunar and Forge.
+ * Toggle Sprint, Dynamic FOV, Team Upgrades (with its Layout row), FPS, CPS, Ping, the per-item Background rows and
+ * the Fullbright, Item Physics, 1.7 Animations and Particles modules are listed on Ornithe and hidden on Lunar and Forge.
  */
 public class PlatformSheetRowsTest {
 
@@ -35,7 +35,10 @@ public class PlatformSheetRowsTest {
                 "potionBg", "armorBg", "inventoryBg", "genTimersBg", "keystrokesBg", "mapInfoBg", "sessionBg",
                 "scoreboardBg", "tabListBg", "chatBg",
                 "fps", "cps", "ping", "fpsBg", "cpsBg", "pingBg", "fpsBrackets", "cpsBrackets", "pingBrackets",
-                "fpsLabel", "cpsLabel", "pingLabel"}) {
+                "fpsLabel", "cpsLabel", "pingLabel",
+                "fullbright", "itemPhysics", "oldAnimations", "oaBlockHit", "oaItemPosition", "oaSmoothSneak",
+                "oaHearts", "oaRedArmor", "particles", "ptAlwaysCrit", "ptHideOwnPotion", "ptHideBlockBreak",
+                "ptMultiplier"}) {
             assertEquals(platform + " lists " + id, ornithe, SheetSchema.shows(values, id));
         }
     }
