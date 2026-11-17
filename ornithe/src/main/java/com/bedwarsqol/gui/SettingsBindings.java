@@ -2,6 +2,7 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.MotionBlur;
 import com.bedwarsqol.feature.MotionBlurRules;
 import com.bedwarsqol.feature.ParticleRules;
 import com.bedwarsqol.feature.SessionHoldKey;
@@ -280,7 +281,10 @@ final class SettingsBindings implements SheetValues {
             case "oaHearts": c.oaHearts = v; break;
             case "oaRedArmor": c.oaRedArmor = v; break;
             case "particles": c.particles = v; break;
-            case "motionBlur": c.motionBlur = v; break;
+            case "motionBlur":
+                c.motionBlur = v;
+                if (!v) MotionBlur.release(); // frees the texture and program; the hook then never touches GL
+                break;
             case "ptAlwaysCrit": c.ptAlwaysCrit = v; break;
             case "ptHideOwnPotion": c.ptHideOwnPotion = v; break;
             case "ptHideBlockBreak": c.ptHideBlockBreak = v; break;
