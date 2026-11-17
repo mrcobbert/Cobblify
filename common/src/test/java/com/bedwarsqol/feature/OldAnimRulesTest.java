@@ -472,4 +472,18 @@ public class OldAnimRulesTest {
         assertEquals("bow_pulling_2", OldAnimRules.bowVariant(18));
         assertEquals("bow_pulling_2", OldAnimRules.bowVariant(72000));
     }
+
+    @Test
+    public void reflectedModelsStayOnTheVanillaPath() {
+        // Vanilla picks the cull face from the model's scale signs; undoing a reflection would flip the faces.
+        float[][] reflected = {
+                {0, 0, 0, 0, 0, 0, -1, 1, 1}, {0, 0, 0, 0, 0, 0, 1, -1, 1}, {0, 0, 0, 0, 0, 0, 1, 1, -1},
+                {0, 0, 0, 0, 0, 0, -1, -1, 1}, {0, 0, 0, 0, 0, 0, -1, -1, -1}};
+        for (float[] t : reflected) {
+            assertEquals(0, OldAnimRules.firstPersonItemOps(false, true, false, t).length);
+            assertEquals(0, OldAnimRules.firstPersonItemOps(false, false, false, t).length);
+            assertEquals(0, OldAnimRules.thirdPersonItemOps(true, false, OldAnimRules.KIND_FLAT, false, false, t).length);
+            assertEquals(0, OldAnimRules.thirdPersonItemOps(true, false, OldAnimRules.KIND_BLOCK, false, false, t).length);
+        }
+    }
 }

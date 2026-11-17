@@ -236,9 +236,13 @@ public final class OldAnimRules {
         ops.op(OP_SCALE, 0.5f, 0.5f, 0.5f, 0);
     }
 
+    /**
+     * Whether the 1.7 placement may undo this display transform. A negative scale stays on the vanilla path:
+     * vanilla picks its cull face from the model's own scale signs, so undoing a reflection would leave the
+     * faces culled the wrong way round.
+     */
     private static boolean invertible(float[] b) {
-        return b != null && b.length >= 9
-                && Math.abs(b[6]) >= MIN_SCALE && Math.abs(b[7]) >= MIN_SCALE && Math.abs(b[8]) >= MIN_SCALE;
+        return b != null && b.length >= 9 && b[6] >= MIN_SCALE && b[7] >= MIN_SCALE && b[8] >= MIN_SCALE;
     }
 
     /** A small growable op list. */
