@@ -7,6 +7,12 @@ python3 tools/local-ci/run-release.py --publish-dev
 ```
 
 Omit `--publish-dev` to build and store a candidate without changing any channel.
+
+A dev build needs its own What's New note first: an entry for `<version>-dev.<next run number>` at the top of
+`launcher/src/release-notes.json` (`"channel": "dev"`, today's date, one `New`/`Changes`/`Fixes` section per kind, a
+few plain lines). With `--publish-dev` the controller refuses to dispatch without it and names the version. On a dev
+build, What's New lists only the dev notes since the version opened before, so a missing note means no What's New,
+never an older release's text.
 Stable promotion is still a separate workflow, with the same identity, version,
 signature, immutable-artifact and forward-only checks. The default candidate
 workflow (`local_build=false`) still uses GitHub-hosted machines.
