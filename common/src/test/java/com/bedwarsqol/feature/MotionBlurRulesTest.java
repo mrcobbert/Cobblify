@@ -138,17 +138,38 @@ public class MotionBlurRulesTest {
         double aspect = 1920.0 / 1080.0;
         // Yaw and pitch both increasing: vanilla moves scene detail left (u falls) and up (v rises).
         double u = MotionBlurRules.textureAxisU(MotionBlurRules.smearX(200, exposure, 70, aspect));
-        double v = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(200, exposure, 70));
+        double v = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(200, exposure, 70), 0);
         assertTrue("u and v have opposite signs for same-sign yaw and pitch rates", u * v < 0);
         assertTrue(u < 0);
         assertTrue(v > 0);
         // Opposite-sign rates smear along the other diagonal.
         double u2 = MotionBlurRules.textureAxisU(MotionBlurRules.smearX(200, exposure, 70, aspect));
-        double v2 = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(-200, exposure, 70));
+        double v2 = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(-200, exposure, 70), 0);
         assertTrue(u2 * v2 > 0);
         // Pure turns keep their axis and length.
-        assertEquals(0.0, MotionBlurRules.textureAxisV(MotionBlurRules.smearY(0, exposure, 70)), 0);
+        assertEquals(0.0, MotionBlurRules.textureAxisV(MotionBlurRules.smearY(0, exposure, 70), 0), 0);
         assertEquals(Math.abs(MotionBlurRules.smearX(300, exposure, 70, aspect)),
                 Math.abs(MotionBlurRules.textureAxisU(MotionBlurRules.smearX(300, exposure, 70, aspect))), 0);
+    }
+
+    /** Code review round 2 I1: the front third-person camera mirrors the vertical scene motion only. */
+    @Test
+    public void frontThirdPersonFlipsOnlyTheVerticalComponent() {
+        double exposure = MotionBlurRules.exposureSeconds(5);
+        double aspect = 1920.0 / 1080.0;
+        double sx = MotionBlurRules.smearX(200, exposure, 70, aspect);
+        double sy = MotionBlurRules.smearY(200, exposure, 70);
+        double u = MotionBlurRules.textureAxisU(sx);
+        // First person (0) and back third person (1): (-x, +y).
+        for (int perspective = 0; perspective <= 1; perspective++) {
+            double v = MotionBlurRules.textureAxisV(sy, perspective);
+            assertTrue(u < 0);
+            assertTrue(v > 0);
+        }
+        // Front third person (2): yaw and pitch both increasing move distant detail left and down, (-x, -y).
+        double front = MotionBlurRules.textureAxisV(sy, MotionBlurRules.PERSPECTIVE_FRONT);
+        assertTrue(front < 0);
+        assertTrue("same-sign components in front view", u * front > 0);
+        assertEquals(Math.abs(sy), Math.abs(front), 0);
     }
 }

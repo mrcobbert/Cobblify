@@ -120,7 +120,7 @@ public final class MotionBlur {
     public static void render(MotionBlurFrame.Sample s) {
         if (!decide(s)) return;
         worldPassRan = MotionBlurGl.run((float) MotionBlurRules.textureAxisU(FRAME.smearX()),
-                (float) MotionBlurRules.textureAxisV(FRAME.smearY()), FRAME.taps(), s.width, s.height);
+                (float) MotionBlurRules.textureAxisV(FRAME.smearY(), s.perspective), FRAME.taps(), s.width, s.height);
     }
 
     /** Frees the texture and program; the module was switched off. No GL call when nothing is held. */

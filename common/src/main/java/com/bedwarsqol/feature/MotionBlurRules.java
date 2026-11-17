@@ -94,9 +94,16 @@ public final class MotionBlurRules {
         return -smearX;
     }
 
-    /** See {@link #textureAxisU}. */
-    public static double textureAxisV(double smearY) {
-        return smearY;
+    /** Vanilla's {@code thirdPersonView} value for the front (mirror) camera. */
+    public static final int PERSPECTIVE_FRONT = 2;
+
+    /**
+     * See {@link #textureAxisU}. In front third-person vanilla adds a half turn about the vertical axis, so a pitch
+     * increase moves distant scene detail down instead of up: the vertical component flips, the horizontal one does
+     * not.
+     */
+    public static double textureAxisV(double smearY, int perspective) {
+        return perspective == PERSPECTIVE_FRONT ? -smearY : smearY;
     }
 
     /** The horizontal smear, a fraction of the screen width, of a yaw speed: the angle turned over the horizontal FOV. */
