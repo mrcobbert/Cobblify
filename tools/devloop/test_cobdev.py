@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 _loader = importlib.machinery.SourceFileLoader("cobdev", os.path.join(HERE, "cobdev"))
@@ -1124,6 +1125,87 @@ class EditHudWindowSizes(unittest.TestCase):
                     self.assertTrue(cobdev.clear_of(box, b), (hb["sw"], b["id"], x, y))
         self.assertIsNone(cobdev.free_spot({"sw": 100, "sh": 100, "boxes": [
             {"id": "all", "x": 0, "y": 0, "w": 100, "h": 100, "pad": 0, "shown": True}]}, 10, 10))
+
+
+class RewindSmoke(unittest.TestCase):
+    """RW (PLAN A11): passes only on RewindCheck's verdict for one closed recording, records into cobdev's own
+    relative folder, and puts both Rewind settings back whatever happens."""
+
+    CFG = "com.bedwarsqol.BedwarsQol.config"
+
+    def run_step(self, latest, present=True):
+        calls = []
+        fields = {self.CFG + ".rewind": "false", self.CFG + ".rewindRecordGames": "true"}
+
+        class Fake(cobdev.Smoke):
+            def call(self, path, params=None, post=None, timeout=60):
+                q = params or post or {}
+                calls.append((path, dict(q)))
+                self.step["commands"].append({"call": path})
+                if path == "/field":
+                    if "value" in q:
+                        fields[q["path"]] = q["value"]
+                        return {"ok": True}
+                    return {"ok": True, "value": fields.get(q["path"])}
+                if path == "/probe":
+                    return {"ok": True, "deleted": 0, "left": 0} if q["name"] == "rewind-clear" else latest
+                if path == "/world":
+                    return {"ok": True, "save": "cobdev"}
+                return {"ok": True}
+
+            def has(self, cls, member=None):
+                return present
+
+        s = Fake("dev", "test")
+        ready = {"title": True, "inWorld": True, "responsive": True}
+        with mock.patch.object(cobdev, "api_quiet", return_value=ready), mock.patch.object(cobdev.time, "sleep"):
+            cobdev.smoke_rewind(s, self.CFG)
+        return s, calls, fields
+
+    def test_a_passing_check_passes_and_settings_come_back(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": "complete=true"}
+        s, calls, fields = self.run_step(latest)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertEqual(fields[self.CFG + ".rewind"], "false")
+        self.assertEqual(fields[self.CFG + ".rewindRecordGames"], "true")
+        paths = [c[0] for c in calls]
+        hold = [c[1] for c in calls if c[0] == "/keyhold"]
+        self.assertEqual(hold, [{"name": "key.forward", "state": "on", "raw": 1},
+                                {"name": "key.forward", "state": "off", "raw": 1}])
+        self.assertIn(("/invoke", {"path": cobdev.REWIND + ".markerKeyPressed", "args": ""}), calls)
+        self.assertLess(paths.index("/invoke"), max(i for i, c in enumerate(calls) if c == ("/world", {"leave": "1"})))
+        clears = [c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-clear"]
+        self.assertEqual(len(clears), 2)  # before the session and after the check
+
+    def test_a_failing_check_fails_and_still_cleans_up(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 16, "pass": False, "line": "markerKey=0"}
+        s, calls, fields = self.run_step(latest)
+        self.assertEqual(s.step["status"], "fail")
+        self.assertEqual(fields[self.CFG + ".rewind"], "false")
+        self.assertEqual(calls[-1][0], "/invoke")  # the restored settings are saved last
+
+    def test_no_recording_fails(self):
+        s, _, _ = self.run_step({"ok": True, "found": False, "closed": 0})
+        self.assertEqual(s.step["status"], "fail")
+
+    def test_an_older_build_is_not_a_failure(self):
+        s, calls, _ = self.run_step({}, present=False)
+        self.assertEqual(s.step["status"], "not available yet")
+        self.assertEqual(calls, [])
+
+    def test_every_runtime_records_into_the_dev_clients_own_relative_folder(self):
+        for mode in ("dev", "prod"):
+            flags = cobdev.launch_flags("/x/devagent.jar", mode)
+            rewind = [f for f in flags if f.startswith("-Dcobblify.rewindDir=")]
+            self.assertEqual(rewind, ["-Dcobblify.rewindDir=" + cobdev.REWIND_DIR])
+            self.assertFalse(os.path.isabs(cobdev.REWIND_DIR))
+            self.assertNotIn(".cobblify", cobdev.REWIND_DIR)
+            self.assertIn("-javaagent:/x/devagent.jar", flags)
+            self.assertIn("-Dcobdev.mode=" + mode, flags)
+
+    def test_smoke_only_rewind_parses(self):
+        args = cobdev.build_parser().parse_args(["smoke", "--only", "rewind"])
+        self.assertEqual(args.only, "rewind")
 
 
 class Pins(unittest.TestCase):

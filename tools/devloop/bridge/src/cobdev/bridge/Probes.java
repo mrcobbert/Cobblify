@@ -71,6 +71,14 @@ final class Probes {
 
     static Object run(String name, List<String> args) throws Exception {
         Refused.check(Policy.probeName(name));
+        if (Policy.REWIND_PROBES.contains(name)) {
+            // Read after leaving the world: no world needed, but never on a multiplayer server.
+            Bridge.onMain(() -> {
+                Bridge.requireLocal();
+                return null;
+            });
+            return "rewind-latest".equals(name) ? rewindLatest() : rewindClear();
+        }
         Bridge.onMain(() -> {
             Bridge.requireSingleplayerWorld();
             return null;
@@ -98,6 +106,80 @@ final class Probes {
                 if (Policy.OVERLAY_PROBES.contains(name)) return OverlayProbes.run(name, args);
                 throw new Refused("unknown probe " + name);
         }
+    }
+
+    // ------------------------------------------------------------------ Rewind
+
+    static final String REWIND_DIR = "com.bedwarsqol.rewind.RewindDir";
+    static final String REWIND_CHECK = "com.bedwarsqol.rewind.RewindCheck";
+
+    /** The folder Rewind writes to in this game ({@code RewindDir.get()}, so cobdev's override when set). */
+    private static java.io.File rewindDir() throws Exception {
+        Class<?> c = Class.forName(REWIND_DIR, true, Probes.class.getClassLoader());
+        return (java.io.File) c.getMethod("get").invoke(null);
+    }
+
+    /** Closed recordings (their {@code .json} says complete), oldest first by id (a timestamp). Never the active one. */
+    private static List<java.io.File> closedRecordings(java.io.File dir) {
+        List<java.io.File> out = new ArrayList<>();
+        String[] names = dir.list();
+        if (names == null) return out;
+        Arrays.sort(names);
+        for (String n : names) {
+            if (!n.endsWith(".cbr") || !Policy.rewindFile(n)) continue;
+            java.io.File cbr = new java.io.File(dir, n);
+            java.io.File json = new java.io.File(dir, n.substring(0, n.length() - 4) + ".json");
+            if (!java.nio.file.Files.isRegularFile(cbr.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || !java.nio.file.Files.isRegularFile(json.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                continue;
+            }
+            try (Reader r = new InputStreamReader(new java.io.FileInputStream(json), StandardCharsets.UTF_8)) {
+                JsonElement e = new JsonParser().parse(r);
+                JsonElement complete = e.isJsonObject() ? e.getAsJsonObject().get("complete") : null;
+                if (complete != null && complete.isJsonPrimitive() && complete.getAsBoolean()) out.add(cbr);
+            } catch (Exception ignored) {
+                // a .json being written or broken: not a closed recording
+            }
+        }
+        return out;
+    }
+
+    /**
+     * {@code rewind-latest}: {@code RewindCheck.summarize} of the newest closed recording, counts only (the summary
+     * line, its exit code and how many closed recordings there are); no path, id, name or chat.
+     */
+    private static Map<String, Object> rewindLatest() throws Exception {
+        List<java.io.File> closed = closedRecordings(rewindDir());
+        Map<String, Object> out = Bridge.ok();
+        out.put("closed", closed.size());
+        out.put("found", !closed.isEmpty());
+        if (closed.isEmpty()) return out;
+        Class<?> check = Class.forName(REWIND_CHECK, true, Probes.class.getClassLoader());
+        Object summary = check.getMethod("summarize", java.io.File.class).invoke(null, closed.get(closed.size() - 1));
+        int exit = (Integer) summary.getClass().getMethod("exitCode").invoke(summary);
+        out.put("line", summary.getClass().getMethod("line").invoke(summary));
+        out.put("exit", exit);
+        out.put("pass", exit == 0);
+        return out;
+    }
+
+    /** {@code rewind-clear}: deletes the closed recordings of cobdev's own Rewind folder only (never ~/.cobblify). */
+    private static Map<String, Object> rewindClear() throws Exception {
+        java.io.File dir = rewindDir();
+        Refused.check(Policy.rewindClear(System.getProperty(Policy.REWIND_DIR_PROPERTY), dir.getAbsolutePath(),
+                System.getProperty("user.home")));
+        int deleted = 0;
+        for (java.io.File cbr : closedRecordings(dir)) {
+            String id = cbr.getName().substring(0, cbr.getName().length() - 4);
+            for (String n : new String[]{id + ".cbr", id + ".json", id + ".stats.json"}) {
+                java.io.File f = new java.io.File(dir, n);
+                if (Policy.rewindFile(n) && java.nio.file.Files.deleteIfExists(f.toPath())) deleted++;
+            }
+        }
+        Map<String, Object> out = Bridge.ok();
+        out.put("deleted", deleted);
+        out.put("left", closedRecordings(dir).size());
+        return out;
     }
 
     /** Read-only {@code EntityRenderer.getFOVModifier(partialTicks, true)}: what the frame uses, mixins included. */

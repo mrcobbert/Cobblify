@@ -1,6 +1,7 @@
 package com.bedwarsqol.ornithe;
 
 import com.bedwarsqol.event.EventDispatcher;
+import com.bedwarsqol.feature.SessionChatLine;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 
@@ -36,6 +37,11 @@ public final class ModEvents {
     public static final EventDispatcher<BlockHighlightEvent> BLOCK_HIGHLIGHT = new EventDispatcher<>();
     /** Login finished, netty thread (FML {@code ClientConnectedToServerEvent}). */
     public static final EventDispatcher<ServerConnectEvent> SERVER_CONNECT = new EventDispatcher<>();
+    /**
+     * One of the player's own Bed Wars game lines, as {@code SessionStatsWatch} classified it (client thread):
+     * every kind it hands Session Stats, plus LOSS when the player's own team is eliminated. Observe-only.
+     */
+    public static final EventDispatcher<SessionChatLine.Kind> GAME_LINE = new EventDispatcher<>();
 
     private ModEvents() {
     }

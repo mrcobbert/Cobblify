@@ -61,6 +61,10 @@ JAVA25_FLAGS = ["--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-
 # Both reference production setups (Ornithe installer trait, Polyfrost profile) start on the first thread.
 MAC_FLAGS = ["-XstartOnFirstThread"]
 READY_LINE = "Cobblify ready (ornithe)"      # CONTRACT: logged at OSL MinecraftClientEvents.READY
+# Rewind records into the dev client's own folder, never the player's ~/.cobblify/rewind. Relative on purpose:
+# start.sh runs the game from its run folder in the user's own account ($HOME/Library/Application Support/
+# cobblify-dev), so the recordings stay private to that account and writable by the game.
+REWIND_DIR = "cobdev-rewind"
 STUB_LINE = "Cobblify (ornithe) initialized"  # the Phase 1 stub's only line
 
 # CONTRACT "Pinned runtime mods" (research/ornithe-launcher.md section 3; OSL = what ornithe/ compiles
@@ -495,7 +499,7 @@ def cmd_stage(args, wt=None):
     copy_file(AGENT_JAR, agent)
     bridge = os.path.join(runtime, "bridge", "cobdev-bridge.jar")
     copy_file(dump["bridgeJar"], bridge)
-    common = ["-Xms512M", "-Xmx2G"] + MAC_FLAGS + JAVA25_FLAGS + ["-javaagent:" + agent, "-Dcobdev.mode=" + mode]
+    common = launch_flags(agent, mode)
 
     if mode == "dev":
         # Pylon replaces LWJGL 2 (its jar carries the LWJGL 2 API on LWJGL 3 + SDL3); keeping both on the
@@ -571,6 +575,12 @@ def cmd_stage(args, wt=None):
     os.replace(tmp_link, os.path.join(SHARED, "current"))
     prune_runtimes()
     print("staged %s (%s, %s mode) in %.0fs" % (branch, os.path.basename(wt), mode, time.time() - started))
+
+
+def launch_flags(agent, mode):
+    """The JVM flags every staged runtime starts with (both modes)."""
+    return (["-Xms512M", "-Xmx2G"] + MAC_FLAGS + JAVA25_FLAGS
+            + ["-javaagent:" + agent, "-Dcobdev.mode=" + mode, "-Dcobblify.rewindDir=" + REWIND_DIR])
 
 
 def prune_runtimes():
@@ -4713,6 +4723,55 @@ def tu_move_keeps_size(s, cfg, mode):
     s.field(scale_path, configured)
 
 
+REWIND = "com.bedwarsqol.rewind.Rewind"
+
+
+def rewind_latest(s, timeout=20):
+    """rewind-latest once a closed recording is there (the writer closes it on its own thread after the leave)."""
+    r = {}
+    for _ in range(timeout * 2):
+        r = s.probe("rewind-latest") or {}
+        if r.get("found"):
+            return r
+        time.sleep(0.5)
+    return r
+
+
+def smoke_rewind(s, cfg):
+    """RW (PLAN A11): rejoin the smoke world with Rewind and Record Games on, walk 1 s, press the Marker Key, leave;
+    the newest closed recording in cobdev's own Rewind folder must pass RewindCheck (complete, no torn tail, NET and
+    TICK records, a KEY marker, every segment starting at its boundary packet). Counts only; the folder is cleared
+    before and after."""
+    s.begin("RW", "Rewind: a single-player session leaves a complete recording")
+    if not cfg or not s.has(REWIND, "markerKeyPressed"):
+        return s.unavailable(REWIND + " is not in this build")
+    on, rec = cfg + ".rewind", cfg + ".rewindRecordGames"
+    was = s.field(on).get("value"), s.field(rec).get("value")
+    try:
+        s.field(on, True)
+        s.field(rec, True)
+        tu_reopen_world(s)  # recording starts with a connection made while it is on
+        cleared = s.probe("rewind-clear")
+        s.check("cobdev's own Rewind folder starts with no closed recording", cleared.get("left") == 0, cleared)
+        s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+        try:
+            time.sleep(1)
+        finally:
+            s.call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+        s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
+        time.sleep(0.5)
+        s.call("/world", {"leave": "1"}, timeout=90)
+        r = rewind_latest(s)
+        s.check("leaving the world closed one recording", r.get("found") and r.get("closed") == 1, r)
+        s.check("RewindCheck passes (complete, no torn tail, NET, TICK, KEY, boundary-first segments)",
+                r.get("pass") is True and r.get("exit") == 0, r.get("line"))
+    finally:
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        s.field(on, was[0])
+        s.field(rec, was[1])
+        tu_save(s, cfg)
+
+
 def smoke_team_upgrades_look(s, cfg, mode):
     """Edit HUD (every module's example in its default spot) over window sizes x GUI scales, at the default
     and the largest HUD Size, plus the live panel (Compact and Full) at each HUD Size."""
@@ -4784,6 +4843,9 @@ def cmd_smoke(args):
     cfg_box = {}
     if args.only == "overlays" and not args.boot_only:
         steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s))] + overlay_steps(s, cfg_box)
+    elif args.only == "rewind" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind(s, cfg_box.get("cfg"))]
     elif not args.boot_only:
         steps += [lambda: smoke_screen(s, "A4-settings", "settings screen", "settings"),
                   lambda: smoke_screen(s, "A4-hudeditor", "HUD editor", "hud"),
@@ -4950,7 +5012,7 @@ def build_parser():
                                 " overlay items: overlay-boxes,"
                                 " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
                                 " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore,"
-                                " chat-defaults")
+                                " chat-defaults; Rewind (no world needed): rewind-latest, rewind-clear")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
     p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch, Team Upgrades, Edit HUD),"
@@ -4959,8 +5021,9 @@ def build_parser():
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
-    p.add_argument("--only", choices=["overlays", "team-upgrades"],
-                   help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look)")
+    p.add_argument("--only", choices=["overlays", "team-upgrades", "rewind"],
+                   help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look;"
+                        " rewind: RW)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

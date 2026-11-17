@@ -181,10 +181,48 @@ final class Policy {
             case "sheet-node":
                 return null;
             default:
-                return OVERLAY_PROBES.contains(name) ? null
+                return OVERLAY_PROBES.contains(name) || REWIND_PROBES.contains(name) ? null
                         : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
-                        + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ")";
+                        + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ", " + String.join(", ", REWIND_PROBES) + ")";
         }
+    }
+
+    // ------------------------------------------------------------------ Rewind (cycle 2026-11-17-rewind-record)
+
+    /**
+     * Rewind's probes: {@code rewind-latest} (RewindCheck's counts for the newest closed recording) and
+     * {@code rewind-clear} (deletes the closed recordings of cobdev's own folder). Neither needs a world (the step
+     * reads the recording after leaving it), but both refuse on a multiplayer server like every other probe.
+     */
+    static final java.util.List<String> REWIND_PROBES = java.util.Arrays.asList("rewind-latest", "rewind-clear");
+
+    /** The system property cobdev's launch sets to the dev client's own Rewind folder. */
+    static final String REWIND_DIR_PROPERTY = "cobblify.rewindDir";
+
+    /** Recording file names, exactly as Rewind's pruning matches them; nothing else is ever deleted. */
+    private static final java.util.regex.Pattern REWIND_FILE =
+            java.util.regex.Pattern.compile("^\\d{8}-\\d{6}-[0-9a-f]{4}\\.(cbr|json|stats\\.json)$");
+
+    /**
+     * {@code rewind-clear} only runs in a game cobdev launched with its own folder ({@code -Dcobblify.rewindDir}),
+     * so it can never reach the player's real {@code ~/.cobblify/rewind}.
+     */
+    static String rewindClear(String overrideProperty, String resolvedDir, String userHome) {
+        if (overrideProperty == null || overrideProperty.trim().isEmpty()) {
+            return "rewind-clear needs the dev client's own folder (-D" + REWIND_DIR_PROPERTY + ", set by cobdev stage)";
+        }
+        if (resolvedDir == null) return "rewind-clear: no Rewind folder";
+        String real = new java.io.File(new java.io.File(userHome == null ? "" : userHome, ".cobblify"), "rewind")
+                .getAbsolutePath();
+        if (new java.io.File(resolvedDir).getAbsolutePath().equals(real)) {
+            return "rewind-clear never touches the player's own Rewind folder";
+        }
+        return null;
+    }
+
+    /** True for a file name {@code rewind-clear} may delete. */
+    static boolean rewindFile(String name) {
+        return name != null && REWIND_FILE.matcher(name).matches();
     }
 
     // ------------------------------------------------------------------ overlay items (HUD parity B)
