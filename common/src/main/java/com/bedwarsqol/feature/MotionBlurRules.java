@@ -84,6 +84,21 @@ public final class MotionBlurRules {
         return Math.pow(2.0, -dtSeconds / HALF_LIFE_SECONDS);
     }
 
+    /**
+     * Smear axis in texture coordinates (u right, v up) for the shader, from the turn-signed smear fractions.
+     * Vanilla's camera rotates the scene opposite to a yaw increase (scene detail moves left) and moves it up for a
+     * pitch increase, so the scene-motion axis is {@code (-smearX, +smearY)}. The blur is centred, so only the
+     * relative sign of the two components matters; it decides which diagonal a combined turn smears along.
+     */
+    public static double textureAxisU(double smearX) {
+        return -smearX;
+    }
+
+    /** See {@link #textureAxisU}. */
+    public static double textureAxisV(double smearY) {
+        return smearY;
+    }
+
     /** The horizontal smear, a fraction of the screen width, of a yaw speed: the angle turned over the horizontal FOV. */
     public static double smearX(double yawDegPerSecond, double exposureSeconds, double fovDegrees, double aspect) {
         return yawDegPerSecond * exposureSeconds / (fovDegrees * aspect);

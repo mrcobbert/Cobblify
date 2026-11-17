@@ -130,4 +130,25 @@ public class MotionBlurRulesTest {
         assertEquals(1.0, MotionBlurRules.ON_PX, 0);
         assertEquals(0.1, MotionBlurRules.OFF_PX, 0);
     }
+
+    /** Code review round 1 I1: a diagonal turn must smear along the scene's motion, not its mirror image. */
+    @Test
+    public void diagonalTurnSmearsAlongSceneMotionNotItsReflection() {
+        double exposure = MotionBlurRules.exposureSeconds(5);
+        double aspect = 1920.0 / 1080.0;
+        // Yaw and pitch both increasing: vanilla moves scene detail left (u falls) and up (v rises).
+        double u = MotionBlurRules.textureAxisU(MotionBlurRules.smearX(200, exposure, 70, aspect));
+        double v = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(200, exposure, 70));
+        assertTrue("u and v have opposite signs for same-sign yaw and pitch rates", u * v < 0);
+        assertTrue(u < 0);
+        assertTrue(v > 0);
+        // Opposite-sign rates smear along the other diagonal.
+        double u2 = MotionBlurRules.textureAxisU(MotionBlurRules.smearX(200, exposure, 70, aspect));
+        double v2 = MotionBlurRules.textureAxisV(MotionBlurRules.smearY(-200, exposure, 70));
+        assertTrue(u2 * v2 > 0);
+        // Pure turns keep their axis and length.
+        assertEquals(0.0, MotionBlurRules.textureAxisV(MotionBlurRules.smearY(0, exposure, 70)), 0);
+        assertEquals(Math.abs(MotionBlurRules.smearX(300, exposure, 70, aspect)),
+                Math.abs(MotionBlurRules.textureAxisU(MotionBlurRules.smearX(300, exposure, 70, aspect))), 0);
+    }
 }
