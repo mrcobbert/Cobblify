@@ -259,6 +259,33 @@ public class ClientSettingsConfigTest {
         assertEquals("an unreadable key code resets to unbound", 0, bad.sessionStatsKeyCode);
     }
 
+    /** Rewind (Ornithe build): a config saved before it loads with Rewind and Record Games on and both keys unbound. */
+    @Test
+    public void rewindDefaultsForAConfigSavedBeforeIt() {
+        ClientSettings old = GSON.fromJson("{\"guiSize\":1,\"autoGg\":true,\"sessionStatsKeyCode\":50}", ClientSettings.class);
+        old.sanitize();
+        assertTrue(old.rewind);
+        assertTrue(old.rewindRecordGames);
+        assertEquals(0, old.rewindMarkerKey);
+        assertEquals(0, old.rewindCleanViewKey);
+        assertEquals("unrelated setting survives", 1, old.guiSize);
+        assertEquals("the Session key is its own", 50, old.sessionStatsKeyCode);
+        String out = GSON.toJson(old);
+        assertTrue(out.contains("\"rewind\":true"));
+        assertTrue(out.contains("\"rewindRecordGames\":true"));
+        assertTrue(out.contains("\"rewindMarkerKey\":0"));
+        assertTrue(out.contains("\"rewindCleanViewKey\":0"));
+
+        ClientSettings off = GSON.fromJson("{\"rewind\":false,\"rewindRecordGames\":false,\"rewindMarkerKey\":50,"
+                + "\"rewindCleanViewKey\":-97}", ClientSettings.class);
+        off.sanitize();
+        assertFalse(off.rewind);
+        assertFalse(off.rewindRecordGames);
+        assertEquals(50, off.rewindMarkerKey);
+        assertEquals(-97, off.rewindCleanViewKey);
+        assertEquals(0, off.sessionStatsKeyCode);
+    }
+
     @Test
     public void fontDefaultsToMinecraftAndOnlyModernSwitchesIt() {
         ClientSettings s = new ClientSettings();

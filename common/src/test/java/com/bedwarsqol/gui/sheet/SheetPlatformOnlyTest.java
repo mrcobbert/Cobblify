@@ -359,6 +359,62 @@ public class SheetPlatformOnlyTest {
         assertEquals("particles", SheetSearch.search("multiplier", ornithe).get(0).module.id);
     }
 
+    /** Rewind's rows, in order (id, name, kind). */
+    private static final String[][] REWIND_ROWS = {
+            {"rewindRecord", "Record Games", "TOGGLE"},
+            {"rewindMarkerKey", "Marker Key", "KEY"},
+            {"rewindCleanKey", "Clean View Key", "KEY"},
+            {"rewindOpenFolder", "Open Folder", "ACTION"},
+    };
+
+    @Test
+    public void rewindIsTheLastHypixelModuleWithExactlyItsFourRows() {
+        List<String> hypixel = modules(new Tree(null, true), "hypixel");
+        assertEquals("rewind", hypixel.get(hypixel.size() - 1));
+        SheetSchema.Module m = SheetSchema.module("rewind");
+        assertEquals("Rewind", m.name);
+        assertEquals("hypixel", m.category().id);
+        assertTrue(SheetSchema.platformOnly("rewind"));
+        assertTrue("rewind has a description", m.desc != null && !m.desc.isEmpty());
+        assertTrue("rewind has search keywords", m.kw != null && !m.kw.isEmpty());
+        assertEquals(REWIND_ROWS.length, m.rows.size());
+        for (int i = 0; i < REWIND_ROWS.length; i++) {
+            SheetSchema.Row r = m.rows.get(i);
+            assertEquals("row " + i, REWIND_ROWS[i][0], r.id);
+            assertEquals(r.id, REWIND_ROWS[i][1], r.name);
+            assertEquals(r.id, SheetSchema.Kind.valueOf(REWIND_ROWS[i][2]), r.kind);
+            assertTrue(r.id + " has a description", r.desc != null && !r.desc.isEmpty());
+            assertTrue(r.id, SheetSchema.platformOnly(r.id));
+            assertEquals(r.id, null, r.hudItem());
+            assertEquals(r.id, null, r.dep());
+        }
+        SheetSchema.Row open = SheetSchema.row("rewindOpenFolder");
+        assertEquals("Open", open.label());
+        assertFalse("Open Folder needs no second press", open.confirm());
+    }
+
+    @Test
+    public void rewindHiddenOnForgeAndLunarListedOnOrnithe() {
+        Tree lunar = lunar();
+        Tree ornithe = new Tree(null, true);
+        List<String> ids = new ArrayList<String>();
+        ids.add("rewind");
+        for (String[] row : REWIND_ROWS) ids.add(row[0]);
+        for (String id : ids) {
+            assertFalse(id, SheetSchema.shows(acceptsEverything, id));
+            assertFalse(id, SheetSchema.shows(lunar, id));
+            assertTrue(id, SheetSchema.shows(ornithe, id));
+        }
+        assertFalse(modules(acceptsEverything, "hypixel").contains("rewind"));
+        assertFalse(modules(lunar, "hypixel").contains("rewind"));
+        for (String q : new String[]{"rewind", "marker key", "clean view"}) {
+            assertTrue(q, SheetSearch.search(q, acceptsEverything).isEmpty());
+            assertTrue(q, SheetSearch.search(q, lunar).isEmpty());
+            assertFalse(q, SheetSearch.search(q, ornithe).isEmpty());
+        }
+        assertEquals("rewind", SheetSearch.search("rewind", ornithe).get(0).module.id);
+    }
+
     /** The module toggles a page draws, in order. */
     private static List<String> modules(SheetValues values, String category) {
         SheetState state = new SheetState();

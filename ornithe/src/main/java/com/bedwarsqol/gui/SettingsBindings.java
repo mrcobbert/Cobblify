@@ -13,6 +13,7 @@ import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.HudModuleState;
 import com.bedwarsqol.hud.HudModules;
 import com.bedwarsqol.hud.TextModules;
+import com.bedwarsqol.rewind.RewindDir;
 import com.bedwarsqol.stats.StatsCache;
 import net.minecraft.client.Minecraft;
 import org.lwjgl.input.Keyboard;
@@ -27,7 +28,7 @@ import java.util.Map;
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
  * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV, Team Upgrades, FPS, CPS,
- * Ping, Fullbright, Item Physics, 1.7 Animations, Particles and the per-item Background rows, which read and write
+ * Ping, Fullbright, Item Physics, 1.7 Animations, Particles, Rewind and the per-item Background rows, which read and write
  * their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
@@ -126,6 +127,8 @@ final class SettingsBindings implements SheetValues {
                 || "oaHearts".equals(id) || "oaRedArmor".equals(id)
                 || "ptAlwaysCrit".equals(id) || "ptHideOwnPotion".equals(id) || "ptHideBlockBreak".equals(id)
                 || "ptMultiplier".equals(id)
+                || "rewind".equals(id) || "rewindRecord".equals(id) || "rewindMarkerKey".equals(id)
+                || "rewindCleanKey".equals(id) || "rewindOpenFolder".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -212,6 +215,8 @@ final class SettingsBindings implements SheetValues {
             case "tagSound": return c.tagAlertSound;
             case "autoGg": return c.autoGg;
             case "partyJoin": return c.partyJoinAlert;
+            case "rewind": return c.rewind;
+            case "rewindRecord": return c.rewindRecordGames;
             default: return false;
         }
     }
@@ -315,6 +320,8 @@ final class SettingsBindings implements SheetValues {
             case "tagSound": c.tagAlertSound = v; break;
             case "autoGg": c.autoGg = v; break;
             case "partyJoin": c.partyJoinAlert = v; break;
+            case "rewind": c.rewind = v; break;
+            case "rewindRecord": c.rewindRecordGames = v; break;
             default: return;
         }
         c.save();
@@ -399,21 +406,35 @@ final class SettingsBindings implements SheetValues {
 
     @Override
     public String keyLabel(String id) {
-        int code = settings().sessionStatsKeyCode;
+        int code = keyCode(settings(), id);
         return SessionHoldKey.displayName(code, code > 0 ? Keyboard.getKeyName(code) : null);
     }
 
     /** Store a key row's binding (0 clears it). */
     void setKey(String id, int binding) {
         ClientSettings c = settings();
-        c.sessionStatsKeyCode = binding;
+        switch (id) {
+            case "rewindMarkerKey": c.rewindMarkerKey = binding; break;
+            case "rewindCleanKey": c.rewindCleanViewKey = binding; break;
+            default: c.sessionStatsKeyCode = binding; break;
+        }
         c.save();
+    }
+
+    /** The binding key row {@code id} shows: Rewind's two keys, else the Session Stats key. */
+    private static int keyCode(ClientSettings c, String id) {
+        switch (id) {
+            case "rewindMarkerKey": return c.rewindMarkerKey;
+            case "rewindCleanKey": return c.rewindCleanViewKey;
+            default: return c.sessionStatsKeyCode;
+        }
     }
 
     @Override
     public void run(String id) {
         if ("sessionReset".equals(id)) SessionStatsWatch.reset();
         else if (SheetLayout.RESET_POSITIONS_ID.equals(id)) resetPositions();
+        else if ("rewindOpenFolder".equals(id)) RewindDir.open();
     }
 
     /** Reset Positions from the settings menu: the default layout, saved, and undoable in the next Edit HUD (D7). */

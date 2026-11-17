@@ -204,6 +204,9 @@ one-sided main ornithe com/bedwarsqol/mixin/RenderPlayerOldAnimMixin.java
 divergent main com/bedwarsqol/mixin/ItemRendererMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
 
+# Rewind: Ornithe-only Hypixel module, its sheet-row test.
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsRewindTest.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java

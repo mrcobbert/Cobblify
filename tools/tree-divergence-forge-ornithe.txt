@@ -101,6 +101,9 @@ divergent main com/bedwarsqol/hud/HudModules.java
 # The Ornithe copy is Lunar's (byte-identical to lunar/).
 divergent main com/bedwarsqol/gui/EditHudGui.java
 
+# Rewind (Ornithe only): the config test also pins Rewind's settings defaults for an old config.
+divergent test com/bedwarsqol/config/ClientSettingsConfigTest.java
+
 # Mixin config: Forge carries the refmap and asks for minVersion 0.7. Ornithe has no
 # refmap (Loom remaps annotation targets straight into the release jar), asks for 0.8,
 # and lists the server-side Clutch mixins plus the client mixins that stand in for
@@ -228,6 +231,9 @@ one-sided main ornithe com/bedwarsqol/mixin/RenderPlayerOldAnimMixin.java
 # 1.7 Animations shares ItemRendererMixin with Hand Position so the two keep a fixed order.
 divergent main com/bedwarsqol/mixin/ItemRendererMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
+
+# Rewind: Ornithe-only Hypixel module, its sheet-row test.
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsRewindTest.java
 
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources

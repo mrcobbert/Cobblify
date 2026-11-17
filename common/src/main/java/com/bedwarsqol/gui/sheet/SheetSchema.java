@@ -238,11 +238,11 @@ public final class SheetSchema {
     /**
      * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
      * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV, Toggle Sprint, Team Upgrades, the FPS,
-     * CPS and Ping HUD modules and the Fullbright, Item Physics, 1.7 Animations and Particles Visuals modules are the
-     * Ornithe build's; Lunar has its own.
+     * CPS and Ping HUD modules, the Fullbright, Item Physics, 1.7 Animations and Particles Visuals modules and Rewind
+     * are the Ornithe build's; Lunar has its own.
      */
     private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov",
-            "teamUpgrades", "fps", "cps", "ping", "fullbright", "itemPhysics", "oldAnimations", "particles"));
+            "teamUpgrades", "fps", "cps", "ping", "fullbright", "itemPhysics", "oldAnimations", "particles", "rewind"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -251,6 +251,8 @@ public final class SheetSchema {
                 "Set session kills, finals, beds and wins to zero", null);
         sessionReset.label = "Reset";
         sessionReset.confirm = true;
+        Row rewindOpenFolder = new Row("rewindOpenFolder", Kind.ACTION, "Open Folder", "Where your games are saved", "files");
+        rewindOpenFolder.label = "Open";
 
         List<Category> cats = new ArrayList<Category>();
         cats.add(category("hud", "HUD",
@@ -371,7 +373,12 @@ public final class SheetSchema {
                         toggle("tagChat", "Chat Alert", "A chat line when a tagged player joins"),
                         toggle("tagSound", "Alert Sound", "Play a sound with the chat alert", "sound")),
                 module("autoGg", "Auto GG", "Say gg when a game ends", "gg"),
-                module("partyJoin", "Party Join Alert", "Warns when a party queues", "queue")));
+                module("partyJoin", "Party Join Alert", "Warns when a party queues", "queue"),
+                module("rewind", "Rewind", "Records your games", "replay recording",
+                        toggle("rewindRecord", "Record Games", "Save every game you play", "record"),
+                        new Row("rewindMarkerKey", Kind.KEY, "Marker Key", "Mark a moment in the game", "bookmark"),
+                        new Row("rewindCleanKey", Kind.KEY, "Clean View Key", "Hide the HUD while watching", null),
+                        rewindOpenFolder)));
         // The Settings page is one headerless section: the HUD sizes, then this menu's size and accent.
         cats.add(new Category("settings", "Settings", new Module[0], new Section[]{
                 new Section(null,
