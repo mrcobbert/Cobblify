@@ -70,12 +70,41 @@ public final class ItemPhysicsRules {
     }
 
     /**
-     * The Y of the item's first translate. Off: vanilla's (bob included). On: the render Y plus
-     * {@link #restLift} plus the {@link #surfaceShift}; no bob.
+     * {@link #restLift} measured from the model itself: how far its lowest drawn point lies under the
+     * transform origin once the item is flat, plus {@link #GROUND_GAP}.
+     *
+     * <p>{@code verts} holds model-space x, y, z triples (0..1 for a full model; a fence's rails reach past
+     * that). {@code ground} is the model's GROUND transform as {rotX, rotY, rotZ, transX, transY, transZ,
+     * scaleX, scaleY, scaleZ}. Vanilla draws a point as [0.5 if 3D] * ground * 0.5 * (p - 0.5), and after
+     * the rest pitch local +Z points down. No vertices (built-in renderers): the fixed {@link #restLift}.
      */
-    public static float restY(boolean on, float vanillaY, double renderY, boolean gui3d, double surfaceShift) {
+    public static float restLift(float[] verts, float[] ground, boolean gui3d) {
+        if (verts == null || verts.length < 3 || ground == null || ground.length < 9) return restLift(gui3d);
+        double a = Math.toRadians(ground[0]), b = Math.toRadians(ground[1]), c = Math.toRadians(ground[2]);
+        double ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b);
+        double cc = Math.cos(c), sc = Math.sin(c);
+        double low = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i + 2 < verts.length; i += 3) {
+            double x = (verts[i] - 0.5) * 0.5 * ground[6];
+            double y = (verts[i + 1] - 0.5) * 0.5 * ground[7];
+            double z = (verts[i + 2] - 0.5) * 0.5 * ground[8];
+            double x1 = x * cc - y * sc;
+            double y1 = x * sc + y * cc;
+            double z2 = y1 * sa + z * ca;
+            double z3 = -x1 * sb + z2 * cb + ground[5];
+            if (z3 > low) low = z3;
+        }
+        if (Double.isNaN(low) || Double.isInfinite(low)) return restLift(gui3d);
+        return (float) (gui3d ? low * 0.5 : low) + GROUND_GAP;
+    }
+
+    /**
+     * The Y of the item's first translate. Off: vanilla's (bob included). On: the render Y plus the
+     * {@code lift} ({@link #restLift}) plus the {@link #surfaceShift}; no bob.
+     */
+    public static float restY(boolean on, float vanillaY, double renderY, float lift, double surfaceShift) {
         if (!on) return vanillaY;
-        return (float) (renderY + restLift(gui3d) + surfaceShift);
+        return (float) (renderY + lift + surfaceShift);
     }
 
     /**

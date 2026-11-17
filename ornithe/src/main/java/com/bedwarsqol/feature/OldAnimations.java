@@ -8,9 +8,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.renderer.GlStateManager;
+import net.minecraft.client.renderer.ItemModelMesher;
 import net.minecraft.client.renderer.block.model.ItemCameraTransforms;
 import net.minecraft.client.renderer.block.model.ItemTransformVec3f;
 import net.minecraft.client.resources.model.IBakedModel;
+import net.minecraft.client.resources.model.ModelResourceLocation;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
@@ -142,7 +144,7 @@ public final class OldAnimations {
     private static void firstPerson(ItemStack stack) {
         if (stack == null || !itemPosition()) return;
         Item item = stack.getItem();
-        IBakedModel model = model(stack);
+        IBakedModel model = model(stack, Minecraft.getMinecraft().thePlayer);
         if (item == null || model == null) return;
         boolean gui3d = model.isGui3d();
         boolean around = item.shouldRotateAroundWhenRendering();
@@ -167,7 +169,7 @@ public final class OldAnimations {
                 && stack.getItemUseAction() == EnumAction.BLOCK;
         if (!position && !blocking) return;
         Item item = stack.getItem();
-        IBakedModel model = model(stack);
+        IBakedModel model = model(stack, entity);
         if (item == null || model == null) return;
         int kind = OldAnimRules.thirdPersonKind(model.isGui3d(), item == Items.bow, item.isFull3D());
         boolean around = item.shouldRotateAroundWhenRendering();
@@ -192,8 +194,27 @@ public final class OldAnimations {
         return OldAnimRules.keepEquipped(true, false, sameItem, sameMeta, subtypes, sameSlot);
     }
 
-    private static IBakedModel model(ItemStack stack) {
-        return Minecraft.getMinecraft().getRenderItem().getItemModelMesher().getItemModel(stack);
+    /**
+     * The model vanilla is about to draw for {@code holder}: the stack's own, or the variant
+     * {@code RenderItem.renderItemModelForEntity} swaps in for a cast fishing rod or a drawn bow. The 1.7
+     * placement undoes that model's display transform, so it has to be the same one.
+     */
+    private static IBakedModel model(ItemStack stack, EntityLivingBase holder) {
+        ItemModelMesher mesher = Minecraft.getMinecraft().getRenderItem().getItemModelMesher();
+        String variant = null;
+        if (holder instanceof EntityPlayer) {
+            EntityPlayer player = (EntityPlayer) holder;
+            Item item = stack.getItem();
+            if (item == Items.fishing_rod && player.fishEntity != null) {
+                variant = "fishing_rod_cast";
+            } else if (item == Items.bow && player.getItemInUse() != null) {
+                variant = OldAnimRules.bowVariant(stack.getMaxItemUseDuration() - player.getItemInUseCount());
+            }
+        }
+        if (variant != null) {
+            return mesher.getModelManager().getModel(new ModelResourceLocation(variant, "inventory"));
+        }
+        return mesher.getItemModel(stack);
     }
 
     private static float[][] cache(Map<IBakedModel, float[][]> map, IBakedModel model, int slots) {

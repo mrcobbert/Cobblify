@@ -25,8 +25,8 @@ public class ItemPhysicsRulesTest {
     @Test
     public void moduleOffKeepsVanillaTranslateY() {
         float vanillaY = 0.37f;
-        assertEquals(vanillaY, ItemPhysicsRules.restY(false, vanillaY, 5.0, true, 0.125), 0f);
-        assertEquals(vanillaY, ItemPhysicsRules.restY(false, vanillaY, 5.0, false, 0.0), 0f);
+        assertEquals(vanillaY, ItemPhysicsRules.restY(false, vanillaY, 5.0, 0.25f, 0.125), 0f);
+        assertEquals(vanillaY, ItemPhysicsRules.restY(false, vanillaY, 5.0, 0.25f, 0.0), 0f);
     }
 
     @Test
@@ -109,13 +109,51 @@ public class ItemPhysicsRulesTest {
         assertEquals(flat - 1f / 64f, block - 1f / 8f, EPS); // the same small gap for both
     }
 
+    private static final float[] IDENTITY_GROUND = {0, 0, 0, 0, 0, 0, 1, 1, 1};
+
+    @Test
+    public void measuredLiftMatchesTheFixedOneForASpriteAndAFullBlock() {
+        float[] sprite = {0, 0, 7.5f / 16f, 1, 1, 8.5f / 16f};
+        assertEquals(ItemPhysicsRules.restLift(false), ItemPhysicsRules.restLift(sprite, IDENTITY_GROUND, false), EPS);
+        float[] cube = {0, 0, 0, 1, 1, 1};
+        assertEquals(ItemPhysicsRules.restLift(true), ItemPhysicsRules.restLift(cube, IDENTITY_GROUND, true), EPS);
+    }
+
+    @Test
+    public void measuredLiftKeepsAFenceRailAboveTheSurface() {
+        // Vanilla fence_inventory: rails from Z=-2 to Z=18 of 16.
+        float[] fence = {6f / 16f, 0, -2f / 16f, 10f / 16f, 1, 18f / 16f};
+        float lift = ItemPhysicsRules.restLift(fence, IDENTITY_GROUND, true);
+        float railBottom = lift - (18f / 16f - 0.5f) * 0.25f;
+        assertEquals(ItemPhysicsRules.GROUND_GAP, railBottom, EPS);
+    }
+
+    @Test
+    public void measuredLiftFollowsAPackGroundTransform() {
+        float[] sprite = {0, 0, 7.5f / 16f, 1, 1, 8.5f / 16f};
+        float[] scaled = {0, 0, 0, 0, 0, 0, 2, 2, 2};
+        assertEquals(1f / 32f + ItemPhysicsRules.GROUND_GAP, ItemPhysicsRules.restLift(sprite, scaled, false), EPS);
+        float[] moved = {0, 0, 0, 0, 0, 0.125f, 1, 1, 1};
+        assertEquals(1f / 64f + 0.125f + ItemPhysicsRules.GROUND_GAP,
+                ItemPhysicsRules.restLift(sprite, moved, false), EPS);
+        // Turned a quarter about X, the sprite's 1 px depth is replaced by its half height.
+        float[] turned = {90, 0, 0, 0, 0, 0, 1, 1, 1};
+        assertEquals(0.25f + ItemPhysicsRules.GROUND_GAP, ItemPhysicsRules.restLift(sprite, turned, false), EPS);
+    }
+
+    @Test
+    public void measuredLiftFallsBackWithoutVertices() {
+        assertEquals(ItemPhysicsRules.restLift(true), ItemPhysicsRules.restLift(new float[0], IDENTITY_GROUND, true), 0f);
+        assertEquals(ItemPhysicsRules.restLift(false), ItemPhysicsRules.restLift(null, IDENTITY_GROUND, false), 0f);
+    }
+
     @Test
     public void restYReplacesBobWithLiftAndSurfaceShift() {
-        assertEquals(5f + ItemPhysicsRules.restLift(true), ItemPhysicsRules.restY(true, 9f, 5.0, true, 0.0), EPS);
+        assertEquals(5f + ItemPhysicsRules.restLift(true), ItemPhysicsRules.restY(true, 9f, 5.0, ItemPhysicsRules.restLift(true), 0.0), EPS);
         assertEquals(5f + ItemPhysicsRules.restLift(false) + 0.125f,
-                ItemPhysicsRules.restY(true, 9f, 5.0, false, 0.125), EPS);
+                ItemPhysicsRules.restY(true, 9f, 5.0, ItemPhysicsRules.restLift(false), 0.125), EPS);
         assertEquals(5f + ItemPhysicsRules.restLift(false) - 0.0625f,
-                ItemPhysicsRules.restY(true, 9f, 5.0, false, -0.0625), EPS);
+                ItemPhysicsRules.restY(true, 9f, 5.0, ItemPhysicsRules.restLift(false), -0.0625), EPS);
     }
 
     @Test

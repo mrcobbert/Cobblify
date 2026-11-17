@@ -366,4 +366,15 @@ public final class OldAnimRules {
     public static boolean armorTint(boolean vanilla, boolean effective) {
         return vanilla || effective;
     }
+
+    /**
+     * The model vanilla draws for a bow drawn for {@code drawnTicks} (max use duration minus use count), as
+     * {@code RenderItem.renderItemModelForEntity} picks it; null means the stack's own model.
+     */
+    public static String bowVariant(int drawnTicks) {
+        if (drawnTicks >= 18) return "bow_pulling_2";
+        if (drawnTicks > 13) return "bow_pulling_1";
+        if (drawnTicks > 0) return "bow_pulling_0";
+        return null;
+    }
 }

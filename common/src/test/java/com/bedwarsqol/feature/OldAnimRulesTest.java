@@ -5,6 +5,7 @@ import org.junit.Test;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** 1.7 Animations: off by default with every row on; a row only counts while the module is on. */
@@ -458,5 +459,17 @@ public class OldAnimRulesTest {
         for (int i = 0; i < 4; i++)
             for (int j = 0; j < 4; j++)
                 assertEquals("m[" + i + "][" + j + "]", expected[i][j], actual[i][j], 1e-4);
+    }
+
+    @Test
+    public void bowVariantFollowsVanillaDrawStages() {
+        assertNull(OldAnimRules.bowVariant(0));
+        assertNull(OldAnimRules.bowVariant(-5));
+        assertEquals("bow_pulling_0", OldAnimRules.bowVariant(1));
+        assertEquals("bow_pulling_0", OldAnimRules.bowVariant(13));
+        assertEquals("bow_pulling_1", OldAnimRules.bowVariant(14));
+        assertEquals("bow_pulling_1", OldAnimRules.bowVariant(17));
+        assertEquals("bow_pulling_2", OldAnimRules.bowVariant(18));
+        assertEquals("bow_pulling_2", OldAnimRules.bowVariant(72000));
     }
 }

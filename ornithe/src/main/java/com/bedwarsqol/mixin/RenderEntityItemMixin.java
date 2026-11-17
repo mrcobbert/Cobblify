@@ -44,9 +44,9 @@ public abstract class RenderEntityItemMixin {
             original.call(x, y, z);
             return;
         }
-        boolean gui3d = model.isGui3d();
         bedwarsqol$pileCopy = 0;
-        original.call(x, ItemPhysicsRules.restY(true, y, renderY, gui3d, ItemPhysics.surfaceShift(item)), z);
+        original.call(x, ItemPhysicsRules.restY(true, y, renderY, ItemPhysics.restLift(model),
+                ItemPhysics.surfaceShift(item)), z);
         GlStateManager.rotate(ItemPhysicsRules.yaw(item.getEntityId()), 0f, 1f, 0f);
         GlStateManager.rotate(ItemPhysicsRules.pitch(item.getAge(), partialTicks, item.onGround), 1f, 0f, 0f);
     }
