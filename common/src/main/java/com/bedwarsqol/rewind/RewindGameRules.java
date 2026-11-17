@@ -36,8 +36,13 @@ import java.util.Locale;
  * </ul>
  *
  * <p><b>Continuation.</b> Once a visit is classified, a new boundary is a candidate: it continues
- * the visit if its location names the same server or none arrives within {@link #CONTINUE_WAIT_US};
- * a different server ends the visit (closing an open game) and starts a new run.
+ * the visit if its location names the same server, and a different server ends the visit (closing an
+ * open game) and starts a new run. Only while a game is open (or a failed game's segments are being
+ * dropped) does a candidate with no location within {@link #CONTINUE_WAIT_US} continue the visit by
+ * itself. Otherwise it stays pending until its location arrives, the visit ends, the Bed Wars sidebar
+ * of its own world decides it (after a dropped visit), or the next boundary comes 5 s later with still
+ * no location (then it was a continuation). A disconnect or Record Games off joins an open game's
+ * candidate before the close: its captured records are that game's.
  *
  * <p><b>Failure ownership.</b> A failure closes the open game as failed (or drops a pending run).
  * Its later same-visit segments are dropped and nothing rearms capture until the failed game
@@ -454,7 +459,7 @@ public final class RewindGameRules {
     public List<Command> onRecordSetting(long nowUs, boolean on) {
         if (on || !active) return flush();
         advance(nowUs);
-        dropCandidate();
+        settleCandidateAtEnd();
         if (visit != null) endVisit(nowUs, EndReason.SETTINGS, false);
         visit = null;
         out.add(Command.simple(CommandType.REMOVE_HANDLER));
@@ -474,10 +479,16 @@ public final class RewindGameRules {
             return flush();
         }
         if (visit == null || (visit.state == State.DROPPED && visit.server == null)) {
+            if (cand != null) mergeCandidate();                  // no server to compare: it was that visit's
             visit = new Visit(segment, nowUs);
         } else if (visit.state == State.UNCLASSIFIED) {
             visit.lastSeg = segment;
         } else if (cand == null) {
+            cand = new Candidate(segment, nowUs);
+        } else if (presumedSameServer(nowUs)) {
+            // The previous run went 5 s without a location before this boundary: a same-server
+            // continuation (open and failed games merged it in advance() already).
+            mergeCandidate();
             cand = new Candidate(segment, nowUs);
         } else {
             cand.lastSeg = segment;
@@ -591,7 +602,13 @@ public final class RewindGameRules {
     public List<Command> onPendingBytes(long nowUs, long bytes) {
         if (!active) return flush();
         advance(nowUs);
-        if (visit != null && isPending(visit.state) && bytes > PENDING_MAX_BYTES) capDrop();
+        if (visit != null && bytes > PENDING_MAX_BYTES) {
+            if (isPending(visit.state)) {
+                capDrop();
+            } else if (cand != null && visit.state == State.DROPPED) {
+                mergeCandidate();                                // an unlocated run after a dropped visit
+            }
+        }
         return flush();
     }
 
@@ -701,9 +718,23 @@ public final class RewindGameRules {
                 closeGame(nowUs, EndReason.CAP, false);
             }
         }
-        if (cand != null && nowUs - cand.lastUs >= CONTINUE_WAIT_US) mergeCandidate();
+        if (cand != null) {
+            if (visit.state == State.OPEN || visit.state == State.FAILED) {
+                // PLAN "Continue" (while a game is open) and failure ownership: no location within 5 s.
+                if (presumedSameServer(nowUs)) mergeCandidate();
+            } else if (visit.state == State.DROPPED) {
+                // Nothing to continue: the run stays pending until its location (or visit end), unless
+                // the Bed Wars sidebar of its own world decides it first (PLAN "No location within 10 s").
+                if (candidateSidebarBedwars(nowUs)) {
+                    startSidebarRunFromCandidate();
+                } else if (nowUs - cand.firstUs >= PENDING_MAX_US) {
+                    mergeCandidate();
+                }
+            }
+        }
 
-        boolean sidebarBedwars = sidebarValid && (bwQueue || bwActive);
+        // While a candidate is undecided the sidebar shows its world, not this visit's.
+        boolean sidebarBedwars = cand == null && sidebarValid && (bwQueue || bwActive);
         switch (visit.state) {
             case UNCLASSIFIED:
                 if (sidebarBedwars && nowUs - visit.startUs >= LOCATION_WAIT_US) {
@@ -727,13 +758,18 @@ public final class RewindGameRules {
             default:
                 break;
         }
-        if (visit.state == State.BEDWARS_PENDING && sidebarValid && bwActive) {
+        // A candidate without a location for 5 s is presumed to be this server: the visit is still current,
+        // and when it opens the candidate is part of it (for a pending visit the merge only extends it).
+        boolean visitIsCurrent = cand == null || presumedSameServer(nowUs);
+        if (visit.state == State.BEDWARS_PENDING && sidebarValid && bwActive && visitIsCurrent) {
+            if (cand != null) mergeCandidate();
             // The rising edge; if the game was already active when the visit began, its start.
             visit.gameStartUs = activeEdgeUs >= visit.startUs ? activeEdgeUs : visit.startUs;
             open(nowUs, StartSource.BEDWARS);
         } else if (visit.state == State.SERVER_PENDING) {
-            long liveUntil = cand != null ? cand.firstUs : nowUs;   // a pending switch may have ended it
+            long liveUntil = visitIsCurrent ? nowUs : cand.firstUs; // a pending switch may have ended it
             if (liveUntil - visit.startUs >= MIN_VISIT_US) {
+                if (cand != null) mergeCandidate();
                 visit.gameStartUs = visit.startUs;
                 open(nowUs, StartSource.VISIT);
             }
@@ -864,15 +900,50 @@ public final class RewindGameRules {
     }
 
     private void endConnection(long nowUs, EndReason reason) {
-        dropCandidate();
+        settleCandidateAtEnd();
         if (visit != null) endVisit(nowUs, reason, true);
         visit = null;
     }
 
-    private void dropCandidate() {
+    /**
+     * The connection ends or Record Games goes off with a candidate still undecided. With a game open, the
+     * candidate's records up to the close cutoff were captured on this connection after the game's last
+     * boundary, and no later location can name another server (nothing more is processed), so they are the
+     * game's: JOIN before the CLOSE. Otherwise there is nothing to continue and the candidate is dropped.
+     */
+    private void settleCandidateAtEnd() {
         if (cand == null) return;
+        if (visit != null && visit.state == State.OPEN) {
+            mergeCandidate();
+            return;
+        }
         emitDrop(cand.firstSeg, cand.lastSeg);
         cand = null;
+    }
+
+    /** The candidate has had no location for {@link #CONTINUE_WAIT_US} since its last boundary. */
+    private boolean presumedSameServer(long nowUs) {
+        return cand != null && nowUs - cand.lastUs >= CONTINUE_WAIT_US;
+    }
+
+    /**
+     * The candidate's own world shows Bed Wars after {@link #LOCATION_WAIT_US} without a location: the
+     * pregame queue, or an active game whose rising edge came after the candidate's boundary (a game that
+     * was already running before it, e.g. the end screen of the previous one, does not count).
+     */
+    private boolean candidateSidebarBedwars(long nowUs) {
+        return sidebarValid && nowUs - cand.firstUs >= LOCATION_WAIT_US
+                && (bwQueue || bwActive && activeEdgeUs >= cand.firstUs);
+    }
+
+    /** A candidate after a dropped visit becomes a new Bed Wars run decided by the sidebar. */
+    private void startSidebarRunFromCandidate() {
+        Candidate c = cand;
+        cand = null;
+        visit = new Visit(c.firstSeg, c.firstUs);
+        visit.lastSeg = c.lastSeg;
+        visit.state = State.BEDWARS_PENDING;
+        visit.classification = Classification.SIDEBAR;
     }
 
     private void capDrop() {

@@ -426,6 +426,7 @@ public final class RecordingReader implements Closeable {
                 c.skip(c.length(RewindFormat.MAX_STRING_BYTES));
                 break;
             case RewindFormat.TAG_GAME_START:
+                c.varLong(); // backUs: the logical start is the record time minus this
                 break;
             default:
                 throw new RewindFormat.FormatException("tag " + tag);

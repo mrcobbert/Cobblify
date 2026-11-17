@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind;
 
+import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.feature.SessionChatLine;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.Rule;
@@ -8,6 +9,9 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
@@ -20,6 +24,9 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 import static com.bedwarsqol.rewind.CaptureSessionTest.other;
 import static com.bedwarsqol.rewind.CaptureSessionTest.s01;
@@ -567,6 +574,382 @@ public class RewindIntegrationTest {
         assertEquals(2, h.ids().size());
         h.ch.checkException();
         assertEquals(h.fired, h.rx.messages.size());
+    }
+
+    // ------------------------------------------------------------------ code review 1, I2: failure before connect
+
+    /** Netty runs ahead of a delayed connect task: S01, initial world data, then {@code failure}. */
+    private void failureBeforeTheConnectTaskIsHandledAndALaterGameIsRecorded(String name, boolean exhaust)
+            throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), name));
+        CaptureSession session = h.rewind.onServerConnect(h.ch, null, false, "mc.hypixel.net", true, true);
+        assertNotNull(session);
+        assertEquals("the connect task is still queued", 1, h.client.size());
+        h.advance(1_000);
+        h.net(s01(701, 0));
+        if (exhaust) {
+            for (int i = 0; i < 13 && !session.failed(); i++) {
+                h.net(other(0x21, 1 << 20)); // 1 MiB of initial world data each, nobody drains yet
+            }
+        } else {
+            h.net(other(0x21, 300), other(0x22, 40));
+            session.fail(new IllegalStateException("fake capture failure"));
+        }
+        assertTrue(session.failed());
+        assertEquals(1, session.failureCount());
+        h.net(other(0x23, 50));
+
+        // Only now does the client thread run the connect task, then the S01's WORLD_LOAD.
+        h.runClient();
+        h.rewind.onWorldLoad(new Rewind.SnapshotSource() {
+            @Override
+            public CarryOverEncoder.Snapshot capture() {
+                return snapshot(0);
+            }
+        });
+        h.location("fakeGame7A", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertFalse("the rules saw the failure: the failed run never opens", h.rewind.rules().gameOpen());
+        h.step();
+        assertTrue("nothing recorded for the failed run", h.ids().isEmpty());
+
+        // The failed run provably ends at a lobby; the next game on this connection is recorded.
+        h.advance(1_000_000L);
+        h.boundary(s01(702, 0), 0);
+        h.location("fakeLobby7", "MAIN", "fakeLobby7", null, null);
+        h.game(5, 71);
+        h.step();
+        h.advance(1_000_000L);
+        h.boundary(s01(703, 0), 0);
+        h.location("fakeGame7B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.game(20, 72);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(20, 73);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+
+        File cbr = RewindWriterTest.onlyCbr(h.dir);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        assertFalse(fc.endMeta.failed);
+        assertEquals(Collections.singleton(3), segments(fc));
+        assertArrayEquals(s01(703, 0), netOf(fc, 3).get(0));
+        assertSameRecords(h.netSent.get(3), netOf(fc, 3));
+        h.ch.checkException();
+        assertEquals(h.fired, h.rx.messages.size());
+    }
+
+    @Test
+    public void aCaptureExceptionBeforeTheConnectTaskReachesTheRules() throws Exception {
+        failureBeforeTheConnectTaskIsHandledAndALaterGameIsRecorded("exception", false);
+    }
+
+    @Test
+    public void chunkExhaustionFromInitialWorldDataBeforeTheConnectTaskReachesTheRules() throws Exception {
+        failureBeforeTheConnectTaskIsHandledAndALaterGameIsRecorded("exhaustion", true);
+    }
+
+    // ------------------------------------------------------------------ code review 1, I4: no log I/O on the client
+
+    /** Stands in for DiagLog's file: records which thread wrote each line. */
+    static final class ThreadRecordingWriter extends PrintWriter {
+        final List<String> lines = Collections.synchronizedList(new ArrayList<String>());
+        final List<Thread> threads = Collections.synchronizedList(new ArrayList<Thread>());
+
+        ThreadRecordingWriter() {
+            super(new StringWriter());
+        }
+
+        @Override
+        public void println(String s) {
+            lines.add(s);
+            threads.add(Thread.currentThread());
+            super.println(s);
+        }
+    }
+
+    @Test
+    public void rewindNeverWritesTheDiagLogOnTheClientThread() throws Exception {
+        Field outField = DiagLog.class.getDeclaredField("out");
+        Field writtenField = DiagLog.class.getDeclaredField("written");
+        outField.setAccessible(true);
+        writtenField.setAccessible(true);
+        Object oldOut;
+        long oldWritten;
+        ThreadRecordingWriter log = new ThreadRecordingWriter();
+        synchronized (DiagLog.class) {
+            oldOut = outField.get(null);
+            oldWritten = writtenField.getLong(null);
+            outField.set(null, log); // initialised as in production: DiagLog writes, it is not a no-op
+            writtenField.setLong(null, 0L);
+        }
+        ExecutorService writerThread = Executors.newSingleThreadExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                return new Thread(r, "test-writer-thread");
+            }
+        });
+        try {
+            final Harness h = new Harness(new File(tmp.getRoot(), "rewind"));
+            Runnable step = new Runnable() {
+                @Override
+                public void run() {
+                    h.writer.step();
+                }
+            };
+            Thread client = Thread.currentThread();
+            CaptureSession session = h.connect(true, true);                       // connect
+            writerThread.submit(step).get();
+            h.advance(1_000);
+            h.boundary(s01(901, 0), 0);
+            h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+            h.game(10, 91);
+            h.advance(300_000);
+            h.tick(false, true);                                                 // OPEN
+            assertTrue(h.rewind.rules().gameOpen());
+            writerThread.submit(step).get();
+            h.game(10, 92);
+            session.fail(new IllegalStateException("fake capture failure"));     // failure + failed CLOSE
+            h.tick(false, true);
+            assertFalse(h.rewind.rules().gameOpen());
+            writerThread.submit(step).get();
+            h.rewind.onGameLine(SessionChatLine.Kind.WIN);                       // the failed game ended: rearm
+            h.advance(1_000_000L);
+            h.boundary(s01(902, 0), -1);
+            h.location("fakeGameServer9B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+            h.game(10, 93);
+            h.advance(300_000);
+            h.tick(false, true);                                                 // OPEN
+            assertTrue(h.rewind.rules().gameOpen());
+            h.game(10, 94);
+            h.ch.close();
+            h.tick(false, false);                                                // disconnect CLOSE
+            writerThread.submit(step).get();
+
+            List<String> rewindLines = new ArrayList<String>();
+            synchronized (log.lines) {
+                for (int i = 0; i < log.lines.size(); i++) {
+                    String line = log.lines.get(i);
+                    if (line.contains("rewind:")) {
+                        rewindLines.add(line);
+                        assertNotEquals("written on the client thread: " + line, client, log.threads.get(i));
+                    }
+                }
+            }
+            String all = rewindLines.toString();
+            assertTrue(all, all.contains("rewind: connect"));
+            assertTrue(all, all.contains("rewind: open"));
+            assertTrue(all, all.contains("rewind: capture failure"));
+            assertTrue(all, all.contains("rewind: close endedBy=failed"));
+            assertTrue(all, all.contains("rewind: close endedBy=disconnect"));
+            assertEquals(2, h.ids().size());
+        } finally {
+            writerThread.shutdownNow();
+            synchronized (DiagLog.class) {
+                outField.set(null, oldOut);
+                writtenField.setLong(null, oldWritten);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ code review 1, I6: recovery keeps the start
+
+    /**
+     * A non-Bed-Wars visit that opens at 60 s (start = visit start). Clean: the connection ends at T. Crash: the
+     * process dies at T after the last 2 s flush, the {@code .json} is lost, and a new writer recovers the file.
+     */
+    private RecordingMeta sixtySecondVisit(String name, boolean crash) throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), name));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.boundary(s01(801, 0), 0);
+        h.location("fakeSkyServer3", "SKYWARS", null, "solo_normal", "FakeSky");
+        for (int i = 0; i < 75; i++) {
+            h.advance(1_000_000L);
+            h.net(other(0x15 + i % 4, 30 + i));
+            h.self(i);
+            h.tick(false, false);
+            if (i == 70) {
+                h.rewind.onMarkerKey();
+            }
+            if (i % 10 == 9) {
+                h.step();
+            }
+        }
+        assertTrue("open at 60 s", h.rewind.rules().gameOpen());
+        h.advance(500_000);
+        h.self(1000);                                                            // the last record, at T
+        if (!crash) {
+            h.ch.close();
+            h.tick(false, false);                                                // CLOSE at T
+            h.step();
+            return RewindWriterTest.jsonOf(RewindWriterTest.onlyCbr(h.dir));
+        }
+        h.step();
+        h.advance(RewindWriter.SYNC_INTERVAL_US);
+        h.step();                                                                // the 2 s flush reaches disk
+        File cbr = RewindWriterTest.onlyCbr(h.dir);
+        File after = new File(tmp.getRoot(), name + "-after-crash");
+        assertTrue(after.mkdirs());
+        File copy = new File(after, cbr.getName());
+        Files.copy(cbr.toPath(), copy.toPath());                                 // no .json survives
+        RewindWriter fresh = new RewindWriter(new RecordingStore(after), "0.0.0-test", h.clock, new Random(8));
+        fresh.recoverAndPrune();
+        assertEquals(1, fresh.recovered());
+        return RewindWriterTest.jsonOf(copy);
+    }
+
+    @Test
+    public void recoveryWithoutTheJsonKeepsTheVisitStartDateAndLength() throws Exception {
+        RecordingMeta clean = sixtySecondVisit("clean", false);
+        RecordingMeta recovered = sixtySecondVisit("crash", true);
+        assertTrue(recovered.recovered);
+        assertEquals("start = visit start", 50_000_000L + 1_000, clean.gameStartUs);
+        assertEquals(clean.gameStartUs, recovered.gameStartUs);
+        assertEquals(clean.startedAtMs, recovered.startedAtMs);
+        assertEquals(clean.endUs, recovered.endUs);
+        assertEquals(clean.lengthUs, recovered.lengthUs);
+        assertEquals(clean.mode, recovered.mode);
+        assertEquals(clean.map, recovered.map);
+        assertEquals(clean.markers.size(), recovered.markers.size());
+        assertEquals(clean.markers.get(0).tUs, recovered.markers.get(0).tUs);
+        assertEquals(clean.keyMarked, recovered.keyMarked);
+    }
+
+    // ------------------------------------------------------------------ code review 1, I3: growing TRACK bodies
+
+    /** Every TRACK record of a producer's live chunk, as the writer's walker reads it. */
+    static List<RewindWriterTest.TrackRec> walkLive(RecordChunk.Producer p) {
+        final List<RewindWriterTest.TrackRec> out = new ArrayList<RewindWriterTest.TrackRec>();
+        RecordChunk c = p.liveChunk();
+        RecordingReader.walkTrack(c.data(), 0, c.committedLength(), c.startTimeUs(), new RecordingReader.TrackVisitor() {
+            @Override
+            public void track(long timeUs, int tag, byte[] buf, int off, int len) {
+                out.add(new RewindWriterTest.TrackRec(0, timeUs, tag, Arrays.copyOfRange(buf, off, off + len)));
+            }
+        });
+        return out;
+    }
+
+    static String text(int bytes) {
+        StringBuilder sb = new StringBuilder(bytes);
+        for (int i = 0; i < bytes; i++) {
+            sb.append((char) ('a' + i % 26));
+        }
+        return sb.toString();
+    }
+
+    @Test
+    public void infoValuesThatGrowTheEncoderBufferRoundTripThroughTheTrackWalker() {
+        for (int len : new int[]{251, 300, 5000}) {
+            SelfTrackSampler s = new SelfTrackSampler();
+            RecordChunk.Producer p = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, 1, 1, 0L);
+            assertTrue(p.startSegment(1, null, 0, 0));
+            String value = text(len);
+            assertTrue("info " + len, s.info(p, 10L, RewindFormat.INFO_MAP, value));
+            assertTrue(s.marker(p, 20L, RewindFormat.MARKER_KEY));
+            List<RewindWriterTest.TrackRec> recs = walkLive(p);
+            assertEquals("records for " + len, 2, recs.size());
+            RewindWriterTest.TrackRec info = recs.get(0);
+            assertEquals(RewindFormat.TAG_INFO, info.tag);
+            RewindFormat.Cursor c = new RewindFormat.Cursor(info.body, 0, info.body.length);
+            assertEquals(RewindFormat.INFO_MAP, c.u8());
+            assertEquals(value, c.string(RewindFormat.MAX_STRING_BYTES));
+            assertEquals(RewindFormat.TAG_MARKER, recs.get(1).tag);
+        }
+    }
+
+    /**
+     * A protocol-47 slot as vanilla's {@code writeItemStackToBuffer} lays it out (i16 id, u8 count, i16 damage,
+     * named root compound): a sword with a long display name and 40 long lore lines, about 5.6 KB of NBT. Built by
+     * hand so no Minecraft registry (and its log4j file config) is started by the test.
+     */
+    static byte[] largeItemSlot() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        java.io.DataOutputStream d = new java.io.DataOutputStream(out);
+        try {
+            d.writeShort(276);                    // diamond sword
+            d.writeByte(1);
+            d.writeShort(0);
+            d.writeByte(10);                      // root compound, empty name
+            d.writeShort(0);
+            d.writeByte(10);                      // "display" compound
+            d.writeUTF("display");
+            d.writeByte(8);
+            d.writeUTF("Name");
+            d.writeUTF("Fake " + text(300));
+            d.writeByte(9);                       // "Lore": list of strings
+            d.writeUTF("Lore");
+            d.writeByte(8);
+            d.writeInt(40);
+            for (int i = 0; i < 40; i++) {
+                d.writeUTF("fake lore line " + i + " " + text(120));
+            }
+            d.writeByte(0);                       // end of display
+            d.writeByte(0);                       // end of root
+            d.flush();
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        return out.toByteArray();
+    }
+
+    @Test
+    public void aLargeEquipNbtRoundTripsThroughTheTrackWalker() {
+        byte[] item = largeItemSlot();
+        assertTrue(item.length > 5000);
+        byte[] padded = new byte[item.length + 7];
+        System.arraycopy(item, 0, padded, 3, item.length);
+        SelfTrackSampler s = new SelfTrackSampler();
+        RecordChunk.Producer p = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, 1, 1, 0L);
+        assertTrue(p.startSegment(1, null, 0, 0));
+        assertTrue(s.equipBytes(p, 10L, RewindFormat.EQUIP_HELD, padded, 3, item.length));
+        assertTrue(s.info(p, 20L, RewindFormat.INFO_MODE, text(400)));
+        byte[] empty = {(byte) 0xFF, (byte) 0xFF};
+        assertTrue(s.equipBytes(p, 30L, RewindFormat.EQUIP_HELMET, empty, 0, empty.length));
+        List<RewindWriterTest.TrackRec> recs = walkLive(p);
+        assertEquals(3, recs.size());
+        assertEquals(RewindFormat.TAG_EQUIP, recs.get(0).tag);
+        byte[] body = recs.get(0).body;
+        assertEquals(RewindFormat.EQUIP_HELD, body[0]);
+        assertArrayEquals(item, Arrays.copyOfRange(body, 1, body.length));
+        assertEquals(RewindFormat.TAG_INFO, recs.get(1).tag);
+        assertEquals(RewindFormat.TAG_EQUIP, recs.get(2).tag);
+        assertArrayEquals(new byte[]{RewindFormat.EQUIP_HELMET, (byte) 0xFF, (byte) 0xFF}, recs.get(2).body);
+    }
+
+    @Test
+    public void aLongMapNameAtOpenIsRecordedAndTheGameIsNotFailed() throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), "rewind"));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.boundary(s01(601, 0), 0);
+        String map = "Fake" + text(296);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", map);
+        h.game(10, 61);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(10, 62);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertFalse(fc.endMeta.failed);
+        assertEquals(map, fc.endMeta.map);
+        int infos = 0;
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (t.tag == RewindFormat.TAG_INFO) {
+                infos++;
+            }
+        }
+        assertEquals(2, infos);
     }
 
     // ------------------------------------------------------------------ A10: off

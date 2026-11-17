@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind;
 
+import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.rewind.RewindGameRules.Command;
 
 import java.io.BufferedInputStream;
@@ -99,6 +100,7 @@ public final class RewindWriter {
     private static final int ITEM_HEADER = 2;
     private static final int ITEM_COMMAND = 3;
     private static final int ITEM_SHUTDOWN = 4;
+    private static final int ITEM_DIAG = 5;
 
     private static final class Item {
         final int kind;
@@ -109,6 +111,7 @@ public final class RewindWriter {
         int segment;
         long timeUs;
         List<byte[]> packets;
+        String line;
         final CountDownLatch done = new CountDownLatch(1);
 
         Item(int kind) {
@@ -342,6 +345,19 @@ public final class RewindWriter {
         }
     }
 
+    /**
+     * A diagnostic line (ids and counts only), written to {@link DiagLog} later by the writer thread, so the
+     * caller (the client thread) never does log I/O. Non-blocking; dropped once the writer has stopped.
+     */
+    public void diag(String line) {
+        if (line == null) {
+            return;
+        }
+        Item it = new Item(ITEM_DIAG);
+        it.line = line;
+        enqueue(it);
+    }
+
     public void submitAll(List<Command> commands) {
         if (commands == null) {
             return;
@@ -514,6 +530,13 @@ public final class RewindWriter {
                     break;
                 case ITEM_SHUTDOWN:
                     doShutdown();
+                    break;
+                case ITEM_DIAG:
+                    try {
+                        DiagLog.log(it.line); // synchronous file I/O: only ever on this thread
+                    } catch (Throwable ignored) {
+                        // a log line never fails a game
+                    }
                     break;
                 default:
                     break;
@@ -1033,7 +1056,9 @@ public final class RewindWriter {
             }
             case RewindFormat.TAG_GAME_START:
                 if (a.gameStartUs == Long.MIN_VALUE) {
-                    a.gameStartUs = timeUs;
+                    // The record is written when the game opens; its body says how much earlier it started.
+                    long back = new RewindFormat.Cursor(buf, off, off + len).varLong();
+                    a.gameStartUs = timeUs - Math.max(0L, back);
                 }
                 break;
             case RewindFormat.TAG_GAME_END:

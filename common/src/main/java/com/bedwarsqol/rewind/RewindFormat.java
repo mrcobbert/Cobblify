@@ -75,6 +75,10 @@ public final class RewindFormat {
     public static final int TAG_EQUIP = 0x03;
     public static final int TAG_MARKER = 0x04;
     public static final int TAG_INFO = 0x05;
+    /**
+     * Body: varint64 {@code backUs}. The record is written when the game is opened; the logical game start
+     * (visit start, or the Bed Wars active edge) is the record's time minus {@code backUs} (code review 1, I6).
+     */
     public static final int TAG_GAME_START = 0x06;
     public static final int TAG_GAME_END = 0x07;
 

@@ -108,6 +108,7 @@ public class RecordingRecoveryTest {
         byte[] track = new byte[4096];
         int p = RewindFormat.putVarInt(track, 0, 0);
         track[p++] = RewindFormat.TAG_GAME_START;
+        track[p++] = 0; // backUs: the game started at this record
         for (int i = 0; i < 3; i++) {
             int n = enc.tick(i, 70, 0, 1f, 2f, 3f, 0, 0, -1, 0);
             p = RewindFormat.putVarInt(track, p, 50_000);

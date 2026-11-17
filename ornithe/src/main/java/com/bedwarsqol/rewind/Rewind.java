@@ -3,7 +3,6 @@ package com.bedwarsqol.rewind;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.event.EventPriority;
-import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.HypixelLocationCodec;
 import com.bedwarsqol.feature.SessionChatLine;
@@ -27,6 +26,7 @@ import net.minecraft.network.NetworkManager;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
@@ -56,8 +56,9 @@ import java.util.function.Supplier;
  *
  * <p><b>Failures.</b> The event dispatcher does not catch, so every listener here catches Throwable: a recorder bug
  * never breaks the connection, the tick or world loading. A failure ends recording for that game through the rules
- * ({@code onFailure}) and is logged on the client thread with ids and counts only. No packet is ever sent or
- * changed; with Rewind or Record Games off nothing is installed, no writer exists and no file is written.
+ * ({@code onFailure}) and is logged with ids and counts only, written by the writer thread (no file I/O here). No
+ * packet is ever sent or changed; with Rewind or Record Games off nothing is installed, no writer exists and no file
+ * is written.
  *
  * <p>The instance is the engine and touches no Minecraft type, so it runs in tests with an embedded channel, a
  * manual task queue and a writer in step mode; {@link Game} holds the Minecraft glue.
@@ -69,6 +70,7 @@ public final class Rewind {
     private static final int NET_INITIAL_CHUNKS = 2;
     private static final int TRACK_INITIAL_CHUNKS = 2;
     private static final int MAX_CHUNKS = 6;
+    private static final int EARLY_LOG_CAP = 16;
     private static final int[] SKIPPED_IDS = {RewindFormat.PACKET_KEEP_ALIVE, RewindFormat.PACKET_CUSTOM_PAYLOAD,
             RewindFormat.PACKET_SET_COMPRESSION};
 
@@ -95,6 +97,7 @@ public final class Rewind {
         int boundaries;
         /** Highest segment the rules dropped. */
         int droppedThrough;
+        /** Capture failures already reported to the rules; starts at 0 (code review 1, I2). */
         int seenCaptureFailures;
         final long[] seenSkippedCount = new long[SKIPPED_IDS.length];
         final long[] seenSkippedBytes = new long[SKIPPED_IDS.length];
@@ -127,6 +130,8 @@ public final class Rewind {
     private RewindWriter writer;
     private Conn conn;
     private int seenWriterFailures;
+    /** Log lines from before the writer existed (client thread). */
+    private final List<String> earlyLog = new ArrayList<String>();
     private long lastCameraNs;
     private boolean cameraSampled;
 
@@ -214,6 +219,12 @@ public final class Rewind {
                 try {
                     if (writer == null) {
                         writer = writerFactory.get();
+                        if (writer != null) {
+                            for (int i = 0; i < earlyLog.size(); i++) {
+                                writer.diag(earlyLog.get(i));
+                            }
+                            earlyLog.clear();
+                        }
                     }
                 } catch (Throwable t) {
                     log("rewind: writer unavailable " + name(t));
@@ -234,7 +245,8 @@ public final class Rewind {
             conn = recording ? c : new Conn(c.handle, c.channel, c.local, null);
             if (recording) {
                 c.track = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, TRACK_INITIAL_CHUNKS, MAX_CHUNKS, now);
-                c.seenCaptureFailures = c.session.failureCount();
+                // seenCaptureFailures stays 0: a capture failure latched on Netty before this task ran (initial
+                // world data, chunks exhausted before attach) is reported to the rules by the first settle.
                 writer.attach(c.session.producer(), c.track, c.feed);
                 log("rewind: connect local=" + c.local + " recording=true");
             }
@@ -447,7 +459,9 @@ public final class Rewind {
                 c.gameLast = cmd.lastSegment;
                 submit(cmd);
                 if (trackInGame(c) && c.track != null) {
-                    c.trackFailed |= !sampler.gameStart(c.track, now);
+                    // The logical start from the rules (visit start or active edge), so recovery without the
+                    // .json rebuilds the same start, date and length (code review 1, I6).
+                    c.trackFailed |= !sampler.gameStart(c.track, now, cmd.timeUs);
                     RewindGameRules.GameInfo info = cmd.info;
                     c.trackFailed |= !sampler.info(c.track, now, RewindFormat.INFO_MODE,
                             info != null && info.mode != null ? info.mode : liveMode());
@@ -590,10 +604,20 @@ public final class Rewind {
         return t == null ? "null" : t.getClass().getSimpleName();
     }
 
-    /** DiagLog with ids and counts only. A no-op until the game initialised it (tests never do). */
-    private static void log(String line) {
+    /**
+     * A DiagLog line with ids and counts only. Never written here: DiagLog writes and flushes synchronously and
+     * this runs on the client (render) thread, so the line goes to the writer thread (code review 1, I4). Lines
+     * from before the writer exists wait (at most {@link #EARLY_LOG_CAP}) and are handed over when it is made;
+     * if no writer is ever made they are dropped.
+     */
+    private void log(String line) {
         try {
-            DiagLog.log(line);
+            RewindWriter w = writer;
+            if (w != null) {
+                w.diag(line);
+            } else if (earlyLog.size() < EARLY_LOG_CAP) {
+                earlyLog.add(line);
+            }
         } catch (Throwable ignored) {
             // logging never matters more than the game
         }

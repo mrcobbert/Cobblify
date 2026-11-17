@@ -8,8 +8,8 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Each encode method returns the body length in {@link #buffer()}, or 0 when nothing changed (the
  * caller then appends nothing). The caller appends a non-zero body with
- * {@code producer.appendTrack(nowUs, tag, encoder.buffer(), 0, n)}. GAME_START has an empty body and
- * needs no encoder call.
+ * {@code producer.appendTrack(nowUs, tag, encoder.buffer(), 0, n)}, reading {@link #buffer()} only after
+ * the encode call returned (an encode may grow it into a new array).
  *
  * <p>TICK body: u8 mask, then the fields whose bit is set, in bit order (see {@code RewindFormat.TICK_*}).
  * The first TICK after construction or {@link #resetSegment()} carries every field. Rate limiting of
@@ -185,6 +185,14 @@ public final class SelfTrackEncoder {
     public int marker(int kind) {
         buf[0] = (byte) kind;
         return 1;
+    }
+
+    /**
+     * GAME_START body: varint64 {@code backUs}, how far before the record's own time the game started (the
+     * logical start = record time - backUs). A negative value is stored as 0.
+     */
+    public int gameStart(long backUs) {
+        return RewindFormat.putVarLong(buf, 0, Math.max(0L, backUs));
     }
 
     /** GAME_END body: u8 result ({@code RewindFormat.GAME_END_*}). */

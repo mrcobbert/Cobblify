@@ -175,6 +175,21 @@ public class PacketStatsTest {
         assertTrue(o.get("restrictChannelSeen").getAsBoolean());
         assertEquals(3, o.get("peakPacketsPerSecond").getAsLong());
         assertEquals(1234, o.get("rawBytes").getAsLong());
+        assertCaptureTimingUnavailable(o);
+    }
+
+    /**
+     * Code review 1, O1: capture time per packet is not measured (that would cost a second clock read per
+     * packet), so the file says so and has no capture timing number that a zero could be mistaken for.
+     */
+    private static void assertCaptureTimingUnavailable(JsonObject o) {
+        assertNotNull("captureTimingMeasured present", o.get("captureTimingMeasured"));
+        assertFalse(o.get("captureTimingMeasured").getAsBoolean());
+        for (String k : PacketStats.KEYS) {
+            assertFalse("no capture timing key: " + k, k.startsWith("captureNs"));
+        }
+        assertFalse(o.has("captureNsPerPacketMean"));
+        assertFalse(o.has("captureNsPerPacketMax"));
     }
 
     @Test
@@ -195,7 +210,6 @@ public class PacketStatsTest {
         f.feed.skipped(0x00, 12);
         f.feed.skipped(0x3F, 300);
         f.feed.restrictChannelSeen();
-        f.feed.capture.add(150);
         f.feed.track.add(900);
         f.feed.camera.add(80);
         SelfTrackEncoder enc = new SelfTrackEncoder();
@@ -223,7 +237,9 @@ public class PacketStatsTest {
         assertEquals(1, countOf(o, "skipped", 0x00).get("count").getAsLong());
         assertEquals(12, countOf(o, "skipped", 0x00).get("bytes").getAsLong());
         assertTrue(o.get("restrictChannelSeen").getAsBoolean());
-        assertEquals(150, o.get("captureNsPerPacketMax").getAsLong());
+        assertEquals(900, o.get("trackNsPerTickMax").getAsLong());
+        assertEquals(80, o.get("cameraNsPerFrameMax").getAsLong());
+        assertCaptureTimingUnavailable(o);
         assertEquals(1, o.getAsJsonArray("boundaries").size());
         assertEquals(1, o.get("segments").getAsInt());
         assertEquals(1, o.get("startSource").getAsInt());

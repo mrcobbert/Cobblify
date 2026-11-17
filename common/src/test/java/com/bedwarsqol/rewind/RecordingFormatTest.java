@@ -166,7 +166,8 @@ public class RecordingFormatTest {
         appendTrack(track, enc, t += 10, RewindFormat.TAG_MARKER, n, tags, bodies, trackTimes);
         n = enc.info(RewindFormat.INFO_MAP, "FakeMap");
         appendTrack(track, enc, t += 10, RewindFormat.TAG_INFO, n, tags, bodies, trackTimes);
-        appendTrack(track, enc, t += 10, RewindFormat.TAG_GAME_START, 0, tags, bodies, trackTimes);
+        n = enc.gameStart(60_000_000L);
+        appendTrack(track, enc, t += 10, RewindFormat.TAG_GAME_START, n, tags, bodies, trackTimes);
         n = enc.gameEnd(RewindFormat.GAME_END_WIN);
         appendTrack(track, enc, t += 10, RewindFormat.TAG_GAME_END, n, tags, bodies, trackTimes);
         RecordChunk trackChunk0 = handOff(track);

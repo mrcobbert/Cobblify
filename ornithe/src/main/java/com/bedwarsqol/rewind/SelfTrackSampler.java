@@ -72,7 +72,12 @@ public final class SelfTrackSampler {
         }
         b.clear();
         b.writeItemStackToBuffer(stack);
-        int n = enc.equip(slot, b.array(), b.arrayOffset() + b.readerIndex(), b.readableBytes());
+        return equipBytes(track, nowUs, slot, b.array(), b.arrayOffset() + b.readerIndex(), b.readableBytes());
+    }
+
+    /** The EQUIP record for protocol-47 slot bytes, if they changed (package-private for tests). */
+    boolean equipBytes(RecordChunk.Producer track, long nowUs, int slot, byte[] item, int off, int len) {
+        int n = enc.equip(slot, item, off, len); // may grow the encoder buffer: read buffer() after it
         return n == 0 || track.appendTrack(nowUs, RewindFormat.TAG_EQUIP, enc.buffer(), 0, n);
     }
 
@@ -82,19 +87,28 @@ public final class SelfTrackSampler {
         return n == 0 || track.appendTrack(nowUs, RewindFormat.TAG_CAMERA, enc.buffer(), 0, n);
     }
 
+    // Every method encodes first and reads enc.buffer() after: an encode call may replace the buffer with a
+    // larger one, and Java evaluates call arguments left to right (code review 1, I3).
+
     /** A MARKER record ({@code RewindFormat.MARKER_*}). */
     public boolean marker(RecordChunk.Producer track, long nowUs, int kind) {
-        return track.appendTrack(nowUs, RewindFormat.TAG_MARKER, enc.buffer(), 0, enc.marker(kind));
+        int n = enc.marker(kind);
+        return track.appendTrack(nowUs, RewindFormat.TAG_MARKER, enc.buffer(), 0, n);
     }
 
-    /** The GAME_START record (empty body). */
-    public boolean gameStart(RecordChunk.Producer track, long nowUs) {
-        return track.appendTrack(nowUs, RewindFormat.TAG_GAME_START, enc.buffer(), 0, 0);
+    /**
+     * The GAME_START record, written at {@code nowUs} (when the game was opened) and naming the logical game
+     * start {@code gameStartUs} (the visit start, or the Bed Wars active edge), which may be earlier.
+     */
+    public boolean gameStart(RecordChunk.Producer track, long nowUs, long gameStartUs) {
+        int n = enc.gameStart(nowUs - gameStartUs);
+        return track.appendTrack(nowUs, RewindFormat.TAG_GAME_START, enc.buffer(), 0, n);
     }
 
     /** A GAME_END record ({@code RewindFormat.GAME_END_*}). */
     public boolean gameEnd(RecordChunk.Producer track, long nowUs, int result) {
-        return track.appendTrack(nowUs, RewindFormat.TAG_GAME_END, enc.buffer(), 0, enc.gameEnd(result));
+        int n = enc.gameEnd(result);
+        return track.appendTrack(nowUs, RewindFormat.TAG_GAME_END, enc.buffer(), 0, n);
     }
 
     /** An INFO record ({@code RewindFormat.INFO_*}); a null or empty value writes nothing. */
@@ -102,6 +116,7 @@ public final class SelfTrackSampler {
         if (value == null || value.isEmpty()) {
             return true;
         }
-        return track.appendTrack(nowUs, RewindFormat.TAG_INFO, enc.buffer(), 0, enc.info(key, value));
+        int n = enc.info(key, value);
+        return track.appendTrack(nowUs, RewindFormat.TAG_INFO, enc.buffer(), 0, n);
     }
 }

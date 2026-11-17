@@ -36,7 +36,7 @@ public final class PacketStats {
             "boundaries", "boundaryCount", "packets", "otherPacketCount", "otherPacketBytes", "skipped",
             "headerPackets", "rawBytes", "storedBytes", "restrictChannelSeen",
             "peakPacketsPerSecond", "peakBytesPerSecond",
-            "captureNsPerPacketMean", "captureNsPerPacketMax", "trackNsPerTickMean", "trackNsPerTickMax",
+            "captureTimingMeasured", "trackNsPerTickMean", "trackNsPerTickMax",
             "cameraNsPerFrameMean", "cameraNsPerFrameMax", "writerMsPerMiB", "peakPendingBytes",
             "locations", "lobbyOverridden", "visitsWithoutLocation", "bedwarsVisitsWithoutStart",
             "shortVisitsDropped", "startSource"));
@@ -81,7 +81,7 @@ public final class PacketStats {
     private long rawBytes;
     private long storedBytes;
     private boolean restrictChannelSeen;
-    private final long[] timings = new long[6]; // capture mean,max; track mean,max; camera mean,max
+    private final long[] timings = new long[4]; // track mean,max; camera mean,max
     private long writerNs;
     private long writerRawBytes;
     private long peakPendingBytes;
@@ -206,15 +206,15 @@ public final class PacketStats {
         this.restrictChannelSeen |= seen;
     }
 
-    /** Mean and max ns of the capture handler per packet, the self track per tick, the camera per frame. */
-    public void setTimings(long captureMean, long captureMax, long trackMean, long trackMax, long cameraMean,
-                           long cameraMax) {
-        timings[0] = captureMean;
-        timings[1] = captureMax;
-        timings[2] = trackMean;
-        timings[3] = trackMax;
-        timings[4] = cameraMean;
-        timings[5] = cameraMax;
+    /**
+     * Mean and max ns of the self track per tick and the camera per frame. The capture handler is not timed
+     * per packet (a second clock read per packet); the file says so with {@code captureTimingMeasured:false}.
+     */
+    public void setTimings(long trackMean, long trackMax, long cameraMean, long cameraMax) {
+        timings[0] = trackMean;
+        timings[1] = trackMax;
+        timings[2] = cameraMean;
+        timings[3] = cameraMax;
     }
 
     /** Writer time spent compressing and writing {@code raw} payload bytes. */
@@ -300,12 +300,11 @@ public final class PacketStats {
         bool(sb, "restrictChannelSeen", restrictChannelSeen);
         num(sb, "peakPacketsPerSecond", pp);
         num(sb, "peakBytesPerSecond", pb);
-        num(sb, "captureNsPerPacketMean", timings[0]);
-        num(sb, "captureNsPerPacketMax", timings[1]);
-        num(sb, "trackNsPerTickMean", timings[2]);
-        num(sb, "trackNsPerTickMax", timings[3]);
-        num(sb, "cameraNsPerFrameMean", timings[4]);
-        num(sb, "cameraNsPerFrameMax", timings[5]);
+        bool(sb, "captureTimingMeasured", false); // code review 1, O1: never measured, so no number
+        num(sb, "trackNsPerTickMean", timings[0]);
+        num(sb, "trackNsPerTickMax", timings[1]);
+        num(sb, "cameraNsPerFrameMean", timings[2]);
+        num(sb, "cameraNsPerFrameMax", timings[3]);
         double msPerMiB = writerRawBytes > 0 ? (writerNs / 1e6) / (writerRawBytes / 1048576.0) : 0.0;
         key(sb, "writerMsPerMiB").append(Double.isNaN(msPerMiB) || Double.isInfinite(msPerMiB)
                 ? "0.0" : Double.toString(Math.round(msPerMiB * 1000.0) / 1000.0)).append(',');
@@ -424,16 +423,15 @@ public final class PacketStats {
 
     /**
      * What the writer cannot see in chunks: packets the capture handler skipped (S00, S3F, S46), whether
-     * a Replay|Restrict-style channel was seen, and the capture, self-track and camera timings. Each
-     * method is for one owner thread (capture handler: {@link #skipped}, {@link #restrictChannelSeen},
-     * {@link #capture}; client thread: {@link #track}, {@link #camera}); no allocation, no locks.
+     * a Replay|Restrict-style channel was seen, and the self-track and camera timings. Each method is for
+     * one owner thread (capture handler: {@link #skipped}, {@link #restrictChannelSeen}; client thread:
+     * {@link #track}, {@link #camera}); no allocation, no locks.
      * Cumulative; the writer takes per-game differences.
      */
     public static final class Feed {
         private final AtomicLongArray skippedCount = new AtomicLongArray(IDS);
         private final AtomicLongArray skippedBytes = new AtomicLongArray(IDS);
         private final AtomicLong restrictSeen = new AtomicLong();
-        public final Timer capture = new Timer();
         public final Timer track = new Timer();
         public final Timer camera = new Timer();
 
@@ -469,8 +467,8 @@ public final class PacketStats {
         private final long[] skippedCount = new long[IDS];
         private final long[] skippedBytes = new long[IDS];
         private long restrict;
-        private final long[] timerCount = new long[3];
-        private final long[] timerTotal = new long[3];
+        private final long[] timerCount = new long[2];
+        private final long[] timerTotal = new long[2];
 
         /** Starts a new window at the feed's current values. */
         void reset(Feed f) {
@@ -482,8 +480,8 @@ public final class PacketStats {
                 skippedBytes[i] = f.skippedBytes(i);
             }
             restrict = f.restrictSeen();
-            Timer[] t = {f.capture, f.track, f.camera};
-            for (int i = 0; i < 3; i++) {
+            Timer[] t = {f.track, f.camera};
+            for (int i = 0; i < 2; i++) {
                 timerCount[i] = t[i].count();
                 timerTotal[i] = t[i].totalNs();
                 t[i].requestReset();
@@ -512,15 +510,15 @@ public final class PacketStats {
                 }
             }
             s.setRestrictChannelSeen(f.restrictSeen() > restrict);
-            Timer[] t = {f.capture, f.track, f.camera};
-            long[] v = new long[6];
-            for (int i = 0; i < 3; i++) {
+            Timer[] t = {f.track, f.camera};
+            long[] v = new long[4];
+            for (int i = 0; i < 2; i++) {
                 long n = t[i].count() - timerCount[i];
                 long total = t[i].totalNs() - timerTotal[i];
                 v[2 * i] = n > 0 ? total / n : 0;
                 v[2 * i + 1] = n > 0 ? t[i].maxNs() : 0;
             }
-            s.setTimings(v[0], v[1], v[2], v[3], v[4], v[5]);
+            s.setTimings(v[0], v[1], v[2], v[3]);
         }
     }
 }

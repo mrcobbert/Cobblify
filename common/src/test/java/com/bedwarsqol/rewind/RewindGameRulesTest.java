@@ -477,7 +477,8 @@ public class RewindGameRulesTest {
         s.disconnect(102 * S);
         Command close = s.one(CommandType.CLOSE);
         assertEquals(EndReason.DISCONNECT, close.endedBy);
-        assertRange(s.one(CommandType.DROP), 2, 2);                      // the undecided segment
+        assertRange(s.one(CommandType.JOIN), 2, 2);                      // its captured data is the game's
+        assertEquals(0, s.count(CommandType.DROP));
         assertFalse(s.rules.gameOpen());
 
         Script q = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
@@ -527,9 +528,16 @@ public class RewindGameRulesTest {
         assertRange(s.one(CommandType.DROP), 1, 1);
         s.tick(5 * S, false, true);
         assertEquals(0, s.count(CommandType.OPEN));
-        // the same visit's next segments are dropped too
+        // The same visit's next segment stays pending without a location (code review 1, I1: no 5 s
+        // continuation into a dropped visit); its same-server location, or the byte cap, drops it.
         s.boundary(6 * S, 2).ticks(7 * S, 12 * S, false, true);
+        assertEquals(1, s.count(CommandType.DROP));
+        s.location(13 * S, 2, BW_A);
         assertEquals(2, s.count(CommandType.DROP));
+        assertRange(s.of(CommandType.DROP).get(1), 2, 2);
+        s.boundary(20 * S, 3).pendingBytes(21 * S, RewindGameRules.PENDING_MAX_BYTES + 1);
+        assertEquals(3, s.count(CommandType.DROP));
+        assertRange(s.of(CommandType.DROP).get(2), 3, 3);
         assertEquals(0, s.count(CommandType.OPEN));
     }
 
@@ -552,6 +560,8 @@ public class RewindGameRulesTest {
         s.idle(S + 2 * 3600 * S);
         assertEquals(EndReason.CAP, s.one(CommandType.CLOSE).endedBy);
         s.boundary(S + 2 * 3600 * S + 10, 2).ticks(2 * 3600 * S + 10 * S, 2 * 3600 * S + 20 * S, false, false);
+        assertEquals("pending until its location (code review 1, I1)", 0, s.count(CommandType.DROP));
+        s.location(2 * 3600 * S + 21 * S, 2, SKYBLOCK);
         assertRange(s.one(CommandType.DROP), 2, 2);                      // same visit, after the cap
         assertEquals(1, s.count(CommandType.OPEN));
     }
@@ -567,6 +577,101 @@ public class RewindGameRulesTest {
         assertRange(s.one(CommandType.DROP), 1, 1);                      // the lobby ended
         s.tick(6 * S, true, false).tick(7 * S, false, true);
         assertRange(s.one(CommandType.OPEN), 2, 2);
+    }
+
+    // ------------------------------------------------------------------ late locations (code review 1, I1)
+
+    /** The reviewer's timeline: the 5 s continuation must not merge a new run into a dropped lobby. */
+    @Test
+    public void aDelayedLocationAfterADroppedLobbyStillOpensTheNextGame() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        s.tick(12 * S, false, false);                                     // the lobby verdict drops it
+        assertRange(s.one(CommandType.DROP), 1, 1);
+        s.boundary(30 * S, 2);
+        s.tick(35 * S, true, false);                                      // queue; the location is late
+        assertEquals("segment 2 stays pending without its location", 1, s.count(CommandType.DROP));
+        s.location(36 * S, 2, BW_B);                                      // a different server
+        s.tick(60 * S, false, true);                                      // the game starts
+        Command open = s.one(CommandType.OPEN);
+        assertRange(open, 2, 2);
+        assertEquals(60 * S, open.timeUs);
+        assertEquals(StartSource.BEDWARS, open.startSource);
+        assertEquals("BEDWARS_FOUR_FOUR", open.info.mode);
+        assertTrue(s.rules.gameOpen());
+        assertEquals(1, s.count(CommandType.DROP));
+    }
+
+    @Test
+    public void aDelayedLocationAfterAShortVisitStartsItsOwnRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, SKYWARS);
+        s.ticks(2 * S, 29 * S, false, false);
+        s.boundary(30 * S, 2);                                            // switch after 29 s
+        s.ticks(31 * S, 35 * S, true, false);                             // the new world's queue sidebar
+        assertEquals(0, s.count(CommandType.DROP));
+        s.location(36 * S, 2, BW_B);
+        assertRange(s.one(CommandType.DROP), 1, 1);                       // the short visit
+        assertEquals(1, s.rules.shortVisitsDropped());
+        s.ticks(37 * S, 59 * S, true, false).tick(60 * S, false, true);
+        Command open = s.one(CommandType.OPEN);
+        assertRange(open, 2, 2);
+        assertEquals(60 * S, open.timeUs);
+        assertEquals("BEDWARS_FOUR_FOUR", open.info.mode);
+    }
+
+    @Test
+    public void theBedwarsSidebarBeforeAnyLocationAfterADroppedLobbyIsABedwarsRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        s.tick(12 * S, false, false);
+        s.boundary(30 * S, 2);
+        s.ticks(31 * S, 39 * S, true, false);
+        assertEquals(1, s.count(CommandType.DROP));                       // still pending before 10 s
+        s.ticks(40 * S, 59 * S, true, false).tick(60 * S, false, true);   // no location at all
+        Command open = s.one(CommandType.OPEN);
+        assertRange(open, 2, 2);
+        assertEquals(60 * S, open.timeUs);
+        assertEquals(Classification.SIDEBAR, open.info.classification);
+        s.location(70 * S, 2, BW_B);                                      // late: fills in, changes nothing
+        assertEquals(1, s.count(CommandType.OPEN));
+        assertEquals(0, s.count(CommandType.CLOSE));
+    }
+
+    @Test
+    public void anUnlocatedSameServerSegmentAfterAClosedGameIsDroppedAtTheNextBoundary() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).line(100 * S, Kind.WIN);
+        s.ticks(101 * S, 115 * S, false, true);
+        assertEquals(EndReason.RESULT, s.one(CommandType.CLOSE).endedBy);
+        s.boundary(120 * S, 2).ticks(121 * S, 140 * S, false, true);      // no fresh edge: not a new game
+        assertEquals(0, s.count(CommandType.DROP));
+        s.boundary(150 * S, 3).location(150 * S + 100_000, 3, MAIN);     // the next switch
+        assertRange(s.of(CommandType.DROP).get(0), 2, 2);                 // the old run was a continuation
+        assertEquals(1, s.count(CommandType.OPEN));
+    }
+
+    // ------------------------------------------------------------------ disconnect with a candidate (code review 1, I5)
+
+    /** The reviewer's sequence: the captured S07 segment belongs to the game and is joined before CLOSE. */
+    @Test
+    public void aDisconnectRightAfterASameServerRespawnJoinsItBeforeTheClose() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.boundary(100 * S, 2);                                           // dimension-changing S07
+        s.disconnect(101 * S);
+        assertEquals(0, s.count(CommandType.DROP));
+        assertEquals(2, s.last.size());
+        assertEquals(CommandType.JOIN, s.last.get(0).type);
+        assertRange(s.last.get(0), 2, 2);
+        assertEquals(CommandType.CLOSE, s.last.get(1).type);
+        assertEquals(EndReason.DISCONNECT, s.last.get(1).endedBy);
+        assertEquals(101 * S, s.last.get(1).timeUs);
+
+        Script off = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        off.tick(2 * S, true, false).tick(3 * S, false, true).boundary(100 * S, 2).record(101 * S, false);
+        assertEquals(0, off.count(CommandType.DROP));
+        assertEquals(CommandType.JOIN, off.last.get(0).type);
+        assertRange(off.last.get(0), 2, 2);
+        assertEquals(CommandType.CLOSE, off.last.get(1).type);
+        assertEquals(EndReason.SETTINGS, off.last.get(1).endedBy);
     }
 
     // ------------------------------------------------------------------ failure ownership
@@ -640,11 +745,15 @@ public class RewindGameRulesTest {
         s.tick(61 * S, true, false).tick(90 * S, false, true);           // that game starts: not recorded
         s.boundary(200 * S, 3).boundary(200 * S + 50_000, 4).ticks(201 * S, 210 * S, false, true);
         assertEquals(1, s.count(CommandType.OPEN));
-        assertRange(s.of(CommandType.DROP).get(1), 3, 4);
-        // the next real switch is recorded
+        assertEquals("pending until a location or the next boundary (code review 1, I1)", 1,
+                s.count(CommandType.DROP));
+        // the next real switch is recorded; the unlocated pair before it was the skipped game's
         s.line(300 * S, Kind.WIN);
-        s.boundary(320 * S, 5).location(320 * S + 100_000, 5, BW_A).tick(321 * S, true, false).tick(350 * S, false, true);
+        s.boundary(320 * S, 5);
+        assertRange(s.of(CommandType.DROP).get(1), 3, 4);
+        s.location(320 * S + 100_000, 5, BW_A).tick(321 * S, true, false).tick(350 * S, false, true);
         assertEquals(2, s.count(CommandType.OPEN));
+        assertRange(s.of(CommandType.OPEN).get(1), 5, 5);
     }
 
     @Test
@@ -687,7 +796,8 @@ public class RewindGameRulesTest {
         Command close = s.one(CommandType.CLOSE);
         assertEquals(EndReason.SETTINGS, close.endedBy);
         assertTrue(s.lastHas(CommandType.REMOVE_HANDLER));
-        assertRange(s.one(CommandType.DROP), 2, 2);
+        assertRange(s.one(CommandType.JOIN), 2, 2);                      // joined before the close
+        assertEquals(0, s.count(CommandType.DROP));
         assertFalse(s.rules.active());
 
         s.boundary(60 * S, 3).location(60 * S + 100_000, 3, BW_B).tick(61 * S, true, false).tick(70 * S, false, true);

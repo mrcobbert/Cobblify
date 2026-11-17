@@ -561,8 +561,77 @@ public class RewindWriterTest {
         assertEquals(2, s.segmentsStartingAtBoundary);
     }
 
+    // ------------------------------------------------------------------ code review 1, I5
+
+    /**
+     * An active game on one server gets a dimension-changing S07, then the connection drops 1 s later,
+     * before a location or the 5 s continuation: the S07 segment's committed records are in the closed file.
+     */
+    @Test
+    public void aDisconnectRightAfterARespawnKeepsTheRespawnSegmentInTheClosedFile() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.connect(false, 4096, 64);
+        Location server = new Location("fakeServer5E", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        f.advance(1_000);
+        f.netBoundary(1, null, s01(55, 0));
+        f.clientBoundary(1, snapshot(0));
+        f.submit(f.rules.onLocation(f.clock.nowUs, 1, server));
+        f.advance(1_000_000L);
+        f.submit(f.rules.tick(f.clock.nowUs, false, true));
+        assertTrue(f.rules.gameOpen());
+        for (int i = 0; i < 50; i++) {
+            f.advance(1_900_000L);
+            f.net(packet(0x20 + i % 7, 30 + i, i));
+            f.tick(i);
+            f.submit(f.rules.tick(f.clock.nowUs, false, true));
+            if (i % 10 == 9) {
+                f.step();
+            }
+        }
+        // ~100 s: S07 to another dimension on the same server, then its packets (all in the live chunk).
+        f.advance(1_000_000L);
+        f.netBoundary(2, null, s07(-1));
+        f.clientBoundary(2, snapshot(-1));
+        for (int i = 0; i < 20; i++) {
+            f.advance(40_000);
+            f.net(packet(0x30 + i % 5, 50 + i, 500 + i));
+            f.tick(500 + i);
+        }
+        f.advance(200_000);
+        List<Command> end = f.rules.onDisconnect(f.clock.nowUs, false);
+        f.gameEnd(RewindFormat.GAME_END_UNKNOWN);
+        f.submit(end);
+        f.step();
+
+        File cbr = onlyCbr(dir);
+        FileContents fc = read(cbr);
+        assertTrue(fc.complete);
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segmentsOf(fc));
+        List<NetRec> seg2 = netOfSegment(fc.net, 2);
+        assertEquals(21, seg2.size());
+        assertArrayEquals("the S07 opens segment 2", s07(-1), seg2.get(0).bytes);
+        for (int seg = 1; seg <= 2; seg++) {
+            assertNetEquals(netOfSegment(f.netSent, seg), netOfSegment(fc.net, seg));
+            assertTrackEquals(trackOfSegment(f.trackSent, seg), trackOfSegment(fc.track, seg));
+        }
+        assertEquals("disconnect", fc.endMeta.endedBy);
+        assertEquals(2, fc.endMeta.segments);
+        assertEquals(0, f.writer.lateBytes());
+    }
+
+    static Set<Integer> segmentsOf(FileContents fc) {
+        Set<Integer> out = new TreeSet<Integer>();
+        for (RecordingReader.Block b : fc.blocks) {
+            if (b.type <= RewindFormat.BLOCK_HEADER) {
+                out.add(b.segment);
+            }
+        }
+        return out;
+    }
+
     private static void trackRecordGameStart(Fixture f) {
-        f.trackRecord(RewindFormat.TAG_GAME_START, new byte[0], 0);
+        f.trackRecord(RewindFormat.TAG_GAME_START, new byte[]{0}, 1); // backUs 0: started at the active edge
     }
 
     private static void assertHeader(FileContents fc, int segment, int source, List<byte[]> packets) {
