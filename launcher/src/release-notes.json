@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.94",
+    "channel": "dev",
+    "date": "2026-11-17",
+    "sections": [
+      ["New", [
+        "Motion Blur (Prism): the world blurs along the direction you turn the camera. Your held item, the HUD and menus stay sharp. One Strength slider. Off by default. If you also use PolyBlur, turn one of them off."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.93",
     "channel": "dev",
     "date": "2026-11-16",

@@ -516,23 +516,33 @@ public final class Bridge {
     private static byte[] shot(int waitMs) throws Exception {
         onMain(() -> null);
         if (waitMs > 0) Thread.sleep(Math.min(waitMs, 10_000));
-        Object[] frame = onMain(() -> {
-            if (!OpenGlHelper.isFramebufferEnabled()) {
-                throw new Refused("framebuffers are off in video settings; screenshots need them");
-            }
-            Framebuffer fb = mc().getFramebuffer();
-            int w = fb.framebufferWidth;
-            int h = fb.framebufferHeight;
-            // At this point in the loop the main framebuffer still holds the whole previous frame.
-            IntBuffer buf = BufferUtils.createIntBuffer(w * h);
-            fb.bindFramebuffer(false);
-            GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
-            GL11.glReadPixels(0, 0, w, h, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buf);
-            fb.unbindFramebuffer();
-            int[] px = new int[w * h];
-            buf.get(px);
-            return new Object[]{w, h, px};
-        });
+        return png(onMain(Bridge::readFrame));
+    }
+
+    /**
+     * The main framebuffer as {width, height, BGRA pixels bottom row first}. Game thread only: called from a scheduled
+     * task, where the main framebuffer still holds the whole previous frame (Motion Blur's {@code mb-shot} relies on it).
+     */
+    static Object[] readFrame() {
+        if (!OpenGlHelper.isFramebufferEnabled()) {
+            throw new Refused("framebuffers are off in video settings; screenshots need them");
+        }
+        Framebuffer fb = mc().getFramebuffer();
+        int w = fb.framebufferWidth;
+        int h = fb.framebufferHeight;
+        // At this point in the loop the main framebuffer still holds the whole previous frame.
+        IntBuffer buf = BufferUtils.createIntBuffer(w * h);
+        fb.bindFramebuffer(false);
+        GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
+        GL11.glReadPixels(0, 0, w, h, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+        fb.unbindFramebuffer();
+        int[] px = new int[w * h];
+        buf.get(px);
+        return new Object[]{w, h, px};
+    }
+
+    /** A {@link #readFrame} result as PNG (any thread). */
+    static byte[] png(Object[] frame) throws Exception {
         int w = (Integer) frame[0];
         int h = (Integer) frame[1];
         int[] px = (int[]) frame[2];

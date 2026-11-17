@@ -6,6 +6,7 @@ because the agent account cannot open windows. cobdev stages the game files wher
 read them and talks to the in-game control API on 127.0.0.1. See tools/devloop/README.md.
 """
 import argparse
+import base64
 import hashlib
 import json
 import math
@@ -4767,6 +4768,340 @@ def smoke_team_upgrades_look(s, cfg, mode):
         tu_clear_board(s)
 
 
+# Motion Blur (cycle 2026-11-17-motion-blur, PLAN Phase 3, step MB). Real names: ornithe/src MotionBlur.record() (read
+# by the bridge's mb-* probes) and MotionBlur.release(); ClientSettings motionBlur, mbStrength (1-9, default 5), fpsEnabled,
+# cpsEnabled, pingEnabled. The fixture is a wool checkerboard at fixed coordinates in the smoke's own save, the camera
+# posed exactly by mb-pose; every field, the GUI scale and the board are put back at the end.
+MB = "com.bedwarsqol.feature.MotionBlur"
+MB_BOARD = (-10, 4, 8, 10, 12, 8)  # x0 y0 z0 x1 y1 z1: 21 x 9 cells, its face 7.5 blocks ahead of MB_START
+MB_START = "/tp @p 0.5 4 0.5 0 0"
+MB_CUT = "/tp @p ~0.5 ~ ~ ~90 ~"  # a real server position correction (S08): half a block and 90 degrees
+MB_STRENGTH = 5
+MB_HUD_OFF = ("fpsEnabled", "cpsEnabled", "pingEnabled")  # HUD text that changes from frame to frame
+MB_TURN = (-15, 15, 200)  # mb-turn FROM TO DEG/S: 150 ms
+MB_SHOT_AT = 0.075  # s into the turn: about 0.83 degrees of smear at strength 5
+MB_REST = 0.3  # s at rest before a rest frame
+MB_MIN_DETAIL = 50.0  # squared luma steps: the board scores hundreds, sky and flat grass a few
+MB_MIN_SHARE = 0.25  # of the detail region: dark wool and light wool each
+
+
+def mb_board_commands():
+    """One /fill of white wool over the board, then a /setblock of black wool on every cell whose x + y is odd."""
+    x0, y0, z, x1, y1, _ = MB_BOARD
+    cmds = ["/fill %d %d %d %d %d %d minecraft:wool 0" % MB_BOARD]
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if (x + y) % 2:
+                cmds.append("/setblock %d %d %d minecraft:wool 15" % (x, y, z))
+    return cmds
+
+
+def mb_board_clear():
+    """The board's cells back to air, as the flat world has them (smoke_world clears its area up to y 9 only)."""
+    return "/fill %d %d %d %d %d %d minecraft:air" % MB_BOARD
+
+
+def mb_region(w, h):
+    """The detail region (x0, y0, x1, y1), exclusive: the middle 50% of the width, 15-55% of the height."""
+    return int(round(w * 0.25)), int(round(h * 0.15)), int(round(w * 0.75)), int(round(h * 0.55))
+
+
+def mb_luma_grid(img, rect):
+    """Rec. 601 luma of every pixel in rect, row by row, as exact integers in thousandths (0-255000)."""
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    return [[299 * r[3 * x] + 587 * r[3 * x + 1] + 114 * r[3 * x + 2] for x in range(x0, x1)] for r in img[2][y0:y1]]
+
+
+def mb_detail(img, rect):
+    """(horizontal, vertical) detail in rect: the mean squared luma difference between neighbours along each axis.
+    Squared, not L1: blurring an isolated edge spreads the same total step over several pixels, which L1 does not see."""
+    g = mb_luma_grid(img, rect)
+    hs = [(row[i + 1] - row[i]) ** 2 for row in g for i in range(len(row) - 1)]
+    vs = [(b[i] - a[i]) ** 2 for a, b in zip(g, g[1:]) for i in range(len(a))]
+    return (sum(hs) / len(hs) / 1e6 if hs else 0.0), (sum(vs) / len(vs) / 1e6 if vs else 0.0)
+
+
+def mb_luma(img, rect):
+    """(mean, variance) of the luma in rect; exact, so a flat frame's variance is exactly 0."""
+    vals = [v for row in mb_luma_grid(img, rect) for v in row]
+    n = len(vals)
+    if not n:
+        return 0.0, 0.0
+    s1, s2 = sum(vals), sum(v * v for v in vals)
+    return s1 / n / 1000.0, (n * s2 - s1 * s1) / (n * n) / 1e6
+
+
+def mb_fixture(img, rect, min_detail=MB_MIN_DETAIL, min_share=MB_MIN_SHARE):
+    """(ok, detail): the board fills the detail region: detail along both axes, and both dark wool (every channel
+    under 70) and light neutral wool (every channel over 140, within 40 of each other) each cover min_share of it.
+    Sky and grass are neither, so a frame that missed the board fails as "fixture not in view"."""
+    dh, dv = mb_detail(img, rect)
+    x0, y0, x1, y1 = clip_rect(rect, img)
+    n = dark = light = 0
+    for r in img[2][y0:y1]:
+        for x in range(x0, x1):
+            p = r[3 * x:3 * x + 3]
+            n += 1
+            if max(p) < 70:
+                dark += 1
+            elif min(p) > 140 and max(p) - min(p) < 40:
+                light += 1
+    detail = {"horizontal": round(dh, 1), "vertical": round(dv, 1), "dark": round(dark / n, 3) if n else 0,
+              "light": round(light / n, 3) if n else 0}
+    ok = n > 0 and min(dh, dv) >= min_detail and dark >= min_share * n and light >= min_share * n
+    return ok, detail
+
+
+def mb_turn_checks(turn, rest):
+    """Step 4's verdict on the turn frame T against the same pose at rest R*, as (name, ok, detail)."""
+    if turn[:2] != rest[:2]:
+        return [("turn and rest frames are the same size", False, "%sx%s vs %sx%s" % (turn[:2] + rest[:2]))]
+    rect = mb_region(rest[0], rest[1])
+    th, tv = mb_detail(turn, rect)
+    rh, rv = mb_detail(rest, rect)
+    tm, tvar = mb_luma(turn, rect)
+    rm, _ = mb_luma(rest, rect)
+
+    def pct(a, b):
+        return "%.1f vs %.1f at rest (%+.0f%%)" % (a, b, (a / b - 1) * 100 if b else 0)
+    return [("horizontal detail while turning is at most 0.8 x the same pose at rest", th <= 0.8 * rh, pct(th, rh)),
+            ("vertical detail while turning is at least 0.8 x at rest (directional control)", tv >= 0.8 * rv,
+             pct(tv, rv)),
+            ("mean luminance within 10% of rest", abs(tm - rm) <= 0.1 * rm, "%.1f vs %.1f" % (tm, rm)),
+            ("turn frame is not blank (luma variance > 0)", tvar > 0, "variance %.1f" % tvar)]
+
+
+def mb_hud_rects(hb):
+    """Device-px rects that must not change when only Motion Blur is switched: the hotbar, the crosshair (1 GUI px
+    margin) and every shown probe hud-boxes box with its pad, as (name, rect)."""
+    sc, sw, sh = hb["scale"], hb["sw"], hb["sh"]
+    rects = [("hotbar", gui_rect((sw // 2 - 92, sh - 23, 184, 23), sc)),
+             ("crosshair", gui_rect((sw // 2 - 8, sh // 2 - 8, 18, 18), sc))]
+    for b in hb.get("boxes") or []:
+        if b.get("shown"):
+            pad = b.get("pad") or 0
+            rects.append((b["id"], gui_rect((b["x"] - pad, b["y"] - pad, b["w"] + 2 * pad, b["h"] + 2 * pad), sc)))
+    return rects
+
+
+def mb_identical(a, b, rects):
+    """[(name, changed pixel count)] per rect, exact (any channel step counts); None when the frames differ in size."""
+    if a[:2] != b[:2]:
+        return [(name, None) for name, _ in rects]
+    return [(name, len(changed_mask(a, b, rect, thresh=0))) for name, rect in rects]
+
+
+def mb_cut_frame(frames, before):
+    """(frame, why): from an mb-record log, the first frame whose recorded cutSerial is past `before`, the count before
+    the correction. It is the reset frame only when the log also holds the frame right before it."""
+    prev = None
+    for f in frames:
+        if (f.get("cutSerial") or 0) > before:
+            if prev is None:
+                return None, "the log starts after the correction"
+            if f.get("frameId") != prev.get("frameId", -2) + 1:
+                return None, "frames %s-%s were skipped by the log, so the reset frame may be among them" % (
+                    prev.get("frameId", -2) + 1, (f.get("frameId") or 0) - 1)
+            return f, "frame %s" % f.get("frameId")
+        prev = f
+    return None, "no frame saw a new cut serial (%d frames logged)" % len(frames)
+
+
+class MbRun:
+    """One step MB run: the fields it set, the GUI scale and the board, all put back by `restore`."""
+
+    def __init__(self, s, cfg):
+        self.s, self.cfg, self.saved, self.scale, self.board = s, cfg, {}, None, False
+
+    def set(self, name, value):
+        path = self.cfg + "." + name
+        if path not in self.saved:
+            self.saved[path] = self.s.field(path).get("value")
+        self.s.field(path, value)
+
+    def pose(self, yaw, pitch=0):
+        return self.s.probe("mb-pose", yaw, pitch)
+
+    def shot(self, tag, stop=False):
+        """mb-shot: (reply with the record, image) of one frame; the PNG goes beside the other smoke shots."""
+        r = self.s.probe("mb-shot", *(["stopTurn"] if stop else []))
+        data = base64.b64decode(r.pop("png"))
+        path = os.path.join(SHOTS, "smoke-mb-%s-%s-%03d.png" % (tag, time.strftime("%Y%m%d-%H%M%S"),
+                                                               int(time.time() * 1000) % 1000))
+        os.makedirs(SHOTS, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        self.s.step["shots"].append(path)
+        return r, png_read(data)
+
+    def restore(self):
+        s = self.s
+        s.try_call("/probe", post={"name": "mb-record", "args": "log"})  # ends a frame log left running
+        s.try_call("/probe", post={"name": "mb-pose", "args": ARG_SEP.join(["0", "0"])})  # ends a turn left running
+        s.try_call("/command", post={"command": MB_START})
+        if self.board:
+            s.try_call("/command", post={"command": mb_board_clear()})
+        for path, value in self.saved.items():
+            s.try_call("/field", post={"path": path, "value": str(value).lower() if isinstance(value, bool) else str(value)})
+        if self.cfg + ".motionBlur" in self.saved and self.saved[self.cfg + ".motionBlur"] in (False, "false"):
+            s.try_call("/invoke", post={"path": MB + ".release", "args": ""})  # what switching it off in the sheet does
+        self.saved = {}
+        s.try_call("/command", post={"command": "/gamerule sendCommandFeedback true"})
+        if self.scale is not None:
+            s.try_call("/scale", {"n": self.scale})
+
+
+def mb_fixture_step(run):
+    """Step 1: the frozen scene, the board, the start pose; the guard that the board fills the detail region."""
+    s = run.s
+    run.scale = (s.status() or {}).get("guiScaleSetting")
+    s.call("/scale", {"n": 2})
+    for c in ("/gamerule sendCommandFeedback false", "/gamerule doDaylightCycle false", "/time set 6000",
+              "/weather clear", "/kill @e[type=!Player]", "/effect @p clear"):
+        s.cmd(c)
+    run.board = True
+    for c in mb_board_commands():
+        s.call("/command", post={"command": c})  # 95 commands: no per-command wait
+    s.cmd(MB_START)
+    for f in MB_HUD_OFF:
+        run.set(f, False)
+    run.set("mbStrength", MB_STRENGTH)
+    run.set("motionBlur", False)  # each later step switches it on itself
+    run.pose(0, 0)
+    s.probe("chat-clear")
+    s.call("/close")
+    time.sleep(1.5)  # the board's chunk re-renders
+    fov, _ = s.try_call("/probe", post={"name": "fov"})
+    s.step["fov"] = fov
+    r, img = run.shot("start")
+    s.step["display"] = [img[0], img[1]]
+    ok, detail = mb_fixture(img, mb_region(img[0], img[1]))
+    s.step["fixture"] = detail
+    return s.check("fixture in view: the board fills the detail region at rest", ok, detail)
+
+
+def mb_cut(run):
+    """Step 2 (B2 live, A5): a real S08 from /tp bumps cutSerial and the next frame resets, unblurred."""
+    s = run.s
+    s.begin("MB-cut", "a real position correction (/tp, S08) resets: the next frame is unblurred")
+    run.set("motionBlur", True)
+    s.cmd(MB_START)
+    run.pose(0, 0)
+    time.sleep(MB_REST)
+    before = s.probe("mb-record")
+    s.probe("mb-record", "watch")
+    try:
+        s.cmd(MB_CUT)
+        time.sleep(0.2)
+    finally:
+        frames = s.probe("mb-record", "log").get("frames") or []
+    serial = before["cutSerialNow"]
+    now = frames[-1].get("cutSerialNow") if frames else None
+    s.step["framesLogged"] = len(frames)
+    s.check("cutSerial rose", now is not None and now > serial, "%s -> %s" % (serial, now))
+    frame, why = mb_cut_frame(frames, serial)
+    s.step["resetFrame"] = frame
+    if s.check("the frame right after the correction was logged", frame is not None, why):
+        s.check("resetReason = position-correction on that frame", frame.get("resetReason") == "position-correction",
+                frame.get("resetReason"))
+        s.check("smearPx = 0 and worldPassRan = false on that frame",
+                frame.get("smearPx") == 0 and frame.get("worldPassRan") is False,
+                "smearPx %s, worldPassRan %s" % (frame.get("smearPx"), frame.get("worldPassRan")))
+    s.cmd(MB_START)  # back to the start (one more correction)
+    run.pose(0, 0)
+
+
+def mb_still(run):
+    """Step 3: at rest with the module on, no pass and no GL entry for 1 s; the HUD is pixel-identical on and off."""
+    s = run.s
+    s.begin("MB-still", "camera still: no pass and no GL entry over 1 s; HUD pixel-identical on/off")
+    run.set("motionBlur", True)
+    run.pose(0, 0)
+    time.sleep(1.0)  # past the last correction's reset and any tail
+    reads = []
+    for _ in range(10):
+        reads.append(s.probe("mb-record"))
+        time.sleep(0.1)
+    keys = ("frameId", "active", "worldPassRan", "glEntries", "smearPx", "fps")
+    s.step["reads"] = [{k: r.get(k) for k in keys} for r in reads]
+    s.check("frames were drawn meanwhile (the hook ran)", reads[-1]["frameId"] > reads[0]["frameId"],
+            "frameId %s -> %s" % (reads[0]["frameId"], reads[-1]["frameId"]))
+    s.check("active = false on every read", all(r.get("active") is False for r in reads))
+    s.check("worldPassRan = false on every read", all(r.get("worldPassRan") is False for r in reads))
+    s.check("glEntries unchanged on every read", all(r.get("glEntries") == reads[0]["glEntries"] for r in reads),
+            [r.get("glEntries") for r in reads])
+    s.note("FPS at rest", [r.get("fps") for r in reads])
+    _, on = run.shot("still-on")
+    run.set("motionBlur", False)
+    time.sleep(MB_REST)
+    _, off = run.shot("still-off")
+    run.set("motionBlur", True)
+    counts = mb_identical(on, off, mb_hud_rects(s.probe("hud-boxes")))
+    s.step["hudRegions"] = counts
+    s.check("the hotbar, the crosshair and every shown HUD box are pixel-identical on/off",
+            all(n == 0 for _, n in counts), counts)
+    if on[:2] == off[:2]:
+        n = len(changed_mask(on, off, thresh=0))
+        s.note("whole-frame difference on/off", "%d px (%.5f)" % (n, n / float(on[0] * on[1])))
+
+
+def mb_turn(run):
+    """Step 4 (A10): a frame mid-turn T against the same pose at rest R*: the board smears along the turn only."""
+    s = run.s
+    s.begin("MB-turn", "a turn smears the board horizontally, against the same pose at rest")
+    run.set("motionBlur", True)
+    frm, to, rate = MB_TURN
+    run.pose(frm, 0)
+    time.sleep(MB_REST)
+    s.probe("mb-turn", frm, to, rate)
+    time.sleep(MB_SHOT_AT)
+    t, turn = run.shot("turn", stop=True)
+    rec = t["record"]
+    yaw = rec["yaw"]
+    s.step["turnRecord"] = rec
+    s.check("T was taken mid-turn", t.get("turning") is True, "%s ms into the turn" % t.get("turnElapsedMs"))
+    s.check("T: smearPx > 0 and failed is null", (rec.get("smearPx") or 0) > 0 and rec.get("failed") is None,
+            "smearPx %s, taps %s, failed %s" % (rec.get("smearPx"), rec.get("taps"), rec.get("failed")))
+    s.check("T: the world pass ran on that frame", rec.get("worldPassRan") is True, rec.get("worldPassRan"))
+    run.pose(repr(float(yaw)), 0)
+    time.sleep(MB_REST)
+    r, rest = run.shot("rest")
+    rr = r["record"]
+    s.step["restRecord"] = rr
+    s.check("R*: worldPassRan = false and its recorded yaw is T's", rr.get("worldPassRan") is False and rr.get("yaw") == yaw,
+            "worldPassRan %s, yaw %r vs %r" % (rr.get("worldPassRan"), rr.get("yaw"), yaw))
+    ok, detail = mb_fixture(rest, mb_region(rest[0], rest[1]))
+    if not s.check("fixture in view at T's pose", ok, detail):
+        return
+    for name, ok, detail in mb_turn_checks(turn, rest):
+        s.check(name, ok, detail)
+    s.note("FPS while turning", t.get("fps"))
+
+
+def smoke_motion_blur(s, cfg):
+    s.begin("MB", "Motion Blur: wool board at fixed coordinates, start pose, frozen scene, FPS/CPS/Ping off")
+    if not cfg or not s.has(MB, "record"):
+        return s.unavailable(MB + ".record() is not in this build")
+    run = MbRun(s, cfg)
+    try:
+        try:
+            if not mb_fixture_step(run):
+                return
+        except ApiError as e:
+            if "unknown probe" in str(e):
+                return s.unavailable("the running bridge has no mb-* probes (stage a build with them)")
+            raise
+        for sub in (mb_cut, mb_still, mb_turn):
+            try:
+                sub(run)
+            except ForeignSave:
+                raise
+            except (ApiError, KeyError, TypeError, ValueError, IndexError) as e:
+                s.error(e)
+    finally:
+        run.restore()
+
+
 def cmd_smoke(args):
     wt = worktree(args)
     take_lock(wt, args.steal)
@@ -4798,12 +5133,17 @@ def cmd_smoke(args):
                   lambda: smoke_clutch(s, cfg_box.get("cfg")),
                   lambda: smoke_team_upgrades(s, cfg_box.get("cfg")),
                   lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode),
-                  lambda: smoke_edithud(s, cfg_box.get("cfg"), mode)]
+                  lambda: smoke_edithud(s, cfg_box.get("cfg"), mode),
+                  lambda: smoke_motion_blur(s, cfg_box.get("cfg"))]
         if args.only == "team-upgrades":
             steps = steps[:1] + [lambda: smoke_world(s),
                                  lambda: cfg_box.setdefault("cfg", find_config(s)),
                                  lambda: smoke_team_upgrades(s, cfg_box.get("cfg")),
                                  lambda: smoke_team_upgrades_look(s, cfg_box.get("cfg"), mode)]
+        elif args.only == "motion-blur":
+            steps = steps[:1] + [lambda: smoke_world(s),
+                                 lambda: cfg_box.setdefault("cfg", find_config(s)),
+                                 lambda: smoke_motion_blur(s, cfg_box.get("cfg"))]
     for step in steps:
         try:
             step()
@@ -4950,17 +5290,20 @@ def build_parser():
                                 " overlay items: overlay-boxes,"
                                 " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
                                 " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore,"
-                                " chat-defaults")
+                                " chat-defaults; motion blur: mb-record [watch|log], mb-turn FROM TO DEG/S,"
+                                " mb-pose YAW PITCH, mb-shot [stopTurn]")
     p.add_argument("name")
     p.add_argument("args", nargs="*")
-    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch, Team Upgrades, Edit HUD),"
+    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6, HUD look, Clutch, Team Upgrades, Edit HUD,"
+                                " Motion Blur),"
                                 " report in ~/.cache/cobdev/smoke")
     p.add_argument("--prod", action="store_true", help="boot the release jar in the production layout")
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
-    p.add_argument("--only", choices=["overlays", "team-upgrades"],
-                   help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look)")
+    p.add_argument("--only", choices=["overlays", "team-upgrades", "motion-blur"],
+                   help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look;"
+                        " motion-blur: MB, MB-cut, MB-still, MB-turn)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

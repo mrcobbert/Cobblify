@@ -16,14 +16,15 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Fullbright, Item Physics, 1.7 Animations and Particles: Visuals modules of the Ornithe sheet (Forge and Lunar do
- * not list them; see SheetPlatformOnlyTest), all off by default with their rows at the agreed defaults, also for a
- * config saved before they existed; every row reads and writes its {@link ClientSettings} field.
+ * Fullbright, Item Physics, 1.7 Animations, Particles and Motion Blur: Visuals modules of the Ornithe sheet (Forge
+ * and Lunar do not list them; see SheetPlatformOnlyTest), all off by default with their rows at the agreed defaults,
+ * also for a config saved before they existed; every row reads and writes its {@link ClientSettings} field.
  */
 public class SettingsBindingsVisualsTest {
 
     private static final String[] TOGGLES = {"fullbright", "itemPhysics", "oldAnimations", "oaBlockHit", "oaItemPosition",
-            "oaSmoothSneak", "oaHearts", "oaRedArmor", "particles", "ptAlwaysCrit", "ptHideOwnPotion", "ptHideBlockBreak"};
+            "oaSmoothSneak", "oaHearts", "oaRedArmor", "particles", "ptAlwaysCrit", "ptHideOwnPotion", "ptHideBlockBreak",
+            "motionBlur"};
 
     private String savedDir;
     private ClientSettings savedConfig;
@@ -49,6 +50,7 @@ public class SettingsBindingsVisualsTest {
         SettingsBindings values = new SettingsBindings();
         for (String id : TOGGLES) assertTrue(id, SheetSchema.shows(values, id));
         assertTrue(SheetSchema.shows(values, "ptMultiplier"));
+        assertTrue(SheetSchema.shows(values, "mbStrength"));
     }
 
     @Test
@@ -70,11 +72,15 @@ public class SettingsBindingsVisualsTest {
             assertTrue(c.ptHideOwnPotion);
             assertFalse(c.ptHideBlockBreak);
             assertEquals(2, c.ptMultiplier);
+            assertFalse(c.motionBlur);
+            assertEquals(5, c.mbStrength);
         }
         SettingsBindings values = new SettingsBindings();
         assertFalse(values.on("fullbright"));
         assertTrue(values.on("oaRedArmor"));
         assertEquals("2x", values.choice("ptMultiplier"));
+        assertFalse(values.on("motionBlur"));
+        assertEquals(5.0, values.number("mbStrength"), 0);
     }
 
     @Test
@@ -116,6 +122,39 @@ public class SettingsBindingsVisualsTest {
         c = new Gson().fromJson("{\"ptMultiplier\":-1}", ClientSettings.class);
         c.sanitize();
         assertEquals(1, c.ptMultiplier);
+    }
+
+    @Test
+    public void motionBlurStrengthReadsAndWritesOneToNine() {
+        SettingsBindings values = new SettingsBindings();
+        values.setNumber("mbStrength", 9);
+        assertEquals(9, BedwarsQol.config.mbStrength);
+        assertEquals(9.0, values.number("mbStrength"), 0);
+        values.setNumber("mbStrength", 1);
+        assertEquals(1, BedwarsQol.config.mbStrength);
+        assertEquals(1.0, values.number("mbStrength"), 0);
+        values.setNumber("mbStrength", 6.4);
+        assertEquals("rounds to the step", 6, BedwarsQol.config.mbStrength);
+        values.setNumber("mbStrength", 40);
+        assertEquals("held to 1..9", 9, BedwarsQol.config.mbStrength);
+        values.setNumber("mbStrength", -3);
+        assertEquals(1, BedwarsQol.config.mbStrength);
+        BedwarsQol.config.mbStrength = 12;
+        assertEquals(9.0, values.number("mbStrength"), 0);
+    }
+
+    @Test
+    public void sanitizeClampsTheMotionBlurStrength() {
+        ClientSettings c = new Gson().fromJson("{\"mbStrength\":0}", ClientSettings.class);
+        c.sanitize();
+        assertEquals(1, c.mbStrength);
+        c = new Gson().fromJson("{\"mbStrength\":12}", ClientSettings.class);
+        c.sanitize();
+        assertEquals(9, c.mbStrength);
+        c = new Gson().fromJson("{\"mbStrength\":7,\"motionBlur\":true}", ClientSettings.class);
+        c.sanitize();
+        assertEquals(7, c.mbStrength);
+        assertTrue(c.motionBlur);
     }
 
     private static boolean field(ClientSettings c, String id) {

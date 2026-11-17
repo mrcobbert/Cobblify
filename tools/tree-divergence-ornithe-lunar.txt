@@ -203,6 +203,12 @@ one-sided main ornithe com/bedwarsqol/mixin/RenderPlayerOldAnimMixin.java
 # 1.7 Animations shares ItemRendererMixin with Hand Position so the two keep a fixed order.
 divergent main com/bedwarsqol/mixin/ItemRendererMixin.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsVisualsTest.java
+# Motion Blur: the Ornithe-only world pass (hook W), its GL helper and the camera-cut glue test; hook C
+# lives in the one-sided NetHandlerPlayClientMixin.
+one-sided main ornithe com/bedwarsqol/feature/MotionBlur.java
+one-sided main ornithe com/bedwarsqol/feature/MotionBlurGl.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererMotionBlurMixin.java
+one-sided test ornithe com/bedwarsqol/feature/MotionBlurCutTest.java
 
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java

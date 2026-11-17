@@ -2,6 +2,8 @@ package com.bedwarsqol.gui;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.feature.MotionBlur;
+import com.bedwarsqol.feature.MotionBlurRules;
 import com.bedwarsqol.feature.ParticleRules;
 import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.feature.SessionStatsWatch;
@@ -27,8 +29,8 @@ import java.util.Map;
  * The settings sheet's rows on this platform, read from and written to {@link ClientSettings}. Every write saves.
  * The Ornithe tree has every module in {@link SheetSchema} except Lunar's top-level Inc, Bed and BG Alert, and it is
  * the platform that lists the platform-only Zoom, No Hurt Cam, Toggle Sprint, Dynamic FOV, Team Upgrades, FPS, CPS,
- * Ping, Fullbright, Item Physics, 1.7 Animations, Particles and the per-item Background rows, which read and write
- * their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
+ * Ping, Fullbright, Item Physics, 1.7 Animations, Particles, Motion Blur and the per-item Background rows, which read
+ * and write their HUD item ({@link SheetSchema#hudItem}) through {@link HudModules}.
  */
 final class SettingsBindings implements SheetValues {
 
@@ -126,6 +128,7 @@ final class SettingsBindings implements SheetValues {
                 || "oaHearts".equals(id) || "oaRedArmor".equals(id)
                 || "ptAlwaysCrit".equals(id) || "ptHideOwnPotion".equals(id) || "ptHideBlockBreak".equals(id)
                 || "ptMultiplier".equals(id)
+                || "motionBlur".equals(id) || "mbStrength".equals(id)
                 || SheetSchema.hudItem(id) != null || SheetLayout.RESET_POSITIONS_ID.equals(id);
     }
 
@@ -177,6 +180,7 @@ final class SettingsBindings implements SheetValues {
             case "oaHearts": return c.oaHearts;
             case "oaRedArmor": return c.oaRedArmor;
             case "particles": return c.particles;
+            case "motionBlur": return c.motionBlur;
             case "ptAlwaysCrit": return c.ptAlwaysCrit;
             case "ptHideOwnPotion": return c.ptHideOwnPotion;
             case "ptHideBlockBreak": return c.ptHideBlockBreak;
@@ -277,6 +281,10 @@ final class SettingsBindings implements SheetValues {
             case "oaHearts": c.oaHearts = v; break;
             case "oaRedArmor": c.oaRedArmor = v; break;
             case "particles": c.particles = v; break;
+            case "motionBlur":
+                c.motionBlur = v;
+                if (!v) MotionBlur.release(); // frees the texture and program; the hook then never touches GL
+                break;
             case "ptAlwaysCrit": c.ptAlwaysCrit = v; break;
             case "ptHideOwnPotion": c.ptHideOwnPotion = v; break;
             case "ptHideBlockBreak": c.ptHideBlockBreak = v; break;
@@ -374,6 +382,7 @@ final class SettingsBindings implements SheetValues {
             case "handZ": return c.handPosZ;
             case "handScale": return c.handScale;
             case "stackWindow": return c.chatStackWindowSec;
+            case "mbStrength": return MotionBlurRules.clampStrength(c.mbStrength);
             default: return 0;
         }
     }
@@ -388,6 +397,7 @@ final class SettingsBindings implements SheetValues {
             case "handZ": c.handPosZ = f; break;
             case "handScale": c.handScale = f; break;
             case "stackWindow": c.chatStackWindowSec = f; break;
+            case "mbStrength": c.mbStrength = MotionBlurRules.clampStrength((int) Math.round(v)); break;
             default: break;
         }
     }
