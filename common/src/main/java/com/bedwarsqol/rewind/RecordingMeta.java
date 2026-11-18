@@ -9,7 +9,7 @@ import java.util.List;
 
 /**
  * Per-game metadata: the {@code <id>.json} gallery cache and the END block's JSON. Field names are the
- * on-disk keys (format v1). A missing key keeps the default below; unknown keys are ignored.
+ * on-disk keys (the same in formats v1 and v2). A missing key keeps the default below; unknown keys are ignored.
  *
  * <p>Uses Gson (shipped with Minecraft 1.8.9, as {@code LobbyExport} does). {@link RecordingReader} and
  * {@link RewindCheck} never load this class, so the G6 check still runs on the JDK alone.
@@ -40,6 +40,7 @@ public final class RecordingMeta {
         }
     }
 
+    /** The {@code .cbr}'s format version: 2 for a new recording; a recovered v1 prefix keeps 1 (the header decides). */
     public int format = RewindFormat.FORMAT_VERSION;
     /** {@code yyyyMMdd-HHmmss-xxxx}; never a name, server or chat. */
     public String id;

@@ -35,6 +35,8 @@ public class RewindCheckTest {
         boolean key = true;
         boolean secondSegmentStartsWithChat = false;
         boolean tornTail = false;
+        /** Format v2: one record of each extension tag (and one unknown extension tag) in each TRACK block. */
+        boolean ext = false;
     }
 
     private File write(Spec s) throws IOException {
@@ -71,6 +73,14 @@ public class RewindCheckTest {
             t.appendTrack(origin + 60, RewindFormat.TAG_CAMERA, enc.buffer(), 0, n);
             n = enc.info(RewindFormat.INFO_MAP, FAKE_SERVER);
             t.appendTrack(origin + 61, RewindFormat.TAG_INFO, enc.buffer(), 0, n);
+            if (s.ext) {
+                for (RecordingFormatV2Test.Rec r : RecordingFormatV2Test.extRecords(0)) {
+                    t.appendTrack(origin + 62, r.tag, r.appended, 0, r.appended.length);
+                }
+                ExtCodec c = new ExtCodec();
+                int m = c.chatInput(FAKE_CHAT + FAKE_NAME, 0);
+                t.appendTrack(origin + 63, 0x7F, c.buffer(), 0, m);
+            }
             if (seg == 1) {
                 n = enc.marker(RewindFormat.MARKER_DEATH);
                 t.appendTrack(origin + 70, RewindFormat.TAG_MARKER, enc.buffer(), 0, n);
@@ -201,5 +211,44 @@ public class RewindCheckTest {
         }
         int code = RewindCheck.run(new String[]{notOurs.getPath()}, ps);
         assertTrue((code & RewindCheck.FAIL_TORN_TAIL) != 0 && (code & RewindCheck.FAIL_INCOMPLETE) != 0);
+    }
+
+    /** Format v2: the line says the version and counts each extension tag; a v1 file says 1 and counts none. */
+    @Test
+    public void aV2RecordingPassesAndCountsEveryExtensionTag() throws IOException {
+        Spec spec = new Spec();
+        spec.ext = true;
+        File f = write(spec);
+        String[] r = run(f);
+        assertEquals(r[1], "0", r[0]);
+        String line = r[1].trim();
+        assertTrue(line, line.matches("([a-zA-Z0-9]+=(\\d+|true|false))( [a-zA-Z0-9]+=(\\d+|true|false))*"));
+        assertFalse(line.contains(FAKE_NAME));
+        assertFalse(line.contains(FAKE_CHAT));
+        assertFalse(line.contains(FAKE_SERVER));
+        assertTrue(line, line.contains(" formatVersion=2"));
+        for (int tag : RewindFormat.EXT_TAGS) {
+            assertTrue(line, line.contains(" ext" + RewindFormat.extName(tag) + "=2 "));
+        }
+        assertTrue(line, line.contains(" extUnknown=2 "));
+        assertTrue(line, line.contains("trackTicks=4"));
+        assertTrue(line, line.contains("cameraSamples=2"));
+        RewindCheck.Summary s = RewindCheck.summarize(f);
+        assertEquals(2, s.extCount(RewindFormat.TAG_TAP));
+        assertEquals(2, s.extUnknown);
+
+        // The same file with a v1 header: version 1, nothing counted.
+        File v1 = write(new Spec());
+        byte[] b = java.nio.file.Files.readAllBytes(v1.toPath());
+        RewindFormat.putShort(b, 8, 1);
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(b, 0, 24);
+        RewindFormat.putInt(b, 24, (int) crc.getValue());
+        java.nio.file.Files.write(v1.toPath(), b);
+        String[] r1 = run(v1);
+        assertEquals(r1[1], "0", r1[0]);
+        assertTrue(r1[1], r1[1].contains(" formatVersion=1"));
+        assertTrue(r1[1], r1[1].contains(" extTickHead=0"));
+        assertTrue(r1[1], r1[1].contains(" extUnknown=0"));
     }
 }

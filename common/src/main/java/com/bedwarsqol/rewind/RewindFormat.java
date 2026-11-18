@@ -3,13 +3,19 @@ package com.bedwarsqol.rewind;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Constants and primitive codecs of the Rewind disk format v1 ({@code .cbr}). This is R2's contract:
+ * Constants and primitive codecs of the Rewind disk format ({@code .cbr}). This is R2's contract:
  * change nothing here without bumping {@link #FORMAT_VERSION}.
+ *
+ * <p><b>Format v2</b> is v1 plus additive TRACK records: every block, NET record, HEADER, INDEX, END and every v1
+ * TRACK tag (0x01-0x07) is byte for byte what v1 writes; tags at or above {@link #EXT_TAG_MIN} are length-prefixed
+ * extension records (see "format v2: extension records" below). A reader accepts versions 1 and 2
+ * ({@link #supportedVersion}); a writer always writes {@link #FORMAT_VERSION}; recovery finalizes a prefix in the
+ * version its header names.
  *
  * <p>Encoding: big-endian; protocol varints (LEB128, at most 5 bytes for a varint, 10 for a varint64);
  * strings are a varint byte length then UTF-8.
  *
- * <p><b>File header</b> (28 B): magic {@code 43 42 52 57 4E 44 31 0A}, u16 formatVersion=1, u16 flags=0,
+ * <p><b>File header</b> (28 B): magic {@code 43 42 52 57 4E 44 31 0A}, u16 formatVersion (1 or 2), u16 flags=0,
  * u32 protocol=47, i64 baseEpochMs (wall clock at timeUs 0), u32 CRC32 of bytes 0-23.
  *
  * <p><b>Block</b> (32 B header + payload): "RWB1" | u8 type | u8 codec (0 stored, 1 raw deflate) |
@@ -36,7 +42,8 @@ public final class RewindFormat {
 
     // ---- file header ----
     private static final byte[] FILE_MAGIC = {0x43, 0x42, 0x52, 0x57, 0x4E, 0x44, 0x31, 0x0A};
-    public static final int FORMAT_VERSION = 1;
+    /** The version this build writes: v1 + extension records. */
+    public static final int FORMAT_VERSION = 2;
     public static final int PROTOCOL = 47;
     public static final int FILE_HEADER_LENGTH = 28;
 
@@ -130,6 +137,304 @@ public final class RewindFormat {
 
     /** Longest string (in UTF-8 bytes) any TRACK INFO body may hold. */
     public static final int MAX_STRING_BYTES = 32767 * 3;
+
+    // ---- format v2: extension records ----
+    //
+    // A TRACK tag at or above EXT_TAG_MIN is an extension record: varint dtUs | u8 tag | varint len | body[len].
+    // The walker sizes any such tag from its length, known or not, so a later build can add a tag without a version
+    // bump and this build skips it; tags 0x08-0x1F stay invalid (no length to skip by). Every body is produced and
+    // decoded by ExtCodec; decoders ignore bytes after the fields they know, so a body may also grow at its end.
+    // Time: the TRACK clock, read when the event happens on the client thread. Sizes in comments are body bytes.
+
+    /** The original format: every v1 record. Still read; never written by this build. */
+    public static final int FORMAT_VERSION_1 = 1;
+    /** Lowest extension tag. */
+    public static final int EXT_TAG_MIN = 0x20;
+    /** Largest extension body; the producer's chunk (at most {@link #CHUNK_CAPACITY}) is the real bound. */
+    public static final int MAX_EXT_BODY_LENGTH = MAX_PACKET_LENGTH;
+
+    /**
+     * Body: varint {@code handled} (how many more of this segment's stored, client-thread-handled NET records had
+     * their handler run since the previous TICK_HEAD), then an optional u8 of {@code TICK_HEAD_*} flags, present only
+     * when a flag is set. Written at {@code Minecraft.runTick} HEAD, every tick of a recorded segment.
+     */
+    public static final int TAG_TICK_HEAD = 0x20;
+    /** Body: a serverbound packet as vanilla writes it, varint id + {@code writePacketData} bytes (C02 C07 C08 C09 C0A C0B C0D C0E C16). */
+    public static final int TAG_OUT = 0x21;
+    /** Body: u8 flags ({@link #DIG_HITTING}), i64 block position (protocol long), u8 face, i8 crack stage (-1 none, 0-9). */
+    public static final int TAG_DIG = 0x22;
+    /** Body: i64 position, varint old state id, varint new state id, u8 cause ({@code BLOCK_CAUSE_*}). */
+    public static final int TAG_BLOCK = 0x23;
+    /** Body: string name, f32 x, y, z, f32 volume, f32 pitch. */
+    public static final int TAG_SOUND = 0x24;
+    /** Body: u8 perspective (0-2), u8 {@code VIEW_*} flags, u8 screen kind ({@code SCREEN_*}). */
+    public static final int TAG_VIEW = 0x25;
+    /** Body: i16 dx, i16 dy: the cursor's offset from the screen centre in quarter GUI pixels. */
+    public static final int TAG_MOUSE = 0x26;
+    /** Body: string text, varint cursor. */
+    public static final int TAG_CHAT_INPUT = 0x27;
+    /** Body: f32 final world FOV in degrees. */
+    public static final int TAG_FOV = 0x28;
+    /** Body: varint {@code itemInUseCount} (0-72000; a bow draw or sword block starts at 72000). */
+    public static final int TAG_USE = 0x29;
+    /** Body: u8 slot ({@code INV_*}: 0-35 main, 36-39 armour boots to helmet, 40 cursor) + protocol-47 slot bytes. */
+    public static final int TAG_INV = 0x2A;
+    /** Body: varint n, then n x (u8 key ({@code SETTING_*}), u8 type ({@code SETTING_TYPE_*}), value). */
+    public static final int TAG_SETTINGS = 0x2B;
+    /** Body: i64 uuidMost, i64 uuidLeast, string name, string skin value, string skin signature (empty when none). */
+    public static final int TAG_IDENTITY = 0x2C;
+    /** Body: u8 {@code INPUT_*} bits. */
+    public static final int TAG_INPUT = 0x2D;
+    /** Body: u8 module id ({@code HUD_*}), u8 {@code HUD_FLAG_*} flags, then the module's values (HudModel). */
+    public static final int TAG_HUD = 0x2E;
+    /** Body: u8 window id, varint slot, protocol-47 slot bytes: one slot of the open window that is not the inventory. */
+    public static final int TAG_CONT = 0x2F;
+    /** Body: u8 button ({@link #TAP_LMB}, {@link #TAP_RMB}): a mouse press the Keystrokes HUD was told about. */
+    public static final int TAG_TAP = 0x30;
+
+    /** Every extension tag this build writes, in tag order. */
+    public static final int[] EXT_TAGS = {TAG_TICK_HEAD, TAG_OUT, TAG_DIG, TAG_BLOCK, TAG_SOUND, TAG_VIEW, TAG_MOUSE,
+            TAG_CHAT_INPUT, TAG_FOV, TAG_USE, TAG_INV, TAG_SETTINGS, TAG_IDENTITY, TAG_INPUT, TAG_HUD, TAG_CONT, TAG_TAP};
+
+    private static final String[] EXT_NAMES = {"TickHead", "Out", "Dig", "Block", "Sound", "View", "Mouse",
+            "ChatInput", "Fov", "Use", "Inv", "Settings", "Identity", "Input", "Hud", "Cont", "Tap"};
+
+    /** TICK_HEAD flag: the handled order is unknown at this head (ring overflow or a resync); use the arrival rule. */
+    public static final int TICK_HEAD_ORDER_UNKNOWN = 1;
+
+    /** DIG flags. */
+    public static final int DIG_HITTING = 1;
+
+    /** BLOCK causes. */
+    public static final int BLOCK_CAUSE_OTHER = 0;
+    /** The change happened while {@code PlayerControllerMP.onPlayerDestroyBlock} was on the stack. */
+    public static final int BLOCK_CAUSE_OWN_BREAK = 1;
+
+    /** VIEW flags. */
+    public static final int VIEW_HIDE_GUI = 1;
+    public static final int VIEW_F3 = 1 << 1;
+    /** The tab list is showing (vanilla's rule, {@code TabHudGate}'s answer). */
+    public static final int VIEW_TAB = 1 << 2;
+    public static final int VIEW_SMOOTH_CAMERA = 1 << 3;
+
+    /** VIEW screen kinds. */
+    public static final int SCREEN_NONE = 0;
+    public static final int SCREEN_CHAT = 1;
+    public static final int SCREEN_INVENTORY = 2;
+    /** A chest or generic container. */
+    public static final int SCREEN_CHEST = 3;
+    public static final int SCREEN_OTHER_CONTAINER = 4;
+    public static final int SCREEN_DEATH = 5;
+    public static final int SCREEN_ESC_MENU = 6;
+    public static final int SCREEN_COBBLIFY = 7;
+    public static final int SCREEN_OTHER = 8;
+
+    /** MOUSE units per GUI pixel. */
+    public static final int MOUSE_UNITS_PER_GUI_PX = 4;
+
+    /** INV slots: 0-35 main inventory (vanilla's {@code mainInventory} order), 36-39 armour, 40 the cursor stack. */
+    public static final int INV_MAIN_SLOTS = 36;
+    public static final int INV_ARMOR_FIRST = 36;
+    public static final int INV_CURSOR = 40;
+    public static final int INV_SLOTS = 41;
+
+    /** INPUT bits. */
+    public static final int INPUT_W = 1;
+    public static final int INPUT_A = 1 << 1;
+    public static final int INPUT_S = 1 << 2;
+    public static final int INPUT_D = 1 << 3;
+    public static final int INPUT_JUMP = 1 << 4;
+    public static final int INPUT_LMB = 1 << 5;
+    public static final int INPUT_RMB = 1 << 6;
+
+    /** TAP buttons (the INPUT bit index of the button). */
+    public static final int TAP_LMB = 5;
+    public static final int TAP_RMB = 6;
+
+    /** HUD flags. */
+    public static final int HUD_FLAG_ON_SCREEN = 1;
+
+    /**
+     * HUD module ids, in {@code HudModules.ids()} order (1-12), then the three vanilla overlays placed as HUD items
+     * (13-15, SETTINGS only: vanilla draws them). 0 is never an id.
+     */
+    public static final int HUD_POTION = 1;
+    public static final int HUD_ARMOR = 2;
+    public static final int HUD_INVENTORY = 3;
+    public static final int HUD_DIAMOND_TIMER = 4;
+    public static final int HUD_EMERALD_TIMER = 5;
+    public static final int HUD_KEYSTROKES = 6;
+    public static final int HUD_SESSION_STATS = 7;
+    public static final int HUD_HEIGHT_LIMIT = 8;
+    public static final int HUD_TEAM_UPGRADES = 9;
+    public static final int HUD_FPS = 10;
+    public static final int HUD_CPS = 11;
+    public static final int HUD_PING = 12;
+    public static final int HUD_ITEM_SCOREBOARD = 13;
+    public static final int HUD_ITEM_CHAT = 14;
+    public static final int HUD_ITEM_TAB_LIST = 15;
+
+    /** The HUD item string ids ({@code BedwarsHudRenderer.*_HUD}), index = id - 1. */
+    private static final String[] HUD_NAMES = {"potion", "armor", "inventory", "diamondtimer", "emeraldtimer",
+            "keystrokes", "sessionstats", "heightlimit", "teamupgrades", "fps", "cps", "ping", "scoreboard", "chat",
+            "tablist"};
+
+    /** SETTINGS value types. */
+    public static final int SETTING_TYPE_VARINT = 0;
+    public static final int SETTING_TYPE_F32 = 1;
+    public static final int SETTING_TYPE_STRING = 2;
+
+    // SETTINGS keys, below SETTING_HUD_BASE. Booleans are varint 0/1. Vanilla GameSettings and screen size:
+    public static final int SETTING_FOV = 1;               // f32 fovSetting
+    public static final int SETTING_GUI_SCALE = 2;         // guiScale
+    public static final int SETTING_VIEW_BOBBING = 3;
+    public static final int SETTING_SCALED_WIDTH = 4;      // ScaledResolution
+    public static final int SETTING_SCALED_HEIGHT = 5;
+    public static final int SETTING_DISPLAY_WIDTH = 6;     // displayWidth, displayHeight
+    public static final int SETTING_DISPLAY_HEIGHT = 7;
+    public static final int SETTING_PARTICLES_VANILLA = 8; // particleSetting
+    public static final int SETTING_GAMMA = 9;             // f32 gammaSetting
+    // Cobblify (ClientSettings):
+    public static final int SETTING_GUI_FONT = 16;         // string guiFont
+    public static final int SETTING_GUI_ACCENT = 17;       // string guiAccent
+    public static final int SETTING_HUD_TEXT_SIZE = 18;    // defaultTextSize
+    public static final int SETTING_OLD_ANIMATIONS = 19;
+    public static final int SETTING_OA_BLOCK_HIT = 20;
+    public static final int SETTING_OA_ITEM_POSITION = 21;
+    public static final int SETTING_OA_SMOOTH_SNEAK = 22;
+    public static final int SETTING_OA_HEARTS = 23;
+    public static final int SETTING_OA_RED_ARMOR = 24;
+    public static final int SETTING_HAND_POSITION = 25;    // handPositionEnabled
+    public static final int SETTING_HAND_POS_X = 26;       // f32
+    public static final int SETTING_HAND_POS_Y = 27;       // f32
+    public static final int SETTING_HAND_POS_Z = 28;       // f32
+    public static final int SETTING_HAND_SCALE = 29;       // f32
+    public static final int SETTING_NO_HURT_CAM = 30;
+    public static final int SETTING_DYNAMIC_FOV = 31;
+    public static final int SETTING_ZOOM = 32;             // zoomEnabled
+    public static final int SETTING_FULLBRIGHT = 33;
+    public static final int SETTING_MOTION_BLUR = 34;
+    public static final int SETTING_MOTION_BLUR_STRENGTH = 35; // mbStrength
+    public static final int SETTING_ITEM_PHYSICS = 36;
+    public static final int SETTING_PARTICLES = 37;        // Cobblify's Particles module
+    public static final int SETTING_PT_ALWAYS_CRIT = 38;
+    public static final int SETTING_PT_HIDE_OWN_POTION = 39;
+    public static final int SETTING_PT_HIDE_BLOCK_BREAK = 40;
+    public static final int SETTING_PT_MULTIPLIER = 41;
+
+    private static final int[] SETTING_F32_KEYS = {SETTING_FOV, SETTING_GAMMA, SETTING_HAND_POS_X, SETTING_HAND_POS_Y,
+            SETTING_HAND_POS_Z, SETTING_HAND_SCALE};
+    private static final int SETTING_LAST_FIXED = SETTING_PT_MULTIPLIER;
+
+    /**
+     * HUD item keys: {@code SETTING_HUD_BASE + (item - 1) x HUD_FIELDS + field} for item {@link #HUD_POTION} to
+     * {@link #HUD_ITEM_TAB_LIST}; the last key is 0xE4. A field an item does not have is not written.
+     */
+    public static final int SETTING_HUD_BASE = 0x40;
+    public static final int HUD_FIELDS = 11;
+    public static final int HUD_FIELD_ENABLED = 0;       // ...Enabled (scoreboard: scoreboardHudEnabled)
+    public static final int HUD_FIELD_IN_GAME_ONLY = 1;  // ...InGameOnly
+    public static final int HUD_FIELD_X = 2;             // ...HudX
+    public static final int HUD_FIELD_Y = 3;             // ...HudY
+    public static final int HUD_FIELD_ANCHOR = 4;        // ...HudAnchor
+    public static final int HUD_FIELD_SCALE = 5;         // f32 ...HudScale
+    public static final int HUD_FIELD_BACKGROUND = 6;    // hudBackgrounds entry (absent = on)
+    public static final int HUD_FIELD_SUB_X = 7;         // f32 hudSubPixel[0]
+    public static final int HUD_FIELD_SUB_Y = 8;         // f32 hudSubPixel[1]
+    /** fps/cps/ping: brackets; teamupgrades: layout; sessionstats: hold key. */
+    public static final int HUD_FIELD_OPTION_A = 9;
+    /** fps/cps/ping: label; sessionstats: key code. */
+    public static final int HUD_FIELD_OPTION_B = 10;
+
+    /** True for the versions this build reads (and so may recover or prune): 1 and 2. */
+    public static boolean supportedVersion(int version) {
+        return version == FORMAT_VERSION_1 || version == FORMAT_VERSION;
+    }
+
+    /** True for a TRACK tag framed as an extension record (sized by its length, known or not). */
+    public static boolean isExtensionTag(int tag) {
+        return tag >= EXT_TAG_MIN && tag <= 0xFF;
+    }
+
+    /** Short name of a known extension tag ({@code RewindCheck} counts), or null. */
+    public static String extName(int tag) {
+        int i = tag - TAG_TICK_HEAD;
+        return i >= 0 && i < EXT_NAMES.length ? EXT_NAMES[i] : null;
+    }
+
+    /** True for the nine serverbound ids an OUT record may hold: C02, C07, C08, C09, C0A, C0B, C0D, C0E, C16. */
+    public static boolean isStoredOutbound(int packetId) {
+        switch (packetId) {
+            case 0x02:
+            case 0x07:
+            case 0x08:
+            case 0x09:
+            case 0x0A:
+            case 0x0B:
+            case 0x0D:
+            case 0x0E:
+            case 0x16:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** The SETTINGS key of HUD {@code item}'s {@code field}. */
+    public static int settingHudKey(int item, int field) {
+        if (item < HUD_POTION || item > HUD_ITEM_TAB_LIST || field < 0 || field >= HUD_FIELDS) {
+            throw new IllegalArgumentException("hud item " + item + " field " + field);
+        }
+        return SETTING_HUD_BASE + (item - 1) * HUD_FIELDS + field;
+    }
+
+    /** The HUD item of a HUD settings key, or -1 for any other key. */
+    public static int settingHudItem(int key) {
+        int i = key - SETTING_HUD_BASE;
+        return i >= 0 && i < HUD_ITEM_TAB_LIST * HUD_FIELDS ? i / HUD_FIELDS + 1 : -1;
+    }
+
+    /** The field of a HUD settings key, or -1 for any other key. */
+    public static int settingHudField(int key) {
+        int i = key - SETTING_HUD_BASE;
+        return i >= 0 && i < HUD_ITEM_TAB_LIST * HUD_FIELDS ? i % HUD_FIELDS : -1;
+    }
+
+    /** The type a known SETTINGS key is written with, or -1 for a key this build does not number. */
+    public static int settingType(int key) {
+        int field = settingHudField(key);
+        if (field >= 0) {
+            return field == HUD_FIELD_SCALE || field == HUD_FIELD_SUB_X || field == HUD_FIELD_SUB_Y
+                    ? SETTING_TYPE_F32 : SETTING_TYPE_VARINT;
+        }
+        if (key == SETTING_GUI_FONT || key == SETTING_GUI_ACCENT) {
+            return SETTING_TYPE_STRING;
+        }
+        for (int k : SETTING_F32_KEYS) {
+            if (k == key) {
+                return SETTING_TYPE_F32;
+            }
+        }
+        if ((key >= SETTING_FOV && key <= SETTING_GAMMA) || (key >= SETTING_GUI_FONT && key <= SETTING_LAST_FIXED)) {
+            return SETTING_TYPE_VARINT;
+        }
+        return -1;
+    }
+
+    /** The HUD module id of a HUD item string id, or 0 if it is not one. */
+    public static int hudModuleId(String name) {
+        for (int i = 0; i < HUD_NAMES.length; i++) {
+            if (HUD_NAMES[i].equals(name)) {
+                return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    /** The HUD item string id of a module id, or null. */
+    public static String hudModuleName(int id) {
+        return id >= 1 && id <= HUD_NAMES.length ? HUD_NAMES[id - 1] : null;
+    }
 
     // ---- protocol 47 play-state clientbound ids ----
     public static final int PACKET_KEEP_ALIVE = 0x00;

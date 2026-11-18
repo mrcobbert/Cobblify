@@ -1192,6 +1192,9 @@ public final class RewindWriter {
                 a.gameEnd = buf[off] & 0xFF;
                 break;
             default:
+                if (RewindFormat.isExtensionTag(tag)) {
+                    a.stats.addExt(tag, len); // counts and body bytes only (A13)
+                }
                 break;
         }
     }
@@ -1473,7 +1476,7 @@ public final class RewindWriter {
                     return;
                 }
                 if (!hasNet) {
-                    delete = true; // a v1 header and not one packet: nothing to replay
+                    delete = true; // a readable header and not one packet: nothing to replay
                     return;
                 }
                 RecordingMeta m = build(id, old, acc, fh, segments, raw);
@@ -1487,6 +1490,7 @@ public final class RewindWriter {
                 h.force();
                 store.writeMeta(id, m);
                 PacketStats s = acc.stats;
+                s.setFormat(fh.formatVersion);
                 s.setGame(m.gameStartUs, m.lengthUs);
                 s.setSegments(m.segments);
                 s.setBytes(raw, m.storedBytes);
@@ -1511,7 +1515,8 @@ public final class RewindWriter {
     private static RecordingMeta build(String id, RecordingMeta old, Acc acc, RecordingReader.FileHeader fh,
                                        Set<Integer> segments, long raw) {
         RecordingMeta m = old != null ? old : new RecordingMeta();
-        m.format = RewindFormat.FORMAT_VERSION;
+        // Recovery finalizes a prefix in its own version: the header is never rewritten, so neither is the claim.
+        m.format = fh != null ? fh.formatVersion : RewindFormat.FORMAT_VERSION;
         m.id = id;
         m.complete = true;
         m.recovered = true;
