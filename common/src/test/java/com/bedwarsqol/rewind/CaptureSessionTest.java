@@ -230,6 +230,18 @@ public class CaptureSessionTest {
         assertTrue(locations.isEmpty());
     }
 
+    /** Code review 3, O1: every message is counted, so a later game's stats window sees its own. */
+    @Test
+    public void restrictStyleChannelIsCountedEveryTimeNotOnce() {
+        assertEquals(0, session.restrictCount());
+        feed(s01(1, 0), s3f("Replay|Restrict", new byte[0]));
+        assertEquals(1, session.restrictCount());
+        feed(s07(-1), s3f("replay|restrict", new byte[]{1}), s3f("MC|Brand", new byte[]{1}));
+        assertEquals(2, session.restrictCount());
+        session.onLocalCustomPayload("Replay|Restrict");
+        assertEquals(3, session.restrictCount());
+    }
+
     @Test
     public void lookalikeLocationChannelIsNotPosted() {
         feed(s01(1, 0), s3f("hyevent:locatioN", new byte[]{1}), s3f("hyevent:location2", new byte[]{1}),

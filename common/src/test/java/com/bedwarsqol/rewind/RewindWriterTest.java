@@ -620,6 +620,118 @@ public class RewindWriterTest {
         assertEquals(0, f.writer.lateBytes());
     }
 
+    // ------------------------------------------------------------------ code review 3, I2: the writer bounds pending
+
+    /** The rules learn what the writer dropped the way the wiring tells them (Rewind.settle). */
+    private static void settleOverflow(Fixture f) {
+        f.submit(f.rules.onPendingOverflow(f.clock.nowUs, f.writer.pendingDroppedThrough(f.feed)));
+    }
+
+    /**
+     * The reviewer's sequence: forty 1 MiB incompressible NET records in segment 1, each handed off and stepped, with
+     * no client callback at all. The writer itself keeps pending at or under the cap and writes nothing; the rules then
+     * drop the run on the client's next event, and a later game on the same connection still records.
+     */
+    @Test
+    public void pendingNeverPassesTheCapWithoutAClientCallbackAndALaterGameStillRecords() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.connect(false, RewindFormat.CHUNK_CAPACITY, 6);
+        f.advance(1_000);
+        f.netBoundary(1, null, s01(4100, 0));
+        Random r = new Random(1);
+        byte[] big = new byte[1 << 20];
+        long peak = 0;
+        for (int i = 0; i < 40; i++) {
+            r.nextBytes(big);
+            big[0] = 0x21;
+            f.advance(10_000);
+            assertTrue(f.net.appendNet(f.clock.nowUs, big, 0, big.length));
+            f.net.handOff();
+            f.step();
+            peak = Math.max(peak, f.writer.pendingBytes());
+            assertTrue("pending " + f.writer.pendingBytes() + " after record " + i,
+                    f.writer.pendingBytes() <= RewindGameRules.PENDING_MAX_BYTES);
+        }
+        assertTrue("the cap was approached, so the test measured something: " + peak, peak > 24L * 1024 * 1024);
+        assertFalse("nothing on disk", dir.exists() && !ids(dir).isEmpty());
+        assertEquals("the writer reports what it dropped", 1, f.writer.pendingDroppedThrough(f.feed));
+        assertEquals("not for another connection's feed", 0, f.writer.pendingDroppedThrough(new PacketStats.Feed()));
+
+        // The client resumes: WORLD_LOAD of segment 1, its Bed Wars location, the game starts. Nothing opens.
+        f.advance(1_000_000L);
+        settleOverflow(f);
+        f.clientBoundary(1, snapshot(0));
+        settleOverflow(f);
+        f.submit(f.rules.onLocation(f.clock.nowUs, 1,
+                new Location("fakeServer41A", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap")));
+        f.submit(f.rules.tick(f.clock.nowUs, true, false));
+        f.advance(1_000_000L);
+        f.submit(f.rules.tick(f.clock.nowUs, false, true));
+        assertFalse(f.rules.gameOpen());
+        f.step();
+        assertFalse(dir.exists() && !ids(dir).isEmpty());
+
+        // The next game on the connection is recorded whole.
+        f.advance(1_000_000L);
+        f.netBoundary(2, null, s01(4101, 0));
+        f.clientBoundary(2, snapshot(0));
+        f.submit(f.rules.onLocation(f.clock.nowUs, 2,
+                new Location("fakeServer41B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther")));
+        for (int i = 0; i < 20; i++) {
+            f.advance(50_000);
+            f.net(packet(0x20 + i % 7, 30 + i, i));
+            f.tick(i);
+        }
+        f.submit(f.rules.tick(f.clock.nowUs, true, false));
+        f.advance(1_000_000L);
+        f.submit(f.rules.tick(f.clock.nowUs, false, true));
+        assertTrue(f.rules.gameOpen());
+        f.advance(100_000);
+        f.net(packet(0x22, 40, 77));
+        List<Command> end = f.rules.onDisconnect(f.clock.nowUs, false);
+        f.gameEnd(RewindFormat.GAME_END_UNKNOWN);
+        f.submit(end);
+        f.step();
+        FileContents fc = read(onlyCbr(dir));
+        assertTrue(fc.complete);
+        assertEquals(Collections.singleton(2), segmentsOf(fc));
+        assertNetEquals(netOfSegment(f.netSent, 2), netOfSegment(fc.net, 2));
+        assertEquals(0, f.writer.pendingBytes());
+    }
+
+    /** A dropped segment never comes back: an OPEN that raced the drop fails its game instead of a headless file. */
+    @Test
+    public void anOpenOfASegmentTheWriterDroppedAtTheCapFailsThatGame() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.connect(false, RewindFormat.CHUNK_CAPACITY, 6);
+        f.advance(1_000);
+        f.netBoundary(1, null, s01(4200, 0));
+        f.clientBoundary(1, snapshot(0));
+        f.submit(f.rules.onLocation(f.clock.nowUs, 1,
+                new Location("fakeServer42A", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap")));
+        f.submit(f.rules.tick(f.clock.nowUs, true, false));
+        Random r = new Random(2);
+        byte[] big = new byte[1 << 20];
+        for (int i = 0; i < 34; i++) {
+            r.nextBytes(big);
+            big[0] = 0x21;
+            f.advance(10_000);
+            assertTrue(f.net.appendNet(f.clock.nowUs, big, 0, big.length));
+            f.net.handOff();
+            f.step();                                                       // the writer drops it at the cap
+        }
+        f.advance(1_000_000L);
+        List<Command> open = f.rules.tick(f.clock.nowUs, false, true);   // the client decided before it learned
+        assertEquals(CommandType.OPEN, open.get(0).type);
+        f.submit(open);                                                     // the writer sees the OPEN after the drop
+        f.step();
+        assertEquals(1, f.writer.pendingDroppedThrough(f.feed));
+        long failed = f.writer.pollFailedGame();
+        assertEquals("the game whose start was dropped is failed", open.get(0).gameId, failed);
+    }
+
     static Set<Integer> segmentsOf(FileContents fc) {
         Set<Integer> out = new TreeSet<Integer>();
         for (RecordingReader.Block b : fc.blocks) {

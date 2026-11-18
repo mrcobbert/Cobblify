@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
  *       boundary packet in stream order.</li>
  *   <li><b>Skip list.</b> S00, S46 and S3F are never stored. For S3F the channel name is compared in place:
  *       a {@code hyevent:location} payload is copied and posted with the current segment index, and a
- *       name containing "restrict" (ASCII, any case, e.g. {@code Replay|Restrict}) sets a flag.</li>
+ *       name containing "restrict" (ASCII, any case, e.g. {@code Replay|Restrict}) is counted, each time, so
+ *       every game's stats window sees its own (code review 3, O1).</li>
  *   <li><b>Copy</b> if the segment is copied: clock, reserve {@code [varint dtUs][varint len]}, copy, commit
  *       (which publishes the watermark).</li>
  * </ol>
@@ -116,7 +117,8 @@ public final class CaptureSession {
     /** Segment copying resumed in after the latest rearm; written before {@link #resumeCount} is incremented. */
     private volatile int resumedSegment;
     private volatile int resumeCount;
-    private volatile boolean restrictSeen;
+    /** Replay|Restrict-style names seen; single writer (Netty), read by the client thread per stats window. */
+    private volatile int restrictCount;
     /** count, bytes for S00, S3F, S46; single writer (Netty), ordered stores. */
     private final AtomicLongArray skipped = new AtomicLongArray(6);
 
@@ -245,8 +247,8 @@ public final class CaptureSession {
         if (payload > len) {
             return;
         }
-        if (!restrictSeen && containsIgnoreCase(f, name, nameLen, RESTRICT)) {
-            restrictSeen = true;
+        if (containsIgnoreCase(f, name, nameLen, RESTRICT)) {
+            restrictCount = restrictCount + 1;
         }
         if (sink != null && equalsBytes(f, name, nameLen, LOCATION_CHANNEL)) {
             byte[] data = new byte[len - payload];
@@ -288,10 +290,10 @@ public final class CaptureSession {
             return;
         }
         countSkipped(RewindFormat.PACKET_CUSTOM_PAYLOAD, 0);
-        if (channel != null && !restrictSeen) {
+        if (channel != null) {
             for (int i = 0; i + RESTRICT.length <= channel.length(); i++) {
                 if (channel.regionMatches(true, i, "restrict", 0, RESTRICT.length)) {
-                    restrictSeen = true;
+                    restrictCount = restrictCount + 1;
                     return;
                 }
             }
@@ -392,8 +394,13 @@ public final class CaptureSession {
         return closed;
     }
 
+    /** Replay|Restrict-style channel names seen so far (code review 3, O1: counted per message). */
+    public int restrictCount() {
+        return restrictCount;
+    }
+
     public boolean restrictChannelSeen() {
-        return restrictSeen;
+        return restrictCount > 0;
     }
 
     /** Frames of a skip-list id (S00, S3F, S46) seen; 0 for any other id. */

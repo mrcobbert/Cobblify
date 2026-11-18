@@ -870,16 +870,159 @@ public class RewindGameRulesTest {
         assertEquals(EndReason.RESULT, close.endedBy);
     }
 
-    @Test
-    public void aStalledClientHoldsTheResultCloseAtMostFiveSeconds() {
+    // ---- code review 3, I1: a stalled client never lets a close leave a captured segment behind
+
+    /** {@link #winThenUnloadedRespawn()}, one tick at 115 s sees the capture progress, then the client stalls. */
+    private static Script winThenStalledRespawn() {
         Script s = winThenUnloadedRespawn();
-        s.ticks(115 * S, 118 * S, false, true);
+        s.tick(115 * S, false, true);
+        assertEquals("due, but segment 2 is undecided", 0, s.count(CommandType.CLOSE));
+        return s;
+    }
+
+    /** The reviewer's sequence: the WORLD_LOAD comes at 130 s, 15 s after the close was due, then its location. */
+    @Test
+    public void aStalledClientThenASameServerLocationJoinsTheRespawnBeforeTheResultClose() {
+        Script s = winThenStalledRespawn();
+        s.boundary(130 * S, 2);
+        assertEquals("the WORLD_LOAD itself never closes first: " + s.all, 0, s.count(CommandType.CLOSE));
+        s.location(130 * S + 100_000, 2, BW_A);
+        Command close = assertJoinedThenClosed(s);
+        assertEquals(EndReason.RESULT, close.endedBy);
+        assertEquals("a JOINed segment runs past the due time: the decision time", 130 * S + 100_000, close.timeUs);
+    }
+
+    @Test
+    public void aStalledClientWithoutALocationJoinsTheRespawnFiveSecondsAfterItsWorldLoad() {
+        Script s = winThenStalledRespawn();
+        s.boundary(130 * S, 2).ticks(131 * S, 134 * S, false, true);
         assertEquals(0, s.count(CommandType.CLOSE));
-        s.tick(119 * S, false, true);                                     // 5 s after Netty got ahead
-        assertEquals(EndReason.RESULT, s.one(CommandType.CLOSE).endedBy);
+        s.tick(135 * S, false, true);                                      // 5 s after the client processed it
+        assertEquals(EndReason.RESULT, assertJoinedThenClosed(s).endedBy);
+    }
+
+    @Test
+    public void aStalledClientThenAnotherServerClosesAtTheDueTimeAndTheRespawnStartsTheNextRun() {
+        Script s = winThenStalledRespawn();
+        s.boundary(130 * S, 2).location(130 * S + 100_000, 2, BW_B);
         assertEquals(0, s.count(CommandType.JOIN));
-        s.boundary(130 * S, 2).location(130 * S + 100_000, 2, BW_A);       // loaded at last: same server, closed game
-        assertRange(s.one(CommandType.DROP), 2, 2);
+        assertEquals(0, s.count(CommandType.DROP));
+        Command close = s.one(CommandType.CLOSE);
+        assertEquals(EndReason.SERVER, close.endedBy);
+        assertEquals(Result.WIN, close.result);
+        assertEquals("nothing JOINed after the due time: the due time", 115 * S, close.timeUs);
+        s.ticks(131 * S, 150 * S, true, false).tick(151 * S, false, true);
+        assertRange(s.of(CommandType.OPEN).get(1), 2, 2);
+    }
+
+    @Test
+    public void aStalledClientThenALobbyClosesAtTheDueTimeAndTheRespawnIsTheLobbyRun() {
+        Script s = winThenStalledRespawn();
+        s.boundary(130 * S, 2).location(130 * S + 100_000, 2, MAIN);
+        assertEquals(0, s.count(CommandType.JOIN));
+        Command close = s.one(CommandType.CLOSE);
+        assertEquals(EndReason.LOBBY, close.endedBy);
+        assertEquals(115 * S, close.timeUs);
+        s.ticks(131 * S, 145 * S, false, false);
+        assertRange(s.one(CommandType.DROP), 2, 2);                       // the lobby verdict, not the game's
+        assertEquals(1, s.count(CommandType.OPEN));
+    }
+
+    @Test
+    public void aStalledClientThenADisconnectJoinsTheUnloadedRespawn() {
+        Script s = winThenStalledRespawn();
+        s.disconnect(130 * S);
+        assertJoinedThenClosed(s);
+        assertEquals(EndReason.DISCONNECT, s.one(CommandType.CLOSE).endedBy);
+    }
+
+    @Test
+    public void aStalledClientThenRecordOffJoinsTheUnloadedRespawn() {
+        Script s = winThenStalledRespawn();
+        s.record(130 * S, false);
+        assertEquals(EndReason.SETTINGS, assertJoinedThenClosed(s).endedBy);
+    }
+
+    @Test
+    public void aStalledClientHoldsTheCapCloseUntilTheRespawnIsDecided() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, SKYBLOCK);
+        s.ticks(2 * S, 61 * S, false, false);
+        s.progress(RewindGameRules.GAME_CAP_US, 2);                        // 1 s before the cap
+        s.idle(S + RewindGameRules.GAME_CAP_US);                           // due
+        s.boundary(S + RewindGameRules.GAME_CAP_US + 20 * S, 2);           // the stall ends 20 s later
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.location(S + RewindGameRules.GAME_CAP_US + 20 * S + 100_000, 2, SKYBLOCK);
+        assertEquals(0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertEquals(EndReason.CAP, s.one(CommandType.CLOSE).endedBy);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    @Test
+    public void aStalledClientHoldsAFailureCloseUntilTheRespawnIsDecided() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).ticks(4 * S, 99 * S, false, true);
+        s.progress(100 * S, 2);                                            // Netty: a same-server respawn
+        s.clientFail(101 * S, 1);                                          // a failure in the open game's segment
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.boundary(130 * S, 2);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.location(130 * S + 100_000, 2, BW_A);
+        assertEquals(s.all.toString(), 0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        Command close = s.one(CommandType.CLOSE);
+        assertTrue(close.failed);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    @Test
+    public void twoCapturedButUnloadedSameServerSegmentsAreBothJoinedBeforeTheResultClose() {
+        Script s = winThenUnloadedRespawn();
+        s.progress(114 * S + 300_000, 3);                                  // and a second dimension change
+        s.tick(115 * S, false, true);
+        s.boundary(130 * S, 2);
+        s.boundary(130 * S + 50_000, 3);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.location(130 * S + 100_000, 3, BW_A);
+        assertEquals(s.all.toString(), 0, s.count(CommandType.DROP));
+        assertRange(s.one(CommandType.JOIN), 2, 3);
+        assertEquals(EndReason.RESULT, s.one(CommandType.CLOSE).endedBy);
+        assertTrue(indexOf(s, CommandType.JOIN) < indexOf(s, CommandType.CLOSE));
+    }
+
+    /** The second unloaded segment is another server: both go to the next run, which the location names. */
+    @Test
+    public void twoCapturedButUnloadedSegmentsEndingOnAnotherServerAreHandedToTheNextRun() {
+        Script s = winThenUnloadedRespawn();
+        s.progress(114 * S + 300_000, 3);
+        s.tick(115 * S, false, true);
+        s.boundary(130 * S, 2).boundary(130 * S + 50_000, 3).location(130 * S + 100_000, 3, BW_B);
+        assertEquals(0, s.count(CommandType.JOIN));
+        assertEquals(0, s.count(CommandType.DROP));
+        assertEquals(EndReason.SERVER, s.one(CommandType.CLOSE).endedBy);
+        s.ticks(131 * S, 150 * S, true, false).tick(151 * S, false, true);
+        assertRange(s.of(CommandType.OPEN).get(1), 2, 3);
+    }
+
+    /** A game line (or Marker Key) is a rules event too: it never closes past a segment the capture handler started. */
+    @Test
+    public void aGameLineDuringTheStallDoesNotCloseFirst() {
+        Script s = winThenStalledRespawn();
+        s.line(125 * S, Kind.FINAL_KILL);
+        s.take(s.rules.onMarkerKey(126 * S));
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.boundary(130 * S, 2).location(130 * S + 100_000, 2, BW_A);
+        assertJoinedThenClosed(s);
+    }
+
+    @Test
+    public void aResultWithNoEventUntilTheDisconnectClosesAtItsDueTime() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true).line(100 * S, Kind.WIN);
+        s.disconnect(200 * S);
+        Command close = s.one(CommandType.CLOSE);
+        assertEquals(EndReason.RESULT, close.endedBy);
+        assertEquals(115 * S, close.timeUs);
     }
 
     @Test
@@ -1277,6 +1420,114 @@ public class RewindGameRulesTest {
         RewindGameRules sp = new RewindGameRules();
         assertTrue(sp.onConnect(0, true, false).isEmpty());
         assertTrue(sp.onBoundary(S, 1).isEmpty());
+    }
+
+    // ------------------------------------------------------------------ markers during an undecided switch (code review 3, I3)
+
+    /** Game A open on BW_A in segment 1; WORLD_LOAD of segment 2 at 4 s; its location has not come yet. */
+    private static Script openThenUndecidedSwitch() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        assertEquals(1, s.count(CommandType.OPEN));
+        s.boundary(4 * S, 2);
+        return s;
+    }
+
+    private static Command markerCommand(Script s, int index) {
+        return s.of(CommandType.MARKER).get(index);
+    }
+
+    /** The reviewer's sequence: the key's TRACK record is in segment 2, which turns out to be game B's. */
+    @Test
+    public void aKeyDuringAnUndecidedSwitchToAnotherServerMarksTheNextGameNotTheOpenOne() {
+        Script s = openThenUndecidedSwitch();
+        s.take(s.rules.onMarkerKey(4 * S + 100_000));
+        assertTrue("accepted: it flashes", s.lastHas(CommandType.FLASH));
+        Command held = markerCommand(s, 0);
+        assertEquals("held for segment 2, not applied to game A", 0L, held.gameId);
+        s.location(4 * S + 200_000, 2, BW_B);
+        Command closeA = s.one(CommandType.CLOSE);
+        assertFalse("A holds no KEY record", closeA.keyMarked);
+        s.tick(5 * S, true, false).tick(30 * S, false, true);
+        Command openB = s.of(CommandType.OPEN).get(1);
+        assertRange(openB, 2, 2);
+        assertTrue("B holds the KEY record", openB.keyMarked);
+        assertEquals(1, openB.markers.size());
+        assertEquals(MarkerRules.Marker.KEY, openB.markers.get(0).marker);
+        s.disconnect(60 * S);
+        assertTrue(s.of(CommandType.CLOSE).get(1).keyMarked);
+    }
+
+    @Test
+    public void aKeyDuringAnUndecidedSameServerSwitchMarksTheOpenGameWhenJoined() {
+        Script s = openThenUndecidedSwitch();
+        s.take(s.rules.onMarkerKey(4 * S + 100_000));
+        assertEquals(0L, markerCommand(s, 0).gameId);
+        s.location(4 * S + 200_000, 2, BW_A);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        s.line(50 * S, Kind.WIN).ticks(51 * S, 70 * S, false, false);
+        assertTrue(s.one(CommandType.CLOSE).keyMarked);
+    }
+
+    @Test
+    public void aKeyDuringAnUndecidedSwitchToALobbyProtectsNothing() {
+        Script s = openThenUndecidedSwitch();
+        s.take(s.rules.onMarkerKey(4 * S + 100_000));
+        assertTrue(s.lastHas(CommandType.FLASH));
+        s.location(4 * S + 200_000, 2, MAIN);
+        assertFalse(s.one(CommandType.CLOSE).keyMarked);
+        s.ticks(5 * S, 20 * S, false, false);
+        assertRange(s.one(CommandType.DROP), 2, 2);
+        s.boundary(30 * S, 3).location(30 * S + 100_000, 3, BW_B).tick(31 * S, true, false).tick(50 * S, false, true);
+        Command next = s.of(CommandType.OPEN).get(1);
+        assertFalse("the lobby's key never reaches a later game", next.keyMarked);
+        assertTrue(next.markers.isEmpty());
+    }
+
+    @Test
+    public void aKeyDuringAnUndecidedSwitchThenADisconnectMarksTheOpenGame() {
+        Script s = openThenUndecidedSwitch();
+        s.take(s.rules.onMarkerKey(4 * S + 100_000));
+        s.disconnect(5 * S);
+        assertRange(s.one(CommandType.JOIN), 2, 2);
+        assertTrue("segment 2 and its KEY record are joined to A", s.one(CommandType.CLOSE).keyMarked);
+    }
+
+    @Test
+    public void automaticMarkersDuringAnUndecidedSwitchGoToTheGameThatOwnsTheSegment() {
+        Script other = openThenUndecidedSwitch();
+        other.line(4 * S + 100_000, Kind.FINAL_KILL);
+        assertEquals(0L, markerCommand(other, 0).gameId);
+        other.location(4 * S + 200_000, 2, BW_B);
+        other.tick(5 * S, true, false).tick(30 * S, false, true);
+        Command openB = other.of(CommandType.OPEN).get(1);
+        assertEquals(1, openB.markers.size());
+        assertEquals(MarkerRules.Marker.FINAL_KILL, openB.markers.get(0).marker);
+        assertFalse(openB.keyMarked);
+
+        Script lobby = openThenUndecidedSwitch();
+        lobby.line(4 * S + 100_000, Kind.DEATH);
+        lobby.location(4 * S + 200_000, 2, MAIN);
+        lobby.ticks(5 * S, 20 * S, false, false);
+        lobby.boundary(30 * S, 3).location(30 * S + 100_000, 3, BW_B).tick(31 * S, true, false).tick(50 * S, false, true);
+        assertTrue(lobby.of(CommandType.OPEN).get(1).markers.isEmpty());
+
+        Script same = openThenUndecidedSwitch();
+        same.line(4 * S + 100_000, Kind.BED_BREAK);
+        same.location(4 * S + 200_000, 2, BW_A);
+        assertRange(same.one(CommandType.JOIN), 2, 2);
+        assertEquals(1, same.count(CommandType.OPEN));
+    }
+
+    @Test
+    public void aKeyInTheOpenGamesOwnSegmentCarriesItsGameId() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.tick(2 * S, true, false).tick(3 * S, false, true);
+        long a = s.one(CommandType.OPEN).gameId;
+        s.take(s.rules.onMarkerKey(10 * S));
+        Command m = markerCommand(s, 0);
+        assertEquals(a, m.gameId);
+        assertTrue(m.keyMarked);
     }
 
     // ------------------------------------------------------------------ metadata after OPEN (code review 2, I4)

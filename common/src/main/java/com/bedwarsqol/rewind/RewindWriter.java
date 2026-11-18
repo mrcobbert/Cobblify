@@ -62,6 +62,17 @@ import java.util.concurrent.locks.LockSupport;
  * <p><b>Metadata updates.</b> An INFO command (mode or map learned after OPEN) updates the open
  * game's metadata and rewrites its {@code .json}; the wiring writes matching TRACK INFO records, so
  * END and a recovery without the {@code .json} use the latest values (code review 2, I4).
+ *
+ * <p><b>Pending cap (code review 3, I2).</b> The writer bounds pending memory itself, with no help
+ * from the client thread: a pending block that would take the retained pending bytes past
+ * {@link RewindGameRules#PENDING_MAX_BYTES} drops every pending segment of the connection (their
+ * blocks are freed, their later records are dropped too) and is reported through
+ * {@link #pendingDroppedThrough}, so the rules drop the run on the client's next event. A dropped
+ * segment never comes back: an OPEN or JOIN naming one fails that game (its file keeps its prefix).
+ *
+ * <p><b>Key markers (code review 3, I3).</b> A MARKER command marks a game only when it names that
+ * game's id; otherwise a game is key-marked by its OPEN, its CLOSE or a KEY record in its own
+ * segments, so its {@code keyMarked} agrees with the KEY records in its file.
  */
 public final class RewindWriter {
 
@@ -202,6 +213,8 @@ public final class RewindWriter {
         final int gen;
         final int segment;
         int state = PENDING;
+        /** Dropped by the writer at the pending cap: never routed to a game afterwards (code review 3, I2). */
+        boolean overflow;
         Game game;
         List<PendingBlock> blocks = new ArrayList<PendingBlock>();
         long pendingBytes;
@@ -249,6 +262,17 @@ public final class RewindWriter {
         }
     }
 
+    /** What the writer dropped at the pending cap, for the connection whose stats feed it names. */
+    private static final class Overflow {
+        final PacketStats.Feed feed;
+        final int through;
+
+        Overflow(PacketStats.Feed feed, int through) {
+            this.feed = feed;
+            this.through = through;
+        }
+    }
+
     // ------------------------------------------------------------------ fields
 
     private final RecordingStore store;
@@ -286,6 +310,7 @@ public final class RewindWriter {
     private volatile int recovered;
     private volatile int recoveryDeleted;
     private volatile int pruned;
+    private volatile Overflow lastOverflow;
 
     public RewindWriter(RecordingStore store, String cobblifyVersion) {
         this(store, cobblifyVersion, SYSTEM_CLOCK, new Random());
@@ -422,6 +447,15 @@ public final class RewindWriter {
     /** Bytes held for pending runs of the current connection (for {@code RewindGameRules.onPendingBytes}). */
     public long pendingBytes() {
         return pendingBytes;
+    }
+
+    /**
+     * The highest segment the writer dropped at the pending cap for the connection attached with {@code feed}, or 0
+     * (code review 3, I2). The wiring hands it to {@code RewindGameRules.onPendingOverflow}. Any thread.
+     */
+    public int pendingDroppedThrough(PacketStats.Feed feed) {
+        Overflow o = lastOverflow;
+        return o != null && o.feed == feed ? o.through : 0;
     }
 
     /** Games failed by a writer error (disk, folder), cumulative. */
@@ -620,8 +654,9 @@ public final class RewindWriter {
                 info(c);
                 break;
             case MARKER:
-                // The TRACK MARKER record itself comes through the client thread's producer.
-                if (game != null && (c.keyMarked || c.marker == MarkerRules.Marker.KEY)) {
+                // The TRACK MARKER record itself comes through the client thread's producer. Only a marker of this
+                // game marks it: one held for an undecided segment names no game (code review 3, I3).
+                if (game != null && c.gameId == game.gameId && (c.keyMarked || c.marker == MarkerRules.Marker.KEY)) {
                     game.meta.keyMarked = true;
                     if (c.marker == MarkerRules.Marker.KEY) {
                         writeMetaQuietly(game); // .json on Marker Key: kept forever from now on
@@ -692,6 +727,11 @@ public final class RewindWriter {
         for (int s = first; s <= last; s++) {
             Seg seg = route(gen, s);
             if (seg == null || seg.state == CLOSED || seg.game == g) {
+                continue;
+            }
+            if (seg.overflow) {
+                // Its records were dropped at the pending cap: the game would miss them (code review 3, I2).
+                failGame(g, new IllegalStateException("pending cap"));
                 continue;
             }
             if (seg.state == PENDING) {
@@ -995,6 +1035,10 @@ public final class RewindWriter {
         long t0 = System.nanoTime();
         int n = codec.encode(type, segment, firstTimeUs, raw, off, len, true);
         if (seg.state == PENDING) {
+            if (pendingTotal + n > RewindGameRules.PENDING_MAX_BYTES) {
+                overflowPending(seg);
+                return;
+            }
             seg.blocks.add(new PendingBlock(type, segment, firstTimeUs, Arrays.copyOf(codec.out(), n), len));
             seg.pendingBytes += n;
             addPending(n);
@@ -1020,6 +1064,25 @@ public final class RewindWriter {
         } catch (Throwable t) {
             failGame(g, t);
         }
+    }
+
+    /**
+     * The pending cap (code review 3, I2): this block would take the retained pending bytes past the cap, so every
+     * pending segment of the connection is dropped, freed and marked; their later records are dropped as well. The
+     * highest one is published for the rules.
+     */
+    private void overflowPending(Seg trigger) {
+        int through = trigger.segment;
+        for (Seg s : segs.values()) {
+            if (s.state == PENDING && s.gen == trigger.gen) {
+                through = Math.max(through, s.segment);
+                s.overflow = true;
+                dropSeg(s);
+            }
+        }
+        Overflow o = lastOverflow;
+        int prev = o != null && o.feed == feed ? o.through : 0;
+        lastOverflow = new Overflow(feed, Math.max(prev, through));
     }
 
     private void late(long bytes) {

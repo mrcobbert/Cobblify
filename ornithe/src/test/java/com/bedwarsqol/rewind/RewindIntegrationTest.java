@@ -1432,6 +1432,198 @@ public class RewindIntegrationTest {
         assertEquals(0, count(RewindWriterTest.read(new File(h.dir, second.id + ".cbr")), RewindFormat.TAG_INFO));
     }
 
+    // ------------------------------------------------------------------ code review 3
+
+    /**
+     * I1, the reviewer's sequence: WIN at 100 s; Netty reads a same-server S07 (segment 2) at 114 s; one tick at
+     * 115 s sees the capture progress; the client stalls until the WORLD_LOAD at 130 s; then the same-server location.
+     * Segment 2 is the game's and its records are in the result-closed file.
+     */
+    @Test
+    public void aStalledClientKeepsTheRespawnInTheResultClosedFile() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(20, 83);
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(RewindGameRules.RESULT_CLOSE_US - 1_000_000L);
+        h.net(s07(-1));                                                         // Netty: segment 2 starts
+        h.net(other(0x30, 70), other(0x31, 80));
+        h.advance(1_000_000L);
+        h.tick(false, true);                                                    // due; sees the capture progress
+        h.step();
+        h.advance(15_000_000L);                                                 // the client stalls
+        h.net(other(0x32, 90));
+        worldLoad(h, 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(false, false);
+        h.step();
+        assertFalse(h.rewind.rules().gameOpen());
+
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
+        assertSameRecords(h.netSent.get(2), netOf(fc, 2));
+        assertEquals("result", fc.endMeta.endedBy);
+        assertEquals(RecordingMeta.RESULT_WIN, fc.endMeta.result);
+    }
+
+    /** I1 wiring: a game line (no tick first) is settled against the capture handler before the rules see it. */
+    @Test
+    public void aGameLineBeforeAnyTickStillWaitsForTheCapturedRespawn() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(20, 84);
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(RewindGameRules.RESULT_CLOSE_US - 1_000_000L);
+        h.net(s07(-1), other(0x30, 70));                                        // Netty: segment 2 starts
+        h.advance(2_000_000L);                                                  // the close is due
+        h.rewind.onGameLine(SessionChatLine.Kind.FINAL_KILL);                   // the first client event since
+        h.step();
+        worldLoad(h, 0);
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(false, false);
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertEquals(new TreeSet<Integer>(Arrays.asList(1, 2)), segments(fc));
+        assertSameRecords(h.netSent.get(2), netOf(fc, 2));
+        assertEquals("result", fc.endMeta.endedBy);
+    }
+
+    /**
+     * I2, the reviewer's sequence through the wiring: forty 1 MiB incompressible frames in segment 1 while the client
+     * thread runs nothing, the writer stepping after each. Pending memory never passes the cap and nothing reaches the
+     * disk; when the client resumes, that run is dropped and the next game on the connection is recorded.
+     */
+    @Test
+    public void aStalledClientCannotGrowPendingPastTheCapAndTheNextGameIsRecorded() throws Exception {
+        Harness h = new Harness(new File(tmp.getRoot(), "rewind"));
+        assertNotNull(h.connect(true, true));
+        h.advance(1_000);
+        h.net(s01(1401, 0));
+        Random r = new Random(1);
+        byte[] big = new byte[1 << 20];
+        for (int i = 0; i < 40; i++) {
+            r.nextBytes(big);
+            big[0] = 0x21;
+            h.advance(10_000);
+            RewindCaptureTest.fire(h.ch, big);
+            h.fired++;
+            h.step();
+            assertTrue("pending " + h.writer.pendingBytes() + " after frame " + i,
+                    h.writer.pendingBytes() <= RewindGameRules.PENDING_MAX_BYTES);
+        }
+        assertTrue("nothing on disk", h.ids().isEmpty());
+        assertFalse("capture never failed", RewindCapture.get(h.ch).session().failed());
+
+        worldLoad(h, 0);                                                        // the client resumes
+        h.location(GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap");
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertFalse("the run that passed the cap never opens", h.rewind.rules().gameOpen());
+        h.step();
+        assertTrue(h.ids().isEmpty());
+
+        h.advance(1_000_000L);
+        h.boundary(s01(1402, 0), 0);
+        h.location("fakeGameServer14B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.game(10, 141);
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(10, 142);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertEquals(Collections.singleton(2), segments(fc));
+        assertSameRecords(h.netSent.get(2), netOf(fc, 2));
+        assertEquals(0, h.writer.pendingBytes());
+        h.ch.checkException();
+        assertEquals(h.fired, h.rx.messages.size());
+    }
+
+    static int keyRecords(RewindWriterTest.FileContents fc) {
+        int n = 0;
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (t.tag == RewindFormat.TAG_MARKER && (t.body[0] & 0xFF) == RewindFormat.MARKER_KEY) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * I3, the reviewer's sequence: game A open; WORLD_LOAD of segment 2 on game server B; Marker Key before B's
+     * location. The KEY record is in segment 2, so A is closed unmarked and B is key-marked.
+     */
+    @Test
+    public void aMarkerKeyDuringAnUndecidedSwitchMarksTheGameThatOwnsItsSegment() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.game(10, 95);
+        h.step();
+        h.advance(1_000_000L);
+        h.boundary(s01(1501, 0), 0);                                            // segment 2, location not yet
+        h.rewind.onMarkerKey();
+        assertNotEquals("accepted: it flashes", 0, h.rewind.flashColor());
+        h.step();
+        h.location("fakeGameServer15B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.game(10, 96);
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.game(10, 97);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+
+        RecordingMeta a = metaOfSegments(h.dir, Collections.singleton(1));
+        RecordingMeta b = metaOfSegments(h.dir, Collections.singleton(2));
+        RewindWriterTest.FileContents fa = RewindWriterTest.read(new File(h.dir, a.id + ".cbr"));
+        RewindWriterTest.FileContents fb = RewindWriterTest.read(new File(h.dir, b.id + ".cbr"));
+        assertEquals("A holds no KEY record", 0, keyRecords(fa));
+        assertFalse("A's .json", a.keyMarked);
+        assertFalse("A's END", fa.endMeta.keyMarked);
+        assertEquals("B holds the KEY record", 1, keyRecords(fb));
+        assertTrue(b.keyMarked);
+        assertTrue(fb.endMeta.keyMarked);
+    }
+
+    /** O1, the reviewer's sequence: a Replay|Restrict-style message in game A and again in game B, one connection. */
+    @Test
+    public void aRestrictChannelSeenInEachGameIsInEachGamesStats() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        h.net(s3f("Replay|Restrict", new byte[]{1}));
+        h.game(10, 98);
+        h.rewind.onGameLine(SessionChatLine.Kind.WIN);
+        h.advance(RewindGameRules.RESULT_CLOSE_US);
+        h.tick(false, false);
+        h.step();
+        assertEquals(1, h.ids().size());
+
+        h.advance(1_000_000L);
+        h.boundary(s01(1601, 0), 0);
+        h.location("fakeGameServer16B", "BEDWARS", null, "BEDWARS_EIGHT_TWO", "FakeOther");
+        h.tick(true, false);
+        h.advance(300_000);
+        h.tick(false, true);
+        assertTrue(h.rewind.rules().gameOpen());
+        h.net(s3f("Replay|Restrict", new byte[]{2}));
+        h.game(10, 99);
+        h.ch.close();
+        h.tick(false, false);
+        h.step();
+
+        List<String> ids = h.ids();
+        assertEquals(2, ids.size());
+        for (String id : ids) {
+            String stats = new String(Files.readAllBytes(new File(h.dir, id + ".stats.json").toPath()),
+                    StandardCharsets.UTF_8);
+            assertTrue(id + ": " + stats, stats.contains("\"restrictChannelSeen\":true"));
+        }
+    }
+
     // ------------------------------------------------------------------ A10: off
 
     @Test

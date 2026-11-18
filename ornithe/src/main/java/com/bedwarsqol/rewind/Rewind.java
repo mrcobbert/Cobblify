@@ -49,9 +49,11 @@ import java.util.function.Supplier;
  *   <li>{@code CLIENT_TICK}: disconnect and settings checks, new capture failures ({@code failureCount} changes),
  *       new writer failures, pending bytes, the Bed Wars sidebar state, the self track and the Marker Key.</li>
  *   <li>Before and after every rules event the wiring settles what changed elsewhere: the capture handler's segment
- *       and restarts, a capture failure with the segment it latched in, writer failures by game id and TRACK
- *       failures with their segment (code review 2, I2/I3). A failure thus reaches the game that owns it, whatever
- *       the rules are tracking when the client thread looks.</li>
+ *       and restarts, a capture failure with the segment it latched in, writer failures by game id, TRACK failures
+ *       with their segment (code review 2, I2/I3) and segments the writer dropped at the pending cap (code review 3,
+ *       I2). A failure thus reaches the game that owns it, whatever the rules are tracking when the client thread
+ *       looks, and no rules event (game lines and the Marker Key included) can close a game past a segment the
+ *       capture handler already started (code review 3, I1).</li>
  *   <li>{@code GAME_LINE}: the player's own classified game lines (results and automatic markers).</li>
  *   <li>A CAMERA sample from {@code EntityRenderer.renderWorld} HEAD, at most every 4 ms and only on change.</li>
  *   <li>{@code HUD_POST}: the Marker Key flash, the only thing Rewind ever draws.</li>
@@ -106,7 +108,10 @@ public final class Rewind {
         int seenResumes;
         final long[] seenSkippedCount = new long[SKIPPED_IDS.length];
         final long[] seenSkippedBytes = new long[SKIPPED_IDS.length];
-        boolean restrictReported;
+        /** Replay|Restrict-style messages already bridged into the stats feed (code review 3, O1: per message). */
+        int seenRestrict;
+        /** The highest segment the writer dropped at the pending cap, already reported (code review 3, I2). */
+        int seenOverflow;
         boolean gameOpen;
         int gameFirst;
         int gameLast;
@@ -239,6 +244,9 @@ public final class Rewind {
                     recording = false;
                     RewindCapture.remove(c.channel);
                 }
+            }
+            if (old != null && recording(old)) {
+                settle(old, now); // segments the old connection's client never loaded are still its game's (I1)
             }
             List<Command> commands = rules.onConnect(now, c.local, recording);
             if (old != null) {
@@ -399,6 +407,7 @@ public final class Rewind {
         }
         try {
             long now = clock.nowUs();
+            settle(c, now); // code review 3, I1: the rules see the capture handler's progress before any close
             execute(c, rules.onGameLine(now, kind));
             settle(c, now);
         } catch (Throwable t) {
@@ -414,6 +423,7 @@ public final class Rewind {
         }
         try {
             long now = clock.nowUs();
+            settle(c, now); // code review 3, I1
             execute(c, rules.onMarkerKey(now));
             settle(c, now);
         } catch (Throwable t) {
@@ -575,8 +585,9 @@ public final class Rewind {
 
     /**
      * What changed outside the client thread since the last look, each reported to the rules once (code review 2,
-     * I2/I3): the capture handler's segment and restarts; a new capture failure with the segment it latched in; each
-     * writer failure with the id of the game whose file failed; a TRACK failure with its segment.
+     * I2/I3): the capture handler's segment and restarts; a new capture failure with the segment it latched in; the
+     * segments the writer dropped at the pending cap (code review 3, I2); each writer failure with the id of the game
+     * whose file failed; a TRACK failure with its segment.
      */
     private void settle(Conn c, long now) {
         if (c.session != null) {
@@ -596,6 +607,12 @@ public final class Rewind {
             }
         }
         if (writer != null) {
+            int dropped = writer.pendingDroppedThrough(c.feed);
+            if (dropped > c.seenOverflow) {
+                c.seenOverflow = dropped;
+                log("rewind: pending cap reached, dropped through segment=" + dropped);
+                execute(c, rules.onPendingOverflow(now, dropped));
+            }
             long id;
             while ((id = writer.pollFailedGame()) >= 0) {
                 Throwable cause = writer.lastFailure();
@@ -630,8 +647,11 @@ public final class Rewind {
             c.seenSkippedCount[i] = n;
             c.seenSkippedBytes[i] = b;
         }
-        if (!c.restrictReported && s.restrictChannelSeen()) {
-            c.restrictReported = true;
+        int restrict = s.restrictCount();
+        if (restrict != c.seenRestrict) {
+            // Per message, not per connection (code review 3, O1): the writer's stats window of the game that is
+            // recording now sees it, even if an earlier game on this connection saw one too.
+            c.seenRestrict = restrict;
             c.feed.restrictChannelSeen();
         }
     }
@@ -644,7 +664,13 @@ public final class Rewind {
             return;
         }
         try {
-            execute(c, rules.onClientFailure(clock.nowUs(), c.boundaries));
+            long now = clock.nowUs();
+            try {
+                settle(c, now); // code review 3, I1: the capture handler's progress first
+            } catch (Throwable ignored) {
+                // the failure is still reported
+            }
+            execute(c, rules.onClientFailure(now, c.boundaries));
         } catch (Throwable again) {
             c.dead = true;
             log("rewind: recorder stopped for this connection " + name(again));
