@@ -338,6 +338,7 @@ public final class Rewind {
             if (c.channel == null || !c.channel.isOpen()) {
                 if (!c.dead) {
                     if (recording(c)) {
+                        bridgeFeed(c); // counts seen since the last tick belong to this game's stats (outcome review O1)
                         settle(c, now); // segments the client never loaded are still this game's (code review 2, I1)
                     }
                     execute(c, rules.onDisconnect(now, false)); // GAME_END is still committed before CLOSE
@@ -349,6 +350,7 @@ public final class Rewind {
                 return;
             }
             if (!recordSetting) {
+                bridgeFeed(c); // as above: bridge before the CLOSE
                 settle(c, now);
                 execute(c, rules.onRecordSetting(now, false));
                 log("rewind: record games off");
