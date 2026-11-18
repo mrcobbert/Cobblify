@@ -333,3 +333,19 @@ one-sided main ornithe com/bedwarsqol/feature/FeatureTasks.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/FeatureTasksTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackNetworkGateTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/QueuedWorkScanTest.java
+
+# Rewind playback session (Ornithe only, R2 Phase 4a): the client side of the common PlaybackSession (its
+# ClientOps in Minecraft calls, the packet sink, the inert camera, the base screen) and its frame, tick,
+# screen-policy, camera, particle, sound and render hooks with their accessors.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindPlayback.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackSink.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindCamera.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindScreen.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftRewindPlaybackMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftTimerAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/PlayerControllerMPRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EffectRendererRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/SoundHandlerRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindPlaybackMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameAccessor.java

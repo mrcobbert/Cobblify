@@ -52,7 +52,15 @@
     "RenderGlobalParticlesMixin",
     "RenderPlayerOldAnimMixin",
     "RendererLivingEntityMixin",
-    "WorldClientMixin"
+    "WorldClientMixin",
+    "MinecraftRewindPlaybackMixin",
+    "MinecraftTimerAccessor",
+    "PlayerControllerMPRewindMixin",
+    "EffectRendererRewindMixin",
+    "SoundHandlerRewindMixin",
+    "EntityRendererRewindPlaybackMixin",
+    "GuiNewChatAccessor",
+    "GuiIngameAccessor"
   ],
   "verbose": true
 }
