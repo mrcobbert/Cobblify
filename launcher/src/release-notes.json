@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.96",
+    "channel": "dev",
+    "date": "2026-11-18",
+    "sections": [
+      ["New", [
+        "Rewind, step 2 of 4 (Prism): watch your recorded games. Open Rewind from the title screen or the Esc menu, pick a game, and it plays back from your own view with your hand, hotbar and hearts. Pause, change speed, skip 5 seconds, jump between markers (bed breaks, final kills, your Marker Key) on the timeline, or switch to a free camera. Games recorded with dev.95 work."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.95",
     "channel": "dev",
     "date": "2026-11-17",
