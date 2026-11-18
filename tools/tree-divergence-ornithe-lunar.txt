@@ -228,6 +228,14 @@ one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/CarryOverDecodeTest.java
 one-sided test ornithe com/bedwarsqol/rewind/RewindIntegrationTest.java
 
+# Rewind playback (Ornithe only): the socketless playback connection, the vanilla decoder for stored
+# packets, their embedded-channel and round-trip tests, and the opt-in real-recording decode check.
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackConnection.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/VanillaPacketDecoder.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackConnectionTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/VanillaPacketDecoderTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RealRecordingDecodeTest.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java
