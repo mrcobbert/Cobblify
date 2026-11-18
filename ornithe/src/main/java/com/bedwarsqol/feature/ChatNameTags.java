@@ -2,6 +2,7 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.BedwarsMode;
 import com.bedwarsqol.stats.BedwarsModeDetector;
 import com.bedwarsqol.stats.BedwarsStats;
@@ -326,9 +327,8 @@ public final class ChatNameTags {
     public static void refreshDisplayMode() {
         final ChatNameTags inst = active;
         if (inst == null) return;
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc != null) mc.addScheduledTask(inst::repaintTracked);
-        else inst.repaintTracked();
+        PlaybackGate.Ticket ticket = PlaybackGate.ticket(); // the /bw mode command is the submission
+        if (!FeatureTasks.schedule(ticket, inst::repaintTracked)) inst.repaintTracked();
     }
 
     private void repaintTracked() {

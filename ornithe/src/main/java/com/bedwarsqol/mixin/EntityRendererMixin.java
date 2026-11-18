@@ -26,7 +26,7 @@ public abstract class EntityRendererMixin {
             require = 1)
     private void bedwarsqol$blockHighlight(RenderGlobal renderGlobal, EntityPlayer player, MovingObjectPosition target,
                                            int execute, float partialTicks, Operation<Void> original) {
-        if (ModEvents.BLOCK_HIGHLIGHT.post(new BlockHighlightEvent(player, target, partialTicks))) return;
+        if (ModEvents.post(ModEvents.BLOCK_HIGHLIGHT, new BlockHighlightEvent(player, target, partialTicks))) return;
         original.call(renderGlobal, player, target, execute, partialTicks);
     }
 }

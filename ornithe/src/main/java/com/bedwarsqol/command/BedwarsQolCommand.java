@@ -3,12 +3,14 @@ package com.bedwarsqol.command;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ChatNameTags;
+import com.bedwarsqol.feature.FeatureTasks;
 import com.bedwarsqol.feature.HeightLimitCore;
 import com.bedwarsqol.feature.HeightLimitWatch;
 import com.bedwarsqol.feature.ModChat;
 import com.bedwarsqol.feature.SessionStats;
 import com.bedwarsqol.feature.SessionStatsWatch;
 import com.bedwarsqol.gui.SettingsGui;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.BackendTarget;
 import com.bedwarsqol.stats.ProviderKeySubmitter;
 import com.bedwarsqol.stats.StatsBackendUrl;
@@ -140,7 +142,8 @@ public class BedwarsQolCommand extends CommandBase {
         // so the GUI opens next tick, after the chat box is already gone.
         final Minecraft mc = Minecraft.getMinecraft();
         if (mc == null) return;
-        Thread t = new Thread(() -> mc.addScheduledTask(() -> mc.displayGuiScreen(new SettingsGui())),
+        final PlaybackGate.Ticket ticket = PlaybackGate.ticket(); // the command is the submission
+        Thread t = new Thread(() -> FeatureTasks.schedule(ticket, () -> mc.displayGuiScreen(new SettingsGui())),
                 "BedwarsQol-OpenGui");
         t.setDaemon(true);
         t.start();
@@ -246,9 +249,11 @@ public class BedwarsQolCommand extends CommandBase {
 
     /** Shared submit path for the urchinkey handler: validation, JSON body, background
      *  POST on {@link #URCHIN_EXEC}, client-thread result marshal, and the post-set invalidate /
-     *  pre-clear strip sequencing (see {@link ProviderKeySubmitter}). */
-    private static final ProviderKeySubmitter KEY_SUBMITTER =
-            new ProviderKeySubmitter(URCHIN_EXEC, BedwarsQolCommand::scheduled);
+     *  pre-clear strip sequencing (see {@link ProviderKeySubmitter}). One per submission, so its
+     *  client-thread results carry the ticket of the command that submitted it (Rewind's lifetime rule). */
+    private static ProviderKeySubmitter keySubmitter(final PlaybackGate.Ticket ticket) {
+        return new ProviderKeySubmitter(URCHIN_EXEC, r -> scheduled(ticket, r));
+    }
 
     /** {@code /cobblify urchin <name>} — on-demand community-tag lookup via the Worker's manual route. */
     private void handleUrchin(ICommandSender sender, String[] args) {
@@ -270,13 +275,14 @@ public class BedwarsQolCommand extends CommandBase {
             return;
         }
         send(sender, "§7Looking up Urchin tags for §f" + name + "§7...");
+        final PlaybackGate.Ticket ticket = PlaybackGate.ticket(); // the command is the submission
         URCHIN_EXEC.submit(() -> {
             try {
                 com.bedwarsqol.stats.ScraperBackendClient.UrchinLookup r =
                         com.bedwarsqol.stats.ScraperBackendClient.getUrchin(url, token, name);
-                scheduled(() -> printUrchin(name, r));
+                scheduled(ticket, () -> printUrchin(name, r));
             } catch (Throwable t) {
-                scheduled(() -> send(sender, "§cUrchin lookup failed for §f" + name + "§c."));
+                scheduled(ticket, () -> send(sender, "§cUrchin lookup failed for §f" + name + "§c."));
             }
         });
     }
@@ -343,10 +349,11 @@ public class BedwarsQolCommand extends CommandBase {
                 // response-lost clear must still leave the client display safe. finishUrchinKey then
                 // only confirms or warns about the server outcome; it never re-derives display
                 // safety from the network result.
-                KEY_SUBMITTER.submitClear(ProviderKeySubmitter.Provider.URCHIN, backend,
+                keySubmitter(PlaybackGate.ticket()).submitClear(ProviderKeySubmitter.Provider.URCHIN, backend,
                         StatsCache::stripUrchinTags, res -> finishUrchinKey(res, true));
             } else {
-                KEY_SUBMITTER.submitSet(ProviderKeySubmitter.Provider.URCHIN, backend, args[1].trim(),
+                keySubmitter(PlaybackGate.ticket()).submitSet(ProviderKeySubmitter.Provider.URCHIN, backend,
+                        args[1].trim(),
                         StatsCache::invalidateUrchinResolution, res -> finishUrchinKey(res, false));
             }
         } catch (Throwable t) {
@@ -429,10 +436,12 @@ public class BedwarsQolCommand extends CommandBase {
         return SeraphKeyScrub.scrubKeyEntries(sent);
     }
 
-    /** Run {@code r} on the client thread (chat/cache mutations must land there). */
-    private static void scheduled(Runnable r) {
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc != null) mc.addScheduledTask(r);
+    /**
+     * Run {@code r} on the client thread (chat/cache mutations must land there), only while {@code ticket}, captured
+     * when the command ran, is still current (Rewind's lifetime rule, {@link FeatureTasks}).
+     */
+    private static void scheduled(PlaybackGate.Ticket ticket, Runnable r) {
+        FeatureTasks.schedule(ticket, r);
     }
 
     private static void local(String message) {

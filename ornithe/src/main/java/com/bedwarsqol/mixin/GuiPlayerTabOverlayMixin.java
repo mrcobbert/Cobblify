@@ -7,6 +7,7 @@ import com.bedwarsqol.hud.BedwarsHudRenderer;
 import com.bedwarsqol.hud.OverlayItems;
 import com.bedwarsqol.hud.TabListLayout;
 import com.bedwarsqol.hud.TabOverlayScale;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.HypixelContext;
 import com.bedwarsqol.stats.TabListLookup;
 import net.minecraft.client.Minecraft;
@@ -115,6 +116,7 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
 
     /** Memoized {@link TabListLookup#statsTextForPlayerInfo}, never null ("" = no overlay). */
     private static String bedwarsqol$statsFor(NetworkPlayerInfo info) {
+        if (PlaybackGate.muted()) return ""; // no stats lookups for a recording's players
         String s = bedwarsqol$statsMemo.get(info);
         if (s == null) {
             s = TabListLookup.statsTextForPlayerInfo(info);
@@ -144,6 +146,7 @@ public abstract class GuiPlayerTabOverlayMixin implements TabOverlayScale {
      */
     @Inject(method = "getPlayerName", at = @At("RETURN"), cancellable = true)
     private void bedwarsqol$appendRealName(NetworkPlayerInfo info, CallbackInfoReturnable<String> cir) {
+        if (PlaybackGate.muted()) return; // this session's denicks never label a recording's players
         ClientSettings cfg = BedwarsQol.config;
         if (cfg == null || !cfg.nickUtils || !cfg.autoDenick) return;
         if (info == null || info.getGameProfile() == null) return;

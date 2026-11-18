@@ -21,6 +21,6 @@ public abstract class MinecraftMouseMixin {
             at = @At(value = "INVOKE", target = "Lorg/lwjgl/input/Mouse;getEventButton()I", ordinal = 0),
             require = 1)
     private void bedwarsqol$mouseEvent(CallbackInfo ci) {
-        ModEvents.MOUSE.post(new MouseButtonEvent(Mouse.getEventButton(), Mouse.getEventButtonState()));
+        ModEvents.post(ModEvents.MOUSE, new MouseButtonEvent(Mouse.getEventButton(), Mouse.getEventButtonState()));
     }
 }

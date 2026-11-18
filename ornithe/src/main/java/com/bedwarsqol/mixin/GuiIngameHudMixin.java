@@ -40,12 +40,12 @@ public abstract class GuiIngameHudMixin {
         // Kept unconditional so vanilla's GL state is the same whether or not the HUD draws.
         GlStateManager.tryBlendFuncSeparate(770, 771, 1, 0);
         TabHudGate.beginFrame(Minecraft.getMinecraft());
-        if (!TabHudGate.hidesHud()) ModEvents.HUD_TEXT.post(partialTicks);
+        if (!TabHudGate.hidesHud()) ModEvents.post(ModEvents.HUD_TEXT, partialTicks);
     }
 
     @Inject(method = "renderGameOverlay", at = @At("TAIL"), require = 1)
     private void bedwarsqol$hudPost(float partialTicks, CallbackInfo ci) {
-        ModEvents.HUD_POST.post(partialTicks);
+        ModEvents.post(ModEvents.HUD_POST, partialTicks);
         TabHudGate.endFrame();
     }
 }

@@ -647,6 +647,10 @@ public final class RewindWriter {
                     return;
                 }
                 syncAll(true);
+                if (c.endedBy == RewindGameRules.EndReason.REPLAY) {
+                    discard(game); // a replay-viewer visit the sidebar had opened (code review 1, I4)
+                    break;
+                }
                 finish(game, c.endedBy != null ? c.endedBy.json : "unknown", c.result, c.failed, c.timeUs,
                         c.keyMarked, c.stats);
                 break;
@@ -1283,6 +1287,38 @@ public final class RewindWriter {
             }
         }
         prune();
+        startWindow();
+    }
+
+    /**
+     * Discards {@code g} (a {@link RewindGameRules.EndReason#REPLAY} close): its segments become CLOSED (later data is
+     * late), the lock is released and its files are deleted. Should a delete fail, the {@code .json} left behind says
+     * REPLAY and incomplete first, so the library never lists it.
+     */
+    private void discard(Game g) {
+        if (game == g) {
+            game = null;
+        }
+        for (Seg s : g.segs) {
+            s.state = CLOSED;
+            s.game = null;
+        }
+        if (g.handle != null) {
+            store.release(g.id, g.handle);
+            g.handle = null;
+        }
+        if (g.id != null) {
+            RecordingMeta m = g.meta;
+            m.complete = false;
+            m.serverType = "REPLAY"; // what the library's replay-viewer filter reads (ModeLabels.isReplay)
+            m.endedBy = RewindGameRules.EndReason.REPLAY.json;
+            try {
+                store.writeMeta(g.id, m);
+            } catch (Throwable ignored) {
+                // deleted next anyway
+            }
+            store.delete(g.id);
+        }
         startWindow();
     }
 

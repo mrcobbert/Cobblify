@@ -24,6 +24,24 @@ final class Policy {
         return inWorld && !singleplayer ? ON_SERVER : null;
     }
 
+    /**
+     * {@link #local(boolean, boolean)}, except that a Rewind recording playing through its socketless connection
+     * ({@link #rewindPlayback}) counts as local: its world is not singleplayer, but there is no server behind it.
+     */
+    static String local(boolean inWorld, boolean singleplayer, boolean rewindPlayback) {
+        return rewindPlayback ? null : local(inWorld, singleplayer);
+    }
+
+    /**
+     * A Rewind recording is playing in the client: the session is active, the client has a world that is not
+     * singleplayer, and the connection's remote address is not a network address (Rewind's playback channel is a
+     * Netty embedded channel; every real server connection has an internet address).
+     */
+    static boolean rewindPlayback(boolean sessionActive, boolean inWorld, boolean singleplayer,
+                                  boolean networkAddress) {
+        return sessionActive && inWorld && !singleplayer && !networkAddress;
+    }
+
     /** Commands and probes act on a world, so they need the integrated (singleplayer) server. */
     static String singleplayerWorld(boolean inWorld, boolean singleplayer, boolean integratedServer) {
         if (inWorld && !singleplayer) return ON_SERVER;
@@ -84,7 +102,12 @@ final class Policy {
      * macOS. Refused on a multiplayer server like every other input.
      */
     static int[] modifiers(String mods, boolean inWorld, boolean singleplayer) {
-        Refused.check(local(inWorld, singleplayer));
+        return modifiers(mods, inWorld, singleplayer, false);
+    }
+
+    /** {@link #modifiers(String, boolean, boolean)}, also allowed while a Rewind recording plays. */
+    static int[] modifiers(String mods, boolean inWorld, boolean singleplayer, boolean rewindPlayback) {
+        Refused.check(local(inWorld, singleplayer, rewindPlayback));
         java.util.LinkedHashSet<Integer> codes = new java.util.LinkedHashSet<>();
         if (mods == null || mods.trim().isEmpty()) return new int[0];
         for (String raw : mods.split(",", -1)) {
@@ -114,12 +137,22 @@ final class Policy {
 
     /** Holding a key needs a local world; releasing ("off") is always allowed, wherever the client is. */
     static String keyhold(String state, boolean inWorld, boolean singleplayer) {
-        return "off".equals(state) ? null : local(inWorld, singleplayer);
+        return keyhold(state, inWorld, singleplayer, false);
+    }
+
+    /** {@link #keyhold(String, boolean, boolean)}; a Rewind recording playing counts as local. */
+    static String keyhold(String state, boolean inWorld, boolean singleplayer, boolean rewindPlayback) {
+        return "off".equals(state) ? null : local(inWorld, singleplayer, rewindPlayback);
     }
 
     /** Checked on every tick of a hold: once the client is on a multiplayer server, every hold ends. */
     static boolean keepHolding(boolean inWorld, boolean singleplayer) {
-        return local(inWorld, singleplayer) == null;
+        return keepHolding(inWorld, singleplayer, false);
+    }
+
+    /** {@link #keepHolding(boolean, boolean)}; a Rewind recording playing keeps holds (the free camera flies). */
+    static boolean keepHolding(boolean inWorld, boolean singleplayer, boolean rewindPlayback) {
+        return local(inWorld, singleplayer, rewindPlayback) == null;
     }
 
     /**
@@ -182,10 +215,11 @@ final class Policy {
                 return null;
             default:
                 return OVERLAY_PROBES.contains(name) || MOTION_BLUR_PROBES.contains(name)
-                        || REWIND_PROBES.contains(name) ? null
+                        || REWIND_PROBES.contains(name) || REWIND_WATCH_PROBES.contains(name) ? null
                         : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
                         + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ", "
-                        + String.join(", ", MOTION_BLUR_PROBES) + ", " + String.join(", ", REWIND_PROBES) + ")";
+                        + String.join(", ", MOTION_BLUR_PROBES) + ", " + String.join(", ", REWIND_PROBES) + ", "
+                        + String.join(", ", REWIND_WATCH_PROBES) + ")";
         }
     }
 
@@ -210,14 +244,22 @@ final class Policy {
      * so it can never reach the player's real {@code ~/.cobblify/rewind}.
      */
     static String rewindClear(String overrideProperty, String resolvedDir, String userHome) {
+        return rewindOwnFolder("rewind-clear", overrideProperty, resolvedDir, userHome);
+    }
+
+    /**
+     * {@code probe} (rewind-clear, rewind-watch-open, rewind-watch-stage) only runs in a game cobdev launched with its
+     * own folder, never the player's {@code ~/.cobblify/rewind}.
+     */
+    static String rewindOwnFolder(String probe, String overrideProperty, String resolvedDir, String userHome) {
         if (overrideProperty == null || overrideProperty.trim().isEmpty()) {
-            return "rewind-clear needs the dev client's own folder (-D" + REWIND_DIR_PROPERTY + ", set by cobdev stage)";
+            return probe + " needs the dev client's own folder (-D" + REWIND_DIR_PROPERTY + ", set by cobdev stage)";
         }
-        if (resolvedDir == null) return "rewind-clear: no Rewind folder";
+        if (resolvedDir == null) return probe + ": no Rewind folder";
         String real = new java.io.File(new java.io.File(userHome == null ? "" : userHome, ".cobblify"), "rewind")
                 .getAbsolutePath();
         if (new java.io.File(resolvedDir).getAbsolutePath().equals(real)) {
-            return "rewind-clear never touches the player's own Rewind folder";
+            return probe + " never touches the player's own Rewind folder";
         }
         return null;
     }
@@ -225,6 +267,79 @@ final class Policy {
     /** True for a file name {@code rewind-clear} may delete. */
     static boolean rewindFile(String name) {
         return name != null && REWIND_FILE.matcher(name).matches();
+    }
+
+    // ------------------------------------------------------------------ Rewind watch (cycle 2026-11-17-rewind-watch)
+
+    /**
+     * Step RWW's probes. {@code rewind-watch-swing ITEM} (singleplayer: hotbar slot 2 holds ITEM and the player swings
+     * once, before RW records); {@code rewind-watch-open} (the newest closed recording of cobdev's own folder);
+     * {@code rewind-watch-state}; {@code rewind-watch-seek TICK} or {@code rewind-watch-seek by MS};
+     * {@code rewind-watch-play-to TICK} (plays at 4x and pauses exactly at TICK); {@code rewind-watch-snapshot} (hashes
+     * and counts of the seek-equivalence contract's seven groups); {@code rewind-watch-quit} (Quit to Title);
+     * {@code rewind-watch-stage DIR} (copies recording files from cobdev's staging folder into its own Rewind folder,
+     * for the timings on a real game). Counts and hashes only: no id, name, chat, map or position leaves the game.
+     */
+    static final java.util.List<String> REWIND_WATCH_PROBES = java.util.Arrays.asList("rewind-watch-swing",
+            "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek", "rewind-watch-play-to",
+            "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage");
+    /** The longest seek {@code rewind-watch-seek by MS} takes, either way: a day. */
+    static final long REWIND_MAX_SEEK_MS = 24L * 3600 * 1000;
+    /** The staging folder's tail under cobdev's shared folder (cobdev writes it, the game reads it). */
+    static final String REWIND_STAGE_TAIL = "/cobblify-dev/cache/rewind-stage";
+
+    /** {@code rewind-watch-seek TICK} -> {0, tick}; {@code rewind-watch-seek by MS} -> {1, microseconds}. */
+    static long[] rewindSeek(java.util.List<String> args) {
+        try {
+            if (args.size() == 1) {
+                long tick = Long.parseLong(args.get(0));
+                if (tick < 0) throw new Refused("rewind-watch-seek TICK is 0 or more");
+                return new long[]{0, tick};
+            }
+            if (args.size() == 2 && "by".equals(args.get(0))) {
+                long ms = Long.parseLong(args.get(1));
+                if (Math.abs(ms) > REWIND_MAX_SEEK_MS) throw new Refused("rewind-watch-seek by MS is at most a day");
+                return new long[]{1, ms * 1000L};
+            }
+        } catch (NumberFormatException e) {
+            throw new Refused("rewind-watch-seek takes whole numbers");
+        }
+        throw new Refused("probe rewind-watch-seek TICK or rewind-watch-seek by MS");
+    }
+
+    /** {@code rewind-watch-play-to TICK}: the tick, 0 or more. */
+    static long rewindPlayTo(java.util.List<String> args) {
+        if (args.size() != 1) throw new Refused("probe rewind-watch-play-to TICK");
+        try {
+            long t = Long.parseLong(args.get(0));
+            if (t >= 0) return t;
+        } catch (NumberFormatException ignored) {
+            // refused below
+        }
+        throw new Refused("rewind-watch-play-to TICK is a whole number, 0 or more");
+    }
+
+    /** {@code rewind-watch-swing ITEM}: a namespaced item id such as minecraft:stone_sword. */
+    static String rewindSwingItem(java.util.List<String> args) {
+        if (args.size() != 1 || args.get(0) == null || !args.get(0).matches("[a-z0-9_]+:[a-z0-9_]+")) {
+            throw new Refused("probe rewind-watch-swing ITEM (e.g. minecraft:stone_sword)");
+        }
+        return args.get(0);
+    }
+
+    /** {@code rewind-watch-stage DIR}: an absolute path that is cobdev's staging folder, nothing else. */
+    static String rewindStageDir(java.util.List<String> args) {
+        if (args.size() != 1 || args.get(0) == null) return "probe rewind-watch-stage DIR";
+        String d = args.get(0);
+        if (!d.startsWith("/") || d.contains("/../") || d.contains("/./") || !d.endsWith(REWIND_STAGE_TAIL)) {
+            return "rewind-watch-stage only reads cobdev's staging folder (*" + REWIND_STAGE_TAIL + ")";
+        }
+        return null;
+    }
+
+    /** Recording files {@code rewind-watch-stage} copies: a recording and its metadata, not its stats. */
+    static boolean rewindStageFile(String name) {
+        return rewindFile(name) && !name.endsWith(".stats.json");
     }
 
     // ------------------------------------------------------------------ Motion Blur (cycle 2026-11-17)

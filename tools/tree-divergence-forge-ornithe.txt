@@ -256,6 +256,14 @@ one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/CarryOverDecodeTest.java
 one-sided test ornithe com/bedwarsqol/rewind/RewindIntegrationTest.java
 
+# Rewind playback (Ornithe only): the socketless playback connection, the vanilla decoder for stored
+# packets, their embedded-channel and round-trip tests, and the opt-in real-recording decode check.
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackConnection.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/VanillaPacketDecoder.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackConnectionTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/VanillaPacketDecoderTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RealRecordingDecodeTest.java
+
 # ---------------------------------------------------------------------------
 # res: src/main/resources vs ornithe/src/main/resources
 # ---------------------------------------------------------------------------
@@ -272,3 +280,63 @@ one-sided res ornithe com/bedwarsqol/version.properties
 # Sharp HUD text (Ornithe only): HUD module text in Minecraft's font at in-between sizes, drawn sharp
 # bilinear from the game's own font texture.
 one-sided main ornithe com/bedwarsqol/gui/render/SharpText.java
+
+# Rewind playback isolation, events and hooks (Ornithe only, R2 Phase 5a): the chat hover card and the
+# chat-submit hook return early while a recording plays (PlaybackGate); the scan test pins every gated
+# ModEvents post and mixin hook, the recorder test pins R1 ignoring everything under the gate.
+divergent main com/bedwarsqol/mixin/GuiChatMixin.java
+divergent main com/bedwarsqol/mixin/GuiScreenMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindIgnoresPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackIsolationScanTest.java
+
+# Rewind playback isolation, one lifetime rule for cross-thread work (Ornithe only, R2 Phase 5b):
+# client-thread callbacks go through FeatureTasks with the ticket of the command that submitted them.
+divergent main com/bedwarsqol/command/BedwarsQolCommand.java
+divergent main com/bedwarsqol/command/BedwarsStatsCommand.java
+one-sided main ornithe com/bedwarsqol/feature/FeatureTasks.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/FeatureTasksTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackNetworkGateTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/QueuedWorkScanTest.java
+
+# Rewind playback session (Ornithe only, R2 Phase 4a): the client side of the common PlaybackSession (its
+# ClientOps in Minecraft calls, the packet sink, the inert camera, the base screen) and its frame, tick,
+# screen-policy, camera, particle, sound and render hooks with their accessors.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindPlayback.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackSink.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindCamera.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindScreen.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftRewindPlaybackMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftTimerAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/PlayerControllerMPRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EffectRendererRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/SoundHandlerRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindPlaybackMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameAccessor.java
+# Rewind gallery and watch entries (Ornithe only, R2 Phase 6c): the gallery screen, the title screen's
+# Realms slot as "Rewind" and the pause menu's "Watch Last Game" row; the test pins the row's layout
+# against vanilla's pause-menu buttons.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindGalleryScreen.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiMainMenuRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameMenuRewindMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindEntryButtonsTest.java
+# Rewind viewer screens (Ornithe only, R2 Phase 6b): the viewer with its bottom bar, the loading card, the Esc
+# menu, and the camera controls the viewer drives; the test pins every viewer, bar and Esc action to its session
+# or camera call.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindViewerScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindLoadingScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindEscScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/ViewerCameraControls.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindViewerActionsTest.java
+# Rewind R2 Phase 7 wiring (Ornithe only): the tests pin onReady's playback wiring and the shared store, the
+# gallery's once-per-frame input while a recording plays, and the held-item sync (C09) cancelled during playback.
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindWiringTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindGalleryInputTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HeldItemSyncCancelTest.java
+# Rewind code review 1 (Ornithe only): the camera's recorded maximum health, pickup-animation countdown and
+# no hurt tilt in the free camera.
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackCameraStateTest.java
+
+# Rewind R2 Phase 4b (Ornithe only): your view, the free camera and the recorded player's puppet in playback.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindSelfPuppet.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/CameraController.java

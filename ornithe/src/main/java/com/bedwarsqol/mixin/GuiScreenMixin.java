@@ -2,6 +2,7 @@ package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.feature.ChatHoverStats;
 import com.bedwarsqol.feature.OutgoingChat;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import net.minecraft.client.gui.GuiChat;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.util.IChatComponent;
@@ -21,6 +22,8 @@ import java.util.List;
  *
  * <p>Also notifies {@link OutgoingChat} on every chat-GUI submit so client commands (which never
  * reach {@code EntityPlayerSP}) still cancel optional automation and open the quiet window.
+ *
+ * <p>Neither hook runs while a Rewind recording plays ({@link PlaybackGate#muted()}).
  */
 @Mixin(GuiScreen.class)
 public abstract class GuiScreenMixin {
@@ -29,6 +32,7 @@ public abstract class GuiScreenMixin {
 
     @Inject(method = "handleComponentHover", at = @At("HEAD"), cancellable = true)
     private void bedwarsqol$chatHoverStats(IChatComponent component, int x, int y, CallbackInfo ci) {
+        if (PlaybackGate.muted()) return; // vanilla's own hover card only, while a Rewind recording plays
         if (!((Object) this instanceof GuiChat)) return;
         List<String> lines = ChatHoverStats.buildTooltip(component);
         if (lines == null || lines.isEmpty()) return;
@@ -38,6 +42,7 @@ public abstract class GuiScreenMixin {
 
     @Inject(method = "sendChatMessage(Ljava/lang/String;Z)V", at = @At("HEAD"))
     private void bedwarsqol$outgoingUserIntent(String msg, boolean addToChat, CallbackInfo ci) {
+        if (PlaybackGate.muted()) return;
         // Only the chat GUI — other screens that call sendChatMessage must not cancel automation.
         if (!((Object) this instanceof GuiChat)) return;
         if (OutgoingChat.get().isPassthrough()) return;

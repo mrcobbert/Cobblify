@@ -25,6 +25,10 @@ import java.util.Locale;
  *   <li>Lobby: {@code serverType} MAIN or TOURNAMENT, or a {@code lobbyName}. The verdict waits
  *       {@link #LOBBY_VERDICT_WAIT_US}: the Bed Wars queue or game on the sidebar turns it into a
  *       Bed Wars run ({@code lobbyOverridden}), otherwise the run is dropped.</li>
+ *   <li>Hypixel's replay viewer ({@code serverType} REPLAY, stats code 7) gets a lobby verdict the
+ *       sidebar never overrides: the replayed game's Bed Wars sidebar is not a game (R2, Q5). A REPLAY
+ *       location that comes after the sidebar already opened the visit discards that game
+ *       ({@link EndReason#REPLAY}; code review 1, I4).</li>
  *   <li>Every other location is a game server (a bare {@code serverName} is "unclassified"). Bed
  *       Wars ({@code serverType} BEDWARS, a {@code BEDWARS_*} mode, or the Bed Wars sidebar) opens
  *       at the active-game rising edge with no minimum length; others open once the visit reaches
@@ -108,6 +112,8 @@ public final class RewindGameRules {
     public static final int VERDICT_LOBBY = 1;
     public static final int VERDICT_GAME_SERVER = 2;
     public static final int VERDICT_UNCLASSIFIED = 3;
+    /** {@link #serverTypeCode} of Hypixel's replay viewer ({@code serverType} REPLAY). */
+    public static final int SERVER_TYPE_REPLAY = 7;
 
     private static final int BOUNDARY_RING = 32;
     private static final long UNKNOWN_DT = -1L;
@@ -144,7 +150,12 @@ public final class RewindGameRules {
         QUIT("quit"),
         SETTINGS("settings"),
         FAILED("failed"),
-        CAP("cap");
+        CAP("cap"),
+        /**
+         * Hypixel's replay viewer, learned from a location that came after the sidebar had opened the game (code review
+         * 1, I4): the game is discarded, its file deleted, never kept.
+         */
+        REPLAY("replay");
 
         public final String json;
 
@@ -231,7 +242,7 @@ public final class RewindGameRules {
         /** Receipt time minus the segment's boundary time; negative if it came first; -1 unknown. */
         public final long dtUsFromBoundary;
         public final boolean hasServerType;
-        /** 0 absent, 1 BEDWARS, 2 MAIN, 3 TOURNAMENT, 4 SKYBLOCK, 5 HOUSING, 6 other. */
+        /** 0 absent, 1 BEDWARS, 2 MAIN, 3 TOURNAMENT, 4 SKYBLOCK, 5 HOUSING, 6 other, 7 REPLAY (since R2). */
         public final int serverTypeCode;
         public final boolean hasLobbyName;
         public final boolean hasMode;
@@ -428,6 +439,10 @@ public final class RewindGameRules {
         boolean captureLatched;
         /** Its first boundary passed while capture was latched: nothing of it is ever recorded. */
         boolean skip;
+        /** Its location gave a lobby verdict (cleared when the Bed Wars sidebar overrides it). */
+        boolean lobby;
+        /** Hypixel's replay viewer ({@code serverType} REPLAY): its lobby verdict is never overridden (R2, Q5). */
+        boolean replay;
         final List<MarkerEvent> pendingMarkers = new ArrayList<MarkerEvent>();
 
         Visit(int seg, long startUs) {
@@ -732,6 +747,55 @@ public final class RewindGameRules {
         return active && visit != null && visit.state == State.OPEN;
     }
 
+    /**
+     * What the current connection is right now, for Rewind's "Watch Last Game" pause-menu row (R2, TASK A4): the row
+     * shows with no game open in a lobby run, or with a game open that has its WIN/LOSS. Everything is false when the
+     * rules are inactive (no recording connection, after a disconnect, Record Games off).
+     */
+    public static final class EntryState {
+        /** A game is being recorded on this connection. */
+        public final boolean gameOpen;
+        /** {@link #result} is WIN or LOSS. */
+        public final boolean resultKnown;
+        /** The open game's result; {@link Result#UNKNOWN} when none is known or no game is open. */
+        public final Result result;
+        /**
+         * The current run is a lobby: a lobby verdict (waiting for, or past, its sidebar check; Hypixel's replay viewer
+         * included), with no new world undecided. A lobby the Bed Wars queue overrode is a pending game run instead.
+         */
+        public final boolean lobby;
+        /** No game is open, and the current run (or an undecided new world) may still become one: a waiting room. */
+        public final boolean pendingGameRun;
+
+        EntryState(boolean gameOpen, Result result, boolean lobby, boolean pendingGameRun) {
+            this.gameOpen = gameOpen;
+            this.result = result;
+            this.resultKnown = result != Result.UNKNOWN;
+            this.lobby = lobby;
+            this.pendingGameRun = pendingGameRun;
+        }
+
+        @Override
+        public String toString() {
+            return "EntryState{gameOpen=" + gameOpen + ", result=" + result + ", lobby=" + lobby
+                    + ", pendingGameRun=" + pendingGameRun + "}";
+        }
+    }
+
+    private static final EntryState NO_ENTRY_STATE = new EntryState(false, Result.UNKNOWN, false, false);
+
+    /** The watch-entry state now (client thread, like every other call). */
+    public EntryState entryState() {
+        if (!active || visit == null) return NO_ENTRY_STATE;
+        boolean open = visit.state == State.OPEN;
+        Result result = open && visit.result != null ? visit.result : Result.UNKNOWN;
+        boolean lobby = !open && cand == null && visit.lobby
+                && (visit.state == State.LOBBY_WAIT || visit.state == State.DROPPED);
+        boolean pending = !open && (cand != null || visit.state == State.UNCLASSIFIED
+                || visit.state == State.BEDWARS_PENDING || visit.state == State.SERVER_PENDING);
+        return new EntryState(open, result, lobby, pending);
+    }
+
     /** Location events since the previous file, oldest first, at most {@link #LOCATION_LOG_CAP}. */
     public List<LocationLogEntry> locationLog() {
         return Collections.unmodifiableList(new ArrayList<LocationLogEntry>(log));
@@ -767,13 +831,17 @@ public final class RewindGameRules {
         if (t.equals("TOURNAMENT")) return 3;
         if (t.equals("SKYBLOCK")) return 4;
         if (t.equals("HOUSING")) return 5;
+        if (t.equals("REPLAY")) return SERVER_TYPE_REPLAY;
         return 6;
     }
 
-    /** Lobby only on a lobby signal; a bare {@code serverName} is unclassified; anything else a game server. */
+    /**
+     * Lobby only on a lobby signal (Hypixel's replay viewer counts as one: it is never a game); a bare
+     * {@code serverName} is unclassified; anything else a game server.
+     */
     public static int verdictOf(Location loc) {
         int type = serverTypeCode(loc.serverType);
-        if (type == 2 || type == 3 || loc.lobbyName != null) return VERDICT_LOBBY;
+        if (type == 2 || type == 3 || type == SERVER_TYPE_REPLAY || loc.lobbyName != null) return VERDICT_LOBBY;
         if (loc.serverType == null && loc.mode == null && loc.map == null) return VERDICT_UNCLASSIFIED;
         return VERDICT_GAME_SERVER;
     }
@@ -985,8 +1053,9 @@ public final class RewindGameRules {
                 }
                 break;
             case LOBBY_WAIT:
-                if (sidebarBedwars) {
+                if (sidebarBedwars && !visit.replay) {   // a replayed game's sidebar is not a game (R2, Q5)
                     lobbyOverridden++;
+                    visit.lobby = false;
                     visit.state = State.BEDWARS_PENDING;
                     visit.classification = Classification.SIDEBAR;
                     if (visit.failPending) failPendingRun(visit, visit.captureLatched);
@@ -1049,6 +1118,7 @@ public final class RewindGameRules {
             classify(nowUs, loc, verdict);
             return;
         }
+        if (lateReplay(nowUs, loc)) return;
         // A late or repeated location for an already classified visit.
         if (visit.server == null) {
             if (verdict != VERDICT_LOBBY) {
@@ -1057,12 +1127,53 @@ public final class RewindGameRules {
             } else if (visit.state == State.FAILED) {
                 if (visit.captureLatched) emitRearm();           // the failed run was a lobby
                 visit.state = State.DROPPED;
+                visit.lobby = true;
                 visit.server = loc.serverName;
             }
         } else if (visit.server.equals(loc.serverName) && verdict != VERDICT_LOBBY) {
             updateInfo(loc);                                     // latest wins (code review 2, I4)
             emitInfoIfChanged();
         }
+    }
+
+    /**
+     * Code review 1, I4: a REPLAY location for this visit after the Bed Wars sidebar had already classified it (no
+     * server yet) or for its own server. Hypixel's replay viewer is never recorded: an open game is discarded (a
+     * {@link EndReason#REPLAY} CLOSE, whose file the writer deletes), a pending run becomes the lobby verdict it would
+     * have had with an early location. Its undecided candidate is left to be decided on its own location.
+     *
+     * @return true when the location was such a REPLAY one and has been applied
+     */
+    private boolean lateReplay(long nowUs, Location loc) {
+        if (serverTypeCode(loc.serverType) != SERVER_TYPE_REPLAY) return false;
+        if (visit.server != null && !visit.server.equals(loc.serverName)) return false;
+        switch (visit.state) {
+            case OPEN: {
+                boolean rearm = visit.failPending && visit.captureLatched; // its failure's owner was no game
+                visit.failPending = false;
+                closeGame(nowUs, EndReason.REPLAY, false, false);
+                if (rearm) emitRearm();
+                markReplay(loc);
+                return true;
+            }
+            case BEDWARS_PENDING:
+            case SERVER_PENDING:
+                classify(nowUs, loc, VERDICT_LOBBY);
+                return true;
+            case LOBBY_WAIT:
+                visit.replay = true;
+                return true;
+            default:
+                return false;                                    // failed or dropped: the branches below apply
+        }
+    }
+
+    /** The visit is the replay viewer's from now on: a lobby, never a game, for any later location or sidebar. */
+    private void markReplay(Location loc) {
+        visit.lobby = true;
+        visit.replay = true;
+        if (visit.server == null) visit.server = loc.serverName;
+        visit.serverType = loc.serverType;
     }
 
     private void resolveCandidate(long nowUs, Location loc, int verdict) {
@@ -1089,6 +1200,7 @@ public final class RewindGameRules {
             Visit skipped = new Visit(c.firstSeg, c.firstUs);
             skipped.lastSeg = c.lastSeg;
             skipped.server = loc.serverName;
+            skipped.lobby = verdict == VERDICT_LOBBY;
             skipped.state = State.DROPPED;
             visit = skipped;
         } else {
@@ -1154,6 +1266,8 @@ public final class RewindGameRules {
         if (verdict == VERDICT_LOBBY) {
             visit.state = State.LOBBY_WAIT;
             visit.lobbyAtUs = nowUs;
+            visit.lobby = true;
+            visit.replay = serverTypeCode(loc.serverType) == SERVER_TYPE_REPLAY;
             return;
         }
         if (visit.skip) {
@@ -1257,10 +1371,13 @@ public final class RewindGameRules {
      * {@link #advance} until nothing is undecided, and a different-server or lobby location resolves the candidate
      * before calling this. With {@code ending} (disconnect, quit, settings) boundaries the capture handler started but
      * the client never loaded are joined too, with any failure pending in them. The CLOSE's time: the due time of a
-     * close that fell due earlier, unless a segment was JOINed after it (then now).
+     * close that fell due earlier, unless a segment was JOINed after it (then now). A {@link EndReason#REPLAY} close
+     * discards the game (the writer deletes its file): it joins nothing and is never a failure.
      */
     private void closeGame(long nowUs, EndReason reason, boolean failed, boolean ending) {
-        if (cand != null) mergeCandidate(nowUs);
+        boolean discard = reason == EndReason.REPLAY;
+        // A discarded game takes nothing more: an undecided candidate waits for its own location (code review 1, I4).
+        if (cand != null && !discard) mergeCandidate(nowUs);
         if (ending && captureSeg > lastBoundarySeg) {
             out.add(Command.range(CommandType.JOIN, lastBoundarySeg + 1, captureSeg));
             visit.lastSeg = captureSeg;
@@ -1273,7 +1390,7 @@ public final class RewindGameRules {
                 pendingFailLatched = false;
             }
         }
-        boolean f = failed || visit.failPending;
+        boolean f = !discard && (failed || visit.failPending);
         EndReason why = f ? EndReason.FAILED : reason;
         // Code review 3, I1: a close that fell due earlier ends at its due time, unless a segment was JOINed after it.
         long due = closeDueAt(visit);

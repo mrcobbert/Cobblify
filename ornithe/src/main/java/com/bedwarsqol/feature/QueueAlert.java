@@ -11,6 +11,7 @@ import com.bedwarsqol.stats.UrchinTag;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.ChatComponentText;
 import com.bedwarsqol.ornithe.ChatReceivedEvent;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 
 import java.util.HashSet;
 import java.util.Locale;
@@ -48,6 +49,10 @@ import java.util.concurrent.Executors;
  * {@link #MAX_LOOKUPS_PER_QUEUE} per queue; past the cap we stop silently, because the providers'
  * keys are personal and rate-limited. The per-queue state resets whenever
  * {@link GameSessionTracker#currentSessionId()} changes.
+ *
+ * <p><b>Rewind.</b> The announcement of a lookup carries the gate ticket of the chat line that started it
+ * ({@link FeatureTasks}), so a lookup from before a recording started playing never prints or sounds during
+ * playback or after it. A lookup the gate refuses is dropped like any failed lookup.
  */
 public final class QueueAlert {
 
@@ -95,7 +100,8 @@ public final class QueueAlert {
         final String url = backend.url;
         final String token = backend.token;
         final String name = sender;
-        EXEC.submit(() -> lookup(name, wantTag, wantNick, urchin, url, token));
+        final PlaybackGate.Ticket ticket = PlaybackGate.ticket(); // the effect's lifetime starts with this line
+        EXEC.submit(() -> lookup(ticket, name, wantTag, wantNick, urchin, url, token));
     }
 
     /**
@@ -121,7 +127,7 @@ public final class QueueAlert {
     }
 
     /** Off-thread: resolve the name, then (for a real account) ask the enabled providers. */
-    private static void lookup(String name, boolean wantTag, boolean wantNick,
+    private static void lookup(PlaybackGate.Ticket ticket, String name, boolean wantTag, boolean wantNick,
                                boolean urchin, String url, String token) {
         UUID resolved;
         try {
@@ -131,15 +137,16 @@ public final class QueueAlert {
         }
         if (resolved == null) {
             // No such Mojang account: the typed name is a nick.
-            if (wantNick) scheduled(() -> announceNick(name));
+            if (wantNick) FeatureTasks.schedule(ticket, () -> announceNick(name));
             return;
         }
         if (!wantTag) return;
         if (url == null || url.trim().isEmpty()) return; // no backend configured — nothing to ask
-        if (urchin) lookupUrchin(name, resolved, url, token);
+        if (urchin) lookupUrchin(ticket, name, resolved, url, token);
     }
 
-    private static void lookupUrchin(String name, UUID resolved, String url, String token) {
+    private static void lookupUrchin(PlaybackGate.Ticket ticket, String name, UUID resolved, String url,
+                                     String token) {
         ScraperBackendClient.UrchinLookup r;
         try {
             r = ScraperBackendClient.getUrchin(url, token, name);
@@ -150,7 +157,7 @@ public final class QueueAlert {
         if (!uuidMatches(resolved, r.uuid)) return; // mismatch => never accuse
         final UrchinTag tag = UrchinTag.priority(r.tags, System.currentTimeMillis());
         if (tag == null) return;
-        scheduled(() -> announceUrchin(name, tag));
+        FeatureTasks.schedule(ticket, () -> announceUrchin(name, tag));
     }
 
     /** Client thread: the same cheater-type-only wording {@link UrchinAlert} uses. */
@@ -176,12 +183,6 @@ public final class QueueAlert {
     private static void pling() {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc != null && mc.thePlayer != null) mc.thePlayer.playSound("note.pling", 1.0f, 1.0f);
-    }
-
-    /** Run {@code r} on the client thread (chat output must land there). */
-    private static void scheduled(Runnable r) {
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc != null) mc.addScheduledTask(r);
     }
 
     private static boolean isSelf(String name) {

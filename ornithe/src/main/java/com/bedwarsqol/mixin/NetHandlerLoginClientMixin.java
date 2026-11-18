@@ -23,6 +23,6 @@ public abstract class NetHandlerLoginClientMixin {
 
     @Inject(method = "handleLoginSuccess", at = @At("RETURN"), require = 1)
     private void bedwarsqol$connected(CallbackInfo ci) {
-        ModEvents.SERVER_CONNECT.post(new ServerConnectEvent(networkManager));
+        ModEvents.post(ModEvents.SERVER_CONNECT, new ServerConnectEvent(networkManager));
     }
 }

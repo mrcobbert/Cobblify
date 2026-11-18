@@ -3,6 +3,7 @@ package com.bedwarsqol.stats;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -21,11 +22,18 @@ import java.util.concurrent.ConcurrentMap;
  * Resolves a player name to a UUID. Only needed by {@code /bw <name>} for players
  * who are not currently in the world/tab list (in-game players already carry their
  * UUID via their GameProfile). UUIDs are stable, so we cache them aggressively.
+ *
+ * <p>The network part runs under one Rewind gate permit ({@link PlaybackGate}, PLAN "Isolation", layer 4) with each
+ * connection attached and the permit re-checked before each request starts (the Ashcon fallback included). While a
+ * recording plays, or once entry aborts the lookup, it fails with {@link PlaybackGate.PlaybackMutedException}.
  */
 public final class MojangNameResolver {
 
     private static final String MOJANG = "https://api.mojang.com/users/profiles/minecraft/";
     private static final String ASHCON = "https://api.ashcon.app/mojang/v2/user/";
+    /** Base-URL seam for tests (a local server); production never changes these. */
+    static volatile String mojangBase = MOJANG;
+    static volatile String ashconBase = ASHCON;
     private static final long TTL_MS = 6L * 60L * 60L * 1000L;
     private static final int CONNECT_TIMEOUT_MS = 6000;
     private static final int READ_TIMEOUT_MS = 8000;
@@ -45,18 +53,28 @@ public final class MojangNameResolver {
         }
 
         UUID uuid;
+        PlaybackGate.Permit permit = PlaybackGate.global().admit();
         try {
-            uuid = resolveMojang(name.trim());
-        } catch (IOException primary) {
-            uuid = resolveAshcon(name.trim());
+            try {
+                uuid = resolveMojang(name.trim(), permit);
+            } catch (PlaybackGate.PlaybackMutedException muted) {
+                throw muted;
+            } catch (IOException primary) {
+                permit.check(); // an aborted lookup never falls back to a second request
+                uuid = resolveAshcon(name.trim(), permit);
+            }
+        } catch (IOException e) {
+            throw permit.failure(e);
+        } finally {
+            permit.end();
         }
         CACHE.put(key, new Entry(uuid, System.currentTimeMillis()));
         return uuid;
     }
 
-    private static UUID resolveMojang(String name) throws IOException {
+    private static UUID resolveMojang(String name, PlaybackGate.Permit permit) throws IOException {
         String encoded = URLEncoder.encode(name, "UTF-8");
-        HttpURLConnection conn = open(MOJANG + encoded);
+        HttpURLConnection conn = open(mojangBase + encoded, permit);
         int code = conn.getResponseCode();
         if (code == 204 || code == 404) return null;
         if (code < 200 || code >= 300) throw new IOException("Mojang returned " + code);
@@ -64,9 +82,9 @@ public final class MojangNameResolver {
         return fromUndashed(string(root, "id"));
     }
 
-    private static UUID resolveAshcon(String name) throws IOException {
+    private static UUID resolveAshcon(String name, PlaybackGate.Permit permit) throws IOException {
         String encoded = URLEncoder.encode(name, "UTF-8");
-        HttpURLConnection conn = open(ASHCON + encoded);
+        HttpURLConnection conn = open(ashconBase + encoded, permit);
         int code = conn.getResponseCode();
         if (code == 404) return null;
         if (code < 200 || code >= 300) throw new IOException("Ashcon returned " + code);
@@ -82,14 +100,17 @@ public final class MojangNameResolver {
         return fromUndashed(uuid);
     }
 
-    private static HttpURLConnection open(String url) throws IOException {
+    /** Opens and attaches the connection, then re-checks the permit: the request starts in the caller's next call. */
+    private static HttpURLConnection open(String url, PlaybackGate.Permit permit) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        permit.attach(conn);
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Accept", "application/json");
         conn.setRequestProperty("User-Agent", "BedwarsQol/0.1 MojangNameResolver");
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(READ_TIMEOUT_MS);
         Tls.apply(conn);
+        permit.check();
         return conn;
     }
 

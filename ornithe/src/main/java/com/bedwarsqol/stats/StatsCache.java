@@ -6,6 +6,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.feature.DiagLog;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -38,6 +39,10 @@ import java.util.function.BiConsumer;
  * {@link RateLimiter}, de-duplicated, served from a priority queue (user-initiated >
  * visible players > tab-only), and persisted to disk so repeat encounters cost zero
  * network calls across sessions.
+ *
+ * <p>While a Rewind recording plays ({@link PlaybackGate}, PLAN "Isolation", layer 4) the dispatcher waits, and a
+ * lookup whose request the gate refused or aborted ({@link PlaybackGate.PlaybackMutedException}) goes back on the
+ * queue: it stays in {@code QUEUED}, gets no ERROR mark and no backoff, and runs after playback.
  */
 public final class StatsCache {
 
@@ -334,6 +339,7 @@ public final class StatsCache {
             Task first;
             try {
                 first = QUEUE.take();
+                PlaybackGate.global().awaitUnmuted(); // queued lookups run after a Rewind recording, not during
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -371,10 +377,19 @@ public final class StatsCache {
         }
     }
 
+    /**
+     * A task whose request the Rewind gate refused or aborted goes back on the queue: it stays in {@link #QUEUED}
+     * (the caller skips its removal), with no ERROR mark and no backoff; the dispatcher holds it until playback ends.
+     */
+    private static void requeue(Task t) {
+        QUEUE.add(t);
+    }
+
     private static void submitSingle(Task t) {
         final int uGen = URCHIN_GEN.get(); // capture at dispatch; a later clear drops this result's tags
         FETCHERS.submit(() -> {
             long now = System.currentTimeMillis();
+            boolean requeued = false;
             try {
                 Entry e = liveEntry(t.key);
                 if (e != null && !needsAnyRefresh(t, e, now)) return;
@@ -385,11 +400,14 @@ public final class StatsCache {
                 BedwarsStats s = ScraperBackendClient.fetch(t.playerName, backend.url, backend.token,
                         false, urchinUuid, r -> uHolder[0] = r, t.priority <= PRIORITY_VISIBLE);
                 putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen, now);
+            } catch (PlaybackGate.PlaybackMutedException muted) {
+                requeue(t);
+                requeued = true;
             } catch (Throwable other) {
                 // Never clobber a warm entry with a failure marker (mirrors the batch-fallback guard).
                 if (liveEntry(t.key) == null) put(t.key, BedwarsStats.error());
             } finally {
-                QUEUED.remove(t.key); // done (or skipped) -> allow a future re-fetch
+                if (!requeued) QUEUED.remove(t.key); // done (or skipped) -> allow a future re-fetch
             }
         });
     }
@@ -459,6 +477,7 @@ public final class StatsCache {
                     } : null;
             Set<String> resolved = new HashSet<>();
             boolean threw = false;
+            boolean refused = false; // the Rewind gate refused or aborted it: requeue, never ERROR
             // Homogeneous by construction: the dispatcher partitions each drain by lane before
             // calling here, so the first task's lane is the whole batch's lane.
             boolean high = batch.get(0).priority <= PRIORITY_VISIBLE;
@@ -480,6 +499,8 @@ public final class StatsCache {
                             }
                         },
                         uuidsCsv, onUrchin, high);
+            } catch (PlaybackGate.PlaybackMutedException muted) {
+                refused = true; // a Rewind recording is starting: no singles, unresolved names are requeued
             } catch (Throwable other) {
                 threw = true; // whether singles make sense is decided below
             } finally {
@@ -514,7 +535,7 @@ public final class StatsCache {
                 }
                 try {
                     int singles = 0;
-                    boolean stop = backendDown; // a refusing/unreachable backend gets no singles at all
+                    boolean stop = backendDown || refused; // a refusing/unreachable backend gets no singles at all
                     long fallbackStart = System.currentTimeMillis();
                     for (Task t : pending) {
                         Entry cur = liveEntry(t.key);
@@ -547,12 +568,21 @@ public final class StatsCache {
                                                 t.priority <= PRIORITY_VISIBLE);
                                         putResolved(t.key, s, uHolder[0], urchinUuid != null, uGen,
                                                 System.currentTimeMillis());
+                                    } catch (PlaybackGate.PlaybackMutedException muted) {
+                                        refused = true; // requeued below with the rest
+                                        stop = true;
+                                        needsFetch = true;
                                     } catch (Throwable single) {
                                         // Never clobber a warm entry with a failure marker.
                                         if (cur == null) put(t.key, BedwarsStats.error());
                                     }
                                 }
                             }
+                        }
+                        if (needsFetch && refused) {
+                            requeue(t); // after playback; kept in QUEUED, no ERROR, no backoff
+                            remaining.remove(t.key);
+                            continue;
                         }
                         // Not fetched (backend down, past the cap/budget, or interrupted): mark cold
                         // keys ERROR so the short TTL + streak backoff re-paces them.

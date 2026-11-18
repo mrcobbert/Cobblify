@@ -79,6 +79,7 @@ final class Probes {
             });
             return "rewind-latest".equals(name) ? rewindLatest() : rewindClear();
         }
+        if (Policy.REWIND_WATCH_PROBES.contains(name)) return RewindWatchProbes.run(name, args);
         Bridge.onMain(() -> {
             Bridge.requireSingleplayerWorld();
             return null;

@@ -2,7 +2,9 @@ package com.bedwarsqol.command;
 
 import com.mojang.authlib.GameProfile;
 import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.feature.FeatureTasks;
 import com.bedwarsqol.feature.ModChat;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.BedwarsStats;
 import com.bedwarsqol.stats.MojangNameResolver;
 import com.bedwarsqol.stats.StatsCache;
@@ -34,14 +36,17 @@ public final class BedwarsStatsCommand {
 
     /** Fetch and print the stats card for {@code args[0]}, or the local player when {@code args} is empty. */
     public static void showStats(String[] args) {
+        // Every line of this card, including those printed when the lookup finishes, carries the ticket of the
+        // command (Rewind's lifetime rule, FeatureTasks): none prints during or after a recording's playback.
+        final PlaybackGate.Ticket ticket = PlaybackGate.ticket();
         if (BedwarsQol.config == null || !BedwarsQol.config.playerStats) {
-            sendChat("§cPlayer Stats is disabled. Enable it in /cobblify.");
+            sendChat(ticket, "§cPlayer Stats is disabled. Enable it in /cobblify.");
             return;
         }
 
         boolean backend = BedwarsQol.config.backendTarget().isConfigured();
         if (!backend) {
-            sendChat("§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
+            sendChat(ticket, "§cNo stats backend URL. Set §f/cobblify statsurl <url>§c.");
             return;
         }
 
@@ -49,25 +54,25 @@ public final class BedwarsStatsCommand {
                 ? args[0]
                 : Minecraft.getMinecraft().getSession().getUsername();
 
-        sendChat("§7Fetching Bedwars stats for §f" + name + "§7...");
+        sendChat(ticket, "§7Fetching Bedwars stats for §f" + name + "§7...");
         final UUID local = localUuid(name); // client state is read here, never on EXEC
         EXEC.submit(() -> {
             try {
                 UUID uuid = local != null ? local : MojangNameResolver.resolve(name);
                 if (uuid == null) {
-                    printCard(name, BedwarsStats.nicked());
+                    printCard(ticket, name, BedwarsStats.nicked());
                     return;
                 }
-                printCard(name, StatsCache.fetchNow(uuid, name, true));
+                printCard(ticket, name, StatsCache.fetchNow(uuid, name, true));
             } catch (StatsCache.RateLimitedException e) {
                 String msg = e.getMessage();
-                sendChat("§eRate limited. " + (msg != null ? msg : "Try again shortly."));
+                sendChat(ticket, "§eRate limited. " + (msg != null ? msg : "Try again shortly."));
             } catch (Throwable t) {
                 Throwable cause = t;
                 while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
                 String msg = cause.getMessage();
                 if (msg == null || msg.isEmpty()) msg = cause.getClass().getSimpleName();
-                sendChat("§cFailed to fetch stats: §f" + msg);
+                sendChat(ticket, "§cFailed to fetch stats: §f" + msg);
             }
         });
     }
@@ -103,22 +108,22 @@ public final class BedwarsStatsCommand {
         return null;
     }
 
-    private static void printCard(String name, BedwarsStats stats) {
+    private static void printCard(PlaybackGate.Ticket ticket, String name, BedwarsStats stats) {
         String header = "§7§m----------§r §6§lBedwars §r§7§m----------";
         String footer = "§7§m------------------------------";
-        sendChat(header);
+        sendChat(ticket, header);
         switch (stats.state) {
             case NICKED:
-                sendChat("§e" + name + " §7is nicked or not found.");
-                sendChat(footer);
+                sendChat(ticket, "§e" + name + " §7is nicked or not found.");
+                sendChat(ticket, footer);
                 return;
             case ERROR:
-                sendChat("§cCould not fetch stats for §e" + name + "§c.");
-                sendChat(footer);
+                sendChat(ticket, "§cCould not fetch stats for §e" + name + "§c.");
+                sendChat(ticket, footer);
                 return;
             case NEVER_PLAYED:
-                sendChat("§e" + (stats.displayName != null ? stats.displayName : name) + " §7has never played Bedwars.");
-                sendChat(footer);
+                sendChat(ticket, "§e" + (stats.displayName != null ? stats.displayName : name) + " §7has never played Bedwars.");
+                sendChat(ticket, footer);
                 return;
             default: break;
         }
@@ -126,29 +131,29 @@ public final class BedwarsStatsCommand {
         String displayName = stats.displayName != null ? stats.displayName : name;
         StringBuilder nameLine = new StringBuilder("§e").append(displayName);
         if (!stats.rankPrefix.isEmpty()) nameLine.append(" ").append(stats.rankPrefix);
-        sendChat(nameLine.toString());
+        sendChat(ticket, nameLine.toString());
 
         BedwarsStats.ModeStats o = stats.overall;
-        sendChat("§6Overall");
-        sendChat(line("Final Kills", num(o.finalKills))
+        sendChat(ticket, "§6Overall");
+        sendChat(ticket, line("Final Kills", num(o.finalKills))
                 + sep() + label("Final Deaths") + ": §f" + num(o.finalDeaths)
                 + sep() + label("FKDR") + ": " + BedwarsStats.fkdrColor(o.fkdr) + fmt2(o.fkdr));
-        sendChat(line("Wins", num(o.wins))
+        sendChat(ticket, line("Wins", num(o.wins))
                 + sep() + label("Losses") + ": §f" + num(o.losses)
                 + sep() + label("WLR") + ": §f" + fmt2(o.wlr));
-        sendChat(line("Kills", num(o.kills))
+        sendChat(ticket, line("Kills", num(o.kills))
                 + sep() + label("Deaths") + ": §f" + num(o.deaths)
                 + sep() + label("K/D") + ": §f" + fmt2(o.kd));
 
         if (stats.solo.hasGames() || stats.doubles.hasGames()
                 || stats.threes.hasGames() || stats.fours.hasGames()) {
-            sendChat("§6Modes");
-            if (stats.solo.hasGames())    sendChat(modeLine("Solo", stats.solo));
-            if (stats.doubles.hasGames()) sendChat(modeLine("Doubles", stats.doubles));
-            if (stats.threes.hasGames())  sendChat(modeLine("3v3v3v3", stats.threes));
-            if (stats.fours.hasGames())   sendChat(modeLine("4v4v4v4", stats.fours));
+            sendChat(ticket, "§6Modes");
+            if (stats.solo.hasGames())    sendChat(ticket, modeLine("Solo", stats.solo));
+            if (stats.doubles.hasGames()) sendChat(ticket, modeLine("Doubles", stats.doubles));
+            if (stats.threes.hasGames())  sendChat(ticket, modeLine("3v3v3v3", stats.threes));
+            if (stats.fours.hasGames())   sendChat(ticket, modeLine("4v4v4v4", stats.fours));
         }
-        sendChat(footer);
+        sendChat(ticket, footer);
     }
 
     /** One compact line summarizing a single mode. */
@@ -186,11 +191,11 @@ public final class BedwarsStatsCommand {
      * time it runs (a disconnect between fetch and reply), and checking here as well would be both
      * an off-thread read and a stale answer.
      */
-    private static void sendChat(String msg) {
+    private static void sendChat(PlaybackGate.Ticket ticket, String msg) {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null) return;
         IChatComponent c = ModChat.mark(new ChatComponentText(msg));
-        mc.addScheduledTask(() -> {
+        FeatureTasks.schedule(ticket, () -> {
             if (mc.thePlayer != null) mc.thePlayer.addChatMessage(c);
         });
     }

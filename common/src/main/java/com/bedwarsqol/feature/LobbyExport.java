@@ -3,6 +3,7 @@ package com.bedwarsqol.feature;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.PlayerCard;
 import com.bedwarsqol.stats.SidebarModeLabel;
 
@@ -29,6 +30,12 @@ import java.util.Map;
  * and is compiled once for both trees. Fail-soft everywhere: a submit is a cheap store on the client
  * thread, all disk work is swallowed on error, and the {@code seq} counter is bumped only when the
  * serialized body actually changed, so the launcher can cheaply detect real updates.
+ *
+ * <p>Rewind's lifetime rule (PLAN "Isolation", layer 4): each snapshot is submitted with the gate ticket of its
+ * moment, and the writer writes it only under a permit for that ticket. A snapshot from before a recording started
+ * playing is therefore never written during playback or after it; entry waits for a write already in progress, up to
+ * the gate's drain bound. The final rename runs in the permit's commit section, so a write still stalled at the bound
+ * never replaces {@code lobby.json} afterwards (its temp file is deleted).
  */
 public final class LobbyExport {
 
@@ -37,8 +44,13 @@ public final class LobbyExport {
 
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
-    private static volatile Lobby latest;
-    private static volatile boolean pending;
+    /** The writer's state: the newest snapshot with its ticket, and the gate it is written under. */
+    private static final Exporter EXPORTER = new Exporter(PlaybackGate.global(), new Sink() {
+        @Override
+        public void write(Lobby lobby, PlaybackGate.Permit permit) {
+            writeIfChanged(lobby, permit);
+        }
+    });
     /** Last supported canonical mode; consulted only when the sidebar Mode line is absent. */
     private static volatile String retainedSupportedMode;
     /** Queue-tab party names, kept into GAME when {@code /party list} was never parsed. */
@@ -74,13 +86,74 @@ public final class LobbyExport {
 
     /** Store the newest snapshot for the writer thread. Cheap; safe to call every client tick. */
     public static void submit(Lobby lobby) {
-        latest = lobby;
-        pending = true;
+        EXPORTER.submit(lobby);
     }
 
     /** Force the next debounce cycle to re-evaluate (e.g. a stat just resolved to a real value). */
     public static void markDirty() {
-        pending = true;
+        EXPORTER.markDirty();
+    }
+
+    /**
+     * Where a snapshot goes (production: {@link #writeIfChanged}). The step that makes the write visible runs through
+     * {@link PlaybackGate.Permit#commit} of {@code permit}, so it never lands once entry has aborted the permit.
+     */
+    interface Sink {
+        void write(Lobby lobby, PlaybackGate.Permit permit) throws Exception;
+    }
+
+    /** A submitted snapshot and the gate ticket of the moment it was submitted. */
+    private static final class Submitted {
+        final Lobby lobby;
+        final PlaybackGate.Ticket ticket;
+
+        Submitted(Lobby lobby, PlaybackGate.Ticket ticket) {
+            this.lobby = lobby;
+            this.ticket = ticket;
+        }
+    }
+
+    /**
+     * The submit/write hand-off, stepped by the writer thread every {@link #WRITE_INTERVAL_MS}. A snapshot is written
+     * only under a permit for its own ticket: one whose ticket is stale (submitted before a recording started
+     * playing) or that meets a muted or entering gate is dropped, never written later. Tests step their own instance.
+     */
+    static final class Exporter {
+        private final PlaybackGate gate;
+        private final Sink sink;
+        private volatile Submitted latest;
+        private volatile boolean pending;
+
+        Exporter(PlaybackGate gate, Sink sink) {
+            this.gate = gate;
+            this.sink = sink;
+        }
+
+        void submit(Lobby lobby) {
+            latest = new Submitted(lobby, gate.currentTicket());
+            pending = true;
+        }
+
+        void markDirty() {
+            pending = true;
+        }
+
+        /** One writer wake: writes the newest snapshot if one is pending and its ticket still admits it. */
+        void step() {
+            if (!pending) return;
+            pending = false;
+            Submitted s = latest;
+            if (s == null || s.lobby == null) return;
+            PlaybackGate.Permit permit = gate.tryBegin(s.ticket);
+            if (permit == null) return; // from before (or during) playback: never written
+            try {
+                sink.write(s.lobby, permit);
+            } catch (Throwable ignored) {
+                // the production sink swallows its own errors; nothing reaches the writer thread
+            } finally {
+                permit.end();
+            }
+        }
     }
 
     public static String retainedSupportedMode() {
@@ -112,14 +185,11 @@ public final class LobbyExport {
                 Thread.currentThread().interrupt();
                 return;
             }
-            if (!pending) continue;
-            pending = false;
-            Lobby snapshot = latest;
-            if (snapshot != null) writeIfChanged(snapshot);
+            EXPORTER.step();
         }
     }
 
-    private static void writeIfChanged(Lobby lobby) {
+    private static void writeIfChanged(Lobby lobby, PlaybackGate.Permit permit) {
         if (WRITER == null || TEMP_FILE == null) return;
         try {
             JsonObject tree = GSON.toJsonTree(lobby).getAsJsonObject();
@@ -129,7 +199,8 @@ public final class LobbyExport {
             if (body.equals(lastBody)) return;
             seq++;
             tree.addProperty("seq", seq);
-            writeAtomically(GSON.toJson(tree));
+            writeAtomically(new File(System.getProperty("user.home"), ".cobblify"), TEMP_FILE, GSON.toJson(tree),
+                    permit);
             lastBody = body;
         } catch (Throwable ignored) {
             deleteOwnedTempBestEffort();
@@ -143,25 +214,38 @@ public final class LobbyExport {
         return new File(dir, identity.tempFileName());
     }
 
-    private static void writeAtomically(String json) throws Exception {
-        File dir = new File(System.getProperty("user.home"), ".cobblify");
+    /**
+     * Writes {@code json} to {@code tmp}, then renames it over {@code dir/lobby.json} inside {@code permit}'s commit
+     * section. When the permit refuses the commit (entry aborted it), {@code tmp} is deleted and a
+     * {@link PlaybackGate.PlaybackMutedException} is thrown: {@code lobby.json} is left as it was.
+     */
+    static void writeAtomically(File dir, File tmp, String json, PlaybackGate.Permit permit) throws Exception {
         if (!dir.isDirectory() && !dir.mkdirs()) return;
-        File file = new File(dir, "lobby.json");
-        File tmp = TEMP_FILE;
+        final File file = new File(dir, "lobby.json");
         if (tmp == null) return;
+        final File from = tmp;
         Writer w = new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8);
         try {
             w.write(json);
         } finally {
             w.close();
         }
-        try {
-            Files.move(tmp.toPath(), file.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception atomicUnsupported) {
-            if (!tmp.renameTo(file)) {
-                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        boolean committed = permit.commit(new PlaybackGate.Commit() {
+            @Override
+            public void run() throws Exception {
+                try {
+                    Files.move(from.toPath(), file.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (Exception atomicUnsupported) {
+                    if (!from.renameTo(file)) {
+                        Files.move(from.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
             }
+        });
+        if (!committed) {
+            from.delete();
+            throw new PlaybackGate.PlaybackMutedException("aborted: a Rewind recording started playing");
         }
     }
 

@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import com.google.gson.JsonArray;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -28,6 +29,11 @@ import java.util.function.Consumer;
  * <p>Two shapes: {@link #fetch} for a single player (the immediate USER path), and
  * {@link #fetchBatch} for many players in one request (the background-lobby path). The Worker
  * paces its own cache-miss scrapes, so the client no longer has to serialize requests itself.
+ *
+ * <p>Every request runs under a Rewind gate permit ({@link PlaybackGate}, PLAN "Isolation", layer 4), held from
+ * opening the connection to reading the response, with the connection attached so the gate can abort it; the permit
+ * is re-checked before each step that can start the request. While a recording plays, or once entry aborts a
+ * request, it fails with {@link PlaybackGate.PlaybackMutedException} and nothing reaches the network.
  */
 public final class ScraperBackendClient {
 
@@ -104,16 +110,23 @@ public final class ScraperBackendClient {
         if (highPriority) query.append(query.length() == 0 ? '?' : '&').append("prio=1");
         // fresh=1 tells the Worker to bypass (and refresh) its edge cache for an up-to-date scrape.
         String url = base + "/bedwars/" + encoded + query;
-        HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS);
-        if (wantUrchin) conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
+        PlaybackGate.Permit permit = PlaybackGate.global().admit();
+        try {
+            HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS, permit);
+            if (wantUrchin) conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
 
-        String body = readBody(conn);
-        JsonObject po = parseJsonObject(body);
-        if (onUrchin != null) {
-            UrchinResult r = parseUrchin(po);
-            if (r != null) onUrchin.accept(r);
+            String body = readBody(conn, permit);
+            JsonObject po = parseJsonObject(body);
+            if (onUrchin != null) {
+                UrchinResult r = parseUrchin(po);
+                if (r != null) onUrchin.accept(r);
+            }
+            return statsFromPlayerObject(po, playerName.trim());
+        } catch (IOException e) {
+            throw permit.failure(e);
+        } finally {
+            permit.end();
         }
-        return statsFromPlayerObject(po, playerName.trim());
     }
 
     /**
@@ -171,11 +184,26 @@ public final class ScraperBackendClient {
         String url = base + "/bedwars/batch?names=" + param;
         if (wantUrchin) url += "&uuids=" + uuidsCsv;
         if (highPriority) url += "&prio=1";
-        HttpURLConnection conn = open(url, token, BATCH_READ_TIMEOUT_MS);
+        PlaybackGate.Permit permit = PlaybackGate.global().admit();
+        try {
+            streamBatch(url, token, wantUrchin, onResult, onUrchin, permit);
+        } catch (IOException e) {
+            throw permit.failure(e);
+        } finally {
+            permit.end();
+        }
+    }
+
+    /** The batch request and its NDJSON stream, under {@code permit}. */
+    private static void streamBatch(String url, String token, boolean wantUrchin,
+            BiConsumer<String, BedwarsStats> onResult, BiConsumer<String, UrchinResult> onUrchin,
+            PlaybackGate.Permit permit) throws IOException {
+        HttpURLConnection conn = open(url, token, BATCH_READ_TIMEOUT_MS, permit);
         conn.setRequestProperty("Accept", "application/x-ndjson");
         conn.setRequestProperty("Accept-Encoding", "identity"); // keep NDJSON lines unbuffered
         if (wantUrchin) conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
 
+        permit.check(); // the request starts in getResponseCode
         int code = conn.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
         if (code < 200 || code >= 300) {
@@ -216,8 +244,11 @@ public final class ScraperBackendClient {
         }
     }
 
-    private static HttpURLConnection open(String url, String token, int readTimeoutMs) throws IOException {
+    /** Opens (does not connect) and attaches the connection to {@code permit}, so entry can abort it. */
+    private static HttpURLConnection open(String url, String token, int readTimeoutMs, PlaybackGate.Permit permit)
+            throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        permit.attach(conn);
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Accept", "application/json");
         conn.setRequestProperty("User-Agent", "BedwarsQol/0.1 ScraperBackendClient");
@@ -231,7 +262,8 @@ public final class ScraperBackendClient {
     }
 
     /** Reads the full body (draining error streams too, so the keep-alive socket can be reused). */
-    private static String readBody(HttpURLConnection conn) throws IOException {
+    private static String readBody(HttpURLConnection conn, PlaybackGate.Permit permit) throws IOException {
+        permit.check(); // the request starts in getResponseCode
         int code = conn.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
         String body = readAll(in);
@@ -449,9 +481,17 @@ public final class ScraperBackendClient {
         String base = normalizeBase(baseUrl);
         if (base == null) throw new BackendException("No stats backend URL configured");
         String url = base + "/urchin/" + java.net.URLEncoder.encode(name.trim(), "UTF-8");
-        HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS);
-        conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
-        String body = readBody(conn);
+        PlaybackGate.Permit permit = PlaybackGate.global().admit();
+        String body;
+        try {
+            HttpURLConnection conn = open(url, token, READ_TIMEOUT_MS, permit);
+            conn.setRequestProperty(URCHIN_OPT_IN_HEADER, "1");
+            body = readBody(conn, permit);
+        } catch (IOException e) {
+            throw permit.failure(e);
+        } finally {
+            permit.end();
+        }
         JsonObject po = parseJsonObject(body);
         List<UrchinTag> tags = new ArrayList<UrchinTag>();
         if (po.has("tags") && po.get("tags").isJsonArray()) {
@@ -505,8 +545,11 @@ public final class ScraperBackendClient {
         String base = normalizeBase(baseUrl);
         String err = validateSecretUrl(base);
         if (err != null) return new SecretPostResult(false, 0, err);
+        PlaybackGate.Permit permit = PlaybackGate.global().tryBegin(null);
+        if (permit == null) return new SecretPostResult(false, 0, "transport_error"); // a recording is playing
         try {
             HttpURLConnection conn = secretConnectionFactory.open(new URL(base + path));
+            permit.attach(conn);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
@@ -520,9 +563,11 @@ public final class ScraperBackendClient {
             conn.setReadTimeout(READ_TIMEOUT_MS);
             Tls.apply(conn);
             byte[] payload = (bodyJson == null ? "" : bodyJson).getBytes(StandardCharsets.UTF_8);
+            permit.check(); // the request starts in getOutputStream
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(payload);
             }
+            permit.check();
             int code = conn.getResponseCode();
             if (code >= 300 && code < 400) return new SecretPostResult(false, code, "redirect_rejected");
             InputStream in = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
@@ -536,6 +581,8 @@ public final class ScraperBackendClient {
         } catch (Exception e) {
             // Never surface the exception text (it can embed the URL, never the secret) — a generic token.
             return new SecretPostResult(false, 0, "transport_error");
+        } finally {
+            permit.end();
         }
     }
 

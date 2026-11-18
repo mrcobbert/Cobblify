@@ -41,7 +41,11 @@ public final class PacketStats {
             "locations", "lobbyOverridden", "visitsWithoutLocation", "bedwarsVisitsWithoutStart",
             "shortVisitsDropped", "startSource"));
 
-    /** Keys of the objects inside each array-valued key. */
+    /**
+     * Keys of the objects inside each array-valued key. In {@code locations}, {@code serverTypeCode} is
+     * {@link RewindGameRules#serverTypeCode}: 0 absent, 1 BEDWARS, 2 MAIN, 3 TOURNAMENT, 4 SKYBLOCK, 5 HOUSING,
+     * 6 other, 7 REPLAY (Hypixel's replay viewer, always {@code verdict} 1; files written before R2 log it as 6).
+     */
     public static final Map<String, List<String>> ARRAY_ITEM_KEYS;
 
     static {
