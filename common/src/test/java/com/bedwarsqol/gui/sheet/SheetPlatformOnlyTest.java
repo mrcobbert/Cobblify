@@ -304,14 +304,16 @@ public class SheetPlatformOnlyTest {
                     {"ptHideOwnPotion", "Hide Own Potion", "TOGGLE"},
                     {"ptHideBlockBreak", "Hide Block Break", "TOGGLE"},
                     {"ptMultiplier", "Multiplier", "SEG"}},
+            {{"motionBlur", "Motion Blur"},
+                    {"mbStrength", "Strength", "SLIDER"}},
     };
 
     @Test
     public void visualModulesFollowBlockOverlayWithTheirRowsInOrder() {
         List<String> visuals = modules(new Tree(null, true), "visuals");
         int b = visuals.indexOf("blockOverlay");
-        assertEquals(Arrays.asList("blockOverlay", "fullbright", "itemPhysics", "oldAnimations", "particles"),
-                visuals.subList(b, b + 5));
+        assertEquals(Arrays.asList("blockOverlay", "fullbright", "itemPhysics", "oldAnimations", "particles", "motionBlur"),
+                visuals.subList(b, b + 6));
         for (String[][] spec : VISUAL_MODULES) {
             SheetSchema.Module m = SheetSchema.module(spec[0][0]);
             assertEquals(spec[0][0], spec[0][1], m.name);
@@ -338,6 +340,27 @@ public class SheetPlatformOnlyTest {
     }
 
     @Test
+    public void motionBlurIsOneStrengthSliderOneToNine() {
+        SheetSchema.Module m = SheetSchema.module("motionBlur");
+        assertEquals("exactly one inner row", 1, m.rows.size());
+        SheetSchema.Row strength = m.rows.get(0);
+        assertEquals("mbStrength", strength.id);
+        assertEquals(SheetSchema.Kind.SLIDER, strength.kind);
+        assertEquals(1.0, strength.min(), 0);
+        assertEquals(9.0, strength.max(), 0);
+        assertEquals(1.0, strength.step(), 0);
+        assertEquals(0, strength.decimals());
+        assertEquals("", strength.unit());
+        assertEquals(null, strength.dep());
+        int longest = 0;
+        for (String id : new String[]{"fullbright", "itemPhysics", "oldAnimations", "particles"}) {
+            longest = Math.max(longest, SheetSchema.module(id).desc.length());
+        }
+        assertTrue("one line, no longer than the other Visuals modules'",
+                m.desc.length() <= longest && !m.desc.contains("\n"));
+    }
+
+    @Test
     public void visualModulesHiddenOnForgeAndLunarListedOnOrnithe() {
         Tree lunar = lunar();
         Tree ornithe = new Tree(null, true);
@@ -350,13 +373,14 @@ public class SheetPlatformOnlyTest {
             assertFalse(modules(acceptsEverything, "visuals").contains(spec[0][0]));
             assertFalse(modules(lunar, "visuals").contains(spec[0][0]));
         }
-        for (String q : new String[]{"fullbright", "item physics", "1.7 animations", "multiplier"}) {
+        for (String q : new String[]{"fullbright", "item physics", "1.7 animations", "multiplier", "motion blur"}) {
             assertTrue(q, SheetSearch.search(q, acceptsEverything).isEmpty());
             assertTrue(q, SheetSearch.search(q, lunar).isEmpty());
             assertFalse(q, SheetSearch.search(q, ornithe).isEmpty());
         }
         assertEquals("fullbright", SheetSearch.search("fullbright", ornithe).get(0).module.id);
         assertEquals("particles", SheetSearch.search("multiplier", ornithe).get(0).module.id);
+        assertEquals("motionBlur", SheetSearch.search("motion blur", ornithe).get(0).module.id);
     }
 
     /** Rewind's rows, in order (id, name, kind). */

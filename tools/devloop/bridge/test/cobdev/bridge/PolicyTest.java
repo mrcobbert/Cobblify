@@ -182,6 +182,49 @@ public final class PolicyTest {
         refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "34", "2"), true));
         refusedCall(() -> Policy.chatPoint(java.util.Arrays.asList("12", "x"), false));
 
+        // Motion Blur probes (cycle 2026-11-17-motion-blur, step MB)
+        for (String p : new String[]{"mb-record", "mb-turn", "mb-pose", "mb-shot"}) allowed(Policy.probeName(p));
+        refused(Policy.probeName("mb-coverage"));
+        // mb-record: the last frame now, or a frame log (watch, then log)
+        same("now", Policy.mbRecordMode(java.util.Collections.<String>emptyList()));
+        same("watch", Policy.mbRecordMode(java.util.Arrays.asList("watch")));
+        same("log", Policy.mbRecordMode(java.util.Arrays.asList("log")));
+        refusedCall(() -> Policy.mbRecordMode(java.util.Arrays.asList("dump")));
+        refusedCall(() -> Policy.mbRecordMode(java.util.Arrays.asList("watch", "log")));
+        // mb-turn FROM TO DEG/S: finite angles, a positive rate up to 3600 deg/s, at most 10 s long
+        same("-15.0,15.0,200.0", joinD(Policy.mbTurn(java.util.Arrays.asList("-15", "15", "200"))));
+        same("15.0,-15.0,200.0", joinD(Policy.mbTurn(java.util.Arrays.asList("15", "-15", "200"))));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "15")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "15", "0")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "15", "-200")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "15", "3601")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("NaN", "15", "200")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "Infinity", "200")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-15", "x", "200")));
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("0", "3000", "200"))); // 15 s: longer than 10 s
+        refusedCall(() -> Policy.mbTurn(java.util.Arrays.asList("-4000", "-3999", "200"))); // |yaw| over 3600
+        // the yaw at a time since the start: from absolute time, held at TO once reached
+        sameD(-15.0, Policy.turnYaw(-15, 15, 200, 0));
+        sameD(0.0, Policy.turnYaw(-15, 15, 200, 0.075));
+        sameD(15.0, Policy.turnYaw(-15, 15, 200, 0.15));
+        sameD(15.0, Policy.turnYaw(-15, 15, 200, 2.0));
+        sameD(5.0, Policy.turnYaw(15, -15, 200, 0.05)); // the other way round
+        sameD(-15.0, Policy.turnYaw(-15, 15, 200, -1.0)); // never before the start
+        // mb-pose YAW PITCH: finite, pitch within vanilla's -90..90
+        same("-15.0,0.0", joinF(Policy.mbPose(java.util.Arrays.asList("-15", "0"))));
+        same("0.83749,-90.0", joinF(Policy.mbPose(java.util.Arrays.asList("0.83749", "-90"))));
+        refusedCall(() -> Policy.mbPose(java.util.Arrays.asList("0", "91")));
+        refusedCall(() -> Policy.mbPose(java.util.Arrays.asList("NaN", "0")));
+        refusedCall(() -> Policy.mbPose(java.util.Arrays.asList("4000", "0")));
+        refusedCall(() -> Policy.mbPose(java.util.Arrays.asList("0")));
+        // mb-shot [stopTurn]
+        checks++;
+        if (Policy.mbShotStop(java.util.Collections.<String>emptyList())) fail("mb-shot alone does not stop a turn");
+        checks++;
+        if (!Policy.mbShotStop(java.util.Arrays.asList("stopTurn"))) fail("mb-shot stopTurn stops the turn");
+        refusedCall(() -> Policy.mbShotStop(java.util.Arrays.asList("stop")));
+        refusedCall(() -> Policy.mbShotStop(java.util.Arrays.asList("stopTurn", "x")));
+
         System.out.println("PolicyTest: " + checks + " checks passed");
     }
 
@@ -191,6 +234,19 @@ public final class PolicyTest {
 
     private static String join(int[] p) {
         return p[0] + "," + p[1] + "," + p[2];
+    }
+
+    private static String joinD(double[] p) {
+        return p[0] + "," + p[1] + "," + p[2];
+    }
+
+    private static String joinF(float[] p) {
+        return p[0] + "," + p[1];
+    }
+
+    private static void sameD(double expected, double actual) {
+        checks++;
+        if (Math.abs(expected - actual) > 1e-9) fail("expected " + expected + ", got " + actual);
     }
 
     private static String joinAll(int[] p) {

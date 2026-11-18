@@ -1127,6 +1127,266 @@ class EditHudWindowSizes(unittest.TestCase):
             {"id": "all", "x": 0, "y": 0, "w": 100, "h": 100, "pad": 0, "shown": True}]}, 10, 10))
 
 
+WOOL_LIGHT, WOOL_DARK = (177, 177, 177), (20, 18, 18)  # white and black wool on a north face (shade 0.8)
+
+
+def checker(w, h, cell=48, light=WOOL_LIGHT, dark=WOOL_DARK, grain=6, x_shift=0):
+    """A wool checkerboard with a little deterministic texture grain, cells of `cell` px (the real board's cells are
+    46-69 px on an 854-1280 px window, against a 6-9 px smear)."""
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            base = light if ((x + x_shift) // cell + y // cell) % 2 == 0 else dark
+            g = (((x + x_shift) // 4) * 5 + (y // 4) * 3) % (2 * grain + 1) - grain  # 4 px texels
+            row += bytes(max(0, min(255, c + g)) for c in base)
+        rows.append(bytes(row))
+    return w, h, rows
+
+
+def box_blur(img, n, vertical=False):
+    """An n-tap box blur along one axis (edge pixels clamp), like a smear along a horizontal or vertical turn."""
+    w, h, rows = img
+    out = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            acc = [0, 0, 0]
+            for k in range(n):
+                d = k - n // 2
+                xx, yy = (x, min(h - 1, max(0, y + d))) if vertical else (min(w - 1, max(0, x + d)), y)
+                p = cobdev.px(img, xx, yy)
+                for i in range(3):
+                    acc[i] += p[i]
+            row += bytes(int(round(a / n)) for a in acc)
+        out.append(bytes(row))
+    return w, h, out
+
+
+def scaled(img, f):
+    w, h, rows = img
+    return w, h, [bytes(min(255, int(round(v * f))) for v in r) for r in rows]
+
+
+class MotionBlurMeasures(unittest.TestCase):
+    """Step MB's image measures (PLAN 2026-11-17-motion-blur Phase 3, step 4) on synthetic frames."""
+
+    REST = checker(320, 180)
+
+    def test_region_is_the_middle_half_and_15_to_55_percent(self):
+        self.assertEqual(cobdev.mb_region(1280, 720), (320, 108, 960, 396))
+        self.assertEqual(cobdev.mb_region(854, 480), (214, 72, 640, 264))
+
+    def test_detail_is_zero_on_a_flat_frame_and_positive_on_the_board(self):
+        rect = cobdev.mb_region(320, 180)
+        self.assertEqual(cobdev.mb_detail(flat(320, 180, (90, 90, 90)), rect), (0.0, 0.0))
+        dh, dv = cobdev.mb_detail(self.REST, rect)
+        self.assertGreater(dh, 100)
+        self.assertGreater(dv, 100)
+
+    def test_detail_is_the_mean_squared_neighbour_difference(self):
+        # one vertical edge of 100 luma steps in a 4 x 2 region: 2 of the 6 horizontal pairs differ
+        img = (4, 2, [bytes([0] * 6 + [100] * 6)] * 2)
+        dh, dv = cobdev.mb_detail(img, (0, 0, 4, 2))
+        self.assertAlmostEqual(dh, 100.0 ** 2 * 2 / 6, places=6)
+        self.assertEqual(dv, 0.0)
+
+    def test_squared_not_l1_a_blurred_isolated_edge_scores_lower(self):
+        # one hard edge versus the same edge spread over 8 px: L1 is the same, the mean square is 8x lower
+        sharp = (16, 1, [bytes(sum(([0, 0, 0] if x < 8 else [160, 160, 160] for x in range(16)), []))])
+        ramp = (16, 1, [bytes(sum(([min(160, max(0, (x - 4) * 20))] * 3 for x in range(16)), []))])
+        self.assertLess(cobdev.mb_detail(ramp, (0, 0, 16, 1))[0], cobdev.mb_detail(sharp, (0, 0, 16, 1))[0] / 4)
+
+    def test_luma_mean_and_variance(self):
+        mean, var = cobdev.mb_luma(flat(10, 10, (100, 100, 100)), (0, 0, 10, 10))
+        self.assertAlmostEqual(mean, 100.0, places=6)
+        self.assertEqual(var, 0.0)
+        self.assertGreater(cobdev.mb_luma(self.REST, cobdev.mb_region(320, 180))[1], 1000)
+
+    def test_a_horizontal_smear_passes_every_turn_check(self):
+        checks = cobdev.mb_turn_checks(box_blur(self.REST, 9), self.REST)
+        self.assertEqual([c[0] for c in checks if not c[1]], [], checks)
+        self.assertEqual(len(checks), 4)
+
+    def test_an_unblurred_turn_fails_the_horizontal_check_only(self):
+        failed = [c[0] for c in cobdev.mb_turn_checks(self.REST, self.REST) if not c[1]]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("horizontal", failed[0])
+
+    def test_a_vertical_smear_fails_the_vertical_control(self):
+        failed = [c[0] for c in cobdev.mb_turn_checks(box_blur(self.REST, 9, vertical=True), self.REST) if not c[1]]
+        self.assertTrue(any("vertical" in f for f in failed), failed)
+
+    def test_a_blank_frame_fails(self):
+        failed = [c[0] for c in cobdev.mb_turn_checks(flat(320, 180, (99, 98, 98)), self.REST) if not c[1]]
+        self.assertTrue(any("blank" in f for f in failed), failed)
+        self.assertTrue(any("vertical" in f for f in failed), failed)
+
+    def test_a_brighter_frame_fails_the_luminance_check(self):
+        failed = [c[0] for c in cobdev.mb_turn_checks(scaled(box_blur(self.REST, 9), 1.25), self.REST) if not c[1]]
+        self.assertTrue(any("luminance" in f for f in failed), failed)
+
+    def test_fixture_guard_passes_on_the_board_only(self):
+        rect = cobdev.mb_region(320, 180)
+        self.assertTrue(cobdev.mb_fixture(self.REST, rect)[0], cobdev.mb_fixture(self.REST, rect)[1])
+        for img in (scene(320, 180, lambda x: 90), flat(320, 180, WOOL_LIGHT), flat(320, 180, WOOL_DARK),
+                    checker(320, 180, light=SKY, dark=GRASS)):  # sky and grass edges are not the board
+            ok, detail = cobdev.mb_fixture(img, rect)
+            self.assertFalse(ok, detail)
+
+
+class MotionBlurHelpers(unittest.TestCase):
+    def test_board_is_21_by_9_white_fill_then_black_cells(self):
+        cmds = cobdev.mb_board_commands()
+        self.assertEqual(cmds[0], "/fill -10 4 8 10 12 8 minecraft:wool 0")
+        black = [c.split()[1:4] for c in cmds[1:]]
+        self.assertTrue(all(c.startswith("/setblock ") and c.endswith(" minecraft:wool 15") for c in cmds[1:]))
+        self.assertEqual(len(black), 94)  # 189 cells, (x + y) odd
+        cells = {tuple(int(v) for v in b) for b in black}
+        self.assertIn((-9, 4, 8), cells)
+        self.assertNotIn((-10, 4, 8), cells)
+        self.assertTrue(all(len(c) <= 100 for c in cmds))  # Policy.command: vanilla's chat limit
+        self.assertEqual(cobdev.mb_board_clear(), "/fill -10 4 8 10 12 8 minecraft:air")
+
+    def test_hud_rects_are_the_hotbar_crosshair_and_shown_boxes(self):
+        hb = {"scale": 2, "sw": 200, "sh": 120,
+              "boxes": [{"id": "potion", "x": 4, "y": 6, "w": 30, "h": 10, "pad": 1, "shown": True},
+                        {"id": "armor", "x": 50, "y": 6, "w": 30, "h": 10, "pad": 1, "shown": False}]}
+        rects = dict(cobdev.mb_hud_rects(hb))
+        self.assertEqual(rects["hotbar"], (16, 194, 384, 240))
+        self.assertEqual(rects["crosshair"], (184, 104, 220, 140))
+        self.assertEqual(rects["potion"], (6, 10, 70, 34))
+        self.assertNotIn("armor", rects)
+
+    def test_identity_counts_every_changed_pixel(self):
+        a = checker(80, 40)
+        rows = [bytearray(r) for r in a[2]]
+        rows[5][3 * 7] ^= 1  # one channel of one pixel, by one step
+        b = (80, 40, [bytes(r) for r in rows])
+        self.assertEqual(cobdev.mb_identical(a, a, [("x", (0, 0, 80, 40))]), [("x", 0)])
+        self.assertEqual(cobdev.mb_identical(a, b, [("in", (0, 0, 10, 10)), ("out", (20, 0, 80, 40)),
+                                                    ("off", (-5, -5, 2, 2))]), [("in", 1), ("out", 0), ("off", 0)])
+
+    def test_cut_frame_is_the_first_frame_with_the_new_serial(self):
+        frames = [{"frameId": 9, "cutSerial": 3}, {"frameId": 10, "cutSerial": 3},
+                  {"frameId": 11, "cutSerial": 4, "resetReason": "position-correction"},
+                  {"frameId": 12, "cutSerial": 4, "resetReason": None}]
+        frame, why = cobdev.mb_cut_frame(frames, 3)
+        self.assertEqual(frame["frameId"], 11, why)
+        frame, why = cobdev.mb_cut_frame(frames[:2], 3)
+        self.assertIsNone(frame)
+        self.assertIn("no frame", why)
+        frame, why = cobdev.mb_cut_frame([frames[0], frames[3]], 3)  # frames 10 and 11 were never sampled
+        self.assertIsNone(frame)
+        self.assertIn("skipped", why)
+
+
+class FakeMotionBlurGame(cobdev.Smoke):
+    """A model of the dev client for step MB: settings, cuts, the turn and the frames mb-shot returns."""
+
+    W, H = 400, 240
+
+    def __init__(self, blurs=True):
+        cobdev.Smoke.__init__(self, "dev", "test")
+        self.blurs = blurs
+        self.fields = {"motionBlur": False, "mbStrength": 3, "fpsEnabled": True, "cpsEnabled": True,
+                       "pingEnabled": False}
+        self.sent, self.cut, self.frame, self.gl, self.yaw, self.scales = [], 0, 100, 7, 0.0, []
+        self.rest = checker(self.W, self.H)
+        self.turned = box_blur(self.rest, 9)
+
+    def record(self, **over):
+        self.frame += 1
+        r = {"frameId": self.frame, "yaw": self.yaw, "pitch": 0.0, "smearPx": 0.0, "taps": 0, "active": False,
+             "worldPassRan": False, "resetReason": None, "cutSerial": self.cut, "cutSerialNow": self.cut,
+             "glEntries": self.gl, "failed": None, "suppressed": False, "fps": 120}
+        r.update(over)
+        return r
+
+    def shot(self, img, rec):
+        out = {"ok": True, "record": rec, "width": self.W, "height": self.H}
+        out["png"] = cobdev.base64.b64encode(cobdev.png_write(*img)).decode()
+        return out
+
+    def call(self, path, params=None, post=None, timeout=60):
+        q = params or post or {}
+        self.sent.append((path, q))
+        if path == "/has":
+            return {"ok": True, "present": True}
+        if path == "/field":
+            name = q["path"].rsplit(".", 1)[-1]
+            if "value" in q:
+                v = q["value"]
+                self.fields[name] = v == "true" if v in ("true", "false") else int(v)
+                return {"ok": True, "value": self.fields[name]}
+            return {"ok": True, "value": self.fields.get(name)}
+        if path == "/scale":
+            self.scales.append(q["n"])
+        if path == "/command" and q["command"].startswith("/tp @p ~0.5"):
+            self.cut += 1
+        if path == "/probe":
+            name, args = q["name"], q.get("args", "").split(cobdev.ARG_SEP) if q.get("args") else []
+            if name == "mb-record" and args == ["log"]:
+                before = self.cut - 1
+                return {"ok": True, "frames": [self.record(cutSerial=before, cutSerialNow=before),
+                                               self.record(resetReason="position-correction"), self.record()]}
+            if name == "mb-record":
+                return dict(self.record(), ok=True)
+            if name == "mb-pose":
+                self.yaw = float(args[0])
+                return {"ok": True}
+            if name == "mb-shot" and args == ["stopTurn"]:
+                self.yaw = 0.4374999701976776
+                rec = self.record(smearPx=8.6, taps=2, active=True, worldPassRan=True)
+                return dict(self.shot(self.turned if self.blurs else self.rest, rec), turning=True, turnElapsedMs=80)
+            if name == "mb-shot":
+                return dict(self.shot(self.rest, self.record()), turning=False)
+            if name == "hud-boxes":
+                return {"ok": True, "scale": 2, "sw": 200, "sh": 120,
+                        "boxes": [{"id": "armor", "x": 4, "y": 6, "w": 30, "h": 10, "pad": 1, "shown": True}]}
+        return {"ok": True}
+
+    def status(self):
+        return {"guiScaleSetting": 3, "scaleFactor": 2, "display": "%dx%d" % (self.W, self.H)}
+
+
+class MotionBlurDryRun(unittest.TestCase):
+    """Step MB against a fake game: it runs to the end, judges the frames, and puts everything back."""
+
+    def run_step(self, game):
+        real_sleep, real_shots = cobdev.time.sleep, cobdev.SHOTS
+        cobdev.time.sleep = lambda t: None
+        with tempfile.TemporaryDirectory() as tmp:
+            cobdev.SHOTS = tmp
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cobdev.smoke_motion_blur(game, "com.bedwarsqol.BedwarsQol.config")
+            finally:
+                cobdev.time.sleep, cobdev.SHOTS = real_sleep, real_shots
+        return {st["id"]: st for st in game.report["steps"]}
+
+    def test_a_blurring_game_passes_and_everything_is_restored(self):
+        g = FakeMotionBlurGame()
+        steps = self.run_step(g)
+        self.assertEqual(list(steps), ["MB", "MB-cut", "MB-still", "MB-turn"])
+        for sid, st in steps.items():
+            self.assertEqual(st["status"], "pass", (sid, [c for c in st["checks"] if not c["ok"]], st.get("error")))
+        self.assertEqual(g.fields, {"motionBlur": False, "mbStrength": 3, "fpsEnabled": True, "cpsEnabled": True,
+                                    "pingEnabled": False})
+        commands = [q["command"] for p, q in g.sent if p == "/command"]
+        self.assertIn("/fill -10 4 8 10 12 8 minecraft:wool 0", commands)
+        self.assertIn(cobdev.mb_board_clear(), commands)
+        self.assertEqual(g.scales[-1], 3)
+        self.assertIn(("/invoke", {"path": cobdev.MB + ".release", "args": ""}), g.sent)
+        poses = [q["args"] for p, q in g.sent if p == "/probe" and q["name"] == "mb-pose"]
+        self.assertIn(cobdev.ARG_SEP.join(["0.4374999701976776", "0"]), poses)  # the turn frame's own yaw
+
+    def test_a_game_that_does_not_blur_fails_the_turn_step(self):
+        steps = self.run_step(FakeMotionBlurGame(blurs=False))
+        self.assertEqual(steps["MB-turn"]["status"], "fail")
+        self.assertEqual(steps["MB-still"]["status"], "pass")
+
+
 class RewindSmoke(unittest.TestCase):
     """RW (PLAN A11): passes only on RewindCheck's verdict for one closed recording, records into cobdev's own
     relative folder, and puts both Rewind settings back whatever happens."""

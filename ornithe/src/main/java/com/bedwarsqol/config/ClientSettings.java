@@ -362,6 +362,10 @@ public class ClientSettings {
     public boolean ptHideBlockBreak = com.bedwarsqol.feature.ParticleRules.DEFAULT_HIDE_BLOCK_BREAK;
     /** Crit and sharpness particles per hit, 1 to 3. */
     public int ptMultiplier = com.bedwarsqol.feature.ParticleRules.DEFAULT_MULTIPLIER;
+    /** Motion Blur (Ornithe build): the world smears along the camera's turn. */
+    public boolean motionBlur = com.bedwarsqol.feature.MotionBlurRules.DEFAULT_ENABLED;
+    /** Motion Blur's Strength, 1 to 9; 5 matches PolyBlur's default. */
+    public int mbStrength = com.bedwarsqol.feature.MotionBlurRules.DEFAULT_STRENGTH;
 
     /** Center-screen countdown for nearby primed TNT. */
     public boolean tntFuseEnabled = false;
@@ -545,6 +549,7 @@ public class ClientSettings {
         if (blockOverlayLineWidth < 0.5f || blockOverlayLineWidth > 10.0f) blockOverlayLineWidth = 2.0f;
         tntFuseRadius = clamp(tntFuseRadius, 1, 64);
         ptMultiplier = com.bedwarsqol.feature.ParticleRules.clampMultiplier(ptMultiplier);
+        mbStrength = com.bedwarsqol.feature.MotionBlurRules.clampStrength(mbStrength);
         chatStackWindowSec = clampf(chatStackWindowSec, 1.0f, 30.0f);
 
         handPosX = clampf(handPosX, -1.0f, 1.0f);

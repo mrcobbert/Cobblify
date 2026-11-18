@@ -104,6 +104,7 @@ final class Probes {
                 return openShop(args);
             default:
                 if (Policy.OVERLAY_PROBES.contains(name)) return OverlayProbes.run(name, args);
+                if (Policy.MOTION_BLUR_PROBES.contains(name)) return MotionBlurProbes.run(name, args);
                 throw new Refused("unknown probe " + name);
         }
     }

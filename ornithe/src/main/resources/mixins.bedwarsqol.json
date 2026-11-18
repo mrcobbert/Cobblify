@@ -26,6 +26,7 @@
     "EntityRendererCameraMixin",
     "EntityRendererMixin",
     "EntityRendererLightmapMixin",
+    "EntityRendererMotionBlurMixin",
     "EffectRendererParticlesMixin",
     "EntityLivingBaseParticlesMixin",
     "EntityPlayerParticlesMixin",

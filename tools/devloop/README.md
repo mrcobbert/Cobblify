@@ -145,14 +145,14 @@ to get a real world load; `cobdev world` opens it again.
 
 ## Smoke checks
 
-`cobdev smoke [--prod] [--boot-only] [--only overlays|team-upgrades]` runs PLAN Verification A3-A6, the
-Clutch Practice check, the HUD look step `HL`, the overlay steps `OV-*`, the Team Upgrades steps (synthetic
+`cobdev smoke [--prod] [--boot-only] [--only overlays|team-upgrades|motion-blur]` runs PLAN Verification A3-A6,
+the Clutch Practice check, the HUD look step `HL`, the overlay steps `OV-*`, the Team Upgrades steps (synthetic
 Bed Wars scoreboard, chat lines, titles and shop windows, then an Edit HUD sweep over window sizes, GUI scales
 and HUD Size that checks Team Upgrades' default spot against every switched-on module and the hotbar, with the
 profile's modules and again with all of them on, where only a screen whose other modules already overlap one
 another is a note, not a failure) and the Edit HUD step `A4-edithud` (its E-checks, from E0: the probe on an
-open editor) against the running game and writes every command, status, shot path and pass/fail per check to
-`~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
+open editor), then the Motion Blur step `MB`, against the running game and writes every command, status, shot
+path and pass/fail per check to `~/.cache/cobdev/smoke/smoke-<time>-<mode>.json`. It stages and restarts into the requested mode
 first (`--no-stage` reuses a running game of that mode); `--prod` switches back to dev afterwards
 unless `--keep`. Steps that need code the build does not have yet report "not available yet"
 instead of failing. Exit status is 1 if any check failed.
@@ -174,6 +174,42 @@ icon cache is never used for them. The step saves every setting it touches and r
 OV-tab, OV-tabhide, OV-chat, OV-chatclick): drawn bounding boxes against `probe overlay-boxes` at three
 placements, Background fill ratios against the plain-sky backdrop, chat rows closed/open, the Tab-hides-HUD
 frame comparison with `TabHudGate.mismatchFrames`, and scripted chat clicks. The full smoke runs them too.
+
+`cobdev smoke --only motion-blur` runs the boot and world steps, then the Motion Blur step `MB` (cycle
+2026-11-17-motion-blur; the full smoke runs it last). It saves and puts back every field it sets (`motionBlur`,
+`mbStrength`, FPS/CPS/Ping), the GUI scale, `sendCommandFeedback` and the board, and frees the effect's GL objects
+(`MotionBlur.release`) when it leaves the module off.
+- `MB`: GUI scale 2, frozen time, weather and entities, FPS/CPS/Ping off, Strength 5, chat cleared. A 21 x 9
+  black-and-white wool checkerboard at x -10..10, y 4..12, z 8, 7.5 blocks ahead of the start pose
+  `/tp @p 0.5 4 0.5 0 0`. Guard: the board must fill the detail region (the middle 50% of the width, 15-55% of the
+  height) at rest, or the step fails as "fixture not in view" (a FOV far above 70 can push the top rows out).
+- `MB-cut`: a real position correction (`/tp @p ~0.5 ~ ~ ~90 ~`, an S08) bumps `cutSerial`, and the frame right after it
+  has `resetReason = position-correction`, `smearPx = 0` and `worldPassRan = false` (read from a frame log).
+- `MB-still`: at rest with the module on, ten reads over 1 s show `active` and `worldPassRan` false and `glEntries`
+  unchanged; then one frame on and one off: the hotbar, the crosshair and every shown HUD box are pixel-identical (the
+  whole-frame difference is a note).
+- `MB-turn`: a frame T 75 ms into a 200 deg/s turn from yaw -15 to 15, against R*, the same recorded yaw at rest. In
+  the detail region, T's horizontal detail (mean squared neighbour difference of luma) is at most 0.8 x R*'s, its
+  vertical detail at least 0.8 x, its mean luminance within 10% and its variance above 0; T has `smearPx > 0`, the
+  world pass ran and `failed` is null. FPS is a note.
+
+Its probes (singleplayer only; Cobblify's `MotionBlur.record()` by reflection, so they work in dev and prod):
+
+```
+cobdev probe mb-record              # the last drawn frame's record (frameId, yaw, pitch, smearPx, taps, active,
+                                    #   worldPassRan, resetReason, cutSerial, cutSerialNow, glEntries, failed,
+                                    #   suppressed) plus Minecraft.getDebugFPS()
+cobdev probe mb-record watch        # start a frame log: one record per drawn frame (at most 4096 frames or 10 s)
+cobdev probe mb-record log          # stop it and print it
+cobdev probe mb-turn -15 15 200     # turn the player's yaw from -15 to 15 at 200 deg/s, then rest there
+cobdev probe mb-pose 0.5 0          # stop any turn; yaw and pitch, current and previous, become exactly these floats
+cobdev probe mb-shot [stopTurn]     # one game-thread task: the last frame's record and that frame (PNG, base64)
+```
+
+A frame driver thread keeps one task queued on the game thread while a turn or a log runs, so it runs once per pass
+of the game loop, between frames: it sets the turn's yaw from the time since the start (current and previous yaw
+alike, so the camera's interpolated yaw is exactly that at any partial tick) and logs the frame just drawn. Above
+roughly 1,000 FPS the log can skip a frame; `MB-cut` then fails with "frames skipped" rather than guessing.
 
 `cobdev smoke --only rewind` runs the boot and world steps, then `RW` (Rewind, PLAN A11): with Rewind and Record
 Games on it rejoins the smoke world, walks for a second, presses the Marker Key (`invoke
