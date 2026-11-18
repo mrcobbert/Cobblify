@@ -38,6 +38,8 @@ public class PlaybackSessionTest {
     static final long TICK = Timeline.TICK_US;
     static final int START_TICK = 20;
     static final int END_TICK = 200;
+    /** Ticks run at the end: tick END_TICK (the end's time) is fed too (code review 2, I3). */
+    static final int END_RUN = END_TICK + 1;
     static final String ID = "20261117-120000-feed";
 
     private File cbr;
@@ -622,8 +624,8 @@ public class PlaybackSessionTest {
     @Test
     public void theEndTickReachedInTheSecondOfFourVanillaTicksStopsTheLoopThere() {
         watching();
-        seekAndSettle(END_TICK - 2);
-        assertEquals(END_TICK - 2, session.ticks().ticksRun());
+        seekAndSettle(END_RUN - 2);
+        assertEquals(END_RUN - 2, session.ticks().ticksRun());
         ops.elapsed = 4;
         session.frameStart();
         ops.elapsed = 4; // a cap at the frame start alone is not enough: the RETURN hook must stop the loop
@@ -635,7 +637,7 @@ public class PlaybackSessionTest {
         }
         session.afterPauseWrite();
         assertEquals(2, runs);
-        assertEquals(END_TICK, session.ticks().ticksRun());
+        assertEquals(END_RUN, session.ticks().ticksRun());
         assertTrue(session.ticks().paused());
         assertTrue(ops.paused);
         int ticks = loop.worldTicks;
@@ -964,7 +966,7 @@ public class PlaybackSessionTest {
     @Test
     public void playAtTheEndRestartsAtTheGameStart() {
         watching();
-        seekAndSettle(END_TICK);
+        seekAndSettle(END_RUN);
         loop.frames(2, 1);
         assertTrue(session.ticks().paused());
         session.togglePlay();

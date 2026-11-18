@@ -61,8 +61,9 @@ public class RewindCamera extends EntityPlayerSP {
 
     /**
      * This world tick's self-track state (both views, so it does not depend on the view): selected slot, EQUIP stacks
-     * ({@code full}: every recorded stack, for a camera made anew; else only this tick's changes, so a later S2F for a
-     * slot wins), the swing and the item in use; then {@link #applyView}.
+     * ({@code full}: every recorded stack newer than the last window-0 S30/S2F for its slot, for a camera made anew;
+     * else only this tick's changes, so a later S2F for a slot wins), the swing and the item in use; then
+     * {@link #applyView}.
      */
     public void applyHand(HandState h, boolean full, boolean yourView, EntityLivingBase puppet) {
         inventory.currentItem = h.selectedSlot();

@@ -493,6 +493,52 @@ public class RewindGameRulesTest {
         }
     }
 
+    /**
+     * Code review 2, I1, the reviewer's timings: connect 0; segment 1 at 1 s; the active Bed Wars sidebar opens the
+     * visit (no location) at 12 s; another world boundary inside the replay viewer at 12.5 s; the first location, for
+     * segment 2, at 13 s says REPLAY with mode BEDWARS_EIGHT_ONE; disconnect at 90 s. The visit the sidebar opened was
+     * the replay viewer's: its game is discarded (a REPLAY close), not closed as a LOBBY and kept, and the replay's
+     * own segment is dropped.
+     */
+    @Test
+    public void aReplayLocationAfterACandidateBoundaryDiscardsTheGameTheSidebarOpened() {
+        for (Location replay : new Location[]{REPLAY_BW_MODE, REPLAY}) {
+            Script s = new Script().connect(0).boundary(1_000_000L, 1).tick(12_000_000L, false, true);
+            Command open = s.one(CommandType.OPEN);
+            s.boundary(12_500_000L, 2).tick(12_600_000L, false, true);
+            s.location(13_000_000L, 2, replay);
+            Command close = s.one(CommandType.CLOSE);
+            assertEquals(replay.toString(), EndReason.REPLAY, close.endedBy);
+            assertEquals(open.gameId, close.gameId);
+            assertFalse(close.failed);
+            assertEquals("the replay's segment joins no game", 0, s.count(CommandType.JOIN));
+            assertRange(s.one(CommandType.DROP), 2, 2);
+            s.ticks(14 * S, 89 * S, false, true);                        // the replayed game's sidebar
+            assertFalse(s.rules.entryState().gameOpen);
+            assertTrue("a lobby run now", s.rules.entryState().lobby);
+            s.disconnect(90_000_000L);
+            assertEquals(replay.toString(), 1, s.count(CommandType.OPEN));
+            assertEquals(replay.toString(), 1, s.count(CommandType.CLOSE));
+            assertEquals(0, s.count(CommandType.JOIN));
+        }
+    }
+
+    /** A game a non-replay location confirmed is a real game: a REPLAY location for the next world closes it, kept. */
+    @Test
+    public void aReplayLocationAfterAConfirmedGameClosesItAsALobbyAndKeepsIt() {
+        Script s = new Script().connect(0).boundary(1_000_000L, 1).tick(12_000_000L, false, true);
+        s.location(12_200_000L, 1, BW_A);                                // the sidebar's game, confirmed
+        s.boundary(30 * S, 2).tick(30 * S + 100_000L, false, false);
+        s.location(31 * S, 2, REPLAY_BW_MODE);                           // then the player opens a replay
+        Command close = s.one(CommandType.CLOSE);
+        assertEquals(EndReason.LOBBY, close.endedBy);
+        assertFalse(close.failed);
+        s.ticks(32 * S, 89 * S, false, true);
+        s.disconnect(90 * S);
+        assertEquals(1, s.count(CommandType.OPEN));
+        assertEquals(1, s.count(CommandType.CLOSE));
+    }
+
     @Test
     public void aLateReplayLocationDropsARunTheSidebarWasStillDeciding() {
         // The replayed game's queue sidebar made a pending Bed Wars run; its REPLAY location came late.
@@ -621,6 +667,80 @@ public class RewindGameRulesTest {
         Script l = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
         l.ticks(2 * S, 20 * S, false, false).disconnect(21 * S);
         assertEntry("disconnected from a lobby", l.rules.entryState(), false, Result.UNKNOWN, false, false);
+    }
+
+    // ---- Record Games off (code review 2, I4): the lobby is still known, nothing is recorded
+
+    /** A connection the recorder does not record (Rewind on, Record Games off): the wiring still reports its worlds. */
+    private static Script notRecording(long t) {
+        Script s = new Script();
+        return s.take(s.rules.onConnect(t, false, false));
+    }
+
+    @Test
+    public void entryStateWithRecordGamesOffStillKnowsTheLobby() {
+        Script s = notRecording(0).boundary(S, 1);
+        assertEntry("new world", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+        s.location(S + 100_000, 1, MAIN);
+        assertEntry("lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        s.ticks(2 * S, 30 * S, false, false);
+        assertEntry("lobby later", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+
+        s.boundary(40 * S, 2);
+        assertEntry("undecided world", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+        s.location(40 * S + 100_000, 2, BW_A).ticks(41 * S, 60 * S, true, false).ticks(61 * S, 300 * S, false, true);
+        assertEntry("a game, never recorded", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+        s.line(301 * S, Kind.WIN);
+        assertEntry("its result changes nothing", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+
+        s.boundary(320 * S, 3).location(320 * S + 100_000, 3, LOBBY_NAME_ONLY).ticks(321 * S, 340 * S, false, false);
+        assertEntry("back in a lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        assertTrue("never a command: nothing is recorded " + s.all, s.all.isEmpty());
+        assertFalse(s.rules.active());
+        assertFalse(s.rules.gameOpen());
+
+        s.disconnect(400 * S);
+        assertEntry("disconnected", s.rules.entryState(), false, Result.UNKNOWN, false, false);
+        assertTrue(s.all.isEmpty());
+    }
+
+    @Test
+    public void withRecordGamesOffTheQueueStillOverridesALobbyButNotTheReplayViewer() {
+        Script s = notRecording(0).boundary(S, 1).location(S + 100_000, 1, LOBBY_NAME_ONLY);
+        s.tick(2 * S, true, false);                                       // the Bed Wars queue inside 10 s
+        assertEntry("overridden lobby", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+        s.ticks(3 * S, 30 * S, false, false);
+        assertEntry("still a game run", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+
+        Script late = notRecording(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        late.ticks(2 * S, 12 * S, false, false).tick(13 * S, true, false); // the queue after the 10 s verdict
+        assertEntry("a decided lobby", late.rules.entryState(), false, Result.UNKNOWN, true, false);
+
+        Script r = notRecording(0).boundary(S, 1).location(S + 100_000, 1, REPLAY_BW_MODE);
+        r.ticks(2 * S, 30 * S, false, true);                              // the replayed game's sidebar
+        assertEntry("replay viewer", r.rules.entryState(), false, Result.UNKNOWN, true, false);
+        assertTrue(s.all.isEmpty() && late.all.isEmpty() && r.all.isEmpty());
+    }
+
+    @Test
+    public void recordGamesTurnedOffInALobbyKeepsTheLobby() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        s.ticks(2 * S, 30 * S, false, false);
+        assertEntry("recording, lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        s.record(31 * S, false);
+        assertFalse(s.rules.active());
+        assertEntry("Record Games off, same lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        int commands = s.all.size();
+        s.boundary(40 * S, 2);
+        assertEntry("undecided world", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+        s.location(40 * S + 100_000, 2, MAIN).ticks(41 * S, 60 * S, false, false);
+        assertEntry("next lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        assertEquals("nothing more is recorded", commands, s.all.size());
+
+        Script g = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        g.tick(2 * S, true, false).tick(3 * S, false, true).line(100 * S, Kind.WIN).record(101 * S, false);
+        assertEntry("off mid-game: no game is open, not a lobby", g.rules.entryState(), false, Result.UNKNOWN,
+                false, true);
     }
 
     @Test

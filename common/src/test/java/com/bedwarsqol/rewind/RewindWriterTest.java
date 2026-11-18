@@ -827,6 +827,50 @@ public class RewindWriterTest {
         assertEquals(0, f.writer.pendingBytes());
     }
 
+    /**
+     * Code review 2, I1 end to end, the reviewer's timings: connect 0; segment 1 at 1 s; the Bed Wars sidebar opens a
+     * file by 12 s; a world boundary (segment 2) inside the replay viewer at 12.5 s; the first location, for segment 2,
+     * at 13 s says REPLAY; disconnect at 90 s. Nothing of the replay viewer visit is left on disk.
+     */
+    @Test
+    public void aReplayLocationAfterACandidateBoundaryLeavesNoFile() {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 0L);
+        f.connect(false, 256, 64);
+        f.advance(1_000_000L);
+        f.netBoundary(1, null, s01(5, 0));
+        f.clientBoundary(1, snapshot(0));
+        int i = 0;
+        boolean switched = false;
+        boolean located = false;
+        boolean sawFile = false;
+        while (f.clock.nowUs < 90_000_000L) {
+            f.advance(100_000L);
+            if (!switched && f.clock.nowUs >= 12_500_000L) {
+                switched = true;
+                sawFile = !names(dir).isEmpty();
+                f.netBoundary(2, null, s07(1));
+                f.clientBoundary(2, snapshot(1));
+            }
+            f.net(packet(0x02, 40, i));
+            f.tick(i++);
+            if (!located && f.clock.nowUs >= 13_000_000L) {
+                located = true;
+                f.submit(f.rules.onLocation(f.clock.nowUs, 2,
+                        new Location("fakeReplay8", "REPLAY", null, "BEDWARS_EIGHT_ONE", "Fakeland")));
+            }
+            f.submit(f.rules.tick(f.clock.nowUs, false, f.clock.nowUs >= 12_000_000L));
+            f.step();
+        }
+        f.advance(RewindWriter.SYNC_INTERVAL_US);
+        f.step();
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+        assertTrue("the sidebar opened a file before the boundary", sawFile);
+        assertEquals("no file for a replay-viewer visit: " + names(dir), 0, names(dir).size());
+        assertEquals(0, f.writer.pendingBytes());
+    }
+
     // ------------------------------------------------------------------ A5: close prunes
 
     @Test

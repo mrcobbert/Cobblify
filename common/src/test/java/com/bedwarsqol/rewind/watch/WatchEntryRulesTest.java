@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.HypixelLocationCodec;
 import com.bedwarsqol.rewind.RewindGameRules;
 import org.junit.Test;
 
@@ -81,9 +82,26 @@ public class WatchEntryRulesTest {
 
     @Test
     public void recorderStateFromRewindGameRules() {
-        // an inactive recorder (Record Games off) reports all false: no row, even with old recordings
+        // no connection yet: no row
         RewindGameRules rules = new RewindGameRules();
-        RewindGameRules.EntryState s = rules.entryState();
-        assertFalse(WatchEntryRules.show(true, true, WatchEntryRules.Newest.PASSED, s));
+        assertFalse(WatchEntryRules.show(true, true, WatchEntryRules.Newest.PASSED, rules.entryState()));
+    }
+
+    /**
+     * Code review 2, I4, the reviewer's inputs: Rewind on, Record Games off (the recorder inactive), a kept readable
+     * game, a Hypixel lobby. A4 has no Record Games condition: the row shows.
+     */
+    @Test
+    public void recordGamesOffStillShowsTheRowInALobbyWithAnOldGame() {
+        RewindGameRules rules = new RewindGameRules();
+        rules.onConnect(0, false, false);
+        rules.onBoundary(1_000_000L, 1);
+        assertFalse("a new world is not a lobby yet",
+                WatchEntryRules.show(true, true, WatchEntryRules.Newest.PASSED, rules.entryState()));
+        rules.onLocation(1_100_000L, 1, new HypixelLocationCodec.Location("lobby7", "MAIN", null, null, null));
+        assertFalse(rules.active());
+        assertTrue(WatchEntryRules.show(true, true, WatchEntryRules.Newest.PASSED, rules.entryState()));
+        assertFalse("still no game to watch", WatchEntryRules.show(true, true, WatchEntryRules.Newest.NONE,
+                rules.entryState()));
     }
 }

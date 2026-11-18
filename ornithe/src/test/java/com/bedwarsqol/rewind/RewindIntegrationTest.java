@@ -1624,6 +1624,77 @@ public class RewindIntegrationTest {
         }
     }
 
+    // ------------------------------------------------------------------ code review 2, I4: Record Games off
+
+    /** A {@code hyevent:location} as vanilla's decoder hands it to {@code packet_handler}. */
+    private static void decodedLocation(Harness h, String server, String type, String lobby, String mode) {
+        h.ch.pipeline().fireChannelRead(new net.minecraft.network.play.server.S3FPacketCustomPayload(
+                "hyevent:location", new net.minecraft.network.PacketBuffer(io.netty.buffer.Unpooled.wrappedBuffer(
+                        locationPayload(server, type, lobby, mode, null)))));
+        h.fired++;
+        h.runClient();
+    }
+
+    /**
+     * Rewind on, Record Games off: nothing is recorded (no capture handler, no writer, no file, every packet passes),
+     * but the rules still learn whether the run is a lobby, so Watch Last Game can show there (A4).
+     */
+    @Test
+    public void recordGamesOffStillTellsTheRulesWhenTheRunIsALobby() {
+        File dir = new File(tmp.getRoot(), "record-off");
+        Harness h = new Harness(dir);
+        assertNull(h.connect(true, false));
+        assertNull(RewindCapture.get(h.ch));
+        h.boundary(s01(601, 0), 0);
+        assertFalse("a new world", h.rewind.rules().entryState().lobby);
+        decodedLocation(h, "fakeLobby2", "MAIN", null, null);
+        h.tick(false, false);
+        assertTrue("the lobby is known", h.rewind.rules().entryState().lobby);
+        assertFalse(h.rewind.rules().active());
+
+        h.boundary(s07(1), 1);
+        decodedLocation(h, GAME, "BEDWARS", null, "BEDWARS_EIGHT_ONE");
+        h.game(10, 61);
+        h.tick(false, true);
+        assertFalse("a game run is not a lobby", h.rewind.rules().entryState().lobby);
+        assertFalse("and nothing records it", h.rewind.rules().gameOpen());
+
+        h.boundary(s07(0), 0);
+        decodedLocation(h, "fakeLobby4", null, "fakeLobby4", null);
+        assertTrue(h.rewind.rules().entryState().lobby);
+        assertEquals("no writer is ever made", 0, h.writersMade);
+        assertFalse(dir.exists());
+        assertEquals("every packet passes", h.fired, h.rx.messages.size());
+        h.ch.close();
+        h.tick(false, false);
+        assertFalse("disconnected", h.rewind.rules().entryState().lobby);
+    }
+
+    /** Record Games turned off mid-connection: the capture handler goes, the next lobby is still known. */
+    @Test
+    public void recordGamesTurnedOffMidConnectionStillFollowsTheNextLobby() throws Exception {
+        Harness h = openGame(tmp.newFolder("off-mid"));
+        h.rewind.tick(false, false, false);               // Record Games switched off
+        h.step();
+        h.ch.runPendingTasks();
+        assertNull("the capture handler is removed", RewindCapture.get(h.ch));
+        assertFalse(h.rewind.rules().active());
+        h.boundary(s07(1), 1);
+        decodedLocation(h, "fakeLobby2", "MAIN", null, null);
+        assertTrue(h.rewind.rules().entryState().lobby);
+    }
+
+    /** Rewind off: nothing at all, not even the lobby. */
+    @Test
+    public void rewindOffFollowsNothing() {
+        Harness h = new Harness(new File(tmp.getRoot(), "rewind-off"));
+        assertNull(h.connect(false, false));
+        h.boundary(s01(602, 0), 0);
+        decodedLocation(h, "fakeLobby2", "MAIN", null, null);
+        assertFalse(h.rewind.rules().entryState().lobby);
+        assertEquals(h.fired, h.rx.messages.size());
+    }
+
     // ------------------------------------------------------------------ A10: off
 
     @Test

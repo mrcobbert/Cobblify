@@ -14,7 +14,12 @@ import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.rewind.watch.RecordingLibrary;
 import com.bedwarsqol.rewind.watch.WatchEntryRules;
 import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.stats.EligibilitySnapshot;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.Gui;
@@ -25,6 +30,7 @@ import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.network.INetHandler;
 import net.minecraft.network.NetworkManager;
+import net.minecraft.network.play.server.S3FPacketCustomPayload;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
@@ -45,7 +51,10 @@ import java.util.function.Supplier;
  * <p><b>Per connection.</b> {@code SERVER_CONNECT} (Netty thread) installs {@link RewindCapture} when Rewind and
  * Record Games are on and the connection is single-player or Hypixel, with a fresh NET producer, then posts the
  * connection to the client thread through Minecraft's task queue, ahead of every play packet. There the rules get
- * {@code onConnect}, the writer {@code attach} (fresh TRACK producer and stats feed), in that order.
+ * {@code onConnect}, the writer {@code attach} (fresh TRACK producer and stats feed), in that order. With Rewind on, a
+ * Hypixel connection also gets a read-only {@link LocationTap}: a connection that is not recorded (Record Games off,
+ * from the start or turned off later) still tells the rules its worlds, locations and sidebar, so they know when the
+ * run is a lobby for Watch Last Game (code review 2, I4). Nothing of it is recorded.
  *
  * <p><b>Client thread.</b>
  * <ul>
@@ -69,8 +78,8 @@ import java.util.function.Supplier;
  * <p><b>Failures.</b> The event dispatcher does not catch, so every listener here catches Throwable: a recorder bug
  * never breaks the connection, the tick or world loading. A failure ends recording for the game that owns it through
  * the rules and is logged with ids and counts only, written by the writer thread (no file I/O here). No
- * packet is ever sent or changed; with Rewind or Record Games off nothing is installed, no writer exists and no file
- * is written.
+ * packet is ever sent or changed; with Rewind off nothing is installed; with Record Games off only the read-only
+ * location tap is, no writer exists and no file is written.
  *
  * <p><b>While a recording plays</b> ({@link PlaybackGate#muted()}, Rewind R2) the recorder ignores everything: no
  * connection is installed or attached, and world loads, locations, ticks, self-track and camera samples, game lines
@@ -109,6 +118,8 @@ public final class Rewind {
         final boolean local;
         /** Null: this connection is not recorded. */
         final CaptureSession session;
+        /** A {@link LocationTap} was installed: while not recorded, its worlds still reach the rules (review 2, I4). */
+        final boolean tapped;
         final PacketStats.Feed feed = new PacketStats.Feed();
         RecordChunk.Producer track;
         /** WORLD_LOADs so far = the current TRACK segment. */
@@ -134,11 +145,12 @@ public final class Rewind {
         /** The rules themselves threw: nothing more is done for this connection. */
         boolean dead;
 
-        Conn(Object handle, Channel channel, boolean local, CaptureSession session) {
+        Conn(Object handle, Channel channel, boolean local, CaptureSession session, boolean tapped) {
             this.handle = handle;
             this.channel = channel;
             this.local = local;
             this.session = session;
+            this.tapped = tapped;
         }
     }
 
@@ -196,7 +208,10 @@ public final class Rewind {
         } catch (Throwable t) {
             nettyError = t;
         }
-        final Conn c = new Conn(handle, channel, local, session);
+        // Code review 2, I4: the lobby is known without recording.
+        boolean tapped = rewindOn && !local && EligibilitySnapshot.isExactHypixelHost(address)
+                && LocationTap.install(channel, this);
+        final Conn c = new Conn(handle, channel, local, session, tapped);
         try {
             clientThread.execute(new Runnable() {
                 @Override
@@ -274,7 +289,7 @@ public final class Rewind {
             } else if (writer != null) {
                 writer.submitAll(commands);
             }
-            conn = recording ? c : new Conn(c.handle, c.channel, c.local, null);
+            conn = recording ? c : new Conn(c.handle, c.channel, c.local, null, c.tapped);
             if (recording) {
                 c.track = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, TRACK_INITIAL_CHUNKS, MAX_CHUNKS, now);
                 // seenCaptureFailures stays 0: a capture failure latched on Netty before this task ran (initial
@@ -291,7 +306,17 @@ public final class Rewind {
     /** {@code WORLD_LOAD}: the next boundary of this connection was applied on the client thread. */
     void onWorldLoad(SnapshotSource source) {
         Conn c = conn;
-        if (muted() || !recording(c)) {
+        if (muted()) {
+            return;
+        }
+        if (!recording(c)) {
+            if (followed(c)) {
+                try {
+                    rules.onBoundary(clock.nowUs(), ++c.boundaries); // not recorded: no command (review 2, I4)
+                } catch (Throwable t) {
+                    failure("world", t);
+                }
+            }
             return;
         }
         Throwable snapshotError = null;
@@ -339,6 +364,22 @@ public final class Rewind {
     }
 
     /**
+     * A {@code hyevent:location} from {@link LocationTap} (client thread): only for the current connection while it is
+     * not recorded (a recorded one gets its locations, with their segment, from the capture handler).
+     */
+    private void observedLocation(Channel channel, byte[] payload) {
+        Conn c = conn;
+        if (muted() || !followed(c) || c.channel != channel) {
+            return;
+        }
+        try {
+            rules.onLocation(clock.nowUs(), c.boundaries, HypixelLocationCodec.decodeLocation(payload));
+        } catch (Throwable t) {
+            failure("location", t);
+        }
+    }
+
+    /**
      * {@code CLIENT_TICK}. {@code recordSetting} is Rewind and Record Games both on; the Bed Wars flags are the
      * existing sidebar detection.
      */
@@ -362,6 +403,9 @@ public final class Rewind {
                 return;
             }
             if (!recording(c)) {
+                if (followed(c)) {
+                    rules.tick(now, bedwarsQueue, bedwarsActive); // not recorded: no command (review 2, I4)
+                }
                 return;
             }
             if (!recordSetting) {
@@ -506,6 +550,86 @@ public final class Rewind {
 
     private boolean recording(Conn c) {
         return c != null && !c.ended && !c.dead && c.session != null && writer != null && rules.active();
+    }
+
+    /**
+     * A live server connection that is not recorded: its worlds, locations and sidebar still reach the rules, which
+     * follow whether the run is a lobby and emit nothing (code review 2, I4).
+     */
+    private boolean followed(Conn c) {
+        return c != null && c.tapped && !c.ended && !c.dead && !recording(c);
+    }
+
+    /** Whether the client tick should read the Bed Wars sidebar for the rules (recorded, or followed). */
+    boolean readsSidebar() {
+        Conn c = conn;
+        return recording(c) || followed(c);
+    }
+
+    /**
+     * Reads (never consumes, never releases) {@code hyevent:location} payloads as vanilla's decoder hands them on, and
+     * posts a copy to the client thread ({@link #observedLocation}); passes every message on. Installed before
+     * {@code packet_handler} on a Hypixel connection while Rewind is on (code review 2, I4).
+     */
+    static final class LocationTap extends ChannelInboundHandlerAdapter {
+        static final String NAME = "cobblify_rewind_location";
+        private static final String PACKET_HANDLER = "packet_handler";
+
+        private final Rewind rewind;
+        private final Channel channel;
+
+        private LocationTap(Rewind rewind, Channel channel) {
+            this.rewind = rewind;
+            this.channel = channel;
+        }
+
+        /**
+         * Never throws. Returns false without a {@code packet_handler}, when one is already there or on failure.
+         */
+        static boolean install(Channel channel, Rewind rewind) {
+            try {
+                ChannelPipeline p = channel == null ? null : channel.pipeline();
+                if (p == null || p.get(PACKET_HANDLER) == null || p.get(NAME) != null) {
+                    return false;
+                }
+                p.addBefore(PACKET_HANDLER, NAME, new LocationTap(rewind, channel));
+                return true;
+            } catch (Throwable t) {
+                rewind.nettyError = t;
+                return false;
+            }
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+            if (msg instanceof S3FPacketCustomPayload) {
+                try {
+                    S3FPacketCustomPayload p = (S3FPacketCustomPayload) msg;
+                    if (HypixelLocationCodec.LOCATION_CHANNEL.equals(p.getChannelName())) {
+                        final byte[] data = copy(p.getBufferData());
+                        rewind.clientThread.execute(new Runnable() {
+                            @Override
+                            public void run() {
+                                rewind.observedLocation(channel, data);
+                            }
+                        });
+                    }
+                } catch (Throwable t) {
+                    rewind.nettyError = t;
+                }
+            }
+            super.channelRead(ctx, msg);
+        }
+
+        private static byte[] copy(ByteBuf buf) {
+            if (buf == null) {
+                return new byte[0];
+            }
+            ByteBuf view = buf.duplicate(); // its own reader index: vanilla and other taps still see it all
+            byte[] out = new byte[view.readableBytes()];
+            view.readBytes(out);
+            return out;
+        }
     }
 
     /** The current TRACK segment is recorded: a boundary was applied and the rules did not drop it. */
@@ -994,8 +1118,8 @@ public final class Rewind {
             }
             try {
                 boolean on = recordSetting();
-                boolean recorded = r.recording(r.conn);
-                r.tick(on, recorded && HypixelContext.isInBedwarsQueue(), recorded && HypixelContext.isInActiveBedwarsGame());
+                boolean sidebar = r.readsSidebar();
+                r.tick(on, sidebar && HypixelContext.isInBedwarsQueue(), sidebar && HypixelContext.isInActiveBedwarsGame());
                 r.selfTrack(PLAYER);
                 pollMarkerKey(r, Minecraft.getMinecraft());
             } catch (Throwable t) {

@@ -9,8 +9,9 @@ import com.bedwarsqol.rewind.RewindGameRules;
  *
  * <p>Recorder state comes from {@link RewindGameRules#entryState()}. Two of its cases, handled here on purpose:
  * <ul>
- *   <li>An inactive recorder (Record Games off) reports every field false, so the row is hidden even when old
- *       recordings exist: "Last Game" would not be the game just played. The gallery still lists them.</li>
+ *   <li>With Record Games off the recorder still follows the connection's worlds (code review 2, I4): no game is
+ *       ever open, and a lobby run shows the row for the newest kept game, as A4 asks (no Record Games
+ *       condition).</li>
  *   <li>Inside Hypixel's replay viewer {@code lobby} is true, so the row shows there like in any lobby: leaving it
  *       loses no game. Replay-viewer recordings themselves never count as the newest game
  *       ({@link RecordingLibrary#newest()}).</li>

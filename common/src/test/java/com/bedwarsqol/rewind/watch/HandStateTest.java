@@ -184,6 +184,7 @@ public class HandStateTest {
                 assertArrayEquals(new byte[]{7, 62}, inventory[0]);
             } else if (i == 7) {
                 inventory[0] = new byte[]{7, 60}; // a later S2F for the same slot
+                h.inventoryPacket(setSlot(0, 36), 0, 6, T + i * TICK + 1); // which the sink reports (review 2, I2)
             } else if (i > 7 && i < 10) {
                 assertArrayEquals("the S2F is not overwritten", new byte[]{7, 60}, inventory[0]);
             } else if (i == 10) {
@@ -200,8 +201,8 @@ public class HandStateTest {
                 }
             }
         }
-        // The full state, for a camera made anew by an S01/S07.
-        assertArrayEquals(new byte[]{7, 62}, h.hotbarItem(0));
+        // The full state, for a camera made anew by an S01/S07: the S2F replaced slot 0's older EQUIP stack.
+        assertNull(h.hotbarItem(0));
         assertArrayEquals(new byte[]{3, 1}, h.hotbarItem(3));
         assertArrayEquals(new byte[]{5, 16}, h.hotbarItem(8));
         assertNull(h.hotbarItem(1));
@@ -231,6 +232,138 @@ public class HandStateTest {
         assertEquals(0, v);
         assertEquals(0, HandState.countDown(0));
         assertEquals(9, HandState.countDown(10));
+    }
+
+    // ------------------------------------------------------------------ code review 2, I2
+
+    private void equipAt(long timeUs, int slot, int... item) {
+        byte[] body = new byte[item.length + 1];
+        body[0] = (byte) slot;
+        for (int k = 0; k < item.length; k++) {
+            body[k + 1] = (byte) item[k];
+        }
+        b.record(timeUs, RewindFormat.TAG_EQUIP, body, 0, body.length);
+    }
+
+    /** S30 (window items) for {@code window}: id, u8 window, short count, then the slots (not read here). */
+    static byte[] windowItems(int window) {
+        return new byte[]{0x30, (byte) window, 0, 45};
+    }
+
+    /** S2F (set slot) for {@code window} and container slot {@code slot}, with an empty stack. */
+    static byte[] setSlot(int window, int slot) {
+        return new byte[]{0x2F, (byte) window, (byte) (slot >> 8), (byte) slot, (byte) 0xFF, (byte) 0xFF};
+    }
+
+    /** What the camera adapter does for a camera made anew by an S01/S07: every remembered stack is copied. */
+    private byte[][] freshCameraCopy(byte[][] serverHotbar) {
+        byte[][] cam = serverHotbar.clone();
+        for (int i = 0; i < HandState.HOTBAR; i++) {
+            if (h.hotbarItem(i) != null) {
+                cam[i] = h.hotbarItem(i);
+            }
+        }
+        return cam;
+    }
+
+    /**
+     * The reviewer's case: a sword held in hotbar slot 1, then empty slot 0 selected; later an S07 makes a new camera
+     * and an S30 (window 0) gives it an empty hotbar in the same playback tick. The fresh camera's full copy must not
+     * put the old sword back: the server's inventory replaces the older EQUIP history.
+     */
+    @Test
+    public void aFreshCameraAfterAnS30KeepsTheServersHotbarNotTheOldSword() {
+        final byte[] empty = {(byte) 0xFF, (byte) 0xFF};
+        b.segment(1);
+        for (int i = 0; i < 20; i++) {
+            tick(i, 0, i < 10 ? 1 : 0, -1, 0);
+            if (i == 0) {
+                equip(0, RewindFormat.EQUIP_HELD, 7, 1);            // the sword, held in slot 1
+            } else if (i == 10) {
+                equip(10, RewindFormat.EQUIP_HELD, 0xFF, 0xFF);      // empty slot 0 selected
+            }
+        }
+        b.segment(2);                                                // after the S07
+        enc.resetSegment();
+        for (int i = 20; i < 30; i++) {
+            tick(i, 0, 0, -1, 0);
+            if (i == 20) {
+                equip(20, RewindFormat.EQUIP_HELD, 0xFF, 0xFF);      // the segment's first EQUIP sample
+            }
+        }
+        SelfTrack s = b.build();
+        for (int i = 0; i < 20; i++) {
+            assertTrue(h.sample(s, T + i * TICK, END));
+        }
+        assertArrayEquals("remembered before the S30", new byte[]{7, 1}, h.hotbarItem(1));
+
+        // Tick 20: the S07 and the S30 (empty hotbar) are fed before the tick's sample.
+        h.inventoryPacket(windowItems(0), 0, 4, T + 20 * TICK - 20_000L);
+        assertTrue(h.sample(s, T + 20 * TICK, END));
+        byte[][] cam = freshCameraCopy(new byte[HandState.HOTBAR][]);
+        assertEquals(0, h.selectedSlot());
+        assertEquals("no ghost sword in slot 1", null, cam[1]);
+        assertArrayEquals("the newer EQUIP of the held slot still applies", empty, cam[0]);
+        for (int i = 21; i < 30; i++) {
+            assertTrue(h.sample(s, T + i * TICK, END));
+            assertFalse("tick " + i, h.hotbarChanged(1));
+            assertNull("tick " + i, h.hotbarItem(1));
+        }
+    }
+
+    /** An EQUIP recorded before the S30 (same tick window) is older than it and never overwrites it; a later one does. */
+    @Test
+    public void anEquipOlderThanTheS30IsNotAppliedAndANewerOneIs() {
+        b.segment(1);
+        for (int i = 0; i < 10; i++) {
+            tick(i, 0, 2, -1, 0);
+        }
+        equipAt(T, RewindFormat.EQUIP_HELD, 7, 1);
+        equipAt(T + 4 * TICK + 10_000L, RewindFormat.EQUIP_HELD, 7, 5);     // before the S30
+        equipAt(T + 4 * TICK + 10_000L, RewindFormat.EQUIP_HELMET, 9, 1);
+        equipAt(T + 7 * TICK, RewindFormat.EQUIP_HELD, 7, 4);               // after it
+        SelfTrack s = b.build();
+        for (int i = 0; i <= 4; i++) {
+            assertTrue(h.sample(s, T + i * TICK, END));
+        }
+        h.inventoryPacket(windowItems(0), 0, 4, T + 4 * TICK + 20_000L);
+        assertTrue(h.sample(s, T + 5 * TICK, END));
+        assertFalse("the older EQUIP does not overwrite the S30's slot", h.hotbarChanged(2));
+        assertNull(h.hotbarItem(2));
+        assertFalse("nor its armour", h.armourChanged(RewindFormat.EQUIP_HELMET));
+        assertNull(h.armourItem(RewindFormat.EQUIP_HELMET));
+        assertTrue(h.sample(s, T + 6 * TICK, END));
+        assertTrue(h.sample(s, T + 7 * TICK, END));
+        assertTrue("a newer EQUIP applies", h.hotbarChanged(2));
+        assertArrayEquals(new byte[]{7, 4}, h.hotbarItem(2));
+    }
+
+    /** An S2F replaces one slot's history (hotbar 36-44, armour 5 helmet - 8 boots); other windows change nothing. */
+    @Test
+    public void anS2fForgetsOnlyItsOwnSlot() {
+        b.segment(1);
+        for (int i = 0; i < 10; i++) {
+            tick(i, 0, i < 3 ? 1 : 3, -1, 0);
+        }
+        equip(0, RewindFormat.EQUIP_HELD, 7, 1);
+        equip(0, RewindFormat.EQUIP_HELMET, 9, 1);
+        equip(0, RewindFormat.EQUIP_BOOTS, 2, 1);
+        equip(3, RewindFormat.EQUIP_HELD, 5, 16);
+        SelfTrack s = b.build();
+        for (int i = 0; i < 5; i++) {
+            assertTrue(h.sample(s, T + i * TICK, END));
+        }
+        h.inventoryPacket(setSlot(1, 37), 0, 6, T + 5 * TICK);              // a chest's window: ignored
+        h.inventoryPacket(setSlot(0, 40), 0, 6, T + 5 * TICK);              // hotbar slot 4: nothing kept there
+        assertArrayEquals(new byte[]{7, 1}, h.hotbarItem(1));
+        h.inventoryPacket(setSlot(0, 37), 0, 6, T + 5 * TICK);              // hotbar slot 1
+        h.inventoryPacket(setSlot(0, 5), 0, 6, T + 5 * TICK);               // the helmet
+        assertNull(h.hotbarItem(1));
+        assertArrayEquals("other slots keep theirs", new byte[]{5, 16}, h.hotbarItem(3));
+        assertNull(h.armourItem(RewindFormat.EQUIP_HELMET));
+        assertArrayEquals(new byte[]{2, 1}, h.armourItem(RewindFormat.EQUIP_BOOTS));
+        h.inventoryPacket(windowItems(1), 0, 4, T + 5 * TICK);              // another window's S30: ignored
+        assertArrayEquals(new byte[]{5, 16}, h.hotbarItem(3));
     }
 
     @Test

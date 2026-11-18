@@ -28,7 +28,8 @@ import java.util.Locale;
  *   <li>Hypixel's replay viewer ({@code serverType} REPLAY, stats code 7) gets a lobby verdict the
  *       sidebar never overrides: the replayed game's Bed Wars sidebar is not a game (R2, Q5). A REPLAY
  *       location that comes after the sidebar already opened the visit discards that game
- *       ({@link EndReason#REPLAY}; code review 1, I4).</li>
+ *       ({@link EndReason#REPLAY}; code review 1, I4), also when it is the first location of a later world of
+ *       that visit (code review 2, I1).</li>
  *   <li>Every other location is a game server (a bare {@code serverName} is "unclassified"). Bed
  *       Wars ({@code serverType} BEDWARS, a {@code BEDWARS_*} mode, or the Bed Wars sidebar) opens
  *       at the active-game rising edge with no minimum length; others open once the visit reaches
@@ -84,7 +85,9 @@ import java.util.Locale;
  * packets and is skipped; other failures never skip the next run.
  *
  * <p><b>Settings.</b> Record off closes the game, drops pending segments and removes the handler;
- * recording resumes only at a connection started with it on.
+ * recording resumes only at a connection started with it on. A server connection that is not recorded still
+ * follows its worlds, locations and sidebar for {@link #entryState()} (whether the run is a lobby, code review 2,
+ * I4); it emits no command.
  */
 public final class RewindGameRules {
 
@@ -514,6 +517,20 @@ public final class RewindGameRules {
     private int earlySeg;
     private long earlyUs;
 
+    // Watch-entry observer (code review 2, I4): a server connection that is not recorded (Record Games off) still
+    // follows its worlds for entryState(); it emits no command and keeps nothing of the stream.
+    private boolean observing;
+    /** A world boundary of the observed connection was applied. */
+    private boolean obsWorld;
+    /** The current observed world has no location yet. */
+    private boolean obsUndecided;
+    /** The current observed world's location gave a lobby verdict, not overridden by the Bed Wars sidebar. */
+    private boolean obsLobby;
+    private boolean obsReplay;
+    /** The lobby verdict is past {@link #LOBBY_VERDICT_WAIT_US}: the sidebar no longer overrides it. */
+    private boolean obsDecided;
+    private long obsLobbyAtUs;
+
     private final ArrayDeque<LocationLogEntry> log = new ArrayDeque<LocationLogEntry>();
     private int lobbyOverridden;
     private int visitsWithoutLocation;
@@ -536,6 +553,7 @@ public final class RewindGameRules {
         connected = true;
         singlePlayer = singlePlayerWorld;
         active = recording;
+        resetObserver(!recording && !singlePlayerWorld);
         if (active && awaitingRearm) emitRearm();
         awaitingRearm = false;
         return flush();
@@ -550,6 +568,7 @@ public final class RewindGameRules {
         resetConnection();
         connected = false;
         active = false;
+        resetObserver(false);
         return flush();
     }
 
@@ -557,6 +576,7 @@ public final class RewindGameRules {
     public List<Command> onRecordSetting(long nowUs, boolean on) {
         if (on || !active) return flush();
         advance(nowUs);
+        observeFrom(nowUs);                                      // the entry state outlives recording (review 2, I4)
         endConnection(nowUs, EndReason.SETTINGS, false);
         out.add(Command.simple(CommandType.REMOVE_HANDLER));
         active = false;
@@ -582,7 +602,10 @@ public final class RewindGameRules {
 
     /** The world boundary that starts segment {@code segment} was applied (WORLD_LOAD). */
     public List<Command> onBoundary(long nowUs, int segment) {
-        if (!active) return flush();
+        if (!active) {
+            observeBoundary();
+            return flush();
+        }
         // Code review 3, I1: this segment exists (the capture handler started it) before any advance may close.
         if (captureSeg < segment) captureSeg = segment;
         advance(nowUs);
@@ -623,7 +646,10 @@ public final class RewindGameRules {
 
     /** A {@code hyevent:location} frame arrived in segment {@code segment}. Null (malformed) is ignored. */
     public List<Command> onLocation(long nowUs, int segment, Location location) {
-        if (!active || singlePlayer || location == null || location.serverName == null) return flush();
+        if (!active || singlePlayer || location == null || location.serverName == null) {
+            if (!active && location != null && location.serverName != null) observeLocation(nowUs, location);
+            return flush();
+        }
         advance(nowUs);
         if (!anyBoundary || segment > lastBoundarySeg) {
             earlyLoc = location;
@@ -641,7 +667,10 @@ public final class RewindGameRules {
      * {@code isInActiveBedwarsGame}). Flags count only once a tick follows the latest boundary.
      */
     public List<Command> tick(long nowUs, boolean bedwarsQueue, boolean bedwarsActive) {
-        if (!active) return flush();
+        if (!active) {
+            observeTick(nowUs, bedwarsQueue, bedwarsActive);
+            return flush();
+        }
         if (bedwarsActive && !prevActive) activeEdgeUs = nowUs;
         prevActive = bedwarsActive;
         bwQueue = bedwarsQueue;
@@ -749,8 +778,9 @@ public final class RewindGameRules {
 
     /**
      * What the current connection is right now, for Rewind's "Watch Last Game" pause-menu row (R2, TASK A4): the row
-     * shows with no game open in a lobby run, or with a game open that has its WIN/LOSS. Everything is false when the
-     * rules are inactive (no recording connection, after a disconnect, Record Games off).
+     * shows with no game open in a lobby run, or with a game open that has its WIN/LOSS. Everything is false with no
+     * connection (before one, after a disconnect, single-player without recording). A server connection that is not
+     * recorded (Record Games off) has no game open but still reports a lobby run (code review 2, I4).
      */
     public static final class EntryState {
         /** A game is being recorded on this connection. */
@@ -784,9 +814,14 @@ public final class RewindGameRules {
 
     private static final EntryState NO_ENTRY_STATE = new EntryState(false, Result.UNKNOWN, false, false);
 
-    /** The watch-entry state now (client thread, like every other call). */
+    /**
+     * The watch-entry state now (client thread, like every other call). A connection that is not recorded (Record
+     * Games off) reports its lobby runs too, from the worlds and locations the wiring still passes in (code review 2,
+     * I4); it never has a game open.
+     */
     public EntryState entryState() {
-        if (!active || visit == null) return NO_ENTRY_STATE;
+        if (!active) return observedEntryState();
+        if (visit == null) return NO_ENTRY_STATE;
         boolean open = visit.state == State.OPEN;
         Result result = open && visit.result != null ? visit.result : Result.UNKNOWN;
         boolean lobby = !open && cand == null && visit.lobby
@@ -794,6 +829,70 @@ public final class RewindGameRules {
         boolean pending = !open && (cand != null || visit.state == State.UNCLASSIFIED
                 || visit.state == State.BEDWARS_PENDING || visit.state == State.SERVER_PENDING);
         return new EntryState(open, result, lobby, pending);
+    }
+
+    // ---- the watch-entry observer (code review 2, I4)
+
+    private EntryState observedEntryState() {
+        if (!observing) return NO_ENTRY_STATE;
+        boolean lobby = obsLobby && !obsUndecided;
+        return new EntryState(false, Result.UNKNOWN, lobby, !lobby && obsWorld);
+    }
+
+    private void resetObserver(boolean on) {
+        observing = on;
+        obsWorld = false;
+        obsUndecided = false;
+        obsLobby = false;
+        obsReplay = false;
+        obsDecided = false;
+        obsLobbyAtUs = 0L;
+    }
+
+    /** Record Games went off: the observer takes over from the recorder's view of the current world. */
+    private void observeFrom(long nowUs) {
+        EntryState before = entryState();
+        resetObserver(connected && !singlePlayer);
+        if (!observing || visit == null) return;
+        obsWorld = true;
+        obsLobby = before.lobby;
+        obsUndecided = !before.lobby && cand != null;
+        obsReplay = visit.replay;
+        obsDecided = visit.state != State.LOBBY_WAIT;
+        obsLobbyAtUs = visit.state == State.LOBBY_WAIT ? visit.lobbyAtUs : nowUs;
+    }
+
+    /** A world boundary of a connection that is not recorded: undecided until its location. */
+    private void observeBoundary() {
+        if (!observing) return;
+        obsWorld = true;
+        obsUndecided = true;
+        obsLobby = false;
+        obsReplay = false;
+        obsDecided = false;
+    }
+
+    /** The current world's location: a lobby verdict as in {@link #verdictOf} (the replay viewer included). */
+    private void observeLocation(long nowUs, Location loc) {
+        if (!observing) return;
+        obsUndecided = false;
+        obsLobby = verdictOf(loc) == VERDICT_LOBBY;
+        obsReplay = serverTypeCode(loc.serverType) == SERVER_TYPE_REPLAY;
+        obsDecided = false;
+        obsLobbyAtUs = nowUs;
+    }
+
+    /**
+     * The Bed Wars sidebar overrides a lobby verdict for {@link #LOBBY_VERDICT_WAIT_US}, never the replay viewer's, as
+     * for a recorded run: the run is then a game run, not a lobby.
+     */
+    private void observeTick(long nowUs, boolean bedwarsQueue, boolean bedwarsActive) {
+        if (!observing || !obsLobby || obsDecided || obsUndecided) return;
+        if ((bedwarsQueue || bedwarsActive) && !obsReplay) {
+            obsLobby = false;
+        } else if (nowUs - obsLobbyAtUs >= LOBBY_VERDICT_WAIT_US) {
+            obsDecided = true;
+        }
     }
 
     /** Location events since the previous file, oldest first, at most {@link #LOCATION_LOG_CAP}. */
@@ -1140,7 +1239,8 @@ public final class RewindGameRules {
      * Code review 1, I4: a REPLAY location for this visit after the Bed Wars sidebar had already classified it (no
      * server yet) or for its own server. Hypixel's replay viewer is never recorded: an open game is discarded (a
      * {@link EndReason#REPLAY} CLOSE, whose file the writer deletes), a pending run becomes the lobby verdict it would
-     * have had with an early location. Its undecided candidate is left to be decided on its own location.
+     * have had with an early location. Its undecided candidate is left to be decided on its own location, unless the
+     * REPLAY location is that candidate's own ({@link #resolveCandidate}: then it is the same replay viewer visit).
      *
      * @return true when the location was such a REPLAY one and has been applied
      */
@@ -1177,6 +1277,14 @@ public final class RewindGameRules {
     }
 
     private void resolveCandidate(long nowUs, Location loc, int verdict) {
+        // Code review 2, I1: the first location after a world change says REPLAY, and the visit before it never had
+        // one (the Bed Wars sidebar opened or classified it). That visit was the replay viewer too: discarded as REPLAY
+        // (lateReplay), never closed as a lobby and kept. The candidate is the same replay viewer visit's next world:
+        // dropped with it, or part of its lobby run. A visit a location confirmed (it has a server) is never discarded.
+        if (visit.server == null && serverTypeCode(loc.serverType) == SERVER_TYPE_REPLAY && lateReplay(nowUs, loc)) {
+            mergeCandidate(nowUs);
+            return;
+        }
         boolean same = visit.server != null ? visit.server.equals(loc.serverName) : verdict != VERDICT_LOBBY;
         if (same) {
             updateInfo(loc);
