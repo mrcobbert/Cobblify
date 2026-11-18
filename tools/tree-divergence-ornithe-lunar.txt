@@ -349,3 +349,10 @@ one-sided main ornithe com/bedwarsqol/mixin/SoundHandlerRewindMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindPlaybackMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatAccessor.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiIngameAccessor.java
+# Rewind gallery and watch entries (Ornithe only, R2 Phase 6c): the gallery screen, the title screen's
+# Realms slot as "Rewind" and the pause menu's "Watch Last Game" row; the test pins the row's layout
+# against vanilla's pause-menu buttons.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindGalleryScreen.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiMainMenuRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameMenuRewindMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindEntryButtonsTest.java

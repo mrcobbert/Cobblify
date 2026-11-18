@@ -11,6 +11,8 @@ import com.bedwarsqol.ornithe.ModEvents;
 import com.bedwarsqol.ornithe.ServerConnectEvent;
 import com.bedwarsqol.rewind.RewindGameRules.Command;
 import com.bedwarsqol.rewind.watch.PlaybackGate;
+import com.bedwarsqol.rewind.watch.RecordingLibrary;
+import com.bedwarsqol.rewind.watch.WatchEntryRules;
 import com.bedwarsqol.stats.HypixelContext;
 import io.netty.channel.Channel;
 import net.minecraft.client.Minecraft;
@@ -29,6 +31,10 @@ import org.lwjgl.input.Mouse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
@@ -800,6 +806,87 @@ public final class Rewind {
         }
     }
 
+    // ================================================================== watch entries (R2 Phase 6c)
+
+    private static RecordingStore store;
+    private static RecordingLibrary library;
+    private static ExecutorService libraryWorker;
+    private static final AtomicBoolean LIBRARY_REFRESH_QUEUED = new AtomicBoolean();
+
+    /**
+     * This process's one {@link RecordingStore}: the writer records through it and the gallery's library reads
+     * through it, so the library knows which file is being written here and R1's prune shares its lock.
+     */
+    public static synchronized RecordingStore store() {
+        if (store == null) {
+            store = new RecordingStore(RewindDir.get());
+        }
+        return store;
+    }
+
+    /** The recordings the gallery and Watch Last Game show, over {@link #store()}. */
+    public static synchronized RecordingLibrary library() {
+        if (library == null) {
+            library = new RecordingLibrary(store());
+        }
+        return library;
+    }
+
+    /** The recorder's watch-entry state (client thread), or null before Rewind is registered. */
+    public static RewindGameRules.EntryState entryState() {
+        Rewind r = instance;
+        return r == null ? null : r.rules.entryState();
+    }
+
+    /** The newest kept game, closed or still being written (reads the {@code .json} files), or null. */
+    public static RecordingLibrary.NewestGame newestGame() {
+        return library().newest();
+    }
+
+    /** The newest kept game with its cached quick-check state, for Watch Last Game (no recording is read). */
+    public static WatchEntryRules.Newest newestAvailability() {
+        return library().newestAvailability();
+    }
+
+    /**
+     * Quick-checks every closed recording not checked yet, on Rewind's library thread (never the client thread). A
+     * refresh already waiting is not queued twice. Never throws.
+     */
+    public static void refreshLibrary() {
+        try {
+            if (!LIBRARY_REFRESH_QUEUED.compareAndSet(false, true)) {
+                return;
+            }
+            libraryWorker().execute(new Runnable() {
+                @Override
+                public void run() {
+                    LIBRARY_REFRESH_QUEUED.set(false);
+                    try {
+                        library().refresh();
+                    } catch (Throwable ignored) {
+                        // an unreadable folder leaves recordings unchecked; the gallery still lists them
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            LIBRARY_REFRESH_QUEUED.set(false);
+        }
+    }
+
+    private static synchronized ExecutorService libraryWorker() {
+        if (libraryWorker == null) {
+            libraryWorker = Executors.newSingleThreadExecutor(new ThreadFactory() {
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "Cobblify Rewind Library");
+                    t.setDaemon(true);
+                    return t;
+                }
+            });
+        }
+        return libraryWorker;
+    }
+
     /** The Minecraft side: event listeners, settings, the player and the flash quad. */
     static final class Game {
 
@@ -848,7 +935,7 @@ public final class Rewind {
 
         /** The writer thread starts with the first recorded connection; the shutdown hook closes open games. */
         private static RewindWriter createWriter(String version) {
-            final RewindWriter w = new RewindWriter(new RecordingStore(RewindDir.get()), version);
+            final RewindWriter w = new RewindWriter(store(), version);
             w.start();
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 @Override

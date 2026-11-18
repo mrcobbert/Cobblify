@@ -33,6 +33,8 @@
     "EntityLivingBaseSwingAccessor",
     "EntityRendererSneakCameraMixin",
     "EntityRendererRewindMixin",
+    "GuiIngameMenuRewindMixin",
+    "GuiMainMenuRewindMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHeartsMixin",
     "GuiIngameHudMixin",
