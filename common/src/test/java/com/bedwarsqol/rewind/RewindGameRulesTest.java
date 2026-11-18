@@ -45,6 +45,9 @@ public class RewindGameRulesTest {
     private static final Location BARE = new Location("limbo2", null, null, null, null);
     private static final Location SKYBLOCK = new Location("mega3X", "SKYBLOCK", null, "hub", null);
     private static final Location HOUSING = new Location("housing2", "HOUSING", null, null, null);
+    /** Hypixel's replay viewer (R2 P0): a lobby verdict the Bed Wars sidebar cannot override. */
+    private static final Location REPLAY = new Location("replay4", "REPLAY", null, null, null);
+    private static final Location REPLAY_BW_MODE = new Location("replay8", "REPLAY", null, "BEDWARS_EIGHT_ONE", "Fakeland");
 
     /**
      * A rules instance plus every command it emitted, in order. It stands in for the capture handler too: a failure
@@ -431,6 +434,129 @@ public class RewindGameRulesTest {
         assertEquals(4, RewindGameRules.serverTypeCode("SKYBLOCK"));
         assertEquals(5, RewindGameRules.serverTypeCode("HOUSING"));
         assertEquals(6, RewindGameRules.serverTypeCode("SKYWARS"));
+        assertEquals(7, RewindGameRules.serverTypeCode("REPLAY"));
+        assertEquals(7, RewindGameRules.serverTypeCode("replay"));
+    }
+
+    // ------------------------------------------------------------------ Hypixel replay viewer (R2 P0, Q5)
+
+    @Test
+    public void aReplayVisitIsNeverRecordedEvenWithTheBedwarsSidebar() {
+        for (Location replay : new Location[]{REPLAY, REPLAY_BW_MODE}) {
+            Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, replay);
+            s.ticks(2 * S, 5 * S, true, false);                          // the replayed game's queue sidebar
+            s.ticks(6 * S, 9 * S, false, true);                          // and its active game, inside 10 s
+            assertEquals(replay.toString(), 0, s.count(CommandType.OPEN));
+            assertEquals(replay.toString(), 0, s.rules.lobbyOverridden());
+            s.ticks(10 * S, 20 * S, false, true);
+            assertRange(s.one(CommandType.DROP), 1, 1);                  // the lobby verdict, not overridden
+            s.boundary(30 * S, 2).location(30 * S + 100_000, 2, replay); // the replay changes world
+            s.ticks(31 * S, 10 * 60 * S, false, true);
+            assertEquals(replay.toString(), 0, s.count(CommandType.OPEN));
+            s.disconnect(10 * 60 * S + 1);
+            assertEquals(replay.toString(), 0, s.count(CommandType.OPEN));
+            assertEquals(replay.toString(), 0, s.count(CommandType.CLOSE));
+            assertEquals(0, s.rules.lobbyOverridden());
+
+            LocationLogEntry e = s.rules.locationLog().get(0);
+            assertTrue(e.hasServerType);
+            assertEquals(7, e.serverTypeCode);
+            assertEquals(RewindGameRules.VERDICT_LOBBY, e.verdict);
+        }
+    }
+
+    @Test
+    public void aBedwarsGameAfterAReplayVisitStillOpens() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, REPLAY);
+        s.ticks(2 * S, 20 * S, false, true);
+        s.boundary(30 * S, 2).location(30 * S + 100_000, 2, BW_A);
+        s.ticks(31 * S, 60 * S, true, false).tick(61 * S, false, true);
+        Command open = s.one(CommandType.OPEN);
+        assertRange(open, 2, 2);
+        assertEquals(61 * S, open.timeUs);
+        assertEquals(StartSource.BEDWARS, open.startSource);
+        assertEquals("BEDWARS", open.info.serverType);
+    }
+
+    // ------------------------------------------------------------------ watch-entry state (R2 P0, A4)
+
+    private static void assertEntry(String what, RewindGameRules.EntryState e, boolean gameOpen, Result result,
+                                    boolean lobby, boolean pendingGameRun) {
+        assertEquals(what + ": gameOpen", gameOpen, e.gameOpen);
+        assertEquals(what + ": result", result, e.result);
+        assertEquals(what + ": resultKnown", result != Result.UNKNOWN, e.resultKnown);
+        assertEquals(what + ": lobby", lobby, e.lobby);
+        assertEquals(what + ": pendingGameRun", pendingGameRun, e.pendingGameRun);
+    }
+
+    @Test
+    public void entryStateBeforeAnyConnectionIsEmpty() {
+        assertEntry("new rules", new RewindGameRules().entryState(), false, Result.UNKNOWN, false, false);
+    }
+
+    @Test
+    public void entryStateInALobbyRun() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        assertEntry("lobby verdict pending", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        s.ticks(2 * S, 30 * S, false, false);                            // verdict decided: dropped
+        assertEntry("lobby after the verdict", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+    }
+
+    @Test
+    public void entryStateInTheBedwarsWaitingRoomIsPending() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.ticks(2 * S, 40 * S, true, false);
+        assertEntry("waiting room", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+
+        Script o = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, LOBBY_NAME_ONLY);
+        o.tick(2 * S, true, false);                                       // the queue overrides the lobby verdict
+        assertEntry("overridden lobby", o.rules.entryState(), false, Result.UNKNOWN, false, true);
+    }
+
+    @Test
+    public void entryStateWithAGameOpenWithoutAResult() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.ticks(2 * S, 20 * S, true, false).ticks(21 * S, 200 * S, false, true);
+        assertTrue(s.rules.gameOpen());
+        assertEntry("mid-game", s.rules.entryState(), true, Result.UNKNOWN, false, false);
+    }
+
+    @Test
+    public void entryStateAfterAWinOrALoss() {
+        for (Kind k : new Kind[]{Kind.WIN, Kind.LOSS}) {
+            Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+            s.ticks(2 * S, 20 * S, true, false).ticks(21 * S, 200 * S, false, true);
+            s.line(201 * S, k);
+            Result r = k == Kind.WIN ? Result.WIN : Result.LOSS;
+            assertEntry(k + " just now", s.rules.entryState(), true, r, false, false);
+            s.ticks(202 * S, 214 * S, false, false);
+            assertEntry(k + " before the close", s.rules.entryState(), true, r, false, false);
+            s.ticks(215 * S, 220 * S, false, false);                     // closed 15 s after the result
+            assertEquals(1, s.count(CommandType.CLOSE));
+            assertEntry(k + " after the close", s.rules.entryState(), false, Result.UNKNOWN, false, false);
+            s.boundary(230 * S, 2).location(230 * S + 100_000, 2, MAIN);  // back to a lobby
+            assertEntry(k + " then a lobby", s.rules.entryState(), false, Result.UNKNOWN, true, false);
+        }
+    }
+
+    @Test
+    public void entryStateWhileANewWorldIsUndecidedIsNotALobby() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        s.ticks(2 * S, 20 * S, false, false);
+        s.boundary(30 * S, 2);                                            // no location yet: could be a game
+        assertEntry("undecided world", s.rules.entryState(), false, Result.UNKNOWN, false, true);
+    }
+
+    @Test
+    public void entryStateAfterADisconnectIsEmpty() {
+        Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, BW_A);
+        s.ticks(2 * S, 20 * S, true, false).ticks(21 * S, 200 * S, false, true).line(201 * S, Kind.WIN);
+        s.disconnect(202 * S);
+        assertEntry("disconnected", s.rules.entryState(), false, Result.UNKNOWN, false, false);
+
+        Script l = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, MAIN);
+        l.ticks(2 * S, 20 * S, false, false).disconnect(21 * S);
+        assertEntry("disconnected from a lobby", l.rules.entryState(), false, Result.UNKNOWN, false, false);
     }
 
     @Test
