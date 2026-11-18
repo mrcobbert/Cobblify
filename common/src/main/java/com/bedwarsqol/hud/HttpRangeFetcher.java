@@ -1,5 +1,6 @@
 package com.bedwarsqol.hud;
 
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.Tls;
 
 import java.io.IOException;
@@ -12,6 +13,10 @@ import java.net.URL;
  * no credentials, no player data). It takes only a {@code 206} whose {@code Content-Range} is the range asked for, with
  * exactly that many bytes; anything else, a redirect or a full {@code 200} body included, is refused without reading
  * the body.
+ *
+ * <p>The request runs under a Rewind gate permit ({@link PlaybackGate}, PLAN "Isolation", layer 4), with the
+ * connection attached and the permit re-checked before the request starts; while a recording plays, or once entry
+ * aborts it, it fails with {@link PlaybackGate.PlaybackMutedException}.
  */
 public final class HttpRangeFetcher implements EffectIconLoader.Fetcher {
 
@@ -30,8 +35,11 @@ public final class HttpRangeFetcher implements EffectIconLoader.Fetcher {
         if (!this.url.equals(url)) throw new IOException("not this fetcher's URL");
         if (from < 0 || to < from || to - from >= Integer.MAX_VALUE) throw new IOException("bad range");
         int n = (int) (to - from + 1);
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        PlaybackGate.Permit permit = PlaybackGate.global().admit();
+        HttpURLConnection conn = null;
         try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            permit.attach(conn);
             Tls.apply(conn);
             conn.setRequestMethod("GET");
             conn.setInstanceFollowRedirects(false);
@@ -41,6 +49,7 @@ public final class HttpRangeFetcher implements EffectIconLoader.Fetcher {
             conn.setRequestProperty("Range", "bytes=" + from + "-" + to);
             conn.setRequestProperty("User-Agent", USER_AGENT);
             conn.setRequestProperty("Accept-Encoding", "identity");
+            permit.check(); // the request starts in getResponseCode
             int status = conn.getResponseCode();
             if (status != 206) throw new IOException("HTTP " + status + ", want 206");
             String contentRange = conn.getHeaderField("Content-Range");
@@ -59,8 +68,11 @@ public final class HttpRangeFetcher implements EffectIconLoader.Fetcher {
                 }
             }
             return out;
+        } catch (IOException e) {
+            throw permit.failure(e);
         } finally {
-            conn.disconnect();
+            if (conn != null) conn.disconnect();
+            permit.end();
         }
     }
 }

@@ -2,6 +2,7 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.mixin.NetworkManagerAccessor;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.HypixelContext;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -140,7 +141,10 @@ public final class HeightLimitWatch {
                     if (HypixelLocationCodec.HELLO_CHANNEL.equals(channel)
                             || HypixelLocationCodec.LOCATION_CHANNEL.equals(channel)) {
                         final byte[] data = copy(p.getBufferData());
-                        Minecraft.getMinecraft().addScheduledTask(() -> onPayload(channel, data));
+                        // The ticket of the moment the packet was read: a payload from before a Rewind
+                        // recording started playing never reaches the client thread during or after it.
+                        final PlaybackGate.Ticket ticket = PlaybackGate.ticket();
+                        FeatureTasks.schedule(ticket, () -> onPayload(channel, data));
                     }
                 } catch (RuntimeException e) {
                     DiagLog.log("heightlimit: payload read failed " + e);
@@ -153,7 +157,8 @@ public final class HeightLimitWatch {
         public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
             if (msg instanceof C08PacketPlayerBlockPlacement) {
                 final C08PacketPlayerBlockPlacement p = (C08PacketPlayerBlockPlacement) msg;
-                Minecraft.getMinecraft().addScheduledTask(() -> onPlacement(p));
+                final PlaybackGate.Ticket ticket = PlaybackGate.ticket(); // when the placement was sent
+                FeatureTasks.schedule(ticket, () -> onPlacement(p));
             }
             super.write(ctx, msg, promise);
         }

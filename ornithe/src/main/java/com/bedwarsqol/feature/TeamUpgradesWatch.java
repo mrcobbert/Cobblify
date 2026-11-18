@@ -3,6 +3,7 @@ package com.bedwarsqol.feature;
 import com.bedwarsqol.mixin.NetworkManagerAccessor;
 import com.bedwarsqol.ornithe.ChatReceivedEvent;
 import com.bedwarsqol.ornithe.ServerConnectEvent;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.HypixelContext;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -228,7 +229,9 @@ public final class TeamUpgradesWatch {
                     S3FPacketCustomPayload p = (S3FPacketCustomPayload) msg;
                     if (HypixelLocationCodec.LOCATION_CHANNEL.equals(p.getChannelName())) {
                         final byte[] data = copy(p.getBufferData());
-                        Minecraft.getMinecraft().addScheduledTask(() -> onLocation(data));
+                        // Ticket of the moment the packet was read (Rewind's lifetime rule, FeatureTasks).
+                        final PlaybackGate.Ticket ticket = PlaybackGate.ticket();
+                        FeatureTasks.schedule(ticket, () -> onLocation(data));
                     }
                 } catch (RuntimeException e) {
                     DiagLog.log("teamupgrades: payload read failed " + e);

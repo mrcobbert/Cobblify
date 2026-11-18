@@ -3,6 +3,7 @@ package com.bedwarsqol.feature;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.PlayerCard;
 import com.bedwarsqol.stats.SidebarModeLabel;
 
@@ -29,6 +30,10 @@ import java.util.Map;
  * and is compiled once for both trees. Fail-soft everywhere: a submit is a cheap store on the client
  * thread, all disk work is swallowed on error, and the {@code seq} counter is bumped only when the
  * serialized body actually changed, so the launcher can cheaply detect real updates.
+ *
+ * <p>Rewind's lifetime rule (PLAN "Isolation", layer 4): each snapshot is submitted with the gate ticket of its
+ * moment, and the writer writes it only under a permit for that ticket. A snapshot from before a recording started
+ * playing is therefore never written during playback or after it; entry waits for a write already in progress.
  */
 public final class LobbyExport {
 
@@ -37,8 +42,13 @@ public final class LobbyExport {
 
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
-    private static volatile Lobby latest;
-    private static volatile boolean pending;
+    /** The writer's state: the newest snapshot with its ticket, and the gate it is written under. */
+    private static final Exporter EXPORTER = new Exporter(PlaybackGate.global(), new Sink() {
+        @Override
+        public void write(Lobby lobby) {
+            writeIfChanged(lobby);
+        }
+    });
     /** Last supported canonical mode; consulted only when the sidebar Mode line is absent. */
     private static volatile String retainedSupportedMode;
     /** Queue-tab party names, kept into GAME when {@code /party list} was never parsed. */
@@ -74,13 +84,71 @@ public final class LobbyExport {
 
     /** Store the newest snapshot for the writer thread. Cheap; safe to call every client tick. */
     public static void submit(Lobby lobby) {
-        latest = lobby;
-        pending = true;
+        EXPORTER.submit(lobby);
     }
 
     /** Force the next debounce cycle to re-evaluate (e.g. a stat just resolved to a real value). */
     public static void markDirty() {
-        pending = true;
+        EXPORTER.markDirty();
+    }
+
+    /** Where a snapshot goes (production: {@link #writeIfChanged}). */
+    interface Sink {
+        void write(Lobby lobby) throws Exception;
+    }
+
+    /** A submitted snapshot and the gate ticket of the moment it was submitted. */
+    private static final class Submitted {
+        final Lobby lobby;
+        final PlaybackGate.Ticket ticket;
+
+        Submitted(Lobby lobby, PlaybackGate.Ticket ticket) {
+            this.lobby = lobby;
+            this.ticket = ticket;
+        }
+    }
+
+    /**
+     * The submit/write hand-off, stepped by the writer thread every {@link #WRITE_INTERVAL_MS}. A snapshot is written
+     * only under a permit for its own ticket: one whose ticket is stale (submitted before a recording started
+     * playing) or that meets a muted or entering gate is dropped, never written later. Tests step their own instance.
+     */
+    static final class Exporter {
+        private final PlaybackGate gate;
+        private final Sink sink;
+        private volatile Submitted latest;
+        private volatile boolean pending;
+
+        Exporter(PlaybackGate gate, Sink sink) {
+            this.gate = gate;
+            this.sink = sink;
+        }
+
+        void submit(Lobby lobby) {
+            latest = new Submitted(lobby, gate.currentTicket());
+            pending = true;
+        }
+
+        void markDirty() {
+            pending = true;
+        }
+
+        /** One writer wake: writes the newest snapshot if one is pending and its ticket still admits it. */
+        void step() {
+            if (!pending) return;
+            pending = false;
+            Submitted s = latest;
+            if (s == null || s.lobby == null) return;
+            PlaybackGate.Permit permit = gate.tryBegin(s.ticket);
+            if (permit == null) return; // from before (or during) playback: never written
+            try {
+                sink.write(s.lobby);
+            } catch (Throwable ignored) {
+                // the production sink swallows its own errors; nothing reaches the writer thread
+            } finally {
+                permit.end();
+            }
+        }
     }
 
     public static String retainedSupportedMode() {
@@ -112,10 +180,7 @@ public final class LobbyExport {
                 Thread.currentThread().interrupt();
                 return;
             }
-            if (!pending) continue;
-            pending = false;
-            Lobby snapshot = latest;
-            if (snapshot != null) writeIfChanged(snapshot);
+            EXPORTER.step();
         }
     }
 

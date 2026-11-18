@@ -78,16 +78,16 @@ public class PlaybackGateTest {
     }
 
     @Test
-    public void repeatedEntryOrExitStillAdvancesTheEpoch() {
+    public void exitWithoutEntryAdvancesTheEpochAndASecondEntryIsANoOp() {
         PlaybackGate gate = new PlaybackGate();
         PlaybackGate.Ticket t0 = gate.currentTicket();
         gate.exit(); // exit without entry: harmless, but a ticket from before it is still stale
         assertFalse(gate.isMuted());
         assertFalse(gate.isCurrent(t0));
         gate.enter();
-        gate.enter();
+        gate.enter(); // already muted: nothing changes (Phase 5b's staged entry)
         assertTrue(gate.isMuted());
-        assertEquals(3L, gate.epoch());
+        assertEquals(2L, gate.epoch());
     }
 
     @Test

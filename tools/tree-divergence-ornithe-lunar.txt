@@ -325,3 +325,11 @@ one-sided main ornithe com/bedwarsqol/gui/render/SharpText.java
 divergent main com/bedwarsqol/mixin/GuiScreenMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/RewindIgnoresPlaybackTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackIsolationScanTest.java
+
+# Rewind playback isolation, one lifetime rule for cross-thread work (Ornithe only, R2 Phase 5b):
+# client-thread callbacks go through FeatureTasks with the ticket of the command that submitted them.
+divergent main com/bedwarsqol/command/BedwarsStatsCommand.java
+one-sided main ornithe com/bedwarsqol/feature/FeatureTasks.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/FeatureTasksTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackNetworkGateTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/QueuedWorkScanTest.java
