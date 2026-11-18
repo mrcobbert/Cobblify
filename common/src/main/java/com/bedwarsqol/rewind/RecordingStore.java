@@ -152,6 +152,18 @@ public final class RecordingStore {
         }
     }
 
+    /**
+     * The one in-process lock for changes to closed recordings: pruning holds it for its whole read-decide-delete pass,
+     * and R2's library holds it to star or delete. So a star set while a prune runs is never lost to that prune, and a
+     * library delete never races one. Static: the writer and the library each build their own store on one folder.
+     */
+    private static final Object MUTATION_LOCK = new Object();
+
+    /** The lock {@link #prune} holds; take it around any other star, rewrite or delete of a closed recording. */
+    public static Object mutationLock() {
+        return MUTATION_LOCK;
+    }
+
     /** Largest {@code .json} read back; a bigger one is not ours and reads as missing. */
     private static final long MAX_JSON_BYTES = 1L << 20;
 
@@ -393,9 +405,15 @@ public final class RecordingStore {
      * are not starred or key-marked are then probed for the lock. A recording whose {@code .cbr} header is not this build's format (a newer
      * or older version, or an unreadable header) is never a candidate, whatever its {@code .json} says: it is
      * not counted toward the {@link PruneRules#KEEP} and never deleted (code review 2, I5). Returns the number
-     * of recordings deleted.
+     * of recordings deleted. Runs under {@link #mutationLock()}.
      */
     public int prune() {
+        synchronized (MUTATION_LOCK) {
+            return pruneLocked();
+        }
+    }
+
+    private int pruneLocked() {
         List<PruneRules.Recording> all = new ArrayList<PruneRules.Recording>();
         for (String id : listIds()) {
             boolean open = openHere.contains(id);
