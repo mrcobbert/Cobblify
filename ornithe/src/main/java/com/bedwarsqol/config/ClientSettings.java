@@ -195,6 +195,15 @@ public class ClientSettings {
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
     public boolean partyJoinAlert = true;
 
+    /** Rewind (Ornithe build): the module switch; recording needs it and {@link #rewindRecordGames} both on. */
+    public boolean rewind = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_ENABLED;
+    /** Rewind's Record Games row. */
+    public boolean rewindRecordGames = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_RECORD_GAMES;
+    /** Rewind's Marker Key, encoded like {@link #sessionStatsKeyCode}; 0 = unbound. */
+    public int rewindMarkerKey = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_MARKER_KEY;
+    /** Rewind's Clean View Key, encoded like {@link #sessionStatsKeyCode}; 0 = unbound. Stored only, used from R3. */
+    public int rewindCleanViewKey = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_CLEAN_VIEW_KEY;
+
     // --- Chat module ---
 
     /** Unlimited Chat: raise the vanilla 100-line chat history cap to 32,767 lines. */
@@ -510,6 +519,8 @@ public class ClientSettings {
         if (keystrokesHudScale < 0.3f || keystrokesHudScale > 10.0f) keystrokesHudScale = defaultTextSizeScale();
         sessionStatsHudAnchor = clamp(sessionStatsHudAnchor, HudPlacement.AUTO, 8);
         if (!SessionHoldKey.isValidBinding(sessionStatsKeyCode)) sessionStatsKeyCode = 0;
+        if (!SessionHoldKey.isValidBinding(rewindMarkerKey)) rewindMarkerKey = 0;
+        if (!SessionHoldKey.isValidBinding(rewindCleanViewKey)) rewindCleanViewKey = 0;
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();

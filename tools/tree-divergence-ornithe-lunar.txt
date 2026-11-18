@@ -210,6 +210,24 @@ one-sided main ornithe com/bedwarsqol/feature/MotionBlurGl.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererMotionBlurMixin.java
 one-sided test ornithe com/bedwarsqol/feature/MotionBlurCutTest.java
 
+# Rewind: Ornithe-only Hypixel module, its sheet-row test.
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsRewindTest.java
+
+# Rewind capture (Ornithe only): the Netty handler that copies the connection's packets into the
+# recording, its embedded-channel tests and its opt-in timing bench. The pure logic is in common/.
+one-sided main ornithe com/bedwarsqol/rewind/RewindCapture.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindCaptureBench.java
+
+# Rewind wiring (Ornithe only): listeners, self track, carry-over snapshot, Marker Key and flash, the
+# camera sample's renderWorld mixin, and their vanilla-decode and embedded-channel integration tests.
+one-sided main ornithe com/bedwarsqol/rewind/Rewind.java
+one-sided main ornithe com/bedwarsqol/rewind/CarryOverSnapshot.java
+one-sided main ornithe com/bedwarsqol/rewind/SelfTrackSampler.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/CarryOverDecodeTest.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindIntegrationTest.java
+
 # Config directory seam (Fabric's config dir) and its test; Lunar hard-codes ~/.cobblify.
 one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
 one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java

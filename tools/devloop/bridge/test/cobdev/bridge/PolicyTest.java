@@ -136,6 +136,25 @@ public final class PolicyTest {
             allowed(Policy.probeName(p));
         }
         allowed(Policy.probeName("hud-boxes")); // the editor cycle's probe, beside B's once both are merged
+
+        // Rewind probes: the newest recording's counts, and clearing cobdev's own folder only
+        allowed(Policy.probeName("rewind-latest"));
+        allowed(Policy.probeName("rewind-clear"));
+        refused(Policy.probeName("rewind-delete"));
+        allowed(Policy.rewindClear("cobdev-rewind", "/Users/someone/run/cobdev-rewind", "/Users/someone"));
+        refused(Policy.rewindClear(null, "/Users/someone/.cobblify/rewind", "/Users/someone"));
+        refused(Policy.rewindClear("  ", "/Users/someone/.cobblify/rewind", "/Users/someone"));
+        refused(Policy.rewindClear("/Users/someone/.cobblify/rewind", "/Users/someone/.cobblify/rewind", "/Users/someone"));
+        for (String ok : new String[]{"20261117-031500-ab12.cbr", "20261117-031500-ab12.json",
+                "20261117-031500-ab12.stats.json"}) {
+            checks++;
+            if (!Policy.rewindFile(ok)) fail("a recording file: " + ok);
+        }
+        for (String no : new String[]{"notes.txt", "20261117-031500-AB12.cbr", "20261117-031500-ab12.cbr.tmp",
+                "../20261117-031500-ab12.cbr", "x20261117-031500-ab12.json", "20261117-0315-ab12.cbr", null}) {
+            checks++;
+            if (Policy.rewindFile(no)) fail("not a recording file: " + no);
+        }
         allowed(Policy.chatClick(true));
         refused(Policy.chatClick(false)); // any other screen, a subclass, or none
         for (String id : new String[]{"scoreboard", "chat", "tablist"}) allowed(Policy.placeItem(id));

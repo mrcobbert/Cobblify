@@ -211,6 +211,15 @@ of the game loop, between frames: it sets the turn's yaw from the time since the
 alike, so the camera's interpolated yaw is exactly that at any partial tick) and logs the frame just drawn. Above
 roughly 1,000 FPS the log can skip a frame; `MB-cut` then fails with "frames skipped" rather than guessing.
 
+`cobdev smoke --only rewind` runs the boot and world steps, then `RW` (Rewind, PLAN A11): with Rewind and Record
+Games on it rejoins the smoke world, walks for a second, presses the Marker Key (`invoke
+com.bedwarsqol.rewind.Rewind.markerKeyPressed`), leaves, and checks the newest closed recording with
+`probe rewind-latest` (RewindCheck's counts only; pass = complete, no torn tail, NET and TICK records, a KEY marker,
+every segment starting at its boundary packet). Every staged runtime records into its own folder,
+`-Dcobblify.rewindDir=cobdev-rewind`, relative to the game's run folder in the user's account, never
+`~/.cobblify/rewind`; `probe rewind-clear` deletes the closed recordings there and refuses without that flag. Both
+Rewind probes work without a world (never on a server).
+
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
 release-jar check.

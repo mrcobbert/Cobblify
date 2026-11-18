@@ -32,6 +32,7 @@
     "EntityPlayerParticlesMixin",
     "EntityLivingBaseSwingAccessor",
     "EntityRendererSneakCameraMixin",
+    "EntityRendererRewindMixin",
     "GuiChatCompletionMixin",
     "GuiIngameHeartsMixin",
     "GuiIngameHudMixin",

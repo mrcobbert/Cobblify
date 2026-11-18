@@ -1,6 +1,7 @@
 package com.bedwarsqol.feature;
 
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.ornithe.ModEvents;
 import com.bedwarsqol.stats.GameSessionTracker;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
@@ -78,6 +79,7 @@ public final class SessionStatsWatch {
             SessionChatLine.Kind kind = SessionChatLine.parseTitle(plain);
             if (kind != null) DiagLog.log("session: title " + plain.trim() + " -> " + kind);
             CORE.onEvent(sample, kind);
+            postGameLine(kind);
         } catch (RuntimeException e) {
             DiagLog.log("session: title handler failed " + e);
         }
@@ -110,6 +112,7 @@ public final class SessionStatsWatch {
             boolean ours = CORE.onTeamEliminated(sample, teamLine.team);
             DiagLog.log("session: TEAM ELIMINATED " + teamLine.team + " own=" + (own == null ? "unknown" : own)
                     + (ours ? " -> own team, loss" : " -> other team"));
+            if (ours) postGameLine(SessionChatLine.Kind.LOSS);
             return;
         }
         String self = selfName();
@@ -121,6 +124,20 @@ public final class SessionStatsWatch {
         }
         if (kind == SessionChatLine.Kind.ELIMINATED) DiagLog.log("session: You have been eliminated!");
         CORE.onEvent(sample, kind);
+        postGameLine(kind);
+    }
+
+    /**
+     * Hands the classified line to {@code ModEvents.GAME_LINE} (Rewind's results and markers) after the tally saw it.
+     * Observe-only, and nothing a listener does can reach the tally.
+     */
+    private static void postGameLine(SessionChatLine.Kind kind) {
+        if (kind == null) return;
+        try {
+            ModEvents.GAME_LINE.post(kind);
+        } catch (Throwable ignored) {
+            // listeners catch their own errors; this only keeps session stats safe from them
+        }
     }
 
     /**
