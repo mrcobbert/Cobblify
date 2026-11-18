@@ -219,6 +219,48 @@ public class GalleryModelTest {
         assertSame(GalleryModel.Intent.Kind.DELETE, m.key(KEY_BACK, NOW).kind);
     }
 
+    /**
+     * Code review 1, I1: a held Delete key sends key-repeat events; none of them may confirm. The reviewer's
+     * sequence: three rows, one physical press then five repeats, every DELETE intent applied.
+     */
+    @Test
+    public void aHeldDeleteKeyNeverConfirmsOrDeletes() {
+        for (int code : new int[]{KEY_DELETE, KEY_BACK}) {
+            GalleryModel m = model(GalleryModel.Origin.TITLE, three());
+            int deleted = 0;
+            for (int i = 0; i < 6; i++) {
+                GalleryModel.Intent in = m.key(code, i > 0, NOW);
+                if (in.kind == GalleryModel.Intent.Kind.DELETE) {
+                    m.removed(in.id);
+                    deleted++;
+                }
+            }
+            assertEquals("repeat events deleted nothing", 0, deleted);
+            assertEquals(3, m.entries().size());
+            assertTrue("the physical press armed it; repeats leave it armed", m.armed());
+            // A second physical press (after the release) confirms.
+            GalleryModel.Intent confirm = m.key(code, false, NOW);
+            assertSame(GalleryModel.Intent.Kind.DELETE, confirm.kind);
+            m.removed(confirm.id);
+            // Holding that second press does not arm or delete the next row.
+            for (int i = 0; i < 5; i++) {
+                assertSame(GalleryModel.Intent.Kind.NONE, m.key(code, true, NOW).kind);
+            }
+            assertFalse(m.armed());
+            assertEquals(2, m.entries().size());
+        }
+    }
+
+    @Test
+    public void heldArrowKeysStillMoveTheSelection() {
+        GalleryModel m = model(GalleryModel.Origin.TITLE, three());
+        m.key(KEY_DOWN, false, NOW);
+        m.key(KEY_DOWN, true, NOW);
+        assertEquals(2, m.selected());
+        m.key(KEY_UP, true, NOW);
+        assertEquals(1, m.selected());
+    }
+
     @Test
     public void removingTheLastRowMovesTheSelectionUp() {
         GalleryModel m = model(GalleryModel.Origin.TITLE, three());

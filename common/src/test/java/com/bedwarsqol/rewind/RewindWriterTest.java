@@ -789,6 +789,44 @@ public class RewindWriterTest {
         assertEquals(0, f.writer.pendingBytes());
     }
 
+    /**
+     * Code review 1, I4 end to end: the reviewer's timings (connect 0; boundary 1 s; Bed Wars sidebar by 12 s; a
+     * REPLAY location at 13 s; disconnect 90 s). The sidebar opens a file; the late REPLAY location discards it:
+     * nothing of the replay viewer visit is left on disk.
+     */
+    @Test
+    public void aLateReplayLocationLeavesNoFile() {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 0L);
+        f.connect(false, 256, 64);
+        f.advance(1_000_000L);
+        f.netBoundary(1, null, s01(5, 0));
+        f.clientBoundary(1, snapshot(0));
+        int i = 0;
+        boolean located = false;
+        boolean sawFile = false;
+        while (f.clock.nowUs < 90_000_000L) {
+            f.advance(100_000L);
+            f.net(packet(0x02, 40, i));
+            f.tick(i++);
+            if (!located && f.clock.nowUs >= 13_000_000L) {
+                located = true;
+                sawFile = !names(dir).isEmpty();
+                f.submit(f.rules.onLocation(f.clock.nowUs, 1,
+                        new Location("fakeReplay8", "REPLAY", null, "BEDWARS_EIGHT_ONE", "Fakeland")));
+            }
+            f.submit(f.rules.tick(f.clock.nowUs, false, f.clock.nowUs >= 12_000_000L));
+            f.step();
+        }
+        f.advance(RewindWriter.SYNC_INTERVAL_US);
+        f.step();
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+        assertTrue("the sidebar opened a file before the location", sawFile);
+        assertEquals("no file for a replay-viewer visit: " + names(dir), 0, names(dir).size());
+        assertEquals(0, f.writer.pendingBytes());
+    }
+
     // ------------------------------------------------------------------ A5: close prunes
 
     @Test

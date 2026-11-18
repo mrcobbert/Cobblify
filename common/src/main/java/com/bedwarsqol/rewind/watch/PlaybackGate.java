@@ -3,6 +3,7 @@ package com.bedwarsqol.rewind.watch;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,7 +32,10 @@ import java.util.Set;
  * drain bound ({@link #DRAIN_MS}) has passed, after marking the rest aborted and calling {@code disconnect()} on
  * their attached connections; completion mutes and advances the epoch. After entry completes no permit is running
  * and none can start. A holder re-checks {@link Permit#check()} before each step that can start a request, and maps
- * a failure of an aborted permit to {@link PlaybackMutedException} ({@link Permit#failure}).
+ * a failure of an aborted permit to {@link PlaybackMutedException} ({@link Permit#failure}). A write makes itself
+ * visible only through {@link Permit#commit}: an aborted permit's commit never runs, and a commit section already
+ * under way at the drain bound finishes before entry completes (its permit is aborted at the bound, so it can start
+ * no other).
  *
  * <p>Thread safety: state changes happen under the gate's lock; the flags and the epoch are volatile, so a change
  * made on one thread is seen by every other. Production code uses {@link #global()}; tests make their own instances.
@@ -70,11 +74,18 @@ public final class PlaybackGate {
         }
     }
 
+    /** The step that makes a write visible (a disk write's final rename). */
+    public interface Commit {
+        void run() throws Exception;
+    }
+
     /** Admission for one effect off the client thread: a request (open to response read) or a write. */
     public static final class Permit {
         private final PlaybackGate gate;
         private volatile boolean aborted;
         private volatile HttpURLConnection connection;
+        /** Inside {@link #commit}'s section (guarded by the gate's lock). */
+        private boolean committing;
 
         Permit(PlaybackGate gate) {
             this.gate = gate;
@@ -105,6 +116,27 @@ public final class PlaybackGate {
                 return e;
             }
             return new PlaybackMutedException("aborted: a Rewind recording started playing", e);
+        }
+
+        /**
+         * Runs {@code c}, the step that makes this permit's write visible (a rename), only while the permit is valid:
+         * the check and the start of the section are one step under the gate's lock, so entry either aborts the permit
+         * first (then {@code c} never runs and this returns false) or waits until {@code c} has returned before it
+         * completes (code review 1, I3). Keep {@code c} short: entry waits for a section under way past the drain
+         * bound. A writer stalled before its commit does not hold entry.
+         *
+         * @return true when {@code c} ran; false when the permit was aborted or had ended
+         */
+        public boolean commit(Commit c) throws Exception {
+            if (!gate.beginCommit(this)) {
+                return false;
+            }
+            try {
+                c.run();
+                return true;
+            } finally {
+                gate.endCommit(this);
+            }
         }
 
         /** Done (in {@code finally}). Idempotent; harmless after an abort. */
@@ -223,11 +255,13 @@ public final class PlaybackGate {
     /**
      * Entry, a later step (call once per frame): true once entry is complete. It completes when no permit is
      * running, or once the drain bound has passed, after aborting the permits still running and disconnecting their
-     * connections; completion mutes and advances the epoch. Without {@link #beginEntry} it returns whether the gate
-     * is already muted.
+     * connections; completion mutes and advances the epoch. A permit inside its {@link Permit#commit} section at the
+     * bound is aborted too, but entry completes only once that section has returned (a later call). Without
+     * {@link #beginEntry} it returns whether the gate is already muted.
      */
     public boolean tryCompleteEntry() {
         List<Permit> aborted = null;
+        boolean complete;
         synchronized (lock) {
             if (!entering) {
                 return muted;
@@ -236,16 +270,26 @@ public final class PlaybackGate {
                 if (System.nanoTime() - entryStartNanos < drainNanos) {
                     return false;
                 }
-                aborted = new ArrayList<Permit>(running);
-                for (Permit p : aborted) {
-                    p.abort();
+                aborted = new ArrayList<Permit>();
+                for (Iterator<Permit> i = running.iterator(); i.hasNext(); ) {
+                    Permit p = i.next();
+                    if (!p.aborted) {
+                        p.abort();
+                        aborted.add(p);
+                    }
+                    if (!p.committing) {
+                        i.remove();
+                    }
                 }
-                running.clear();
             }
-            entering = false;
-            muted = true;
-            epoch++;
-            lock.notifyAll();
+            // What is left is aborted and inside a commit section that began before the abort: it finishes first.
+            complete = running.isEmpty();
+            if (complete) {
+                entering = false;
+                muted = true;
+                epoch++;
+                lock.notifyAll();
+            }
         }
         if (aborted != null) {
             for (Permit p : aborted) {
@@ -255,7 +299,7 @@ public final class PlaybackGate {
                 }
             }
         }
-        return true;
+        return complete;
     }
 
     /**
@@ -273,9 +317,14 @@ public final class PlaybackGate {
                 if (running.isEmpty()) {
                     continue;
                 }
-                long leftMs = (drainNanos - (System.nanoTime() - entryStartNanos)) / 1_000_000L;
+                long leftNanos = drainNanos - (System.nanoTime() - entryStartNanos);
                 try {
-                    lock.wait(Math.max(1L, leftMs));
+                    if (leftNanos > 0) {
+                        lock.wait(Math.max(1L, leftNanos / 1_000_000L));
+                    } else if (allAborted()) {
+                        lock.wait(); // only commit sections under way: each one's end notifies
+                    }
+                    // else: past the bound with permits not aborted yet; tryCompleteEntry aborts them
                 } catch (InterruptedException e) {
                     interrupted = true;
                 }
@@ -314,6 +363,38 @@ public final class PlaybackGate {
                 lock.notifyAll();
             }
         }
+    }
+
+    /** {@link Permit#commit}'s check and start, one step: false once the permit was aborted or has ended. */
+    private boolean beginCommit(Permit p) {
+        synchronized (lock) {
+            if (p.aborted || !running.contains(p)) {
+                return false;
+            }
+            p.committing = true;
+            return true;
+        }
+    }
+
+    /** The commit section ended: a permit aborted meanwhile no longer holds entry. */
+    private void endCommit(Permit p) {
+        synchronized (lock) {
+            p.committing = false;
+            if (p.aborted) {
+                running.remove(p);
+            }
+            lock.notifyAll();
+        }
+    }
+
+    /** Every running permit is aborted (only commit sections under way hold entry). Under the lock. */
+    private boolean allAborted() {
+        for (Permit p : running) {
+            if (!p.aborted) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void disconnectQuietly(HttpURLConnection c) {

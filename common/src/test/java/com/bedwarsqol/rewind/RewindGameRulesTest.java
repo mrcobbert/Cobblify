@@ -465,6 +465,70 @@ public class RewindGameRulesTest {
         }
     }
 
+    /**
+     * Code review 1, I4, the reviewer's timings: the Bed Wars sidebar opens the visit before its location arrives
+     * (connect 0; boundary 1 s; tick 12 s with an active game sidebar), then the location says REPLAY (13 s). The
+     * open game is discarded at once (a REPLAY close, which the writer deletes), and nothing else is kept or reopened
+     * through the replay's own sidebar until the disconnect at 90 s.
+     */
+    @Test
+    public void aLateReplayLocationDiscardsTheGameTheSidebarOpened() {
+        for (Location replay : new Location[]{REPLAY_BW_MODE, REPLAY}) {
+            Script s = new Script().connect(0).boundary(1_000_000L, 1).tick(12_000_000L, false, true);
+            Command open = s.one(CommandType.OPEN);
+            assertEquals(StartSource.BEDWARS, open.startSource);
+            s.location(13_000_000L, 1, replay);
+            Command close = s.one(CommandType.CLOSE);
+            assertEquals(replay.toString(), EndReason.REPLAY, close.endedBy);
+            assertEquals(open.gameId, close.gameId);
+            assertEquals(13_000_000L, close.timeUs);
+            assertFalse(close.failed);
+            s.ticks(14 * S, 89 * S, false, true);                        // the replayed game's sidebar
+            assertFalse(s.rules.entryState().gameOpen);
+            assertTrue("a lobby run now", s.rules.entryState().lobby);
+            s.disconnect(90_000_000L);
+            assertEquals(replay.toString(), 1, s.count(CommandType.OPEN));
+            assertEquals(replay.toString(), 1, s.count(CommandType.CLOSE));
+            assertEquals(0, s.count(CommandType.JOIN));
+        }
+    }
+
+    @Test
+    public void aLateReplayLocationDropsARunTheSidebarWasStillDeciding() {
+        // The replayed game's queue sidebar made a pending Bed Wars run; its REPLAY location came late.
+        Script s = new Script().connect(0).boundary(S, 1).ticks(2 * S, 12 * S, true, false);
+        s.location(13 * S, 1, REPLAY_BW_MODE);
+        s.ticks(14 * S, 89 * S, false, true);                            // the replay's "active game"
+        s.disconnect(90 * S);
+        assertEquals(0, s.count(CommandType.OPEN));
+        assertEquals(0, s.count(CommandType.CLOSE));
+        assertRange(s.one(CommandType.DROP), 1, 1);
+    }
+
+    @Test
+    public void aLateNonReplayLocationStillUpdatesTheGameTheSidebarOpened() {
+        Script s = new Script().connect(0).boundary(1_000_000L, 1).tick(12_000_000L, false, true);
+        Command open = s.one(CommandType.OPEN);
+        s.location(13_000_000L, 1, BW_A);
+        Command info = s.one(CommandType.INFO);
+        assertEquals(open.gameId, info.gameId);
+        assertEquals("Lighthouse", info.info.map);
+        assertEquals(0, s.count(CommandType.CLOSE));
+        s.ticks(14 * S, 89 * S, false, true);
+        s.disconnect(90_000_000L);
+        assertEquals(EndReason.DISCONNECT, s.one(CommandType.CLOSE).endedBy);
+    }
+
+    @Test
+    public void aLateLobbyLocationThatIsNotTheReplayViewerLeavesTheOpenGameAlone() {
+        Script s = new Script().connect(0).boundary(1_000_000L, 1).tick(12_000_000L, false, true);
+        s.location(13_000_000L, 1, MAIN);
+        s.ticks(14 * S, 89 * S, false, true);
+        s.disconnect(90_000_000L);
+        assertEquals(1, s.count(CommandType.OPEN));
+        assertEquals(EndReason.DISCONNECT, s.one(CommandType.CLOSE).endedBy);
+    }
+
     @Test
     public void aBedwarsGameAfterAReplayVisitStillOpens() {
         Script s = new Script().connect(0).boundary(S, 1).location(S + 100_000, 1, REPLAY);

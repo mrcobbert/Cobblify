@@ -6,9 +6,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.network.NetworkPlayerInfo;
+import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.entity.SharedMonsterAttributes;
+import net.minecraft.entity.ai.attributes.AttributeModifier;
+import net.minecraft.entity.ai.attributes.IAttributeInstance;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.INetHandlerPlayClient;
 import net.minecraft.network.play.server.S01PacketJoinGame;
+import net.minecraft.network.play.server.S06PacketUpdateHealth;
+import net.minecraft.network.play.server.S20PacketEntityProperties;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.world.WorldSettings;
@@ -51,6 +57,7 @@ public final class PlaybackSink implements PacketSink {
     /** The camera that has HandState's full state (a new one after an S01/S07 takes it all). */
     private RewindCamera handCamera;
     private boolean handFailureLogged;
+    private final SelfHealth health = new SelfHealth();
 
     public PlaybackSink(Minecraft mc, PlaybackConnection connection) {
         this.mc = mc;
@@ -69,6 +76,11 @@ public final class PlaybackSink implements PacketSink {
         }
         p.processPacket(handler);
         last = p;
+        try {
+            health.applied(p, recordedEntityId, camera());
+        } catch (RuntimeException e) {
+            handFailed(e);
+        }
         return true;
     }
 
@@ -76,6 +88,7 @@ public final class PlaybackSink implements PacketSink {
     public void boundary(int packetId, byte[] buf, int off, int len) {
         Packet<INetHandlerPlayClient> p = last;
         last = null;
+        health.reset(); // S01 and S07 make a new camera with vanilla's default health and maximum
         if (p instanceof S01PacketJoinGame) {
             recordedEntityId = ((S01PacketJoinGame) p).getEntityId();
             if (mc.thePlayer != null) {
@@ -265,5 +278,51 @@ public final class PlaybackSink implements PacketSink {
 
     public long lastSampleUs() {
         return lastSampleUs;
+    }
+
+    /**
+     * The recorded player's health on the camera (code review 1, I2). Vanilla routes S20 by entity id, so the recorded
+     * player's properties land on the puppet, while S06 lands on the camera and {@code setHealth} clamps it to the
+     * camera's own {@code generic.maxHealth} (20 by default). So an S20 for the recorded id also sets the camera's
+     * maximum health, as vanilla's {@code handleEntityProperties} would on the real player (base value, then the
+     * modifiers), and the last S06 health is applied again whenever the maximum changes, so S06 before S20 shows the
+     * recorded hearts too. A new world (S01/S07: a new camera) starts from vanilla's defaults again.
+     */
+    static final class SelfHealth {
+        private static final String MAX_HEALTH = "generic.maxHealth";
+        private float recordedHealth = Float.NaN;
+
+        void applied(Packet<?> p, int recordedId, EntityLivingBase camera) {
+            if (p instanceof S06PacketUpdateHealth) {
+                recordedHealth = ((S06PacketUpdateHealth) p).getHealth();
+                return;
+            }
+            if (!(p instanceof S20PacketEntityProperties) || camera == null) {
+                return;
+            }
+            S20PacketEntityProperties props = (S20PacketEntityProperties) p;
+            if (props.getEntityId() != recordedId || recordedId == RewindCamera.RESERVED_ID) {
+                return;
+            }
+            for (S20PacketEntityProperties.Snapshot snap : props.m_57321779()) {
+                if (!MAX_HEALTH.equals(snap.m_23449231())) {
+                    continue;
+                }
+                IAttributeInstance a = camera.getEntityAttribute(SharedMonsterAttributes.maxHealth);
+                double before = a.getAttributeValue();
+                a.setBaseValue(snap.m_16455010());
+                a.removeAllModifiers();
+                for (AttributeModifier m : snap.m_41315742()) {
+                    a.applyModifier(m);
+                }
+                if (a.getAttributeValue() != before && !Float.isNaN(recordedHealth)) {
+                    camera.setHealth(recordedHealth); // clamped to the new maximum
+                }
+            }
+        }
+
+        void reset() {
+            recordedHealth = Float.NaN;
+        }
     }
 }

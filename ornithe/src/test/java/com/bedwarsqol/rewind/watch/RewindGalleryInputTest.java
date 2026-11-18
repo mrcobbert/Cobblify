@@ -61,6 +61,47 @@ public class RewindGalleryInputTest {
         assertEquals("drawing pumps nothing extra", 2, pump.pumps);
     }
 
+    /**
+     * Code review 1, I1: the screen enables keyboard repeat and vanilla forwards every repeated key-down to
+     * {@code keyTyped}. Holding Delete (one physical press, then repeats) must delete nothing: the screen passes the
+     * event's repeat flag to the model. Intents go to a recorder here, so no file is ever touched.
+     */
+    @Test
+    public void holdingDeleteThroughTheScreenDeletesNothing() {
+        for (int key : new int[]{GalleryModel.KEY_DELETE, GalleryModel.KEY_BACK}) {
+            RewindGalleryScreen g = gallery(false, new Counter());
+            final GalleryModel m = new GalleryModel(GalleryModel.Origin.PLAYING, GalleryModelTest.three(),
+                    GalleryModelTest.NOW, GalleryModelTest.TZ);
+            g.useModel(m);
+            final boolean[] repeat = new boolean[1];
+            g.repeatEvent = () -> repeat[0];
+            final int[] deletes = new int[1];
+            g.actions = intent -> {
+                if (intent.kind == GalleryModel.Intent.Kind.DELETE) {
+                    deletes[0]++;
+                    m.removed(intent.id); // as the library's successful delete would report it
+                }
+            };
+            for (int i = 0; i < 6; i++) { // one physical press, then five repeats
+                repeat[0] = i > 0;
+                g.keyTyped((char) 0, key);
+            }
+            assertEquals("repeat events deleted nothing", 0, deletes[0]);
+            assertEquals(3, m.entries().size());
+            repeat[0] = false;
+            g.keyTyped((char) 0, key);
+            assertEquals("a second physical press confirms", 1, deletes[0]);
+        }
+    }
+
+    @Test
+    public void productionWiringReadsTheKeyboardRepeatFlag() throws Exception {
+        java.io.File src = new java.io.File(PlaybackIsolationScanTest.mainRoot(),
+                "com/bedwarsqol/rewind/watch/RewindGalleryScreen.java");
+        String text = PlaybackIsolationScanTest.strip(PlaybackIsolationScanTest.read(src));
+        assertTrue(text.contains("repeatEvent = Keyboard::isRepeatEvent"));
+    }
+
     @Test
     public void productionWiringReadsThePlaybackSession() {
         RewindGalleryScreen g = new RewindGalleryScreen(GalleryModel.Origin.TITLE, new GuiScreen() {

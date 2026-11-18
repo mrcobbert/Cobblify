@@ -116,6 +116,14 @@ public final class CameraController {
         return freeMode;
     }
 
+    /**
+     * Whether {@code EntityRenderer.hurtCameraEffect} is skipped (code review 1, O2): in the free camera of a playing
+     * recording it never tilts, also not vanilla's separate death branch at recorded health 0. Your view keeps vanilla.
+     */
+    public static boolean cancelsHurtTilt(boolean playing, boolean freeCamera) {
+        return playing && freeCamera;
+    }
+
     /** Your view is up (also when no recording plays). */
     public static boolean yourView() {
         return !freeMode;

@@ -183,9 +183,20 @@ public final class RewindGalleryScreen extends GuiScreen {
         if (wheel != 0) model.scroll(wheel > 0 ? -1 : 1);
     }
 
+    /** Whether the keyboard event being handled is a key-repeat of a held key (a test replaces it). */
+    java.util.function.BooleanSupplier repeatEvent = Keyboard::isRepeatEvent;
+    /** Carries out the model's intent (a test replaces it). */
+    java.util.function.Consumer<GalleryModel.Intent> actions = this::apply;
+
+    /** A test's model (the screen otherwise builds it from the library in {@link #initGui}). */
+    void useModel(GalleryModel m) {
+        model = m;
+    }
+
     @Override
     protected void keyTyped(char typedChar, int keyCode) {
-        apply(model.key(keyCode, System.currentTimeMillis()));
+        // Vanilla forwards key-repeat events here too (repeat is on for the arrows): the model ignores held Deletes.
+        actions.accept(model.key(keyCode, repeatEvent.getAsBoolean(), System.currentTimeMillis()));
     }
 
     private void apply(GalleryModel.Intent intent) {

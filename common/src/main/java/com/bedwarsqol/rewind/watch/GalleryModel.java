@@ -20,7 +20,8 @@ import java.util.TimeZone;
  * {@link Intent} the screen carries out with {@link RecordingLibrary}, then reports with {@link #starred},
  * {@link #removed} or {@link #deleteFailed}. Any action other than a second Delete disarms Delete.
  *
- * <p>Keys: Up/Down select, Enter watches, Delete/Backspace delete, Esc is Done. A double-click on a row (two clicks
+ * <p>Keys: Up/Down select, Enter watches, Delete/Backspace delete (fresh presses only: a held key's repeats are
+ * ignored, so the confirming press is a second physical one), Esc is Done. A double-click on a row (two clicks
  * on it within {@value #DOUBLE_CLICK_MS} ms) watches it. Done leads back to where the gallery was opened from: the
  * title screen, or the Esc menu of a playing session. A gallery reached because a recording could not be played is
  * opened with {@link Origin#TITLE} (its Done leads to the title screen, round 1 I3).
@@ -313,8 +314,20 @@ public final class GalleryModel {
         return new Intent(Intent.Kind.STAR, e.id, !e.starred, null);
     }
 
-    /** A keyboard key (LWJGL code). */
+    /** A keyboard key (LWJGL code), a fresh press. */
     public Intent key(int code, long nowMs) {
+        return key(code, false, nowMs);
+    }
+
+    /**
+     * A keyboard key (LWJGL code); {@code repeat}: a key-repeat event of a held key. Delete and Backspace act on fresh
+     * presses only, so holding one never confirms the armed Delete or arms the next row (code review 1, I1); held
+     * arrows still move the selection.
+     */
+    public Intent key(int code, boolean repeat, long nowMs) {
+        if (repeat && (code == KEY_DELETE || code == KEY_BACK)) {
+            return Intent.NONE;
+        }
         switch (code) {
             case KEY_UP:
                 armed = false;

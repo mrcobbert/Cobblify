@@ -306,6 +306,98 @@ public class PlaybackGatePermitTest {
         assertTrue(passed.get());
     }
 
+    /** Code review 1, I3: the commit barrier. An aborted permit's commit never runs. */
+    @Test
+    public void anAbortedPermitRefusesItsCommit() throws Exception {
+        PlaybackGate gate = new PlaybackGate(0);
+        PlaybackGate.Permit p = gate.tryBegin(null);
+        gate.beginEntry();
+        assertTrue(gate.tryCompleteEntry());
+        final AtomicBoolean ran = new AtomicBoolean();
+        assertFalse(p.commit(new PlaybackGate.Commit() {
+            @Override
+            public void run() {
+                ran.set(true);
+            }
+        }));
+        assertFalse("nothing committed after mute", ran.get());
+    }
+
+    @Test
+    public void aCommitOutsideEntryRunsAndAnEndedPermitRefusesIt() throws Exception {
+        PlaybackGate gate = new PlaybackGate(0);
+        PlaybackGate.Permit p = gate.tryBegin(null);
+        final AtomicInteger runs = new AtomicInteger();
+        PlaybackGate.Commit c = new PlaybackGate.Commit() {
+            @Override
+            public void run() {
+                runs.incrementAndGet();
+            }
+        };
+        assertTrue(p.commit(c));
+        assertTrue(p.commit(c));
+        p.end();
+        assertFalse("an ended permit commits nothing", p.commit(c));
+        assertEquals(2, runs.get());
+    }
+
+    /**
+     * A commit section under way when the drain bound passes finishes before entry completes (blocking entry waits
+     * for it), and the permit, aborted at the bound, refuses any further commit.
+     */
+    @Test(timeout = 10_000)
+    public void blockingEnterWaitsForACommitUnderWayAtTheDrainBound() throws Exception {
+        final PlaybackGate gate = new PlaybackGate(0);
+        final PlaybackGate.Permit p = gate.tryBegin(null);
+        final CountDownLatch inCommit = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicBoolean committedUnmuted = new AtomicBoolean();
+        final AtomicReference<Throwable> error = new AtomicReference<Throwable>();
+        Thread committer = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    p.commit(new PlaybackGate.Commit() {
+                        @Override
+                        public void run() throws Exception {
+                            inCommit.countDown();
+                            release.await();
+                            committedUnmuted.set(!gate.isMuted());
+                        }
+                    });
+                } catch (Throwable t) {
+                    error.set(t);
+                }
+            }
+        }, "committer");
+        committer.start();
+        assertTrue(inCommit.await(5, TimeUnit.SECONDS));
+        Thread enterer = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                gate.enter();
+            }
+        }, "enterer");
+        enterer.start();
+        Thread.sleep(50);
+        assertTrue("entry waits for the commit section", enterer.isAlive());
+        assertFalse(gate.isMuted());
+        release.countDown();
+        enterer.join(5_000);
+        committer.join(5_000);
+        assertFalse(enterer.isAlive());
+        assertNull(error.get());
+        assertTrue("the commit finished before mute", committedUnmuted.get());
+        assertTrue(gate.isMuted());
+        assertTrue("aborted at the bound", p.aborted());
+        assertFalse(p.commit(new PlaybackGate.Commit() {
+            @Override
+            public void run() {
+                fail("a second commit after the bound");
+            }
+        }));
+    }
+
     @Test
     public void exitWhileEnteringCancelsTheEntry() {
         PlaybackGate gate = new PlaybackGate(60_000);

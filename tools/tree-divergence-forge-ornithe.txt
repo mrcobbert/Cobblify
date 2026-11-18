@@ -333,6 +333,9 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/RewindViewerActionsTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindWiringTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindGalleryInputTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/HeldItemSyncCancelTest.java
+# Rewind code review 1 (Ornithe only): the camera's recorded maximum health, pickup-animation countdown and
+# no hurt tilt in the free camera.
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackCameraStateTest.java
 
 # Rewind R2 Phase 4b (Ornithe only): your view, the free camera and the recorded player's puppet in playback.
 one-sided main ornithe com/bedwarsqol/rewind/watch/RewindSelfPuppet.java

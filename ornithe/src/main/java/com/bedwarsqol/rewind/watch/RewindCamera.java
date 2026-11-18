@@ -29,8 +29,9 @@ import java.util.Collection;
  *
  * <p>Created only during a session, by {@code PlayerControllerMPRewindMixin} at the one place vanilla creates the
  * client player. It is a spectator for its own physics and terrain culling, never clips, ignores motion, its tick
- * only carries the pose over (previous = current), it never sends (its chat is swallowed here, so Cobblify's
- * {@code EntityPlayerSPMixin} and {@code OutgoingChat} are never reached from playback), never swings, closes,
+ * only carries the pose over (previous = current) and counts the hotbar's pickup animations down, it never sends
+ * (its chat is swallowed here, so Cobblify's {@code EntityPlayerSPMixin} and {@code OutgoingChat} are never reached
+ * from playback), never swings, closes,
  * reports abilities or opens a sign, book, container or trade screen through vanilla (each of those would send or
  * open a screen), never takes damage and never dies. Its connection is the socketless playback connection anyway,
  * which discards every write.
@@ -135,6 +136,22 @@ public class RewindCamera extends EntityPlayerSP {
         motionX = motionY = motionZ = 0;
     }
 
+    /**
+     * Each stack's pickup animation one tick on (code review 1, O1): vanilla's
+     * {@code InventoryPlayer.decrementAnimations} counts {@code animationsToGo} down from the 5 an S2F sets, but the
+     * camera skips the player update that calls it. Only the countdown: no item update runs.
+     */
+    static void countDownAnimations(ItemStack[] stacks) {
+        if (stacks == null) {
+            return;
+        }
+        for (ItemStack s : stacks) {
+            if (s != null && s.animationsToGo > 0) {
+                s.animationsToGo--;
+            }
+        }
+    }
+
     @Override
     public boolean isSpectator() {
         return true;
@@ -143,6 +160,7 @@ public class RewindCamera extends EntityPlayerSP {
     @Override
     public void onUpdate() {
         holdPose();
+        countDownAnimations(inventory.mainInventory);
     }
 
     @Override
