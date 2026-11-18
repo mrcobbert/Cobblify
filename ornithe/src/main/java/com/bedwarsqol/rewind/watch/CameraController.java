@@ -54,13 +54,17 @@ public final class CameraController {
 
     // ================================================================== viewer API
 
-    /** Key 1: your recorded view. */
+    /** Key 1: your recorded view (with your hand, hotbar and hearts). */
     public static void selectYourView() {
+        boolean changed = freeMode;
         freeMode = false;
         clearMove();
+        if (changed) {
+            viewChanged();
+        }
     }
 
-    /** Key 2: the free camera, starting where your view is. */
+    /** Key 2: the free camera, starting where your view is (no hand, hotbar or hearts; it never tilts). */
     public static void selectFreeCamera() {
         if (freeMode) {
             return;
@@ -83,6 +87,15 @@ public final class CameraController {
         freeMode = true;
         clearMove();
         lastFrameNanos = System.nanoTime();
+        viewChanged();
+    }
+
+    /** The controller's game type and the camera's view state follow the view at once (Rev 3 amendment 1). */
+    private static void viewChanged() {
+        PlaybackSink sink = RewindPlayback.currentSink();
+        if (sink != null) {
+            sink.viewChanged();
+        }
     }
 
     /** The camera key's choice: {@link #YOUR_VIEW} or {@link #FREE_CAMERA}. */
@@ -177,9 +190,7 @@ public final class CameraController {
     /** {@code renderWorld} HEAD while a recorded world plays: this frame's camera pose. */
     static void onRender(PlaybackSession session, float partialTicks) {
         LoadedRecording r = session.recording();
-        if (r != recording.get()) {
-            newRecording(r);
-        }
+        forRecording(r);
         RewindCamera cam = camera();
         SelfTrack track = r == null ? null : r.selfTrack();
         if (track != null && track.pose(session.renderTimeUs(partialTicks), youPose)) {
@@ -211,9 +222,19 @@ public final class CameraController {
         }
     }
 
+    /** A connection or frame of recording {@code r}: a recording other than the last one starts in your view. */
+    static void forRecording(Object r) {
+        if (r != recording.get()) {
+            newRecording(r);
+        }
+    }
+
     private static void newRecording(Object r) {
         recording = new WeakReference<Object>(r);
-        freeMode = false;
+        if (freeMode) {
+            freeMode = false;
+            viewChanged();
+        }
         youPoseValid = false;
         scrollNanos = Long.MIN_VALUE;
         clearMove();

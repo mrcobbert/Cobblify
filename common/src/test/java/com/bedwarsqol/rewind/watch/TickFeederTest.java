@@ -272,8 +272,8 @@ public class TickFeederTest {
             sink.feed(k);
         }
         List<Event> applied = sink.of(Event.APPLY);
-        // Start segment: header 0 = S01, S09 (dropped while the amendment rows drop), S38, S3E; header 1 = S47.
-        int[] headerIds = {0x01, 0x38, 0x3E, 0x47};
+        // Start segment: header 0 = S01, S09 (passes to the camera, amendment 1), S38, S3E; header 1 = S47.
+        int[] headerIds = {0x01, 0x09, 0x38, 0x3E, 0x47};
         for (int i = 0; i < headerIds.length; i++) {
             assertEquals("header packet " + i, headerIds[i], applied.get(i).packetId);
             assertEquals(TickFeeder.HEADER, applied.get(i).recordIndex);
@@ -302,7 +302,7 @@ public class TickFeederTest {
         LogSink sink = new LogSink(feeder);
         feeder.feedHeaders(sink);
         int afterHeaders = sink.of(Event.APPLY).size();
-        assertEquals(4, afterHeaders);
+        assertEquals(5, afterHeaders);
         feeder.feedHeaders(sink);
         sink.feed(0);
         int headers = 0;
@@ -311,7 +311,7 @@ public class TickFeederTest {
                 headers++;
             }
         }
-        assertEquals(4, headers);
+        assertEquals(5, headers);
     }
 
     @Test
@@ -367,7 +367,7 @@ public class TickFeederTest {
             }
         }
         assertEquals(Arrays.asList(0x01, 0x2B, 0x02), ids);
-        assertEquals("three NET records and the header's S09", 4, feeder.dropped());
+        assertEquals("three NET records", 3, feeder.dropped());
     }
 
     @Test
@@ -394,7 +394,7 @@ public class TickFeederTest {
             }
         }
         assertEquals("records after a failure are still fed", 30, chat);
-        assertEquals(1 + 30 + 3, feeder.applied()); // S01 + chat + header S01, S38, S47
+        assertEquals(1 + 30 + 4, feeder.applied()); // S01 + chat + header S01, S09, S38, S47
     }
 
     @Test

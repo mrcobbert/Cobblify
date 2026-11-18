@@ -9,7 +9,8 @@ import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.INetHandlerPlayClient;
 import net.minecraft.network.play.server.S01PacketJoinGame;
-import net.minecraft.network.play.server.S07PacketRespawn;
+import net.minecraft.potion.Potion;
+import net.minecraft.potion.PotionEffect;
 import net.minecraft.world.WorldSettings;
 
 import java.io.IOException;
@@ -22,13 +23,16 @@ import java.io.IOException;
  *
  * <p><b>Boundary hook</b> (after every S01 and S07 that applied): S01 remembers the recorded entity id and gives the
  * camera {@link RewindCamera#RESERVED_ID}; both make the packet's game type the recorded game mode and put the
- * controller in the view's game type, which is SPECTATOR until Phase 4c; then the recorded player's puppet
- * ({@link RewindSelfPuppet}) is added with the recorded id if the world lacks it, and the new camera takes the current
- * view's pose at once ({@link CameraController#restorePose}).
+ * controller in the view's game type ({@link ViewGameType}: the recorded mode in your view, SPECTATOR in the free
+ * camera); then the recorded player's puppet ({@link RewindSelfPuppet}) is added with the recorded id if the world
+ * lacks it, and the new camera takes the current view's pose at once ({@link CameraController#restorePose}).
+ *
+ * <p>{@link #sessionHook} (S2B reason 3, never passed to vanilla): the recorded game mode changes and the controller
+ * takes the view's game type.
  *
  * <p>{@link #sample} (each world tick, after its records): the puppet takes the self track's state for the tick
- * ({@link PuppetState}), and is re-added if something removed it. {@link #sessionHook}: nothing reaches it before
- * Phase 4c (S2B reason 3 still drops).
+ * ({@link PuppetState}), and is re-added if something removed it; then the camera takes your hand, held item and
+ * hotbar ({@link HandState}, Rev 3 amendment 1), in both views. {@link #viewChanged} applies a view switch at once.
  */
 public final class PlaybackSink implements PacketSink {
 
@@ -42,10 +46,16 @@ public final class PlaybackSink implements PacketSink {
     private final PuppetState puppetState = new PuppetState();
     private RewindSelfPuppet puppet;
     private boolean puppetFailureLogged;
+    private final ViewGameType viewType = new ViewGameType();
+    private final HandState hand = new HandState();
+    /** The camera that has HandState's full state (a new one after an S01/S07 takes it all). */
+    private RewindCamera handCamera;
+    private boolean handFailureLogged;
 
     public PlaybackSink(Minecraft mc, PlaybackConnection connection) {
         this.mc = mc;
         this.handler = connection.handler();
+        CameraController.forRecording(RewindPlayback.session().recording()); // before the headers' game type
     }
 
     @Override
@@ -66,23 +76,16 @@ public final class PlaybackSink implements PacketSink {
     public void boundary(int packetId, byte[] buf, int off, int len) {
         Packet<INetHandlerPlayClient> p = last;
         last = null;
-        WorldSettings.GameType type = null;
         if (p instanceof S01PacketJoinGame) {
-            S01PacketJoinGame join = (S01PacketJoinGame) p;
-            recordedEntityId = join.getEntityId();
-            type = join.getGameType();
+            recordedEntityId = ((S01PacketJoinGame) p).getEntityId();
             if (mc.thePlayer != null) {
                 mc.thePlayer.setEntityId(RewindCamera.RESERVED_ID);
             }
-        } else if (p instanceof S07PacketRespawn) {
-            type = ((S07PacketRespawn) p).getGameType();
         }
-        if (type != null && type != WorldSettings.GameType.NOT_SET) {
-            recordedGameType = type;
+        if (viewType.onPacket(buf, off, len)) {
+            recordedGameType = WorldSettings.GameType.getByID(viewType.recorded());
         }
-        if (mc.playerController != null) {
-            mc.playerController.setGameType(WorldSettings.GameType.SPECTATOR); // the view's game type until P4c
-        }
+        applyViewGameType();
         try {
             ensurePuppet(feedTimeUs());
         } catch (RuntimeException e) {
@@ -93,7 +96,36 @@ public final class PlaybackSink implements PacketSink {
 
     @Override
     public boolean sessionHook(int packetId, byte[] buf, int off, int len) {
-        return true; // no session-hook packet before Phase 4c
+        if (!viewType.onPacket(buf, off, len)) {
+            return false;
+        }
+        recordedGameType = WorldSettings.GameType.getByID(viewType.recorded());
+        applyViewGameType();
+        return true;
+    }
+
+    /** The controller takes the current view's game type (what vanilla's HUD and hand read). */
+    private void applyViewGameType() {
+        if (mc.playerController != null && mc.thePlayer != null) {
+            mc.playerController.setGameType(
+                    WorldSettings.GameType.getByID(viewType.forView(CameraController.yourView())));
+        }
+    }
+
+    /**
+     * A view switch ({@link CameraController}): the controller's game type and the camera's view-dependent state
+     * (hurtTime, absorption, air, effects) change at once, not at the next world tick (playback may be paused).
+     */
+    public void viewChanged() {
+        applyViewGameType();
+        RewindCamera cam = camera();
+        if (cam != null) {
+            try {
+                cam.applyView(hand, CameraController.yourView(), puppet);
+            } catch (RuntimeException e) {
+                handFailed(e);
+            }
+        }
     }
 
     @Override
@@ -110,6 +142,48 @@ public final class PlaybackSink implements PacketSink {
             }
         } catch (RuntimeException e) {
             puppetFailed(e);
+        }
+        try {
+            applyHand(timeUs);
+        } catch (RuntimeException e) {
+            handFailed(e);
+        }
+    }
+
+    /** HandState for this tick (every tick, whatever the camera), then onto the camera. */
+    private void applyHand(long timeUs) {
+        SelfTrack track = track();
+        if (track == null || !hand.sample(track, timeUs, swingEnd(puppet))) {
+            return;
+        }
+        RewindCamera cam = camera();
+        if (cam == null) {
+            return;
+        }
+        boolean full = cam != handCamera;
+        handCamera = cam;
+        cam.applyHand(hand, full, CameraController.yourView(), puppet);
+    }
+
+    /** The swing's length from the recorded player's haste and mining fatigue (on the puppet, where S1D lands). */
+    private static int swingEnd(RewindSelfPuppet p) {
+        if (p == null) {
+            return HandState.SWING_END;
+        }
+        PotionEffect haste = p.getActivePotionEffect(Potion.digSpeed);
+        PotionEffect fatigue = p.getActivePotionEffect(Potion.digSlowdown);
+        return HandState.swingEnd(haste == null ? -1 : haste.getAmplifier(),
+                fatigue == null ? -1 : fatigue.getAmplifier());
+    }
+
+    private RewindCamera camera() {
+        return mc.thePlayer instanceof RewindCamera ? (RewindCamera) mc.thePlayer : null;
+    }
+
+    private void handFailed(RuntimeException e) {
+        if (!handFailureLogged) {
+            handFailureLogged = true;
+            DiagLog.log("rewind-watch: hand failed " + e.getClass().getSimpleName());
         }
     }
 
@@ -180,7 +254,7 @@ public final class PlaybackSink implements PacketSink {
         return recordedEntityId;
     }
 
-    /** The recorded game mode from the last S01/S07. */
+    /** The recorded game mode from the last S01, S07 or S2B reason 3. */
     public WorldSettings.GameType recordedGameType() {
         return recordedGameType;
     }

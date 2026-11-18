@@ -1,11 +1,13 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.SelfTrackEncoder;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
@@ -34,6 +36,12 @@ import static org.junit.Assert.assertTrue;
  * (membership changes only in ticks), spawns refused in unloaded chunks, and a GUI reset at every restart. Its state
  * is equal for all three ways of reaching K, including the reviewer's S14 case and the chat lines at 5 s and 15 s
  * with a backward seek from 20 s to 10 s.
+ *
+ * <p><b>Group 7 (Rev 3 amendment 1):</b> the model also keeps the recorded player's state on the camera: health,
+ * food and XP (S06, S1F), the selected slot (S09, then TICK {@code heldSlot} through {@link HandState}), the player
+ * inventory (S2F for window 0; a container window is dropped by the policy) and EQUIP stacks, armour, the swing, the
+ * item in use, {@code hurtTime}, and the recorded game mode (S01, S07, S2B reason 3 through the session hook into
+ * {@link ViewGameType}). A camera made anew by an S01/S07 starts empty and takes HandState's full state.
  */
 public class TickFeedEquivalenceTest {
 
@@ -99,6 +107,86 @@ public class TickFeedEquivalenceTest {
         return pk(0x04, i);
     }
 
+    // ---------------- group 7: packets that land on the camera (amendment 1) ----------------
+
+    private static byte[] health(int health, int food) {
+        return pk(0x06, health, food);
+    }
+
+    private static byte[] experience(int level) {
+        return pk(0x1F, level);
+    }
+
+    private static byte[] heldSlot(int slot) {
+        return pk(0x09, slot);
+    }
+
+    /** S2F: window byte (the policy reads it), then the model's int slot and item. */
+    private static byte[] setSlot(int window, int slot, int item) {
+        byte[] b = new byte[10];
+        b[0] = 0x2F;
+        b[1] = (byte) window;
+        RewindFormat.putInt(b, 2, slot);
+        RewindFormat.putInt(b, 6, item);
+        return b;
+    }
+
+    private static byte[] gameMode(int mode) {
+        byte[] b = new byte[6];
+        b[0] = 0x2B;
+        b[1] = 3;
+        RewindFormat.putFloat(b, 2, mode);
+        return b;
+    }
+
+    /** Client ticks of the recording, 7 ms off the playback grid. */
+    private static long clientTick(int i) {
+        return O + 7_000L + i * Timeline.TICK_US;
+    }
+
+    static final int CLICK_1 = 100;
+    static final int CLICK_RESTART = 104;
+    static final int CLICK_2 = 300;
+    static final int USE_FROM = 250;
+    static final int USE_TO = 290;
+    static final int HURT_AT = 450;
+
+    /** The self track the model's camera follows: slots, swings (one restarted), a use, a hit, EQUIP stacks. */
+    static SelfTrack selfTrack() {
+        SelfTrackEncoder enc = new SelfTrackEncoder();
+        SelfTrack.Builder b = new SelfTrack.Builder().segment(1);
+        HandStateTest.VanillaSwing swing = new HandStateTest.VanillaSwing();
+        for (int i = 0; i < 600; i++) {
+            if (i == CLICK_1 || i == CLICK_RESTART || i == CLICK_2) {
+                swing.swingItem(6);
+            }
+            swing.tick(6);
+            int flags = i >= USE_FROM && i < USE_TO ? RewindFormat.FLAG_USING_ITEM : 0;
+            int slot = i < 200 ? 0 : i < 400 ? 2 : 5;
+            int hurt = i >= HURT_AT && i <= HURT_AT + 10 ? 10 - (i - HURT_AT) : 0;
+            int n = enc.tick(i / 20, 64, 0, 0f, 0f, 0f, flags, slot, swing.progress, hurt);
+            if (n > 0) {
+                b.record(clientTick(i), RewindFormat.TAG_TICK, enc.buffer(), 0, n);
+            }
+            int[] equip = i == 0 ? new int[]{RewindFormat.EQUIP_HELD, 1, 64}
+                    : i == 150 ? new int[]{RewindFormat.EQUIP_HELD, 1, 63}
+                    : i == 200 ? new int[]{RewindFormat.EQUIP_HELD, 2, 1}
+                    : i == 400 ? new int[]{RewindFormat.EQUIP_HELD, 3, 16}
+                    : i == 420 ? new int[]{RewindFormat.EQUIP_BOOTS, 4, 1} : null;
+            if (equip != null) {
+                byte[] body = {(byte) equip[0], (byte) equip[1], (byte) equip[2]};
+                b.record(clientTick(i), RewindFormat.TAG_EQUIP, body, 0, body.length);
+            }
+            if (i == 0) {
+                byte[] helmet = {(byte) RewindFormat.EQUIP_HELMET, 5, 1};
+                b.record(clientTick(i), RewindFormat.TAG_EQUIP, helmet, 0, helmet.length);
+            }
+        }
+        return b.build();
+    }
+
+    private static final SelfTrack TRACK = selfTrack();
+
     private static final class Timed {
         final long t;
         final byte[] p;
@@ -133,6 +221,15 @@ public class TickFeedEquivalenceTest {
         for (int i = 0; i < 100; i++) {
             game.add(new Timed(O + 100_000L + i * 300_000L, filler(i)));
         }
+        // Group 7: the camera's packets.
+        game.add(new Timed(O + 4 * S, health(20, 20)));
+        game.add(new Timed(O + 6 * S, setSlot(0, 36, 111)));
+        game.add(new Timed(O + 8 * S, heldSlot(7)));
+        game.add(new Timed(O + 9 * S, setSlot(0, 36, 112))); // after the last EQUIP for hotbar slot 0
+        game.add(new Timed(O + 16 * S, setSlot(5, 0, 222))); // a chest: never reaches the camera
+        game.add(new Timed(O + 19 * S, health(14, 18)));
+        game.add(new Timed(O + 23 * S, experience(5)));
+        game.add(new Timed(O + 26 * S, gameMode(ViewGameType.SPECTATOR)));
         // Stable sort by time keeps the listed order of records that share a time.
         Collections.sort(game, new Comparator<Timed>() {
             @Override
@@ -184,6 +281,33 @@ public class TickFeedEquivalenceTest {
         final List<int[]> chat = new ArrayList<int[]>();
         int titleTimer;
         int cameraX;
+        /** Group 7: the camera's recorded-player state. */
+        Cam cam = new Cam();
+        HandState hand = new HandState();
+        ViewGameType mode = new ViewGameType();
+        boolean camFull = true;
+
+        static final class Cam {
+            int health = -1;
+            int food = -1;
+            int xp = -1;
+            int selected;
+            final TreeMap<Integer, String> inventory = new TreeMap<Integer, String>();
+            final String[] armour = new String[5];
+            int swingInt;
+            boolean swinging;
+            float swing;
+            float prevSwing;
+            boolean inUse;
+            int useCount;
+            int hurt;
+
+            String snapshot() {
+                return "h=" + health + " f=" + food + " xp=" + xp + " sel=" + selected + " inv=" + inventory
+                        + " arm=" + Arrays.toString(armour) + " swing=" + swinging + "/" + swingInt + "/" + swing + "/"
+                        + prevSwing + " use=" + inUse + "/" + useCount + " hurt=" + hurt;
+            }
+        }
 
         static int chunkOf(double x) {
             return (int) Math.floor(x / 16.0);
@@ -200,6 +324,49 @@ public class TickFeedEquivalenceTest {
             ents.clear();
             chunks.clear();
             worldTime = 0;
+            // A new connection: a new sink with its own hand state and recorded mode, and no camera yet.
+            cam = new Cam();
+            hand = new HandState();
+            mode = new ViewGameType();
+            camFull = true;
+        }
+
+        /** After an S01/S07: vanilla made a new, empty camera; the recorded mode comes from the packet. */
+        void boundary(byte[] b, int off, int len) {
+            cam = new Cam();
+            camFull = true;
+            mode.onPacket(b, off, len);
+        }
+
+        /** S2B reason 3. */
+        boolean hook(byte[] b, int off, int len) {
+            return mode.onPacket(b, off, len);
+        }
+
+        /** The tick's sample: the self track onto the camera (your view), as the Ornithe sink does. */
+        void sample(long timeUs) {
+            if (!hand.sample(TRACK, timeUs, 6)) {
+                return;
+            }
+            cam.selected = hand.selectedSlot();
+            for (int i = 0; i < HandState.HOTBAR; i++) {
+                if ((camFull || hand.hotbarChanged(i)) && hand.hotbarItem(i) != null) {
+                    cam.inventory.put(36 + i, "E" + Arrays.toString(hand.hotbarItem(i)));
+                }
+            }
+            for (int i = 1; i < 5; i++) {
+                if ((camFull || hand.armourChanged(i)) && hand.armourItem(i) != null) {
+                    cam.armour[i] = Arrays.toString(hand.armourItem(i));
+                }
+            }
+            camFull = false;
+            cam.swingInt = hand.swingProgressInt();
+            cam.swinging = hand.swingInProgress();
+            cam.swing = hand.swingProgress();
+            cam.prevSwing = hand.prevSwingProgress();
+            cam.inUse = hand.inUse();
+            cam.useCount = hand.inUse() ? hand.useCount(72000) : 0;
+            cam.hurt = hand.hurtTime(true);
         }
 
         private void newWorld(int dim) {
@@ -267,6 +434,22 @@ public class TickFeedEquivalenceTest {
                 case 0x08:
                     cameraX = RewindFormat.getInt(b, off + 1);
                     break;
+                case 0x06:
+                    cam.health = RewindFormat.getInt(b, off + 1);
+                    cam.food = RewindFormat.getInt(b, off + 5);
+                    break;
+                case 0x1F:
+                    cam.xp = RewindFormat.getInt(b, off + 1);
+                    break;
+                case 0x09:
+                    cam.selected = len >= 5 ? RewindFormat.getInt(b, off + 1) : b[off + 1];
+                    break;
+                case 0x2F:
+                    if (b[off + 1] != 0) {
+                        throw new AssertionError("a container window reached the camera");
+                    }
+                    cam.inventory.put(RewindFormat.getInt(b, off + 2), "S" + RewindFormat.getInt(b, off + 6));
+                    break;
                 default:
                     break;
             }
@@ -320,6 +503,7 @@ public class TickFeedEquivalenceTest {
             for (int[] l : visibleChat()) {
                 sb.append('[').append(l[0]).append(" age ").append(l[1]).append(']');
             }
+            sb.append(" cam=").append(cam.snapshot()).append(" mode=").append(mode.recorded());
             return sb.toString();
         }
     }
@@ -354,17 +538,19 @@ public class TickFeedEquivalenceTest {
         @Override
         public void boundary(int packetId, byte[] buf, int off, int len) {
             trace.add("B t" + tick + " id" + packetId);
+            model.boundary(buf, off, len);
         }
 
         @Override
         public boolean sessionHook(int packetId, byte[] buf, int off, int len) {
             trace.add("H t" + tick + " id" + packetId);
-            return true;
+            return model.hook(buf, off, len);
         }
 
         @Override
         public void sample(long t, long timeUs) {
             trace.add("S t" + t + " at" + timeUs);
+            model.sample(timeUs);
         }
 
         /** Rebuild: GUI reset, world gone, headers before tick 0. */
@@ -586,9 +772,10 @@ public class TickFeedEquivalenceTest {
         Harness h = new Harness(r, 11).open();
         assertTrue(h.trace.get(0).startsWith("R t-1 #-1 id1 "));
         assertEquals("B t-1 id1", h.trace.get(1));
-        assertTrue(h.trace.get(2).startsWith("R t-1 #-1 id56 ")); // S38 (S09 dropped)
-        assertTrue(h.trace.get(3).startsWith("R t-1 #-1 id71 ")); // S47
-        assertTrue(h.trace.get(4).startsWith("R t0 #0 id1 "));
+        assertTrue(h.trace.get(2).startsWith("R t-1 #-1 id9 ")); // S09 lands on the camera (amendment 1)
+        assertTrue(h.trace.get(3).startsWith("R t-1 #-1 id56 ")); // S38
+        assertTrue(h.trace.get(4).startsWith("R t-1 #-1 id71 ")); // S47
+        assertTrue(h.trace.get(5).startsWith("R t0 #0 id1 "));
         int samples = 0;
         for (String s : h.trace) {
             if (s.startsWith("S ")) {
@@ -596,5 +783,64 @@ public class TickFeedEquivalenceTest {
             }
         }
         assertEquals("one sample per tick of the opening", r.timeline().startTick(), samples);
+    }
+
+    @Test
+    public void groupSevenTheRecordedPlayerOnTheCameraIsEqualAfterEverySeek() throws Exception {
+        LoadedRecording r = recording();
+        Timeline tl = r.timeline();
+        long end = tl.endTick();
+        long swingTick = tick(tl, clientTick(CLICK_RESTART + 2));
+        long useTick = tick(tl, clientTick(USE_FROM + 5));
+        long hurtTick = tick(tl, clientTick(HURT_AT + 2));
+        long late = tick(tl, O + 27 * S);
+        for (long k : new long[]{swingTick, useTick, hurtTick, late}) {
+            for (long seed = 0; seed < 5; seed++) {
+                Harness straight = new Harness(r, seed).open().playTo(k);
+                Harness forward = new Harness(r, seed + 100).open().playTo(tl.startTick() + seed).seekTo(k);
+                Harness backward = new Harness(r, seed + 200).open().playTo(Math.min(end, k + 40 + seed)).seekTo(k);
+                assertEquals(2, backward.restarts);
+                String want = straight.model.cam.snapshot() + " mode=" + straight.model.mode.recorded();
+                assertEquals("forward, K=" + k, want,
+                        forward.model.cam.snapshot() + " mode=" + forward.model.mode.recorded());
+                assertEquals("backward, K=" + k, want,
+                        backward.model.cam.snapshot() + " mode=" + backward.model.mode.recorded());
+                assertEquals(straight.model.snapshot(), backward.model.snapshot());
+            }
+        }
+
+        Model.Cam swinging = new Harness(r, 1).open().playTo(swingTick).model.cam;
+        assertTrue("mid-swing after the restarted click", swinging.swinging);
+        assertEquals(20, swinging.health);
+        assertEquals("the EQUIP held stack", "E[1, 64]", swinging.inventory.get(36));
+
+        Model.Cam using = new Harness(r, 2).open().playTo(useTick).model.cam;
+        assertTrue(using.inUse);
+        assertTrue(using.useCount < 72000 && using.useCount > 72000 - 10);
+        assertEquals("TICK heldSlot wins over the S09", 2, using.selected);
+        assertEquals("a later S2F replaces the EQUIP stack", "S112", using.inventory.get(36));
+        assertEquals("E[2, 1]", using.inventory.get(38));
+
+        Harness hit = new Harness(r, 3).open().playTo(hurtTick);
+        assertTrue("your view tilts on a recorded hit", hit.model.cam.hurt > 0);
+        assertEquals("the free camera never does", 0, hit.model.hand.hurtTime(false));
+
+        Harness last = new Harness(r, 4).open().playTo(late);
+        Model.Cam cam = last.model.cam;
+        assertEquals(14, cam.health);
+        assertEquals(18, cam.food);
+        assertEquals(5, cam.xp);
+        assertEquals(5, cam.selected);
+        assertEquals("E[3, 16]", cam.inventory.get(36 + 5));
+        assertEquals("S112", cam.inventory.get(36));
+        assertEquals("[4, 1]", cam.armour[RewindFormat.EQUIP_BOOTS]);
+        assertEquals("[5, 1]", cam.armour[RewindFormat.EQUIP_HELMET]);
+        assertFalse("no container slot reached the camera", cam.inventory.containsKey(0));
+        assertEquals("a final death: recorded spectator", ViewGameType.SPECTATOR, last.model.mode.recorded());
+        assertEquals(ViewGameType.SPECTATOR, last.model.mode.forView(true));
+        assertEquals(ViewGameType.SPECTATOR, last.model.mode.forView(false));
+        Harness before = new Harness(r, 5).open().playTo(tick(tl, O + 25 * S));
+        assertEquals("survival from S01/S07 before it", ViewGameType.SURVIVAL, before.model.mode.forView(true));
+        assertEquals(ViewGameType.SPECTATOR, before.model.mode.forView(false));
     }
 }
