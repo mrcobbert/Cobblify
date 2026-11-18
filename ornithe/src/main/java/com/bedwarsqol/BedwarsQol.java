@@ -192,11 +192,21 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.CLIENT_TICK.register(mc -> teamUpgrades.onClientTick());
         // Rewind: records games (capture handler, self track, carry-over, markers, flash); Ornithe only.
         com.bedwarsqol.rewind.Rewind.register(VERSION);
+        // Rewind playback (watching a recording): its screens, cameras and failure gallery.
+        wireRewindPlayback();
         // Clutch Practice's server-side hooks are called by its own mixins (EntityPlayerMixin,
         // ItemInWorldManagerMixin); they act only once it is enabled here.
         ClutchPractice.enable();
 
         LOGGER.info(READY_LINE);
+    }
+
+    /** Rewind playback's screens, cameras and failure gallery (Ornithe only). */
+    public static void wireRewindPlayback() {
+        com.bedwarsqol.rewind.watch.RewindViewerScreen.register();
+        com.bedwarsqol.rewind.watch.ViewerCameraControls.set(com.bedwarsqol.rewind.watch.CameraController.controls());
+        com.bedwarsqol.rewind.watch.RewindPlayback.setFailureGallery(
+                () -> com.bedwarsqol.rewind.watch.RewindGalleryScreen.fromTitle(new net.minecraft.client.gui.GuiMainMenu()));
     }
 
     /** The mod version, filled into com/bedwarsqol/version.properties by the build. */

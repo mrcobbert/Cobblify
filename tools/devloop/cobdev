@@ -1178,6 +1178,13 @@ class Smoke:
     def probe(self, name, *args):
         return self.call("/probe", post={"name": name, "args": ARG_SEP.join(str(a) for a in args)})
 
+    def peek(self, name, *args):
+        """A probe for polling: not recorded in the report (the poll's last answer is recorded by the caller)."""
+        try:
+            return api_try("/probe", None, {"name": name, "args": ARG_SEP.join(str(a) for a in args)}, 30)
+        except ApiError:
+            return None
+
     def field(self, path, value=None):
         post = {"path": path}
         if value is not None:
@@ -4754,6 +4761,12 @@ def smoke_rewind(s, cfg):
         tu_reopen_world(s)  # recording starts with a connection made while it is on
         cleared = s.probe("rewind-clear")
         s.check("cobdev's own Rewind folder starts with no closed recording", cleared.get("left") == 0, cleared)
+        # RWW 3b (Rev 3 amendment 1): survival, hotbar slot 2 holding a sword, one swing, so the watched
+        # recording has a held item, a selected slot, hearts and a swing to compare.
+        watch = s.has(REWIND_PLAYBACK, "open")
+        if watch:
+            s.cmd("/gamemode 0")
+            s.probe("rewind-watch-swing", RWW_ITEM)
         s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
         try:
             time.sleep(1)
@@ -4761,16 +4774,260 @@ def smoke_rewind(s, cfg):
             s.call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
         s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
         time.sleep(0.5)
+        if watch:
+            s.cmd("/gamemode 1")  # the smoke save stays creative for every other step
         s.call("/world", {"leave": "1"}, timeout=90)
         r = rewind_latest(s)
         s.check("leaving the world closed one recording", r.get("found") and r.get("closed") == 1, r)
         s.check("RewindCheck passes (complete, no torn tail, NET, TICK, KEY, boundary-first segments)",
                 r.get("pass") is True and r.get("exit") == 0, r.get("line"))
+        if watch and r.get("pass") is True:
+            smoke_rewind_watch(s)  # watches this recording before the folder is cleared
+            smoke_rewind_timings(s)
     finally:
         s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
         s.field(on, was[0])
         s.field(rec, was[1])
         tu_save(s, cfg)
+
+
+# Rewind watch (cycle 2026-11-17-rewind-watch, PLAN Phase 7 step RWW). The bridge's rewind-watch-* probes reply with
+# counts, ticks, flags and hashes only (no id, name, chat, map or position).
+REWIND_PLAYBACK = "com.bedwarsqol.rewind.watch.RewindPlayback"
+RWW_ITEM = "minecraft:stone_sword"
+RWW_STAGE = os.path.join(SHARED, "cache", "rewind-stage")  # bridge Policy.REWIND_STAGE_TAIL
+TICKS_PER_S = 20
+# PLAN "Seek equivalence contract": the seven groups rewind-watch-snapshot hashes.
+CONTRACT_GROUPS = ("1-living", "2-entities", "3-chunks", "4-time", "5-scoreboard", "6-chat-titles", "7-camera")
+
+
+def rww_points(start, end):
+    """Step 3's ticks: K in the middle of [start, end]; the forward seek starts min(30 s, half the way from the start)
+    before K, the backward seek min(30 s, half the way to the end) after it."""
+    k = start + (end - start) // 2
+    fwd = k - min(30 * TICKS_PER_S, (k - start) // 2)
+    back = k + min(30 * TICKS_PER_S, (end - k) // 2)
+    return k, fwd, back
+
+
+def rww_differs(a, b, c):
+    """The contract groups not equal in all three snapshots (or missing from one): [] when the seek is exact."""
+    out = []
+    for g in CONTRACT_GROUPS:
+        va, vb, vc = (((x or {}).get("groups") or {}).get(g) for x in (a, b, c))
+        if va is None or not va == vb == vc:
+            out.append(g)
+    return out
+
+
+def ms_per_game_minute(ms, target_tick):
+    """A backward seek's cost per game minute of its target (it replays every tick from the recording's start)."""
+    minutes = max(1, target_tick) / (60.0 * TICKS_PER_S)
+    return round(ms / minutes, 1)
+
+
+def longest_bedwars(folder):
+    """(cbr, json) of the longest closed Bed Wars recording in folder by its recorded length, else None. Reads the
+    .json files only; nothing about them is printed."""
+    best, best_len = None, -1
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for n in names:
+        if not re.match(r"^\d{8}-\d{6}-[0-9a-f]{4}\.json$", n):
+            continue
+        cbr = os.path.join(folder, n[:-5] + ".cbr")
+        try:
+            with open(os.path.join(folder, n)) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not meta.get("complete") or str(meta.get("serverType", "")).upper() != "BEDWARS" or not os.path.isfile(cbr):
+            continue
+        length = meta.get("lengthUs") or 0
+        if length > best_len:
+            best, best_len = (cbr, os.path.join(folder, n)), length
+    return best
+
+
+def rww_wait(s, timeout=60, until=None):
+    """Polls rewind-watch-state until the last command landed (or until(state)); records the final answer."""
+    deadline = time.time() + timeout
+    st = {}
+    while time.time() < deadline:
+        st = s.peek("rewind-watch-state") or {}
+        if (until(st) if until else st.get("landedMs", -1) >= 0):
+            break
+        time.sleep(0.05)
+    s.step["commands"].append({"call": "/probe rewind-watch-state (last poll)", "result": st})
+    return st
+
+
+def rww_seek(s, *args):
+    s.probe("rewind-watch-seek", *args)
+    return rww_wait(s)
+
+
+def smoke_rewind_watch(s):
+    """RWW (PLAN Phase 7): watch the single-player recording RW just made, in cobdev's own folder.
+    1 open: WATCHING, gate on, failures 0, your view; 2 free camera moves while paused; 3 straight play, a forward
+    seek and a backward seek to the same tick K give equal hashes in all seven contract groups; 3b your view's hand
+    at the recorded swing, none of it in the free camera; 4 Quit to Title restores what playback changed and leaves
+    no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
+    watching (every rebuild's join adds its own client settings and brand, nothing else)."""
+    s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, exit)")
+    pre, err = s.try_call("/probe", post={"name": "rewind-watch-state", "args": ""})
+    if pre is None:
+        return s.unavailable("the running bridge has no rewind-watch probes (stage a build with them): %s" % err)
+    files_before = (s.probe("rewind-latest") or {}).get("closed")
+    opened = False
+    try:
+        s.probe("rewind-watch-open")
+        opened = True
+        st = rww_wait(s, 30)
+        s.check("1 the recording opens to WATCHING", st.get("state") == "WATCHING" and st.get("landedMs", -1) >= 0,
+                {"state": st.get("state"), "openMs": st.get("landedMs"), "lastFailure": st.get("lastFailure")})
+        s.check("1 gate on, failures 0, your view",
+                st.get("muted") is True and st.get("failures") == 0 and st.get("camera") == "YOU",
+                {k: st.get(k) for k in ("muted", "failures", "camera", "applied")})
+        start, end = st.get("startTick", 0), st.get("endTick", 0)
+        joined = st.get("discarded")
+
+        # 2 free camera, paused
+        if not st.get("paused"):
+            s.call("/key", {"code": KEYS["space"]})
+        s.call("/key", {"code": KEYS["2"]})
+        time.sleep(0.3)
+        a = s.probe("rewind-watch-state")
+        s.call("/keyhold", {"name": "key.forward", "state": "on", "raw": 1})
+        try:
+            time.sleep(1)
+        finally:
+            s.call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+        b = s.probe("rewind-watch-state")
+        s.check("2 key 2 is the free camera, paused", a.get("camera") == "FREE" and a.get("paused") is True,
+                {"camera": a.get("camera"), "paused": a.get("paused")})
+        s.check("2 holding W for 1 s moves it while paused", a.get("pose") and a.get("pose") != b.get("pose"),
+                {"moved": a.get("pose") != b.get("pose"), "ticksRun": [a.get("ticksRun"), b.get("ticksRun")]})
+        s.check("nothing reaches the discard handler after the join (no rebuild yet)",
+                b.get("discarded") == joined, {"atOpen": joined, "now": b.get("discarded")})
+        s.call("/key", {"code": KEYS["1"]})
+
+        # 3 equivalence at K
+        k, fwd, back = rww_points(start, end)
+        rww_seek(s, start)
+        s.probe("rewind-watch-play-to", k)
+        st = rww_wait(s, 120)
+        s.check("3 play-to K at 4x pauses exactly at K", st.get("stoppedAt") == k and st.get("playhead") == k,
+                {"K": k, "stoppedAt": st.get("stoppedAt"), "playhead": st.get("playhead")})
+        snap_a = s.probe("rewind-watch-snapshot")
+        rww_seek(s, fwd)
+        st = rww_seek(s, k)
+        snap_b = s.probe("rewind-watch-snapshot")
+        rww_seek(s, back)
+        st = rww_seek(s, k)
+        snap_c = s.probe("rewind-watch-snapshot")
+        ticks = [((x or {}).get("counts") or {}).get("tick") for x in (snap_a, snap_b, snap_c)]
+        s.check("3 all three snapshots are at K", ticks == [k, k, k], {"K": k, "ticks": ticks})
+        differs = rww_differs(snap_a, snap_b, snap_c)
+        s.check("3 straight play, forward seek and backward seek agree in all seven contract groups", not differs,
+                {"differ": differs, "from": [fwd, back]})
+        s.note("3 snapshot counts (excludedNonLiving are reported, not compared)", (snap_a or {}).get("counts"))
+        missing = sorted(set((snap_a or {}).get("missing") or []))
+        if missing:
+            s.note("3 snapshot fields this build could not read (equal by construction)", missing)
+
+        # 3b your view's hand at the recorded swing; none of it in the free camera
+        swing = st.get("firstSwingTick", -1)
+        if s.check("3b RW recorded a swing", swing is not None and swing > 0, swing):
+            st = rww_seek(s, min(end, swing + 2))
+            s.check("3b your view: held stack = recorded EQUIP, slot = TICK heldSlot, swinging, survival",
+                    st.get("cameraHeld") is not None and st.get("cameraHeld") == st.get("recordedHeld")
+                    and st.get("cameraSlot") == st.get("recordedSlot") == 1 and st.get("cameraSwinging") is True
+                    and st.get("controllerGameType") == "SURVIVAL",
+                    dict({k2: st.get(k2) for k2 in ("cameraSlot", "recordedSlot", "cameraSwinging",
+                                                    "controllerGameType", "recordedGameType")},
+                         heldEqual=st.get("cameraHeld") == st.get("recordedHeld")))
+            s.shot("rww-your-view", wait=500)
+            s.call("/key", {"code": KEYS["2"]})
+            time.sleep(0.3)
+            st = s.probe("rewind-watch-state")
+            s.check("3b free camera: controller SPECTATOR, hurtTime 0",
+                    st.get("controllerGameType") == "SPECTATOR" and st.get("cameraHurtTime") == 0,
+                    {k2: st.get(k2) for k2 in ("controllerGameType", "cameraHurtTime")})
+            s.shot("rww-free-camera", wait=500)
+            s.call("/key", {"code": KEYS["1"]})
+
+        # 4 Quit to Title
+        s.probe("rewind-watch-quit")
+        st = rww_wait(s, 30)
+        opened = False
+        title = (s.status() or {}).get("title")
+        s.check("4 Quit to Title: title screen, IDLE", title and st.get("state") == "IDLE",
+                {"title": title, "state": st.get("state")})
+        restored = {key: [pre.get(key), st.get(key)] for key in ("timerSpeed", "thirdPersonView", "chatLines",
+                                                                    "updateCounter")}
+        s.check("4 timer speed, F5 view, chat lines and update counter are back", all(
+            v[0] == v[1] for v in restored.values()), restored)
+        after = (s.probe("rewind-latest") or {}).get("closed")
+        s.check("4 watching recorded nothing", after == files_before, {"before": files_before, "after": after})
+    finally:
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+
+
+def smoke_rewind_timings(s):
+    """RWW-time (A17, Mac part): the longest real Bed Wars game from COBBLIFY_REWIND_SAMPLES, staged in cobdev's own
+    Rewind folder and deleted afterwards (timings only, no screenshot): (a) open, (b) a 30 s forward seek from the
+    middle, (c) Left 5 s from 10 s before the end, also per game minute of its target, (d) end to the game start."""
+    s.begin("RWW-time", "Rewind: A17 timings on the longest real Bed Wars game")
+    folder = os.environ.get("COBBLIFY_REWIND_SAMPLES")
+    pick = longest_bedwars(folder) if folder else None
+    if not pick:
+        return s.unavailable("set COBBLIFY_REWIND_SAMPLES to a folder with a real Bed Wars recording")
+    opened = False
+    try:
+        s.probe("rewind-clear")  # the staged game is then the newest closed recording
+        os.makedirs(RWW_STAGE, mode=0o755, exist_ok=True)
+        try:
+            for src in pick:
+                dst = os.path.join(RWW_STAGE, os.path.basename(src))
+                shutil.copyfile(src, dst)
+                os.chmod(dst, 0o644)  # the game runs in the user's account
+            staged = s.probe("rewind-watch-stage", RWW_STAGE)
+        finally:
+            shutil.rmtree(RWW_STAGE, ignore_errors=True)
+        s.check("the game is staged in cobdev's own folder", staged.get("copied") == 2, staged)
+        s.probe("rewind-watch-open")
+        opened = True
+        st = rww_wait(s, 60)
+        open_ms = st.get("landedMs")
+        s.check("(a) open finishes within 3 s", st.get("state") == "WATCHING" and 0 <= (open_ms or -1) <= 3000,
+                {"openMs": open_ms, "failures": st.get("failures")})
+        start, end = st.get("startTick", 0), st.get("endTick", 0)
+        rww_seek(s, start + (end - start) // 2)
+        st = rww_seek(s, "by", 30000)
+        fwd_ms = st.get("landedMs")
+        s.check("(b) a 30 s forward seek from the middle finishes within 1 s", 0 <= (fwd_ms or -1) <= 1000,
+                {"seekForwardMs": fwd_ms})
+        rww_seek(s, max(start, end - 10 * TICKS_PER_S))
+        st = rww_seek(s, "by", -5000)
+        late_ms, late_target = st.get("landedMs"), st.get("playhead")
+        s.note("(c) Left 5 s from 10 s before the end", {"seekBackLateMs": late_ms, "targetTick": late_target,
+                                                         "msPerGameMinute": ms_per_game_minute(late_ms or 0,
+                                                                                               late_target or 1)})
+        if (late_ms or 0) > 5000:
+            s.note("(c) is over 5 s: put it to the user (Q9) before the cycle closes", late_ms)
+        rww_seek(s, end)
+        st = rww_seek(s, start)
+        s.note("(d) end to the game start", {"seekBackStartMs": st.get("landedMs")})
+    finally:
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
 
 
 def smoke_team_upgrades_look(s, cfg, mode):
@@ -5352,7 +5609,8 @@ def build_parser():
                                 " overlay items: overlay-boxes,"
                                 " chat-fixture overlays, chat-clear, chat-open, chat-at GX GY, chat-click GX GY,"
                                 " tab-header-footer H F|clear, place-item ID X Y, chat-heights F U|restore,"
-                                " chat-defaults; Rewind (no world needed): rewind-latest, rewind-clear;"
+                                " chat-defaults; Rewind (no world needed): rewind-latest, rewind-clear; Rewind watch: rewind-watch-swing,"
+                                " rewind-watch-open, -state, -seek, -play-to, -snapshot, -quit, -stage;"
                                 " motion blur: mb-record [watch|log], mb-turn FROM TO DEG/S,"
                                 " mb-pose YAW PITCH, mb-shot [stopTurn]")
     p.add_argument("name")
@@ -5366,7 +5624,7 @@ def build_parser():
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
     p.add_argument("--only", choices=["overlays", "team-upgrades", "rewind", "motion-blur"],
                    help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look;"
-                        " rewind: RW; motion-blur: MB, MB-cut, MB-still, MB-turn)")
+                        " rewind: RW, RWW, RWW-time; motion-blur: MB, MB-cut, MB-still, MB-turn)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

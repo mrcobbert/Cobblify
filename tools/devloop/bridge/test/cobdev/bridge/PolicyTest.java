@@ -155,6 +155,57 @@ public final class PolicyTest {
             checks++;
             if (Policy.rewindFile(no)) fail("not a recording file: " + no);
         }
+        // Rewind watch (step RWW): a recording playing through Rewind's socketless connection counts as local; a
+        // real server never does, whatever the session says.
+        checks++;
+        if (!Policy.rewindPlayback(true, true, false, false)) fail("an active session without a network address");
+        for (boolean[] no : new boolean[][]{{false, true, false, false}, {true, true, false, true},
+                {true, false, false, false}, {true, true, true, false}}) {
+            checks++;
+            if (Policy.rewindPlayback(no[0], no[1], no[2], no[3])) fail("not Rewind playback: " + java.util.Arrays.toString(no));
+        }
+        allowed(Policy.local(true, false, true));
+        refused(Policy.local(true, false, false));
+        allowed(Policy.keyhold("on", true, false, true));
+        refused(Policy.keyhold("on", true, false, false));
+        checks++;
+        if (!Policy.keepHolding(true, false, true) || Policy.keepHolding(true, false, false)) fail("holds while watching only");
+        same("42", joinAll(Policy.modifiers("shift", true, false, true)));
+        refusedCall(() -> Policy.modifiers("shift", true, false, false));
+        for (String p : new String[]{"rewind-watch-swing", "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek",
+                "rewind-watch-play-to", "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage"}) {
+            allowed(Policy.probeName(p));
+        }
+        refused(Policy.probeName("rewind-watch-copy"));
+        same("0,1234", join3(Policy.rewindSeek(java.util.Arrays.asList("1234"))));
+        same("1,-30000000", join3(Policy.rewindSeek(java.util.Arrays.asList("by", "-30000"))));
+        refusedCall(() -> Policy.rewindSeek(java.util.Arrays.asList("-1")));
+        refusedCall(() -> Policy.rewindSeek(java.util.Arrays.asList("by", "x")));
+        refusedCall(() -> Policy.rewindSeek(java.util.Arrays.asList("by", String.valueOf(Policy.REWIND_MAX_SEEK_MS + 1))));
+        refusedCall(() -> Policy.rewindSeek(java.util.Collections.<String>emptyList()));
+        checks++;
+        if (Policy.rewindPlayTo(java.util.Arrays.asList("600")) != 600) fail("play-to 600");
+        refusedCall(() -> Policy.rewindPlayTo(java.util.Arrays.asList("-5")));
+        refusedCall(() -> Policy.rewindPlayTo(java.util.Arrays.asList("1", "2")));
+        same("minecraft:stone_sword", Policy.rewindSwingItem(java.util.Arrays.asList("minecraft:stone_sword")));
+        refusedCall(() -> Policy.rewindSwingItem(java.util.Arrays.asList("stone sword")));
+        refusedCall(() -> Policy.rewindSwingItem(java.util.Collections.<String>emptyList()));
+        allowed(Policy.rewindOwnFolder("rewind-watch-open", "cobdev-rewind", "/Users/someone/run/cobdev-rewind",
+                "/Users/someone"));
+        refused(Policy.rewindOwnFolder("rewind-watch-open", null, "/Users/someone/.cobblify/rewind", "/Users/someone"));
+        refused(Policy.rewindOwnFolder("rewind-watch-stage", "/Users/someone/.cobblify/rewind",
+                "/Users/someone/.cobblify/rewind", "/Users/someone"));
+        allowed(Policy.rewindStageDir(java.util.Arrays.asList("/Users/Shared/cobblify-dev/cache/rewind-stage")));
+        refused(Policy.rewindStageDir(java.util.Arrays.asList("/Users/agent/rewind-samples/rewind")));
+        refused(Policy.rewindStageDir(java.util.Arrays.asList("cobblify-dev/cache/rewind-stage")));
+        refused(Policy.rewindStageDir(java.util.Arrays.asList("/Users/Shared/cobblify-dev/cache/../../x/cobblify-dev/cache/rewind-stage")));
+        refused(Policy.rewindStageDir(java.util.Collections.<String>emptyList()));
+        checks++;
+        if (!Policy.rewindStageFile("20261117-031500-ab12.cbr") || !Policy.rewindStageFile("20261117-031500-ab12.json")
+                || Policy.rewindStageFile("20261117-031500-ab12.stats.json") || Policy.rewindStageFile("notes.txt")) {
+            fail("staged files: the recording and its metadata only");
+        }
+
         allowed(Policy.chatClick(true));
         refused(Policy.chatClick(false)); // any other screen, a subclass, or none
         for (String id : new String[]{"scoreboard", "chat", "tablist"}) allowed(Policy.placeItem(id));
@@ -238,6 +289,10 @@ public final class PolicyTest {
 
     private static String joinD(double[] p) {
         return p[0] + "," + p[1] + "," + p[2];
+    }
+
+    private static String join3(long[] p) {
+        return p[0] + "," + p[1];
     }
 
     private static String joinF(float[] p) {

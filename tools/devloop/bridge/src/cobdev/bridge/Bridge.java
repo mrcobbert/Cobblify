@@ -245,6 +245,7 @@ public final class Bridge {
                 s.put("guiScaleSetting", m.gameSettings.guiScale);
                 s.put("inWorld", m.theWorld != null);
                 s.put("onServer", onServer(m));
+                s.put("rewindPlayback", rewindPlayback(m));
                 s.put("cursorHeld", cursor != null && System.currentTimeMillis() < cursorUntil);
                 s.put("mouseBackend", Input.backend());
                 return s;
@@ -340,7 +341,7 @@ public final class Bridge {
 
     private static int[] mods(String names) {
         Minecraft m = mc();
-        return Policy.modifiers(names, m.theWorld != null, m.isSingleplayer());
+        return Policy.modifiers(names, m.theWorld != null, m.isSingleplayer(), rewindPlayback(m));
     }
 
     private static Map<String, Object> scale(int n) throws Exception {
@@ -463,7 +464,7 @@ public final class Bridge {
         return onMain(() -> {
             Minecraft m = mc();
             // Releasing is always allowed: a hold must be endable from anywhere (review I2).
-            Refused.check(Policy.keyhold(state, m.theWorld != null, m.isSingleplayer()));
+            Refused.check(Policy.keyhold(state, m.theWorld != null, m.isSingleplayer(), rewindPlayback(m)));
             List<Object> listed = new ArrayList<>();
             KeyBinding match = null;
             for (KeyBinding kb : mc().gameSettings.keyBindings) {
@@ -565,7 +566,7 @@ public final class Bridge {
                     if (m != null && (holdCursor || !heldKeys.isEmpty() || !rawKeys.isEmpty())) {
                         m.addScheduledTask(() -> {
                             try {
-                                if (!Policy.keepHolding(m.theWorld != null, m.isSingleplayer())) {
+                                if (!Policy.keepHolding(m.theWorld != null, m.isSingleplayer(), rewindPlayback(m))) {
                                     releaseAll();
                                     return;
                                 }
@@ -696,7 +697,33 @@ public final class Bridge {
 
     static void requireLocal() {
         Minecraft m = mc();
-        Refused.check(Policy.local(m.theWorld != null, m.isSingleplayer()));
+        Refused.check(Policy.local(m.theWorld != null, m.isSingleplayer(), rewindPlayback(m)));
+    }
+
+    private static volatile Method rewindActive;
+
+    /**
+     * A Rewind recording is playing through its socketless connection ({@link Policy#rewindPlayback}): Cobblify's
+     * {@code RewindPlayback.active()} and a connection whose remote address is not an internet address. False when
+     * this build has no Rewind playback. Game thread.
+     */
+    static boolean rewindPlayback(Minecraft m) {
+        boolean active;
+        try {
+            Method a = rewindActive;
+            if (a == null) {
+                a = Class.forName(RewindWatchProbes.PLAYBACK, true, Bridge.class.getClassLoader()).getMethod("active");
+                rewindActive = a;
+            }
+            active = Boolean.TRUE.equals(a.invoke(null));
+        } catch (ReflectiveOperationException | LinkageError e) {
+            return false;
+        }
+        boolean network = true;
+        if (m.getNetHandler() != null && m.getNetHandler().getNetworkManager() != null) {
+            network = m.getNetHandler().getNetworkManager().getRemoteAddress() instanceof java.net.InetSocketAddress;
+        }
+        return Policy.rewindPlayback(active, m.theWorld != null, m.isSingleplayer(), network);
     }
 
     static void requireSingleplayerWorld() {

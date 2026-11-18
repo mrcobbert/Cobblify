@@ -97,8 +97,35 @@ public final class RewindGalleryScreen extends GuiScreen {
         }
     }
 
+    /** Whether a recording is playing (a test replaces it). */
+    java.util.function.BooleanSupplier playing = RewindPlayback::active;
+    /** Vanilla's input step: every pending mouse and keyboard event (a test replaces it). */
+    Runnable inputPump = this::vanillaInput;
+
+    private void vanillaInput() {
+        super.handleInput();
+    }
+
+    /**
+     * {@code runTick}'s call. While a recording plays it is ignored: a paused session runs no tick, so the gallery
+     * opened from the Esc menu would get no input; it pumps its input once per drawn frame instead
+     * ({@link #frameInput}), as {@link RewindScreen} does. Otherwise vanilla.
+     */
+    @Override
+    public void handleInput() {
+        if (!playing.getAsBoolean()) inputPump.run();
+    }
+
+    /** While a recording plays, this frame's input before drawing; false when it closed or replaced this screen. */
+    boolean frameInput() {
+        if (!playing.getAsBoolean()) return true;
+        inputPump.run();
+        return mc == null || mc.currentScreen == this;
+    }
+
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
+        if (!frameInput()) return;
         scale = new ScaledResolution(mc).getScaleFactor();
         backdrop(mouseX, mouseY, partialTicks);
         ClientSettings cfg = BedwarsQol.config;

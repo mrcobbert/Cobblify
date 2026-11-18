@@ -4,6 +4,7 @@ import importlib.machinery
 import io
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -1393,7 +1394,7 @@ class RewindSmoke(unittest.TestCase):
 
     CFG = "com.bedwarsqol.BedwarsQol.config"
 
-    def run_step(self, latest, present=True):
+    def run_step(self, latest, present=True, playback=False):
         calls = []
         fields = {self.CFG + ".rewind": "false", self.CFG + ".rewindRecordGames": "true"}
 
@@ -1414,13 +1415,41 @@ class RewindSmoke(unittest.TestCase):
                 return {"ok": True}
 
             def has(self, cls, member=None):
-                return present
+                return playback if cls == cobdev.REWIND_PLAYBACK else present
 
         s = Fake("dev", "test")
         ready = {"title": True, "inWorld": True, "responsive": True}
-        with mock.patch.object(cobdev, "api_quiet", return_value=ready), mock.patch.object(cobdev.time, "sleep"):
+        watched = []
+        with mock.patch.object(cobdev, "api_quiet", return_value=ready), mock.patch.object(cobdev.time, "sleep"), \
+                mock.patch.object(cobdev, "smoke_rewind_watch", lambda st: watched.append("RWW")), \
+                mock.patch.object(cobdev, "smoke_rewind_timings", lambda st: watched.append("RWW-time")):
             cobdev.smoke_rewind(s, self.CFG)
+        self.watched = watched
         return s, calls, fields
+
+    def test_with_playback_rw_records_a_swing_in_survival_then_hands_over_to_rww(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": "complete=true"}
+        s, calls, fields = self.run_step(latest, playback=True)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertEqual(self.watched, ["RWW", "RWW-time"])
+        key = {"/command": "command", "/probe": "name", "/keyhold": "state"}
+        seq = [(c[0], c[1].get(key[c[0]])) for c in calls if c[0] in key]
+        i_survival = seq.index(("/command", "/gamemode 0"))
+        i_swing = seq.index(("/probe", "rewind-watch-swing"))
+        i_walk = seq.index(("/keyhold", "on"))
+        i_creative = seq.index(("/command", "/gamemode 1"))
+        i_leave = max(i for i, c in enumerate(calls) if c == ("/world", {"leave": "1"}))
+        self.assertLess(i_survival, i_swing)
+        self.assertLess(i_swing, i_walk)
+        self.assertLess(i_walk, i_creative)
+        self.assertLess(calls.index(("/command", {"command": "/gamemode 1"})), i_leave)
+        clears = [c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-clear"]
+        self.assertEqual(len(clears), 2)  # RWW watches before the folder is cleared
+
+    def test_a_failing_rw_check_does_not_watch(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 16, "pass": False, "line": "markerKey=0"}
+        self.run_step(latest, playback=True)
+        self.assertEqual(self.watched, [])
 
     def test_a_passing_check_passes_and_settings_come_back(self):
         latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": "complete=true"}
@@ -1480,6 +1509,188 @@ class Pins(unittest.TestCase):
         prod = {p["name"] for p in cobdev.pins_for("prod")}
         self.assertEqual(dev, {"pylon", "sarcio", "slipstream"})
         self.assertEqual(prod, {"pylon", "argentum", "sarcio", "slipstream", "osl"})
+
+
+class RewindWatchHelpers(unittest.TestCase):
+    """Step RWW's pure helpers (PLAN 2026-11-17-rewind-watch Phase 7)."""
+
+    def test_points_are_30_s_either_side_of_the_middle_or_half_the_way(self):
+        self.assertEqual(cobdev.rww_points(0, 8000), (4000, 3400, 4600))
+        self.assertEqual(cobdev.rww_points(20, 220), (120, 70, 170))  # a 10 s recording: half the way
+        k, fwd, back = cobdev.rww_points(20, 21)
+        self.assertTrue(20 <= fwd <= k <= back <= 21)
+
+    def test_differs_names_the_groups_that_are_not_equal_or_missing(self):
+        same = {"groups": {g: "h" + g for g in cobdev.CONTRACT_GROUPS}}
+        self.assertEqual(cobdev.rww_differs(same, dict(same), dict(same)), [])
+        other = {"groups": dict(same["groups"], **{"3-chunks": "x"})}
+        self.assertEqual(cobdev.rww_differs(same, other, same), ["3-chunks"])
+        partial = {"groups": {g: v for g, v in same["groups"].items() if g != "7-camera"}}
+        self.assertEqual(cobdev.rww_differs(partial, partial, partial), ["7-camera"])
+        self.assertEqual(cobdev.rww_differs(None, same, same), list(cobdev.CONTRACT_GROUPS))
+
+    def test_ms_per_game_minute_of_the_target(self):
+        self.assertEqual(cobdev.ms_per_game_minute(6000, 6 * 1200), 1000.0)
+        self.assertEqual(cobdev.ms_per_game_minute(500, 0), 500 * 1200.0)  # never divides by zero
+
+    def test_longest_bedwars_reads_only_closed_bed_wars_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            def rec(rid, server, length, complete=True, cbr=True):
+                with open(os.path.join(d, rid + ".json"), "w") as f:
+                    json.dump({"complete": complete, "serverType": server, "lengthUs": length}, f)
+                if cbr:
+                    open(os.path.join(d, rid + ".cbr"), "wb").close()
+            rec("20261101-100000-aaaa", "BEDWARS", 300)
+            rec("20261101-110000-bbbb", "BEDWARS", 500)
+            rec("20261101-120000-cccc", "DUELS", 900)
+            rec("20261101-130000-dddd", "BEDWARS", 950, complete=False)
+            rec("20261101-140000-eeee", "BEDWARS", 990, cbr=False)
+            rec("20261101-150000-ffff", "REPLAY", 999)
+            open(os.path.join(d, "20261101-110000-bbbb.stats.json"), "w").close()
+            cbr, meta = cobdev.longest_bedwars(d)
+            self.assertEqual(os.path.basename(cbr), "20261101-110000-bbbb.cbr")
+            self.assertEqual(os.path.basename(meta), "20261101-110000-bbbb.json")
+            self.assertIsNone(cobdev.longest_bedwars(os.path.join(d, "missing")))
+
+
+class FakePlayback(cobdev.Smoke):
+    """A game whose Rewind session answers like the real one does when everything works."""
+
+    START, END, SWING = 20, 1000, 50
+
+    def __init__(self):
+        super().__init__("dev", "test")
+        self.st = {"ok": True, "active": False, "state": "IDLE", "timerSpeed": 1.0, "thirdPersonView": 0,
+                   "chatLines": 3, "updateCounter": 77, "landedMs": -1, "stoppedAt": -1, "discarded": None}
+        self.pose = 0
+        self.closed = 1
+
+    def _state(self):
+        return dict(self.st, pose="p%d" % self.pose)
+
+    def _land(self, playhead=None):
+        if playhead is not None:
+            self.st["playhead"] = self.st["ticksRun"] = max(self.START, min(self.END, playhead))
+        self.st["landedMs"] = 12
+
+    def call(self, path, params=None, post=None, timeout=60):
+        self.step["commands"].append({"call": path})
+        st = self.st
+        if path == "/has":
+            return {"ok": True, "present": True}
+        if path == "/key":
+            code = params["code"]
+            if code == cobdev.KEYS["space"]:
+                st["paused"] = not st["paused"]
+            elif code in (cobdev.KEYS["1"], cobdev.KEYS["2"]):
+                free = code == cobdev.KEYS["2"]
+                st["camera"] = "FREE" if free else "YOU"
+                st["controllerGameType"] = "SPECTATOR" if free else "SURVIVAL"
+                st["cameraHurtTime"] = 0 if free else 4
+            return {"ok": True}
+        if path == "/keyhold":
+            if params["state"] == "on" and st.get("camera") == "FREE":
+                self.pose += 1
+            return {"ok": True}
+        if path != "/probe":
+            return {"ok": True}
+        name = post["name"]
+        args = post["args"].split(cobdev.ARG_SEP) if post["args"] else []
+        if name == "rewind-watch-state":
+            return self._state()
+        if name == "rewind-latest":
+            return {"ok": True, "closed": self.closed, "found": True}
+        if name == "rewind-watch-open":
+            st.update(active=True, state="WATCHING", muted=True, failures=0, camera="YOU", paused=False,
+                      startTick=self.START, endTick=self.END, discarded=2, firstSwingTick=self.SWING,
+                      controllerGameType="SURVIVAL", cameraSlot=1, recordedSlot=1, cameraHeld="sword",
+                      recordedHeld="sword", cameraSwinging=True, recordedGameType="SURVIVAL")
+            self._land(self.START)
+            return {"ok": True, "closed": self.closed}
+        if name == "rewind-watch-seek":
+            target = int(args[0]) if len(args) == 1 else st["playhead"] + int(args[1]) // 50
+            st["discarded"] += 2 if target < st["playhead"] else 0  # a rebuild's join
+            self._land(target)
+            return {"ok": True, "target": st["playhead"]}
+        if name == "rewind-watch-play-to":
+            st["paused"] = True
+            st["stoppedAt"] = int(args[0])
+            self._land(int(args[0]))
+            return {"ok": True}
+        if name == "rewind-watch-snapshot":
+            return {"ok": True, "groups": {g: "h" for g in cobdev.CONTRACT_GROUPS},
+                    "counts": {"tick": st["playhead"], "excludedNonLiving": 3}, "missing": []}
+        if name == "rewind-watch-quit":
+            st.update(active=False, state="IDLE")
+            self._land()
+            return {"ok": True}
+        if name == "rewind-watch-swing":
+            return {"ok": True, "slot": 1}
+        return {"ok": True}
+
+    def peek(self, name, *args):
+        return self._state() if name == "rewind-watch-state" else None
+
+    def shot(self, tag, wait=300):
+        self.step["shots"].append(tag)
+        return tag, None
+
+    def status(self):
+        return {"title": self.st["state"] == "IDLE"}
+
+
+class RewindWatchDryRun(unittest.TestCase):
+    """Step RWW against a fake session: every check runs and passes; a wrong snapshot or restore fails it."""
+
+    def run_step(self, s):
+        real_sleep = cobdev.time.sleep
+        cobdev.time.sleep = lambda t: None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                s.begin("RW", "fake")
+                cobdev.smoke_rewind_watch(s)
+        finally:
+            cobdev.time.sleep = real_sleep
+        return s.report["steps"][-1]
+
+    def test_every_check_passes_on_a_working_session(self):
+        step = self.run_step(FakePlayback())
+        self.assertEqual(step["id"], "RWW")
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, [])
+        self.assertEqual(len(step["checks"]), 14)
+        self.assertEqual(step["shots"], ["rww-your-view", "rww-free-camera"])
+
+    def test_a_backward_seek_that_differs_fails_step_3(self):
+        class Drift(FakePlayback):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = super().call(path, params, post, timeout)
+                if post and post.get("name") == "rewind-watch-snapshot" and self.st["discarded"] > 4:
+                    r["groups"]["6-chat-titles"] = "other"  # after the backward rebuild
+                return r
+        step = self.run_step(Drift())
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["3 straight play, forward seek and backward seek agree in all seven contract groups"])
+
+    def test_a_chat_line_left_behind_fails_step_4(self):
+        class Leak(FakePlayback):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = super().call(path, params, post, timeout)
+                if post and post.get("name") == "rewind-watch-quit":
+                    self.st["chatLines"] = 4
+                return r
+        step = self.run_step(Leak())
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["4 timer speed, F5 view, chat lines and update counter are back"])
+
+    def test_an_older_bridge_is_not_available_not_a_failure(self):
+        class Old(FakePlayback):
+            def try_call(self, path, params=None, post=None, timeout=60):
+                if post and post.get("name") == "rewind-watch-state":
+                    return None, "unknown probe rewind-watch-state"
+                return super().try_call(path, params, post, timeout)
+        step = self.run_step(Old())
+        self.assertEqual(step["status"], "not available yet")
 
 
 if __name__ == "__main__":

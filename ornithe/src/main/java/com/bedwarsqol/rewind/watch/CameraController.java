@@ -185,6 +185,51 @@ public final class CameraController {
         return FreeCameraMath.speedBarAlpha((System.nanoTime() - scrollNanos) / 1_000_000L);
     }
 
+    private static final ViewerCameraControls CONTROLS = new Controls();
+
+    /** The viewer's camera seam ({@link ViewerCameraControls}) over this controller; one instance. */
+    public static ViewerCameraControls controls() {
+        return CONTROLS;
+    }
+
+    /**
+     * {@link ViewerCameraControls} for the viewer: the camera index maps to {@link #selectCamera}, the free camera's
+     * movement to {@link #move} (the controller moves by its own frame time, so the viewer's step length is not
+     * needed), drag and wheel to {@link #look} and {@link #scroll}. Selecting works before the world is complete
+     * (no camera, no connection yet): your view then only clears the free camera's state.
+     */
+    private static final class Controls implements ViewerCameraControls {
+        @Override
+        public void select(int camera) {
+            selectCamera(camera == FREE ? FREE_CAMERA : YOUR_VIEW);
+        }
+
+        @Override
+        public int camera() {
+            return freeMode ? FREE : YOU;
+        }
+
+        @Override
+        public void move(int forward, int strafe, int vertical, double seconds) {
+            CameraController.move(forward, strafe, vertical);
+        }
+
+        @Override
+        public void look(double dx, double dy) {
+            CameraController.look(dx, dy);
+        }
+
+        @Override
+        public void scroll(int wheel) {
+            CameraController.scroll(wheel);
+        }
+
+        @Override
+        public int flyLevel() {
+            return level;
+        }
+    }
+
     // ================================================================== playback hooks
 
     /** {@code renderWorld} HEAD while a recorded world plays: this frame's camera pose. */
@@ -248,6 +293,6 @@ public final class CameraController {
 
     private static RewindCamera camera() {
         Minecraft mc = Minecraft.getMinecraft();
-        return mc.thePlayer instanceof RewindCamera ? (RewindCamera) mc.thePlayer : null;
+        return mc != null && mc.thePlayer instanceof RewindCamera ? (RewindCamera) mc.thePlayer : null;
     }
 }

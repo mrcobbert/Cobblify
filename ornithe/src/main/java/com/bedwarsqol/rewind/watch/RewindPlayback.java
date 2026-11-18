@@ -9,7 +9,6 @@ import com.bedwarsqol.mixin.MinecraftTimerAccessor;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RecordingStore;
 import com.bedwarsqol.rewind.Rewind;
-import com.bedwarsqol.rewind.RewindDir;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.ChatLine;
@@ -131,6 +130,16 @@ public final class RewindPlayback implements ClientOps {
         failureGallery = gallery;
     }
 
+    /** The registered loading card and viewer. */
+    static Screens screens() {
+        return screens;
+    }
+
+    /** The registered failure gallery, or null. */
+    static Supplier<GuiScreen> failureGallery() {
+        return failureGallery;
+    }
+
     /** The current connection's sink (the recorded entity id and game mode), or null. */
     public static PlaybackSink currentSink() {
         return INSTANCE.sink;
@@ -249,8 +258,9 @@ public final class RewindPlayback implements ClientOps {
         return ((MinecraftTimerAccessor) mc()).bedwarsqol$getTimer();
     }
 
-    private static RecordingStore store() {
-        return new RecordingStore(RewindDir.get());
+    /** The recorder's own store ({@link Rewind#store()}): it knows which file is still being written here. */
+    static RecordingStore store() {
+        return Rewind.store();
     }
 
     @Override
