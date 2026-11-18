@@ -82,7 +82,6 @@ public final class RewindPlayback implements ClientOps {
     private static volatile Supplier<GuiScreen> failureGallery;
 
     private final PlaybackSession session = new PlaybackSession(this, PlaybackGate.global());
-    private final SelfTrack.Pose pose = new SelfTrack.Pose();
     private PlaybackConnection connection;
     private PlaybackSink sink;
     /** The server the last pause-menu entry left, for Rejoin; kept across sessions. */
@@ -235,17 +234,9 @@ public final class RewindPlayback implements ClientOps {
         return new RewindCamera(mc, world, handler, stats);
     }
 
-    /** Your view, plain (Phase 4b adds the free camera): the recorded eye position and camera rotation. */
+    /** This frame's camera pose: your view or the free camera ({@link CameraController}). */
     private void poseCamera(float partialTicks) {
-        Minecraft mc = Minecraft.getMinecraft();
-        LoadedRecording r = session.recording();
-        if (r == null || !(mc.thePlayer instanceof RewindCamera)) {
-            return;
-        }
-        SelfTrack track = r.selfTrack();
-        if (track != null && track.pose(session.renderTimeUs(partialTicks), pose)) {
-            ((RewindCamera) mc.thePlayer).pose(pose.x, pose.eyeY, pose.z, pose.yaw, pose.pitch);
-        }
+        CameraController.onRender(session, partialTicks);
     }
 
     // ================================================================== ClientOps

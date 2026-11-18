@@ -1,0 +1,229 @@
+package com.bedwarsqol.rewind.watch;
+
+import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.SelfTrackEncoder;
+import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+/**
+ * The recorded player's stand-in (PLAN section 4, Phase 4b): each world tick maps the track's last TICK to entity
+ * fields, starts a swing exactly once per recorded swing (at the tick vanilla's {@code swingItem} ran), applies each
+ * EQUIP change once, and is hidden in your view and while the recorded invisible flag is set.
+ */
+public class PuppetStateTest {
+
+    private static final long T = 1_000_000L;
+    private static final long TICK = Timeline.TICK_US;
+
+    private final SelfTrackEncoder enc = new SelfTrackEncoder();
+    private final SelfTrack.Builder b = new SelfTrack.Builder();
+    private final PuppetState p = new PuppetState();
+
+    private void tick(long t, double x, int flags, int swingInt) {
+        int n = enc.tick(x, 64, 0, 10f, 5f, 20f, flags, 0, swingInt, 0);
+        assertTrue("fixture tick must change something", n > 0);
+        b.record(t, RewindFormat.TAG_TICK, enc.buffer(), 0, n);
+    }
+
+    private void equip(long t, int slot, int... item) {
+        byte[] body = new byte[item.length + 1];
+        body[0] = (byte) slot;
+        for (int i = 0; i < item.length; i++) {
+            body[i + 1] = (byte) item[i];
+        }
+        b.record(t, RewindFormat.TAG_EQUIP, body, 0, body.length);
+    }
+
+    /** Samples every grid tick from {@code from} on and returns the ticks at which a swing started. */
+    private List<Integer> swingTicks(SelfTrack s, long from, int count) {
+        List<Integer> out = new ArrayList<Integer>();
+        for (int k = 0; k < count; k++) {
+            assertTrue(p.sample(s, from + k * TICK));
+            if (p.swingStarted()) {
+                out.add(k);
+            }
+        }
+        return out;
+    }
+
+    @Test
+    public void aTicksPoseAndFlagsBecomeEntityFields() {
+        b.segment(1);
+        int flags = RewindFormat.FLAG_ON_GROUND | RewindFormat.FLAG_SNEAKING | RewindFormat.FLAG_USING_ITEM
+                | RewindFormat.FLAG_BURNING;
+        int n = enc.tick(3.5, 70.25, -8.75, 91f, -12f, 95f, flags, 4, -1, 0);
+        b.record(T, RewindFormat.TAG_TICK, enc.buffer(), 0, n);
+        n = enc.tick(4.5, 70.25, -8.75, 92f, -12f, 96f, RewindFormat.FLAG_SPRINTING, 4, -1, 0);
+        b.record(T + TICK, RewindFormat.TAG_TICK, enc.buffer(), 0, n);
+        SelfTrack s = b.build();
+
+        assertTrue(p.sample(s, T + 20_000));
+        assertEquals(3.5, p.x(), 0);
+        assertEquals(70.25, p.y(), 0);
+        assertEquals(-8.75, p.z(), 0);
+        assertEquals(91f, p.yaw(), 0);
+        assertEquals(-12f, p.pitch(), 0);
+        assertEquals(95f, p.headYaw(), 0);
+        assertTrue(p.onGround());
+        assertTrue(p.sneaking());
+        assertFalse(p.sprinting());
+        assertTrue(p.usingItem());
+        assertTrue(p.burning());
+        assertFalse(p.invisible());
+
+        assertTrue(p.sample(s, T + TICK));
+        assertEquals(4.5, p.x(), 0);
+        assertEquals(96f, p.headYaw(), 0);
+        assertFalse(p.onGround());
+        assertFalse(p.sneaking());
+        assertTrue(p.sprinting());
+        assertFalse(p.usingItem());
+        assertFalse(p.burning());
+
+        // A long gap holds the last TICK.
+        assertTrue(p.sample(s, T + 40 * TICK));
+        assertEquals(4.5, p.x(), 0);
+    }
+
+    @Test
+    public void noTrackNoSample() {
+        b.segment(1);
+        assertFalse(p.sample(b.build(), T));
+        assertFalse(p.swingStarted());
+    }
+
+    @Test
+    public void aSwingStartsOnceAtTheTickSwingItemRan() {
+        b.segment(1);
+        // Recorded swingProgressInt per client tick: idle 0, the click tick reads 0 too, then 1..5, then 0.
+        int[] swing = {0, 0, 1, 2, 3, 4, 5, 0, 0};
+        for (int i = 0; i < swing.length; i++) {
+            tick(T + i * TICK, i, RewindFormat.FLAG_ON_GROUND, swing[i]);
+        }
+        SelfTrack s = b.build();
+        List<Integer> expected = new ArrayList<Integer>();
+        expected.add(1);
+        assertEquals(expected, swingTicks(s, T, swing.length + 3));
+
+        // The grid need not line up with the client's ticks.
+        p.reset();
+        assertEquals(expected, swingTicks(s, T + 20_000, swing.length + 3));
+    }
+
+    @Test
+    public void aRepeatedClickRestartsTheSwing() {
+        b.segment(1);
+        int[] swing = {0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0};
+        for (int i = 0; i < swing.length; i++) {
+            tick(T + i * TICK, i, 0, swing[i]);
+        }
+        SelfTrack s = b.build();
+        List<Integer> expected = new ArrayList<Integer>();
+        expected.add(0);
+        expected.add(4);
+        assertEquals(expected, swingTicks(s, T, swing.length + 2));
+    }
+
+    @Test
+    public void anIdlePlayerNeverSwings() {
+        b.segment(1);
+        for (int i = 0; i < 20; i++) {
+            tick(T + i * TICK, i, 0, 0);
+        }
+        assertTrue(swingTicks(b.build(), T, 25).isEmpty());
+    }
+
+    @Test
+    public void aSwingAfterAnUnchangedGapStartsOneTickBeforeItsFirstRecord() {
+        b.segment(1);
+        tick(T, 0, 0, 0);
+        // Standing still for 2 s writes nothing; the click tick reads like idle and is not written either.
+        tick(T + 41 * TICK, 0, 0, 1);
+        tick(T + 42 * TICK, 0, 0, 2);
+        SelfTrack s = b.build();
+        List<Integer> expected = new ArrayList<Integer>();
+        expected.add(40);
+        assertEquals(expected, swingTicks(s, T, 45));
+    }
+
+    @Test
+    public void eachEquipChangeAppliesOnce() {
+        b.segment(1);
+        tick(T, 0, 0, 0);
+        equip(T, RewindFormat.EQUIP_HELD, 1, 2, 3);
+        equip(T, RewindFormat.EQUIP_HELMET, 9, 9);
+        equip(T + 120_000, RewindFormat.EQUIP_HELD, 4, 5);
+        equip(T + 120_000, RewindFormat.EQUIP_HELD, 4, 6); // two changes in one tick: the later one
+        SelfTrack s = b.build();
+
+        assertTrue(p.sample(s, T));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELMET));
+        assertFalse(p.equipChanged(RewindFormat.EQUIP_BOOTS));
+        assertArrayEquals(new byte[]{1, 2, 3}, p.equipItem(RewindFormat.EQUIP_HELD));
+        assertArrayEquals(new byte[]{9, 9}, p.equipItem(RewindFormat.EQUIP_HELMET));
+        assertNull(p.equipItem(RewindFormat.EQUIP_BOOTS));
+
+        for (long t : new long[]{T + TICK, T + 2 * TICK}) {
+            assertTrue(p.sample(s, t));
+            for (int slot = 0; slot < PuppetState.SLOTS; slot++) {
+                assertFalse("no change at " + t, p.equipChanged(slot));
+            }
+        }
+        assertTrue(p.sample(s, T + 3 * TICK));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
+        assertFalse(p.equipChanged(RewindFormat.EQUIP_HELMET));
+        assertArrayEquals(new byte[]{4, 6}, p.equipItem(RewindFormat.EQUIP_HELD));
+        assertTrue(p.sample(s, T + 4 * TICK));
+        assertFalse(p.equipChanged(RewindFormat.EQUIP_HELD));
+
+        // After a restart (a fresh puppet) every recorded slot applies again, at its state for that time.
+        p.reset();
+        assertTrue(p.sample(s, T + 4 * TICK));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELMET));
+        assertArrayEquals(new byte[]{4, 6}, p.equipItem(RewindFormat.EQUIP_HELD));
+    }
+
+    @Test
+    public void aNewSegmentAppliesItsOwnEquipment() {
+        b.segment(1);
+        tick(T, 0, 0, 0);
+        equip(T, RewindFormat.EQUIP_HELD, 1);
+        b.segment(2);
+        enc.resetSegment();
+        tick(T + 10 * TICK, 0, 0, 0);
+        equip(T + 10 * TICK, RewindFormat.EQUIP_HELD, 2);
+        SelfTrack s = b.build();
+        assertTrue(p.sample(s, T + 9 * TICK));
+        assertArrayEquals(new byte[]{1}, p.equipItem(RewindFormat.EQUIP_HELD));
+        assertTrue(p.sample(s, T + 10 * TICK));
+        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
+        assertArrayEquals(new byte[]{2}, p.equipItem(RewindFormat.EQUIP_HELD));
+    }
+
+    @Test
+    public void invisibleHidesAndYourViewHides() {
+        b.segment(1);
+        tick(T, 0, 0, 0);
+        tick(T + TICK, 1, RewindFormat.FLAG_INVISIBLE, 0);
+        SelfTrack s = b.build();
+        assertTrue(p.hidden(true)); // nothing sampled yet
+        assertTrue(p.hidden(false));
+        assertTrue(p.sample(s, T));
+        assertFalse(p.hidden(false));
+        assertTrue(p.hidden(true));
+        assertTrue(p.sample(s, T + TICK));
+        assertTrue(p.invisible());
+        assertTrue(p.hidden(false));
+        assertTrue(p.hidden(true));
+    }
+}

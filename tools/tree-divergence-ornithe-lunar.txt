@@ -364,3 +364,7 @@ one-sided main ornithe com/bedwarsqol/rewind/watch/RewindLoadingScreen.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/RewindEscScreen.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/ViewerCameraControls.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindViewerActionsTest.java
+
+# Rewind R2 Phase 4b (Ornithe only): your view, the free camera and the recorded player's puppet in playback.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindSelfPuppet.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/CameraController.java
