@@ -356,3 +356,11 @@ one-sided main ornithe com/bedwarsqol/rewind/watch/RewindGalleryScreen.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiMainMenuRewindMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiIngameMenuRewindMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindEntryButtonsTest.java
+# Rewind viewer screens (Ornithe only, R2 Phase 6b): the viewer with its bottom bar, the loading card, the Esc
+# menu, and the camera controls the viewer drives; the test pins every viewer, bar and Esc action to its session
+# or camera call.
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindViewerScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindLoadingScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RewindEscScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/ViewerCameraControls.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindViewerActionsTest.java
