@@ -1,6 +1,7 @@
 package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.rewind.Rewind;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import net.minecraft.client.renderer.EntityRenderer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -17,6 +18,7 @@ public abstract class EntityRendererRewindMixin {
 
     @Inject(method = "renderWorld", at = @At("HEAD"), require = 1)
     private void bedwarsqol$rewindCamera(float partialTicks, long finishTimeNano, CallbackInfo ci) {
+        if (PlaybackGate.muted()) return; // R1 records nothing while a recording plays
         Rewind.onRenderWorld(partialTicks);
     }
 }

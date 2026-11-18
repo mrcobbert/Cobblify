@@ -318,3 +318,10 @@ divergent res mixins.bedwarsqol.json
 # Sharp HUD text (Ornithe only): HUD module text in Minecraft's font at in-between sizes, drawn sharp
 # bilinear from the game's own font texture.
 one-sided main ornithe com/bedwarsqol/gui/render/SharpText.java
+
+# Rewind playback isolation, events and hooks (Ornithe only, R2 Phase 5a): the chat hover card and the
+# chat-submit hook return early while a recording plays (PlaybackGate); the scan test pins every gated
+# ModEvents post and mixin hook, the recorder test pins R1 ignoring everything under the gate.
+divergent main com/bedwarsqol/mixin/GuiScreenMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindIgnoresPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackIsolationScanTest.java

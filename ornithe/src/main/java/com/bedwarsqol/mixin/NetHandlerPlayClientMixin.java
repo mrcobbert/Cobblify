@@ -15,7 +15,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Posts {@link ModEvents#CHAT} for every server chat packet, where Forge posts
  * {@code ClientChatReceivedEvent}: right after {@code checkThreadAndEnqueue}, so only on the client
  * thread (that call throws on the netty thread after re-queueing the packet), before vanilla shows
- * it in chat or the action bar. Canceling the event skips vanilla's print.
+ * it in chat or the action bar. Canceling the event skips vanilla's print. While a Rewind recording plays the post is
+ * skipped ({@link ModEvents#post}), so recorded chat shows as vanilla prints it.
  *
  * <p>Motion Blur, hook C: after {@code handlePlayerPosLook} has set the player's position and rotation from a server
  * correction, the next rendered frame is a camera cut ({@link MotionBlur#onPositionCorrected}). It reads nothing from
@@ -31,7 +32,7 @@ public abstract class NetHandlerPlayClientMixin {
             cancellable = true, require = 1)
     private void bedwarsqol$postChat(S02PacketChat packet, CallbackInfo ci) {
         if (packet.getChatComponent() == null) return;
-        if (ModEvents.CHAT.post(new ChatReceivedEvent(packet.getType(), packet.getChatComponent()))) {
+        if (ModEvents.post(ModEvents.CHAT, new ChatReceivedEvent(packet.getType(), packet.getChatComponent()))) {
             ci.cancel();
         }
     }

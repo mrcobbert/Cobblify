@@ -18,6 +18,6 @@ public abstract class RendererLivingEntityMixin {
 
     @Inject(method = "renderName(Lnet/minecraft/entity/EntityLivingBase;DDD)V", at = @At("RETURN"), require = 1)
     private void bedwarsqol$nametagPost(EntityLivingBase entity, double x, double y, double z, CallbackInfo ci) {
-        ModEvents.NAMETAG_POST.post(new NametagRenderEvent(entity, x, y, z));
+        ModEvents.post(ModEvents.NAMETAG_POST, new NametagRenderEvent(entity, x, y, z));
     }
 }

@@ -13,6 +13,6 @@ public abstract class WorldClientMixin {
 
     @Inject(method = "<init>", at = @At("RETURN"), require = 1)
     private void bedwarsqol$worldLoad(CallbackInfo ci) {
-        ModEvents.WORLD_LOAD.post((WorldClient) (Object) this);
+        ModEvents.post(ModEvents.WORLD_LOAD, (WorldClient) (Object) this);
     }
 }

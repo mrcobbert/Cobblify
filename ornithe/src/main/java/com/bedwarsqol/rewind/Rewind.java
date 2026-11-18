@@ -10,6 +10,7 @@ import com.bedwarsqol.mixin.NetworkManagerAccessor;
 import com.bedwarsqol.ornithe.ModEvents;
 import com.bedwarsqol.ornithe.ServerConnectEvent;
 import com.bedwarsqol.rewind.RewindGameRules.Command;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.stats.HypixelContext;
 import io.netty.channel.Channel;
 import net.minecraft.client.Minecraft;
@@ -64,6 +65,12 @@ import java.util.function.Supplier;
  * the rules and is logged with ids and counts only, written by the writer thread (no file I/O here). No
  * packet is ever sent or changed; with Rewind or Record Games off nothing is installed, no writer exists and no file
  * is written.
+ *
+ * <p><b>While a recording plays</b> ({@link PlaybackGate#muted()}, Rewind R2) the recorder ignores everything: no
+ * connection is installed or attached, and world loads, locations, ticks, self-track and camera samples, game lines
+ * and the Marker Key do nothing, so no writer command is made and no file is written. Because the gate silences
+ * the CLIENT_TICK in which R1 would notice the closed connection, playback calls {@link #settleDisconnect()} before
+ * it mutes the gate (PLAN planner amendment PA1).
  *
  * <p>The instance is the engine and touches no Minecraft type, so it runs in tests with an embedded channel, a
  * manual task queue and a writer in step mode; {@link Game} holds the Minecraft glue.
@@ -168,6 +175,9 @@ public final class Rewind {
      */
     CaptureSession onServerConnect(Channel channel, Object handle, boolean local, String address, boolean rewindOn,
                                    boolean recordGames) {
+        if (muted()) {
+            return null; // no connection is recorded while a recording plays
+        }
         CaptureSession session = null;
         try {
             session = RewindCapture.installIfEligible(channel, rewindOn, recordGames, local, address,
@@ -221,6 +231,9 @@ public final class Rewind {
     // ================================================================== client thread
 
     private void connected(Conn c) {
+        if (muted()) {
+            return;
+        }
         try {
             long now = clock.nowUs();
             Conn old = conn;
@@ -272,7 +285,7 @@ public final class Rewind {
     /** {@code WORLD_LOAD}: the next boundary of this connection was applied on the client thread. */
     void onWorldLoad(SnapshotSource source) {
         Conn c = conn;
-        if (!recording(c)) {
+        if (muted() || !recording(c)) {
             return;
         }
         Throwable snapshotError = null;
@@ -306,7 +319,7 @@ public final class Rewind {
 
     private void location(CaptureSession session, int segment, byte[] payload) {
         Conn c = conn;
-        if (!recording(c) || c.session != session) {
+        if (muted() || !recording(c) || c.session != session) {
             return;
         }
         try {
@@ -324,6 +337,9 @@ public final class Rewind {
      * existing sidebar detection.
      */
     void tick(boolean recordSetting, boolean bedwarsQueue, boolean bedwarsActive) {
+        if (muted()) {
+            return; // a closed connection is settled by closeDisconnected() before the gate goes on
+        }
         try {
             Throwable netty = nettyError;
             if (netty != null) {
@@ -336,14 +352,7 @@ public final class Rewind {
             }
             long now = clock.nowUs();
             if (c.channel == null || !c.channel.isOpen()) {
-                if (!c.dead) {
-                    if (recording(c)) {
-                        bridgeFeed(c); // counts seen since the last tick belong to this game's stats (outcome review O1)
-                        settle(c, now); // segments the client never loaded are still this game's (code review 2, I1)
-                    }
-                    execute(c, rules.onDisconnect(now, false)); // GAME_END is still committed before CLOSE
-                }
-                c.ended = true;
+                disconnected(c, now);
                 return;
             }
             if (!recording(c)) {
@@ -366,10 +375,40 @@ public final class Rewind {
         }
     }
 
+    /**
+     * Recorder settle (PLAN section 3 step 2, planner amendment PA1): the caller has just closed the current
+     * connection with vanilla's disconnect calls and is about to mute the gate, which silences the CLIENT_TICK where
+     * the recorder would notice. The open game is closed now, exactly as that tick would close it. Runs whatever the
+     * gate says (it is called before entry); with no connection, or a second time, it does nothing.
+     */
+    void closeDisconnected() {
+        try {
+            Conn c = conn;
+            if (c == null || c.ended) {
+                return;
+            }
+            disconnected(c, clock.nowUs());
+        } catch (Throwable t) {
+            failure("settle", t);
+        }
+    }
+
+    /** The connection ended: its game is closed (GAME_END committed before CLOSE) and nothing more is done for it. */
+    private void disconnected(Conn c, long now) {
+        if (!c.dead) {
+            if (recording(c)) {
+                bridgeFeed(c); // counts seen since the last tick belong to this game's stats (outcome review O1)
+                settle(c, now); // segments the client never loaded are still this game's (code review 2, I1)
+            }
+            execute(c, rules.onDisconnect(now, false)); // GAME_END is still committed before CLOSE
+        }
+        c.ended = true;
+    }
+
     /** Self-track work on the current segment, if it is recorded. */
     void selfTrack(TrackWork work) {
         Conn c = conn;
-        if (!trackOpen(c)) {
+        if (muted() || !trackOpen(c)) {
             return;
         }
         try {
@@ -386,7 +425,7 @@ public final class Rewind {
     /** A CAMERA sample at {@code nanoTime}: at most every {@link #CAMERA_INTERVAL_NS}, written only on change. */
     void camera(long nanoTime, float yaw, float pitch) {
         Conn c = conn;
-        if (!trackOpen(c) || cameraSampled && nanoTime - lastCameraNs < CAMERA_INTERVAL_NS) {
+        if (muted() || !trackOpen(c) || cameraSampled && nanoTime - lastCameraNs < CAMERA_INTERVAL_NS) {
             return;
         }
         try {
@@ -404,7 +443,7 @@ public final class Rewind {
     /** A classified own game line ({@code GAME_LINE}). */
     void onGameLine(SessionChatLine.Kind kind) {
         Conn c = conn;
-        if (!recording(c) || kind == null) {
+        if (muted() || !recording(c) || kind == null) {
             return;
         }
         try {
@@ -420,7 +459,7 @@ public final class Rewind {
     /** The Marker Key went down (rising edge, no screen open). */
     void onMarkerKey() {
         Conn c = conn;
-        if (!recording(c)) {
+        if (muted() || !recording(c)) {
             return;
         }
         try {
@@ -453,6 +492,11 @@ public final class Rewind {
     }
 
     // ================================================================== internals
+
+    /** A recording plays: the recorder ignores everything (Rewind R2, PLAN section 5). */
+    private static boolean muted() {
+        return PlaybackGate.muted();
+    }
 
     private boolean recording(Conn c) {
         return c != null && !c.ended && !c.dead && c.session != null && writer != null && rules.active();
@@ -725,6 +769,22 @@ public final class Rewind {
             }
         } catch (Throwable ignored) {
             // onMarkerKey reports its own failures
+        }
+    }
+
+    /**
+     * Recorder settle before playback (client thread; PLAN section 3 step 2): call right after closing the connection
+     * and before muting the gate, so the game that just ended is closed now rather than on a CLIENT_TICK the gate
+     * would silence. Never throws.
+     */
+    public static void settleDisconnect() {
+        try {
+            Rewind r = instance;
+            if (r != null) {
+                r.closeDisconnected();
+            }
+        } catch (Throwable ignored) {
+            // closeDisconnected reports its own failures
         }
     }
 

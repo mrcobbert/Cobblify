@@ -2,6 +2,7 @@ package com.bedwarsqol.ornithe;
 
 import com.bedwarsqol.event.EventDispatcher;
 import com.bedwarsqol.feature.SessionChatLine;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 
@@ -9,6 +10,9 @@ import net.minecraft.client.multiplayer.WorldClient;
  * The Ornithe build's replacement for {@code MinecraftForge.EVENT_BUS}: one dispatcher per event the
  * features listen to. OSL feeds {@link #CLIENT_TICK}; Cobblify's own mixins feed the rest, at the
  * vanilla positions Forge posts its events from.
+ *
+ * <p>Every post goes through {@link #post(EventDispatcher, Object)}, which posts nothing while a Rewind recording
+ * plays ({@link PlaybackGate#muted()}): Cobblify's features receive no event then (PLAN "Isolation", layer 3).
  */
 public final class ModEvents {
 
@@ -44,5 +48,17 @@ public final class ModEvents {
     public static final EventDispatcher<SessionChatLine.Kind> GAME_LINE = new EventDispatcher<>();
 
     private ModEvents() {
+    }
+
+    /**
+     * The only way to post one of these events: skipped while a Rewind recording plays, otherwise
+     * {@code dispatcher.post(event)} unchanged. A skipped post is "not canceled", so vanilla goes on as without
+     * Cobblify (recorded chat shows unprocessed). Any thread.
+     *
+     * @return whether the event ends up canceled; false when skipped
+     */
+    public static <E> boolean post(EventDispatcher<E> dispatcher, E event) {
+        if (PlaybackGate.muted()) return false;
+        return dispatcher.post(event);
     }
 }

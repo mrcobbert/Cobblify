@@ -6,6 +6,7 @@ import com.bedwarsqol.feature.AlertCopyReason;
 import com.bedwarsqol.feature.ChatCopyAccess;
 import com.bedwarsqol.feature.ChatHoverStats;
 import com.bedwarsqol.feature.ChatLengthLimit;
+import com.bedwarsqol.rewind.watch.PlaybackGate;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.GuiChat;
@@ -63,6 +64,7 @@ public abstract class GuiChatMixin extends GuiScreen {
 
     @Inject(method = "drawScreen", at = @At("RETURN"))
     private void bedwarsqol$chatHoverStats(int mouseX, int mouseY, float partialTicks, CallbackInfo ci) {
+        if (PlaybackGate.muted()) return; // no stats card (or lookup) while a Rewind recording plays
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.ingameGUI == null) return;
         IChatComponent comp = mc.ingameGUI.getChatGUI().getChatComponent(Mouse.getX(), Mouse.getY());

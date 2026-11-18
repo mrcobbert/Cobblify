@@ -86,7 +86,7 @@ public class BedwarsQol implements ClientModInitializer {
     public void initClient() {
         KeybindEvents.REGISTER_KEYBINDS.register(BedwarsQol::registerKeybinds);
         MinecraftClientEvents.READY.register(mc -> onReady());
-        MinecraftClientEvents.TICK_END.register(ModEvents.CLIENT_TICK::post);
+        MinecraftClientEvents.TICK_END.register(mc -> ModEvents.post(ModEvents.CLIENT_TICK, mc));
     }
 
     private static void loadConfig() {

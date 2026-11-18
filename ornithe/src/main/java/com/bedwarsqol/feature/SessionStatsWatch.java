@@ -134,7 +134,7 @@ public final class SessionStatsWatch {
     private static void postGameLine(SessionChatLine.Kind kind) {
         if (kind == null) return;
         try {
-            ModEvents.GAME_LINE.post(kind);
+            ModEvents.post(ModEvents.GAME_LINE, kind);
         } catch (Throwable ignored) {
             // listeners catch their own errors; this only keeps session stats safe from them
         }
