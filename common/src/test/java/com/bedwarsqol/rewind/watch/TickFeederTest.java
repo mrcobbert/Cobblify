@@ -629,6 +629,51 @@ public class TickFeederTest {
                 Long.valueOf(t.tickOf(200 * MS) + 1), tickOf.get(9));
     }
 
+    /**
+     * Review code-2 I2 (B12, C2): the handled-order rule across segments. A record of an earlier segment is handled
+     * before the first head of a later one, whatever the counts; the ordinal restarts at each segment, so the later
+     * segment's boundary S01 is its ordinal 1; a later segment's record waits for its own segment's counts even when
+     * its stamp is before the head; after the last head the stamp rule feeds what the counts did not.
+     */
+    @Test
+    public void handledCountsAreCountedPerSegmentAndAnEarlierSegmentAlwaysComesFirst() throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0))
+                .at(50 * MS, p(0x03, 1))      // segment 0, ordinal 2
+                .at(160 * MS, p(0x03, 2))     // segment 0, ordinal 3: after its segment's last head
+                .segment(2, null, null).at(200 * MS, RecordingFixture.joinGame(0)) // segment 1, ordinal 1
+                .at(205 * MS, p(0x02, 3))     // segment 1, ordinal 2: stamped before the head at 210
+                .at(240 * MS, p(0x02, 4));    // segment 1, ordinal 3
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        long[] ms = {100, 150, 210, 260};
+        int[] increments = {2, 0, 1, 1};
+        int[] segments = {0, 0, 1, 1};
+        for (int i = 0; i < ms.length; i++) {
+            int n = c.tickHead(increments[i], 0);
+            b.addEncoded(segments[i], ms[i] * MS, RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+        }
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS).withExt(b.build());
+        assertEquals(2, r.segments().size());
+        TickTable t = r.timeline().ticks();
+        assertSame(TickTable.Kind.V2, t.kind());
+        long k150 = t.tickOf(150 * MS), k210 = t.tickOf(210 * MS), k260 = t.tickOf(260 * MS);
+        assertEquals(1, t.segment(k210));
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        for (long k = 0; k <= k260 + 1; k++) {
+            sink.feed(k);
+        }
+        List<String> fed = new ArrayList<String>();
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.recordIndex == TickFeeder.HEADER || e.timeUs < 150 * MS) {
+                continue;
+            }
+            fed.add(Integer.toHexString(e.packetId) + "@" + e.timeUs / MS + ":" + (e.tick == k150 ? "k150"
+                    : e.tick == k210 ? "k210" : e.tick == k260 ? "k260" : e.tick == k260 + 1 ? "k260+1" : "k" + e.tick));
+        }
+        assertEquals(Arrays.asList("3@160:k210", "1@200:k210", "2@205:k260", "2@240:k260+1"), fed);
+    }
+
     @Test
     public void aFailingOrThrowingSinkIsSkippedAndCounted() throws Exception {
         long o = 2_000_000L;

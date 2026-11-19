@@ -257,6 +257,39 @@ public class RiddenHandTest {
         assertTrue(connection.channel().outboundMessages().isEmpty());
     }
 
+    /**
+     * Review code-2 O6: vanilla's held-item name popup ({@code GuiIngame.renderSelectedItem}, drawn for every mode but
+     * spectator: javap {@code renderGameOverlay} @542-550) is cancelled with the hotbar while a recording plays in
+     * another player's view, by the same rule ({@link RiddenView#hidesHotbar()}). With nothing playing it draws.
+     */
+    @Test
+    public void theHeldItemNamePopupIsHiddenWithTheHotbarInAnotherPlayersView() throws Exception {
+        Class<?> mixin = Class.forName("com.bedwarsqol.mixin.GuiIngameRewindMixin");
+        java.util.List<String> handlers = new java.util.ArrayList<String>();
+        for (java.lang.reflect.Method m : mixin.getDeclaredMethods()) {
+            org.spongepowered.asm.mixin.injection.Inject inject =
+                    m.getAnnotation(org.spongepowered.asm.mixin.injection.Inject.class);
+            if (inject == null) continue;
+            for (String t : inject.method()) {
+                if (t.startsWith("renderSelectedItem")) {
+                    assertEquals("renderSelectedItem(Lnet/minecraft/client/gui/ScaledResolution;)V", t);
+                    assertEquals("HEAD", inject.at()[0].value());
+                    assertTrue(inject.cancellable());
+                    assertEquals(1, inject.require());
+                    handlers.add(m.getName());
+                }
+            }
+        }
+        assertEquals("one injector on renderSelectedItem", 1, handlers.size());
+        String src = new String(Files.readAllBytes(repoFile(
+                "ornithe/src/main/java/com/bedwarsqol/mixin/GuiIngameRewindMixin.java").toPath()),
+                StandardCharsets.UTF_8);
+        int at = src.indexOf("void " + handlers.get(0) + "(");
+        String body = src.substring(at, src.indexOf("\n    }", at));
+        assertTrue(body, body.contains("if (RiddenView.hidesHotbar())") && body.contains("ci.cancel();"));
+        assertFalse("nothing plays: shown", RiddenView.hidesHotbar());
+    }
+
     @Test
     public void theRiddenViewsSourcesNeverSend() throws Exception {
         String[] files = {"ornithe/src/main/java/com/bedwarsqol/rewind/watch/RiddenView.java",

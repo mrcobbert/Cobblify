@@ -14,7 +14,9 @@ package com.bedwarsqol.rewind.watch;
  *       {@code renderPartialTicks} must be so entities are drawn where they were at P.</li>
  *   <li>Time-scoped extension records ({@link ExtRecords.Scope#TIME}): {@link #dispatchTimed} hands every one stamped
  *       at or before P, not dispatched yet, to {@link PacketSink#timed}, in stamp order; {@link #skipTimed} moves the
- *       cursor to P without dispatching (seek, catch-up, restart).</li>
+ *       cursor to P without dispatching what is stamped before P (seek, catch-up, restart). A record stamped exactly
+ *       at P stays: a seek lands at the next tick's time, and that tick (with its records) runs after the seek
+ *       (review code-2 O10).</li>
  * </ul>
  *
  * So a tick runs in the first frame whose playback time has reached its recorded time: at 1x its error is at most
@@ -82,9 +84,9 @@ public final class TickClock {
         return table.partial(lastRun, playUs);
     }
 
-    /** The dispatch cursor to P: nothing stamped at or before P will be dispatched. */
+    /** The dispatch cursor to P: nothing stamped before P will be dispatched; what is stamped at P will. */
     public void skipTimed(ExtRecords ext) {
-        timedNext = ext == null ? 0 : ext.firstTimedAfter(playUs);
+        timedNext = ext == null ? 0 : ext.firstTimedAfter(playUs - 1);
     }
 
     /** Dispatches every time-scoped record stamped at or before P not dispatched yet; returns how many. */

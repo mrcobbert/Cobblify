@@ -14,7 +14,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Rewind's BLOCK record (format v2, PLAN section A, A5): a client-world block change made inside a local scope (the
  * player's own place or break), with the state before (HEAD) and after (RETURN). The integrated server's worlds pay
- * one final-field read ({@code isRemote}); nothing is changed or cancelled.
+ * one final-field read ({@code isRemote}); nothing is changed or cancelled. Neither handler touches its
+ * {@code CallbackInfoReturnable}, so Mixin builds none per call (review code-1 O6, code-2 recurrence): whether the
+ * block changed is read from the world ({@link ActionCapture#onBlockChangeReturn}), not from the return value.
  */
 @Mixin(World.class)
 public abstract class WorldRewindMixin {
@@ -32,6 +34,6 @@ public abstract class WorldRewindMixin {
             at = @At("RETURN"), require = 1)
     private void bedwarsqol$rewindBlockReturn(BlockPos pos, IBlockState state, int flags,
                                               CallbackInfoReturnable<Boolean> cir) {
-        if (isRemote) ActionCapture.onBlockChangeReturn((World) (Object) this, pos, cir.getReturnValueZ());
+        if (isRemote) ActionCapture.onBlockChangeReturn((World) (Object) this, pos);
     }
 }

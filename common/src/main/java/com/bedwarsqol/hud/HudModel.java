@@ -30,6 +30,13 @@ import java.util.List;
  */
 public final class HudModel {
 
+    /**
+     * The most rows a recorded Map Info, Session Stats or Upgrades &amp; Traps record may hold (more than any screen
+     * shows); a longer list is malformed (review code-2 O2: a corrupt file could ask for a million rows, measured and
+     * drawn every frame).
+     */
+    public static final int MAX_ROWS = 256;
+
     /** Session Stats line kinds. */
     public static final int LINE_ROW = 0;
     public static final int LINE_HEADER = 1;
@@ -300,8 +307,12 @@ public final class HudModel {
         return v;
     }
 
-    /** A list length no larger than the bytes left (each element takes at least one). */
+    /** A list length no larger than the bytes left (each element takes at least one) nor {@link #MAX_ROWS}. */
     private static int count(RewindFormat.Cursor c) {
-        return c.length(c.remaining());
+        int n = c.length(c.remaining());
+        if (n > MAX_ROWS) {
+            throw new RewindFormat.FormatException("hud rows " + n);
+        }
+        return n;
     }
 }

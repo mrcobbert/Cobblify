@@ -452,6 +452,10 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/ContainerPlaybackTest.java
 # Rewind parity Phase 14 (Ornithe only): other players' views (the ridden view part, the hotbar cancel).
 one-sided main ornithe com/bedwarsqol/rewind/watch/RiddenView.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiIngameRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityXPOrbRewindMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudRealPaintersTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudRealPaintersDriver.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/NoGlClassLoader.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RiddenHandTest.java
 # Rewind parity Phase 12 (Ornithe only): recorded view, FOV and cursor parts (inventory screen and chat bar live in RecordedScreens).
 one-sided main ornithe com/bedwarsqol/rewind/watch/ViewPart.java

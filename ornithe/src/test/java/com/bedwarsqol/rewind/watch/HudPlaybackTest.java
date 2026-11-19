@@ -632,7 +632,15 @@ public class HudPlaybackTest {
     }
 
     /** A read-only picture of the live trackers' state (reflection; nothing is called on them). */
-    private static String trackers() throws Exception {
+    static String trackers() throws Exception {
+        return trackers(Collections.<String>emptySet());
+    }
+
+    /**
+     * {@link #trackers()} without the static fields named in {@code memos}: caches that are a pure function of their
+     * own key (the HUD's default-layout memo, keyed by screen, font and placement settings), which any draw may fill.
+     */
+    static String trackers(java.util.Set<String> memos) throws Exception {
         StringBuilder b = new StringBuilder();
         for (String name : new String[]{"com.bedwarsqol.hud.BedwarsHudRenderer", "com.bedwarsqol.bedwars.GeneratorTracker",
                 "com.bedwarsqol.feature.SessionStatsWatch", "com.bedwarsqol.feature.HeightLimitWatch",
@@ -642,6 +650,7 @@ public class HudPlaybackTest {
             for (Field f : c.getDeclaredFields()) {
                 if (!Modifier.isStatic(f.getModifiers()) || f.isSynthetic()) continue;
                 if (f.getType().isPrimitive() && Modifier.isFinal(f.getModifiers())) continue; // constants
+                if (memos.contains(f.getName())) continue;
                 f.setAccessible(true);
                 b.append(f.getName()).append('=');
                 describe(b, f.get(null), 0, new IdentityHashMap<Object, Boolean>());

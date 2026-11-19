@@ -30,6 +30,14 @@ public final class HudCapture {
         boolean append(int tag, byte[] buf, int len);
 
         /**
+         * True while the current TRACK segment is recorded. A sink that stops recording turns capture off at the next
+         * write without a failure report ({@link ActionCapture.Sink#recording} has the same meaning).
+         */
+        default boolean recording() {
+            return true;
+        }
+
+        /**
          * Capture failed and is off until the next {@link #setSink}; {@code where} is {@code "hud"}. (Its own
          * signature, not {@code failed(Throwable)}: the recorder's sink also implements {@link ActionCapture.Sink},
          * whose {@code failed(Throwable)} reports "action".)
@@ -284,11 +292,18 @@ public final class HudCapture {
         return true;
     }
 
-    /** Ends the body begun on {@link #codec} and appends it; false (and capture off) when the sink had no room. */
+    /**
+     * Ends the body begun on {@link #codec} and appends it; false (and capture off) when the segment is no longer
+     * recorded (quietly: nothing is built or reported, review code-2 O7) or the sink had no room (a failure).
+     */
     private boolean write() {
         int n = codec.end();
         Sink s = sink;
         if (s == null) return false;
+        if (!s.recording()) {
+            sink = null; // the recorder's rules stopped this segment: off until the next setSink
+            return false;
+        }
         if (s.append(RewindFormat.TAG_HUD, codec.buffer(), n)) return true;
         fail(new IllegalStateException("no room for a HUD record"));
         return false;

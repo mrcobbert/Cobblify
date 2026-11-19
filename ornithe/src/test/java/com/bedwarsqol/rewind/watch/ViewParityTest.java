@@ -242,6 +242,41 @@ public class ViewParityTest {
         assertTrue(Float.isNaN(fov.recorded()));
     }
 
+    // ------------------------------------------------------------------ the free camera has no body (review code-2 O5)
+
+    /**
+     * Review code-2 O5: since amendment 1 the free camera is no spectator (so invisible entities stay invisible), but
+     * it must not take part in client-side physics either: arrows, snowballs and fish hooks test
+     * {@code canBeCollidedWith} after vanilla's spectator filter (javap: {@code EntityArrow/EntityThrowable.onUpdate}),
+     * and an XP orb's target ({@code World.getClosestPlayerToEntity}) skips the free camera for the next closest
+     * player. Your view and another player's view keep vanilla's answers.
+     */
+    @Test
+    public void theFreeCameraIsNotHitByProjectilesNorAttractsOrbsButStaysNoSpectator() throws Exception {
+        set(World.class, world, "playerEntities", new java.util.ArrayList<Object>(java.util.Arrays.asList(cam, ridden)));
+        set(PlaybackSink.class, sink, "recordedGameType", WorldSettings.GameType.SURVIVAL);
+        net.minecraft.entity.item.EntityXPOrb orb = new net.minecraft.entity.item.EntityXPOrb(world, 1, 64, 0, 3);
+        ViewState v = RewindPlayback.view();
+        for (V view : V.values()) {
+            select(view, new RiddenView.Hand());
+            cam.setPosition(0, 64, 0);
+            ridden.setPosition(5, 64, 0);
+            boolean free = view == V.FREE;
+            assertEquals(view + ": collides", !free, cam.canBeCollidedWith());
+            assertFalse(view + ": never a spectator for the invisible-entity rule outside a recorded spectator",
+                    cam.isSpectator());
+            assertSame(view + ": the orb's target", free ? ridden : cam,
+                    RewindCamera.orbTarget(world, orb, 8.0, cam));
+            assertSame("another player picked by vanilla stays", ridden,
+                    RewindCamera.orbTarget(world, orb, 8.0, ridden));
+        }
+        select(V.FREE, new RiddenView.Hand());
+        ridden.setPosition(20, 64, 0);
+        assertSame("no other player in range: no target", null, RewindCamera.orbTarget(world, orb, 8.0, cam));
+        assertSame(null, RewindCamera.orbTarget(world, orb, 8.0, null));
+        v.selectYou();
+    }
+
     // ------------------------------------------------------------------ recorded F1 and the clean view
 
     @Test
@@ -289,7 +324,7 @@ public class ViewParityTest {
                 || viewer.contains("hideGui"));
         String hud = source("ornithe/src/main/java/com/bedwarsqol/mixin/GuiIngameHudMixin.java");
         assertTrue("one rule skips the overlay: the clean view or recorded F1 with no recorded screen",
-                hud.contains("if (HudPlayback.hidesEveryHud())"));
+                hud.contains("if (HudPlayback.skipsOverlay(Minecraft.getMinecraft()))"));
         assertNotEquals(-1, source("common/src/main/java/com/bedwarsqol/rewind/watch/PlaybackSession.java")
                 .indexOf("ops.setHideGui(view.hideGui());"));
     }

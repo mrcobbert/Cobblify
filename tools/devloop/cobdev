@@ -4798,13 +4798,15 @@ def rewind_action_problems(line):
             if ext.get(name, 0) < least]
 
 
-def rw_actions(s):
+def rw_actions(s, started):
     """RW's scripted actions while it records (bridge rewind-watch-actions). None: this bridge has none (an older
-    stage); else the final status. The caller runs the cleanup."""
+    stage); else the final status. started["yes"] is set once the start was asked for: the caller then runs the
+    cleanup, whatever happens after (review code-2 I1)."""
     pre, err = s.try_call("/probe", post={"name": "rewind-watch-actions", "args": "status"})
     if pre is None:
         s.note("this bridge has no rewind-watch-actions (stage a build with them)", err)
         return None
+    started["yes"] = True
     s.probe("rewind-watch-actions", "start")
     st = {}
     deadline = time.time() + RW_ACTIONS_TIMEOUT_S
@@ -4848,17 +4850,25 @@ def smoke_rewind(s, cfg):
             s.call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
         if watch:
             # Rewind parity Phase 16: dig, place, the inventory, F5 and a double chest, while recording
-            acted = rw_actions(s)
-            if acted is not None:
-                s.check("RW actions: the stone dug, wool placed, inventory and F5 shown",
-                        acted.get("phase") == "DONE" and all(acted.get(k) for k in (
-                            "dug", "placed", "inventoryShown", "perspectiveShown")),
-                        {k: acted.get(k) for k in ("phase", "failure", "dug", "placed", "inventoryShown",
-                                                   "perspectiveShown")})
-                s.check("RW actions: the double chest opened with its 54 slots filled at its first tick (90 in all)",
-                        acted.get("chestOpened") and acted.get("chestSlots") == 90 and acted.get("chestFilled") == 54,
-                        {k: acted.get(k) for k in ("chestOpened", "chestSlots", "chestFilled")})
-                s.try_call("/probe", post={"name": "rewind-watch-actions", "args": "cleanup"})
+            started = {}
+            try:
+                acted = rw_actions(s, started)
+                if acted is not None:
+                    s.check("RW actions: the stone dug, wool placed, inventory and F5 shown",
+                            acted.get("phase") == "DONE" and all(acted.get(k) for k in (
+                                "dug", "placed", "inventoryShown", "perspectiveShown")),
+                            {k: acted.get(k) for k in ("phase", "failure", "dug", "placed", "inventoryShown",
+                                                       "perspectiveShown")})
+                    s.check("RW actions: the double chest opened with its 54 slots filled at its first tick "
+                            "(90 in all)",
+                            acted.get("chestOpened") and acted.get("chestSlots") == 90
+                            and acted.get("chestFilled") == 54,
+                            {k: acted.get(k) for k in ("chestOpened", "chestSlots", "chestFilled")})
+            finally:
+                if started:
+                    undone, err = s.try_call("/probe", post={"name": "rewind-watch-actions", "args": "cleanup"})
+                    s.check("RW actions: the smoke world put back (blocks, inventory, dropped items)",
+                            bool(undone) and undone.get("restored") is True, undone if undone is not None else err)
         s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
         time.sleep(0.5)
         if watch:

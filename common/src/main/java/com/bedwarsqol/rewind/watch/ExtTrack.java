@@ -34,6 +34,12 @@ public final class ExtTrack {
 
     /** Key range of {@link #keyedAt} (u8 keys: INV slot, HUD module, SETTINGS key). */
     private static final int KEYS = 256;
+    /**
+     * Segments indexed: a record in a later segment is skipped (review code-2 O11: per-segment index arrays are sized
+     * by the highest segment named, so one record in segment 19,999 of a corrupt file cost about 99 MB). Far more than
+     * a recorded game has.
+     */
+    public static final int MAX_SEGMENTS = 1024;
     private static final int KEYED_INV = 0;
     private static final int KEYED_HUD = 1;
     private static final int KEYED_SETTINGS = 2;
@@ -76,7 +82,7 @@ public final class ExtTrack {
         int n = records.size();
         int segs = 0;
         for (int i = 0; i < n; i++) {
-            segs = Math.max(segs, records.segmentIndex(i) + 1);
+            segs = Math.max(segs, Math.min(MAX_SEGMENTS, records.segmentIndex(i) + 1));
         }
         int[][] count = new int[KEYS][segs];
         int[] totals = new int[KEYS];
@@ -88,7 +94,7 @@ public final class ExtTrack {
         for (int i = 0; i < n; i++) {
             int s = records.segmentIndex(i);
             keyOf[i] = -1;
-            if (s < 0) {
+            if (s < 0 || s >= segs) {
                 continue;
             }
             int tag = records.tag(i) & 0xFF;
@@ -147,7 +153,7 @@ public final class ExtTrack {
         int[][][] keyFill = new int[3][KEYS][segs];
         for (int i = 0; i < n; i++) {
             int s = records.segmentIndex(i);
-            if (s < 0) {
+            if (s < 0 || s >= segs) {
                 continue;
             }
             int tag = records.tag(i) & 0xFF;

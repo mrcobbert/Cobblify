@@ -1447,7 +1447,7 @@ class RewindSmoke(unittest.TestCase):
     DONE = {"ok": True, "phase": "DONE", "done": True, "failure": None, "dug": True, "placed": True,
             "inventoryShown": True, "perspectiveShown": True, "chestOpened": True, "chestSlots": 90, "chestFilled": 54}
 
-    def run_step(self, latest, present=True, playback=False, actions=None):
+    def run_step(self, latest, present=True, playback=False, actions=None, cleanup=None, poll_error=None):
         calls = []
         fields = {self.CFG + ".rewind": "false", self.CFG + ".rewindRecordGames": "true",
                   self.CFG + ".fpsEnabled": "false"}
@@ -1456,7 +1456,9 @@ class RewindSmoke(unittest.TestCase):
         def actions_reply(arg):
             if arg == "status":
                 return status
-            return {"ok": True, "restored": True} if arg == "cleanup" else {"ok": True}
+            if arg == "cleanup":
+                return {"ok": True, "restored": True} if cleanup is None else cleanup
+            return {"ok": True}
 
         class Fake(cobdev.Smoke):
             def call(self, path, params=None, post=None, timeout=60):
@@ -1480,9 +1482,12 @@ class RewindSmoke(unittest.TestCase):
                 return playback if cls == cobdev.REWIND_PLAYBACK else present
 
             def peek(self, name, *args):
+                if name == "rewind-watch-actions" and poll_error is not None:
+                    raise poll_error
                 return actions_reply(args[0]) if name == "rewind-watch-actions" else None
 
         s = Fake("dev", "test")
+        self.last_step = (s, calls, fields)
         ready = {"title": True, "inWorld": True, "responsive": True}
         watched = []
         with mock.patch.object(cobdev, "api_quiet", return_value=ready), mock.patch.object(cobdev.time, "sleep"), \
@@ -1532,6 +1537,23 @@ class RewindSmoke(unittest.TestCase):
             "format v2: the actions' dig, blocks, sounds, outbound packets, views, mouse, window and HUD"])
         acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
         self.assertEqual(acts[-1], "cleanup")
+
+    def test_the_actions_cleanup_runs_after_a_failure_and_its_result_is_checked(self):
+        # review code-2 I1: the cleanup is in a finally (a failure between start and cleanup would leave the stone,
+        # the chest and the items for the next start to refuse), and a cleanup that did not restore fails RW
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindActionCounts.LINE}
+        with self.assertRaises(RuntimeError):
+            self.run_step(latest, playback=True, poll_error=RuntimeError("bridge went away"))
+        s, calls, _ = self.last_step
+        acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
+        self.assertEqual(acts, ["status", "start", "cleanup"])
+
+        s, calls, _ = self.run_step(latest, playback=True, cleanup={"ok": True, "restored": False})
+        failed = [c["check"] for c in s.step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["RW actions: the smoke world put back (blocks, inventory, dropped items)"])
+        s, calls, _ = self.run_step(latest, playback=True)
+        self.assertIn("RW actions: the smoke world put back (blocks, inventory, dropped items)",
+                      [c["check"] for c in s.step["checks"] if c["ok"]])
 
     def test_without_playback_rw_runs_no_actions(self):
         latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}

@@ -5,6 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.inventory.GuiChest;
 import net.minecraft.client.gui.inventory.GuiInventory;
+import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.init.Blocks;
@@ -29,14 +30,19 @@ import java.util.concurrent.FutureTask;
  * <ol>
  *   <li>the integrated server puts a stone block two blocks east of the player, a double chest two blocks south
  *       (54 diamonds), a diamond pickaxe in hotbar slot 3 and wool in slot 4, remembering what was there;</li>
- *   <li>the client digs the stone through vanilla's own {@code sendClickBlockToController} (so Rewind's local scope,
- *       crack, hit particles and break are the live ones), places wool on the block below it through
+ *   <li>the client digs the stone the way a held attack button does: the script holds {@code keyBindAttack} down and
+ *       the game focused while it aims, and vanilla's own {@code runTick} calls
+ *       {@code sendClickBlockToController(true)} every tick (so Rewind's local scope, crack, hit particles and break
+ *       are the live ones; a call from the script would be undone by vanilla's {@code false} call, which resets the
+ *       dig every tick); it lets go and puts the focus back once the stone is air or the step ends; places wool on the
+ *       block below it through
  *       {@code rightClickMouse}, shows the inventory screen for 10 ticks, F5 for 10 ticks, then opens the chest the
  *       same way (the server sends the window and its 90 stacks back to back) and closes it after 10 ticks.</li>
  * </ol>
  * {@code status} reports the progress (flags and counts only); {@code cleanup} puts the three blocks, the player's
- * inventory and any dropped item back, so the smoke world is as before. The private Minecraft methods are reached by
- * their MCP names, so this needs the dev client (the step runs there); a production layout refuses.
+ * inventory and any dropped item back, so the smoke world is as before. Every tick of the script checks it is still in
+ * a single-player world before it acts (review code-2 O9). The private Minecraft methods are reached by their MCP
+ * names, so this needs the dev client (the step runs there); a production layout refuses.
  */
 final class RewindActions {
 
@@ -62,6 +68,8 @@ final class RewindActions {
         BlockPos stone, chest, chest2;
         IBlockState[] before;
         ItemStack[] mainBefore, armorBefore;
+        /** While the dig holds the attack button: the focus flag to put back; null when not holding. */
+        Boolean focusBefore;
     }
 
     static Object run(List<String> args) throws Exception {
@@ -100,8 +108,7 @@ final class RewindActions {
         if (old != null && old.before != null) {
             throw new Refused("rewind-watch-actions cleanup first");
         }
-        clickMethod("sendClickBlockToController", boolean.class); // refuse up front outside the dev client
-        clickMethod("rightClickMouse");
+        clickMethod("rightClickMouse"); // refuse up front outside the dev client
         Minecraft mc = Bridge.mc();
         IntegratedServer server = mc.getIntegratedServer();
         Run r = new Run();
@@ -146,13 +153,13 @@ final class RewindActions {
             out.put("restored", false);
             return out;
         }
-        if (r.phase != Phase.DONE && r.phase != Phase.FAILED) {
-            r.phase = Phase.FAILED; // stop the script first
-            r.failure = "cleaned up before the end";
-        }
         Minecraft mc = Bridge.mc();
         IntegratedServer server = mc.getIntegratedServer();
         java.util.UUID id = Bridge.onMain(() -> {
+            if (r.phase != Phase.DONE && r.phase != Phase.FAILED) {
+                fail(r, "cleaned up before the end"); // stop the script first (lets go of the attack button)
+            }
+            releaseDig(r);
             if (mc.thePlayer != null && mc.currentScreen != null) mc.thePlayer.closeScreen();
             mc.gameSettings.thirdPersonView = 0;
             return mc.thePlayer.getUniqueID();
@@ -210,6 +217,10 @@ final class RewindActions {
             fail(r, "left the world");
             return;
         }
+        if (!mc.isSingleplayer() || mc.getIntegratedServer() == null) {
+            fail(r, "not in a single-player world"); // review code-2 O9: checked before every step that acts
+            return;
+        }
         try {
             step(mc, p, r);
         } catch (Throwable t) {
@@ -231,16 +242,19 @@ final class RewindActions {
                 }
                 return;
             case DIG:
-                p.inventory.currentItem = 2;
-                aim(mc, p, r.stone.getX() + 0.5, r.stone.getY() + 0.5, r.stone.getZ() + 0.5);
-                click(mc, "sendClickBlockToController", true);
                 if (mc.theWorld.isAirBlock(r.stone)) {
-                    click(mc, "sendClickBlockToController", false);
+                    releaseDig(r);
                     r.dug = true;
                     next(r, Phase.PLACE);
-                } else if (r.ticks > DIG_TIMEOUT_TICKS) {
-                    fail(r, "the stone did not break");
+                    return;
                 }
+                if (r.ticks > DIG_TIMEOUT_TICKS) {
+                    fail(r, "the stone did not break");
+                    return;
+                }
+                p.inventory.currentItem = 2;
+                aim(mc, p, r.stone.getX() + 0.5, r.stone.getY() + 0.5, r.stone.getZ() + 0.5);
+                holdDig(mc, r); // vanilla's next runTick digs, as for a held button
                 return;
             case PLACE:
                 if (r.ticks == 4) {
@@ -307,6 +321,27 @@ final class RewindActions {
     private static void fail(Run r, String why) {
         r.failure = why;
         r.phase = Phase.FAILED;
+        releaseDig(r);
+    }
+
+    /**
+     * Holds the attack button as vanilla reads it in {@code runTick} ({@code currentScreen == null &&
+     * keyBindAttack.isKeyDown() && inGameHasFocus}, javap @1846-1878), so vanilla's own tick calls
+     * {@code sendClickBlockToController(true)} and the dig goes on instead of being reset. Client thread.
+     */
+    private static void holdDig(Minecraft mc, Run r) {
+        if (r.focusBefore == null) r.focusBefore = mc.inGameHasFocus;
+        mc.inGameHasFocus = true;
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindAttack.getKeyCode(), true);
+    }
+
+    /** Lets go of the attack button and puts the focus flag back, if the dig held them. Client thread. */
+    private static void releaseDig(Run r) {
+        if (r == null || r.focusBefore == null) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindAttack.getKeyCode(), false);
+        mc.inGameHasFocus = r.focusBefore;
+        r.focusBefore = null;
     }
 
     /** Looks at (x, y, z) from the player's eye and lets vanilla pick what is under the crosshair. */

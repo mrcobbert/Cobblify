@@ -199,6 +199,51 @@ public class RewindReadOnlyScanTest {
         assertTrue("a recorder mixin changes the game: " + found, found.isEmpty());
     }
 
+    /**
+     * Review code-1 O6 item 2, code-2 recurrence: Mixin builds a {@code CallbackInfo(Returnable)} per call only for a
+     * handler whose bytecode loads it ({@code CallbackInjector.Callback.usesCallbackInfo}). No recorder handler may,
+     * so {@code World.setBlockState} on the integrated server's worlds (and every other hooked call) allocates
+     * nothing for the recorder. Checked on the compiled handlers, as Mixin checks them.
+     */
+    @Test
+    public void recorderInjectorsNeverLoadTheirCallbackInfo() throws IOException {
+        List<String> found = new ArrayList<String>();
+        int handlers = 0;
+        for (String m : RECORDER_MIXINS) {
+            java.io.InputStream in = RewindReadOnlyScanTest.class.getClassLoader()
+                    .getResourceAsStream("com/bedwarsqol/mixin/" + m + ".class");
+            assertTrue("compiled " + m, in != null);
+            org.objectweb.asm.tree.ClassNode cn = new org.objectweb.asm.tree.ClassNode();
+            try {
+                new org.objectweb.asm.ClassReader(in).accept(cn, 0);
+            } finally {
+                in.close();
+            }
+            for (org.objectweb.asm.tree.MethodNode mn : cn.methods) {
+                org.objectweb.asm.Type[] args = org.objectweb.asm.Type.getArgumentTypes(mn.desc);
+                if (args.length == 0 || !args[args.length - 1].getInternalName()
+                        .startsWith("org/spongepowered/asm/mixin/injection/callback/CallbackInfo")) {
+                    continue;
+                }
+                handlers++;
+                int slot = (mn.access & org.objectweb.asm.Opcodes.ACC_STATIC) != 0 ? 0 : 1;
+                for (int i = 0; i < args.length - 1; i++) {
+                    slot += args[i].getSize();
+                }
+                for (org.objectweb.asm.tree.AbstractInsnNode insn : mn.instructions.toArray()) {
+                    if (insn.getOpcode() == org.objectweb.asm.Opcodes.ALOAD
+                            && ((org.objectweb.asm.tree.VarInsnNode) insn).var == slot) {
+                        found.add(m + "." + mn.name);
+                        break;
+                    }
+                }
+            }
+        }
+        assertTrue("handlers found: " + handlers, handlers >= 10);
+        assertTrue("a recorder handler loads its CallbackInfo (Mixin allocates one per call): " + found,
+                found.isEmpty());
+    }
+
     // ------------------------------------------------------------------ A15: every mixin registered
 
     @Test

@@ -376,6 +376,49 @@ public class SnapshotCaptureTest {
         assertEquals("bmV3U2tpbg==", identity(s.of(RewindFormat.TAG_IDENTITY).get(2)).skinValue);
     }
 
+    /**
+     * Review code-2 O4: when the own tab entry has not arrived {@link StateCapture#IDENTITY_FALLBACK_TICKS} ticks into
+     * a segment, IDENTITY is written from the login profile (UUID and name, empty skin), so the segment never lacks
+     * one; the tab entry, if it shows up later with a skin, writes it again; a later entry with nothing new does not.
+     */
+    @Test
+    public void identityFallsBackToTheLoginProfileWhenTheTabEntryNeverArrives() {
+        InventoryCaptureTest.Own own = new InventoryCaptureTest.Own();
+        InventoryPlayer inv = new InventoryPlayer(null);
+        NetHandlerPlayClient net = handler();
+        StateCapture c = new StateCapture(StateCapture.DEEP_COMPARE_TICKS);
+        Recorder s = new Recorder();
+        for (int t = 0; t < StateCapture.IDENTITY_FALLBACK_TICKS; t++) {
+            assertTrue(c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile()));
+        }
+        assertEquals("waits a few seconds for the tab entry", 0, s.of(RewindFormat.TAG_IDENTITY).size());
+        for (int t = 0; t < 40; t++) {
+            assertTrue(c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile()));
+        }
+        List<Rec> ids = s.of(RewindFormat.TAG_IDENTITY);
+        assertEquals("then the login profile, once", 1, ids.size());
+        assertEquals(SELF, new UUID(identity(ids.get(0)).uuidMost, identity(ids.get(0)).uuidLeast));
+        assertEquals("Steve_Test", identity(ids.get(0)).name);
+        assertEquals("", identity(ids.get(0)).skinValue);
+        assertEquals("", identity(ids.get(0)).skinSignature);
+
+        listed(net, loginProfile()); // a tab entry with nothing new: no record
+        c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile());
+        assertEquals(1, s.of(RewindFormat.TAG_IDENTITY).size());
+        listed(net, profile()); // the entry with the skin, late
+        c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile());
+        ids = s.of(RewindFormat.TAG_IDENTITY);
+        assertEquals("rewritten with the skin", 2, ids.size());
+        assertEquals("eyJ0ZXh0dXJlcyI6e319", identity(ids.get(1)).skinValue);
+
+        c.reset(); // a new segment where the entry is there at once: no fallback, one record
+        c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile());
+        for (int t = 0; t < 2 * StateCapture.IDENTITY_FALLBACK_TICKS; t++) {
+            c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF), loginProfile());
+        }
+        assertEquals(3, s.of(RewindFormat.TAG_IDENTITY).size());
+    }
+
     @Test
     public void aProfileWithoutASkinWritesEmptySkinStrings() {
         GameProfile p = new GameProfile(UUID.fromString("00000000-0000-0000-0000-00000000002a"), "NoSkin");

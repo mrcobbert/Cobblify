@@ -185,4 +185,37 @@ public class TickTableTest {
             assertNotEquals("nor does the feeder", "clientHandled", m.getName());
         }
     }
+
+    /**
+     * Review code-2 O11 (corrupt files): the v1 gap fill is bounded. Two TICK times 2^46 us apart asked for about 1.4
+     * billion filled ticks (OutOfMemoryError); a gap longer than {@link TickTable#V1_FILL_MAX_GAP_US} is now left as
+     * it is (replayed as a freeze), a one-hour gap is still filled, and all gaps together fill at most
+     * {@link TickTable#V1_MAX_FILLED} ticks.
+     */
+    @Test
+    public void v1GapFillIsBounded() {
+        long hour = 3_600_000L * MS;
+        int gaps = 30;
+        long[] us = new long[gaps + 1];
+        for (int i = 0; i <= gaps; i++) {
+            us[i] = O + 51 * MS + i * hour;
+        }
+        TickTable many = TickTable.v1(O, us, us.length);
+        assertTrue("filled in all: " + many.entries(), many.entries() <= TickTable.V1_MAX_FILLED + us.length);
+        assertTrue("still fills up to the cap", many.entries() >= TickTable.V1_MAX_FILLED);
+        long last = Long.MIN_VALUE;
+        for (int k = 0; k < many.entries(); k += 997) {
+            long t = many.timeOf(many.tickOf(O) + k);
+            assertTrue("never decreasing", t >= last);
+            last = t;
+        }
+        assertEquals("the last TICK time is kept", us[gaps] - TickTable.V1_TICK_RUN_US,
+                many.timeOf(many.tickOf(us[gaps] - TickTable.V1_TICK_RUN_US)));
+
+        TickTable huge = TickTable.v1(O, new long[]{O + 51 * MS, O + 51 * MS + (1L << 46)}, 2);
+        assertEquals("a gap past the limit is not filled", 2, huge.entries());
+
+        TickTable oneHour = TickTable.v1(O, new long[]{O + 51 * MS, O + 51 * MS + hour}, 2);
+        assertEquals("a one-hour gap is filled at 50 ms", hour / TickTable.TICK_US + 1, oneHour.entries());
+    }
 }

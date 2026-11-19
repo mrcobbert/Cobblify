@@ -274,8 +274,12 @@ public class PlaybackIsolationScanTest {
         String hook = strip(read(new File(root, "com/bedwarsqol/mixin/GuiIngameHudMixin.java")));
         assertTrue("the text pass draws the recorded HUD", hook.contains("HudPlayback.drawText("));
         assertTrue("the post pass draws the recorded Session Stats", hook.contains("HudPlayback.drawPost("));
-        assertTrue("every HUD hides in the clean view", hook.contains("HudPlayback.hidesEveryHud()"));
+        assertTrue("every HUD hides in the clean view", hook.contains("HudPlayback.skipsOverlay("));
         String part = strip(read(new File(root, RECORDED_HUD[0])));
+        int skip = part.indexOf("boolean skipsOverlay(Minecraft mc)");
+        assertTrue("skipsOverlay found", skip >= 0);
+        assertTrue("the skip asks hidesEveryHud (a playing recording) before anything else",
+                block(part, part.indexOf('{', skip)).replaceAll("\\s+", " ").startsWith("{ if (!hidesEveryHud()) {"));
         for (String entry : new String[]{"hidesEveryHud", "draw"}) {
             Matcher m = Pattern.compile("\\b(?:public\\s+)?(?:static\\s+)?(?:private\\s+)?(?:void|boolean)\\s+" + entry
                     + "\\s*\\(\\s*(?:Minecraft\\s+\\w+\\s*,\\s*boolean\\s+\\w+\\s*)?\\)").matcher(part);

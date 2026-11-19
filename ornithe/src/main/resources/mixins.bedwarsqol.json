@@ -73,7 +73,8 @@
     "WorldRewindMixin",
     "SoundHandlerRewindRecordMixin",
     "PacketThreadUtilRunMixin",
-    "GuiIngameRewindMixin"
+    "GuiIngameRewindMixin",
+    "EntityXPOrbRewindMixin"
   ],
   "verbose": true
 }

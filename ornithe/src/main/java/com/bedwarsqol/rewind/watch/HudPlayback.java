@@ -81,6 +81,22 @@ public final class HudPlayback implements PlaybackPart {
         return s.playingWorld() && s.view().hidesEveryHud();
     }
 
+    /**
+     * The HUD layer's wrap of {@code GuiIngame.renderGameOverlay} (review code-2 B1): true when the overlay is skipped
+     * this frame ({@link #hidesEveryHud}). With a world loaded, vanilla sets the 2D GUI projection only at the top of
+     * {@code renderGameOverlay} (javap: {@code EntityRenderer.setupOverlayRendering} at offset 30), before the current
+     * screen draws; so a skipped overlay sets it up here the same way, and the viewer bar, the Esc menu and the
+     * loading card draw in screen space, not in the world's perspective. False at once (nothing set) when nothing
+     * plays or the overlay is drawn.
+     */
+    public static boolean skipsOverlay(Minecraft mc) {
+        if (!hidesEveryHud()) {
+            return false;
+        }
+        mc.entityRenderer.setupOverlayRendering();
+        return true;
+    }
+
     /** The HUD's text pass: the recorded items but Session Stats. Returns at once when nothing plays. */
     public static void drawText(Minecraft mc) {
         INSTANCE.draw(mc, false);

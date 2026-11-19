@@ -12,6 +12,7 @@ import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.IMerchant;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.passive.EntityHorse;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.potion.PotionEffect;
@@ -220,6 +221,42 @@ public class RewindCamera extends EntityPlayerSP {
             setFlag(0, burning);
         }
         fovModifier = fov;
+    }
+
+    /**
+     * Review code-2 O5: the free camera has no body. Client-predicted arrows, snowballs and fish hooks test this after
+     * vanilla's spectator filter (javap: {@code EntityArrow} and {@code EntityThrowable.onUpdate}), which the camera
+     * passes since amendment 1 (it is no spectator, so invisible entities stay invisible), so they pass through it.
+     * Your view and another player's view keep vanilla's answer.
+     */
+    @Override
+    public boolean canBeCollidedWith() {
+        return !RewindPlayback.view().freeCamera() && super.canBeCollidedWith();
+    }
+
+    /**
+     * An XP orb's target ({@code EntityXPOrbRewindMixin}, around {@code EntityXPOrb.onUpdate}'s
+     * {@code World.getClosestPlayerToEntity}): vanilla's pick, unless it is the camera in the free camera; then the
+     * closest other player within {@code range} that is not a spectator, as vanilla's search finds it without the
+     * camera (review code-2 O5), or null. Any other pick (live play, the integrated server) returns at once.
+     */
+    public static EntityPlayer orbTarget(World world, Entity orb, double range, EntityPlayer picked) {
+        if (!(picked instanceof RewindCamera) || !RewindPlayback.view().freeCamera()) {
+            return picked;
+        }
+        EntityPlayer best = null;
+        double bestSq = -1.0;
+        for (EntityPlayer p : world.playerEntities) {
+            if (p instanceof RewindCamera || p.isSpectator()) {
+                continue; // vanilla: EntitySelectors.NOT_SPECTATING
+            }
+            double d = p.getDistanceSq(orb.posX, orb.posY, orb.posZ);
+            if ((range < 0.0 || d < range * range) && (bestSq == -1.0 || d < bestSq)) {
+                bestSq = d;
+                best = p;
+            }
+        }
+        return best;
     }
 
     /** Never drawn (PLAN "Camera state"): in F5 the puppet is the recorded body, so there is never a second one. */

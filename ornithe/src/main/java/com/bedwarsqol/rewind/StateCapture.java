@@ -43,7 +43,9 @@ import java.util.UUID;
  *   <li><b>IDENTITY</b>: own UUID, name and {@code textures} property (value and signature), read from the player's
  *       own tab entry ({@link #ownTabProfile}; the login profile never has the property). Written once the entry is
  *       there (it may arrive after the segment's first tick; nothing is written or allocated while waiting), and again
- *       within the segment only if a new entry carries different textures.</li>
+ *       within the segment only if a new entry carries a different name, UUID or textures. If the entry has not
+ *       arrived {@link #IDENTITY_FALLBACK_TICKS} ticks into the segment, the login profile's UUID and name are written
+ *       with an empty skin, so no segment lacks one (review code-2 O4); a later entry with a skin writes it again.</li>
  * </ul>
  *
  * <p><b>Cost.</b> Client thread only. An unchanged tick allocates nothing, and neither does a change on an untagged
@@ -73,6 +75,11 @@ public final class StateCapture {
 
     /** Ticks between deep tag compares: a tag edited in place is stored within a second. */
     static final int DEEP_COMPARE_TICKS = 20;
+    /**
+     * Ticks into a segment after which IDENTITY falls back to the login profile while the own tab entry has not
+     * arrived (three seconds; review code-2 O4).
+     */
+    static final int IDENTITY_FALLBACK_TICKS = 60;
 
     private static Sink sink;
     private static final StateCapture INSTANCE = new StateCapture(DEEP_COMPARE_TICKS);
@@ -116,7 +123,7 @@ public final class StateCapture {
             }
             SETTINGS.read(mc, BedwarsQol.config);
             INSTANCE.tick(s, p.getItemInUseCount(), p.inventory, p.openContainer, p.inventoryContainer, SETTINGS,
-                    ownTabProfile(p.sendQueue, p.getUniqueID()));
+                    ownTabProfile(p.sendQueue, p.getUniqueID()), p.getGameProfile());
         } catch (Throwable t) {
             s.failed("state", t);
         }
@@ -165,9 +172,11 @@ public final class StateCapture {
     private boolean segmentStart = true;
     /** The tab profile IDENTITY was last checked against (a new S38 ADD_PLAYER makes a new one), or null. */
     private GameProfile identityProfile;
-    /** The textures value and signature of this segment's last IDENTITY; null before the first. */
+    /** The textures value and signature, name and UUID of this segment's last IDENTITY; null before the first. */
     private String identitySkin;
     private String identitySig;
+    private String identityName;
+    private UUID identityId;
     private long ticks;
     private int lastUse;
     private Container window;
@@ -187,6 +196,8 @@ public final class StateCapture {
         identityProfile = null;
         identitySkin = null;
         identitySig = null;
+        identityName = null;
+        identityId = null;
         ticks = 0;
         lastUse = 0;
         window = null;
@@ -202,10 +213,23 @@ public final class StateCapture {
      */
     boolean tick(Sink s, int useCount, InventoryPlayer playerInv, Container open, Container own,
                  SettingsSnapshot settings, GameProfile tabProfile) {
+        return tick(s, useCount, playerInv, open, own, settings, tabProfile, null);
+    }
+
+    /**
+     * {@link #tick(Sink, int, InventoryPlayer, Container, Container, SettingsSnapshot, GameProfile)} with the login
+     * profile ({@code EntityPlayer.getGameProfile()}) for the IDENTITY fallback; null: no fallback.
+     */
+    boolean tick(Sink s, int useCount, InventoryPlayer playerInv, Container open, Container own,
+                 SettingsSnapshot settings, GameProfile tabProfile, GameProfile loginProfile) {
         try {
             boolean first = segmentStart;
             boolean deep = deepEvery > 0 && ticks % deepEvery == 0;
             if (tabProfile != null && tabProfile != identityProfile && !identity(s, tabProfile)) {
+                return false;
+            }
+            if (tabProfile == null && identitySkin == null && loginProfile != null && ticks >= IDENTITY_FALLBACK_TICKS
+                    && !write(s, loginProfile.getId(), loginProfile.getName(), "", "")) {
                 return false;
             }
             if (settings != null) {
@@ -246,17 +270,26 @@ public final class StateCapture {
             sig = p.getSignature() == null ? "" : p.getSignature();
             break;
         }
-        if (skin.equals(identitySkin) && sig.equals(identitySig)) {
+        UUID id = profile.getId();
+        String name = profile.getName();
+        if (skin.equals(identitySkin) && sig.equals(identitySig) && java.util.Objects.equals(name, identityName)
+                && java.util.Objects.equals(id, identityId)) {
             return true;
         }
-        UUID id = profile.getId();
+        return write(s, id, name, skin, sig);
+    }
+
+    /** One IDENTITY record, remembered as this segment's last. */
+    private boolean write(Sink s, UUID id, String name, String skin, String sig) {
         int n = codec.identity(id == null ? 0L : id.getMostSignificantBits(),
-                id == null ? 0L : id.getLeastSignificantBits(), profile.getName(), skin, sig);
+                id == null ? 0L : id.getLeastSignificantBits(), name == null ? "" : name, skin, sig);
         if (!s.append(RewindFormat.TAG_IDENTITY, codec.buffer(), n)) {
             return false;
         }
         identitySkin = skin;
         identitySig = sig;
+        identityName = name;
+        identityId = id;
         return true;
     }
 

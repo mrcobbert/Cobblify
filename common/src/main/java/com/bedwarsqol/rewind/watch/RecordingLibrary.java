@@ -232,7 +232,9 @@ public final class RecordingLibrary {
         LoadedRecording.Problem p;
         try {
             p = checker.check(store.cbrFile(id), store.jsonFile(id));
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
+            // review code-2 O11: whatever one file's check throws (an Error included), that file is unreadable and
+            // the library goes on; the loader's size caps keep a corrupt file from exhausting memory first
             p = LoadedRecording.Problem.UNREADABLE;
         }
         synchronized (cache) {

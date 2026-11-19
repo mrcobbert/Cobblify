@@ -385,13 +385,14 @@ public final class RecordedHudSource implements HudSource {
                         st.fracX, st.fracY));
                 break;
             case RewindFormat.HUD_FIELD_SCALE:
-                HudModules.set(c, id, st.withScale(f));
+                // review code-2 O1: only a scale the live settings allow (a corrupt one keeps the default)
+                if (f >= CornerResize.MIN_SCALE && f <= CornerResize.MAX_SCALE) HudModules.set(c, id, st.withScale(f));
                 break;
             case RewindFormat.HUD_FIELD_SUB_X:
-                HudModules.set(c, id, st.withFraction(f, st.fracY));
+                if (f >= -0.5f && f < 0.5f) HudModules.set(c, id, st.withFraction(f, st.fracY));
                 break;
             case RewindFormat.HUD_FIELD_SUB_Y:
-                HudModules.set(c, id, st.withFraction(st.fracX, f));
+                if (f >= -0.5f && f < 0.5f) HudModules.set(c, id, st.withFraction(st.fracX, f));
                 break;
             case RewindFormat.HUD_FIELD_BACKGROUND:
                 c.setHudBackground(id, b);

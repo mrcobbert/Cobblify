@@ -61,7 +61,7 @@ public class DigCaptureTest {
             if (changed) {
                 blocks.put(pos.toLong(), state);
             }
-            ActionCapture.onBlockChangeReturn(this, pos, changed);
+            ActionCapture.onBlockChangeReturn(this, pos);
             return changed;
         }
     }
@@ -231,7 +231,7 @@ public class DigCaptureTest {
         ActionCapture.onBlockChangeHead(world, outer);
         world.blocks.put(outer.toLong(), Blocks.stone.getDefaultState());
         world.change(inner, Blocks.air.getDefaultState()); // a neighbour update inside the outer call
-        ActionCapture.onBlockChangeReturn(world, outer, true);
+        ActionCapture.onBlockChangeReturn(world, outer);
         ActionCapture.exitLocal();
         List<RecordingCaptureSink.Rec> blocks = sink.ofTag(RewindFormat.TAG_BLOCK);
         assertEquals(2, blocks.size());

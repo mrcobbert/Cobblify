@@ -472,7 +472,21 @@ public final class LoadedRecording {
                 new SelfTrack.Builder().build(), null, 0, ExtRecords.EMPTY, version, 0, 0);
     }
 
+    /**
+     * {@link #readChecked}, with any failure of this one file (an Error included) an {@link Problem#UNREADABLE}
+     * recording (review code-2 O11): a corrupt file never takes the loader or the library down. The size caps
+     * ({@link TickTable#V1_MAX_FILLED}, {@link ExtTrack#MAX_SEGMENTS}, {@code HudModel.MAX_ROWS}) keep it from
+     * asking for unbounded memory first.
+     */
     private static LoadedRecording read(File cbr, File json, boolean keepNet) {
+        try {
+            return readChecked(cbr, json, keepNet);
+        } catch (Throwable t) {
+            return failed(Problem.UNREADABLE, false, null, 0);
+        }
+    }
+
+    private static LoadedRecording readChecked(File cbr, File json, boolean keepNet) {
         RecordingMeta jsonMeta = readJson(json);
         TreeMap<Integer, SegAcc> segs = new TreeMap<Integer, SegAcc>();
         String endJson = null;

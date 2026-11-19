@@ -303,4 +303,34 @@ public class ExtTrackTest {
         }
         assertTrue(sum != 0);
     }
+
+    /**
+     * Review code-2 O11 (corrupt files): per-segment index arrays are sized by the highest segment a record names. A
+     * record in segment 19,999 of a crafted file cost about 99 MB; segments at or past {@link ExtTrack#MAX_SEGMENTS}
+     * are not indexed (their records are skipped, as a malformed one is), so building the track stays small.
+     */
+    @Test
+    public void aRecordInAFarSegmentIsNotIndexedAndCostsNoPerSegmentArrays() {
+        java.lang.management.ThreadMXBean base = ManagementFactory.getThreadMXBean();
+        Assume.assumeTrue(base instanceof com.sun.management.ThreadMXBean);
+        com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) base;
+        long self = Thread.currentThread().getId();
+        ExtCodec c = new ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        b.addEncoded(0, 1_000L, RewindFormat.TAG_FOV, c.buffer(), c.fov(70f));
+        b.addEncoded(ExtTrack.MAX_SEGMENTS - 1, 2_000L, RewindFormat.TAG_FOV, c.buffer(), c.fov(71f));
+        b.addEncoded(19_999, 3_000L, RewindFormat.TAG_FOV, c.buffer(), c.fov(72f));
+        b.addEncoded(19_999, 3_000L, RewindFormat.TAG_INV, c.buffer(), c.inv(3, new byte[]{(byte) 0xFF, (byte) 0xFF},
+                0, 2));
+        ExtRecords records = b.build();
+        long before = mx.getThreadAllocatedBytes(self);
+        ExtTrack t = ExtTrack.of(records);
+        long spent = mx.getThreadAllocatedBytes(self) - before;
+        assertTrue("built in " + spent + " bytes", spent < 16L << 20);
+        assertEquals(1, t.count(RewindFormat.TAG_FOV, 0));
+        assertEquals("the last indexed segment", 1, t.count(RewindFormat.TAG_FOV, ExtTrack.MAX_SEGMENTS - 1));
+        assertEquals(0, t.count(RewindFormat.TAG_FOV, 19_999));
+        assertEquals(-1, t.keyedAt(RewindFormat.TAG_INV, 3, 19_999, 4_000L));
+        assertEquals(ExtTrack.MAX_SEGMENTS, t.segmentCount());
+    }
 }

@@ -223,7 +223,10 @@ public class LocalSoundPlaybackTest {
         assertEquals(Arrays.asList(DIG + " 10.5 64.5 -2.5 0.25 0.5", STEP + " 10.0 64.0 -3.0 0.15 1.0"), heard());
     }
 
-    /** A seek or catch-up past a sound plays nothing; a backward seek to before it plays it once more, at its stamp. */
+    /**
+     * A seek or catch-up past a sound plays nothing; one stamped exactly at the landing time plays once after it; a
+     * backward seek to before it plays it once more, at its stamp.
+     */
     @Test
     public void noneDuringACatchUpOrSeek() throws Exception {
         Frames f = new Frames(recording(twoSounds()));
@@ -233,9 +236,14 @@ public class LocalSoundPlaybackTest {
         f.frame(16);
         assertEquals(Collections.<ISound>emptyList(), played);
 
-        f.land(141_500L); // landing exactly on a stamp: that one counts as passed
+        // landing exactly on a stamp (a seek lands at a tick's time): the record belongs to the frame that runs that
+        // tick, which comes after the landing, so it plays there, once (review code-2 O10; it used to count as passed)
+        f.land(141_500L);
         f.frame(1);
-        assertEquals(Collections.<ISound>emptyList(), played);
+        assertEquals(Collections.singletonList(STEP + " 10.0 64.0 -3.0 0.15 1.0"), heard());
+        f.frame(16);
+        assertEquals(1, played.size());
+        played.clear();
 
         f.land(100 * MS); // backward seek to before both
         f.frame(39); // P = 139

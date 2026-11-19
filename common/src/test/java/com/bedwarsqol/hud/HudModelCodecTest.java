@@ -221,4 +221,45 @@ public class HudModelCodecTest {
         assertEquals(-1, HudModel.shape(RewindFormat.HUD_ITEM_SCOREBOARD));
         assertEquals(-1, HudModel.shape(0));
     }
+
+    /**
+     * Review code-2 O2 (corrupt files): a Map Info, Session Stats or Upgrades &amp; Traps record holds at most
+     * {@link HudModel#MAX_ROWS} rows (more than any screen shows); a longer one is malformed, so a crafted record with
+     * a million one-byte rows is never measured and drawn every frame. A list of exactly the cap still decodes.
+     */
+    @Test
+    public void rowCountsAboveTheCapAreMalformed() {
+        String[] rows = new String[HudModel.MAX_ROWS + 1];
+        Arrays.fill(rows, "");
+        int[] kinds = new int[rows.length];
+        TeamUpgradeRows.Row[] team = new TeamUpgradeRows.Row[rows.length];
+        Arrays.fill(team, new TeamUpgradeRows.Row(TeamUpgradeRows.Kind.TRAP, "", "", "", TeamUpgradeRows.Style.NORMAL,
+                1f));
+        for (int shape = 0; shape < 3; shape++) {
+            for (int n : new int[]{HudModel.MAX_ROWS, HudModel.MAX_ROWS + 1}) {
+                if (shape == 0) {
+                    codec.beginHud(RewindFormat.HUD_HEIGHT_LIMIT, RewindFormat.HUD_FLAG_ON_SCREEN);
+                    HudModel.putRows(codec, rows, n);
+                } else if (shape == 1) {
+                    codec.beginHud(RewindFormat.HUD_SESSION_STATS, RewindFormat.HUD_FLAG_ON_SCREEN);
+                    HudModel.putLines(codec, rows, kinds, n);
+                } else {
+                    codec.beginHud(RewindFormat.HUD_TEAM_UPGRADES, RewindFormat.HUD_FLAG_ON_SCREEN);
+                    HudModel.putTeamRows(codec, team, n);
+                }
+                int len = codec.end();
+                if (n == HudModel.MAX_ROWS) {
+                    HudModel.Values v = decode(len);
+                    assertEquals("shape " + shape, n, v.rows.size() + v.lines.size() + v.team.size());
+                } else {
+                    try {
+                        decode(len);
+                        fail("shape " + shape + ": " + n + " rows accepted");
+                    } catch (RewindFormat.FormatException expected) {
+                        // the record is skipped: the item keeps its last good value
+                    }
+                }
+            }
+        }
+    }
 }

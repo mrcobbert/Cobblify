@@ -20,7 +20,8 @@ import java.util.Arrays;
  *       is written at the end of its tick; 1 ms is the estimate of a tick's run). A gap over
  *       {@value #V1_FILL_OVER_US} µs is filled with {@code round(gap / 50 ms)} evenly spaced ticks, because v1 wrote
  *       nothing for a tick in which nothing changed. A real freeze in a v1 game is therefore replayed as ticks (stated
- *       limitation). No handled counts.</li>
+ *       limitation). A gap over {@link #V1_FILL_MAX_GAP_US}, and any gap once {@link #V1_MAX_FILLED} ticks were filled,
+ *       is left as it is (only a corrupt file has one). No handled counts.</li>
  *   <li>Before the first and after the last entry the table continues at 50 ms; tick 0 is the first of those times
  *       at or after the origin, so tick numbers start at the recording's start as R2's did. A recording with no tick
  *       times is R2's grid {@code origin + k x 50 ms} ({@link Kind#GRID}). Continuation ticks have no handled count
@@ -37,6 +38,13 @@ public final class TickTable {
     public static final long V1_TICK_RUN_US = 1_000L;
     /** v1: a gap between two tick times longer than this is filled with 50 ms ticks. */
     public static final long V1_FILL_OVER_US = 75_000L;
+    /**
+     * v1: a gap longer than this (one hour) is not filled (review code-2 O11: two TICK times 2^46 us apart in a corrupt
+     * file asked for over a billion ticks); it plays as a freeze.
+     */
+    public static final long V1_FILL_MAX_GAP_US = 3_600_000_000L;
+    /** v1: at most this many ticks are filled in over all gaps (ten hours of ticks, under 6 MB); later gaps stay. */
+    public static final int V1_MAX_FILLED = 720_000;
 
     public enum Kind { GRID, V1, V2 }
 
@@ -73,15 +81,20 @@ public final class TickTable {
     public static TickTable v1(long originUs, long[] tickRecordTimes, int count) {
         long[] src = new long[Math.max(4, count)];
         int k = 0;
+        long filled = 0;
         for (int i = 0; i < count; i++) {
             long s = tickRecordTimes[i] - V1_TICK_RUN_US;
             if (s < originUs || k > 0 && s <= src[k - 1]) {
                 continue;
             }
-            if (k > 0 && s - src[k - 1] > V1_FILL_OVER_US) {
+            if (k > 0 && s - src[k - 1] > V1_FILL_OVER_US && s - src[k - 1] <= V1_FILL_MAX_GAP_US) {
                 long prev = src[k - 1];
                 long gap = s - prev;
                 long parts = Math.round(gap / (double) TICK_US);
+                if (filled + parts - 1 > V1_MAX_FILLED) {
+                    parts = 1; // over the budget: this gap stays a gap
+                }
+                filled += Math.max(0, parts - 1);
                 for (long j = 1; j < parts; j++) {
                     src = ensure(src, k + 1);
                     src[k++] = prev + gap * j / parts;

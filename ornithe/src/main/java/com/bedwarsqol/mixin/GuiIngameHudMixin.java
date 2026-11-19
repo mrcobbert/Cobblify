@@ -33,16 +33,23 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>Rewind (Phase 15): while a recording plays the HUD events are muted, and each layer draws the recorded Cobblify
  * HUD instead ({@link HudPlayback#drawText}, {@link HudPlayback#drawPost}; not while the tab list shows). In the clean
  * view, or under the recorded F1 with no recorded screen open, the whole overlay is skipped
- * ({@link HudPlayback#hidesEveryHud}), as vanilla skips it under F1 when no screen is open (the viewer is a screen,
- * so vanilla would draw it). With nothing playing each Rewind call returns at once and the live HUD is unchanged.
+ * ({@link HudPlayback#skipsOverlay}), as vanilla skips it under F1 when no screen is open (the viewer is a screen,
+ * so vanilla would draw it). The skip still sets up the GUI projection the overlay's first call would have, and
+ * leaves the colour, lighting and alpha test as the overlay's last calls do, so every Rewind screen draws in screen
+ * space (review code-2 B1). With nothing playing each Rewind call returns at once and the live HUD is unchanged.
  */
 @Mixin(GuiIngame.class)
 public abstract class GuiIngameHudMixin {
 
     @WrapMethod(method = "renderGameOverlay", require = 1)
     private void bedwarsqol$noHudInTheCleanView(float partialTicks, Operation<Void> original) {
-        if (HudPlayback.hidesEveryHud()) {
-            return; // vanilla's F1 with no screen open: the overlay is not drawn at all
+        if (HudPlayback.skipsOverlay(Minecraft.getMinecraft())) {
+            // vanilla's F1 with no screen open: the overlay is not drawn at all. The GUI projection is set (above);
+            // the overlay's last state calls, for the screen drawn next:
+            GlStateManager.color(1f, 1f, 1f, 1f);
+            GlStateManager.disableLighting();
+            GlStateManager.enableAlpha();
+            return;
         }
         original.call(partialTicks);
     }

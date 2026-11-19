@@ -949,4 +949,58 @@ public class RewindParityPlaybackTest {
         assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
         assertEquals(0, connection.discarded());
     }
+
+    /** {@code EntityRenderer.setupOverlayRendering}: counts the 2D GUI projections set up. */
+    static final class Projection extends net.minecraft.client.renderer.EntityRenderer {
+        int overlays;
+
+        Projection() {
+            super(null, null); // never run: allocated
+        }
+
+        @Override
+        public void setupOverlayRendering() {
+            overlays++;
+        }
+    }
+
+    /**
+     * Review code-2 B1: with a world loaded, vanilla sets the GUI projection only inside {@code renderGameOverlay}
+     * (offset 30) before the current screen draws. Whenever the HUD layer skips that method (the clean view, recorded
+     * F1 with no recorded screen), the same projection is set up, so the viewer bar, the Esc menu and the loading card
+     * draw in screen space; when the overlay runs, the skip path sets nothing.
+     */
+    @Test
+    public void aSkippedOverlayStillSetsUpTheGuiProjectionForTheScreens() throws Exception {
+        open(writeRecording(tmp.newFolder("rewind")));
+        Projection p = (Projection) RecordedScreensTest.allocate(Projection.class);
+        mc.entityRenderer = p;
+        session.setPaused(true);
+        seek(20);
+        assertFalse("the overlay runs (and sets the projection itself)", HudPlayback.skipsOverlay(mc));
+        assertEquals(0, p.overlays);
+
+        RewindPlayback.view().toggleClean(); // the Clean View Key
+        RewindPlayback.viewStateChanged();
+        frame(0);
+        assertTrue("the clean view skips the overlay", HudPlayback.skipsOverlay(mc));
+        assertEquals("and sets up the GUI projection instead", 1, p.overlays);
+        RewindPlayback.view().toggleClean();
+        RewindPlayback.viewStateChanged();
+        frame(0);
+        assertFalse(HudPlayback.skipsOverlay(mc));
+        assertEquals(1, p.overlays);
+
+        RewindPlayback.view().selectYou(); // key 1: follow the recording again
+        RewindPlayback.viewStateChanged();
+        seek(32); // the recorded F1 (ticks 30-34), no recorded screen
+        assertTrue(ops.hideGui);
+        assertTrue("recorded F1 skips the overlay", HudPlayback.skipsOverlay(mc));
+        assertEquals("and sets up the GUI projection instead", 2, p.overlays);
+
+        session.requestExit(PlaybackSession.Exit.TITLE);
+        frame(0);
+        assertFalse("nothing plays: vanilla's overlay, nothing added", HudPlayback.skipsOverlay(mc));
+        assertEquals(2, p.overlays);
+    }
 }

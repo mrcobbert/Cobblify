@@ -217,6 +217,8 @@ public final class PlaybackSession {
     private long catchUpNanos;
     private long catchUpFrom;
     private boolean catchUpRestart;
+    /** A seek while watching whose target is the tick already reached: no tick runs, playback time stays. */
+    private boolean seekInPlace;
 
     public PlaybackSession(ClientOps ops, PlaybackGate gate) {
         this.ops = ops;
@@ -350,9 +352,13 @@ public final class PlaybackSession {
         if (plan.restart) {
             restart(plan);
         } else {
+            // review code-2 O10: a target already reached (a click inside the current interval, a short seekBy, a
+            // marker there) runs no tick, so playback time and the timed cursor stay where straight play has them
+            seekInPlace = state == State.WATCHING && plan.catchUpTicks == 0;
             startCatchUp(false);
             ticks.seek(plan);
             afterSeek();
+            seekInPlace = false;
         }
     }
 
@@ -400,8 +406,10 @@ public final class PlaybackSession {
 
     private void finishCatchUp() {
         state = State.WATCHING;
-        clock.set(timeline.timeOfTick(ticks.ticksRun()), ops.nanoTime());
-        clock.skipTimed(recording.ext());
+        if (!seekInPlace) {
+            clock.set(timeline.timeOfTick(ticks.ticksRun()), ops.nanoTime());
+            clock.skipTimed(recording.ext());
+        }
         long ms = (ops.nanoTime() - catchUpNanos) / 1_000_000L;
         long ran = ticks.ticksRun() - catchUpFrom;
         if (!opened) {

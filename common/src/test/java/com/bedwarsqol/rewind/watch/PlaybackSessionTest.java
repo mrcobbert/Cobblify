@@ -1113,6 +1113,100 @@ public class PlaybackSessionTest {
         }
     }
 
+    /**
+     * Review code-2 O10 (a): a seek whose target is the tick already reached (a timeline click inside the current
+     * interval, {@code seekBy} under one tick, a marker landing there) runs no tick and leaves playback time where it
+     * was: the sound stamped at 140 ms still plays once at its time, and a recorded freeze is not cut short.
+     */
+    @Test
+    public void aSeekToTheTickAlreadyReachedKeepsPlaybackTime() throws IOException {
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        int n = c.sound("random.click", 1f, 64f, 1f, 1f, 1f);
+        ExtRecords.Builder b = new ExtRecords.Builder()
+                .add(0, ORIGIN + 140 * MS, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND, ExtRecords.body(c.buffer(), n));
+        v2(new long[]{100, 150, 200, 250}, 4000, b);
+        openAtStart();
+        long step = 10_000_000L; // 10 ms of playback per frame
+        for (int f = 0; f < 12; f++) {
+            loop.timed(step); // to P = 120
+        }
+        assertEquals(ORIGIN + 120 * MS, session.renderTimeUs());
+        long ran = session.ticks().ticksRun();
+        session.seekBy(20_000L); // under one tick: the tick already reached
+        loop.timed(0);
+        assertEquals(PlaybackSession.State.WATCHING, session.state());
+        assertEquals("no tick ran", ran, session.ticks().ticksRun());
+        assertEquals("playback time kept", ORIGIN + 120 * MS, session.renderTimeUs());
+        session.seekTo(session.ticks().ticksRun());
+        loop.timed(0);
+        assertEquals(ORIGIN + 120 * MS, session.renderTimeUs());
+        loop.timed(step * 21 / 10); // P = 141
+        assertEquals(java.util.Arrays.asList(com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + "@140 P=141"),
+                ops.sink.timed);
+
+        // inside a recorded freeze (heads 100 and 2100 ms)
+        client();
+        v2(new long[]{100, 2100, 2150}, 4000, null);
+        openAtStart();
+        for (int f = 0; f < 50; f++) {
+            loop.timed(step); // to P = 500
+        }
+        assertEquals(ORIGIN + 500 * MS, session.renderTimeUs());
+        session.seekTo(session.ticks().ticksRun());
+        loop.timed(0);
+        assertEquals("the freeze goes on", ORIGIN + 500 * MS, session.renderTimeUs());
+    }
+
+    /**
+     * Review code-2 O10 (b): a timed record stamped exactly at the landing tick's time belongs to the frame that runs
+     * that tick, which comes after the seek: it is dispatched once after the seek, as in straight play.
+     */
+    @Test
+    public void aTimedRecordAtTheLandingTicksTimeIsDispatchedAfterTheSeekAsInStraightPlay() throws IOException {
+        List<String> straight = null;
+        for (boolean seek : new boolean[]{false, true}) {
+            client();
+            com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+            int n = c.sound("random.click", 1f, 64f, 1f, 1f, 1f);
+            ExtRecords.Builder b = new ExtRecords.Builder()
+                    .add(0, ORIGIN + 200 * MS, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND,
+                            ExtRecords.body(c.buffer(), n));
+            v2(new long[]{100, 150, 200, 250}, 4000, b);
+            openAtStart();
+            TickTable t = session.timeline().ticks();
+            long step = 10_000_000L;
+            for (int f = 0; f < 10; f++) {
+                loop.timed(step); // to P = 100
+            }
+            if (seek) {
+                session.seekTo(t.tickOf(ORIGIN + 200 * MS)); // lands with P = T[k200] = 200 ms
+                loop.frame(0);
+                loop.until(PlaybackSession.State.WATCHING, 0);
+                assertEquals(ORIGIN + 200 * MS, session.renderTimeUs());
+                assertTrue("nothing yet: " + ops.sink.timed, ops.sink.timed.isEmpty());
+                loop.timed(0);
+            } else {
+                for (int f = 0; f < 10; f++) {
+                    loop.timed(step); // to P = 200
+                }
+            }
+            List<String> sounds = new ArrayList<String>();
+            for (String e : ops.sink.timed) {
+                sounds.add(e.substring(0, e.indexOf(' ')));
+            }
+            for (int f = 0; f < 5; f++) {
+                loop.timed(step);
+            }
+            assertEquals("once", 1, ops.sink.timed.size());
+            assertEquals(java.util.Arrays.asList(com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + "@200"), sounds);
+            if (straight == null) {
+                straight = sounds;
+            } else {
+                assertEquals("seek == straight play", straight, sounds);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ wait-for-closed
 
     @Test
