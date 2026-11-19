@@ -184,7 +184,7 @@ public final class RewindPainter {
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
 
-        // the camera menu, below its key: You, Free camera, then a row per player
+        // the camera menu, above its key: You, Free camera, then a row per player
         if (s.menuOpen) {
             float[] d = l.dropdown();
             card(c, d[0], d[1], d[2], d[3]);
@@ -247,7 +247,7 @@ public final class RewindPainter {
     }
 
     /**
-     * Another player's view (Phase 14): their name in their team's colour, centred under the bar
+     * Another player's view (Phase 14): their name in their team's colour, centred at the top
      * ({@link ViewerLayout#riddenNameTop()}), whether or not the bar shows.
      */
     public static void riddenName(Canvas c, float screenW, String name, int colour) {

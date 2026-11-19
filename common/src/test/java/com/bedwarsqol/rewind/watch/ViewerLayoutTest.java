@@ -16,8 +16,8 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release.
- * Parity B11 (Q1): the bar sits at the top edge and its camera menu and the flight-speed bar open downward, clear of
- * the hotbar, hearts and XP bar.
+ * The bar sits at the bottom edge (the user's call after dev.102, replacing parity B11/Q1's top bar); its camera menu
+ * opens upward and the flight-speed bar and the ridden name sit at the top.
  */
 public class ViewerLayoutTest {
 
@@ -37,9 +37,9 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void geometryAtNineSixtyMatchesTheMockupAtTheTopEdge() {
+    public void geometryAtNineSixtyMatchesTheMockupAtTheBottomEdge() {
         ViewerLayout l = plain(960);
-        float by = 2;
+        float by = 540 - 2 - 26;
         assertArrayEquals(new float[]{2, by, 956, 26}, l.bar, 0f);
         assertArrayEquals(new float[]{7, by + 5, 16, 16}, l.play, 0f);
         // camera key: 7 + widest (icon 14 + "Free camera") + 6 + 6 + 7
@@ -171,13 +171,13 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void cameraDropdownOpensDownwardBelowTheKey() {
+    public void cameraDropdownOpensUpwardAboveTheKey() {
         ViewerLayout l = plain(640);
         float[] dd = l.dropdown();
         assertEquals(l.camera[0], dd[0], 0f);
         assertEquals(l.camera[2], dd[2], 0f);
         assertEquals(1 + 3 + 2 * 14 + 3 + 1, dd[3], 0f);
-        assertEquals(l.bar[1] + l.bar[3] + 3, dd[1], 0f);
+        assertEquals(l.bar[1] - 3, dd[1] + dd[3], 0f);
         for (int i = 0; i < 2; i++) {
             float[] r = l.dropdownRow(i);
             assertArrayEquals(new float[]{dd[0] + 1, dd[1] + 4 + 14 * i, dd[2] - 2, 14}, r, 0f);
@@ -194,13 +194,9 @@ public class ViewerLayoutTest {
         return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
     }
 
-    /**
-     * B11: at GUI scales 1-4 of common windows, nothing the viewer draws (the bar, the open camera menu, the flight
-     * speed bar) touches vanilla's hotbar (182 x 22 at the bottom centre), XP bar (5 px above it) or the hearts,
-     * armour, hunger and air rows (up to 59 px above the bottom), as {@code GuiIngame} lays them out.
-     */
+    /** The bar hugs the bottom edge on every display and GUI scale; the speed bar and the menu stay on screen. */
     @Test
-    public void theBarItsMenuAndTheSpeedBarNeverCoverTheHotbarHeartsOrXpBar() {
+    public void theBarSitsAtTheBottomEdgeOnEveryDisplay() {
         int[][] displays = {{1920, 1080}, {1280, 720}, {854, 480}, {2560, 1440}, {1366, 768}};
         for (int[] d : displays) {
             for (int scale = 1; scale <= 4; scale++) {
@@ -210,25 +206,15 @@ public class ViewerLayoutTest {
                 }
                 ViewerLayout l = ViewerLayout.of(w, h, GalleryModelTest.MC, LEN, new long[]{60_000_000L},
                         new int[]{D});
-                float cx = w / 2f;
-                float[][] hud = {
-                        {cx - 91, h - 22, 182, 22},      // hotbar
-                        {cx - 91, h - 29, 182, 5},       // XP bar
-                        {cx - 91, h - 39, 81, 9},        // hearts
-                        {cx - 91, h - 49, 81, 9},        // a second heart row or armour
-                        {cx - 91, h - 59, 81, 9},        // absorption rows
-                        {cx + 10, h - 39, 81, 9},        // hunger
-                        {cx + 10, h - 49, 81, 9},        // air
-                };
-                float[] fly = {cx - 46, ViewerLayout.flySpeedTop() - 1, 92, 10};
                 String at = (int) w + "x" + (int) h + " scale " + scale;
-                for (float[] r : hud) {
-                    assertFalse(at + " bar", intersects(l.bar, r));
-                    assertFalse(at + " camera menu", intersects(l.dropdown(), r));
-                    assertFalse(at + " speed bar", intersects(fly, r));
-                }
-                assertTrue(at + ": the bar is at the top", l.bar[1] + l.bar[3] < h / 4f);
-                assertTrue(at + ": the speed bar is below the bar", fly[1] > l.bar[1] + l.bar[3]);
+                assertEquals(at, h - ViewerLayout.GAP, l.bar[1] + l.bar[3], 0f);
+                assertEquals(at, ViewerLayout.BAR_H, l.bar[3], 0f);
+                float[] dd = l.dropdown();
+                assertTrue(at + ": the menu ends above the bar", dd[1] + dd[3] <= l.bar[1]);
+                assertTrue(at + ": the menu starts on screen", dd[1] >= 0);
+                float[] fly = {w / 2f - 46, ViewerLayout.flySpeedTop() - 1, 92, 10};
+                assertTrue(at + ": the speed bar is on screen, clear of the bar and the menu",
+                        fly[1] >= 0 && !intersects(fly, l.bar));
             }
         }
     }
@@ -280,7 +266,7 @@ public class ViewerLayoutTest {
         float[] dd = l.dropdown();
         float need = 7 + ViewerLayout.CAMERA_ICON + GalleryModelTest.MC.width(longName, ViewerLayout.FONT) + 7;
         assertTrue("the menu fits the name: " + dd[2] + " >= " + need, dd[2] >= need);
-        assertEquals("right-aligned under the key", right(l.camera), right(dd), 1e-3f);
+        assertEquals("right-aligned over the key", right(l.camera), right(dd), 1e-3f);
     }
 
     @Test
@@ -305,9 +291,9 @@ public class ViewerLayoutTest {
                 withPlayers(640, 540, new String[]{"Bob"}, 7).cameraKeyLabel());
     }
 
-    /** B11 with a full lobby: the menu opens more columns instead of reaching the hotbar, hearts or XP bar. */
+    /** A full lobby: the menu opens more columns instead of running off the top of the screen. */
     @Test
-    public void aFullLobbyOpensColumnsThatStayClearOfTheHud() {
+    public void aFullLobbyOpensColumnsThatStayOnScreen() {
         String[] players = new String[15];
         for (int i = 0; i < players.length; i++) players[i] = "Player_" + (char) ('a' + i) + "name";
         int[][] displays = {{1920, 1080}, {1280, 720}, {854, 480}, {2560, 1440}, {1366, 768}, {640, 480}};
@@ -318,14 +304,10 @@ public class ViewerLayoutTest {
                 if (w < 320 || h < 240) continue;
                 ViewerLayout l = withPlayers(w, h, players, 0);
                 assertEquals(17, l.cameraOptionCount());
-                float cx = w / 2f;
-                float[][] hud = {{cx - 91, h - 22, 182, 22}, {cx - 91, h - 29, 182, 5}, {cx - 91, h - 59, 81, 37},
-                        {cx + 10, h - 49, 81, 27}};
                 String at = (int) w + "x" + (int) h + " scale " + scale;
                 float[] dd = l.dropdown();
                 assertTrue(at, dd[0] >= 0 && right(dd) <= w);
-                assertTrue(at, dd[1] + dd[3] <= h - ViewerLayout.HUD_CLEAR);
-                for (float[] r : hud) assertFalse(at + " menu over the HUD", intersects(dd, r));
+                assertTrue(at, dd[1] >= ViewerLayout.GAP && dd[1] + dd[3] <= l.bar[1]);
                 if (dd[2] > l.camera[2] + 1) sawColumns = true;
                 for (int i = 0; i < 17; i++) {
                     float[] r = l.dropdownRow(i);
@@ -342,11 +324,9 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void theRiddenPlayersNameSitsUnderTheBar() {
+    public void theRiddenPlayersNameSitsAtTheTop() {
         ViewerLayout l = plain(427);
-        assertTrue(ViewerLayout.riddenNameTop() > l.bar[1] + l.bar[3]);
-        assertTrue("clear of the hotbar region at the smallest window",
-                ViewerLayout.riddenNameTop() + 9 < 240 - ViewerLayout.HUD_CLEAR);
+        assertTrue(ViewerLayout.riddenNameTop() >= 0 && ViewerLayout.riddenNameTop() + 9 < l.bar[1]);
     }
 
     @Test
