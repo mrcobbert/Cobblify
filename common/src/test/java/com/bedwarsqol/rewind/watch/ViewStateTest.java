@@ -399,6 +399,79 @@ public class ViewStateTest {
         assertEquals("not the earlier chat's text", "", r.chatText());
     }
 
+    // ------------------------------------------------------------------ Phase 15: the clean view and the recorded HUD (D5, D6)
+
+    /**
+     * D6: the clean view (the Clean View Key or F1) hides every HUD in every view, and the next press shows it again.
+     * Vanilla skips the in-game overlay under F1 only while no screen is open, and the viewer is a screen, so playback
+     * asks {@link ViewState#hidesEveryHud} itself.
+     */
+    @Test
+    public void theCleanViewHidesEveryHudInEveryViewAndTheNextPressShowsItAgain() {
+        ViewState v = new ViewState();
+        v.recorded(0, 0, RewindFormat.SCREEN_CHEST);
+        assertFalse(v.hidesEveryHud());
+        assertTrue(v.recordedHud());
+        v.toggleClean();
+        assertTrue("every HUD hidden, a recorded window too", v.hidesEveryHud());
+        assertFalse("the recorded Cobblify HUD too", v.recordedHud());
+        v.toggleClean();
+        assertFalse("the next press shows it again", v.hidesEveryHud());
+        assertTrue(v.recordedHud());
+        v.selectFree();
+        v.toggleClean();
+        assertTrue("also in the free camera", v.hidesEveryHud());
+        v.toggleClean();
+        assertFalse(v.hidesEveryHud());
+        v.ride(5);
+        v.toggleClean();
+        assertTrue("and in another player's view", v.hidesEveryHud());
+        v.selectYou();
+        assertFalse("key 1 ends it", v.hidesEveryHud());
+    }
+
+    /**
+     * The recorded F1 is followed as the live client drew it: with no screen open nothing is drawn; with a screen open
+     * vanilla still draws the overlay (and the HUD under the screen).
+     */
+    @Test
+    public void theRecordedF1HidesEveryHudOnlyWhileNoRecordedScreenIsOpen() {
+        ViewState v = new ViewState();
+        v.recorded(0, HIDE, RewindFormat.SCREEN_NONE);
+        assertTrue(v.hidesEveryHud());
+        v.recorded(0, HIDE, RewindFormat.SCREEN_CHAT);
+        assertFalse("F1 with chat open: vanilla draws the overlay", v.hidesEveryHud());
+        v.recorded(0, HIDE, RewindFormat.SCREEN_NONE);
+        v.selectFree();
+        assertFalse("the free camera follows no recorded F1", v.hidesEveryHud());
+    }
+
+    /**
+     * D5: the recorded Cobblify HUD shows in your view only, never in the clean view, and not while the recorded Tab
+     * list or F3 hid it; an F5 override stops following the recorded Tab and F3, so it shows again.
+     */
+    @Test
+    public void theRecordedCobblifyHudShowsInYourViewUnlessTheRecordedTabOrF3HidIt() {
+        ViewState v = new ViewState();
+        assertTrue("a v1 view state (nothing recorded) does not hide it", v.recordedHud());
+        v.recorded(0, TAB, RewindFormat.SCREEN_NONE);
+        assertFalse("the recorded Tab list hid it", v.recordedHud());
+        v.recorded(0, F3, RewindFormat.SCREEN_NONE);
+        assertFalse("F3 hid it", v.recordedHud());
+        v.recorded(0, 0, RewindFormat.SCREEN_INVENTORY);
+        assertTrue("a recorded screen does not (the live HUD drew under it)", v.recordedHud());
+        v.recorded(0, TAB | F3, RewindFormat.SCREEN_NONE);
+        v.cyclePerspective();
+        assertTrue("F5 overrides the recorded Tab and F3", v.recordedHud());
+        v.selectYou();
+        assertFalse(v.recordedHud());
+        v.recorded(0, 0, RewindFormat.SCREEN_NONE);
+        v.selectFree();
+        assertFalse("not in the free camera", v.recordedHud());
+        v.ride(3);
+        assertFalse("not in another player's view", v.recordedHud());
+    }
+
     @Test
     public void everyChangeBumpsTheVersionSoConsumersApplyItOnce() {
         ViewState v = new ViewState();

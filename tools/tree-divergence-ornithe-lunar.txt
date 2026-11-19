@@ -461,3 +461,7 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedFovTest.java
 # Rewind parity Phase 6 (recorder wiring): Ornithe-only recorder tests and the opt-in client capture bench.
 one-sided test ornithe com/bedwarsqol/rewind/RewindReadOnlyScanTest.java
 one-sided test ornithe com/bedwarsqol/rewind/RewindClientCaptureBench.java
+# Rewind parity Phase 15 (Cobblify HUD as recorded, clean view): the recorded HUD part, its HUD source and test.
+one-sided main ornithe com/bedwarsqol/rewind/watch/HudPlayback.java
+one-sided main ornithe com/bedwarsqol/hud/RecordedHudSource.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudPlaybackTest.java

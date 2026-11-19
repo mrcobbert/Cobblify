@@ -2,6 +2,9 @@ package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.hud.TabHudGate;
 import com.bedwarsqol.ornithe.ModEvents;
+import com.bedwarsqol.rewind.watch.HudPlayback;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiIngame;
 import net.minecraft.client.renderer.GlStateManager;
@@ -26,9 +29,23 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * While the tab list shows this frame ({@link TabHudGate}), the Text layer is not posted, so no
  * Cobblify HUD element draws under or over it; the Post layer still runs and its listeners check
  * {@link TabHudGate#hidesHud()} themselves.
+ *
+ * <p>Rewind (Phase 15): while a recording plays the HUD events are muted, and each layer draws the recorded Cobblify
+ * HUD instead ({@link HudPlayback#drawText}, {@link HudPlayback#drawPost}; not while the tab list shows). In the clean
+ * view, or under the recorded F1 with no recorded screen open, the whole overlay is skipped
+ * ({@link HudPlayback#hidesEveryHud}), as vanilla skips it under F1 when no screen is open (the viewer is a screen,
+ * so vanilla would draw it). With nothing playing each Rewind call returns at once and the live HUD is unchanged.
  */
 @Mixin(GuiIngame.class)
 public abstract class GuiIngameHudMixin {
+
+    @WrapMethod(method = "renderGameOverlay", require = 1)
+    private void bedwarsqol$noHudInTheCleanView(float partialTicks, Operation<Void> original) {
+        if (HudPlayback.hidesEveryHud()) {
+            return; // vanilla's F1 with no screen open: the overlay is not drawn at all
+        }
+        original.call(partialTicks);
+    }
 
     @Inject(method = "renderGameOverlay",
             at = @At(value = "FIELD",
@@ -39,13 +56,18 @@ public abstract class GuiIngameHudMixin {
         // Forge's renderHUDText sets this blend function before posting its Text event.
         // Kept unconditional so vanilla's GL state is the same whether or not the HUD draws.
         GlStateManager.tryBlendFuncSeparate(770, 771, 1, 0);
-        TabHudGate.beginFrame(Minecraft.getMinecraft());
-        if (!TabHudGate.hidesHud()) ModEvents.post(ModEvents.HUD_TEXT, partialTicks);
+        Minecraft mc = Minecraft.getMinecraft();
+        TabHudGate.beginFrame(mc);
+        if (!TabHudGate.hidesHud()) {
+            ModEvents.post(ModEvents.HUD_TEXT, partialTicks);
+            HudPlayback.drawText(mc); // a recording's HUD (returns at once unless one plays)
+        }
     }
 
     @Inject(method = "renderGameOverlay", at = @At("TAIL"), require = 1)
     private void bedwarsqol$hudPost(float partialTicks, CallbackInfo ci) {
         ModEvents.post(ModEvents.HUD_POST, partialTicks);
+        if (!TabHudGate.hidesHud()) HudPlayback.drawPost(Minecraft.getMinecraft());
         TabHudGate.endFrame();
     }
 }

@@ -34,7 +34,8 @@ import java.util.List;
  *       ({@link MarkerNav}: 3 s before it, the marker highlighted); {@code [ ]} slower/faster; 1 your view, 2 free
  *       camera; Esc closes the camera menu, else opens the Esc menu ({@link RewindEscScreen}); Tab held shows the
  *       recorded tab list (it holds the player-list binding); F5 cycles your view's perspective; F1 and the Clean
- *       View Key toggle the clean view ({@link ViewState}); 3 and Shift+3 ride the next and previous player (a
+ *       View Key (a key or a mouse button) toggle the clean view ({@link ViewState}: no HUD, hand or recorded screen;
+ *       the bar still shows on mouse move); 3 and Shift+3 ride the next and previous player (a
  *       playback part answers: {@link RiddenView}, Phase 14).</li>
  *   <li>Mouse: the bar's keys, marker icons and timeline ({@link ViewerLayout.Pointer}: a drag previews, the release
  *       seeks); right-click on the speed key steps down. In the free camera a drag off the bar looks around and the
@@ -310,6 +311,9 @@ public final class RewindViewerScreen extends RewindScreen {
         if (button != -1 || dx != 0 || dy != 0) {
             controls.fade.mouseMoved(nowMs);
         }
+        if (button > 0 && Mouse.getEventButtonState() && cleanViewButton(l, button, m)) {
+            return;
+        }
         if (button == 0 || button == 1) {
             boolean right = button == 1;
             if (Mouse.getEventButtonState()) {
@@ -349,6 +353,24 @@ public final class RewindViewerScreen extends RewindScreen {
         if (wheel != 0) {
             controls.scroll(wheel, nowMs);
         }
+    }
+
+    /**
+     * A press of the mouse button the Clean View Key is bound to ({@link ViewerKeys#mouseAction}) toggles the clean
+     * view, except a right click on the bar, which stays the bar's. @return true if it did
+     */
+    private boolean cleanViewButton(ViewerLayout l, int button, float[] m) {
+        ClientSettings cfg = BedwarsQol.config;
+        if (ViewerKeys.mouseAction(button, cfg == null ? 0 : cfg.rewindCleanViewKey) != ViewerKeys.Action.CLEAN_VIEW) {
+            return false;
+        }
+        if (button == 1 && controls.fade.visible()
+                && l.hit(m[0], m[1], controls.menuOpen).part != ViewerLayout.Part.NONE) {
+            return false;
+        }
+        session.view().toggleClean();
+        RewindPlayback.viewStateChanged();
+        return true;
     }
 
     private static boolean isKey(ViewerLayout.Hit h) {

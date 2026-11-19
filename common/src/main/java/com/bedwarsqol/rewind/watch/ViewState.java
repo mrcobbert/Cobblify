@@ -174,6 +174,24 @@ public final class ViewState {
         return followsRecording() && (recordedFlags & RewindFormat.VIEW_TAB) != 0;
     }
 
+    /**
+     * No HUD at all this frame (D6): the clean view in any view, or the recorded F1 in your view while no recorded
+     * screen is open. Vanilla skips the in-game overlay under F1 only while no screen is open
+     * ({@code EntityRenderer.updateCameraAndRender}: {@code !hideGUI || currentScreen != null}), and the viewer is a
+     * screen, so playback skips it itself; with a recorded screen open the live client drew it, so it is drawn.
+     */
+    public boolean hidesEveryHud() {
+        return hideGui() && screenKind() == RewindFormat.SCREEN_NONE;
+    }
+
+    /**
+     * The recorded Cobblify HUD may draw (D5): in your view only, never in the clean view, and not while the recorded
+     * Tab list or F3 hid it (an F5 override stops following those, so it shows again).
+     */
+    public boolean recordedHud() {
+        return view == View.YOU && !clean && !tabList() && !showDebug();
+    }
+
     /** The recorded screen to draw ({@code RewindFormat.SCREEN_*}): only in your view, never in the clean view. */
     public int screenKind() {
         return view == View.YOU && !clean ? recordedScreen : RewindFormat.SCREEN_NONE;

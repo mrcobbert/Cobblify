@@ -1,5 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.SessionHoldKey;
+
 /**
  * The viewer's keys (G37, G45, Q1) as LWJGL 2 {@code Keyboard.KEY_*} codes (common code cannot import LWJGL; the
  * values are pinned by {@code ViewerKeysTest}).
@@ -11,8 +13,8 @@ package com.bedwarsqol.rewind.watch;
  *   <li>Comma/period: previous/next marker. {@code [} {@code ]}: slower/faster.</li>
  *   <li>1: your view (it also ends the F5 and clean-view overrides); 2: free camera; 3: the next player's view,
  *       Shift+3 the previous one (Phase 14 rides them). Esc: the Esc menu. Tab (held): the recorded tab list.</li>
- *   <li>F5: first person, behind, front in your view (B4). F1 and the Clean View Key the user bound: the clean view
- *       (Q3, D6).</li>
+ *   <li>F5: first person, behind, front in your view (B4). F1 and the Clean View Key the user bound, a key or a
+ *       mouse button ({@link #mouseAction}): the clean view (Q3, D6).</li>
  * </ul>
  *
  * Pure.
@@ -106,6 +108,18 @@ public final class ViewerKeys {
             return Action.CLEAN_VIEW;
         }
         return a;
+    }
+
+    /**
+     * The action of a mouse button press: {@link Action#CLEAN_VIEW} when the user bound the Clean View Key to that
+     * button ({@code cleanViewKey} encoded as {@link SessionHoldKey#bindingForMouse}), else none. The left button
+     * (0) never: it is the bar, the free camera's look drag and click to ride.
+     */
+    public static Action mouseAction(int button, int cleanViewKey) {
+        if (button > 0 && SessionHoldKey.isMouse(cleanViewKey) && SessionHoldKey.mouseButton(cleanViewKey) == button) {
+            return Action.CLEAN_VIEW;
+        }
+        return Action.NONE;
     }
 
     /** The seek step of a seek action ({@link SeekPlanner#relative}), else 0. */
