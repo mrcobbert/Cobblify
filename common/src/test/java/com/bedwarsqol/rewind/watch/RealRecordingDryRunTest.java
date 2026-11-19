@@ -13,6 +13,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -59,6 +60,13 @@ public class RealRecordingDryRunTest {
             long loadMs = (System.nanoTime() - t0) / 1_000_000L;
             assertNull(label + " problem", r.problem());
             assertNull(label + " quick check", LoadedRecording.quickCheck(files[n], jsonFor(files[n])));
+            // Parity Phase 10 (C10): a v1 file takes no v2 path; no file has a skipped extension record.
+            if (r.formatVersion() == RewindFormat.FORMAT_VERSION_1) {
+                assertSame(label + " v1: no extension records", ExtRecords.EMPTY, r.ext());
+                assertSame(label + " v1: empty extension track", ExtTrack.EMPTY, r.extTrack());
+            }
+            assertEquals(label + " unknown extension records", 0, r.extUnknown());
+            assertEquals(label + " malformed extension records", 0, r.extMalformed());
 
             for (LoadedRecording.Segment s : r.segments()) {
                 if (s.netRecordCount() > 0) {
@@ -115,7 +123,8 @@ public class RealRecordingDryRunTest {
             assertEquals(label + " every recorded marker lies inside the game", r.trackMarkerCount(),
                     t.markers().size());
 
-            System.out.println("rewind dry run " + label + ": segments=" + r.segments().size()
+            System.out.println("rewind dry run " + label + ": format=" + r.formatVersion()
+                    + " extRecords=" + r.ext().size() + " segments=" + r.segments().size()
                     + " skipped=" + r.skippedSegments() + " torn=" + r.tornTail()
                     + " netBlocks=" + r.netBlockCount() + " netRecords=" + records
                     + " storedNetKB=" + r.retainedNetBytes() / 1024 + " rawNetKB=" + r.rawNetBytes() / 1024

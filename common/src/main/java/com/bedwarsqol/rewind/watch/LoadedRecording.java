@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.TreeMap;
 
 /**
- * A {@code .cbr} recording loaded for playback (format v1, {@link RewindFormat}).
+ * A {@code .cbr} recording loaded for playback (format v1 or v2, {@link RewindFormat}).
  *
  * <p>{@link #load} makes one pass with R1's {@link RecordingReader} (validation, torn-tail stop: a torn or recovered
  * file plays its complete prefix). It keeps each NET block's segment, first and last record time, record count, file
@@ -33,6 +33,12 @@ import java.util.TreeMap;
  * source 0 (normally the file's first); segments before it cannot be played and are skipped. {@link #segments()}
  * lists the start segment and every later one. TRACK records of skipped segments are left out of the self track;
  * GAME_START and MARKER records count from every segment.
+ *
+ * <p><b>Format v2.</b> The extension records ({@code tag >= 0x20}) of the playable segments go to {@link #ext()} (in
+ * time order, segment = position in {@link #segments()}) and {@link #extTrack()} (per tag and segment), and the
+ * TICK_HEAD records make the v2 tick table. A record of a tag this build does not know ({@link #extUnknown()}) or
+ * whose body does not decode ({@link #extMalformed()}) is skipped and counted; the recording still loads. A v1 file
+ * takes none of this: its {@code ext()} is {@link ExtRecords#EMPTY} whatever its TRACK holds (TASK C10).
  *
  * <p>{@link #problem()} is null for a playable recording, or the first of: {@link Problem#UNREADABLE} (no file, no
  * valid file header, an I/O error), {@link Problem#UNSUPPORTED_VERSION}, {@link Problem#NO_NET} (no NET record at all,
@@ -154,6 +160,10 @@ public final class LoadedRecording {
     private final Timeline timeline;
     private final int trackMarkers;
     private final ExtRecords ext;
+    private final ExtTrack extTrack;
+    private final int formatVersion;
+    private final int extUnknown;
+    private final int extMalformed;
 
     /** Created on the first inflate, so a quick check or a failed load holds no native zlib state. */
     private BlockCodec codec;
@@ -165,7 +175,7 @@ public final class LoadedRecording {
     private LoadedRecording(Problem problem, boolean tornTail, RecordingMeta meta, List<Segment> segments,
                             int skippedSegments, NetBlock[] netBlocks, long netRecords, long retainedNetBytes,
                             long rawNetBytes, SelfTrack selfTrack, Timeline timeline, int trackMarkers,
-                            ExtRecords ext) {
+                            ExtRecords ext, int formatVersion, int extUnknown, int extMalformed) {
         this.problem = problem;
         this.tornTail = tornTail;
         this.meta = meta;
@@ -179,6 +189,10 @@ public final class LoadedRecording {
         this.timeline = timeline;
         this.trackMarkers = trackMarkers;
         this.ext = ext;
+        this.extTrack = ExtTrack.of(ext);
+        this.formatVersion = formatVersion;
+        this.extUnknown = extUnknown;
+        this.extMalformed = extMalformed;
     }
 
     /**
@@ -251,6 +265,31 @@ public final class LoadedRecording {
     }
 
     /**
+     * The file header's format version (1 or 2); 0 without a valid header or for a version this build does not take.
+     */
+    public int formatVersion() {
+        return formatVersion;
+    }
+
+    /**
+     * The extension records by tag and segment, with time, tick and state-at-time lookups ({@link ExtTrack#EMPTY}
+     * for a v1 file).
+     */
+    public ExtTrack extTrack() {
+        return extTrack;
+    }
+
+    /** Extension records of a tag this build does not know, skipped while loading (a v1 file: 0). */
+    public int extUnknown() {
+        return extUnknown;
+    }
+
+    /** Extension records of a known tag whose body did not decode, skipped while loading (a v1 file: 0). */
+    public int extMalformed() {
+        return extMalformed;
+    }
+
+    /**
      * This recording with extension records {@code e} (the seam Phase 10 fills from the file): the same segments,
      * NET blocks and self track, and a timeline on the tick table built from {@code e}'s TICK_HEAD records when it
      * has any ({@link TickTable#forRecording}). The returned object has its own inflate cache; use one of the two.
@@ -263,7 +302,7 @@ public final class LoadedRecording {
         ExtRecords x = e == null ? ExtRecords.EMPTY : e;
         Timeline t = timeline.withTicks(TickTable.forRecording(timeline.originUs(), selfTrack, x));
         return new LoadedRecording(problem, tornTail, meta, segments, skippedSegments, netBlocks, netRecords,
-                retainedNetBytes, rawNetBytes, selfTrack, t, trackMarkers, x);
+                retainedNetBytes, rawNetBytes, selfTrack, t, trackMarkers, x, formatVersion, extUnknown, extMalformed);
     }
 
     /** MARKER records found in the TRACK, before the timeline keeps those inside the game. */
@@ -428,9 +467,9 @@ public final class LoadedRecording {
         }
     };
 
-    private static LoadedRecording failed(Problem p, boolean torn, RecordingMeta meta) {
+    private static LoadedRecording failed(Problem p, boolean torn, RecordingMeta meta, int version) {
         return new LoadedRecording(p, torn, meta, Collections.<Segment>emptyList(), 0, new NetBlock[0], 0, 0, 0,
-                new SelfTrack.Builder().build(), null, 0, ExtRecords.EMPTY);
+                new SelfTrack.Builder().build(), null, 0, ExtRecords.EMPTY, version, 0, 0);
     }
 
     private static LoadedRecording read(File cbr, File json, boolean keepNet) {
@@ -439,8 +478,9 @@ public final class LoadedRecording {
         String endJson = null;
         boolean torn;
         long anyNet = 0;
+        int version = 0;
         if (cbr == null || !cbr.isFile()) {
-            return failed(Problem.UNREADABLE, false, jsonMeta);
+            return failed(Problem.UNREADABLE, false, jsonMeta, version);
         }
         try {
             TeeInputStream tee = new TeeInputStream(new BufferedInputStream(new FileInputStream(cbr), 1 << 16));
@@ -448,11 +488,12 @@ public final class LoadedRecording {
             try {
                 reader = new RecordingReader(tee, cbr.length());
                 if (reader.unsupportedVersion()) {
-                    return failed(Problem.UNSUPPORTED_VERSION, false, jsonMeta);
+                    return failed(Problem.UNSUPPORTED_VERSION, false, jsonMeta, version);
                 }
                 if (reader.header() == null) {
-                    return failed(Problem.UNREADABLE, reader.tornTail(), jsonMeta);
+                    return failed(Problem.UNREADABLE, reader.tornTail(), jsonMeta, version);
                 }
+                version = reader.header().formatVersion;
                 long teeBase = RewindFormat.FILE_HEADER_LENGTH;
                 tee.clear();
                 RecordingReader.Block b;
@@ -523,14 +564,14 @@ public final class LoadedRecording {
                 tee.close();
             }
         } catch (IOException e) {
-            return failed(Problem.UNREADABLE, false, jsonMeta);
+            return failed(Problem.UNREADABLE, false, jsonMeta, version);
         } catch (RewindFormat.FormatException e) {
-            return failed(Problem.UNREADABLE, false, jsonMeta);
+            return failed(Problem.UNREADABLE, false, jsonMeta, version);
         }
 
         RecordingMeta meta = jsonMeta != null ? jsonMeta : RecordingMeta.fromJson(endJson);
         if (anyNet == 0) {
-            return failed(Problem.NO_NET, torn, meta);
+            return failed(Problem.NO_NET, torn, meta, version);
         }
 
         // GAME_START and MARKER from every segment's TRACK, in time order.
@@ -570,12 +611,19 @@ public final class LoadedRecording {
             }
         }
         if (playable.isEmpty()) {
-            return failed(Problem.NO_HEADER, torn, meta);
+            return failed(Problem.NO_HEADER, torn, meta, version);
         }
 
         List<Segment> segments = new ArrayList<Segment>();
         List<NetBlock> blocks = new ArrayList<NetBlock>();
         SelfTrack.Builder track = new SelfTrack.Builder();
+        // Format v2 only: a v1 file takes no v2 path (TASK C10), whatever its TRACK holds. A quick check (its answer
+        // does not depend on them) skips them too.
+        boolean v2 = keepNet && version > RewindFormat.FORMAT_VERSION_1;
+        ExtRecords.Builder extBuilder = v2 ? new ExtRecords.Builder() : null;
+        ExtTrack.Checker checker = v2 ? new ExtTrack.Checker() : null;
+        int extUnknown = 0;
+        int extMalformed = 0;
         long records = 0;
         long storedBytes = 0;
         long rawBytes = 0;
@@ -611,22 +659,38 @@ public final class LoadedRecording {
             track.segment(acc.number);
             for (RecordingReader.Block tb : acc.track) {
                 for (RecordingReader.TrackRecord tr : RecordingReader.trackRecords(tb)) {
-                    track.record(tr.timeUs, tr.tag, tr.body, 0, tr.body.length);
+                    if (!RewindFormat.isExtensionTag(tr.tag)) {
+                        track.record(tr.timeUs, tr.tag, tr.body, 0, tr.body.length);
+                    } else if (v2) {
+                        switch (checker.check(tr.tag, tr.body, 0, tr.body.length)) {
+                            case OK:
+                                extBuilder.add(index, tr.timeUs, tr.tag, tr.body, 0, tr.body.length);
+                                break;
+                            case UNKNOWN:
+                                extUnknown++;
+                                break;
+                            default:
+                                extMalformed++;
+                                break;
+                        }
+                    }
                 }
             }
         }
         if (records == 0) {
-            return failed(Problem.NO_NET, torn, meta);
+            return failed(Problem.NO_NET, torn, meta, version);
         }
         SelfTrack selfTrack = track.build();
-        // Phase 10 fills the extension records from the file here; a v1 file has none.
-        ExtRecords ext = ExtRecords.EMPTY;
+        ExtRecords ext = v2 ? extBuilder.build() : ExtRecords.EMPTY;
+        if (ext.isEmpty()) {
+            ext = ExtRecords.EMPTY;
+        }
         Timeline timeline = Timeline.build(origin, lastNet, gameStartRecord, backUs, markers, meta)
                 .withTicks(TickTable.forRecording(origin, selfTrack, ext));
         Problem problem = timeline.startInsideData() ? null : Problem.START_OUTSIDE_DATA;
         return new LoadedRecording(problem, torn, meta, Collections.unmodifiableList(segments), skipped,
                 blocks.toArray(new NetBlock[0]), records, storedBytes, rawBytes, selfTrack, timeline,
-                markers.size(), ext);
+                markers.size(), ext, version, extUnknown, extMalformed);
     }
 
     private static List<byte[]> unmodifiable(List<byte[]> l) {
