@@ -423,3 +423,8 @@ one-sided test ornithe com/bedwarsqol/rewind/HandledOrderTest.java
 # calls go (the recorded-window holder).
 one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackPart.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreenHolder.java
+# Rewind parity Phase 8 (Ornithe only): the recorded player's own sounds (the puppet's playSound answer) and derived
+# footsteps as playback parts, and their test. The step rule itself is in common (StepSounds).
+one-sided main ornithe com/bedwarsqol/rewind/watch/PuppetSounds.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/StepSoundPart.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PuppetSoundTest.java
