@@ -1,9 +1,19 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.HypixelLocationCodec.Location;
+import com.bedwarsqol.feature.SessionChatLine;
 import com.bedwarsqol.rewind.BlockCodec;
+import com.bedwarsqol.rewind.ExtCodec;
+import com.bedwarsqol.rewind.PacketStats;
+import com.bedwarsqol.rewind.RecordChunk;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RecordingReader;
+import com.bedwarsqol.rewind.RecordingStore;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.RewindGameRules;
+import com.bedwarsqol.rewind.RewindGameRules.Command;
+import com.bedwarsqol.rewind.RewindGameRules.CommandType;
+import com.bedwarsqol.rewind.RewindWriter;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 
 import java.io.ByteArrayOutputStream;
@@ -14,6 +24,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
+import java.util.zip.CRC32;
 
 /**
  * Writes format-v1 recordings for the watch tests with R1's {@link BlockCodec} and {@link RewindFormat}, block by
@@ -58,9 +70,21 @@ final class RecordingFixture {
     long storedNetBytes;
     long rawNetBytes;
     long lastTimeUs;
+    /** {@link #realShaped(int, Track...)}'s extra TRACK records, written before INDEX + END. */
+    private Track[] pendingExtra;
 
     RecordingFixture() {
         byte[] h = BlockCodec.fileHeader(BASE_EPOCH_MS);
+        out.write(h, 0, h.length);
+    }
+
+    /** A file whose header names format {@code version} (1: what dev.95/dev.96 wrote; 2: the current writer's). */
+    RecordingFixture(int version) {
+        byte[] h = BlockCodec.fileHeader(BASE_EPOCH_MS);
+        RewindFormat.putShort(h, 8, version);
+        CRC32 crc = new CRC32();
+        crc.update(h, 0, 24);
+        RewindFormat.putInt(h, 24, (int) crc.getValue());
         out.write(h, 0, h.length);
     }
 
@@ -216,6 +240,206 @@ final class RecordingFixture {
         return new Track(timeUs, RewindFormat.TAG_INFO, b);
     }
 
+    // ---------------- format v2 extension records ----------------
+
+    /** An extension record as {@code ExtCodec} encoded it: {@code c.buffer()[0, n)} = varint length + body. */
+    static Track ext(long timeUs, int tag, ExtCodec c, int n) {
+        return new Track(timeUs, tag, Arrays.copyOf(c.buffer(), n));
+    }
+
+    /** An extension record with a raw body (any bytes; framed with its varint length, as on disk). */
+    static Track extRaw(long timeUs, int tag, byte[] body) {
+        byte[] b = new byte[5 + body.length];
+        int n = RewindFormat.putVarInt(b, 0, body.length);
+        System.arraycopy(body, 0, b, n, body.length);
+        return new Track(timeUs, tag, Arrays.copyOf(b, n + body.length));
+    }
+
+    /** The body of an extension {@link Track} (the bytes after its length prefix). */
+    static byte[] extBody(Track t) {
+        RewindFormat.Cursor c = new RewindFormat.Cursor(t.body, 0, t.body.length);
+        int len = c.varInt();
+        return Arrays.copyOfRange(t.body, c.pos(), c.pos() + len);
+    }
+
+    /** A protocol-47 item slot: item id, count, damage, no NBT. */
+    static byte[] itemSlot(int item, int count, int damage) {
+        return new byte[]{(byte) (item >> 8), (byte) item, (byte) count, (byte) (damage >> 8), (byte) damage, 0};
+    }
+
+    /**
+     * One record of each of the 17 extension tags, every value derived from {@code seed}, the i-th at
+     * {@code t0 + i * stepUs} (step 0: all at one time). Keyed ones: INV slot {@code seed % 36}, SETTINGS FOV and the
+     * accent, HUD FPS.
+     */
+    static List<Track> everyExtTag(long t0, long stepUs, int seed) {
+        ExtCodec c = new ExtCodec();
+        List<Track> out = new ArrayList<Track>();
+        long t = t0;
+        out.add(ext(t, RewindFormat.TAG_TICK_HEAD, c, c.tickHead(seed % 7)));
+        byte[] data = {0x01, (byte) seed, 0x03};
+        out.add(ext(t += stepUs, RewindFormat.TAG_OUT, c, c.out(0x0A, data, 0, data.length)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_DIG, c, c.dig(RewindFormat.DIG_HITTING, 1000L + seed, 1, seed % 10)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_BLOCK, c, c.block(2000L + seed, 35 << 4, 0,
+                RewindFormat.BLOCK_CAUSE_OWN_BREAK)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_SOUND, c, c.sound("minecraft:dig.cloth", seed, 64f, 3f, 1f, 0.8f)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_VIEW, c, c.view(seed % 3, RewindFormat.VIEW_F3,
+                RewindFormat.SCREEN_INVENTORY)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_MOUSE, c, c.mouse(-40 + seed, 12)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_CHAT_INPUT, c, c.chatInput("/fake" + seed, 5)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_FOV, c, c.fov(70f + seed)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_USE, c, c.use(72_000 - seed)));
+        byte[] slot = itemSlot(267, 1 + seed % 60, seed);
+        out.add(ext(t += stepUs, RewindFormat.TAG_INV, c, c.inv(seed % 36, slot, 0, slot.length)));
+        c.beginSettings();
+        c.settingFloat(RewindFormat.SETTING_FOV, 90f + seed);
+        c.settingString(RewindFormat.SETTING_GUI_ACCENT, "pale-blue");
+        out.add(ext(t += stepUs, RewindFormat.TAG_SETTINGS, c, c.endSettings()));
+        out.add(ext(t += stepUs, RewindFormat.TAG_IDENTITY, c, c.identity(1L, 2L + seed, "FakeName", "FakeSkin", "")));
+        out.add(ext(t += stepUs, RewindFormat.TAG_INPUT, c, c.input(RewindFormat.INPUT_W | RewindFormat.INPUT_LMB)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_HUD, c,
+                c.beginHud(RewindFormat.HUD_FPS, RewindFormat.HUD_FLAG_ON_SCREEN).putVarInt(100 + seed).end()));
+        out.add(ext(t += stepUs, RewindFormat.TAG_CONT, c, c.cont(2, 53, slot, 0, slot.length)));
+        out.add(ext(t += stepUs, RewindFormat.TAG_TAP, c, c.tap(RewindFormat.TAP_LMB)));
+        return out;
+    }
+
+    /**
+     * A recorder run through the real {@link RewindWriter} in step mode on a temp folder (as R1's writer tests drive
+     * it): rules, a NET and a TRACK producer, a settable clock. Every TRACK record appended is kept with its segment.
+     */
+    static final class WriterRun {
+        static final class Sent {
+            final int segment;
+            final long timeUs;
+            final int tag;
+            final byte[] appended;
+
+            Sent(int segment, long timeUs, int tag, byte[] appended) {
+                this.segment = segment;
+                this.timeUs = timeUs;
+                this.tag = tag;
+                this.appended = appended;
+            }
+        }
+
+        final File dir;
+        long nowUs;
+        final RewindWriter writer;
+        final RewindGameRules rules = new RewindGameRules();
+        final PacketStats.Feed feed = new PacketStats.Feed();
+        RecordChunk.Producer net;
+        RecordChunk.Producer track;
+        final SelfTrackEncoder enc = new SelfTrackEncoder();
+        final List<Sent> trackSent = new ArrayList<Sent>();
+        int netSent;
+
+        WriterRun(File dir, long startUs) {
+            this.dir = dir;
+            this.nowUs = startUs;
+            RewindWriter.Clock clock = new RewindWriter.Clock() {
+                @Override
+                public long nowUs() {
+                    return WriterRun.this.nowUs;
+                }
+
+                @Override
+                public long wallMs() {
+                    return 1_760_000_000_000L + WriterRun.this.nowUs / 1000;
+                }
+            };
+            this.writer = new RewindWriter(new RecordingStore(dir), "0.0.0-test", clock, new Random(42));
+        }
+
+        void connect(int chunkCapacity) {
+            writer.submitAll(rules.onConnect(nowUs, false, true));
+            net = new RecordChunk.Producer(chunkCapacity, 2, 256, nowUs);
+            track = new RecordChunk.Producer(chunkCapacity, 2, 256, nowUs);
+            writer.attach(net, track, feed);
+        }
+
+        void advance(long us) {
+            nowUs += us;
+        }
+
+        /** Both sides of a boundary: the boundary packet opens the NET segment, then TRACK, header and rules. */
+        void boundary(int segment, byte[] boundaryPacket, int dimension) {
+            if (!net.startSegment(segment, null, 0, 0)) {
+                throw new IllegalStateException("net segment");
+            }
+            net(boundaryPacket);
+            if (!track.startSegment(segment, null, 0, 0)) {
+                throw new IllegalStateException("track segment");
+            }
+            enc.resetSegment();
+            List<byte[]> snapshot = new ArrayList<byte[]>();
+            snapshot.add(joinGame(dimension));
+            snapshot.add(packet(0x38, 30, 900 + dimension));
+            writer.header(segment, nowUs, snapshot);
+            writer.submitAll(rules.onBoundary(nowUs, segment));
+            writer.submitAll(rules.onLocation(nowUs, segment,
+                    new Location("fakeServer1A", "BEDWARS", null, "BEDWARS_EIGHT_ONE", "FakeMap")));
+        }
+
+        void net(byte[] p) {
+            if (!net.appendNet(nowUs, p, 0, p.length)) {
+                throw new IllegalStateException("net append");
+            }
+            netSent++;
+        }
+
+        void track(int tag, byte[] appended) {
+            if (!track.appendTrack(nowUs, tag, appended, 0, appended.length)) {
+                throw new IllegalStateException("track append");
+            }
+            trackSent.add(new Sent(track.segment(), nowUs, tag, appended));
+        }
+
+        /** The Bed Wars active edge: the rules open the file, GAME_START is written with backUs 0. */
+        void open() {
+            List<Command> open = rules.tick(nowUs, false, true);
+            if (open.isEmpty() || open.get(0).type != CommandType.OPEN) {
+                throw new IllegalStateException("no OPEN: " + open);
+            }
+            writer.submitAll(open);
+            track(RewindFormat.TAG_GAME_START, new byte[]{0});
+            writer.step();
+        }
+
+        void step() {
+            writer.step();
+        }
+
+        /** A win, then the close after the result delay; returns the one recording. */
+        File close() {
+            writer.submitAll(rules.onGameLine(nowUs, SessionChatLine.Kind.WIN));
+            int n = enc.gameEnd(RewindFormat.GAME_END_WIN);
+            track(RewindFormat.TAG_GAME_END, Arrays.copyOf(enc.buffer(), n));
+            writer.step();
+            nowUs += RewindGameRules.RESULT_CLOSE_US;
+            List<Command> close = rules.tick(nowUs, false, false);
+            if (close.isEmpty() || close.get(0).type != CommandType.CLOSE) {
+                throw new IllegalStateException("no CLOSE: " + close);
+            }
+            writer.submitAll(close);
+            writer.step();
+            File[] files = dir.listFiles();
+            File cbr = null;
+            for (File f : files == null ? new File[0] : files) {
+                if (f.getName().endsWith(".cbr")) {
+                    if (cbr != null) {
+                        throw new IllegalStateException("two recordings");
+                    }
+                    cbr = f;
+                }
+            }
+            if (cbr == null) {
+                throw new IllegalStateException("no recording");
+            }
+            return cbr;
+        }
+    }
+
     static RecordingMeta meta(String id, long gameStartUs, long endUs) {
         RecordingMeta m = new RecordingMeta();
         m.id = id;
@@ -248,7 +472,18 @@ final class RecordingFixture {
      * and its TRACK blocks sit between NET blocks out of time order. INDEX + END close it.
      */
     static RecordingFixture realShaped() {
-        RecordingFixture f = new RecordingFixture();
+        return realShaped(RewindFormat.FORMAT_VERSION);
+    }
+
+    /**
+     * {@link #realShaped()} with a header naming format {@code version}, plus {@code extra} TRACK records (if any) in
+     * one more TRACK block of the last segment.
+     */
+    static RecordingFixture realShaped(int version, Track... extra) {
+        RecordingFixture f = new RecordingFixture(version);
+        if (extra.length > 0) {
+            f.pendingExtra = extra;
+        }
         byte[] s47 = packet(0x47, 20, 1);
         f.header(SEG_JOIN, RewindFormat.SOURCE_CLIENT_SNAPSHOT, T0, joinGame(0), packet(0x09, 1, 0),
                 packet(0x38, 80, 2), packet(0x3E, 30, 3));
@@ -291,6 +526,10 @@ final class RecordingFixture {
                 gameStart(GAME_START_US, 0),
                 marker(MARKER_US[0], RewindFormat.MARKER_BED_BROKEN));
         f.net(SEG_GAME, times[199], Arrays.copyOfRange(times, 200, n), Arrays.copyOfRange(packets, 200, n));
+        if (f.pendingExtra != null) {
+            f.track(SEG_GAME, f.pendingExtra[0].timeUs, f.pendingExtra);
+            f.pendingExtra = null;
+        }
         f.end(realShapedMeta(), END_US);
         return f;
     }

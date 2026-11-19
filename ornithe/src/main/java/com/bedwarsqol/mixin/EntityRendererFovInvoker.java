@@ -8,7 +8,8 @@ import org.spongepowered.asm.mixin.gen.Invoker;
  * Rewind's recorder reads the final world field of view (PLAN section A "FOV"): vanilla's private
  * {@code getFOVModifier(partialTicks, true)}, the value the world pass uses, with every mod's change to it (Zoom,
  * Dynamic FOV, potions, bow, water). {@code com.bedwarsqol.rewind.ViewCapture} calls it at most once per 16 ms while a
- * game is recorded; the call reads state and changes nothing.
+ * game is recorded; Rewind playback's {@code RiddenView.pick} calls it once per click in the free camera (the pick ray
+ * uses the FOV the frame was drawn with). Both calls read state and change nothing.
  */
 @Mixin(EntityRenderer.class)
 public interface EntityRendererFovInvoker {

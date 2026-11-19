@@ -461,6 +461,14 @@ public final class ExtCodec {
         }
     }
 
+    /** {@code v}, or a malformed body when it is NaN or infinite (review code-2 O1: only a corrupt file holds one). */
+    static float finite(float v) {
+        if (Float.isNaN(v) || Float.isInfinite(v)) {
+            throw new RewindFormat.FormatException("float " + v);
+        }
+        return v;
+    }
+
     public static final class Sound extends Base {
         public String name;
         public float x;
@@ -473,11 +481,11 @@ public final class ExtCodec {
         public Sound read(byte[] b, int off, int len) {
             RewindFormat.Cursor c = open(b, off, len);
             name = c.string(RewindFormat.MAX_STRING_BYTES);
-            x = c.f32();
-            y = c.f32();
-            z = c.f32();
-            volume = c.f32();
-            pitch = c.f32();
+            x = finite(c.f32());
+            y = finite(c.f32());
+            z = finite(c.f32());
+            volume = finite(c.f32());
+            pitch = finite(c.f32());
             return this;
         }
     }
@@ -530,6 +538,9 @@ public final class ExtCodec {
         @Override
         public Fov read(byte[] b, int off, int len) {
             degrees = open(b, off, len).f32();
+            if (!(degrees > 0f && degrees < 180f)) { // NaN fails too
+                throw new RewindFormat.FormatException("fov " + degrees);
+            }
             return this;
         }
     }
@@ -592,7 +603,9 @@ public final class ExtCodec {
     /**
      * SETTINGS entries {@code [0, count)}: {@code keys[i]}, {@code types[i]} and the value in {@code ints},
      * {@code floats} or {@code strings} by type. A key this build does not number is still read (by its type), so
-     * the caller can ignore it; an unknown type cannot be skipped and makes the body malformed.
+     * the caller can ignore it; an unknown type cannot be skipped and makes the body malformed. A float entry that is
+     * NaN or infinite is read past and not kept (review code-2 O1: only a corrupt file holds one), so no reader ever
+     * sees it; the record's other entries stay.
      */
     public static final class Settings extends Base {
         public int count;
@@ -618,7 +631,9 @@ public final class ExtCodec {
             count = 0;
             int n = c.length(c.remaining() / 3); // every entry is at least 3 bytes
             grow(n);
-            for (int i = 0; i < n; i++) {
+            int kept = 0;
+            for (int e = 0; e < n; e++) {
+                int i = kept;
                 keys[i] = c.u8();
                 types[i] = c.u8();
                 ints[i] = 0;
@@ -630,6 +645,9 @@ public final class ExtCodec {
                         break;
                     case RewindFormat.SETTING_TYPE_F32:
                         floats[i] = c.f32();
+                        if (Float.isNaN(floats[i]) || Float.isInfinite(floats[i])) {
+                            continue; // not kept
+                        }
                         break;
                     case RewindFormat.SETTING_TYPE_STRING:
                         strings[i] = c.string(RewindFormat.MAX_STRING_BYTES);
@@ -637,8 +655,9 @@ public final class ExtCodec {
                     default:
                         throw new RewindFormat.FormatException("setting type " + types[i]);
                 }
+                kept++;
             }
-            count = n;
+            count = kept;
             return this;
         }
 

@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.SessionHoldKey;
 import com.bedwarsqol.rewind.watch.ViewerKeys.Action;
 import org.junit.Test;
 
@@ -75,6 +76,50 @@ public class ViewerKeysTest {
             assertEquals(Action.NONE, ViewerKeys.action(30 /* A */, false, free));
             assertEquals(Action.NONE, ViewerKeys.action(0, false, free));
         }
+    }
+
+    @Test
+    public void viewKeyCodesAreLwjglKeyboardCodes() {
+        assertEquals(4, ViewerKeys.KEY_3);
+        assertEquals(59, ViewerKeys.KEY_F1);
+        assertEquals(63, ViewerKeys.KEY_F5);
+    }
+
+    /** B4, D1, D6, Q3: F5 cycles the perspective, F1 and the Clean View Key toggle the clean view, 3 rides players. */
+    @Test
+    public void f5F1ThreeShiftThreeAndTheCleanViewKey() {
+        int clean = 47; // V, a binding the user chose
+        for (boolean free : new boolean[]{false, true}) {
+            assertEquals(Action.CYCLE_PERSPECTIVE, ViewerKeys.action(ViewerKeys.KEY_F5, false, free, clean));
+            assertEquals(Action.CLEAN_VIEW, ViewerKeys.action(ViewerKeys.KEY_F1, false, free, clean));
+            assertEquals(Action.CLEAN_VIEW, ViewerKeys.action(clean, false, free, clean));
+            assertEquals(Action.NEXT_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, false, free, clean));
+            assertEquals(Action.PREVIOUS_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, true, free, clean));
+            assertEquals("the three-argument form knows the fixed keys", Action.CYCLE_PERSPECTIVE,
+                    ViewerKeys.action(ViewerKeys.KEY_F5, false, free));
+            assertEquals(Action.NEXT_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, false, free));
+        }
+        assertEquals("unbound (0) is no key", Action.NONE, ViewerKeys.action(0, false, false, 0));
+        assertEquals("a fixed viewer key wins over the same binding", Action.TOGGLE_PLAY,
+                ViewerKeys.action(ViewerKeys.KEY_K, false, false, ViewerKeys.KEY_K));
+        assertEquals("a mouse binding never matches a key", Action.NONE, ViewerKeys.action(30, false, false, -100));
+    }
+
+    /**
+     * D6, Q3: a Clean View Key bound to a mouse button (the settings sheet stores {@code button - 100}) toggles the clean
+     * view on that button's press; the left button never does (it is the bar, the look drag and click to ride).
+     */
+    @Test
+    public void aCleanViewKeyBoundToAMouseButtonTogglesOnThatButton() {
+        int middle = SessionHoldKey.bindingForMouse(2);
+        assertEquals(Action.CLEAN_VIEW, ViewerKeys.mouseAction(2, middle));
+        assertEquals(Action.CLEAN_VIEW, ViewerKeys.mouseAction(4, SessionHoldKey.bindingForMouse(4)));
+        assertEquals(Action.CLEAN_VIEW, ViewerKeys.mouseAction(1, SessionHoldKey.bindingForMouse(1)));
+        assertEquals("another button", Action.NONE, ViewerKeys.mouseAction(3, middle));
+        assertEquals("the left button never", Action.NONE, ViewerKeys.mouseAction(0, SessionHoldKey.bindingForMouse(0)));
+        assertEquals("a key binding never matches a button", Action.NONE, ViewerKeys.mouseAction(2, 47));
+        assertEquals("unbound", Action.NONE, ViewerKeys.mouseAction(2, 0));
+        assertEquals("no button (a move)", Action.NONE, ViewerKeys.mouseAction(-1, middle));
     }
 
     @Test

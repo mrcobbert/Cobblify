@@ -173,9 +173,16 @@ public final class PolicyTest {
         same("42", joinAll(Policy.modifiers("shift", true, false, true)));
         refusedCall(() -> Policy.modifiers("shift", true, false, false));
         for (String p : new String[]{"rewind-watch-swing", "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek",
-                "rewind-watch-play-to", "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage"}) {
+                "rewind-watch-play-to", "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage",
+                "rewind-watch-actions", "rewind-watch-window"}) {
             allowed(Policy.probeName(p));
         }
+        for (String a : new String[]{"start", "status", "cleanup"}) {
+            same(a, Policy.rewindActions(java.util.Arrays.asList(a)));
+        }
+        refusedCall(() -> Policy.rewindActions(java.util.Arrays.asList("dig")));
+        refusedCall(() -> Policy.rewindActions(java.util.Collections.<String>emptyList()));
+        refusedCall(() -> Policy.rewindActions(java.util.Arrays.asList("start", "now")));
         refused(Policy.probeName("rewind-watch-copy"));
         same("0,1234", join3(Policy.rewindSeek(java.util.Arrays.asList("1234"))));
         same("1,-30000000", join3(Policy.rewindSeek(java.util.Arrays.asList("by", "-30000"))));

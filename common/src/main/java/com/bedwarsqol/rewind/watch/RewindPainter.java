@@ -100,8 +100,13 @@ public final class RewindPainter {
         /** The playhead from the game start (the drag preview while dragging). */
         public long timeUs;
         public float speed = 1f;
-        /** 0 your view, 1 free camera ({@link ViewerLayout#CAMERA_LABELS}). */
+        /**
+         * The camera option shown on the key: 0 your view, 1 free camera ({@link ViewerLayout#CAMERA_LABELS}),
+         * {@link ViewerLayout#FIRST_PLAYER} + i the i-th player's view; as the layout's {@code camera()}.
+         */
         public int camera;
+        /** Each listed player's team colour (ARGB), in menu order; null or missing entries: white. */
+        public int[] playerColours;
         public boolean menuOpen;
         public ViewerLayout.Hit hover;
         public ViewerLayout.Hit pressed;
@@ -144,7 +149,10 @@ public final class RewindPainter {
         float cy = camDown ? by + 8 : by + 6;
         if (camDown) pressedBox(c, camX, by + 7, camW, 14, camHover ? FACE_HOVER : FACE, SH, SH2);
         else raisedFace(c, camX, by + 5, camW, 16, camHover);
-        cameraOption(c, s.camera, camX + 7, cy, 10, acc);
+        String keyLabel = s.camera == l.camera() ? l.cameraKeyLabel() // a long name cut to the key
+                : s.camera >= 0 && s.camera < l.cameraOptionCount() ? l.cameraLabel(s.camera)
+                : ViewerLayout.CAMERA_LABELS[0];
+        cameraOption(c, s, s.camera, keyLabel, camX + 7, cy, 10, acc);
         chevron(c, camX + camW - 13, cy + 3, true, TEXT_HI);
 
         // speed key
@@ -176,43 +184,76 @@ public final class RewindPainter {
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
 
-        // the camera menu, above its key
+        // the camera menu, below its key: You, Free camera, then a row per player
         if (s.menuOpen) {
             float[] d = l.dropdown();
             card(c, d[0], d[1], d[2], d[3]);
-            for (int i = 0; i < ViewerLayout.CAMERA_LABELS.length; i++) {
+            for (int i = 0; i < l.cameraOptionCount(); i++) {
                 float[] r = l.dropdownRow(i);
                 if (is(s.hover, ViewerLayout.Part.CAMERA_OPTION, i)) c.fill(r[0], r[1], r[2], r[3], FACE);
                 if (i == s.camera) c.fill(r[0], r[1] + 2, 2, r[3] - 4, acc.base);
-                cameraOption(c, i, d[0] + 7, r[1] + 2, 10, acc);
+                cameraOption(c, s, i, l.cameraLabel(i), r[0] + 6, r[1] + 2, 10, acc);
             }
         }
         c.popAlpha();
     }
 
     /**
-     * Where the screen draws your face (8 x 8, the skin's face and hat layers) over the head frames this bar drew:
-     * on the camera key when it shows your view, and on the menu's first row when the menu is open.
+     * Where the screen draws faces (8 x 8, the skin's face and hat layers) over the head frames this bar drew, as
+     * {x, y, 8, 8, option}: option 0 is your face, {@link ViewerLayout#FIRST_PLAYER} + i the i-th player's. On the
+     * camera key when it shows your view or a player's, and on the menu's rows for you and every player when the menu
+     * is open.
      */
     public static List<float[]> faces(ViewerLayout l, BarState s) {
         List<float[]> out = new ArrayList<float[]>();
         if (s.alpha <= 0.004f) return out;
         boolean camDown = (is(s.pressed, ViewerLayout.Part.CAMERA, -1) && is(s.hover, ViewerLayout.Part.CAMERA, -1))
                 || s.menuOpen;
-        if (s.camera == 0) out.add(new float[]{l.camera[0] + 7 + 1, (camDown ? l.bar[1] + 8 : l.bar[1] + 6) + 1, 8, 8});
+        if (s.camera != 1) {
+            out.add(new float[]{l.camera[0] + 7 + 1, (camDown ? l.bar[1] + 8 : l.bar[1] + 6) + 1, 8, 8, s.camera});
+        }
         if (s.menuOpen) {
-            float[] r = l.dropdownRow(0);
-            out.add(new float[]{l.dropdown()[0] + 7 + 1, r[1] + 2 + 1, 8, 8});
+            for (int i = 0; i < l.cameraOptionCount(); i++) {
+                if (i == 1) continue;
+                float[] r = l.dropdownRow(i);
+                out.add(new float[]{r[0] + 6 + 1, r[1] + 2 + 1, 8, 8, i});
+            }
         }
         return out;
     }
 
-    /** One camera option: a head frame (your view) or the camera icon (free camera), then its label. */
-    private static void cameraOption(Canvas c, int camera, float x, float y, float h, SheetColors.Shades acc) {
-        if (camera == 0) c.fill(x, y + (h - 10) / 2f, 10, 10, acc.base);
-        else pix(c, ART_CAMERA, TEXT_HI, x + 1, y + (h - 6) / 2f, false);
-        String label = ViewerLayout.CAMERA_LABELS[camera == 0 ? 0 : 1];
-        text(c, label, x + ViewerLayout.CAMERA_ICON, y + (h - LINE) / 2f, TEXT_HI);
+    /** Player option {@code option}'s team colour, white when unknown. */
+    private static int playerColour(BarState s, int option) {
+        int i = option - ViewerLayout.FIRST_PLAYER;
+        return s.playerColours != null && i >= 0 && i < s.playerColours.length ? s.playerColours[i] : TEXT_HI;
+    }
+
+    /**
+     * One camera option: a head frame (your view in the accent, a player in their team's colour) or the camera icon
+     * (free camera), then its label (a player's name in their team's colour).
+     */
+    private static void cameraOption(Canvas c, BarState s, int option, String label, float x, float y, float h,
+                                     SheetColors.Shades acc) {
+        int colour = TEXT_HI;
+        if (option == 1) {
+            pix(c, ART_CAMERA, TEXT_HI, x + 1, y + (h - 6) / 2f, false);
+        } else if (option >= ViewerLayout.FIRST_PLAYER) {
+            colour = playerColour(s, option);
+            c.fill(x, y + (h - 10) / 2f, 10, 10, colour);
+        } else {
+            c.fill(x, y + (h - 10) / 2f, 10, 10, acc.base);
+        }
+        text(c, label, x + ViewerLayout.CAMERA_ICON, y + (h - LINE) / 2f, colour);
+    }
+
+    /**
+     * Another player's view (Phase 14): their name in their team's colour, centred under the bar
+     * ({@link ViewerLayout#riddenNameTop()}), whether or not the bar shows.
+     */
+    public static void riddenName(Canvas c, float screenW, String name, int colour) {
+        if (name == null || name.isEmpty()) return;
+        text(c, name, Math.round((screenW - c.width(name, ViewerLayout.FONT)) / 2f), ViewerLayout.riddenNameTop(),
+                colour);
     }
 
     /** The free camera's speed bar (G43; mockup {@code drawFly}): 10 segments, {@code level} lit. */
@@ -220,7 +261,7 @@ public final class RewindPainter {
                                 SheetColors.Shades accent) {
         if (alpha <= 0.004f) return;
         int n = 10;
-        float segW = 8, w = n * (segW + 1) + 1, x = Math.round((screenW - w) / 2f), y = screenH - 60;
+        float segW = 8, w = n * (segW + 1) + 1, x = Math.round((screenW - w) / 2f), y = ViewerLayout.flySpeedTop();
         c.pushAlpha(alpha);
         c.fill(x - 1, y - 1, w + 2, 10, RIM);
         c.fill(x, y, w, 8, BLACK);

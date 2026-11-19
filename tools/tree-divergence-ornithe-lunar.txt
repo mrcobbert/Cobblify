@@ -419,6 +419,55 @@ one-sided test ornithe com/bedwarsqol/rewind/LocalSoundCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/TickHeadCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/CaptureFailureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/HandledOrderTest.java
+# Rewind parity Phase 5 (Ornithe only): the playback seam later phases add parts to, and where the camera's window
+# calls go (the recorded-window holder).
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreenHolder.java
+# Rewind parity Phase 8 (Ornithe only): the recorded player's own sounds (the puppet's playSound answer) and derived
+# footsteps as playback parts, and their test. The step rule itself is in common (StepSounds).
+one-sided main ornithe com/bedwarsqol/rewind/watch/PuppetSounds.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/StepSoundPart.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/PuppetSoundTest.java
+# Rewind parity Phase 9 (Ornithe only): recorded chest, shop and death screens (the recorded-window holder).
+one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreens.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedScreensTest.java
+# Rewind parity Phase 7 (Ornithe only): your view's camera state part (bob, hand sway, nausea, derived FOV, flags).
+one-sided main ornithe com/bedwarsqol/rewind/watch/CameraStatePart.java
+# Rewind parity Phase 13 (Ornithe only): the recorded identity for the playback connection, the camera and the puppet,
+# and the v2 hand part (recorded swings, item use, all 41 inventory slots), and the identity test. The v2 hand rules
+# themselves are in common (HandState).
+one-sided main ornithe com/bedwarsqol/rewind/watch/HandV2Part.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/Identity.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/IdentityTest.java
+# Rewind parity Phase 11 (Ornithe only): v2 playback of your own digging, predicted blocks, sounds and window clicks
+# as playback parts, and their tests. The dig state rule itself is in common (DigState).
+one-sided main ornithe com/bedwarsqol/rewind/watch/DigPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/BlockPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/SoundPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/ContainerPart.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/DigPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/BlockPredictionTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/LocalSoundPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ContainerPlaybackTest.java
+# Rewind parity Phase 14 (Ornithe only): other players' views (the ridden view part, the hotbar cancel).
+one-sided main ornithe com/bedwarsqol/rewind/watch/RiddenView.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityXPOrbRewindMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudRealPaintersTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudRealPaintersDriver.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/NoGlClassLoader.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RiddenHandTest.java
+# Rewind parity Phase 12 (Ornithe only): recorded view, FOV and cursor parts (inventory screen and chat bar live in RecordedScreens).
+one-sided main ornithe com/bedwarsqol/rewind/watch/ViewPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/FovPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/CursorPainter.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedFovTest.java
 # Rewind parity Phase 6 (recorder wiring): Ornithe-only recorder tests and the opt-in client capture bench.
 one-sided test ornithe com/bedwarsqol/rewind/RewindReadOnlyScanTest.java
 one-sided test ornithe com/bedwarsqol/rewind/RewindClientCaptureBench.java
+# Rewind parity Phase 15 (Cobblify HUD as recorded, clean view): the recorded HUD part, its HUD source and test.
+one-sided main ornithe com/bedwarsqol/rewind/watch/HudPlayback.java
+one-sided main ornithe com/bedwarsqol/hud/RecordedHudSource.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/HudPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ViewParityTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java

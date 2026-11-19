@@ -201,12 +201,31 @@ public class BedwarsQol implements ClientModInitializer {
         LOGGER.info(READY_LINE);
     }
 
-    /** Rewind playback's screens, cameras and failure gallery (Ornithe only). */
+    /**
+     * Rewind playback's screens, cameras, failure gallery and playback parts (Ornithe only). The parts' order matters:
+     * the puppet's own sounds before the derived footsteps (StepSoundPart registers PuppetSounds first), the recorded
+     * screens (the camera's window holder) before the container writes, the v2 hand before another player's hand is
+     * put over it, and the ridden view's tab entry (their skin and arm) before the recorded identity's. Registering
+     * twice adds nothing.
+     */
     public static void wireRewindPlayback() {
         com.bedwarsqol.rewind.watch.RewindViewerScreen.register();
         com.bedwarsqol.rewind.watch.ViewerCameraControls.set(com.bedwarsqol.rewind.watch.CameraController.controls());
         com.bedwarsqol.rewind.watch.RewindPlayback.setFailureGallery(
                 () -> com.bedwarsqol.rewind.watch.RewindGalleryScreen.fromTitle(new net.minecraft.client.gui.GuiMainMenu()));
+        com.bedwarsqol.rewind.watch.CameraStatePart.register();
+        com.bedwarsqol.rewind.watch.StepSoundPart.register();
+        com.bedwarsqol.rewind.watch.RecordedScreens.register();
+        com.bedwarsqol.rewind.watch.DigPart.register();
+        com.bedwarsqol.rewind.watch.BlockPart.register();
+        com.bedwarsqol.rewind.watch.SoundPart.register();
+        com.bedwarsqol.rewind.watch.ContainerPart.register();
+        com.bedwarsqol.rewind.watch.ViewPart.register();
+        com.bedwarsqol.rewind.watch.FovPart.register();
+        com.bedwarsqol.rewind.watch.HandV2Part.register();
+        com.bedwarsqol.rewind.watch.RiddenView.register();
+        com.bedwarsqol.rewind.watch.Identity.register();
+        com.bedwarsqol.rewind.watch.HudPlayback.register();
     }
 
     /** The mod version, filled into com/bedwarsqol/version.properties by the build. */

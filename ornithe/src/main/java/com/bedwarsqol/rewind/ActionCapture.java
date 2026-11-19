@@ -350,8 +350,13 @@ public final class ActionCapture {
         }
     }
 
-    /** {@code World.setBlockState(pos, state, flags)} RETURN; {@code changed} is its return value. */
-    public static void onBlockChangeReturn(World world, BlockPos pos, boolean changed) {
+    /**
+     * {@code World.setBlockState(pos, state, flags)} RETURN. Whether the block changed is read from the world: the
+     * state now against the one HEAD captured (vanilla returns true exactly when the chunk took a different state; a
+     * change undone inside the call is no change to store). The return value is not read, so the hook's Mixin
+     * callback object is never built.
+     */
+    public static void onBlockChangeReturn(World world, BlockPos pos) {
         Sink s = sink;
         if (s == null || world == null || !world.isRemote || blockDepth == 0) {
             return;
@@ -361,13 +366,15 @@ public final class ActionCapture {
             return;
         }
         int old = BLOCK_OLD[d];
-        if (old == NOT_CAPTURED || !changed || failed || !onClientThread()) {
+        if (old == NOT_CAPTURED || failed || !onClientThread()) {
             return;
         }
         try {
-            IBlockState now = world.getBlockState(pos);
-            append(s, RewindFormat.TAG_BLOCK,
-                    CODEC.block(pos.toLong(), old, Block.BLOCK_STATE_IDS.get(now), SCOPE.blockCause()));
+            int now = Block.BLOCK_STATE_IDS.get(world.getBlockState(pos));
+            if (now == old) {
+                return;
+            }
+            append(s, RewindFormat.TAG_BLOCK, CODEC.block(pos.toLong(), old, now, SCOPE.blockCause()));
         } catch (Throwable t) {
             fail(t);
         }

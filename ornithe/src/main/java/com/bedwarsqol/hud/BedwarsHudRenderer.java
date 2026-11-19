@@ -654,7 +654,9 @@ public class BedwarsHudRenderer {
             PotionEntry entry = entries.get(i);
             if (PotionRows.blinkHidden(entry.durationTicks, entry.max, now)) continue;
             if (!requested) {
-                EffectIconTextures.request(); // once per session, and only once the HUD draws a row
+                // once per session, and only once the live HUD draws a row: a recording being drawn never starts the
+                // loader (its download is refused while one plays, which would leave the icons failed for the session)
+                if (source == LiveHudSource.INSTANCE) EffectIconTextures.request();
                 requested = true;
             }
             float rowY = y + i * PotionRows.ROW * e;

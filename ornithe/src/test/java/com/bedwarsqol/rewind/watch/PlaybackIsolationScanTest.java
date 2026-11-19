@@ -198,6 +198,97 @@ public class PlaybackIsolationScanTest {
         assertEquals(Collections.<String>emptyList(), bad);
     }
 
+    // ------------------------------------------------------------------ the recorded Cobblify HUD (Phase 15, D5)
+
+    /** The recorded HUD's files: the part and the painters' source. */
+    private static final String[] RECORDED_HUD = {"com/bedwarsqol/rewind/watch/HudPlayback.java",
+            "com/bedwarsqol/hud/RecordedHudSource.java"};
+    /** Reviewed references from the recorded HUD into {@code feature}, {@code stats} or {@code bedwars}: class -> why. */
+    private static final Map<String, String> RECORDED_HUD_REFS = new TreeMap<String, String>();
+    /**
+     * What the recorded HUD never names: the live trackers (CPS counters, Keystrokes fades, generator timers, Session
+     * Stats, Map Info, Upgrades &amp; Traps, the game context), the live source, the recorder, and any send or lookup.
+     */
+    private static final String[] RECORDED_HUD_FORBIDDEN = {"GeneratorTracker", "SessionStatsWatch", "SessionStats",
+            "HeightLimitWatch", "HeightLimitCore", "HeightLimitTable", "TeamUpgradesWatch", "TeamUpgradeLifecycle",
+            "TeamUpgradeCatalog", "HypixelContext", "ClickCounter", "LEFT_CLICKS", "RIGHT_CLICKS", "KS_FADES",
+            "LiveHudSource", "HudCapture", "getDebugFPS", "getNetHandler", "getPlayerInfo", "addToSendQueue",
+            "sendPacket", "writeAndFlush", "BedwarsQol.config"};
+
+    static {
+        RECORDED_HUD_REFS.put("feature.KeyFade",
+                "the recording's own Keystrokes fades, fed by TAP records; never the live KS_FADES");
+        RECORDED_HUD_REFS.put("feature.TeamUpgradeRows", "the row type recorded Upgrades & Traps rows decode into");
+        RECORDED_HUD_REFS.put("feature.DiagLog",
+                "a painter failure, logged once: the exception's class name only, no HUD text");
+    }
+
+    /**
+     * D5: drawing the recorded HUD counts, looks up and sends nothing. Its two files reach {@code feature},
+     * {@code stats} and {@code bedwars} only through the reviewed list (each with its reason), name no live tracker,
+     * no live source, no recorder and no send or lookup; the HUD layer hooks call the part, which returns at once
+     * unless a recording plays.
+     */
+    @Test
+    public void theRecordedHudCountsLooksUpAndSendsNothing() throws IOException {
+        File root = mainRoot();
+        Set<String> seen = new TreeSet<String>();
+        List<String> bad = new ArrayList<String>();
+        Pattern refs = Pattern.compile("\\bcom\\.bedwarsqol\\.((?:feature|stats|bedwars)\\.[A-Z]\\w*)");
+        for (String path : RECORDED_HUD) {
+            File f = new File(root, path);
+            assertTrue(path + " exists", f.isFile());
+            String src = strip(read(f));
+            Matcher m = refs.matcher(src);
+            while (m.find()) {
+                seen.add(m.group(1));
+                if (!RECORDED_HUD_REFS.containsKey(m.group(1))) {
+                    bad.add(path + ":" + line(src, m.start()) + " " + m.group(1) + " is not reviewed");
+                }
+            }
+            for (String token : RECORDED_HUD_FORBIDDEN) {
+                Matcher t = Pattern.compile("(?<![\\w])" + Pattern.quote(token) + "\\b").matcher(src);
+                while (t.find()) {
+                    bad.add(path + ":" + line(src, t.start()) + " names " + token);
+                }
+            }
+        }
+        assertEquals(Collections.<String>emptyList(), bad);
+        for (String cls : RECORDED_HUD_REFS.keySet()) {
+            assertTrue("stale reviewed entry " + cls, seen.contains(cls));
+        }
+
+        // a recording being drawn never starts the potion icon download (refused while one plays: failed for good)
+        String painters = strip(read(new File(root, "com/bedwarsqol/hud/BedwarsHudRenderer.java")));
+        Matcher request = Pattern.compile("EffectIconTextures\\s*\\.\\s*request\\s*\\(").matcher(painters);
+        int requests = 0;
+        while (request.find()) {
+            requests++;
+            int from = painters.lastIndexOf('\n', request.start()) + 1;
+            assertTrue("the icon loader starts from the live source only (line " + line(painters, request.start())
+                    + ")", painters.substring(from, request.start()).contains("source == LiveHudSource.INSTANCE"));
+        }
+        assertEquals(1, requests);
+
+        // the HUD layer hooks: one call each into the part, which checks for a playing recording first
+        String hook = strip(read(new File(root, "com/bedwarsqol/mixin/GuiIngameHudMixin.java")));
+        assertTrue("the text pass draws the recorded HUD", hook.contains("HudPlayback.drawText("));
+        assertTrue("the post pass draws the recorded Session Stats", hook.contains("HudPlayback.drawPost("));
+        assertTrue("every HUD hides in the clean view", hook.contains("HudPlayback.skipsOverlay("));
+        String part = strip(read(new File(root, RECORDED_HUD[0])));
+        int skip = part.indexOf("boolean skipsOverlay(Minecraft mc)");
+        assertTrue("skipsOverlay found", skip >= 0);
+        assertTrue("the skip asks hidesEveryHud (a playing recording) before anything else",
+                block(part, part.indexOf('{', skip)).replaceAll("\\s+", " ").startsWith("{ if (!hidesEveryHud()) {"));
+        for (String entry : new String[]{"hidesEveryHud", "draw"}) {
+            Matcher m = Pattern.compile("\\b(?:public\\s+)?(?:static\\s+)?(?:private\\s+)?(?:void|boolean)\\s+" + entry
+                    + "\\s*\\(\\s*(?:Minecraft\\s+\\w+\\s*,\\s*boolean\\s+\\w+\\s*)?\\)").matcher(part);
+            assertTrue(entry + " found", m.find());
+            String body = block(part, part.indexOf('{', m.end()));
+            assertTrue(entry + " returns unless a recording plays: " + body, body.contains("RewindPlayback.active()"));
+        }
+    }
+
     /** The checker itself: an ungated call is found, a gated one is not, a javadoc mention is not a call. */
     @Test
     public void theGateCheckerSeesThroughCommentsAndFindsUngatedCalls() {

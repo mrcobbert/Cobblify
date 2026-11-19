@@ -54,6 +54,11 @@ import java.util.TreeMap;
  * are reached by reflection on their own (unremapped) names; Minecraft through its MCP names, compile-checked. Every
  * reply is counts, ticks, flags and hashes: no recording id, player name, chat line, map or position leaves the game.
  *
+ * <p>Rewind parity (cycle 2026-11-18-rewind-parity, Phase 16): the snapshot adds four groups (the recorded view,
+ * the open window, the dig state, the recorded Cobblify HUD), {@code rewind-watch-state} names the ticks of the first
+ * recorded F5 and the first recorded chest window, and {@code rewind-watch-window} reports the held recorded screen.
+ * The actions RW records for them are {@link RewindActions}.
+ *
  * <p>Refusals: never on a multiplayer server ({@link Bridge#requireLocal}, which lets a Rewind recording through:
  * its world has no server behind it); open and stage only with cobdev's own Rewind folder; seek, play-to and quit
  * only while a recording plays.
@@ -69,6 +74,11 @@ final class RewindWatchProbes {
     static final String SELF_STATE = "com.bedwarsqol.rewind.SelfTrackEncoder$State";
     static final String TIMER_ACCESSOR = "com.bedwarsqol.mixin.MinecraftTimerAccessor";
     static final String CHAT_ACCESSOR = "com.bedwarsqol.mixin.GuiNewChatAccessor";
+    static final String REWIND_CAMERA = "com.bedwarsqol.rewind.watch.RewindCamera";
+    static final String DIG_PART = "com.bedwarsqol.rewind.watch.DigPart";
+    static final String HUD_PLAYBACK = "com.bedwarsqol.rewind.watch.HudPlayback";
+    static final String FORMAT = "com.bedwarsqol.rewind.RewindFormat";
+    static final String VIEW_DECODER = "com.bedwarsqol.rewind.ExtCodec$View";
     /** The longest a play-to may wait for its tick before the caller gives up (it can always quit). */
     private static final long TICK_US = 50_000L;
 
@@ -89,6 +99,7 @@ final class RewindWatchProbes {
     static Object run(String name, List<String> args) throws Exception {
         if ("rewind-watch-swing".equals(name)) return swing(args);
         if ("rewind-watch-stage".equals(name)) return stage(args);
+        if ("rewind-watch-actions".equals(name)) return RewindActions.run(args);
         return Bridge.onMain(() -> {
             Bridge.requireLocal();
             switch (name) {
@@ -104,6 +115,8 @@ final class RewindWatchProbes {
                     return snapshot();
                 case "rewind-watch-quit":
                     return quit();
+                case "rewind-watch-window":
+                    return window();
                 default:
                     throw new Refused("unknown probe " + name);
             }
@@ -285,7 +298,13 @@ final class RewindWatchProbes {
         }
         Object connection = field(cls(PLAYBACK), staticInstance(), "connection");
         out.put("discarded", connection == null ? null : call(connection, "discarded"));
-        if (active && timeline != null) out.put("firstSwingTick", firstSwingTick(session, timeline));
+        if (active && timeline != null) {
+            out.put("firstSwingTick", firstSwingTick(session, timeline));
+            long[] view = viewTicks(session, timeline);
+            out.put("perspectiveTick", view[0]);
+            out.put("windowOpenTick", view[1]);
+            out.put("windowCloseTick", view[2]);
+        }
         hand(mc, out);
         return out;
     }
@@ -352,6 +371,87 @@ final class RewindWatchProbes {
             if (Boolean.TRUE.equals(swingStartIn.invoke(null, seg, t - TICK_US, t))) return k;
         }
         return -1;
+    }
+
+    /** The recording {@link #viewTicks} was found for (weak) and its answer. */
+    private static java.lang.ref.WeakReference<Object> viewFor = new java.lang.ref.WeakReference<>(null);
+    private static long[] viewTicksFound = {-1, -1, -1};
+
+    /**
+     * From the recording's VIEW records (format v2; -1 each on v1): the first tick at or after the first recorded
+     * F5 (perspective 1 or 2), the first tick after a chest window opened (screen kind 3), and the first tick after
+     * that window's screen ended. Once per recording.
+     */
+    private static long[] viewTicks(Object session, Object timeline) throws Exception {
+        Object rec = call(session, "recording");
+        if (rec == null) return new long[]{-1, -1, -1};
+        if (rec == viewFor.get()) return viewTicksFound;
+        long[] out = {-1, -1, -1};
+        Object ext = call(rec, "ext");
+        int tagView = cls(FORMAT).getField("TAG_VIEW").getInt(null);
+        int chest = cls(FORMAT).getField("SCREEN_CHEST").getInt(null);
+        Object decoder = cls(VIEW_DECODER).getConstructor().newInstance();
+        byte[] buf = (byte[]) call(ext, "buffer");
+        int n = ((Number) call(ext, "size")).intValue();
+        for (int i = 0; i < n; i++) {
+            if (((Number) call(ext, "tag", i)).intValue() != tagView) continue;
+            call(decoder, "read", buf, ((Number) call(ext, "offset", i)).intValue(),
+                    ((Number) call(ext, "length", i)).intValue());
+            int persp = decoder.getClass().getField("perspective").getInt(decoder);
+            int kind = decoder.getClass().getField("screenKind").getInt(decoder);
+            long t = ((Number) call(ext, "timeUs", i)).longValue();
+            long tick = ((Number) call(timeline, "tickOf", t)).longValue();
+            if (out[0] < 0 && persp != 0) out[0] = tick;
+            if (out[1] < 0 && kind == chest) out[1] = tick + 1;
+            else if (out[1] >= 0 && out[2] < 0 && kind != chest) out[2] = tick + 1;
+        }
+        viewTicksFound = out;
+        viewFor = new java.lang.ref.WeakReference<>(rec);
+        return out;
+    }
+
+    /**
+     * {@code rewind-watch-window}: the held recorded screen (chest, inventory, death, chat or none), the camera's open
+     * window (its slots, how many of its own slots hold a stack) and a hash of the camera's own inventory.
+     */
+    private static Map<String, Object> window() throws Exception {
+        requirePlaying();
+        Minecraft mc = Bridge.mc();
+        EntityPlayerSP cam = mc.thePlayer;
+        if (cam == null) throw new Refused("no playback camera yet");
+        Map<String, Object> out = Bridge.ok();
+        Object held = call(call(cls(REWIND_CAMERA), "screenHolder"), "held");
+        out.put("held", heldKind(held));
+        net.minecraft.inventory.Container c = cam.openContainer;
+        boolean open = c != null && c != cam.inventoryContainer;
+        out.put("windowOpen", open);
+        int slots = open ? c.inventorySlots.size() : 0;
+        int own = Math.max(0, slots - 36);
+        int filled = 0;
+        for (int i = 0; i < own; i++) {
+            if (c.getSlot(i).getHasStack()) filled++;
+        }
+        out.put("slots", slots);
+        out.put("ownSlots", own);
+        out.put("ownFilled", filled);
+        out.put("inventory", hash(inventory(cam)));
+        return out;
+    }
+
+    private static String heldKind(Object held) {
+        if (held == null) return "none";
+        if (held instanceof net.minecraft.client.gui.inventory.GuiChest) return "chest";
+        if (held instanceof net.minecraft.client.gui.inventory.GuiInventory) return "inventory";
+        if (held instanceof net.minecraft.client.gui.GuiGameOver) return "death";
+        return "other";
+    }
+
+    private static String inventory(EntityPlayerSP c) {
+        StringBuilder b = new StringBuilder();
+        for (ItemStack s : c.inventory.mainInventory) b.append(stack(s)).append(';');
+        b.append('|');
+        for (ItemStack s : c.inventory.armorInventory) b.append(stack(s)).append(';');
+        return b.toString();
     }
 
     // ------------------------------------------------------------------ snapshot
@@ -449,6 +549,27 @@ final class RewindWatchProbes {
 
         groups.put("7-camera", hash(camera(mc, session)));
         counts.put("tick", call(session, "playheadTick"));
+
+        // Rewind parity (Phase 16): what the parts put on the playback client.
+        groups.put("8-view", hash(view(mc)));
+        EntityPlayerSP cam = mc.thePlayer;
+        StringBuilder win = new StringBuilder();
+        int windowSlots = 0;
+        if (cam != null && cam.openContainer != null && cam.openContainer != cam.inventoryContainer) {
+            net.minecraft.inventory.Container c = cam.openContainer;
+            windowSlots = c.inventorySlots.size();
+            win.append(c.windowId).append('|').append(windowSlots).append('|');
+            for (int i = 0; i < windowSlots; i++) win.append(stack(c.getSlot(i).getStack())).append(';');
+        }
+        win.append('|').append(heldKind(call(call(cls(REWIND_CAMERA), "screenHolder"), "held")));
+        groups.put("9-window", hash(win.toString()));
+        counts.put("windowSlots", windowSlots);
+        Object dig = call(call(cls(DIG_PART), "instance"), "state");
+        groups.put("10-dig", hash(call(dig, "hitting") + "|" + call(dig, "pos") + "|" + call(dig, "stage") + "|"
+                + call(dig, "shown")));
+        int[] shown = new int[1];
+        groups.put("11-hud", hash(hud(mc, shown)));
+        counts.put("hudItemsShown", shown[0]);
 
         Map<String, Object> out = Bridge.ok();
         out.put("groups", groups);
@@ -561,6 +682,36 @@ final class RewindWatchProbes {
             if (v == null && !hasField(gui.getClass(), n)) missing.add("GuiIngame." + n);
             b.append(n).append('=').append(v).append('\n');
         }
+        return b.toString();
+    }
+
+    /** Group 8: the view state the session writes (F5, F1, F3) and the recorded view it follows. */
+    private static String view(Minecraft mc) throws Exception {
+        Object v = call(cls(PLAYBACK), "view");
+        return mc.gameSettings.thirdPersonView + "|" + mc.gameSettings.hideGUI + "|" + mc.gameSettings.showDebugInfo
+                + "|" + call(v, "view") + "|" + call(v, "perspective") + "|" + call(v, "hideGui") + "|"
+                + call(v, "showDebug") + "|" + call(v, "tabList") + "|" + call(v, "screenKind") + "|"
+                + call(v, "clean");
+    }
+
+    /** Group 11: what the recorded Cobblify HUD shows (each item's on-screen flag, the text items' runs, the keys). */
+    private static String hud(Minecraft mc, int[] shown) throws Exception {
+        Field f = cls(HUD_PLAYBACK).getDeclaredField("INSTANCE");
+        f.setAccessible(true);
+        Object source = call(f.get(null), "source");
+        StringBuilder b = new StringBuilder();
+        for (int id = 1; id <= 12; id++) {
+            Object name = call(cls(FORMAT), "hudModuleName", id);
+            if (name == null) continue;
+            boolean on = Boolean.TRUE.equals(call(source, "shows", name));
+            if (on) shown[0]++;
+            b.append(name).append('=').append(on).append(':');
+            for (Object seg : (List<?>) call(source, "textRuns", mc, name)) {
+                b.append(seg.getClass().getField("text").get(seg)).append(',');
+            }
+            b.append(';');
+        }
+        b.append(Arrays.toString((boolean[]) call(source, "keyStates", mc)));
         return b.toString();
     }
 

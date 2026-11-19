@@ -14,7 +14,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/** TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release. */
+/**
+ * TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release.
+ * Parity B11 (Q1): the bar sits at the top edge and its camera menu and the flight-speed bar open downward, clear of
+ * the hotbar, hearts and XP bar.
+ */
 public class ViewerLayoutTest {
 
     static final long LEN = 406_600_000L;
@@ -33,9 +37,9 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void geometryAtNineSixtyMatchesTheMockup() {
+    public void geometryAtNineSixtyMatchesTheMockupAtTheTopEdge() {
         ViewerLayout l = plain(960);
-        float by = 540 - 2 - 26;
+        float by = 2;
         assertArrayEquals(new float[]{2, by, 956, 26}, l.bar, 0f);
         assertArrayEquals(new float[]{7, by + 5, 16, 16}, l.play, 0f);
         // camera key: 7 + widest (icon 14 + "Free camera") + 6 + 6 + 7
@@ -167,13 +171,13 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void cameraDropdownSitsAboveTheKey() {
+    public void cameraDropdownOpensDownwardBelowTheKey() {
         ViewerLayout l = plain(640);
         float[] dd = l.dropdown();
         assertEquals(l.camera[0], dd[0], 0f);
         assertEquals(l.camera[2], dd[2], 0f);
         assertEquals(1 + 3 + 2 * 14 + 3 + 1, dd[3], 0f);
-        assertEquals(l.bar[1] - 3 - dd[3], dd[1], 0f);
+        assertEquals(l.bar[1] + l.bar[3] + 3, dd[1], 0f);
         for (int i = 0; i < 2; i++) {
             float[] r = l.dropdownRow(i);
             assertArrayEquals(new float[]{dd[0] + 1, dd[1] + 4 + 14 * i, dd[2] - 2, 14}, r, 0f);
@@ -184,6 +188,165 @@ public class ViewerLayoutTest {
         }
         assertSame(ViewerLayout.Part.DROPDOWN, l.hit(dd[0] + 1, dd[1] + 1, true).part);
         assertEquals(Arrays.asList("You", "Free camera"), Arrays.asList(ViewerLayout.CAMERA_LABELS));
+    }
+
+    private static boolean intersects(float[] a, float[] b) {
+        return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+    }
+
+    /**
+     * B11: at GUI scales 1-4 of common windows, nothing the viewer draws (the bar, the open camera menu, the flight
+     * speed bar) touches vanilla's hotbar (182 x 22 at the bottom centre), XP bar (5 px above it) or the hearts,
+     * armour, hunger and air rows (up to 59 px above the bottom), as {@code GuiIngame} lays them out.
+     */
+    @Test
+    public void theBarItsMenuAndTheSpeedBarNeverCoverTheHotbarHeartsOrXpBar() {
+        int[][] displays = {{1920, 1080}, {1280, 720}, {854, 480}, {2560, 1440}, {1366, 768}};
+        for (int[] d : displays) {
+            for (int scale = 1; scale <= 4; scale++) {
+                float w = (float) Math.ceil(d[0] / (double) scale), h = (float) Math.ceil(d[1] / (double) scale);
+                if (w < 320 || h < 240) {
+                    continue; // vanilla never picks a scale that small
+                }
+                ViewerLayout l = ViewerLayout.of(w, h, GalleryModelTest.MC, LEN, new long[]{60_000_000L},
+                        new int[]{D});
+                float cx = w / 2f;
+                float[][] hud = {
+                        {cx - 91, h - 22, 182, 22},      // hotbar
+                        {cx - 91, h - 29, 182, 5},       // XP bar
+                        {cx - 91, h - 39, 81, 9},        // hearts
+                        {cx - 91, h - 49, 81, 9},        // a second heart row or armour
+                        {cx - 91, h - 59, 81, 9},        // absorption rows
+                        {cx + 10, h - 39, 81, 9},        // hunger
+                        {cx + 10, h - 49, 81, 9},        // air
+                };
+                float[] fly = {cx - 46, ViewerLayout.flySpeedTop() - 1, 92, 10};
+                String at = (int) w + "x" + (int) h + " scale " + scale;
+                for (float[] r : hud) {
+                    assertFalse(at + " bar", intersects(l.bar, r));
+                    assertFalse(at + " camera menu", intersects(l.dropdown(), r));
+                    assertFalse(at + " speed bar", intersects(fly, r));
+                }
+                assertTrue(at + ": the bar is at the top", l.bar[1] + l.bar[3] < h / 4f);
+                assertTrue(at + ": the speed bar is below the bar", fly[1] > l.bar[1] + l.bar[3]);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ Phase 14: players in the camera menu (D1, D3)
+
+    static ViewerLayout withPlayers(float w, float h, String[] players, int camera) {
+        return ViewerLayout.of(w, h, GalleryModelTest.MC, LEN, new long[]{60_000_000L, 200_000_000L},
+                new int[]{D, F}, players, camera);
+    }
+
+    @Test
+    public void theCameraMenuListsYouFreeCameraAndEveryPlayer() {
+        ViewerLayout l = withPlayers(640, 540, new String[]{"Alice", "Bob"}, 0);
+        assertEquals(4, l.cameraOptionCount());
+        assertEquals(Arrays.asList("You", "Free camera", "Alice", "Bob"), Arrays.asList(l.cameraLabel(0),
+                l.cameraLabel(1), l.cameraLabel(2), l.cameraLabel(3)));
+        assertEquals(2, ViewerLayout.FIRST_PLAYER);
+        float[] dd = l.dropdown();
+        assertEquals("short names: one column as wide as the key", l.camera[0], dd[0], 0f);
+        assertEquals(l.camera[2], dd[2], 0f);
+        assertEquals(1 + 3 + 4 * 14 + 3 + 1, dd[3], 0f);
+        for (int i = 0; i < 4; i++) {
+            float[] r = l.dropdownRow(i);
+            assertArrayEquals(new float[]{dd[0] + 1, dd[1] + 4 + 14 * i, dd[2] - 2, 14}, r, 0f);
+            ViewerLayout.Hit h = l.hit(r[0] + 5, r[1] + 5, true);
+            assertSame(ViewerLayout.Part.CAMERA_OPTION, h.part);
+            assertEquals(i, h.index);
+        }
+        // picking a player's row asks for that option (the viewer rides player option - FIRST_PLAYER)
+        ViewerLayout.Pointer p = new ViewerLayout.Pointer();
+        float[] bob = l.dropdownRow(3);
+        p.down(l, bob[0] + 2, bob[1] + 2, true, false);
+        ViewerLayout.Action a = p.up(l, bob[0] + 3, bob[1] + 3);
+        assertSame(ViewerLayout.Action.Kind.CAMERA, a.kind);
+        assertEquals(3, a.index);
+        // no players: You and Free camera only
+        assertEquals(2, withPlayers(640, 540, new String[0], 0).cameraOptionCount());
+        assertEquals(2, withPlayers(640, 540, null, 0).cameraOptionCount());
+    }
+
+    @Test
+    public void aLongNameWidensTheMenuNotTheKey() {
+        String longName = "Abcdefghijklmnop";
+        ViewerLayout plain = plain(640);
+        ViewerLayout l = withPlayers(640, 540, new String[]{longName}, 0);
+        assertArrayEquals("the bar does not move", plain.camera, l.camera, 0f);
+        assertEquals(plain.stripW, l.stripW, 0f);
+        float[] dd = l.dropdown();
+        float need = 7 + ViewerLayout.CAMERA_ICON + GalleryModelTest.MC.width(longName, ViewerLayout.FONT) + 7;
+        assertTrue("the menu fits the name: " + dd[2] + " >= " + need, dd[2] >= need);
+        assertEquals("right-aligned under the key", right(l.camera), right(dd), 1e-3f);
+    }
+
+    @Test
+    public void theKeyShowsTheRiddenPlayerWithTheNameTrimmedToFit() {
+        ViewerLayout you = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, 0);
+        assertEquals(0, you.camera());
+        assertEquals("You", you.cameraKeyLabel());
+        assertEquals("Free camera", withPlayers(640, 540, new String[]{"Bob"}, 1).cameraKeyLabel());
+        ViewerLayout bob = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, 2);
+        assertEquals(2, bob.camera());
+        assertEquals("Bob", bob.cameraKeyLabel());
+        assertArrayEquals(you.camera, bob.camera, 0f);
+        ViewerLayout longOne = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, 3);
+        assertArrayEquals("riding a long name keeps the key's width", you.camera, longOne.camera, 0f);
+        String shown = longOne.cameraKeyLabel();
+        assertTrue(shown, "Abcdefghijklmnop".startsWith(shown) && shown.length() >= 3 && shown.length() < 16);
+        assertTrue(GalleryModelTest.MC.width(shown, ViewerLayout.FONT)
+                <= GalleryModelTest.MC.width("Free camera", ViewerLayout.FONT));
+        assertTrue(GalleryModelTest.MC.width(shown + "Abcdefghijklmnop".charAt(shown.length()), ViewerLayout.FONT)
+                > GalleryModelTest.MC.width("Free camera", ViewerLayout.FONT));
+        assertEquals("an option that does not exist shows your view", "You",
+                withPlayers(640, 540, new String[]{"Bob"}, 7).cameraKeyLabel());
+    }
+
+    /** B11 with a full lobby: the menu opens more columns instead of reaching the hotbar, hearts or XP bar. */
+    @Test
+    public void aFullLobbyOpensColumnsThatStayClearOfTheHud() {
+        String[] players = new String[15];
+        for (int i = 0; i < players.length; i++) players[i] = "Player_" + (char) ('a' + i) + "name";
+        int[][] displays = {{1920, 1080}, {1280, 720}, {854, 480}, {2560, 1440}, {1366, 768}, {640, 480}};
+        boolean sawColumns = false;
+        for (int[] d : displays) {
+            for (int scale = 1; scale <= 4; scale++) {
+                float w = (float) Math.ceil(d[0] / (double) scale), h = (float) Math.ceil(d[1] / (double) scale);
+                if (w < 320 || h < 240) continue;
+                ViewerLayout l = withPlayers(w, h, players, 0);
+                assertEquals(17, l.cameraOptionCount());
+                float cx = w / 2f;
+                float[][] hud = {{cx - 91, h - 22, 182, 22}, {cx - 91, h - 29, 182, 5}, {cx - 91, h - 59, 81, 37},
+                        {cx + 10, h - 49, 81, 27}};
+                String at = (int) w + "x" + (int) h + " scale " + scale;
+                float[] dd = l.dropdown();
+                assertTrue(at, dd[0] >= 0 && right(dd) <= w);
+                assertTrue(at, dd[1] + dd[3] <= h - ViewerLayout.HUD_CLEAR);
+                for (float[] r : hud) assertFalse(at + " menu over the HUD", intersects(dd, r));
+                if (dd[2] > l.camera[2] + 1) sawColumns = true;
+                for (int i = 0; i < 17; i++) {
+                    float[] r = l.dropdownRow(i);
+                    assertTrue(at + " row " + i + " inside the card", r[0] >= dd[0] && right(r) <= right(dd)
+                            && r[1] >= dd[1] && r[1] + r[3] <= dd[1] + dd[3]);
+                    ViewerLayout.Hit hit = l.hit(r[0] + r[2] / 2, r[1] + r[3] / 2, true);
+                    assertSame(at, ViewerLayout.Part.CAMERA_OPTION, hit.part);
+                    assertEquals(at, i, hit.index);
+                    for (int j = 0; j < i; j++) assertFalse(at + " rows overlap", intersects(r, l.dropdownRow(j)));
+                }
+            }
+        }
+        assertTrue("short windows get a second column", sawColumns);
+    }
+
+    @Test
+    public void theRiddenPlayersNameSitsUnderTheBar() {
+        ViewerLayout l = plain(427);
+        assertTrue(ViewerLayout.riddenNameTop() > l.bar[1] + l.bar[3]);
+        assertTrue("clear of the hotbar region at the smallest window",
+                ViewerLayout.riddenNameTop() + 9 < 240 - ViewerLayout.HUD_CLEAR);
     }
 
     @Test

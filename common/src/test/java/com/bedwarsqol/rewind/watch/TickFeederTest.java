@@ -15,6 +15,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -34,6 +35,7 @@ public class TickFeederTest {
             final byte[][] header1;
             final List<Long> times = new ArrayList<Long>();
             final List<byte[]> packets = new ArrayList<byte[]>();
+            final List<Long> ticks = new ArrayList<Long>();
 
             Seg(int number, byte[][] header0, byte[][] header1) {
                 this.number = number;
@@ -62,9 +64,23 @@ public class TickFeederTest {
             return this;
         }
 
+        /** A TICK record (position x = its index) at {@code timeUs} in the current segment: a v1 tick time. */
+        Rec tick(long timeUs) {
+            segs.get(segs.size() - 1).ticks.add(timeUs);
+            return this;
+        }
+
         LoadedRecording load(File dir, long gameStartUs, long endUs) throws IOException {
             RecordingFixture f = new RecordingFixture();
             for (Seg s : segs) {
+                if (!s.ticks.isEmpty()) {
+                    com.bedwarsqol.rewind.SelfTrackEncoder enc = new com.bedwarsqol.rewind.SelfTrackEncoder();
+                    RecordingFixture.Track[] t = new RecordingFixture.Track[s.ticks.size()];
+                    for (int i = 0; i < t.length; i++) {
+                        t[i] = RecordingFixture.tick(s.ticks.get(i), enc, i, 64, 0, 0f, 0f, 0);
+                    }
+                    f.track(s.number, s.ticks.get(0), t);
+                }
                 long first = s.times.get(0);
                 if (s.header0 != null) {
                     f.header(s.number, RewindFormat.SOURCE_CLIENT_SNAPSHOT, first, s.header0);
@@ -118,6 +134,8 @@ public class TickFeederTest {
         static final int BOUNDARY = 1;
         static final int HOOK = 2;
         static final int SAMPLE = 3;
+        static final int WINDOW = 4;
+        static final int LOCAL = 5;
         final int kind;
         final long tick;
         final int packetId;
@@ -167,6 +185,18 @@ public class TickFeederTest {
         public boolean sessionHook(int packetId, byte[] buf, int off, int len) {
             events.add(new Event(Event.HOOK, tick, packetId, feeder.recordIndex(), feeder.recordTimeUs(), null));
             return true;
+        }
+
+        @Override
+        public boolean window(int packetId, byte[] buf, int off, int len) {
+            events.add(new Event(Event.WINDOW, tick, packetId, feeder.recordIndex(), feeder.recordTimeUs(),
+                    Arrays.copyOfRange(buf, off, off + len)));
+            return true;
+        }
+
+        @Override
+        public void local(int tag, long timeUs, byte[] buf, int off, int len) {
+            events.add(new Event(Event.LOCAL, tick, tag, -1, timeUs, Arrays.copyOfRange(buf, off, off + len)));
         }
 
         @Override
@@ -351,7 +381,7 @@ public class TickFeederTest {
         Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1())
                 .at(o, RecordingFixture.joinGame(0))
                 .at(o + 10, p(0x08, 1))       // position/look: acts on the client player
-                .at(o + 20, p(0x2D, 2))       // open window
+                .at(o + 20, p(0x31, 2))       // window property
                 .at(o + 30, p(0x2B, 4, 0, 0, 0, 0)) // credits screen
                 .at(o + 40, p(0x2B, 1, 0, 0, 0, 0)) // rain: passes
                 .at(o + 50, p(0x02, 7));
@@ -368,6 +398,280 @@ public class TickFeederTest {
         }
         assertEquals(Arrays.asList(0x01, 0x2B, 0x02), ids);
         assertEquals("three NET records", 3, feeder.dropped());
+    }
+
+    @Test
+    public void windowPacketsGoToTheWindowHolderNeverToApply() throws Exception {
+        long o = 1_000_000L;
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1())
+                .at(o, RecordingFixture.joinGame(0))
+                .at(o + 10, p(0x2D, 7, 0))          // open a shop window
+                .at(o + 20, p(0x30, 7, 0, 0))       // its contents
+                .at(o + 30, p(0x2F, 7, 0, 40, 0xFF, 0xFF)) // a player slot through the shop's window id
+                .at(o + 40, p(0x2F, 0, 0, 36, 0xFF, 0xFF)) // the inventory: still applied
+                .at(o + 50, p(0x2E, 7));            // close
+        LoadedRecording r = rec.load(tmp.newFolder(), o, o + 1_000_000L);
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        sink.feed(0);
+        sink.feed(1);
+        List<Integer> window = new ArrayList<Integer>();
+        for (Event e : sink.of(Event.WINDOW)) {
+            window.add(e.packetId);
+        }
+        assertEquals(Arrays.asList(0x2D, 0x30, 0x2F, 0x2E), window);
+        for (Event e : sink.of(Event.APPLY)) {
+            assertTrue("never applied: 0x" + Integer.toHexString(e.packetId), e.packetId != 0x2D
+                    && e.packetId != 0x2E && e.packetId != 0x30 && !(e.packetId == 0x2F && e.bytes[1] != 0));
+        }
+        assertEquals("the window-0 S2F still applies", 1, applied(sink, 0x2F));
+        assertEquals(0, feeder.dropped());
+    }
+
+    // ---------------- event order: handled counts (round 2 B1) and the local phase (review B2) ----------------
+
+    private static final long MS = 1_000L;
+    /** The origin: the S01, ordinal 1. */
+    private static final long EO = 40 * MS;
+
+    /** TICK_HEAD bodies at the given times (ms) with the given handled increments and flags, then other records. */
+    static ExtRecords.Builder heads(long[] ms, int[] increments, int[] flags) {
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        for (int i = 0; i < ms.length; i++) {
+            int n = c.tickHead(increments[i], flags == null ? 0 : flags[i]);
+            b.addEncoded(0, ms[i] * MS, RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+        }
+        return b;
+    }
+
+    static byte[] blockBody() {
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        int n = c.block(42L, 0, 35 << 4, RewindFormat.BLOCK_CAUSE_OTHER);
+        return ExtRecords.body(c.buffer(), n);
+    }
+
+    /**
+     * The review cases: S01 at 40 (ordinal 1), fillers at 50-90 (ordinals 2-6), an S47 (Netty-handled, no ordinal)
+     * at 99.2, the S23 at {@code s23Us} (ordinal 7), an S47 right after it, heads at 100 and 150 with handled counts
+     * {@code h100}, 7, BLOCK(P, wool) at 101.
+     */
+    private LogSink order(long s23Us, int h100) throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0));
+        for (int i = 0; i < 5; i++) {
+            rec.at((50 + 10 * i) * MS, p(0x03, i));
+        }
+        rec.at(99_200L, p(0x47, 1));
+        rec.at(s23Us, p(0x23, 0, 0, 0, 0, 0, 0, 0, 42, 0));
+        rec.at(s23Us + 200, p(0x47, 2));
+        ExtRecords ext = heads(new long[]{100, 150}, new int[]{h100, 7 - h100}, null)
+                .add(0, 101 * MS, RewindFormat.TAG_BLOCK, blockBody()).build();
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS).withExt(ext);
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        TickTable t = r.timeline().ticks();
+        lastTable = t;
+        for (long k = 0; k <= t.tickOf(150 * MS); k++) {
+            sink.feed(k);
+        }
+        return sink;
+    }
+
+    private TickTable lastTable;
+
+    /** The order of the S23, the S47s and the BLOCK in the feed, as "s23", "s47a", "s47b", "block". */
+    private static List<String> s23AndBlock(LogSink sink) {
+        List<String> out = new ArrayList<String>();
+        for (Event e : sink.events) {
+            if (e.kind == Event.APPLY && e.packetId == 0x23) {
+                out.add("s23@" + e.tick);
+            } else if (e.kind == Event.APPLY && e.packetId == 0x47 && e.recordIndex != TickFeeder.HEADER) {
+                out.add((e.bytes[1] == 1 ? "s47a@" : "s47b@") + e.tick);
+            } else if (e.kind == Event.LOCAL && e.packetId == RewindFormat.TAG_BLOCK) {
+                out.add("block@" + e.tick);
+            }
+        }
+        return out;
+    }
+
+    /** The world ends as the last writer left it: air from the S23, wool from the BLOCK. */
+    private static String endState(LogSink sink) {
+        String state = "none";
+        for (Event e : sink.events) {
+            if (e.kind == Event.APPLY && e.packetId == 0x23) {
+                state = "air";
+            } else if (e.kind == Event.LOCAL && e.packetId == RewindFormat.TAG_BLOCK) {
+                state = "wool";
+            }
+        }
+        return state;
+    }
+
+    @Test
+    public void roundTwoInterleavingTheS23QueuedBeforeTheHeadButHandledAfterItComesAfterTheBlock() throws Exception {
+        LogSink sink = order(99_500L, 6);
+        TickTable t = lastTable;
+        long k100 = t.tickOf(100 * MS);
+        long k150 = t.tickOf(150 * MS);
+        assertEquals(Arrays.asList("s47a@" + k100, "block@" + k100, "s23@" + k150, "s47b@" + k150),
+                s23AndBlock(sink));
+        assertEquals("the server's correction handled after the prediction wins", "air", endState(sink));
+    }
+
+    @Test
+    public void anS23HandledBeforeTheHeadComesFirstWhateverItsStamp() throws Exception {
+        LogSink sink = order(99_500L, 7);
+        long k100 = lastTable.tickOf(100 * MS);
+        assertEquals(Arrays.asList("s47a@" + k100, "s23@" + k100, "s47b@" + k100, "block@" + k100),
+                s23AndBlock(sink));
+        assertEquals("wool", endState(sink));
+    }
+
+    @Test
+    public void roundOneCaseTheS23StampedAfterTheHeadComesAfterTheBlock() throws Exception {
+        LogSink sink = order(110_000L, 6);
+        TickTable t = lastTable;
+        assertEquals(Arrays.asList("s47a@" + t.tickOf(100 * MS), "block@" + t.tickOf(100 * MS),
+                "s23@" + t.tickOf(150 * MS), "s47b@" + t.tickOf(150 * MS)), s23AndBlock(sink));
+        assertEquals("air", endState(sink));
+    }
+
+    @Test
+    public void localRecordsComeAfterTheTicksNetRecordsAndBeforeItsSampleInStampOrder() throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0))
+                .at(60 * MS, p(0x03, 1));
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = heads(new long[]{100, 150}, new int[]{2, 0}, null);
+        int n = c.use(72000);
+        b.add(0, 140 * MS, RewindFormat.TAG_USE, ExtRecords.body(c.buffer(), n));
+        b.add(0, 101 * MS, RewindFormat.TAG_BLOCK, blockBody());
+        n = c.tap(RewindFormat.TAP_LMB);
+        b.add(0, 120 * MS, RewindFormat.TAG_TAP, ExtRecords.body(c.buffer(), n)); // time-scoped: never in the feed
+        n = c.use(0);
+        b.add(0, 150 * MS, RewindFormat.TAG_USE, ExtRecords.body(c.buffer(), n)); // the next tick's interval
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS).withExt(b.build());
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        long k100 = r.timeline().ticks().tickOf(100 * MS);
+        for (long k = 0; k <= k100 + 1; k++) {
+            sink.feed(k);
+        }
+        List<String> seen = new ArrayList<String>();
+        for (Event e : sink.events) {
+            if (e.tick < k100 || e.recordIndex == TickFeeder.HEADER && e.kind == Event.APPLY) {
+                continue;
+            }
+            seen.add(e.kind == Event.APPLY ? "net" + e.packetId : e.kind == Event.LOCAL ? "local" + e.packetId
+                    + "@" + e.timeUs / MS : e.kind == Event.SAMPLE ? "sample" + e.tick : "other");
+        }
+        assertEquals(Arrays.asList("net3", "local" + RewindFormat.TAG_BLOCK + "@101",
+                "local" + RewindFormat.TAG_USE + "@140", "sample" + k100,
+                "local" + RewindFormat.TAG_USE + "@150", "sample" + (k100 + 1)), seen);
+    }
+
+    @Test
+    public void aV1TableFeedsByStampAtOrBeforeTheTickTime() throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0))
+                .at(99_500L, p(0x23, 1)).at(149_000L, p(0x02, 1)).at(149_001L, p(0x02, 2))
+                .tick(101 * MS).tick(151 * MS).tick(201 * MS);
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS);
+        TickTable t = r.timeline().ticks();
+        assertSame(TickTable.Kind.V1, t.kind());
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        for (long k = 0; k <= t.tickOf(200 * MS); k++) {
+            sink.feed(k);
+        }
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.recordIndex == TickFeeder.HEADER) {
+                continue;
+            }
+            assertTrue("stamp at or before T[k]", e.timeUs <= t.timeOf(e.tick));
+            assertTrue("not a tick early", e.timeUs > t.timeOf(e.tick - 1));
+        }
+        long s23 = -1;
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.packetId == 0x23) {
+                s23 = e.tick;
+            }
+        }
+        assertEquals("the S23 at 99.5 runs before the tick at 100", t.tickOf(100 * MS), s23);
+    }
+
+    @Test
+    public void aSpanMarkedUnknownFallsBackToStampsAndReturnsToCountsAfterIt() throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0));
+        for (int i = 0; i < 5; i++) {
+            rec.at((50 + 10 * i) * MS, p(0x03, i));
+        }
+        rec.at(99_500L, p(0x23, 7));   // ordinal 7
+        rec.at(160 * MS, p(0x02, 8));  // ordinal 8
+        rec.at(170 * MS, p(0x02, 9));  // ordinal 9
+        ExtRecords ext = heads(new long[]{100, 150, 200}, new int[]{6, 0, 2},
+                new int[]{0, RewindFormat.TICK_HEAD_ORDER_UNKNOWN, 0}).build();
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS).withExt(ext);
+        TickTable t = r.timeline().ticks();
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        for (long k = 0; k <= t.tickOf(250 * MS); k++) {
+            sink.feed(k);
+        }
+        java.util.Map<Integer, Long> tickOf = new java.util.HashMap<Integer, Long>();
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.recordIndex != TickFeeder.HEADER && (e.packetId == 0x23 || e.packetId == 0x02)) {
+                tickOf.put((int) e.bytes[1], e.tick);
+            }
+        }
+        assertEquals("unknown head at 150: the S23 by its stamp", Long.valueOf(t.tickOf(150 * MS)), tickOf.get(7));
+        assertEquals("counts again at 200: ordinal 8 (stamp 160 was after the unknown head)",
+                Long.valueOf(t.tickOf(200 * MS)), tickOf.get(8));
+        assertEquals("ordinal 9 is not counted at 200; after the last head the stamp rule feeds it",
+                Long.valueOf(t.tickOf(200 * MS) + 1), tickOf.get(9));
+    }
+
+    /**
+     * Review code-2 I2 (B12, C2): the handled-order rule across segments. A record of an earlier segment is handled
+     * before the first head of a later one, whatever the counts; the ordinal restarts at each segment, so the later
+     * segment's boundary S01 is its ordinal 1; a later segment's record waits for its own segment's counts even when
+     * its stamp is before the head; after the last head the stamp rule feeds what the counts did not.
+     */
+    @Test
+    public void handledCountsAreCountedPerSegmentAndAnEarlierSegmentAlwaysComesFirst() throws Exception {
+        Rec rec = new Rec().segment(1, standardHeader0(), standardHeader1()).at(EO, RecordingFixture.joinGame(0))
+                .at(50 * MS, p(0x03, 1))      // segment 0, ordinal 2
+                .at(160 * MS, p(0x03, 2))     // segment 0, ordinal 3: after its segment's last head
+                .segment(2, null, null).at(200 * MS, RecordingFixture.joinGame(0)) // segment 1, ordinal 1
+                .at(205 * MS, p(0x02, 3))     // segment 1, ordinal 2: stamped before the head at 210
+                .at(240 * MS, p(0x02, 4));    // segment 1, ordinal 3
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        long[] ms = {100, 150, 210, 260};
+        int[] increments = {2, 0, 1, 1};
+        int[] segments = {0, 0, 1, 1};
+        for (int i = 0; i < ms.length; i++) {
+            int n = c.tickHead(increments[i], 0);
+            b.addEncoded(segments[i], ms[i] * MS, RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+        }
+        LoadedRecording r = rec.load(tmp.newFolder(), EO, 400 * MS).withExt(b.build());
+        assertEquals(2, r.segments().size());
+        TickTable t = r.timeline().ticks();
+        assertSame(TickTable.Kind.V2, t.kind());
+        long k150 = t.tickOf(150 * MS), k210 = t.tickOf(210 * MS), k260 = t.tickOf(260 * MS);
+        assertEquals(1, t.segment(k210));
+        TickFeeder feeder = new TickFeeder(r);
+        LogSink sink = new LogSink(feeder);
+        for (long k = 0; k <= k260 + 1; k++) {
+            sink.feed(k);
+        }
+        List<String> fed = new ArrayList<String>();
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.recordIndex == TickFeeder.HEADER || e.timeUs < 150 * MS) {
+                continue;
+            }
+            fed.add(Integer.toHexString(e.packetId) + "@" + e.timeUs / MS + ":" + (e.tick == k150 ? "k150"
+                    : e.tick == k210 ? "k210" : e.tick == k260 ? "k260" : e.tick == k260 + 1 ? "k260+1" : "k" + e.tick));
+        }
+        assertEquals(Arrays.asList("3@160:k210", "1@200:k210", "2@205:k260", "2@240:k260+1"), fed);
     }
 
     @Test

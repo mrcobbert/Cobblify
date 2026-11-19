@@ -9,13 +9,16 @@ package com.bedwarsqol.rewind.watch;
  *   <tr><td>{@link Decision#PASS}</td><td>02-05, 0A-1E, 20-2A, 2C, 33-35, 38, 3B-3E, 41, 42, 44, 45, 47, 49 (world,
  *   entities, chat, sidebar, tab, titles; 27 too: its motion for {@code thePlayer} lands on the inert camera);
  *   (amendment 1) 06, 09, 1F (health, food and saturation, the server-set held slot, XP: they land on the camera,
- *   whose own state is otherwise unused, and vanilla's HUD draws them); 2F and 30 for window 0 only (the player
+ *   whose own state is otherwise unused, and vanilla's HUD draws them); 2F and 30 for window 0 (the player
  *   inventory)</td></tr>
+ *   <tr><td>{@link Decision#WINDOW}</td><td>(parity B10, coordinator amendment 2) 2D, 2E, and 2F/30 for every window
+ *   but 0 (S2F's cursor window -1 too): handed to {@link PacketSink#window}, which the recorded-window holder
+ *   processes (its container is built on the camera's inventory, so a player slot the server sets through a shop's
+ *   window id reaches the hotbar); without a holder they reach nothing</td></tr>
  *   <tr><td>{@link Decision#BOUNDARY}</td><td>01, 07: passed, then the session's boundary hook</td></tr>
- *   <tr><td>{@link Decision#DROP}</td><td>08, 2D, 2E, 31, 32, 36, 37, 39, 3A, 43, 48 (they act on the client player,
- *   open or close screens, or would send or download); 2F and 30 for any window but 0 (containers; 2F's cursor
- *   window -1 too), so container contents never reach the camera; 2B reasons 4 (credits) and 5 (demo); the
- *   never-stored 00, 3F, 46; any unknown id</td></tr>
+ *   <tr><td>{@link Decision#DROP}</td><td>08, 31, 32, 36, 37, 39, 3A, 43, 48 (they act on the client player, open a
+ *   sign or statistics screen, or would send or download); 2F and 30 without a window byte; 2B reasons 4 (credits)
+ *   and 5 (demo); the never-stored 00, 3F, 46; any unknown id</td></tr>
  *   <tr><td>{@link Decision#SESSION_HOOK}</td><td>(amendment 1) 2B reason 3 (game mode): not passed to vanilla; it
  *   updates the recorded game mode and the controller takes the view's game type</td></tr>
  *   <tr><td>{@link Decision#END}</td><td>40: a recorded kick ends the timeline instead of disconnecting
@@ -38,7 +41,9 @@ public final class PacketPolicy {
         /** Not passed to vanilla; the session acts on it ({@link PacketSink#sessionHook}). */
         SESSION_HOOK,
         /** The recorded connection ended here: no record after it is fed. */
-        END
+        END,
+        /** Container window traffic: handed to {@link PacketSink#window}, which a recorded-window holder processes. */
+        WINDOW
     }
 
     /** "No such body byte" for {@link #decide(int, int, int)}. */
@@ -63,10 +68,12 @@ public final class PacketPolicy {
         }
         TABLE[0x01] = Decision.BOUNDARY;
         TABLE[0x07] = Decision.BOUNDARY;
-        int[] drop = {0x08, 0x2D, 0x2E, 0x31, 0x32, 0x36, 0x37, 0x39, 0x3A, 0x43, 0x48};
+        int[] drop = {0x08, 0x31, 0x32, 0x36, 0x37, 0x39, 0x3A, 0x43, 0x48};
         for (int id : drop) {
             TABLE[id] = Decision.DROP;
         }
+        TABLE[0x2D] = Decision.WINDOW; // open window
+        TABLE[0x2E] = Decision.WINDOW; // close window
         // (amendment 1) health, held slot and XP pass to the camera (the PASS default); 2F and 30 by window, below.
         TABLE[SET_SLOT] = null;
         TABLE[WINDOW_ITEMS] = null;
@@ -95,7 +102,7 @@ public final class PacketPolicy {
         }
         if (packetId == SET_SLOT || packetId == WINDOW_ITEMS) {
             // The window id is the first body byte (S2F a signed byte, -1 = 255 the cursor; S30 unsigned).
-            return body0 == PLAYER_WINDOW ? Decision.PASS : Decision.DROP;
+            return body0 == NO_BYTE ? Decision.DROP : body0 == PLAYER_WINDOW ? Decision.PASS : Decision.WINDOW;
         }
         return TABLE[packetId];
     }

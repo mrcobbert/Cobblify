@@ -26,7 +26,9 @@ import java.lang.ref.WeakReference;
  * </ul>
  * In your view {@code move}, {@code look} and {@code scroll} do nothing.
  *
- * <p>A new recording starts in your view; seeks and rebuilt worlds keep the view and the free camera's place.
+ * <p>A new recording starts in your view; seeks and rebuilt worlds keep the view and the free camera's place. Which
+ * view is up lives in the session's {@link ViewState} (the single owner of what the view shows); this class poses the
+ * camera for it.
  */
 public final class CameraController {
 
@@ -38,7 +40,6 @@ public final class CameraController {
 
     private static final SelfTrack.Pose youPose = new SelfTrack.Pose();
     private static final FreeCameraMath.Camera free = new FreeCameraMath.Camera();
-    private static boolean freeMode;
     private static boolean youPoseValid;
     /** The recording the views belong to (weak: a finished recording is not kept in memory). */
     private static WeakReference<Object> recording = new WeakReference<Object>(null);
@@ -54,19 +55,23 @@ public final class CameraController {
 
     // ================================================================== viewer API
 
-    /** Key 1: your recorded view (with your hand, hotbar and hearts). */
+    private static ViewState view() {
+        return RewindPlayback.view();
+    }
+
+    /** Key 1: your recorded view (with your hand, hotbar and hearts); it also ends the F5 and clean-view overrides. */
     public static void selectYourView() {
-        boolean changed = freeMode;
-        freeMode = false;
+        int before = view().version();
+        view().selectYou();
         clearMove();
-        if (changed) {
+        if (view().version() != before) {
             viewChanged();
         }
     }
 
     /** Key 2: the free camera, starting where your view is (no hand, hotbar or hearts; it never tilts). */
     public static void selectFreeCamera() {
-        if (freeMode) {
+        if (view().freeCamera()) {
             return;
         }
         RewindCamera cam = camera();
@@ -84,7 +89,23 @@ public final class CameraController {
             free.pitch = cam.rotationPitch;
         }
         free.pitch = Math.max(-90f, Math.min(90f, free.pitch));
-        freeMode = true;
+        view().selectFree();
+        clearMove();
+        lastFrameNanos = System.nanoTime();
+        viewChanged();
+    }
+
+    /**
+     * The free camera starting at an exact eye pose (Phase 14: where another player's view was, when that player
+     * leaves the world or key 2 is pressed while riding).
+     */
+    public static void selectFreeCameraAt(double x, double eyeY, double z, float yaw, float pitch) {
+        free.x = x;
+        free.y = eyeY;
+        free.z = z;
+        free.yaw = yaw;
+        free.pitch = Math.max(-90f, Math.min(90f, pitch));
+        view().selectFree();
         clearMove();
         lastFrameNanos = System.nanoTime();
         viewChanged();
@@ -109,11 +130,11 @@ public final class CameraController {
 
     /** {@link #YOUR_VIEW} or {@link #FREE_CAMERA}. */
     public static int cameraIndex() {
-        return freeMode ? FREE_CAMERA : YOUR_VIEW;
+        return view().freeCamera() ? FREE_CAMERA : YOUR_VIEW;
     }
 
     public static boolean freeCamera() {
-        return freeMode;
+        return view().freeCamera();
     }
 
     /**
@@ -126,7 +147,7 @@ public final class CameraController {
 
     /** Your view is up (also when no recording plays). */
     public static boolean yourView() {
-        return !freeMode;
+        return view().yourView();
     }
 
     /**
@@ -134,7 +155,7 @@ public final class CameraController {
      * (Space) / -1 down (Shift). Moves the next drawn frame by its real time at the current speed.
      */
     public static void move(int forward, int strafe, int vertical) {
-        if (!freeMode) {
+        if (!view().freeCamera()) {
             return;
         }
         moveForward = Integer.signum(forward);
@@ -164,7 +185,7 @@ public final class CameraController {
 
     /** Turns the free camera by a drag of {@code dx, dy} mouse pixels (dy positive = up, as LWJGL reports it). */
     public static void look(double dx, double dy) {
-        if (!freeMode) {
+        if (!view().freeCamera()) {
             return;
         }
         GameSettings g = Minecraft.getMinecraft().gameSettings;
@@ -173,7 +194,7 @@ public final class CameraController {
 
     /** A mouse wheel delta: one speed level per notch; shows the speed bar. */
     public static void scroll(int wheel) {
-        if (!freeMode || wheel == 0) {
+        if (!view().freeCamera() || wheel == 0) {
             return;
         }
         level = FreeCameraMath.scrolled(level, wheel);
@@ -187,7 +208,7 @@ public final class CameraController {
 
     /** The speed bar's opacity now (0 when hidden or in your view). */
     public static float speedBarAlpha() {
-        if (!freeMode || scrollNanos == Long.MIN_VALUE) {
+        if (!view().freeCamera() || scrollNanos == Long.MIN_VALUE) {
             return 0f;
         }
         return FreeCameraMath.speedBarAlpha((System.nanoTime() - scrollNanos) / 1_000_000L);
@@ -214,7 +235,7 @@ public final class CameraController {
 
         @Override
         public int camera() {
-            return freeMode ? FREE : YOU;
+            return view().freeCamera() ? FREE : YOU;
         }
 
         @Override
@@ -240,17 +261,19 @@ public final class CameraController {
 
     // ================================================================== playback hooks
 
-    /** {@code renderWorld} HEAD while a recorded world plays: this frame's camera pose. */
+    /**
+     * {@code renderWorld} HEAD while a recorded world plays: this frame's camera pose (your view: the session's
+     * {@link PlaybackSession#yourPose}, by the recorded tick table).
+     */
     static void onRender(PlaybackSession session, float partialTicks) {
         LoadedRecording r = session.recording();
         forRecording(r);
         RewindCamera cam = camera();
-        SelfTrack track = r == null ? null : r.selfTrack();
-        if (track != null && track.pose(session.renderTimeUs(partialTicks), youPose)) {
+        if (session.yourPose(youPose)) {
             youPoseValid = true;
         }
         long now = System.nanoTime();
-        if (freeMode) {
+        if (view().freeCamera()) {
             double seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, (now - lastFrameNanos) / 1e9));
             FreeCameraMath.move(free, moveForward, moveStrafe, moveVertical, level, seconds);
             clearMove();
@@ -268,7 +291,7 @@ public final class CameraController {
         if (cam == null) {
             return;
         }
-        if (freeMode) {
+        if (view().freeCamera()) {
             cam.pose(free.x, free.y, free.z, free.yaw, free.pitch);
         } else if (youPoseValid) {
             cam.pose(youPose.x, youPose.eyeY, youPose.z, youPose.yaw, youPose.pitch);
@@ -284,8 +307,8 @@ public final class CameraController {
 
     private static void newRecording(Object r) {
         recording = new WeakReference<Object>(r);
-        if (freeMode) {
-            freeMode = false;
+        if (!view().yourView()) {
+            view().selectYou();
             viewChanged();
         }
         youPoseValid = false;

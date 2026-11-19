@@ -62,6 +62,9 @@ public interface ClientOps extends PlaybackRestore.Client {
 
     void setElapsedTicks(int ticks);
 
+    /** {@code timer.renderPartialTicks}: the share of the recorded tick interval the frame draws ({@link TickClock}). */
+    void setPartialTicks(float partial);
+
     /** {@code System.nanoTime()} (a fake clock in tests). */
     long nanoTime();
 

@@ -1268,6 +1268,24 @@ class RewindExtCounts(unittest.TestCase):
                              "Unknown=3"])
 
 
+class RewindActionCounts(unittest.TestCase):
+    """RW's scripted actions (Rewind parity Phase 16): what their recording must hold, counts only."""
+
+    LINE = RewindExtCounts.LINE.replace("extOut=0", "extOut=9").replace("extDig=0", "extDig=6") \
+        .replace("extBlock=0", "extBlock=2").replace("extView=1", "extView=7").replace("extMouse=0", "extMouse=12") \
+        .replace("extCont=0", "extCont=54")
+
+    def test_a_recording_of_every_action_has_no_problem(self):
+        self.assertEqual(cobdev.rewind_action_problems(self.LINE), [])
+        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, walked=True), [])
+
+    def test_each_short_count_is_named_with_its_minimum(self):
+        p = cobdev.rewind_action_problems(RewindExtCounts.LINE)
+        self.assertEqual(p, ["Dig=0 (at least 1)", "Block=0 (at least 2)", "Out=0 (at least 1)",
+                             "View=1 (at least 3)", "Mouse=0 (at least 1)", "Cont=0 (at least 1)"])
+        self.assertEqual(len(cobdev.rewind_action_problems(None)), len(cobdev.RW_ACTION_EXT_MIN))
+
+
 class MotionBlurHelpers(unittest.TestCase):
     def test_board_is_21_by_9_white_fill_then_black_cells(self):
         cmds = cobdev.mb_board_commands()
@@ -1426,9 +1444,21 @@ class RewindSmoke(unittest.TestCase):
 
     CFG = "com.bedwarsqol.BedwarsQol.config"
 
-    def run_step(self, latest, present=True, playback=False):
+    DONE = {"ok": True, "phase": "DONE", "done": True, "failure": None, "dug": True, "placed": True,
+            "inventoryShown": True, "perspectiveShown": True, "chestOpened": True, "chestSlots": 90, "chestFilled": 54}
+
+    def run_step(self, latest, present=True, playback=False, actions=None, cleanup=None, poll_error=None):
         calls = []
-        fields = {self.CFG + ".rewind": "false", self.CFG + ".rewindRecordGames": "true"}
+        fields = {self.CFG + ".rewind": "false", self.CFG + ".rewindRecordGames": "true",
+                  self.CFG + ".fpsEnabled": "false"}
+        status = self.DONE if actions is None else actions
+
+        def actions_reply(arg):
+            if arg == "status":
+                return status
+            if arg == "cleanup":
+                return {"ok": True, "restored": True} if cleanup is None else cleanup
+            return {"ok": True}
 
         class Fake(cobdev.Smoke):
             def call(self, path, params=None, post=None, timeout=60):
@@ -1441,6 +1471,8 @@ class RewindSmoke(unittest.TestCase):
                         return {"ok": True}
                     return {"ok": True, "value": fields.get(q["path"])}
                 if path == "/probe":
+                    if q["name"] == "rewind-watch-actions":
+                        return actions_reply(q["args"])
                     return {"ok": True, "deleted": 0, "left": 0} if q["name"] == "rewind-clear" else latest
                 if path == "/world":
                     return {"ok": True, "save": "cobdev"}
@@ -1449,7 +1481,13 @@ class RewindSmoke(unittest.TestCase):
             def has(self, cls, member=None):
                 return playback if cls == cobdev.REWIND_PLAYBACK else present
 
+            def peek(self, name, *args):
+                if name == "rewind-watch-actions" and poll_error is not None:
+                    raise poll_error
+                return actions_reply(args[0]) if name == "rewind-watch-actions" else None
+
         s = Fake("dev", "test")
+        self.last_step = (s, calls, fields)
         ready = {"title": True, "inWorld": True, "responsive": True}
         watched = []
         with mock.patch.object(cobdev, "api_quiet", return_value=ready), mock.patch.object(cobdev.time, "sleep"), \
@@ -1460,7 +1498,7 @@ class RewindSmoke(unittest.TestCase):
         return s, calls, fields
 
     def test_with_playback_rw_records_a_swing_in_survival_then_hands_over_to_rww(self):
-        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindActionCounts.LINE}
         s, calls, fields = self.run_step(latest, playback=True)
         self.assertEqual(s.step["status"], "pass", s.step["checks"])
         self.assertEqual(self.watched, ["RWW", "RWW-time"])
@@ -1474,9 +1512,54 @@ class RewindSmoke(unittest.TestCase):
         self.assertLess(i_survival, i_swing)
         self.assertLess(i_swing, i_walk)
         self.assertLess(i_walk, i_creative)
+        # Rewind parity Phase 16: the actions run while recording, after the walk; their cleanup before the leave
+        acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
+        self.assertEqual(acts, ["status", "start", "cleanup"])
+        i_start = seq.index(("/probe", "rewind-watch-actions"))
+        self.assertLess(i_walk, i_start)
+        self.assertLess(i_start, i_creative)
+        self.assertEqual(fields[self.CFG + ".fpsEnabled"], "false")  # the HUD item is put back
+        self.assertIn(("/field", {"path": self.CFG + ".fpsEnabled", "value": "true"}), calls)
+        names = [c["check"] for c in s.step["checks"]]
+        self.assertIn("RW actions: the double chest opened with its 54 slots filled at its first tick (90 in all)",
+                      names)
         self.assertLess(calls.index(("/command", {"command": "/gamemode 1"})), i_leave)
         clears = [c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-clear"]
         self.assertEqual(len(clears), 2)  # RWW watches before the folder is cleared
+
+    def test_actions_short_of_the_chest_or_their_records_fail_rw(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}
+        half = dict(self.DONE, chestFilled=27)
+        s, calls, _ = self.run_step(latest, playback=True, actions=half)
+        failed = [c["check"] for c in s.step["checks"] if not c["ok"]]
+        self.assertEqual(failed, [
+            "RW actions: the double chest opened with its 54 slots filled at its first tick (90 in all)",
+            "format v2: the actions' dig, blocks, sounds, outbound packets, views, mouse, window and HUD"])
+        acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
+        self.assertEqual(acts[-1], "cleanup")
+
+    def test_the_actions_cleanup_runs_after_a_failure_and_its_result_is_checked(self):
+        # review code-2 I1: the cleanup is in a finally (a failure between start and cleanup would leave the stone,
+        # the chest and the items for the next start to refuse), and a cleanup that did not restore fails RW
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindActionCounts.LINE}
+        with self.assertRaises(RuntimeError):
+            self.run_step(latest, playback=True, poll_error=RuntimeError("bridge went away"))
+        s, calls, _ = self.last_step
+        acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
+        self.assertEqual(acts, ["status", "start", "cleanup"])
+
+        s, calls, _ = self.run_step(latest, playback=True, cleanup={"ok": True, "restored": False})
+        failed = [c["check"] for c in s.step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["RW actions: the smoke world put back (blocks, inventory, dropped items)"])
+        s, calls, _ = self.run_step(latest, playback=True)
+        self.assertIn("RW actions: the smoke world put back (blocks, inventory, dropped items)",
+                      [c["check"] for c in s.step["checks"] if c["ok"]])
+
+    def test_without_playback_rw_runs_no_actions(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}
+        s, calls, _ = self.run_step(latest)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
+        self.assertFalse([c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"])
 
     def test_a_failing_rw_check_does_not_watch(self):
         latest = {"ok": True, "found": True, "closed": 1, "exit": 16, "pass": False, "line": "markerKey=0"}
@@ -1599,6 +1682,7 @@ class FakePlayback(cobdev.Smoke):
     """A game whose Rewind session answers like the real one does when everything works."""
 
     START, END, SWING = 20, 1000, 50
+    PERSPECTIVE, WINDOW = 300, 400
 
     def __init__(self):
         super().__init__("dev", "test")
@@ -1645,6 +1729,7 @@ class FakePlayback(cobdev.Smoke):
         if name == "rewind-watch-open":
             st.update(active=True, state="WATCHING", muted=True, failures=0, camera="YOU", paused=False,
                       startTick=self.START, endTick=self.END, discarded=2, firstSwingTick=self.SWING,
+                      perspectiveTick=self.PERSPECTIVE, windowOpenTick=self.WINDOW, windowCloseTick=self.WINDOW + 10,
                       controllerGameType="SURVIVAL", cameraSlot=1, recordedSlot=1, cameraHeld="sword",
                       recordedHeld="sword", cameraSwinging=True, recordedGameType="SURVIVAL")
             self._land(self.START)
@@ -1653,7 +1738,13 @@ class FakePlayback(cobdev.Smoke):
             target = int(args[0]) if len(args) == 1 else st["playhead"] + int(args[1]) // 50
             st["discarded"] += 2 if target < st["playhead"] else 0  # a rebuild's join
             self._land(target)
+            st["thirdPersonView"] = 1 if self.PERSPECTIVE < st["playhead"] <= self.PERSPECTIVE + 10 else 0
             return {"ok": True, "target": st["playhead"]}
+        if name == "rewind-watch-window":
+            inside = self.WINDOW <= st["playhead"] < self.WINDOW + 10
+            return {"ok": True, "held": "chest" if inside else "none", "windowOpen": inside,
+                    "slots": 90 if inside else 0, "ownSlots": 54 if inside else 0, "ownFilled": 54 if inside else 0,
+                    "inventory": "inv"}
         if name == "rewind-watch-play-to":
             st["paused"] = True
             st["stoppedAt"] = int(args[0])
@@ -1661,7 +1752,7 @@ class FakePlayback(cobdev.Smoke):
             return {"ok": True}
         if name == "rewind-watch-snapshot":
             return {"ok": True, "groups": {g: "h" for g in cobdev.CONTRACT_GROUPS},
-                    "counts": {"tick": st["playhead"], "excludedNonLiving": 3}, "missing": []}
+                    "counts": {"tick": st["playhead"], "excludedNonLiving": 3, "hudItemsShown": 1}, "missing": []}
         if name == "rewind-watch-quit":
             st.update(active=False, state="IDLE")
             self._land()
@@ -1700,8 +1791,8 @@ class RewindWatchDryRun(unittest.TestCase):
         self.assertEqual(step["id"], "RWW")
         failed = [c["check"] for c in step["checks"] if not c["ok"]]
         self.assertEqual(failed, [])
-        self.assertEqual(len(step["checks"]), 14)
-        self.assertEqual(step["shots"], ["rww-your-view", "rww-free-camera"])
+        self.assertEqual(len(step["checks"]), 17)
+        self.assertEqual(step["shots"], ["rww-your-view", "rww-free-camera", "rww-double-chest"])
 
     def test_a_backward_seek_that_differs_fails_step_3(self):
         class Drift(FakePlayback):
@@ -1712,7 +1803,28 @@ class RewindWatchDryRun(unittest.TestCase):
                 return r
         step = self.run_step(Drift())
         failed = [c["check"] for c in step["checks"] if not c["ok"]]
-        self.assertEqual(failed, ["3 straight play, forward seek and backward seek agree in all seven contract groups"])
+        self.assertEqual(failed, ["3 straight play, forward seek and backward seek agree in every contract group"])
+
+    def test_a_parity_group_that_differs_or_a_chest_short_of_its_slots_fails(self):
+        class Drift(FakePlayback):
+            def call(self, path, params=None, post=None, timeout=60):
+                r = super().call(path, params, post, timeout)
+                if post and post.get("name") == "rewind-watch-snapshot" and self.st["discarded"] > 4:
+                    r["groups"]["9-window"] = "other"
+                if post and post.get("name") == "rewind-watch-window" and r.get("held") == "chest":
+                    r["ownFilled"] = 27
+                return r
+        step = self.run_step(Drift())
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["3 straight play, forward seek and backward seek agree in every contract group",
+                                  "3c the double chest: held, 90 slots, its 54 filled, the camera's inventory untouched"])
+
+    def test_a_recording_without_the_actions_notes_3c_and_still_passes(self):
+        class NoActions(FakePlayback):
+            PERSPECTIVE = WINDOW = -1
+        step = self.run_step(NoActions())
+        self.assertEqual([c["check"] for c in step["checks"] if not c["ok"]], [])
+        self.assertTrue(any(n["note"].startswith("3c the recording has no recorded F5") for n in step["notes"]))
 
     def test_a_chat_line_left_behind_fails_step_4(self):
         class Leak(FakePlayback):

@@ -75,6 +75,31 @@ public class ViewGameTypeTest {
         assertEquals(ViewGameType.NOT_SET, v.recorded());
     }
 
+    /**
+     * D3 (Phase 14): another player's view is CREATIVE whatever was recorded, so vanilla draws the first-person hand
+     * ({@code EntityRenderer.renderHand} skips only SPECTATOR) but no hearts, hunger or armour
+     * ({@code GuiIngame.renderGameOverlay} @334 {@code shouldDrawHUD} = survival or adventure) and no XP bar (@509
+     * {@code gameIsSurvivalOrAdventure}); the hotbar ({@code renderTooltip}, @219, drawn for every mode but SPECTATOR)
+     * is cancelled by {@code GuiIngameRewindMixin}. javap-verified on the mapped 1.8.9 jar.
+     */
+    @Test
+    public void anotherPlayersViewIsCreativeYourViewTheRecordedModeAndTheFreeCameraSpectator() {
+        ViewGameType v = new ViewGameType();
+        assertEquals(ViewGameType.CREATIVE, v.forView(ViewState.View.RIDDEN));
+        assertEquals(ViewGameType.SURVIVAL, v.forView(ViewState.View.YOU));
+        assertEquals(ViewGameType.SPECTATOR, v.forView(ViewState.View.FREE));
+        for (int mode : new int[]{ViewGameType.SURVIVAL, ViewGameType.ADVENTURE, ViewGameType.SPECTATOR,
+                ViewGameType.CREATIVE}) {
+            byte[] r = respawn(0, mode);
+            v.onPacket(r, 0, r.length);
+            assertEquals("recorded " + mode, ViewGameType.CREATIVE, v.forView(ViewState.View.RIDDEN));
+            assertEquals(mode, v.forView(ViewState.View.YOU));
+            assertEquals(v.forView(true), v.forView(ViewState.View.YOU));
+            assertEquals(ViewGameType.SPECTATOR, v.forView(ViewState.View.FREE));
+            assertEquals(v.forView(false), v.forView(ViewState.View.FREE));
+        }
+    }
+
     @Test
     public void unknownModesReadAsSurvivalAsVanillaDoes() {
         ViewGameType v = new ViewGameType();

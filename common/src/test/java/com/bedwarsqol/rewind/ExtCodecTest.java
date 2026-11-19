@@ -473,4 +473,55 @@ public class ExtCodecTest {
         }
         assertTrue(sum > 0);
     }
+
+    /**
+     * Review code-2 O1 (corrupt files): a SETTINGS float that is NaN or infinite is read past but not kept, so no
+     * later reader sees it (a NaN HUD scale froze the render thread in {@code HudLayout.fit}); the other entries of
+     * the record stay. A SOUND or FOV with a non-finite value, or an FOV outside (0, 180) degrees, is malformed.
+     */
+    @Test
+    public void nonFiniteFloatsAreRejectedAtDecode() {
+        ExtCodec c = new ExtCodec();
+        int scale = RewindFormat.settingHudKey(RewindFormat.HUD_TEAM_UPGRADES, RewindFormat.HUD_FIELD_SCALE);
+        int subX = RewindFormat.settingHudKey(RewindFormat.HUD_FPS, RewindFormat.HUD_FIELD_SUB_X);
+        c.beginSettings();
+        c.settingFloat(scale, Float.NaN);
+        c.settingInt(RewindFormat.SETTING_GUI_SCALE, 2);
+        c.settingFloat(RewindFormat.SETTING_FOV, Float.POSITIVE_INFINITY);
+        c.settingFloat(subX, 0.25f);
+        c.settingFloat(RewindFormat.settingHudKey(RewindFormat.HUD_PING, RewindFormat.HUD_FIELD_SCALE),
+                Float.NEGATIVE_INFINITY);
+        byte[] b = body(c, c.endSettings());
+        ExtCodec.Settings d = new ExtCodec.Settings().read(b, 0, b.length);
+        assertEquals("the two finite entries are kept", 2, d.count);
+        assertEquals(-1, d.indexOf(scale));
+        assertEquals(-1, d.indexOf(RewindFormat.SETTING_FOV));
+        assertEquals(2, d.ints[d.indexOf(RewindFormat.SETTING_GUI_SCALE)]);
+        assertEquals(0.25f, d.floats[d.indexOf(subX)], 0f);
+
+        for (float bad : new float[]{Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY}) {
+            for (int field = 0; field < 5; field++) {
+                float[] v = {1f, 64f, 1f, 1f, 1f};
+                v[field] = bad;
+                byte[] sound = body(c, c.sound("random.click", v[0], v[1], v[2], v[3], v[4]));
+                try {
+                    new ExtCodec.Sound().read(sound, 0, sound.length);
+                    fail("sound field " + field + " = " + bad + " accepted");
+                } catch (RewindFormat.FormatException expected) {
+                    // skipped and counted by the loader
+                }
+            }
+        }
+        for (float bad : new float[]{Float.NaN, Float.POSITIVE_INFINITY, 0f, -5f, 180f, 1e9f}) {
+            byte[] fov = body(c, c.fov(bad));
+            try {
+                new ExtCodec.Fov().read(fov, 0, fov.length);
+                fail("fov " + bad + " accepted");
+            } catch (RewindFormat.FormatException expected) {
+                // no recorded FOV at that time
+            }
+        }
+        byte[] zoom = body(c, c.fov(10.5f));
+        assertEquals("a zoomed FOV is fine", 10.5f, new ExtCodec.Fov().read(zoom, 0, zoom.length).degrees, 0f);
+    }
 }

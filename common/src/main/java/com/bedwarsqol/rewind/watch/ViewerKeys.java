@@ -1,5 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.SessionHoldKey;
+
 /**
  * The viewer's keys (G37, G45, Q1) as LWJGL 2 {@code Keyboard.KEY_*} codes (common code cannot import LWJGL; the
  * values are pinned by {@code ViewerKeysTest}).
@@ -9,7 +11,10 @@ package com.bedwarsqol.rewind.watch;
  *   <li>K: play/pause in both views.</li>
  *   <li>Left/Right: 5 s; with Shift: 30 s.</li>
  *   <li>Comma/period: previous/next marker. {@code [} {@code ]}: slower/faster.</li>
- *   <li>1: your view; 2: free camera. Esc: the Esc menu. Tab (held): the recorded tab list.</li>
+ *   <li>1: your view (it also ends the F5 and clean-view overrides); 2: free camera; 3: the next player's view,
+ *       Shift+3 the previous one (Phase 14 rides them). Esc: the Esc menu. Tab (held): the recorded tab list.</li>
+ *   <li>F5: first person, behind, front in your view (B4). F1 and the Clean View Key the user bound, a key or a
+ *       mouse button ({@link #mouseAction}): the clean view (Q3, D6).</li>
  * </ul>
  *
  * Pure.
@@ -19,6 +24,7 @@ public final class ViewerKeys {
     public static final int KEY_ESCAPE = 1;
     public static final int KEY_1 = 2;
     public static final int KEY_2 = 3;
+    public static final int KEY_3 = 4;
     public static final int KEY_TAB = 15;
     public static final int KEY_LBRACKET = 26;
     public static final int KEY_RBRACKET = 27;
@@ -28,6 +34,8 @@ public final class ViewerKeys {
     public static final int KEY_PERIOD = 52;
     public static final int KEY_RSHIFT = 54;
     public static final int KEY_SPACE = 57;
+    public static final int KEY_F1 = 59;
+    public static final int KEY_F5 = 63;
     public static final int KEY_LEFT = 203;
     public static final int KEY_RIGHT = 205;
 
@@ -38,7 +46,15 @@ public final class ViewerKeys {
         NONE, TOGGLE_PLAY, BACK_SHORT, FORWARD_SHORT, BACK_LONG, FORWARD_LONG, PREVIOUS_MARKER, NEXT_MARKER, SLOWER,
         FASTER, VIEW_YOU, VIEW_FREE, ESC_MENU,
         /** Held: shows the recorded tab list while down. */
-        TAB_LIST
+        TAB_LIST,
+        /** F5: the perspective (your view only). */
+        CYCLE_PERSPECTIVE,
+        /** F1 or the Clean View Key: the clean view on or off. */
+        CLEAN_VIEW,
+        /** 3: the next player's view. */
+        NEXT_PLAYER,
+        /** Shift+3: the previous player's view. */
+        PREVIOUS_PLAYER
     }
 
     private ViewerKeys() {
@@ -67,6 +83,12 @@ public final class ViewerKeys {
                 return Action.VIEW_YOU;
             case KEY_2:
                 return Action.VIEW_FREE;
+            case KEY_3:
+                return shiftDown ? Action.PREVIOUS_PLAYER : Action.NEXT_PLAYER;
+            case KEY_F5:
+                return Action.CYCLE_PERSPECTIVE;
+            case KEY_F1:
+                return Action.CLEAN_VIEW;
             case KEY_ESCAPE:
                 return Action.ESC_MENU;
             case KEY_TAB:
@@ -74,6 +96,30 @@ public final class ViewerKeys {
             default:
                 return Action.NONE;
         }
+    }
+
+    /**
+     * {@link #action(int, boolean, boolean)} plus the Clean View Key the user bound ({@code cleanViewKey}: a key code,
+     * 0 unbound; a mouse binding never matches a key). A fixed viewer key wins over the same binding.
+     */
+    public static Action action(int key, boolean shiftDown, boolean freeCamera, int cleanViewKey) {
+        Action a = action(key, shiftDown, freeCamera);
+        if (a == Action.NONE && cleanViewKey > 0 && key == cleanViewKey) {
+            return Action.CLEAN_VIEW;
+        }
+        return a;
+    }
+
+    /**
+     * The action of a mouse button press: {@link Action#CLEAN_VIEW} when the user bound the Clean View Key to that
+     * button ({@code cleanViewKey} encoded as {@link SessionHoldKey#bindingForMouse}), else none. The left button
+     * (0) never: it is the bar, the free camera's look drag and click to ride.
+     */
+    public static Action mouseAction(int button, int cleanViewKey) {
+        if (button > 0 && SessionHoldKey.isMouse(cleanViewKey) && SessionHoldKey.mouseButton(cleanViewKey) == button) {
+            return Action.CLEAN_VIEW;
+        }
+        return Action.NONE;
     }
 
     /** The seek step of a seek action ({@link SeekPlanner#relative}), else 0. */

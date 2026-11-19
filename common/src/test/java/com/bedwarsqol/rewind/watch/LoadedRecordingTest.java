@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.ExtCodec;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RewindFormat;
 import org.junit.Rule;
@@ -13,6 +14,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -72,7 +74,12 @@ public class LoadedRecordingTest {
         assertEquals(RewindFormat.TICK_ALL, game.tickMask(0));
         assertTrue(game.tickTimeUs(0) < game.tickTimeUs(1) && game.tickTimeUs(1) < game.tickTimeUs(2));
         SelfTrack.Pose p = new SelfTrack.Pose();
-        assertTrue(r.selfTrack().pose(RecordingFixture.TRACK_US + 75_000, p));
+        // The v1 tick table puts ticks 1 ms before each TICK: half way through the second tick's interval.
+        TickTable t = r.timeline().ticks();
+        assertEquals(TickTable.Kind.V1, t.kind());
+        long at = RecordingFixture.TRACK_US + 74_000;
+        long j = t.tickOf(at + 1) - 1;
+        assertTrue(r.selfTrack().pose(t, j, t.partial(j, at), at, p));
         assertEquals(0.125, p.x, 1e-9);
         assertEquals(5f, p.yaw, 1e-6);
         r.close();
@@ -241,6 +248,305 @@ public class LoadedRecordingTest {
         assertNotNull(fromEnd.meta());
         assertNull(fromEnd.meta().map);
         assertEquals(RecordingFixture.END_US, fromEnd.meta().endUs);
+    }
+
+    // ---------------- Phase 10: format v2 extension records ----------------
+
+    private static void assertBody(String what, byte[] want, ExtRecords r, int i) {
+        assertEquals(what + " length", want.length, r.length(i));
+        for (int k = 0; k < want.length; k++) {
+            assertEquals(what + " byte " + k, want[k], r.buffer()[r.offset(i) + k]);
+        }
+    }
+
+    @Test
+    public void aV2RecordingWrittenByTheWriterLoadsEveryExtensionRecordInOrder() throws Exception {
+        File dir = new File(dir(), "rewind");
+        RecordingFixture.WriterRun w = new RecordingFixture.WriterRun(dir, 10_000_000L);
+        w.connect(512);
+        w.advance(1_000);
+        w.boundary(0, RecordingFixture.joinGame(0), 0);
+        int seed = 0;
+        // Segment 0: one round before the game opens (pending, flushed on OPEN), two after; one round with every
+        // record at one stamp. NET packets and writer steps between them split everything over many blocks.
+        for (int round = 0; round < 3; round++) {
+            if (round == 1) {
+                w.advance(500_000);
+                w.open();
+            }
+            for (RecordingFixture.Track t : RecordingFixture.everyExtTag(0, 0, seed++)) {
+                w.advance(round == 2 ? 0 : 3_000);
+                w.track(t.tag, t.body);
+                if (round != 2) {
+                    w.net(RecordingFixture.packet(0x20 + seed % 8, 40 + seed, seed));
+                }
+            }
+            w.step();
+        }
+        // Segment 1 (S07): two more rounds.
+        w.advance(3_000);
+        w.boundary(1, RecordingFixture.respawn(-1), -1);
+        for (int round = 0; round < 2; round++) {
+            for (RecordingFixture.Track t : RecordingFixture.everyExtTag(0, 0, seed++)) {
+                w.advance(2_000);
+                w.track(t.tag, t.body);
+                w.net(RecordingFixture.packet(0x30 + seed % 3, 30 + seed, seed));
+            }
+            w.step();
+        }
+        File cbr = w.close();
+
+        LoadedRecording r = LoadedRecording.load(cbr, null);
+        assertNull(r.problem());
+        assertFalse(r.tornTail());
+        assertEquals(2, r.formatVersion());
+        assertEquals(0, r.extUnknown());
+        assertEquals(0, r.extMalformed());
+        assertEquals(2, r.segments().size());
+
+        // Expected: every extension record appended, in append order (times never go back, so a stable time sort is
+        // append order), with its segment as a position in segments().
+        java.util.List<RecordingFixture.WriterRun.Sent> want = new java.util.ArrayList<RecordingFixture.WriterRun.Sent>();
+        for (RecordingFixture.WriterRun.Sent s : w.trackSent) {
+            if (RewindFormat.isExtensionTag(s.tag)) {
+                want.add(s);
+            }
+        }
+        assertEquals(5 * RewindFormat.EXT_TAGS.length, want.size());
+        ExtRecords ext = r.ext();
+        assertEquals("every extension record reached", want.size(), ext.size());
+        for (int i = 0; i < want.size(); i++) {
+            RecordingFixture.WriterRun.Sent s = want.get(i);
+            String what = "record #" + i + " " + RewindFormat.extName(s.tag);
+            assertEquals(what, s.tag, ext.tag(i));
+            assertEquals(what, s.timeUs, ext.timeUs(i));
+            assertEquals(what, s.segment, r.segments().get(ext.segmentIndex(i)).number());
+            assertBody(what, RecordingFixture.extBody(new RecordingFixture.Track(s.timeUs, s.tag, s.appended)),
+                    ext, i);
+        }
+
+        // The per-tag track holds the same records per segment, in the same order.
+        ExtTrack x = r.extTrack();
+        assertSame(ext, x.records());
+        for (int tag : RewindFormat.EXT_TAGS) {
+            String name = RewindFormat.extName(tag);
+            assertTrue(name, r.has(tag));
+            assertTrue(name, x.has(tag));
+            for (int seg = 0; seg < 2; seg++) {
+                int j = 0;
+                for (int i = 0; i < want.size(); i++) {
+                    if (ext.tag(i) == tag && ext.segmentIndex(i) == seg) {
+                        assertEquals(name + " seg " + seg + " #" + j, i, x.record(tag, seg, j++));
+                    }
+                }
+                assertEquals(name + " seg " + seg, seg == 0 ? 3 : 2, j);
+                assertEquals(name + " seg " + seg, j, x.count(tag, seg));
+            }
+        }
+        // TICK_HEAD records make the v2 tick table.
+        assertEquals(TickTable.Kind.V2, r.timeline().ticks().kind());
+        assertEquals(5, r.timeline().ticks().entries());
+        r.close();
+    }
+
+    @Test
+    public void extensionRecordsAreInTimeOrderWhateverTheOrderOfTheirTrackBlocks() throws Exception {
+        java.util.List<RecordingFixture.Track> a = RecordingFixture.everyExtTag(1_000_000L, 1_000, 1);
+        java.util.List<RecordingFixture.Track> b = RecordingFixture.everyExtTag(2_000_000L, 1_000, 2);
+        RecordingFixture f = new RecordingFixture(2);
+        f.header(1, RewindFormat.SOURCE_CLIENT_SNAPSHOT, 100, RecordingFixture.joinGame(0));
+        f.net(1, 100, new long[]{110, 1_500_000L}, new byte[][]{RecordingFixture.joinGame(0),
+                RecordingFixture.packet(0x02, 30, 1)});
+        f.track(1, 2_000_000L, b.toArray(new RecordingFixture.Track[0])); // the later block first
+        java.util.List<RecordingFixture.Track> first = new java.util.ArrayList<RecordingFixture.Track>();
+        first.add(RecordingFixture.gameStart(150, 0));
+        first.addAll(a);
+        f.track(1, 150, first.toArray(new RecordingFixture.Track[0]));
+        f.net(1, 1_500_000L, new long[]{3_000_000L}, new byte[][]{RecordingFixture.packet(0x02, 30, 2)});
+        LoadedRecording r = LoadedRecording.load(f.write(dir(), "ooo"), null);
+        assertNull(r.problem());
+        assertEquals(2, r.formatVersion());
+        ExtRecords ext = r.ext();
+        assertEquals(a.size() + b.size(), ext.size());
+        for (int i = 0; i < ext.size(); i++) {
+            RecordingFixture.Track t = i < a.size() ? a.get(i) : b.get(i - a.size());
+            assertEquals("#" + i, t.tag, ext.tag(i));
+            assertEquals("#" + i, t.timeUs, ext.timeUs(i));
+            assertEquals("#" + i, 0, ext.segmentIndex(i));
+            assertBody("#" + i, RecordingFixture.extBody(t), ext, i);
+        }
+        for (int tag : RewindFormat.EXT_TAGS) {
+            assertEquals(2, r.extTrack().count(tag, 0));
+            assertTrue(r.extTrack().timeUs(tag, 0, 0) < 2_000_000L);
+            assertTrue(r.extTrack().timeUs(tag, 0, 1) >= 2_000_000L);
+        }
+    }
+
+    @Test
+    public void unknownAndMalformedExtensionRecordsAreSkippedAndCountedAndTheRestLoads() throws Exception {
+        java.util.List<RecordingFixture.Track> good = RecordingFixture.everyExtTag(1_000_000L, 1_000, 3);
+        java.util.List<RecordingFixture.Track> all = new java.util.ArrayList<RecordingFixture.Track>();
+        all.add(RecordingFixture.gameStart(150, 0));
+        for (int i = 0; i < good.size(); i++) {
+            all.add(good.get(i));
+            long t = good.get(i).timeUs + 1;
+            switch (i) {
+                case 2:
+                    all.add(RecordingFixture.extRaw(t, 0x3F, new byte[]{1, 2, 3})); // a tag no build knows yet
+                    break;
+                case 5:
+                    all.add(RecordingFixture.extRaw(t, RewindFormat.TAG_INV, new byte[]{99, (byte) 0xFF, (byte) 0xFF}));
+                    break;
+                case 8:
+                    all.add(RecordingFixture.extRaw(t, RewindFormat.TAG_HUD, new byte[]{(byte) 200, 1, 5}));
+                    break;
+                case 11:
+                    all.add(RecordingFixture.extRaw(t, RewindFormat.TAG_SETTINGS, new byte[]{1, 1, 9, 0}));
+                    break;
+                default:
+                    break;
+            }
+        }
+        RecordingFixture f = new RecordingFixture(2);
+        f.header(1, RewindFormat.SOURCE_CLIENT_SNAPSHOT, 100, RecordingFixture.joinGame(0));
+        f.net(1, 100, new long[]{110, 3_000_000L}, new byte[][]{RecordingFixture.joinGame(0),
+                RecordingFixture.packet(0x02, 30, 1)});
+        f.track(1, 150, all.toArray(new RecordingFixture.Track[0]));
+        LoadedRecording r = LoadedRecording.load(f.write(dir(), "bad"), null);
+        assertNull(r.problem());
+        assertFalse(r.tornTail());
+        assertEquals(1, r.extUnknown());
+        assertEquals(3, r.extMalformed());
+        assertFalse(r.has(0x3F));
+        ExtRecords ext = r.ext();
+        assertEquals(good.size(), ext.size());
+        for (int i = 0; i < good.size(); i++) {
+            assertEquals("#" + i, good.get(i).tag, ext.tag(i));
+            assertEquals("#" + i, good.get(i).timeUs, ext.timeUs(i));
+            assertBody("#" + i, RecordingFixture.extBody(good.get(i)), ext, i);
+        }
+        assertEquals("the skipped INV is not a slot state", 1, r.extTrack().count(RewindFormat.TAG_INV, 0));
+        assertEquals(1, r.extTrack().count(RewindFormat.TAG_HUD, 0));
+        assertEquals(1, r.extTrack().count(RewindFormat.TAG_SETTINGS, 0));
+    }
+
+    @Test
+    public void aTornV2FileKeepsTheExtensionRecordsOfItsCompletePrefix() throws Exception {
+        java.util.List<RecordingFixture.Track> a = RecordingFixture.everyExtTag(1_000_000L, 1_000, 4);
+        java.util.List<RecordingFixture.Track> b = RecordingFixture.everyExtTag(2_000_000L, 1_000, 5);
+        RecordingFixture f = new RecordingFixture(2);
+        f.header(1, RewindFormat.SOURCE_CLIENT_SNAPSHOT, 100, RecordingFixture.joinGame(0));
+        f.net(1, 100, new long[]{110, 3_000_000L}, new byte[][]{RecordingFixture.joinGame(0),
+                RecordingFixture.packet(0x02, 30, 1)});
+        java.util.List<RecordingFixture.Track> first = new java.util.ArrayList<RecordingFixture.Track>();
+        first.add(RecordingFixture.gameStart(150, 0));
+        first.addAll(a);
+        f.track(1, 150, first.toArray(new RecordingFixture.Track[0]));
+        int prefix = f.bytes().length;
+        f.track(1, 2_000_000L, b.toArray(new RecordingFixture.Track[0]));
+        byte[] cut = Arrays.copyOf(f.bytes(), prefix + (f.bytes().length - prefix) / 2);
+        File cbr = new File(dir(), "torn.cbr");
+        java.nio.file.Files.write(cbr.toPath(), cut);
+        LoadedRecording r = LoadedRecording.load(cbr, null);
+        assertNull(r.problem());
+        assertTrue(r.tornTail());
+        assertEquals(2, r.formatVersion());
+        assertEquals(0, r.extMalformed());
+        assertEquals("the cut block's records are gone, the prefix's all load", a.size(), r.ext().size());
+        for (int i = 0; i < a.size(); i++) {
+            assertEquals(a.get(i).timeUs, r.ext().timeUs(i));
+            assertBody("#" + i, RecordingFixture.extBody(a.get(i)), r.ext(), i);
+        }
+        assertEquals(TickTable.Kind.V2, r.timeline().ticks().kind());
+    }
+
+    /** Hashes everything the feeder hands over, including any extension record (there must be none for v1). */
+    private static final class AllSink implements PacketSink {
+        long h = 17;
+        int local;
+        int timed;
+
+        private void mix(long v) {
+            h = h * 1_000_003L ^ v;
+        }
+
+        @Override
+        public boolean apply(int packetId, byte[] buf, int off, int len) {
+            mix(packetId);
+            mix(len);
+            return true;
+        }
+
+        @Override
+        public void boundary(int packetId, byte[] buf, int off, int len) {
+            mix(-packetId);
+        }
+
+        @Override
+        public boolean sessionHook(int packetId, byte[] buf, int off, int len) {
+            mix(-1000 - packetId);
+            return true;
+        }
+
+        @Override
+        public void local(int tag, long timeUs, byte[] buf, int off, int len) {
+            local++;
+            mix(-2000 - tag);
+        }
+
+        @Override
+        public void timed(int tag, long timeUs, byte[] buf, int off, int len) {
+            timed++;
+        }
+
+        @Override
+        public void sample(long tick, long timeUs) {
+            mix(tick);
+            mix(timeUs);
+        }
+    }
+
+    private static long feedAll(LoadedRecording r, AllSink sink) {
+        TickFeeder feeder = new TickFeeder(r);
+        feeder.feedHeaders(sink);
+        for (long k = 0; k <= r.timeline().endTick(); k++) {
+            feeder.feedForTick(k, sink);
+        }
+        sink.timed += r.ext().timedCount(); // what the clock would dispatch
+        return sink.h;
+    }
+
+    @Test
+    public void aV1RecordingTakesNoV2Path() throws Exception {
+        File dir = dir();
+        ExtCodec c = new ExtCodec();
+        long t = RecordingFixture.TRACK_US + 41_000_000L;
+        // A v1 header with extension-tagged records in its TRACK (no shipped writer makes this; it must be ignored).
+        File plain = RecordingFixture.realShaped(1).write(dir, "v1plain");
+        File odd = RecordingFixture.realShaped(1,
+                RecordingFixture.ext(t, RewindFormat.TAG_TICK_HEAD, c, c.tickHead(3)),
+                RecordingFixture.ext(t + 10, RewindFormat.TAG_VIEW, c, c.view(1, 0, 0)),
+                RecordingFixture.ext(t + 20, RewindFormat.TAG_DIG, c, c.dig(0, 5L, 1, 2)),
+                RecordingFixture.extRaw(t + 30, 0x3F, new byte[]{1})).write(dir, "v1odd");
+        for (File f : new File[]{plain, odd}) {
+            LoadedRecording r = LoadedRecording.load(f, null);
+            String what = f.getName();
+            assertNull(what, r.problem());
+            assertEquals(what, 1, r.formatVersion());
+            assertSame(what, ExtRecords.EMPTY, r.ext());
+            assertSame(what, ExtTrack.EMPTY, r.extTrack());
+            assertEquals(what, 0, r.extUnknown());
+            assertEquals(what, 0, r.extMalformed());
+            for (int tag = 0; tag < 256; tag++) {
+                assertFalse(what + " tag " + tag, r.has(tag));
+            }
+            assertEquals(what, TickTable.Kind.V1, r.timeline().ticks().kind());
+        }
+        AllSink a = new AllSink();
+        AllSink b = new AllSink();
+        assertEquals("the v1 file feeds the same trace with or without stray records",
+                feedAll(LoadedRecording.load(plain, null), a), feedAll(LoadedRecording.load(odd, null), b));
+        assertEquals(0, a.local + a.timed + b.local + b.timed);
     }
 
     @Test

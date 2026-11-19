@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.HandledRing;
 import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 import org.junit.Rule;
@@ -42,6 +43,11 @@ import static org.junit.Assert.assertTrue;
  * inventory (S2F for window 0; a container window is dropped by the policy) and EQUIP stacks, armour, the swing, the
  * item in use, {@code hurtTime}, and the recorded game mode (S01, S07, S2B reason 3 through the session hook into
  * {@link ViewGameType}). A camera made anew by an S01/S07 starts empty and takes HandState's full state.
+ *
+ * <p><b>Group 7, format v2</b> (Phase 13, C9): on a v2 recording the model also does what {@code HandV2Part} does
+ * after the sink's hand: a second {@link HandState} reads the extension records, so the swing starts on the tick of an
+ * OUT C0A, the item-use count is the recorded USE count, and all 41 slots (36 main, armour, the cursor) are the INV
+ * records', over S2F and EQUIP. Equal after every seek.
  */
 public class TickFeedEquivalenceTest {
 
@@ -286,6 +292,9 @@ public class TickFeedEquivalenceTest {
         HandState hand = new HandState();
         ViewGameType mode = new ViewGameType();
         boolean camFull = true;
+        /** Group 7, v2: the recording's extension records and HandV2Part's own hand state. */
+        ExtTrack ext = ExtTrack.EMPTY;
+        HandState hand2 = new HandState();
 
         static final class Cam {
             int health = -1;
@@ -301,11 +310,12 @@ public class TickFeedEquivalenceTest {
             boolean inUse;
             int useCount;
             int hurt;
+            String cursor;
 
             String snapshot() {
                 return "h=" + health + " f=" + food + " xp=" + xp + " sel=" + selected + " inv=" + inventory
-                        + " arm=" + Arrays.toString(armour) + " swing=" + swinging + "/" + swingInt + "/" + swing + "/"
-                        + prevSwing + " use=" + inUse + "/" + useCount + " hurt=" + hurt;
+                        + " arm=" + Arrays.toString(armour) + " cur=" + cursor + " swing=" + swinging + "/" + swingInt
+                        + "/" + swing + "/" + prevSwing + " use=" + inUse + "/" + useCount + " hurt=" + hurt;
             }
         }
 
@@ -313,8 +323,33 @@ public class TickFeedEquivalenceTest {
             return (int) Math.floor(x / 16.0);
         }
 
+        /** Local records applied since the last restart, by tag (a count). */
+        final Map<Integer, Integer> locals = new java.util.TreeMap<Integer, Integer>();
+        /** Phase 11: the world's predicted blocks (BLOCK: position -> new state id, as BlockPart sets them). */
+        final TreeMap<Long, Integer> blocks = new TreeMap<Long, Integer>();
+        /** Phase 11: the open window's slots (CONT: "window:slot" -> stack bytes, as ContainerPart puts them). */
+        final TreeMap<String, String> slots = new TreeMap<String, String>();
+        private final com.bedwarsqol.rewind.ExtCodec.Block blockRec = new com.bedwarsqol.rewind.ExtCodec.Block();
+        private final com.bedwarsqol.rewind.ExtCodec.Cont contRec = new com.bedwarsqol.rewind.ExtCodec.Cont();
+
+        void local(int tag, byte[] b, int off, int len) {
+            Integer n = locals.get(tag);
+            locals.put(tag, n == null ? 1 : n + 1);
+            if (tag == RewindFormat.TAG_BLOCK) {
+                blockRec.read(b, off, len);
+                blocks.put(blockRec.pos, blockRec.newState);
+            } else if (tag == RewindFormat.TAG_CONT) {
+                contRec.read(b, off, len);
+                slots.put(contRec.windowId + ":" + contRec.slot, Arrays.toString(
+                        Arrays.copyOfRange(contRec.buf, contRec.slotOff, contRec.slotOff + contRec.slotLen)));
+            }
+        }
+
         /** A restart: the world is torn down; GUI state outside the world is reset (round 2 B2). */
         void restart() {
+            locals.clear();
+            blocks.clear(); // a new connection: a new world
+            slots.clear();
             if (guiResetAtRestart) {
                 chat.clear();
                 titleTimer = 0;
@@ -329,6 +364,7 @@ public class TickFeedEquivalenceTest {
             hand = new HandState();
             mode = new ViewGameType();
             camFull = true;
+            hand2 = new HandState();
         }
 
         /** After an S01/S07: vanilla made a new, empty camera; the recorded mode comes from the packet. */
@@ -344,8 +380,8 @@ public class TickFeedEquivalenceTest {
         }
 
         /** The tick's sample: the self track onto the camera (your view), as the Ornithe sink does. */
-        void sample(long timeUs) {
-            if (!hand.sample(TRACK, timeUs, 6)) {
+        void sample(TickTable table, long k) {
+            if (!hand.sample(TRACK, table, k, 6)) {
                 return;
             }
             cam.selected = hand.selectedSlot();
@@ -367,6 +403,39 @@ public class TickFeedEquivalenceTest {
             cam.inUse = hand.inUse();
             cam.useCount = hand.inUse() ? hand.useCount(72000) : 0;
             cam.hurt = hand.hurtTime(true);
+            sampleV2(table, k);
+        }
+
+        /** HandV2Part, after the sink's hand: the v2 records over what the v1 rules put on the camera. */
+        private void sampleV2(TickTable table, long k) {
+            if (!HandState.usesExt(ext) || !hand2.sample(TRACK, ext, table, k, 6)) {
+                return;
+            }
+            if (hand2.extInventory()) {
+                for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+                    byte[] item = hand2.invItem(slot);
+                    if (item == null) {
+                        continue;
+                    }
+                    String v = "I" + Arrays.toString(item);
+                    if (slot < RewindFormat.INV_MAIN_SLOTS) {
+                        cam.inventory.put(slot < HandState.HOTBAR ? 36 + slot : slot, v); // container slot numbers
+                    } else if (slot < RewindFormat.INV_CURSOR) {
+                        cam.armour[slot - RewindFormat.INV_ARMOR_FIRST + RewindFormat.EQUIP_BOOTS] = v;
+                    } else {
+                        cam.cursor = v;
+                    }
+                }
+            }
+            if (hand2.extSwing()) {
+                cam.swingInt = hand2.swingProgressInt();
+                cam.swinging = hand2.swingInProgress();
+                cam.swing = hand2.swingProgress();
+                cam.prevSwing = hand2.prevSwingProgress();
+            }
+            if (hand2.extUse() && hand2.inUse()) {
+                cam.useCount = hand2.useCount(72000);
+            }
         }
 
         private void newWorld(int dim) {
@@ -504,6 +573,7 @@ public class TickFeedEquivalenceTest {
                 sb.append('[').append(l[0]).append(" age ").append(l[1]).append(']');
             }
             sb.append(" cam=").append(cam.snapshot()).append(" mode=").append(mode.recorded());
+            sb.append(" locals=").append(locals).append(" blocks=").append(blocks).append(" slots=").append(slots);
             return sb.toString();
         }
     }
@@ -526,6 +596,7 @@ public class TickFeedEquivalenceTest {
             feeder = new TickFeeder(r);
             ticks = new ReplayTicks(tl.endTick());
             rnd = new Random(seed);
+            model.ext = r.extTrack();
         }
 
         @Override
@@ -548,9 +619,21 @@ public class TickFeedEquivalenceTest {
         }
 
         @Override
+        public boolean window(int packetId, byte[] buf, int off, int len) {
+            trace.add("W t" + tick + " #" + feeder.recordIndex() + " id" + packetId);
+            return true;
+        }
+
+        @Override
+        public void local(int tag, long timeUs, byte[] buf, int off, int len) {
+            trace.add("L t" + tick + " tag" + tag + " at" + timeUs + " len" + len);
+            model.local(tag, buf, off, len);
+        }
+
+        @Override
         public void sample(long t, long timeUs) {
             trace.add("S t" + t + " at" + timeUs);
-            model.sample(timeUs);
+            model.sample(tl.ticks(), t);
         }
 
         /** Rebuild: GUI reset, world gone, headers before tick 0. */
@@ -667,6 +750,148 @@ public class TickFeedEquivalenceTest {
             }
         }
         assertEquals(15 * 4 + 15 * 3, compared);
+    }
+
+    /**
+     * The same recording as format v2: a TICK_HEAD every client tick (7 ms off the 50 ms grid, a 400 ms freeze at
+     * 12 s, a span marked order-unknown at 18-19 s) whose handled counts lag the arrival stamps by up to 30 ms, and
+     * tick-scoped local records (BLOCK, USE, CONT) plus time-scoped ones (SOUND) that never enter the feed.
+     */
+    private LoadedRecording v2() throws Exception {
+        return v2(false);
+    }
+
+    /** Head n of the v2 fixtures (7 ms off the grid; not inside the 12 s freeze). */
+    private static long head(int n) {
+        return O + 30_000L + 7_000L + n * Timeline.TICK_US;
+    }
+
+    /** A protocol-47 slot: item {@code id}, {@code count}, damage 0, no tag. */
+    private static byte[] item(int id, int count) {
+        return new byte[]{(byte) (id >> 8), (byte) id, (byte) count, 0, 0, 0};
+    }
+
+    static final long OUT_SWING = head(460) + 2_000L;
+    static final long OUT_SWING_2 = head(464) + 2_000L;
+
+    /**
+     * {@link #v2()}; with {@code hand}, Phase 13's records instead of the generic USE ones: all 41 INV slots at the
+     * first head and changes later (hotbar slot 0 after the S2F at 9 s, a main slot, the cursor, the leggings), OUT
+     * C0As at 23 s (no TICK swing there), a block placement OUT, and a USE of 32 (food) where the flag rises.
+     */
+    private LoadedRecording v2(boolean hand) throws Exception {
+        LoadedRecording r = recording();
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        // Per segment: the stamps of its client-handled records, in order.
+        List<List<Long>> handled = new ArrayList<List<Long>>();
+        NetCursor cur = r.newCursor();
+        while (!cur.atEnd()) {
+            while (handled.size() <= cur.segmentIndex()) {
+                handled.add(new ArrayList<Long>());
+            }
+            if (HandledRing.clientHandled(cur.packetId())) {
+                handled.get(cur.segmentIndex()).add(cur.timeUs());
+            }
+            cur.advance();
+        }
+        int seg = handled.size() - 1; // every head after the last boundary belongs to the last segment
+        int count = 0;
+        long lag = 0;
+        Random rnd = new Random(42);
+        for (long t = O + 30_000L + 7_000L; t < END; t += Timeline.TICK_US) {
+            if (t > O + 12 * S && t < O + 12 * S + 400_000L) {
+                continue; // a freeze
+            }
+            lag = rnd.nextInt(30_000);
+            int now = count;
+            List<Long> stamps = handled.get(seg);
+            while (now < stamps.size() && stamps.get(now) <= t - lag) {
+                now++;
+            }
+            int flags = t > O + 18 * S && t < O + 19 * S
+                    ? com.bedwarsqol.rewind.RewindFormat.TICK_HEAD_ORDER_UNKNOWN : 0;
+            int n = c.tickHead(now - count, flags);
+            b.addEncoded(seg, t, com.bedwarsqol.rewind.RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+            count = now;
+            if ((t / Timeline.TICK_US) % 7 == 0) {
+                n = c.block(t, 1, 2, 0);
+                b.addEncoded(seg, t + 1_000L, com.bedwarsqol.rewind.RewindFormat.TAG_BLOCK, c.buffer(), n);
+                n = c.sound("dig.stone", 0f, 64f, 0f, 1f, 1f);
+                b.addEncoded(seg, t + 20_000L, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND, c.buffer(), n);
+            }
+            if (!hand && (t / Timeline.TICK_US) % 11 == 0) {
+                n = c.use(72000);
+                b.addEncoded(seg, t + 2_000L, com.bedwarsqol.rewind.RewindFormat.TAG_USE, c.buffer(), n);
+                n = c.cont(5, 3, new byte[]{(byte) 0xFF, (byte) 0xFF}, 0, 2);
+                b.addEncoded(seg, t + 2_000L, com.bedwarsqol.rewind.RewindFormat.TAG_CONT, c.buffer(), n);
+            }
+        }
+        if (hand) {
+            int n;
+            for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+                n = c.inv(slot, item(slot + 1, 1), 0, 6);
+                b.addEncoded(seg, head(0) + 2_000L, RewindFormat.TAG_INV, c.buffer(), n);
+            }
+            n = c.inv(0, item(150, 2), 0, 6);
+            b.addEncoded(seg, O + 10 * S + 2_000L, RewindFormat.TAG_INV, c.buffer(), n);
+            n = c.inv(20, item(160, 1), 0, 6);
+            b.addEncoded(seg, O + 14 * S + 2_000L, RewindFormat.TAG_INV, c.buffer(), n);
+            n = c.inv(RewindFormat.INV_CURSOR, item(170, 3), 0, 6);
+            b.addEncoded(seg, O + 16 * S + 2_000L, RewindFormat.TAG_INV, c.buffer(), n);
+            n = c.inv(37, item(180, 1), 0, 6);
+            b.addEncoded(seg, O + 22 * S + 2_000L, RewindFormat.TAG_INV, c.buffer(), n);
+            n = c.out(0x0A, new byte[0], 0, 0);
+            b.addEncoded(seg, OUT_SWING, RewindFormat.TAG_OUT, c.buffer(), n);
+            b.addEncoded(seg, OUT_SWING_2, RewindFormat.TAG_OUT, c.buffer(), n);
+            n = c.out(0x08, new byte[]{1, 2, 3}, 0, 3);
+            b.addEncoded(seg, head(470) + 2_000L, RewindFormat.TAG_OUT, c.buffer(), n);
+            n = c.use(32);
+            b.addEncoded(seg, clientTick(USE_FROM), RewindFormat.TAG_USE, c.buffer(), n);
+        }
+        return r.withExt(b.build());
+    }
+
+    @Test
+    public void v2TracesWithHandledCountsAndLocalRecordsAreEqualForStraightPlayAndSeeks() throws Exception {
+        LoadedRecording r = v2();
+        Timeline tl = r.timeline();
+        assertEquals(TickTable.Kind.V2, tl.ticks().kind());
+        long start = tl.startTick();
+        long end = tl.endTick();
+        long[] targets = {tick(tl, O + 10 * S), tick(tl, O + 12 * S + 300_000L), tick(tl, O + 18 * S + 500_000L),
+                tick(tl, O + 25 * S), end};
+        int locals = 0;
+        for (long k : targets) {
+            for (long seed = 0; seed < 6; seed++) {
+                Harness straight = new Harness(r, seed).open().playTo(k);
+                Random pick = new Random(seed * 17 + k);
+                long j = start + (long) (pick.nextDouble() * (k - start));
+                Harness forward = new Harness(r, seed + 1000).open().playTo(j).seekTo(k);
+                assertEquals("v2 forward trace, K=" + k + " seed " + seed, straight.trace, forward.trace);
+                assertEquals(straight.model.snapshot(), forward.model.snapshot());
+                if (k < end) {
+                    long j2 = k + 1 + (long) (pick.nextDouble() * (end - k - 1));
+                    Harness backward = new Harness(r, seed + 2000).open().playTo(j2).seekTo(k);
+                    assertEquals("v2 backward trace, K=" + k + " seed " + seed, straight.trace, backward.trace);
+                    assertEquals(straight.model.snapshot(), backward.model.snapshot());
+                }
+                for (String e : straight.trace) {
+                    if (e.startsWith("L ")) {
+                        locals++;
+                        assertFalse("time-scoped records never enter the feed",
+                                e.contains(" tag" + com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + " "));
+                    }
+                }
+            }
+        }
+        assertTrue("local records are in the traces", locals > 0);
+        Harness h = new Harness(r, 3).open().playTo(tick(tl, O + 25 * S));
+        assertFalse("BLOCK records reached the model's world (Phase 11)", h.model.blocks.isEmpty());
+        assertFalse("CONT records reached the model's window (Phase 11)", h.model.slots.isEmpty());
+        assertNotEquals("the v2 order differs from the v1 stamp order somewhere",
+                new Harness(recording(), 1).open().playTo(tick(tl, O + 25 * S)).trace,
+                new Harness(r, 1).open().playTo(tick(tl, O + 25 * S)).trace);
     }
 
     @Test
@@ -842,5 +1067,67 @@ public class TickFeedEquivalenceTest {
         Harness before = new Harness(r, 5).open().playTo(tick(tl, O + 25 * S));
         assertEquals("survival from S01/S07 before it", ViewGameType.SURVIVAL, before.model.mode.forView(true));
         assertEquals(ViewGameType.SPECTATOR, before.model.mode.forView(false));
+    }
+
+    /** The tick whose interval {@code [T[k], T[k+1])} holds a record stamped {@code tUs}. */
+    private static long tickHolding(Timeline tl, long tUs) {
+        long k = tl.ticks().tickOf(tUs);
+        return tl.ticks().timeOf(k) > tUs ? k - 1 : k;
+    }
+
+    @Test
+    public void groupSevenV2RecordedSwingsUseCountAndAllInventorySlotsAreEqualAfterEverySeek() throws Exception {
+        LoadedRecording r = v2(true);
+        Timeline tl = r.timeline();
+        assertEquals(TickTable.Kind.V2, tl.ticks().kind());
+        long end = tl.endTick();
+        long swingTick = tickHolding(tl, OUT_SWING);
+        long v1SwingTick = tick(tl, clientTick(CLICK_RESTART + 2));
+        long useStart = tickHolding(tl, clientTick(USE_FROM));
+        long useTick = tick(tl, clientTick(USE_FROM + 5));
+        long late = tick(tl, O + 27 * S);
+        for (long k : new long[]{v1SwingTick, swingTick + 1, swingTick + 2, swingTick + 5, useTick, late}) {
+            for (long seed = 0; seed < 4; seed++) {
+                Harness straight = new Harness(r, seed).open().playTo(k);
+                Harness forward = new Harness(r, seed + 100).open().playTo(tl.startTick() + seed).seekTo(k);
+                Harness backward = new Harness(r, seed + 200).open().playTo(Math.min(end, k + 40 + seed)).seekTo(k);
+                assertEquals(2, backward.restarts);
+                assertEquals("v2 forward, K=" + k, straight.model.snapshot(), forward.model.snapshot());
+                assertEquals("v2 backward, K=" + k, straight.model.snapshot(), backward.model.snapshot());
+            }
+        }
+
+        // playTo(k) runs ticks 0 to k-1: the state shown after tick k-1.
+        Model.Cam before = new Harness(r, 1).open().playTo(swingTick).model.cam;
+        assertFalse(before.swinging);
+        Model.Cam swing = new Harness(r, 1).open().playTo(swingTick + 1).model.cam;
+        assertTrue("the swing starts on the C0A's tick", swing.swinging);
+        assertEquals(0, swing.swingInt);
+        Model.Cam restarted = new Harness(r, 2).open().playTo(swingTick + 5).model.cam;
+        assertTrue("the second C0A, four ticks on (second half), restarts it", restarted.swinging);
+        assertEquals(0, restarted.swingInt);
+        assertFalse("the TICK counters no longer start swings on v2",
+                new Harness(r, 3).open().playTo(v1SwingTick).model.cam.swinging);
+
+        Model.Cam using = new Harness(r, 4).open().playTo(useTick).model.cam;
+        assertTrue(using.inUse);
+        assertEquals("the recorded count, counted down", 32 - (useTick - 1 - useStart), using.useCount);
+
+        Model.Cam cam = new Harness(r, 5).open().playTo(late).model.cam;
+        assertEquals("INV wins over the S2F and the EQUIP stack", "I" + Arrays.toString(item(150, 2)),
+                cam.inventory.get(36));
+        assertEquals("I" + Arrays.toString(item(160, 1)), cam.inventory.get(20));
+        assertEquals("the cursor", "I" + Arrays.toString(item(170, 3)), cam.cursor);
+        assertEquals("the leggings", "I" + Arrays.toString(item(180, 1)), cam.armour[2]);
+        assertEquals("the boots", "I" + Arrays.toString(item(37, 1)), cam.armour[RewindFormat.EQUIP_BOOTS]);
+        for (int slot = 0; slot < RewindFormat.INV_MAIN_SLOTS; slot++) {
+            assertTrue("main slot " + slot, cam.inventory.containsKey(slot < 9 ? 36 + slot : slot));
+        }
+        assertFalse("no container slot reached the camera", cam.inventory.containsKey(0));
+
+        // C10: the same recording without its extension records takes no v2 path.
+        Model.Cam v1 = new Harness(recording(), 5).open().playTo(late).model.cam;
+        assertNull(v1.cursor);
+        assertEquals("S112", v1.inventory.get(36));
     }
 }

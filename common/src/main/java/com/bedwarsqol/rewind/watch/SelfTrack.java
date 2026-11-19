@@ -12,14 +12,22 @@ import java.util.List;
  * forward from the previous TICK of the same segment; the first TICK of a segment starts from zeros, and R1 writes it
  * full), CAMERA samples and EQUIP events. Immutable after {@link Builder#build()}; reading allocates nothing.
  *
- * <p><b>Pose.</b> {@link #pose} gives your eye position and camera rotation at time t. Position: let record i be the
- * last TICK at or before t and P_prev the position of the TICK before it in the same segment (P_i itself for the
- * segment's first TICK); eye = lerp(P_prev, P_i, min(1, (t - t_i) / 50 ms)) plus the eye height of record i's
- * flags. That is vanilla drawing the client player one tick behind its latest tick, and it holds across the gaps in
- * which an unchanged player wrote no TICK. Rotation: the latest CAMERA sample of the segment at or before t,
- * interpolated with the next sample when that one is at most 50 ms later (raw, unwrapped yaw); before the segment's
- * first CAMERA sample, TICK rotation interpolated like position. The segment for t is the last one whose first TICK
- * is at or before t (the first segment with a TICK when t is earlier).
+ * <p><b>Self state binding</b> (PLAN "Self state binding", round 2 B2; TASK C9). TICK and EQUIP samples are written
+ * at the end of the tick that produced them, so a sample stamped in {@code [T[k], T[k+1])} of the recording's
+ * {@link TickTable} is tick k's end state (v2: by construction; v1: the table is built from those same stamps minus
+ * 1 ms). Playback asks by tick, never by time: {@link #tickState} is the state after the last TICK stamped before
+ * T[k+1] (carried forward when tick k wrote none), {@link #swingStartsAt} reads tick k+1 (the swing's first tick reads
+ * like idle), and the EQUIP lookups of {@link PuppetState} and {@link HandState} take events stamped before T[k+1].
+ *
+ * <p><b>Pose.</b> {@link #pose} gives your eye position and camera rotation for a drawn frame: position = lerp(tick
+ * j-1's end state, tick j's, partial), j the last tick run and partial the share of tick j's recorded interval the
+ * frame's playback time has reached ({@link TickClock#partial}), plus the eye height of tick j's flags. That is what
+ * vanilla drew (the client player one tick behind its latest tick), on the table's own interval rather than 50 ms;
+ * across a segment boundary the new segment's state is used as is. Rotation: the latest CAMERA sample at or before the
+ * playback time, of the segment that answers for it, interpolated with the next sample when that one is at most 50 ms
+ * later (raw, unwrapped yaw); before that segment's first CAMERA sample, TICK rotation interpolated like position. The
+ * segment for a time is the last one whose first TICK is at or before it (the first segment with a TICK when it is
+ * earlier).
  */
 public final class SelfTrack {
 
@@ -275,58 +283,79 @@ public final class SelfTrack {
         return found;
     }
 
-    /** Writes your eye position and camera rotation at {@code t} into {@code out}; false if there is no TICK. */
-    public boolean pose(long t, Pose out) {
-        int si = segmentIndexAt(t);
+    /**
+     * Writes tick {@code k}'s end state: the last TICK stamped before {@code T[k+1]} (the first TICK of that segment
+     * when none is); false if there is no TICK.
+     */
+    public boolean tickState(TickTable table, long k, SelfTrackEncoder.State out) {
+        long before = table.timeOf(k + 1) - 1;
+        int si = segmentIndexAt(before);
         if (si < 0) {
             return false;
         }
         Segment s = segments[si];
-        int i = s.tickIndexAt(t);
-        int prev;
-        double a;
-        if (i < 0) {
-            i = 0;
-            prev = 0;
-            a = 1;
-        } else {
-            prev = i > 0 ? i - 1 : i;
-            a = Math.min(1.0, (double) (t - s.tickTime[i]) / Timeline.TICK_US);
+        s.state(Math.max(0, s.tickIndexAt(before)), out);
+        return true;
+    }
+
+    /**
+     * True when a recorded swing starts in tick {@code k}: vanilla's {@code swingItem} sets the counter to -1 and the
+     * tick moves it to 0, so the swing's first tick reads like idle and tick k+1 is the first to read 1. So: a TICK
+     * stamped in tick k+1's interval reads 1 and the TICK before it does not. Each tick reads its own interval, so a
+     * recorded swing (a restart by a repeated click included) starts exactly once.
+     */
+    public boolean swingStartsAt(TickTable table, long k) {
+        long from = table.timeOf(k + 1);
+        long before = table.timeOf(k + 2) - 1;
+        int si = segmentIndexAt(before);
+        if (si < 0) {
+            return false;
         }
+        Segment s = segments[si];
+        for (int j = s.tickIndexAt(before); j >= 0 && s.tickTime[j] >= from; j--) {
+            if (s.swingProgressInt(j) == 1 && !(j > 0 && s.swingProgressInt(j - 1) == 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Writes your eye position and camera rotation for a frame that draws tick {@code j} at {@code partial} (0-1) of
+     * its recorded interval, at playback time {@code cameraUs}; false if there is no TICK.
+     */
+    public boolean pose(TickTable table, long j, float partial, long cameraUs, Pose out) {
+        long beforeJ = table.timeOf(j + 1) - 1;
+        int si = segmentIndexAt(beforeJ);
+        if (si < 0) {
+            return false;
+        }
+        Segment s = segments[si];
+        int i = Math.max(0, s.tickIndexAt(beforeJ));
+        long beforePrev = table.timeOf(j) - 1;
+        int prev = segmentIndexAt(beforePrev) == si ? Math.max(0, s.tickIndexAt(beforePrev)) : i;
+        double a = Math.max(0.0, Math.min(1.0, partial));
         out.x = lerp(s.x[prev], s.x[i], a);
         out.y = lerp(s.y[prev], s.y[i], a);
         out.z = lerp(s.z[prev], s.z[i], a);
         out.flags = s.flags(i);
         out.eyeY = out.y + ((out.flags & RewindFormat.FLAG_SNEAKING) != 0 ? EYE_HEIGHT_SNEAKING : EYE_HEIGHT);
 
-        int c = s.cameraIndexAt(t);
+        int ci = segmentIndexAt(cameraUs);
+        Segment cs = ci < 0 ? s : segments[ci];
+        int c = cs.cameraIndexAt(cameraUs);
         if (c < 0) {
             out.yaw = (float) lerp(s.yaw[prev], s.yaw[i], a);
             out.pitch = (float) lerp(s.pitch[prev], s.pitch[i], a);
-        } else if (c + 1 < s.cameras && s.cameraTime[c + 1] - s.cameraTime[c] <= CAMERA_LERP_US
-                && s.cameraTime[c + 1] > s.cameraTime[c]) {
-            double ca = (double) (t - s.cameraTime[c]) / (s.cameraTime[c + 1] - s.cameraTime[c]);
-            out.yaw = (float) lerp(s.cameraYaw[c], s.cameraYaw[c + 1], ca);
-            out.pitch = (float) lerp(s.cameraPitch[c], s.cameraPitch[c + 1], ca);
+        } else if (c + 1 < cs.cameras && cs.cameraTime[c + 1] - cs.cameraTime[c] <= CAMERA_LERP_US
+                && cs.cameraTime[c + 1] > cs.cameraTime[c]) {
+            double ca = (double) (cameraUs - cs.cameraTime[c]) / (cs.cameraTime[c + 1] - cs.cameraTime[c]);
+            out.yaw = (float) lerp(cs.cameraYaw[c], cs.cameraYaw[c + 1], ca);
+            out.pitch = (float) lerp(cs.cameraPitch[c], cs.cameraPitch[c + 1], ca);
         } else {
-            out.yaw = s.cameraYaw[c];
-            out.pitch = s.cameraPitch[c];
+            out.yaw = cs.cameraYaw[c];
+            out.pitch = cs.cameraPitch[c];
         }
-        return true;
-    }
-
-    /**
-     * Writes the state of the last TICK at or before {@code t} (the first TICK when t is earlier) of the segment that
-     * answers for t; false if there is no TICK.
-     */
-    public boolean stateAt(long t, SelfTrackEncoder.State out) {
-        int si = segmentIndexAt(t);
-        if (si < 0) {
-            return false;
-        }
-        Segment s = segments[si];
-        int i = Math.max(0, s.tickIndexAt(t));
-        s.state(i, out);
         return true;
     }
 

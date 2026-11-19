@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.HandledRing;
 import com.bedwarsqol.rewind.RewindFormat;
 
 import java.util.List;
@@ -7,11 +8,22 @@ import java.util.List;
 /**
  * The tick-locked feed: the only place a recording's packets enter the client.
  *
- * <p>Tick k stands for {@code origin + k x 50 ms} ({@link Timeline#timeOfTick}). Before world tick k runs,
- * {@link #feedForTick feedForTick(k, sink)} hands over every NET record with a time at or before that, in stored
- * order, each through {@link PacketPolicy}, then the puppet's sample for that time ({@link PacketSink#sample}). Ticks
- * are fed in sequence from 0; speed, pause and catch-up only change how many ticks a frame runs, never which records
- * come before which tick. No record is dropped or reordered for a catch-up.
+ * <p>Tick k is tick k of the recording's {@link TickTable} (T[k] = {@link Timeline#timeOfTick}). Before world tick k
+ * runs, {@link #feedForTick feedForTick(k, sink)} does, in this order (PLAN "Event order"):
+ * <ol>
+ *   <li><b>NET records</b> in stored order, each through {@link PacketPolicy}, up to the first one not handled yet:
+ *       where tick k is a v2 head with a known order, a client-handled record of the head's segment is handled when
+ *       its ordinal (1-based, among the segment's client-handled stored records) is at most H[k], a record of an
+ *       earlier segment always is and one of a later segment is not; a record vanilla handles on the Netty thread
+ *       ({@link HandledRing#clientHandled} false), a v1 tick, a continuation tick or a head marked order-unknown use the
+ *       arrival rule (stamp at or before T[k]; R2's rule, with its stated error of one tick).</li>
+ *   <li>the <b>local phase</b>: every tick-scoped extension record ({@link ExtRecords.Scope#TICK}) stamped before
+ *       T[k+1] not fed yet, in stamp order ({@link PacketSink#local});</li>
+ *   <li>the puppet's <b>sample</b> for tick k ({@link PacketSink#sample}).</li>
+ * </ol>
+ * Ticks are fed in sequence from 0; speed, pause and catch-up only change how many ticks a frame runs, never which
+ * records come before which tick, so the whole order is part of the trace the seek contract compares. No record is
+ * dropped or reordered for a catch-up. Time-scoped extension records never enter the feed ({@link TickClock}).
  *
  * <p><b>Restarts.</b> {@link #restart()} goes back to before tick 0 at the start segment. The start segment's
  * source-0 header packets, then its source-1 ones, are fed before tick 0 ({@link #feedHeaders}, or the first
@@ -40,7 +52,14 @@ public final class TickFeeder {
 
     private final LoadedRecording recording;
     private final Timeline timeline;
+    private final TickTable table;
+    private final ExtRecords ext;
     private final NetCursor cursor;
+    /** The next tick-scoped extension record (a position in {@link ExtRecords#local}). */
+    private int localNext;
+    /** Client-handled records fed so far in segment {@link #ordinalSegment}. */
+    private long ordinal;
+    private int ordinalSegment = Integer.MIN_VALUE;
 
     private long nextTick;
     private boolean headersFed;
@@ -62,6 +81,8 @@ public final class TickFeeder {
         }
         this.recording = recording;
         this.timeline = recording.timeline();
+        this.table = timeline.ticks();
+        this.ext = recording.ext();
         this.cursor = recording.newCursor();
         this.currentTimeUs = timeline.originUs();
     }
@@ -79,6 +100,9 @@ public final class TickFeeder {
         dropped = 0;
         currentIndex = HEADER;
         currentTimeUs = timeline.originUs();
+        localNext = 0;
+        ordinal = 0;
+        ordinalSegment = Integer.MIN_VALUE;
     }
 
     /** Feeds the start segment's headers (source 0, then 1) if they were not fed since the last restart. */
@@ -119,23 +143,60 @@ public final class TickFeeder {
             return state;
         }
         feedHeaders(sink);
-        long limit = timeline.timeOfTick(k);
-        while (state == State.RUNNING && !cursor.atEnd() && cursor.timeUs() <= limit) {
+        long limit = table.timeOf(k);
+        while (state == State.RUNNING && !cursor.atEnd() && handledBefore(k, limit)) {
             long position = cursor.position();
             currentIndex = position;
             currentTimeUs = cursor.timeUs();
+            int id = cursor.packetId();
+            int segment = cursor.segmentIndex();
             feedOne(cursor.buffer(), cursor.offset(), cursor.length(), position > highWater, k, false, sink);
             if (position > highWater) {
                 highWater = position;
+            }
+            if (HandledRing.clientHandled(id)) {
+                if (segment != ordinalSegment) {
+                    ordinalSegment = segment;
+                    ordinal = 0;
+                }
+                ordinal++;
             }
             cursor.advance();
         }
         currentIndex = HEADER;
         currentTimeUs = limit;
         if (state != State.FAILED) {
+            feedLocal(k, sink);
             sink.sample(k, limit);
         }
         return state;
+    }
+
+    /** Whether the record under the cursor was handled before tick {@code k} (the class comment's rule). */
+    private boolean handledBefore(long k, long limit) {
+        if (!table.orderKnown(k) || !HandledRing.clientHandled(cursor.packetId())) {
+            return cursor.timeUs() <= limit;
+        }
+        int segment = cursor.segmentIndex();
+        int head = table.segment(k);
+        if (segment != head) {
+            return segment < head;
+        }
+        long next = (segment == ordinalSegment ? ordinal : 0) + 1;
+        return next <= table.handled(k);
+    }
+
+    /** The local phase of tick {@code k}: tick-scoped extension records stamped before T[k+1], in stamp order. */
+    private void feedLocal(long k, PacketSink sink) {
+        long end = table.timeOf(k + 1);
+        while (localNext < ext.localCount()) {
+            int i = ext.local(localNext);
+            if (ext.timeUs(i) >= end) {
+                return;
+            }
+            localNext++;
+            sink.local(ext.tag(i), ext.timeUs(i), ext.buffer(), ext.offset(i), ext.length(i));
+        }
     }
 
     private void feedOne(byte[] buf, int off, int len, boolean count, long tick, boolean header, PacketSink sink) {
@@ -152,6 +213,9 @@ public final class TickFeeder {
                 break;
             case SESSION_HOOK:
                 ok = hook(sink, id, buf, off, len);
+                break;
+            case WINDOW:
+                ok = window(sink, id, buf, off, len);
                 break;
             case END:
                 if (header) {
@@ -184,12 +248,25 @@ public final class TickFeeder {
         }
     }
 
+    private static boolean window(PacketSink sink, int id, byte[] buf, int off, int len) {
+        try {
+            return sink.window(id, buf, off, len);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     private static boolean hook(PacketSink sink, int id, byte[] buf, int off, int len) {
         try {
             return sink.sessionHook(id, buf, off, len);
         } catch (RuntimeException e) {
             return false;
         }
+    }
+
+    /** The tick being fed ({@link #nextTick()} - 1): -1 before tick 0, e.g. while the headers are fed. */
+    public long currentTick() {
+        return nextTick - 1;
     }
 
     /** The tick {@link #feedForTick} expects next (0 after a restart). */

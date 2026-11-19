@@ -10,6 +10,7 @@ import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RecordingStore;
 import com.bedwarsqol.rewind.Rewind;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.Gui;
@@ -21,6 +22,7 @@ import net.minecraft.client.multiplayer.GuiConnecting;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.ServerList;
 import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.boss.BossStatus;
 import net.minecraft.stats.StatFileWriter;
 import net.minecraft.util.Timer;
@@ -28,7 +30,10 @@ import net.minecraft.world.EnumDifficulty;
 import net.minecraft.world.World;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -47,6 +52,11 @@ import java.util.function.Supplier;
  * <p><b>Hooks</b> ({@code MinecraftRewindPlaybackMixin}, {@code EntityRendererRewindPlaybackMixin},
  * {@code PlayerControllerMPRewindMixin}, {@code EffectRendererRewindMixin}, {@code SoundHandlerRewindMixin}) return at
  * once when no recording plays and never throw.
+ *
+ * <p><b>Parts</b> (PLAN "B-seam"): playback behaviour that later phases add registers once with {@link #register}
+ * ({@link PlaybackPart} documents the lifecycle). The session, the sink, the camera, the puppet and the viewer call
+ * them through the {@code parts*} methods here; a part that throws is logged once and keeps being called.
+ * {@link #view()} is the session's {@link ViewState}.
  *
  * <p>Diagnostics go to DiagLog with counts and timings only.
  */
@@ -77,6 +87,10 @@ public final class RewindPlayback implements ClientOps {
     };
 
     private static final RewindPlayback INSTANCE = new RewindPlayback();
+    /** Registered parts, in registration order (client thread). */
+    private static final List<PlaybackPart> PARTS = new ArrayList<PlaybackPart>();
+    /** Parts whose failure was logged (once each). */
+    private static final Map<PlaybackPart, Boolean> FAILED = new IdentityHashMap<PlaybackPart, Boolean>();
     private static volatile Screens screens = MINIMAL;
     private static volatile Supplier<GuiScreen> failureGallery;
 
@@ -143,6 +157,199 @@ public final class RewindPlayback implements ClientOps {
     /** The current connection's sink (the recorded entity id and game mode), or null. */
     public static PlaybackSink currentSink() {
         return INSTANCE.sink;
+    }
+
+    /** The session's view state: what the view shows ({@link ViewState}). */
+    public static ViewState view() {
+        return INSTANCE.session.view();
+    }
+
+    // ================================================================== parts (PLAN "B-seam")
+
+    /** Adds a playback part (once; a second registration of the same object is ignored). Client thread. */
+    public static void register(PlaybackPart part) {
+        if (part != null && !PARTS.contains(part)) {
+            PARTS.add(part);
+        }
+    }
+
+    /** The registered parts, in order (read only). */
+    static List<PlaybackPart> parts() {
+        return Collections.unmodifiableList(PARTS);
+    }
+
+    private static void partFailed(PlaybackPart p, String hook, Throwable t) {
+        if (FAILED.put(p, Boolean.TRUE) == null) {
+            DiagLog.log("rewind-watch: part failed " + p.getClass().getSimpleName() + " " + hook + " "
+                    + t.getClass().getSimpleName());
+        }
+    }
+
+    static void partsRestart() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).restart();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "restart", t);
+            }
+        }
+    }
+
+    static void partsBoundary() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).boundary();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "boundary", t);
+            }
+        }
+    }
+
+    static void partsLocal(int tag, long timeUs, byte[] buf, int off, int len) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).local(tag, timeUs, buf, off, len);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "local", t);
+            }
+        }
+    }
+
+    static void partsTick(long tick, long timeUs) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).tick(tick, timeUs);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "tick", t);
+            }
+        }
+    }
+
+    static void partsTimed(int tag, long timeUs, byte[] buf, int off, int len) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).timed(tag, timeUs, buf, off, len);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "timed", t);
+            }
+        }
+    }
+
+    static void partsFrame(long timeUs, float partial) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).frame(timeUs, partial);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "frame", t);
+            }
+        }
+    }
+
+    static void partsViewChanged() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).viewChanged();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "viewChanged", t);
+            }
+        }
+    }
+
+    static void partsExit() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).exit();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "exit", t);
+            }
+        }
+    }
+
+    /** The viewer's underlay slot (under the bar). */
+    static void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).drawUnder(width, height, mouseX, mouseY, partial);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "drawUnder", t);
+            }
+        }
+    }
+
+    /** The viewer's overlay slot (over the bar). */
+    static void drawOver(int width, int height, int mouseX, int mouseY, float partial) {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).drawOver(width, height, mouseX, mouseY, partial);
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "drawOver", t);
+            }
+        }
+    }
+
+    /** Keys 3 / Shift+3: the first part that rides another player. */
+    public static boolean cyclePlayer(int direction) {
+        if (!active()) {
+            return false;
+        }
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                if (PARTS.get(i).cyclePlayer(direction)) {
+                    return true;
+                }
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "cyclePlayer", t);
+            }
+        }
+        return false;
+    }
+
+    /** The puppet's {@code playSound} (one-line hook in {@link RewindSelfPuppet}): true if a part took it. */
+    public static boolean puppetSound(RewindSelfPuppet puppet, String name, float volume, float pitch) {
+        if (!active()) {
+            return false;
+        }
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                if (PARTS.get(i).puppetSound(puppet, name, volume, pitch)) {
+                    return true;
+                }
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "puppetSound", t);
+            }
+        }
+        return false;
+    }
+
+    /** The camera's and the puppet's tab entry (one-line hooks): the first part's answer, or null for vanilla's. */
+    public static NetworkPlayerInfo playerInfo(AbstractClientPlayer player) {
+        if (!active()) {
+            return null;
+        }
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                NetworkPlayerInfo info = PARTS.get(i).playerInfo(player);
+                if (info != null) {
+                    return info;
+                }
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "playerInfo", t);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The view state changed through a viewer key (F5, the clean view): the sink re-applies the view's game type and
+     * camera state and tells the parts. The session writes F5, F1 and F3 from the view at the next frame.
+     */
+    public static void viewStateChanged() {
+        PlaybackSink s = INSTANCE.sink;
+        if (s != null) {
+            s.viewChanged();
+        } else {
+            partsViewChanged();
+        }
     }
 
     // ================================================================== hooks (mixins)
@@ -217,6 +424,7 @@ public final class RewindPlayback implements ClientOps {
             }
             if (s.playingWorld()) {
                 INSTANCE.poseCamera(partialTicks);
+                partsFrame(s.renderTimeUs(), s.renderPartial());
             }
         } catch (Throwable ignored) {
             // a frame is never broken by playback
@@ -387,8 +595,9 @@ public final class RewindPlayback implements ClientOps {
             mc.loadWorld(null);
         }
         closeConnection();
-        connection = PlaybackConnection.open(mc, mc.getSession().getProfile());
+        connection = PlaybackConnection.open(mc, Identity.connectionProfile(mc.getSession().getProfile()));
         sink = new PlaybackSink(mc, connection);
+        partsRestart();
     }
 
     private void closeConnection() {
@@ -426,6 +635,11 @@ public final class RewindPlayback implements ClientOps {
     }
 
     @Override
+    public void setPartialTicks(float partial) {
+        timer().renderPartialTicks = partial;
+    }
+
+    @Override
     public long nanoTime() {
         return System.nanoTime();
     }
@@ -439,6 +653,7 @@ public final class RewindPlayback implements ClientOps {
             }
         } finally {
             closeConnection();
+            partsExit();
         }
     }
 
@@ -508,6 +723,36 @@ public final class RewindPlayback implements ClientOps {
     @Override
     public void setThirdPersonView(int view) {
         mc().gameSettings.thirdPersonView = view;
+    }
+
+    @Override
+    public boolean hideGui() {
+        return mc().gameSettings.hideGUI;
+    }
+
+    @Override
+    public void setHideGui(boolean hide) {
+        mc().gameSettings.hideGUI = hide;
+    }
+
+    @Override
+    public boolean showDebugInfo() {
+        return mc().gameSettings.showDebugInfo;
+    }
+
+    @Override
+    public void setShowDebugInfo(boolean show) {
+        mc().gameSettings.showDebugInfo = show;
+    }
+
+    @Override
+    public boolean smoothCamera() {
+        return mc().gameSettings.smoothCamera;
+    }
+
+    @Override
+    public void setSmoothCamera(boolean smooth) {
+        mc().gameSettings.smoothCamera = smooth;
     }
 
     @Override

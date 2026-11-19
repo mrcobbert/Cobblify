@@ -20,6 +20,7 @@ import java.util.regex.Pattern;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -344,6 +345,41 @@ public class HudCaptureTest {
         cap.offerShown(RewindFormat.HUD_POTION);
         assertEquals("no room is a failure too", 1, full.failures);
         assertFalse(cap.active());
+    }
+
+    /**
+     * Review code-2 O7: when the recorder's rules stop recording the segment, the next offer finds the sink not
+     * recording and switches capture off quietly: no failure is built or reported (no exception on the render thread).
+     */
+    @Test
+    public void aSegmentThatStopsBeingRecordedTurnsCaptureOffWithoutAFailure() {
+        final boolean[] recording = {true};
+        Recording rules = new Recording() {
+            @Override
+            public boolean recording() {
+                return recording[0];
+            }
+
+            @Override
+            public boolean append(int tag, byte[] buf, int len) {
+                return recording[0] && super.append(tag, buf, len);
+            }
+        };
+        cap.setSink(rules);
+        tick();
+        cap.offerShown(RewindFormat.HUD_POTION);
+        assertEquals(1, rules.records.size());
+        recording[0] = false; // the rules drop the segment
+        tick();
+        cap.offerShown(RewindFormat.HUD_ARMOR);
+        assertEquals("nothing built or reported", 0, rules.failures);
+        assertNull(rules.cause);
+        assertFalse("capture is off until the next segment", cap.active());
+        recording[0] = true;
+        cap.setSink(rules);
+        tick();
+        cap.offerShown(RewindFormat.HUD_ARMOR);
+        assertEquals(2, rules.records.size());
     }
 
     @Test

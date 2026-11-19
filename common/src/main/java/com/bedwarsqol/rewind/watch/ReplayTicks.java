@@ -2,8 +2,10 @@ package com.bedwarsqol.rewind.watch;
 
 /**
  * Playback's tick counter: ticks run since the last restart, speed (G45: 0.25x, 0.5x, 1x, 2x, 4x), pause, the end
- * tick and a running catch-up. Playback time advances only by world ticks: tick k stands for
- * {@code origin + k x 50 ms}, and after {@link #ticksRun()} = n ticks the records of ticks 0..n-1 have been fed.
+ * tick and a running catch-up. Tick k is tick k of the recording's {@link TickTable}, and after {@link #ticksRun()} =
+ * n ticks the records of ticks 0..n-1 have been fed. While watching, how many ticks a frame runs is the
+ * {@link TickClock}'s answer (playback time against the recorded tick times); {@link #frameTicks} is the cap R2 used
+ * with vanilla's count, kept for the engine's pure tests.
  *
  * <p>The session calls {@link #beginTick()} at {@code runTick} HEAD (with the feed) and {@link #finishTick()} at
  * RETURN. A catch-up ({@link #seek}) runs ticks whether paused or not; when it reaches its target the user's play

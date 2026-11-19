@@ -113,6 +113,13 @@ public class PlaybackSessionTest {
             return true;
         }
 
+        final List<String> timed = new ArrayList<String>();
+
+        @Override
+        public void timed(int tag, long timeUs, byte[] buf, int off, int len) {
+            timed.add(tag + "@" + (timeUs - ORIGIN) / 1000 + " P=" + (session.renderTimeUs() - ORIGIN) / 1000);
+        }
+
         @Override
         public void sample(long tick, long timeUs) {
             ops.event("sample " + tick + (loop.inHead ? " head" : " outside"));
@@ -139,6 +146,12 @@ public class PlaybackSessionTest {
         float timerSpeed = 1f;
         int thirdPerson = 2;
         int difficulty = 3;
+        boolean hideGui = true;
+        boolean showDebug = true;
+        boolean smoothCamera = true;
+        float partial = -1f;
+        final List<Float> partials = new ArrayList<Float>();
+        ExtRecords loadExt;
         List<Line> chat = new ArrayList<Line>();
         List<String> sent = new ArrayList<String>();
         int counter = 500;
@@ -227,6 +240,9 @@ public class PlaybackSessionTest {
                 }
                 event("load");
                 LoadedRecording r = LoadedRecording.load(loadCbr, loadJson);
+                if (loadExt != null) {
+                    r = r.withExt(loadExt);
+                }
                 if (r.problem() != null) {
                     load.fail(PlaybackSession.Failure.UNPLAYABLE, String.valueOf(r.problem()));
                 } else {
@@ -278,6 +294,12 @@ public class PlaybackSessionTest {
         @Override
         public void setElapsedTicks(int ticks) {
             elapsed = ticks;
+        }
+
+        @Override
+        public void setPartialTicks(float p) {
+            partial = p;
+            partials.add(p);
         }
 
         @Override
@@ -345,6 +367,36 @@ public class PlaybackSessionTest {
         }
 
         @Override
+        public boolean hideGui() {
+            return hideGui;
+        }
+
+        @Override
+        public void setHideGui(boolean hide) {
+            hideGui = hide;
+        }
+
+        @Override
+        public boolean showDebugInfo() {
+            return showDebug;
+        }
+
+        @Override
+        public void setShowDebugInfo(boolean show) {
+            showDebug = show;
+        }
+
+        @Override
+        public boolean smoothCamera() {
+            return smoothCamera;
+        }
+
+        @Override
+        public void setSmoothCamera(boolean smooth) {
+            smoothCamera = smooth;
+        }
+
+        @Override
         public int difficulty() {
             return difficulty;
         }
@@ -395,10 +447,42 @@ public class PlaybackSessionTest {
         /** Per frame: world drawing skipped. */
         final List<Boolean> drawSkipped = new ArrayList<Boolean>();
         int ticksLastFrame;
+        /**
+         * Wall time added after each frame. 0: {@link #frame} sets the clock for exactly the ticks it asks for, and
+         * {@link #timed} frames add their own wall time before the frame.
+         */
+        long afterFrameNs = 0L;
+        /** Per frame: playback time when the frame's ticks were decided, ticks run in it. */
+        final List<long[]> frameLog = new ArrayList<long[]>();
+
+        /** Advances the fake clock so exactly {@code n} more ticks are due at 1x or any speed. */
+        private void clockFor(int n) {
+            if (session.state() != PlaybackSession.State.WATCHING || session.clock() == null
+                    || session.ticks().paused()) {
+                return;
+            }
+            TickTable t = session.timeline().ticks();
+            long want = t.timeOf(session.ticks().ticksRun() + n) - 1 - session.clock().playbackUs();
+            if (want > 0) {
+                ops.nanos += (long) Math.ceil(want * 1000.0 / session.ticks().speed());
+            }
+        }
+
+        /** One frame {@code frameNs} after the last, nothing else added. */
+        void timed(long frameNs) {
+            ops.nanos += frameNs;
+            frameNoClock(1);
+        }
 
         void frame(int vanillaElapsed) {
+            clockFor(vanillaElapsed);
+            frameNoClock(vanillaElapsed);
+        }
+
+        private void frameNoClock(int vanillaElapsed) {
             ops.elapsed = vanillaElapsed;
             session.frameStart();
+            long decidedAt = session.clock() == null ? Long.MIN_VALUE : session.clock().playbackUs();
             int before = worldTicks;
             for (int j = 0; j < ops.elapsed; j++) { // re-read before every pass
                 inHead = true;
@@ -419,7 +503,9 @@ public class PlaybackSessionTest {
             session.afterPauseWrite();
             drawSkipped.add(session.skipWorldDraw());
             ticksLastFrame = worldTicks - before;
-            ops.nanos += 1_000_000L;
+            frameLog.add(new long[]{decidedAt, ticksLastFrame,
+                    session.ticks() == null ? -1 : session.ticks().ticksRun()});
+            ops.nanos += afterFrameNs;
         }
 
         void frames(int n, int vanillaElapsed) {
@@ -583,16 +669,16 @@ public class PlaybackSessionTest {
     }
 
     @Test
-    public void speedSetsTheTimerAndPauseKeepsItAtOne() {
+    public void theTimerSpeedStaysOneAtEverySpeedAndPauseHoldsTheWorld() {
         watching();
         session.faster();
         loop.frame(1);
-        assertEquals(2f, ops.timerSpeed, 0f);
+        assertEquals("the recorded clock decides the ticks, not the timer", 1f, ops.timerSpeed, 0f);
         session.slower();
         session.slower();
         session.slower();
         loop.frame(1);
-        assertEquals(0.25f, ops.timerSpeed, 0f);
+        assertEquals(1f, ops.timerSpeed, 0f);
         session.setPaused(true);
         loop.frame(1);
         assertEquals(1f, ops.timerSpeed, 0f);
@@ -767,6 +853,358 @@ public class PlaybackSessionTest {
         assertEquals("a line 5 s old at entry is 5 s old after exit", 100, ops.counter - ops.chat.get(0).created);
         assertEquals("/typed", ops.sent.get(0));
         assertTrue(index("openTitle muted=false") < index("restoreChat"));
+    }
+
+    /** B3: playback starts with the HUD shown even if F1 was on; leaving puts F1, F3, F5 and smooth camera back. */
+    @Test
+    public void playbackStartsWithTheHudShownAndLeavingPutsF1F3F5AndSmoothCameraBack() {
+        ops.hideGui = true;
+        ops.showDebug = true;
+        ops.smoothCamera = true;
+        ops.thirdPerson = 2;
+        watching();
+        assertFalse("HUD shown", ops.hideGui);
+        assertFalse("no F3", ops.showDebug);
+        assertFalse("no smooth camera", ops.smoothCamera);
+        assertEquals(0, ops.thirdPerson);
+        loop.frames(3, 1);
+        assertFalse("still shown while watching", ops.hideGui);
+        session.seekTo(START_TICK + 2); // backward: a restart
+        ops.hideGui = true;
+        loop.frame(0);
+        loop.until(PlaybackSession.State.WATCHING, 1);
+        assertFalse("every restart shows the HUD", ops.hideGui);
+        session.requestExit(PlaybackSession.Exit.TITLE);
+        loop.frame(0);
+        assertTrue(ops.hideGui);
+        assertTrue(ops.showDebug);
+        assertTrue(ops.smoothCamera);
+        assertEquals(2, ops.thirdPerson);
+    }
+
+    @Test
+    public void theViewStateDrivesF5AndF1EachFrameAndANewSessionStartsFromIt() {
+        watching();
+        session.view().cyclePerspective();
+        loop.frame(1);
+        assertEquals("F5 in your view: behind", 1, ops.thirdPerson);
+        session.view().toggleClean();
+        loop.frame(1);
+        assertTrue("the clean view hides the HUD", ops.hideGui);
+        session.view().selectYou();
+        loop.frame(1);
+        assertEquals(0, ops.thirdPerson);
+        assertFalse(ops.hideGui);
+        session.view().selectFree();
+        session.requestExit(PlaybackSession.Exit.TITLE);
+        loop.frame(0);
+        session.open(ID);
+        assertTrue("a new session starts in your view", session.view().yourView());
+    }
+
+    // ------------------------------------------------------------------ the recorded tick clock (review B4, I2, I3)
+
+    static final long MS = 1_000L;
+    static final long FRAME_16 = 16_700_000L;
+    static final long FRAME_5 = 5_000_000L;
+
+    /** A v2 recording: S01 at the origin, a time update every 10 ms, heads at {@code ORIGIN + ms} and more records. */
+    private void v2(long[] headMs, int endMs, ExtRecords.Builder more) throws IOException {
+        TickFeederTest.Rec rec = new TickFeederTest.Rec()
+                .segment(1, TickFeederTest.standardHeader0(), TickFeederTest.standardHeader1())
+                .at(ORIGIN, RecordingFixture.joinGame(0));
+        for (int t = 10; t < endMs; t += 10) {
+            rec.at(ORIGIN + t * MS, TickFeederTest.p(0x03, t & 0x7F));
+        }
+        File dir = tmp.newFolder();
+        rec.load(dir, ORIGIN, ORIGIN + endMs * MS).close();
+        ops.loadCbr = new File(dir, ID + ".cbr");
+        ops.loadJson = new File(dir, ID + ".json");
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = more == null ? new ExtRecords.Builder() : more;
+        for (long h : headMs) {
+            int n = c.tickHead(0);
+            b.addEncoded(0, ORIGIN + h * MS, com.bedwarsqol.rewind.RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+        }
+        ops.loadExt = b.build();
+    }
+
+    /** Opens the recording and returns the wall time (ns) at which playback time stood at the first tick's time. */
+    private long openAtStart() {
+        loop.afterFrameNs = 0;
+        session.open(ID);
+        loop.until(PlaybackSession.State.WATCHING, 0);
+        assertEquals("opens at tick 0", ORIGIN, session.renderTimeUs());
+        return ops.nanos;
+    }
+
+    /** Runs frames of {@code frameNs} until {@code ticks} ticks ran; per tick: {k, wall ns of its frame}. */
+    private List<long[]> runTicks(long frameNs, int ticks) {
+        List<long[]> out = new ArrayList<long[]>();
+        for (int f = 0; f < 10_000 && out.size() < ticks; f++) {
+            long before = session.ticks().ticksRun();
+            loop.timed(frameNs);
+            for (long k = before; k < session.ticks().ticksRun(); k++) {
+                out.add(new long[]{k, ops.nanos});
+            }
+        }
+        assertEquals(ticks, out.size());
+        return out;
+    }
+
+    @Test
+    public void theReviewersSeriesRunsEachTickInTheFirstFrameAtOrAfterItsRecordedTime() throws IOException {
+        long[] heads = {0, 50, 100, 170, 240, 310};
+        for (long frame : new long[]{FRAME_16, FRAME_5}) {
+            client();
+            v2(heads, 2000, null);
+            long anchor = openAtStart();
+            TickTable t = session.timeline().ticks();
+            // tick 0 ran in the opening frame, at its time
+            assertEquals(1, session.ticks().ticksRun());
+            for (long[] run : runTicks(frame, heads.length - 1)) {
+                long recorded = (t.timeOf(run[0]) - ORIGIN) * 1000;
+                long wall = run[1] - anchor;
+                assertTrue("tick " + run[0] + " never before its time: wall " + wall + " rec " + recorded,
+                        wall >= recorded);
+                assertTrue("tick " + run[0] + " at most one frame late: " + (wall - recorded),
+                        wall - recorded <= frame);
+            }
+            assertEquals(ORIGIN + 310 * MS, t.timeOf(heads.length - 1));
+        }
+    }
+
+    @Test
+    public void otherSpeedsScaleTheSameClockInPlaybackTime() throws IOException {
+        long[] heads = {0, 50, 100, 170, 240, 310};
+        for (int speedSteps : new int[]{-2, 1, 2}) {
+            client();
+            v2(heads, 2000, null);
+            long anchor = openAtStart();
+            for (int i = 0; i < Math.abs(speedSteps); i++) {
+                if (speedSteps > 0) {
+                    session.faster();
+                } else {
+                    session.slower();
+                }
+            }
+            float speed = session.ticks().speed();
+            TickTable t = session.timeline().ticks();
+            for (long[] run : runTicks(FRAME_16, heads.length - 1)) {
+                double played = (run[1] - anchor) / 1000.0 * speed; // playback us since tick 0
+                long recorded = t.timeOf(run[0]) - ORIGIN;
+                assertTrue(speed + "x tick " + run[0] + " never before", played + 1e-6 >= recorded);
+                assertTrue(speed + "x tick " + run[0] + " within a frame of playback time",
+                        played - recorded <= FRAME_16 / 1000.0 * speed + 1e-6);
+            }
+        }
+    }
+
+    @Test
+    public void aPauseRunsNoTickAndPlaybackResumesWithoutAJump() throws IOException {
+        v2(new long[]{0, 50, 100, 150, 200, 250, 300}, 2000, null);
+        openAtStart();
+        runTicks(FRAME_16, 2);
+        session.setPaused(true);
+        loop.timed(FRAME_16);
+        long held = session.renderTimeUs();
+        long ran = session.ticks().ticksRun();
+        for (int i = 0; i < 120; i++) {
+            loop.timed(FRAME_16); // two seconds paused
+        }
+        assertEquals("no tick while paused", ran, session.ticks().ticksRun());
+        assertEquals("playback time holds", held, session.renderTimeUs());
+        session.setPaused(false);
+        loop.timed(FRAME_16);
+        assertEquals("one frame on, not two seconds", held + FRAME_16 / 1000, session.renderTimeUs());
+    }
+
+    @Test
+    public void aRecordedFreezeReplaysAsAFreezeThenItsCatchUpTicksInOneFrame() throws IOException {
+        v2(new long[]{100, 600, 601, 602}, 2000, null);
+        openAtStart();
+        TickTable t = session.timeline().ticks();
+        long k100 = t.tickOf(ORIGIN + 100 * MS);
+        long frame = 17_000_000L;
+        int ticksAt100 = -1;
+        boolean sawGap = false;
+        for (int f = 0; f < 60; f++) {
+            long before = session.ticks().ticksRun();
+            loop.timed(frame);
+            long p = session.renderTimeUs() - ORIGIN;
+            int ran = (int) (session.ticks().ticksRun() - before);
+            if (before <= k100 && session.ticks().ticksRun() > k100) {
+                ticksAt100 = ran;
+            } else if (p > 100 * MS && p < 600 * MS) {
+                assertEquals("nothing inside the freeze at P=" + p, 0, ran);
+                sawGap = true;
+            } else if (p >= 602 * MS && before == k100 + 1) {
+                assertEquals("the three catch-up ticks in one frame", 3, ran);
+                assertTrue(sawGap);
+                assertEquals(1, ticksAt100);
+                return;
+            }
+        }
+        throw new AssertionError("the frame after the freeze never came");
+    }
+
+    @Test
+    public void renderPartialTicksIsPlaybackTimeOverTheRecordedInterval() throws IOException {
+        v2(new long[]{0, 50, 100, 170, 240, 310}, 2000, null);
+        openAtStart();
+        TickTable t = session.timeline().ticks();
+        for (int f = 0; f < 18; f++) {
+            loop.timed(FRAME_16);
+            long j = session.ticks().ticksRun() - 1;
+            long p = session.renderTimeUs();
+            double want = Math.max(0, Math.min(1, (p - t.timeOf(j)) / (double) (t.timeOf(j + 1) - t.timeOf(j))));
+            assertEquals("frame " + f, want, ops.partial, 1e-6);
+            assertEquals(want, session.renderPartial(), 1e-6);
+        }
+        // with heads 100 and 170 the frame at P = 135 draws half way
+        assertEquals(0.5f, t.partial(t.tickOf(ORIGIN + 100 * MS), ORIGIN + 135 * MS), 1e-6f);
+    }
+
+    /** Round 2 I2: a sound stamped inside a tick plays in the first frame at or after its own stamp, once. */
+    @Test
+    public void aTimeScopedRecordIsDispatchedInTheFirstFrameAtOrAfterItsStampNeverInASeek() throws IOException {
+        for (boolean twice : new boolean[]{false, true}) {
+            client();
+            com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+            int n = c.sound("random.click", 1f, 64f, 1f, 1f, 1f);
+            ExtRecords.Builder b = new ExtRecords.Builder()
+                    .add(0, ORIGIN + 140 * MS, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND,
+                            ExtRecords.body(c.buffer(), n));
+            v2(new long[]{100, 150, 200, 250}, 4000, b);
+            openAtStart();
+            if (twice) {
+                session.faster();
+            }
+            float speed = session.ticks().speed();
+            long step = (long) (10_000_000L / speed); // 10 ms of playback per frame
+            TickTable t = session.timeline().ticks();
+            for (int f = 0; f < 10; f++) {
+                loop.timed(step); // to P = 100
+            }
+            assertEquals(ORIGIN + 100 * MS, session.renderTimeUs());
+            assertTrue("the frame at P = 100 ran the tick at 100",
+                    session.ticks().ticksRun() > t.tickOf(ORIGIN + 100 * MS));
+            assertTrue("nothing dispatched at P = 100", ops.sink.timed.isEmpty());
+            loop.timed(step);
+            loop.timed(step); // P = 120
+            assertTrue("nothing at P = 120", ops.sink.timed.isEmpty());
+            loop.timed(step * 21 / 10); // P = 141
+            assertEquals(java.util.Arrays.asList(com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + "@140 P=141"),
+                    ops.sink.timed);
+            loop.timed(step);
+            loop.timed(step);
+            assertEquals("once", 1, ops.sink.timed.size());
+
+            // A backward seek to before it and a forward seek past it dispatch nothing.
+            ops.sink.timed.clear();
+            session.seekTo(0);
+            loop.frame(0);
+            loop.until(PlaybackSession.State.WATCHING, 0);
+            session.seekTo(t.tickOf(ORIGIN + 300 * MS));
+            loop.frame(0);
+            loop.until(PlaybackSession.State.WATCHING, 0);
+            loop.timed(step);
+            assertTrue("a seek past it plays nothing: " + ops.sink.timed, ops.sink.timed.isEmpty());
+        }
+    }
+
+    /**
+     * Review code-2 O10 (a): a seek whose target is the tick already reached (a timeline click inside the current
+     * interval, {@code seekBy} under one tick, a marker landing there) runs no tick and leaves playback time where it
+     * was: the sound stamped at 140 ms still plays once at its time, and a recorded freeze is not cut short.
+     */
+    @Test
+    public void aSeekToTheTickAlreadyReachedKeepsPlaybackTime() throws IOException {
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        int n = c.sound("random.click", 1f, 64f, 1f, 1f, 1f);
+        ExtRecords.Builder b = new ExtRecords.Builder()
+                .add(0, ORIGIN + 140 * MS, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND, ExtRecords.body(c.buffer(), n));
+        v2(new long[]{100, 150, 200, 250}, 4000, b);
+        openAtStart();
+        long step = 10_000_000L; // 10 ms of playback per frame
+        for (int f = 0; f < 12; f++) {
+            loop.timed(step); // to P = 120
+        }
+        assertEquals(ORIGIN + 120 * MS, session.renderTimeUs());
+        long ran = session.ticks().ticksRun();
+        session.seekBy(20_000L); // under one tick: the tick already reached
+        loop.timed(0);
+        assertEquals(PlaybackSession.State.WATCHING, session.state());
+        assertEquals("no tick ran", ran, session.ticks().ticksRun());
+        assertEquals("playback time kept", ORIGIN + 120 * MS, session.renderTimeUs());
+        session.seekTo(session.ticks().ticksRun());
+        loop.timed(0);
+        assertEquals(ORIGIN + 120 * MS, session.renderTimeUs());
+        loop.timed(step * 21 / 10); // P = 141
+        assertEquals(java.util.Arrays.asList(com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + "@140 P=141"),
+                ops.sink.timed);
+
+        // inside a recorded freeze (heads 100 and 2100 ms)
+        client();
+        v2(new long[]{100, 2100, 2150}, 4000, null);
+        openAtStart();
+        for (int f = 0; f < 50; f++) {
+            loop.timed(step); // to P = 500
+        }
+        assertEquals(ORIGIN + 500 * MS, session.renderTimeUs());
+        session.seekTo(session.ticks().ticksRun());
+        loop.timed(0);
+        assertEquals("the freeze goes on", ORIGIN + 500 * MS, session.renderTimeUs());
+    }
+
+    /**
+     * Review code-2 O10 (b): a timed record stamped exactly at the landing tick's time belongs to the frame that runs
+     * that tick, which comes after the seek: it is dispatched once after the seek, as in straight play.
+     */
+    @Test
+    public void aTimedRecordAtTheLandingTicksTimeIsDispatchedAfterTheSeekAsInStraightPlay() throws IOException {
+        List<String> straight = null;
+        for (boolean seek : new boolean[]{false, true}) {
+            client();
+            com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+            int n = c.sound("random.click", 1f, 64f, 1f, 1f, 1f);
+            ExtRecords.Builder b = new ExtRecords.Builder()
+                    .add(0, ORIGIN + 200 * MS, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND,
+                            ExtRecords.body(c.buffer(), n));
+            v2(new long[]{100, 150, 200, 250}, 4000, b);
+            openAtStart();
+            TickTable t = session.timeline().ticks();
+            long step = 10_000_000L;
+            for (int f = 0; f < 10; f++) {
+                loop.timed(step); // to P = 100
+            }
+            if (seek) {
+                session.seekTo(t.tickOf(ORIGIN + 200 * MS)); // lands with P = T[k200] = 200 ms
+                loop.frame(0);
+                loop.until(PlaybackSession.State.WATCHING, 0);
+                assertEquals(ORIGIN + 200 * MS, session.renderTimeUs());
+                assertTrue("nothing yet: " + ops.sink.timed, ops.sink.timed.isEmpty());
+                loop.timed(0);
+            } else {
+                for (int f = 0; f < 10; f++) {
+                    loop.timed(step); // to P = 200
+                }
+            }
+            List<String> sounds = new ArrayList<String>();
+            for (String e : ops.sink.timed) {
+                sounds.add(e.substring(0, e.indexOf(' ')));
+            }
+            for (int f = 0; f < 5; f++) {
+                loop.timed(step);
+            }
+            assertEquals("once", 1, ops.sink.timed.size());
+            assertEquals(java.util.Arrays.asList(com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + "@200"), sounds);
+            if (straight == null) {
+                straight = sounds;
+            } else {
+                assertEquals("seek == straight play", straight, sounds);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ wait-for-closed

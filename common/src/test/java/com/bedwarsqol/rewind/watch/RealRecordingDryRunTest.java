@@ -13,6 +13,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -23,6 +24,10 @@ import static org.junit.Assert.assertTrue;
  * <p>Phase 2 adds the engine dry run: every record through the packet policy and the tick-locked feed, seek plans to
  * every marker and to 25/50/75/100 %, and the trace of straight play to the last tick against a seek to it (and a
  * backward seek to the middle against straight play's prefix).
+ *
+ * <p>Parity Phase 5 re-baselined it on the recorded tick table: every real (v1) file plays on the table rebuilt from
+ * its TICK records, so which records come before which tick differs from dev.96's 50 ms grid; the contract that
+ * straight play and seeks feed equal traces is unchanged and still checked on every file.
  */
 public class RealRecordingDryRunTest {
 
@@ -55,6 +60,13 @@ public class RealRecordingDryRunTest {
             long loadMs = (System.nanoTime() - t0) / 1_000_000L;
             assertNull(label + " problem", r.problem());
             assertNull(label + " quick check", LoadedRecording.quickCheck(files[n], jsonFor(files[n])));
+            // Parity Phase 10 (C10): a v1 file takes no v2 path; no file has a skipped extension record.
+            if (r.formatVersion() == RewindFormat.FORMAT_VERSION_1) {
+                assertSame(label + " v1: no extension records", ExtRecords.EMPTY, r.ext());
+                assertSame(label + " v1: empty extension track", ExtTrack.EMPTY, r.extTrack());
+            }
+            assertEquals(label + " unknown extension records", 0, r.extUnknown());
+            assertEquals(label + " malformed extension records", 0, r.extMalformed());
 
             for (LoadedRecording.Segment s : r.segments()) {
                 if (s.netRecordCount() > 0) {
@@ -102,6 +114,7 @@ public class RealRecordingDryRunTest {
 
             Timeline t = r.timeline();
             assertNotNull(label + " timeline", t);
+            assertEquals(label + " v1 plays on the table rebuilt from its TICKs", TickTable.Kind.V1, t.ticks().kind());
             assertTrue(label + " start inside the data", t.startInsideData());
             assertTrue(label + " end after start", t.endUs() >= t.gameStartUs());
             for (Timeline.Marker m : t.markers()) {
@@ -110,7 +123,8 @@ public class RealRecordingDryRunTest {
             assertEquals(label + " every recorded marker lies inside the game", r.trackMarkerCount(),
                     t.markers().size());
 
-            System.out.println("rewind dry run " + label + ": segments=" + r.segments().size()
+            System.out.println("rewind dry run " + label + ": format=" + r.formatVersion()
+                    + " extRecords=" + r.ext().size() + " segments=" + r.segments().size()
                     + " skipped=" + r.skippedSegments() + " torn=" + r.tornTail()
                     + " netBlocks=" + r.netBlockCount() + " netRecords=" + records
                     + " storedNetKB=" + r.retainedNetBytes() / 1024 + " rawNetKB=" + r.rawNetBytes() / 1024
@@ -118,7 +132,8 @@ public class RealRecordingDryRunTest {
                     + " ticks=" + track.tickCount() + " camera=" + track.cameraCount()
                     + " equip=" + track.equipCount() + " markers=" + t.markers().size()
                     + " startTick=" + t.startTick() + " endTick=" + t.endTick()
-                    + " lastNetTick=" + t.tickOf(t.lastNetUs()) + " loadMs=" + loadMs);
+                    + " lastNetTick=" + t.tickOf(t.lastNetUs()) + " tickTable=" + t.ticks().kind()
+                    + " tableEntries=" + t.ticks().entries() + " loadMs=" + loadMs);
             r.close();
         }
     }

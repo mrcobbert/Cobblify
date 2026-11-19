@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.19.0-dev.101",
+    "channel": "dev",
+    "date": "2026-11-18",
+    "sections": [
+      ["New", [
+        "Rewind, your view like a live recording (Prism): games recorded with dev.100 or later now play back with your hand and swings, block breaking and placing, your own sounds, F5/F1/F3/Tab, inventory, chest and shop screens with the cursor, chat typing, your exact FOV and aim, and your Cobblify HUD as it looked in the game.",
+        "Rewind: watch from another player's view, and a Clean View Key hides the viewer bar."
+      ]],
+      ["Fixes", [
+        "Rewind: no more see-through armor stands or small dragons over chests and shopkeepers, and the hotbar no longer falls behind after buying from a shop."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.100",
     "channel": "dev",
     "date": "2026-11-18",

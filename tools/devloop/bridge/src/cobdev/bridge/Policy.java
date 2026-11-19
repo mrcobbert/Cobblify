@@ -279,10 +279,19 @@ final class Policy {
      * and counts of the seek-equivalence contract's seven groups); {@code rewind-watch-quit} (Quit to Title);
      * {@code rewind-watch-stage DIR} (copies recording files from cobdev's staging folder into its own Rewind folder,
      * for the timings on a real game). Counts and hashes only: no id, name, chat, map or position leaves the game.
+     *
+     * <p>Rewind parity (cycle 2026-11-18-rewind-parity, Phase 16): {@code rewind-watch-actions start|status|cleanup}
+     * (singleplayer, while RW records: digs a block, places one, opens the inventory, presses F5 and opens a double
+     * chest the server filled with 54 stacks, then puts the world and the inventory back on cleanup) and
+     * {@code rewind-watch-window} (while a recording plays: the held recorded screen, its slot counts and a hash of
+     * the camera's inventory).
      */
     static final java.util.List<String> REWIND_WATCH_PROBES = java.util.Arrays.asList("rewind-watch-swing",
             "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek", "rewind-watch-play-to",
-            "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage");
+            "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage", "rewind-watch-actions",
+            "rewind-watch-window");
+    /** {@code rewind-watch-actions}' one argument. */
+    static final java.util.List<String> REWIND_ACTIONS = java.util.Arrays.asList("start", "status", "cleanup");
     /** The longest seek {@code rewind-watch-seek by MS} takes, either way: a day. */
     static final long REWIND_MAX_SEEK_MS = 24L * 3600 * 1000;
     /** The staging folder's tail under cobdev's shared folder (cobdev writes it, the game reads it). */
@@ -323,6 +332,14 @@ final class Policy {
     static String rewindSwingItem(java.util.List<String> args) {
         if (args.size() != 1 || args.get(0) == null || !args.get(0).matches("[a-z0-9_]+:[a-z0-9_]+")) {
             throw new Refused("probe rewind-watch-swing ITEM (e.g. minecraft:stone_sword)");
+        }
+        return args.get(0);
+    }
+
+    /** {@code rewind-watch-actions start|status|cleanup}: the one word, else refused. */
+    static String rewindActions(java.util.List<String> args) {
+        if (args.size() != 1 || !REWIND_ACTIONS.contains(args.get(0))) {
+            throw new Refused("probe rewind-watch-actions start|status|cleanup");
         }
         return args.get(0);
     }

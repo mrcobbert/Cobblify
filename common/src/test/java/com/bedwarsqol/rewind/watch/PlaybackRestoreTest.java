@@ -22,6 +22,9 @@ public class PlaybackRestoreTest {
         List<String> chat = new ArrayList<String>(Arrays.asList("hello@400", "gg@450"));
         List<String> sent = new ArrayList<String>(Arrays.asList("/bw"));
         int counter = 500;
+        boolean hideGui = true;
+        boolean showDebug = true;
+        boolean smoothCamera = true;
         String throwOn = "";
 
         private void maybe(String step) {
@@ -50,6 +53,39 @@ public class PlaybackRestoreTest {
         public void setThirdPersonView(int view) {
             maybe("f5");
             thirdPerson = view;
+        }
+
+        @Override
+        public boolean hideGui() {
+            return hideGui;
+        }
+
+        @Override
+        public void setHideGui(boolean hide) {
+            maybe("f1");
+            hideGui = hide;
+        }
+
+        @Override
+        public boolean showDebugInfo() {
+            return showDebug;
+        }
+
+        @Override
+        public void setShowDebugInfo(boolean show) {
+            maybe("f3");
+            showDebug = show;
+        }
+
+        @Override
+        public boolean smoothCamera() {
+            return smoothCamera;
+        }
+
+        @Override
+        public void setSmoothCamera(boolean smooth) {
+            maybe("f8");
+            smoothCamera = smooth;
         }
 
         @Override
@@ -110,6 +146,38 @@ public class PlaybackRestoreTest {
         c.counter = 0;
         c.chat.add("recorded@3");
         c.counter = 1234;
+        c.hideGui = false; // a restart shows the HUD (B3)
+        c.showDebug = false;
+        c.smoothCamera = false;
+    }
+
+    /** B3: F1, F3 and the smooth camera the user had come back after leaving, also when another step throws. */
+    @Test
+    public void hiddenHudDebugScreenAndSmoothCameraComeBack() {
+        Client c = new Client();
+        PlaybackRestore r = PlaybackRestore.capture(c);
+        play(c);
+        r.restoreSettings(c, null);
+        assertTrue("F1 back", c.hideGui);
+        assertTrue("F3 back", c.showDebug);
+        assertTrue("smooth camera back", c.smoothCamera);
+
+        Client off = new Client();
+        off.hideGui = false;
+        off.showDebug = false;
+        off.smoothCamera = false;
+        PlaybackRestore r2 = PlaybackRestore.capture(off);
+        off.hideGui = true;
+        off.showDebug = true;
+        off.smoothCamera = true;
+        off.throwOn = "timer f1";
+        final List<String> failed = new ArrayList<String>();
+        r2.restoreSettings(off, (step, t) -> failed.add(step));
+        assertEquals(Arrays.asList("timerSpeed", "hideGui"), failed);
+        assertTrue("the throwing step is left", off.hideGui);
+        assertFalse(off.showDebug);
+        assertFalse(off.smoothCamera);
+        assertEquals(1, off.thirdPerson);
     }
 
     @Test

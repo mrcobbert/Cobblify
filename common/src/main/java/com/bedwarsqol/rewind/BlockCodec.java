@@ -143,7 +143,7 @@ public final class BlockCodec implements AutoCloseable {
 
     // ---------------- file header and payload builders ----------------
 
-    /** The 28-byte file header for format v1, protocol 47. */
+    /** The 28-byte file header for the current format ({@link RewindFormat#FORMAT_VERSION}), protocol 47. */
     public static byte[] fileHeader(long baseEpochMs) {
         byte[] h = new byte[RewindFormat.FILE_HEADER_LENGTH];
         System.arraycopy(RewindFormat.fileMagic(), 0, h, 0, 8);

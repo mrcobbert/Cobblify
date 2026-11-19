@@ -135,6 +135,43 @@ public class RewindPainterTest {
         assertEquals(Arrays.asList("Free camera", "0.25x", "1:05", " / 6:47", "You", "Free camera"), texts(open));
     }
 
+    /** Phase 14 (D1, D3): the players in the camera menu, the key showing the ridden one, their faces and name. */
+    @Test
+    public void theMenuListsPlayersInTheirTeamColourAndTheKeyShowsTheRiddenOne() {
+        int red = 0xFFFF5555, blue = 0xFF5555FF;
+        SheetFixtures.Recorder r = new SheetFixtures.Recorder(new SheetFixtures.MinecraftMetrics(2f));
+        ViewerLayout l = ViewerLayout.of(640, 360, r, LEN, new long[0], new int[0], new String[]{"amy", "Bob"},
+                ViewerLayout.FIRST_PLAYER + 1);
+        RewindPainter.BarState s = state(65_000_000L);
+        s.camera = ViewerLayout.FIRST_PLAYER + 1;
+        s.playerColours = new int[]{red, blue};
+        s.menuOpen = true;
+        RewindPainter.bar(r, l, s);
+        assertEquals(Arrays.asList("Bob", "1x", "1:05", " / 6:47", "You", "Free camera", "amy", "Bob"), texts(r));
+        assertEquals("the key's name in the team colour", blue, (int) r.textColours.get(0));
+        assertEquals(red, (int) r.textColours.get(6));
+        assertEquals(blue, (int) r.textColours.get(7));
+        float[] amy = l.dropdownRow(2);
+        assertTrue("a team-coloured head frame", hasFill(r, amy[0] + 6, amy[1] + 2, 10, 10, red));
+        assertTrue("the ridden row is marked", hasFill(r, l.dropdownRow(3)[0], l.dropdownRow(3)[1] + 2, 2, 10,
+                ACC.base));
+
+        List<float[]> faces = RewindPainter.faces(l, s);
+        assertEquals("the key, You, amy and Bob (the free camera has no face)", 4, faces.size());
+        assertEquals(ViewerLayout.FIRST_PLAYER + 1, faces.get(0)[4], 0f);
+        assertEquals(0, faces.get(1)[4], 0f);
+        assertEquals(ViewerLayout.FIRST_PLAYER, faces.get(2)[4], 0f);
+        assertEquals(amy[0] + 7, faces.get(2)[0], 0f);
+        assertEquals(amy[1] + 3, faces.get(2)[1], 0f);
+
+        SheetFixtures.Recorder name = new SheetFixtures.Recorder(new SheetFixtures.MinecraftMetrics(2f));
+        RewindPainter.riddenName(name, 640, "Bob", blue);
+        assertEquals(Collections.singletonList("Bob"), texts(name));
+        assertEquals(blue, (int) name.textColours.get(0));
+        assertEquals(ViewerLayout.riddenNameTop(), (Float) name.texts.get(0)[2], 0f);
+        assertEquals("centred", 320f, (Float) name.texts.get(0)[1] + name.width("Bob", ViewerLayout.FONT) / 2f, 0.5f);
+    }
+
     @Test
     public void playedPartIsInTheAccent() {
         SheetFixtures.Recorder r = new SheetFixtures.Recorder();

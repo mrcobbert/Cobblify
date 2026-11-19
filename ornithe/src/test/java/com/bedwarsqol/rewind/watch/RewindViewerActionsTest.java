@@ -284,6 +284,30 @@ public class RewindViewerActionsTest {
         assertFalse(RewindViewerScreen.Controls.tabListHeld(ViewerKeys.KEY_TAB, false));
         checked.add(ViewerKeys.Action.TAB_LIST);
 
+        // F5: your view's perspective (first person, behind, front); F1 and the Clean View Key: the clean view; key 1
+        // ends both overrides (ViewState). The session writes them to the game settings each frame.
+        ViewState v = session.view();
+        assertEquals(0, v.perspective());
+        key(ViewerKeys.KEY_F5, false);
+        assertEquals("F5: behind", 1, v.perspective());
+        key(ViewerKeys.KEY_F5, false);
+        assertEquals("F5: front", 2, v.perspective());
+        checked.add(ViewerKeys.Action.CYCLE_PERSPECTIVE);
+        key(ViewerKeys.KEY_F1, false);
+        assertTrue("F1: the clean view", v.clean());
+        assertTrue(v.hideGui());
+        controls.key(47, false, 47, openEsc); // the Clean View Key the user bound (V)
+        assertFalse("the Clean View Key toggles it back", v.clean());
+        checked.add(ViewerKeys.Action.CLEAN_VIEW);
+        p = session.playheadTick();
+        calls = cameras.calls.size();
+        key(ViewerKeys.KEY_3, false);
+        key(ViewerKeys.KEY_3, true);
+        assertEquals("3 and Shift+3 ask the playback parts (Phase 14), nothing else", p, session.playheadTick());
+        assertEquals(calls, cameras.calls.size());
+        checked.add(ViewerKeys.Action.NEXT_PLAYER);
+        checked.add(ViewerKeys.Action.PREVIOUS_PLAYER);
+
         assertEquals("every viewer key action is checked", EnumSet.allOf(ViewerKeys.Action.class), checked);
         for (ViewerKeys.Action a : ViewerKeys.Action.values()) {
             if (a != ViewerKeys.Action.NONE) codeOf(a);
@@ -339,6 +363,12 @@ public class RewindViewerActionsTest {
         assertFalse("choosing closes the menu", controls.menuOpen());
         controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA, ViewerCameraControls.YOU, 0));
         assertEquals("select " + ViewerCameraControls.YOU, cameras.calls.get(cameras.calls.size() - 1));
+        // a player's row (Phase 14) goes to the ridden view, never to your view or the free camera
+        int before = cameras.calls.size();
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA, ViewerLayout.FIRST_PLAYER, 0));
+        assertEquals(before, cameras.calls.size());
+        assertFalse(controls.menuOpen());
         checked.add(ViewerLayout.Action.Kind.CAMERA);
 
         // a marker click jumps 3 s before it and highlights it

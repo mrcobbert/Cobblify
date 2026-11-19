@@ -4,23 +4,23 @@ import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 
 /**
- * The recorded player's stand-in, one world tick at a time (PLAN section 4, "Puppet"): what the Ornithe puppet entity
- * takes from the self track at tick time {@code t = origin + k x 50 ms}. Pure; one instance per puppet, reset when the
- * puppet is made anew (every restart).
+ * The recorded player's stand-in, one world tick at a time (PLAN section 4, "Puppet"; parity "Self state binding"):
+ * what the Ornithe puppet entity takes from the self track for world tick k of the recording's {@link TickTable}. Pure;
+ * one instance per puppet, reset when the puppet is made anew (every restart).
  *
  * <ul>
- *   <li><b>Pose and flags:</b> the last TICK at or before t (position, body yaw and pitch, head yaw, the
- *       {@code RewindFormat.FLAG_*} flags). The entity moves there during the tick, like any other player.</li>
- *   <li><b>Swing:</b> vanilla's {@code swingItem} sets the counter to -1 and its tick moves it to 0, so the tick a
- *       swing starts reads the same as idle (R1 stores the counter plus one). A recorded counter of 1 therefore means
- *       the swing started on the client tick before it: the previous TICK when it is at most 60 ms earlier, else 50 ms
- *       before. {@link #swingStarted()} is true at the one sample whose window ({@code (previous sample, t]}, or the
- *       50 ms up to t after a reset) holds that start, so each recorded swing, a restart by a repeated click included,
- *       triggers exactly once. This reads one record ahead of t.</li>
- *   <li><b>Equipment:</b> per EQUIP slot (0 held, 1-4 boots to helmet) the latest EQUIP of t's segment at or before t.
- *       {@link #equipChanged} is true only at the sample where that event became the latest, so each change applies
- *       once; after a reset every slot with a recorded item applies again.</li>
- *   <li><b>Hidden</b> in your view (the camera is you) and while the recorded invisible flag is set.</li>
+ *   <li><b>Pose and flags:</b> tick k's end state ({@link SelfTrack#tickState}: position, body yaw and pitch, head
+ *       yaw, the {@code RewindFormat.FLAG_*} flags). The entity takes it before world tick k and moves there during
+ *       it, as vanilla moves another player, so after tick k it stands where the recorded player stood after tick
+ *       k.</li>
+ *   <li><b>Swing:</b> {@link #swingStarted()} is true at the tick vanilla's {@code swingItem} ran
+ *       ({@link SelfTrack#swingStartsAt}: one tick of lookahead), exactly once per recorded swing.</li>
+ *   <li><b>Equipment:</b> per EQUIP slot (0 held, 1-4 boots to helmet) the latest EQUIP of that segment stamped
+ *       before T[k+1]. {@link #equipChanged} is true only at the tick where that event became the latest, so each
+ *       change applies once, in the tick it was stamped in; after a reset every slot with a recorded item applies
+ *       again.</li>
+ *   <li><b>Hidden</b> in your view (the camera is you) and while the recorded invisible flag is set ({@link #hidden};
+ *       the puppet entity asks {@code ViewState.puppetHidden}).</li>
  * </ul>
  */
 public final class PuppetState {
@@ -32,7 +32,6 @@ public final class PuppetState {
 
     private final SelfTrackEncoder.State state = new SelfTrackEncoder.State();
     private boolean sampled;
-    private long lastUs;
     private int segment = -1;
     private boolean swingStarted;
     private final int[] equipIndex = new int[SLOTS];
@@ -46,7 +45,6 @@ public final class PuppetState {
     /** Forgets everything: the next sample is the first (a new puppet). */
     public void reset() {
         sampled = false;
-        lastUs = 0;
         segment = -1;
         swingStarted = false;
         equipChanged = 0;
@@ -58,33 +56,40 @@ public final class PuppetState {
     }
 
     /**
-     * Takes the track's state for the world tick at {@code timeUs}.
+     * Takes the track's state for world tick {@code k} of {@code table}.
      *
      * @return false if the track has no TICK (nothing changes)
      */
-    public boolean sample(SelfTrack track, long timeUs) {
+    public boolean sample(SelfTrack track, TickTable table, long k) {
         swingStarted = false;
         equipChanged = 0;
-        int si = track == null ? -1 : track.segmentIndexAt(timeUs);
-        if (si < 0 || !track.stateAt(timeUs, state)) {
+        long before = table.timeOf(k + 1) - 1;
+        int si = track == null ? -1 : track.segmentIndexAt(before);
+        if (si < 0 || !track.tickState(table, k, state)) {
             return false;
         }
         SelfTrack.Segment s = track.segment(si);
-        long windowStart = sampled && timeUs > lastUs ? lastUs : timeUs - Timeline.TICK_US;
-        swingStarted = swingStartIn(s, windowStart, timeUs);
+        swingStarted = track.swingStartsAt(table, k);
         if (si != segment) {
             segment = si;
             for (int i = 0; i < SLOTS; i++) {
                 equipIndex[i] = -1;
             }
         }
-        applyEquip(s, timeUs);
+        applyEquip(s, before);
         sampled = true;
-        lastUs = timeUs;
         return true;
     }
 
-    /** A recorded swing started in {@code (from, to]}. */
+    /** At least one tick was sampled since the last reset. */
+    public boolean sampled() {
+        return sampled;
+    }
+
+    /**
+     * A recorded swing started in {@code (from, to]} by R2's time rule (the TICK before a counter of 1). Playback uses
+     * {@link SelfTrack#swingStartsAt}; this stays for the cobdev watch probe, which looks for a swing by time.
+     */
     static boolean swingStartIn(SelfTrack.Segment s, long from, long to) {
         int first = s.tickIndexAt(from) + 1;
         int last = s.tickIndexAt(to + CONSECUTIVE_US);

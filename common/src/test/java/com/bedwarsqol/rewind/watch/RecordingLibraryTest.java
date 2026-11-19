@@ -383,6 +383,33 @@ public class RecordingLibraryTest {
         assertSame(RecordingLibrary.Check.PASSED, lib.checkState(B));
     }
 
+    /**
+     * Review code-2 O11: one bad file never takes the library down. Whatever a single file's check throws (an
+     * Error included), that file is cached as an unreadable recording and the others are still checked.
+     */
+    @Test
+    public void anyFailureOfOneFilesCheckMarksItUnreadable() throws IOException {
+        setUp();
+        closed(A, 1000);
+        closed(B, 2000);
+        final AtomicInteger calls = new AtomicInteger();
+        RecordingLibrary lib = new RecordingLibrary(new RecordingStore(dir), new RecordingLibrary.Checker() {
+            @Override
+            public LoadedRecording.Problem check(File cbr, File json) {
+                calls.incrementAndGet();
+                if (cbr.getName().startsWith(A)) {
+                    throw new StackOverflowError("crafted nesting");
+                }
+                throw new LinkageError("crafted");
+            }
+        });
+        assertSame(RecordingLibrary.Check.FAILED, lib.check(A));
+        assertSame(RecordingLibrary.Check.FAILED, lib.check(B));
+        assertSame("cached", RecordingLibrary.Check.FAILED, lib.checkState(A));
+        assertEquals(0, lib.refresh());
+        assertEquals(2, calls.get());
+    }
+
     @Test
     public void theNewestKeptGame() throws IOException {
         setUp();

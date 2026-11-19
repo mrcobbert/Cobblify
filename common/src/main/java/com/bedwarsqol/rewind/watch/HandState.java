@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.ExtCodec;
 import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 
@@ -7,14 +8,16 @@ import java.util.Arrays;
 
 /**
  * The recorded player's hand, held item and hotbar for the camera in your view, one world tick at a time (PLAN
- * section 4.1, Rev 3 amendment 1). Pure; one instance per connection, fed every world tick from tick 0 of a restart,
- * so its state at a tick is the same however the tick was reached. It is fed in both views; only {@link #hurtTime}
- * depends on the view.
+ * section 4.1, Rev 3 amendment 1; parity "Self state binding"). Pure; one instance per connection, fed every world
+ * tick from tick 0 of a restart, so its state at a tick is the same however the tick was reached. It is fed in both
+ * views; only {@link #hurtTime} depends on the view. World tick k of the recording's {@link TickTable} takes tick k's
+ * end state: the samples stamped before T[k+1].
  *
  * <ul>
- *   <li><b>Selected slot</b> = TICK {@code heldSlot} (the last TICK at or before t).</li>
- *   <li><b>Hotbar and armour stacks:</b> every EQUIP event of t's segment up to t, in order, once each: a held stack
- *       goes to the hotbar slot selected when it was recorded (the client's own view, counts it predicted included),
+ *   <li><b>Selected slot</b> = TICK {@code heldSlot} of tick k's end state ({@link SelfTrack#tickState}).</li>
+ *   <li><b>Hotbar and armour stacks:</b> every EQUIP event of the segment stamped before T[k+1], in order, once each:
+ *       a held stack goes to the hotbar slot selected when it was recorded (the client's own view, counts it predicted
+ *       included),
  *       armour to its slot. Applying each event only once lets a later S2F for that slot replace it; a slot you
  *       switch away from keeps its last stack. The full state ({@link #hotbarItem}, {@link #armourItem}) is there
  *       for a camera made anew by an S01/S07. A window-0 inventory packet ({@link #inventoryPacket}) replaces the
@@ -22,11 +25,25 @@ import java.util.Arrays;
  *       inventory (code review 2, I2).</li>
  *   <li><b>Swing:</b> vanilla's {@code swingItem} (counter -1 unless a swing is in its first half) and
  *       {@code updateArmSwingProgress} (counter + 1, back to 0 at the swing's end), run at the tick each recorded
- *       swing started ({@link PuppetState#swingStartIn}: one TICK of lookahead). Repeated clicks restart it as in
+ *       swing started ({@link SelfTrack#swingStartsAt}: tick k+1 read as lookahead). Repeated clicks restart it as in
  *       vanilla.</li>
  *   <li><b>Item in use:</b> the using-item flag's rising tick starts it with the item's full duration, the count
  *       drops by one per tick, the falling tick clears it.</li>
  *   <li><b>hurtTime:</b> the recorded TICK value in your view; 0 in the free camera, which never tilts.</li>
+ * </ul>
+ *
+ * <p><b>Format v2</b> (Phase 13, C9), taken from the recording's {@link ExtTrack} by tick, each only when the
+ * recording holds that record kind (a v1 recording has none and runs exactly the rules above, C10):
+ * <ul>
+ *   <li><b>Swing</b> ({@link #extSwing}): starts on the tick an OUT C0A (vanilla's {@code swingItem} sends it) is
+ *       stamped in, instead of the TICK counters' lookahead.</li>
+ *   <li><b>Item use count</b> ({@link #extUse}): the last USE record stamped before T[k+1], counted down one per tick
+ *       since the tick it was stamped in (the recorder writes USE only when the count does not follow, so a bow draw
+ *       starts at its 72000). Whether an item is in use stays the TICK flag.</li>
+ *   <li><b>Inventory</b> ({@link #extInventory}): all 41 slots (0-35 main, 36-39 boots to helmet, 40 the cursor) are
+ *       the last INV record of each slot stamped before T[k+1] ({@link ExtTrack#keyedAt}), over every segment (each
+ *       segment restates all 41 on its first tick). They win over EQUIP: {@link #hotbarItem} and {@link #armourItem}
+ *       answer from INV. A pure function of k, so the state after a seek or a fresh start is the same.</li>
  * </ul>
  */
 public final class HandState {
@@ -37,7 +54,6 @@ public final class HandState {
 
     private final SelfTrackEncoder.State state = new SelfTrackEncoder.State();
     private boolean sampled;
-    private long lastUs;
     private int segment = -1;
     private int equipCursor = -1;
 
@@ -73,34 +89,128 @@ public final class HandState {
     private boolean useStarted;
     private int useTicks;
 
+    /** C0A, the swing packet vanilla's {@code EntityPlayerSP.swingItem} sends. */
+    private static final int SWING_PACKET = 0x0A;
+    private boolean extSwing;
+    private boolean extUse;
+    private boolean extInventory;
+    private int recordedUse;
+    private final int[] invRecord = minusOnes(RewindFormat.INV_SLOTS);
+    private final byte[][] inv = new byte[RewindFormat.INV_SLOTS][];
+    private long invChanged;
+    private final ExtCodec.Out outBody = new ExtCodec.Out();
+    private final ExtCodec.Use useBody = new ExtCodec.Use();
+    private final ExtCodec.Inv invBody = new ExtCodec.Inv();
+
+    private static int[] minusOnes(int n) {
+        int[] a = new int[n];
+        Arrays.fill(a, -1);
+        return a;
+    }
+
     /**
-     * Takes the track's state for the world tick at {@code timeUs}.
+     * Takes the track's state for world tick {@code k} of {@code table}.
      *
      * @param swingEnd the swing's length ({@link #swingEnd}) from the recorded player's effects
      * @return false if the track has no TICK (nothing changes)
      */
-    public boolean sample(SelfTrack track, long timeUs, int swingEnd) {
+    public boolean sample(SelfTrack track, TickTable table, long k, int swingEnd) {
+        return sample(track, ExtTrack.EMPTY, table, k, swingEnd);
+    }
+
+    /**
+     * Takes world tick {@code k}: the self track as {@link #sample(SelfTrack, TickTable, long, int)}, with the v2
+     * inputs of {@code ext} for each record kind it holds (class comment). {@link ExtTrack#EMPTY}: the v1 rules.
+     */
+    public boolean sample(SelfTrack track, ExtTrack ext, TickTable table, long k, int swingEnd) {
         hotbarChanged = 0;
         armourChanged = 0;
+        invChanged = 0L;
         swingStarted = false;
         useStarted = false;
-        int si = track == null ? -1 : track.segmentIndexAt(timeUs);
-        if (si < 0 || !track.stateAt(timeUs, state)) {
+        ExtTrack x = ext == null ? ExtTrack.EMPTY : ext;
+        extSwing = x.has(RewindFormat.TAG_OUT);
+        extUse = x.has(RewindFormat.TAG_USE);
+        extInventory = x.has(RewindFormat.TAG_INV);
+        long before = table.timeOf(k + 1) - 1;
+        int si = track == null ? -1 : track.segmentIndexAt(before);
+        if (si < 0 || !track.tickState(table, k, state)) {
             return false;
         }
         SelfTrack.Segment s = track.segment(si);
-        long windowStart = sampled && timeUs > lastUs ? lastUs : timeUs - Timeline.TICK_US;
         if (si != segment) {
             segment = si;
             equipCursor = -1;
         }
         selected = Math.max(0, Math.min(HOTBAR - 1, state.heldSlot));
-        applyEquip(s, timeUs);
-        swing(PuppetState.swingStartIn(s, windowStart, timeUs), Math.max(1, swingEnd));
+        if (extInventory) {
+            applyInv(x, before);
+        } else {
+            applyEquip(s, before);
+        }
+        swing(extSwing ? swingSent(x, table, k) : track.swingStartsAt(table, k), Math.max(1, swingEnd));
         use((state.flags & RewindFormat.FLAG_USING_ITEM) != 0);
+        if (extUse) {
+            recordedUse = recordedUse(x, table, k, before);
+        }
         sampled = true;
-        lastUs = timeUs;
         return true;
+    }
+
+    /** Each slot's last INV record before {@code timeUs}; a slot whose record changed is marked and copied. */
+    private void applyInv(ExtTrack x, long timeUs) {
+        for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+            int rec = -1;
+            for (int seg = 0; seg < x.segmentCount(); seg++) {
+                rec = Math.max(rec, x.keyedAt(RewindFormat.TAG_INV, slot, seg, timeUs)); // record order = time order
+            }
+            if (rec == invRecord[slot]) {
+                continue;
+            }
+            invRecord[slot] = rec;
+            invChanged |= 1L << slot;
+            if (rec < 0) {
+                inv[slot] = null;
+            } else {
+                x.read(rec, invBody);
+                inv[slot] = Arrays.copyOfRange(invBody.buf, invBody.slotOff, invBody.slotOff + invBody.slotLen);
+            }
+        }
+    }
+
+    /** An OUT C0A is stamped in tick {@code k}'s interval (tick 0: or before it). */
+    private boolean swingSent(ExtTrack x, TickTable table, long k) {
+        for (int seg = 0; seg < x.segmentCount(); seg++) {
+            int end = x.endOfTick(RewindFormat.TAG_OUT, seg, table, k);
+            for (int j = x.firstInTick(RewindFormat.TAG_OUT, seg, table, k); j < end; j++) {
+                if (x.read(x.record(RewindFormat.TAG_OUT, seg, j), outBody).packetId == SWING_PACKET) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Vanilla's {@code itemInUseCount} at the end of tick {@code k}: the last USE record before {@code timeUs},
+     * less one per tick since the tick it was stamped in; 0 before any.
+     */
+    private int recordedUse(ExtTrack x, TickTable table, long k, long timeUs) {
+        int rec = -1;
+        for (int seg = 0; seg < x.segmentCount(); seg++) {
+            rec = Math.max(rec, x.stateAt(RewindFormat.TAG_USE, seg, timeUs));
+        }
+        if (rec < 0) {
+            return 0;
+        }
+        int count = x.read(rec, useBody).count;
+        long stamp = x.records().timeUs(rec);
+        long j = table.tickOf(stamp);
+        if (table.timeOf(j) > stamp) {
+            j--; // the tick whose interval holds the stamp
+        }
+        long v = count - (k - Math.max(0L, j));
+        return (int) Math.max(Integer.MIN_VALUE, v);
     }
 
     private void applyEquip(SelfTrack.Segment s, long timeUs) {
@@ -221,6 +331,40 @@ public final class HandState {
         }
     }
 
+    /** The recording holds a v2 hand input (OUT, USE or INV records); false for every v1 recording. */
+    public static boolean usesExt(ExtTrack ext) {
+        return ext != null && (ext.has(RewindFormat.TAG_OUT) || ext.has(RewindFormat.TAG_USE)
+                || ext.has(RewindFormat.TAG_INV));
+    }
+
+    /** The last sample's swing came from OUT C0A records. */
+    public boolean extSwing() {
+        return extSwing;
+    }
+
+    /** The last sample's item-use count is the recorded USE count. */
+    public boolean extUse() {
+        return extUse;
+    }
+
+    /** The last sample's inventory (all 41 slots) is the INV records'. */
+    public boolean extInventory() {
+        return extInventory;
+    }
+
+    /**
+     * INV slot {@code slot} (0-35 main, 36-39 boots to helmet, 40 cursor): its protocol-47 bytes (an empty slot is
+     * id -1), or null when no INV record set it yet. Do not modify.
+     */
+    public byte[] invItem(int slot) {
+        return slot >= 0 && slot < RewindFormat.INV_SLOTS ? inv[slot] : null;
+    }
+
+    /** INV slot {@code slot}'s record changed at this sample (every slot with a record at a first sample). */
+    public boolean invChanged(int slot) {
+        return slot >= 0 && slot < RewindFormat.INV_SLOTS && (invChanged & (1L << slot)) != 0;
+    }
+
     /** Vanilla's {@code getArmSwingAnimationEnd}: haste shortens, mining fatigue lengthens (amplifier, or -1). */
     public static int swingEnd(int hasteAmplifier, int fatigueAmplifier) {
         if (hasteAmplifier >= 0) {
@@ -242,26 +386,42 @@ public final class HandState {
         return selected;
     }
 
-    /** Hotbar slot {@code slot} got an EQUIP stack at this sample. */
+    /** Hotbar slot {@code slot} got an EQUIP stack at this sample (v2 inventory: its INV record changed). */
     public boolean hotbarChanged(int slot) {
+        if (extInventory) {
+            return slot >= 0 && slot < HOTBAR && invChanged(slot);
+        }
         return slot >= 0 && slot < HOTBAR && (hotbarChanged & (1 << slot)) != 0;
     }
 
-    /** Hotbar slot {@code slot}'s last EQUIP stack (protocol-47 bytes), or null if none. */
+    /** Hotbar slot {@code slot}'s last EQUIP stack (protocol-47 bytes), or null if none (v2 inventory: INV's). */
     public byte[] hotbarItem(int slot) {
+        if (extInventory) {
+            return slot >= 0 && slot < HOTBAR ? inv[slot] : null;
+        }
         return slot >= 0 && slot < HOTBAR ? hotbar[slot] : null;
     }
 
-    /** Armour slot {@code equipSlot} (1 boots - 4 helmet) got an EQUIP stack at this sample. */
+    /** Armour slot {@code equipSlot} (1 boots - 4 helmet) got an EQUIP stack at this sample (v2 inventory: INV). */
     public boolean armourChanged(int equipSlot) {
-        return equipSlot >= RewindFormat.EQUIP_BOOTS && equipSlot <= RewindFormat.EQUIP_HELMET
-                && (armourChanged & (1 << equipSlot)) != 0;
+        boolean valid = equipSlot >= RewindFormat.EQUIP_BOOTS && equipSlot <= RewindFormat.EQUIP_HELMET;
+        if (extInventory) {
+            return valid && invChanged(armourInvSlot(equipSlot));
+        }
+        return valid && (armourChanged & (1 << equipSlot)) != 0;
     }
 
-    /** Armour slot {@code equipSlot}'s last EQUIP stack, or null if none. */
+    /** Armour slot {@code equipSlot}'s last EQUIP stack, or null if none (v2 inventory: INV's). */
     public byte[] armourItem(int equipSlot) {
-        return equipSlot >= RewindFormat.EQUIP_BOOTS && equipSlot <= RewindFormat.EQUIP_HELMET
-                ? armour[equipSlot] : null;
+        if (equipSlot < RewindFormat.EQUIP_BOOTS || equipSlot > RewindFormat.EQUIP_HELMET) {
+            return null;
+        }
+        return extInventory ? inv[armourInvSlot(equipSlot)] : armour[equipSlot];
+    }
+
+    /** The INV slot of EQUIP armour slot {@code equipSlot} (1 boots - 4 helmet: 36-39). */
+    private static int armourInvSlot(int equipSlot) {
+        return RewindFormat.INV_ARMOR_FIRST + equipSlot - RewindFormat.EQUIP_BOOTS;
     }
 
     /** A recorded swing started at this sample's tick. */
@@ -295,9 +455,12 @@ public final class HandState {
         return useStarted;
     }
 
-    /** Vanilla's {@code itemInUseCount} for an item of {@code maxDuration}: full at the start, one less per tick. */
+    /**
+     * Vanilla's {@code itemInUseCount} for an item of {@code maxDuration}: full at the start, one less per tick; with
+     * USE records ({@link #extUse}) the recorded count whatever the duration.
+     */
     public int useCount(int maxDuration) {
-        return maxDuration - useTicks;
+        return extUse ? recordedUse : maxDuration - useTicks;
     }
 
     /** The camera's {@code hurtTime}: as recorded in your view, 0 in the free camera. */

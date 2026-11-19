@@ -1,11 +1,9 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.feature.DiagLog;
-import com.mojang.authlib.GameProfile;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.network.NetHandlerPlayClient;
-import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.ai.attributes.AttributeModifier;
@@ -30,15 +28,20 @@ import java.io.IOException;
  * <p><b>Boundary hook</b> (after every S01 and S07 that applied): S01 remembers the recorded entity id and gives the
  * camera {@link RewindCamera#RESERVED_ID}; both make the packet's game type the recorded game mode and put the
  * controller in the view's game type ({@link ViewGameType}: the recorded mode in your view, SPECTATOR in the free
- * camera); then the recorded player's puppet ({@link RewindSelfPuppet}) is added with the recorded id if the world
+ * camera, CREATIVE in another player's view); then the recorded player's puppet ({@link RewindSelfPuppet}) is added with the recorded id if the world
  * lacks it, and the new camera takes the current view's pose at once ({@link CameraController#restorePose}).
  *
  * <p>{@link #sessionHook} (S2B reason 3, never passed to vanilla): the recorded game mode changes and the controller
  * takes the view's game type.
  *
- * <p>{@link #sample} (each world tick, after its records): the puppet takes the self track's state for the tick
- * ({@link PuppetState}), and is re-added if something removed it; then the camera takes your hand, held item and
- * hotbar ({@link HandState}, Rev 3 amendment 1), in both views. {@link #viewChanged} applies a view switch at once.
+ * <p>{@link #sample} (each world tick, after its records and its local phase): the puppet takes tick k's end state
+ * from the self track ({@link PuppetState} on the recording's {@link TickTable}), and is re-added if something removed
+ * it; then the camera takes your hand, held item and hotbar ({@link HandState}, Rev 3 amendment 1), in both views;
+ * then the playback parts' {@code tick}. {@link #viewChanged} applies a view switch at once.
+ *
+ * <p>Parts (PLAN "B-seam"): {@link #local} and {@link #timed} hand extension records to them, {@link #boundary} and
+ * {@link #viewChanged} tell them. {@link #window} processes window packets only when a recorded-window holder takes
+ * them ({@link RecordedScreenHolder#takesWindows}); until Phase 9 none does and they reach nothing.
  */
 public final class PlaybackSink implements PacketSink {
 
@@ -87,6 +90,25 @@ public final class PlaybackSink implements PacketSink {
         return true;
     }
 
+    /** Window traffic (S2D, S2E, container S2F/S30): vanilla processes it only for a holder that keeps windows. */
+    @Override
+    public boolean window(int packetId, byte[] buf, int off, int len) {
+        if (!RewindCamera.screenHolder().takesWindows()) {
+            return true;
+        }
+        return apply(packetId, buf, off, len);
+    }
+
+    @Override
+    public void local(int tag, long timeUs, byte[] buf, int off, int len) {
+        RewindPlayback.partsLocal(tag, timeUs, buf, off, len);
+    }
+
+    @Override
+    public void timed(int tag, long timeUs, byte[] buf, int off, int len) {
+        RewindPlayback.partsTimed(tag, timeUs, buf, off, len);
+    }
+
     @Override
     public void boundary(int packetId, byte[] buf, int off, int len) {
         Packet<INetHandlerPlayClient> p = last;
@@ -103,11 +125,12 @@ public final class PlaybackSink implements PacketSink {
         }
         applyViewGameType();
         try {
-            ensurePuppet(feedTimeUs());
+            ensurePuppet(Math.max(0, feedTick()));
         } catch (RuntimeException e) {
             puppetFailed(e);
         }
         CameraController.restorePose();
+        RewindPlayback.partsBoundary();
     }
 
     @Override
@@ -124,7 +147,7 @@ public final class PlaybackSink implements PacketSink {
     private void applyViewGameType() {
         if (mc.playerController != null && mc.thePlayer != null) {
             mc.playerController.setGameType(
-                    WorldSettings.GameType.getByID(viewType.forView(CameraController.yourView())));
+                    WorldSettings.GameType.getByID(viewType.forView(RewindPlayback.view().view())));
         }
     }
 
@@ -142,6 +165,7 @@ public final class PlaybackSink implements PacketSink {
                 handFailed(e);
             }
         }
+        RewindPlayback.partsViewChanged();
     }
 
     @Override
@@ -149,27 +173,29 @@ public final class PlaybackSink implements PacketSink {
         lastSampleTick = tick;
         lastSampleUs = timeUs;
         try {
-            if (ensurePuppet(timeUs)) {
-                return; // a new puppet took this tick's sample already
-            }
-            SelfTrack track = track();
-            if (puppet != null && track != null && puppetState.sample(track, timeUs)) {
-                puppet.follow();
+            if (!ensurePuppet(tick)) { // a new puppet took this tick's sample already
+                SelfTrack track = track();
+                TickTable table = table();
+                if (puppet != null && track != null && table != null && puppetState.sample(track, table, tick)) {
+                    puppet.follow();
+                }
             }
         } catch (RuntimeException e) {
             puppetFailed(e);
         }
         try {
-            applyHand(timeUs);
+            applyHand(tick);
         } catch (RuntimeException e) {
             handFailed(e);
         }
+        RewindPlayback.partsTick(tick, timeUs);
     }
 
     /** HandState for this tick (every tick, whatever the camera), then onto the camera. */
-    private void applyHand(long timeUs) {
+    private void applyHand(long tick) {
         SelfTrack track = track();
-        if (track == null || !hand.sample(track, timeUs, swingEnd(puppet))) {
+        TickTable table = table();
+        if (track == null || table == null || !hand.sample(track, table, tick, swingEnd(puppet))) {
             return;
         }
         RewindCamera cam = camera();
@@ -213,12 +239,12 @@ public final class PlaybackSink implements PacketSink {
 
     /**
      * Adds the puppet with the recorded id when the current world lacks it (a new world after S01/S07, or something
-     * removed it): a fresh {@link PuppetState} sampled at {@code timeUs}, so it stands at the recorded pose wearing
+     * removed it): a fresh {@link PuppetState} sampled for tick {@code tick}, so it stands at the recorded pose wearing
      * everything recorded so far. The camera must already have its reserved id (an id clash would remove it).
      *
      * @return true if a puppet was added
      */
-    private boolean ensurePuppet(long timeUs) {
+    private boolean ensurePuppet(long tick) {
         WorldClient world = mc.theWorld;
         if (world == null || recordedEntityId == Integer.MIN_VALUE || recordedEntityId == RewindCamera.RESERVED_ID) {
             return false;
@@ -227,14 +253,16 @@ public final class PlaybackSink implements PacketSink {
             return false;
         }
         SelfTrack track = track();
-        if (track == null) {
+        TickTable table = table();
+        if (track == null || table == null) {
             return false;
         }
         puppetState.reset();
-        if (!puppetState.sample(track, timeUs)) {
+        if (!puppetState.sample(track, table, tick)) {
             return false;
         }
-        RewindSelfPuppet p = new RewindSelfPuppet(world, puppetProfile(), puppetState);
+        RewindSelfPuppet p = new RewindSelfPuppet(world, Identity.puppetProfile(handler, mc.getSession().getProfile()),
+                puppetState);
         p.place();
         p.follow();
         world.addEntityToWorld(recordedEntityId, p);
@@ -242,22 +270,27 @@ public final class PlaybackSink implements PacketSink {
         return true;
     }
 
-    /** The tab entry's profile for the session's account (its skin), else the session profile (format gap 1). */
-    private GameProfile puppetProfile() {
-        GameProfile own = mc.getSession().getProfile();
-        NetworkPlayerInfo info = own.getId() == null ? null : handler.getPlayerInfo(own.getId());
-        return info != null && info.getGameProfile() != null ? info.getGameProfile() : own;
-    }
-
     private static SelfTrack track() {
         LoadedRecording r = RewindPlayback.session().recording();
         return r == null ? null : r.selfTrack();
+    }
+
+    /** The recording's tick table, or null. */
+    private static TickTable table() {
+        Timeline t = RewindPlayback.session().timeline();
+        return t == null ? null : t.ticks();
     }
 
     /** The time of the record being fed (the origin for headers). */
     private static long feedTimeUs() {
         TickFeeder f = RewindPlayback.session().feeder();
         return f == null ? 0 : f.recordTimeUs();
+    }
+
+    /** The tick being fed (-1 while the headers are). */
+    private static long feedTick() {
+        TickFeeder f = RewindPlayback.session().feeder();
+        return f == null ? 0 : f.currentTick();
     }
 
     /** The recorded player's stand-in in the current world, or null. */
