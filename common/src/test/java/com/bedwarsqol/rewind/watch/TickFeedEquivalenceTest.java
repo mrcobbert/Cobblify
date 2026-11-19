@@ -322,17 +322,33 @@ public class TickFeedEquivalenceTest {
             return (int) Math.floor(x / 16.0);
         }
 
-        /** Local records applied since the last restart, by tag (BLOCK, CONT, ... in the model: a count). */
+        /** Local records applied since the last restart, by tag (a count). */
         final Map<Integer, Integer> locals = new java.util.TreeMap<Integer, Integer>();
+        /** Phase 11: the world's predicted blocks (BLOCK: position -> new state id, as BlockPart sets them). */
+        final TreeMap<Long, Integer> blocks = new TreeMap<Long, Integer>();
+        /** Phase 11: the open window's slots (CONT: "window:slot" -> stack bytes, as ContainerPart puts them). */
+        final TreeMap<String, String> slots = new TreeMap<String, String>();
+        private final com.bedwarsqol.rewind.ExtCodec.Block blockRec = new com.bedwarsqol.rewind.ExtCodec.Block();
+        private final com.bedwarsqol.rewind.ExtCodec.Cont contRec = new com.bedwarsqol.rewind.ExtCodec.Cont();
 
-        void local(int tag) {
+        void local(int tag, byte[] b, int off, int len) {
             Integer n = locals.get(tag);
             locals.put(tag, n == null ? 1 : n + 1);
+            if (tag == RewindFormat.TAG_BLOCK) {
+                blockRec.read(b, off, len);
+                blocks.put(blockRec.pos, blockRec.newState);
+            } else if (tag == RewindFormat.TAG_CONT) {
+                contRec.read(b, off, len);
+                slots.put(contRec.windowId + ":" + contRec.slot, Arrays.toString(
+                        Arrays.copyOfRange(contRec.buf, contRec.slotOff, contRec.slotOff + contRec.slotLen)));
+            }
         }
 
         /** A restart: the world is torn down; GUI state outside the world is reset (round 2 B2). */
         void restart() {
             locals.clear();
+            blocks.clear(); // a new connection: a new world
+            slots.clear();
             if (guiResetAtRestart) {
                 chat.clear();
                 titleTimer = 0;
@@ -556,7 +572,7 @@ public class TickFeedEquivalenceTest {
                 sb.append('[').append(l[0]).append(" age ").append(l[1]).append(']');
             }
             sb.append(" cam=").append(cam.snapshot()).append(" mode=").append(mode.recorded());
-            sb.append(" locals=").append(locals);
+            sb.append(" locals=").append(locals).append(" blocks=").append(blocks).append(" slots=").append(slots);
             return sb.toString();
         }
     }
@@ -610,7 +626,7 @@ public class TickFeedEquivalenceTest {
         @Override
         public void local(int tag, long timeUs, byte[] buf, int off, int len) {
             trace.add("L t" + tick + " tag" + tag + " at" + timeUs + " len" + len);
-            model.local(tag);
+            model.local(tag, buf, off, len);
         }
 
         @Override
@@ -869,6 +885,9 @@ public class TickFeedEquivalenceTest {
             }
         }
         assertTrue("local records are in the traces", locals > 0);
+        Harness h = new Harness(r, 3).open().playTo(tick(tl, O + 25 * S));
+        assertFalse("BLOCK records reached the model's world (Phase 11)", h.model.blocks.isEmpty());
+        assertFalse("CONT records reached the model's window (Phase 11)", h.model.slots.isEmpty());
         assertNotEquals("the v2 order differs from the v1 stamp order somewhere",
                 new Harness(recording(), 1).open().playTo(tick(tl, O + 25 * S)).trace,
                 new Harness(r, 1).open().playTo(tick(tl, O + 25 * S)).trace);

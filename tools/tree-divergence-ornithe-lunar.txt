@@ -439,3 +439,13 @@ one-sided main ornithe com/bedwarsqol/rewind/watch/CameraStatePart.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/HandV2Part.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/Identity.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/IdentityTest.java
+# Rewind parity Phase 11 (Ornithe only): v2 playback of your own digging, predicted blocks, sounds and window clicks
+# as playback parts, and their tests. The dig state rule itself is in common (DigState).
+one-sided main ornithe com/bedwarsqol/rewind/watch/DigPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/BlockPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/SoundPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/ContainerPart.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/DigPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/BlockPredictionTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/LocalSoundPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ContainerPlaybackTest.java
