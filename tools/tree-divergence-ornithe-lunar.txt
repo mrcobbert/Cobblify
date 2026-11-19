@@ -376,3 +376,16 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackCameraStateTest.java
 # Rewind R2 Phase 4b (Ornithe only): your view, the free camera and the recorded player's puppet in playback.
 one-sided main ornithe com/bedwarsqol/rewind/watch/RewindSelfPuppet.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/CameraController.java
+
+# Rewind parity Phase 3 (Ornithe only): the recorder's per-frame view state (VIEW, MOUSE, CHAT_INPUT, FOV, INPUT,
+# TAP), per-tick client state (USE, INV, CONT, SETTINGS, IDENTITY) and the settings snapshot, the FOV invoker and
+# chat-bar accessor they read through, and their capture and allocation tests.
+one-sided main ornithe com/bedwarsqol/rewind/ViewCapture.java
+one-sided main ornithe com/bedwarsqol/rewind/StateCapture.java
+one-sided main ornithe com/bedwarsqol/rewind/SettingsSnapshot.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererFovInvoker.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiChatRewindAccessor.java
+one-sided test ornithe com/bedwarsqol/rewind/ViewCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/InventoryCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/SnapshotCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/ClientTrackCaptureTest.java

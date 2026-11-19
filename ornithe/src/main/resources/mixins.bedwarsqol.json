@@ -62,7 +62,9 @@
     "SoundHandlerRewindMixin",
     "EntityRendererRewindPlaybackMixin",
     "GuiNewChatAccessor",
-    "GuiIngameAccessor"
+    "GuiIngameAccessor",
+    "EntityRendererFovInvoker",
+    "GuiChatRewindAccessor"
   ],
   "verbose": true
 }
