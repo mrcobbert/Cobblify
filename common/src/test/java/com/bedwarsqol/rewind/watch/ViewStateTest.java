@@ -123,14 +123,58 @@ public class ViewStateTest {
         assertEquals(-1, v.riddenEntityId());
     }
 
+    /** B4 (Phase 7): your view hides the puppet only in first person; F5's behind and front views show it. */
     @Test
-    public void thePuppetKeepsTodaysRuleUntilPhaseSeven() {
+    public void thePuppetIsHiddenInYourViewOnlyInFirstPerson() {
         ViewState v = new ViewState();
-        assertTrue("your view: the camera is you", v.puppetHidden(true, false));
+        assertTrue("first person: the camera is you", v.puppetHidden(true, false));
+        assertTrue(v.cyclePerspective());
+        assertFalse("F5 behind: the recorded body", v.puppetHidden(true, false));
+        assertTrue(v.cyclePerspective());
+        assertFalse("F5 front", v.puppetHidden(true, false));
+        assertTrue(v.cyclePerspective());
+        assertTrue("first person again", v.puppetHidden(true, false));
+        v.recorded(1, 0, RewindFormat.SCREEN_NONE);
+        v.selectYou();
+        assertFalse("a recorded behind view shows it too", v.puppetHidden(true, false));
         v.selectFree();
         assertFalse(v.puppetHidden(true, false));
         assertTrue("recorded invisible", v.puppetHidden(true, true));
         assertTrue("nothing sampled yet", v.puppetHidden(false, false));
+        v.ride(7);
+        assertFalse("another player's view sees you", v.puppetHidden(true, false));
+    }
+
+    /**
+     * Coordinator amendment 1 + B1 (Phase 7): what the camera's {@code isSpectator()} answers, which is the only input
+     * vanilla's {@code Entity.isInvisibleToPlayer} reads from the viewer (an invisible entity is drawn translucent for
+     * a spectator viewer), and what hides the bare arm's body parts and the water and fire overlays. True only in your
+     * view while the recorded game mode is spectator: never in your view otherwise, never in the free camera, never in
+     * another player's view.
+     */
+    @Test
+    public void theCameraIsASpectatorOnlyInYourViewOfARecordedSpectator() {
+        int[] modes = {ViewGameType.NOT_SET, ViewGameType.SURVIVAL, ViewGameType.CREATIVE, ViewGameType.ADVENTURE,
+                ViewGameType.SPECTATOR};
+        ViewState v = new ViewState();
+        for (int view = 0; view < 3; view++) {
+            if (view == 0) {
+                v.selectYou();
+            } else if (view == 1) {
+                v.selectFree();
+            } else {
+                v.ride(9);
+            }
+            for (int mode : modes) {
+                boolean expected = view == 0 && mode == ViewGameType.SPECTATOR;
+                assertEquals("view " + v.view() + " mode " + mode, expected, v.cameraSpectator(mode));
+            }
+        }
+        v.selectYou();
+        v.cyclePerspective();
+        assertTrue("F5 keeps it", v.cameraSpectator(ViewGameType.SPECTATOR));
+        v.toggleClean();
+        assertTrue("the clean view keeps it", v.cameraSpectator(ViewGameType.SPECTATOR));
     }
 
     @Test

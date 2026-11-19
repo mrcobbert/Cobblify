@@ -1,5 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.feature.CameraOptions;
+import net.minecraft.block.material.Material;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.network.NetHandlerPlayClient;
@@ -29,7 +31,7 @@ import java.util.Collection;
  * {@link CameraController} each frame (your view or the free camera).
  *
  * <p>Created only during a session, by {@code PlayerControllerMPRewindMixin} at the one place vanilla creates the
- * client player. It is a spectator for its own physics and terrain culling, never clips, ignores motion, its tick
+ * client player. It is never drawn, never clips, ignores motion, its tick
  * only carries the pose over (previous = current) and counts the hotbar's pickup animations down, it never sends
  * (its chat is swallowed here, so Cobblify's {@code EntityPlayerSPMixin} and {@code OutgoingChat} are never reached
  * from playback), never swings, closes,
@@ -49,6 +51,11 @@ import java.util.Collection;
  * the hand and bars are drawn at all is the controller's game type ({@link ViewGameType}). The camera never runs
  * vanilla's death tick, so health at 0 opens nothing.
  *
+ * <p><b>Camera state</b> (Phase 7): {@link #isSpectator()} is true only in your view of a recorded spectator, so your
+ * view of a survival game draws the bare arm and the water and fire overlays, and invisible entities are translucent
+ * only where they were live. The bob, the hand's lag, the nausea warp, the FOV multiplier and the recorded invisible
+ * and burning flags come from {@link CameraStatePart} through {@link #cameraState}; {@link #pose} leaves them alone.
+ *
  * <p><b>Seams</b> (PLAN "B-seam"): the {@code displayGUI*} and close calls vanilla's window handlers make go to the
  * installed {@link RecordedScreenHolder} ({@link #setScreenHolder}; none until Phase 9, so nothing opens), and
  * {@link #getPlayerInfo()} asks the playback parts first ({@link RewindPlayback#playerInfo}; Phase 13's
@@ -60,6 +67,9 @@ public class RewindCamera extends EntityPlayerSP {
     public static final int RESERVED_ID = -0x52574E44; // "RWND"
 
     private static volatile RecordedScreenHolder screens = RecordedScreenHolder.NONE;
+
+    /** {@link #getFovModifier()}: 1 until {@link CameraStatePart} sets your view's derived value. */
+    private float fovModifier = 1f;
 
     /** Installs where window calls go (Phase 9's {@code RecordedScreens}); null: {@link RecordedScreenHolder#NONE}. */
     public static void setScreenHolder(RecordedScreenHolder holder) {
@@ -150,8 +160,6 @@ public class RewindCamera extends EntityPlayerSP {
         prevRotationPitch = rotationPitch;
         rotationYawHead = prevRotationYawHead = rotationYaw;
         renderYawOffset = prevRenderYawOffset = rotationYaw;
-        prevRenderArmYaw = renderArmYaw = rotationYaw;
-        prevRenderArmPitch = renderArmPitch = rotationPitch;
         motionX = motionY = motionZ = 0;
     }
 
@@ -171,9 +179,62 @@ public class RewindCamera extends EntityPlayerSP {
         }
     }
 
+    /**
+     * Amendment 1 and B1: a spectator only in your view while the recorded game mode is spectator
+     * ({@link ViewState#cameraSpectator}). This is what vanilla's {@code Entity.isInvisibleToPlayer} reads from the
+     * viewer (invisible entities are drawn translucent for a spectator), what hides the bare arm's body parts
+     * ({@code RenderPlayer.setModelVisibilities}) and the water and fire overlays ({@code ItemRenderer.renderOverlays}),
+     * and the terrain culling flag ({@code renderWorldPass}; the free camera keeps spectator culling through
+     * {@code EntityRendererRewindPlaybackMixin}).
+     */
     @Override
     public boolean isSpectator() {
-        return true;
+        PlaybackSink sink = RewindPlayback.currentSink();
+        return RewindPlayback.view().cameraSpectator(
+                sink == null ? ViewGameType.NOT_SET : sink.recordedGameType().getID());
+    }
+
+    /**
+     * Your view's camera state from {@link CameraStatePart} (PLAN "Camera state"): the bob, walked distance and nausea
+     * warp ({@code bob}), the hand's lag ({@code arm}), the recorded invisible flag (vanilla hides the bare arm), the
+     * recorded burning flag (vanilla's fire overlay reads entity flag 0 on a client world) and the FOV multiplier.
+     * Null {@code bob} or {@code arm} (outside your view): no bob, no warp, no lag.
+     */
+    void cameraState(ViewBob bob, ArmSway arm, boolean invisible, boolean burning, float fov) {
+        prevCameraYaw = bob == null ? 0f : bob.prevCameraYaw();
+        cameraYaw = bob == null ? 0f : bob.cameraYaw();
+        prevCameraPitch = bob == null ? 0f : bob.prevCameraPitch();
+        cameraPitch = bob == null ? 0f : bob.cameraPitch();
+        prevDistanceWalkedModified = bob == null ? 0f : bob.prevDistanceWalked();
+        distanceWalkedModified = bob == null ? 0f : bob.distanceWalked();
+        prevTimeInPortal = bob == null ? 0f : bob.prevTimeInPortal();
+        timeInPortal = bob == null ? 0f : bob.timeInPortal();
+        prevRenderArmYaw = arm == null ? rotationYaw : arm.prevYaw();
+        renderArmYaw = arm == null ? rotationYaw : arm.yaw();
+        prevRenderArmPitch = arm == null ? rotationPitch : arm.prevPitch();
+        renderArmPitch = arm == null ? rotationPitch : arm.pitch();
+        if (isInvisible() != invisible) {
+            setInvisible(invisible);
+        }
+        if (getFlag(0) != burning) {
+            setFlag(0, burning);
+        }
+        fovModifier = fov;
+    }
+
+    /** Never drawn (PLAN "Camera state"): in F5 the puppet is the recorded body, so there is never a second one. */
+    @Override
+    public boolean isInRangeToRender3d(double x, double y, double z) {
+        return false;
+    }
+
+    /**
+     * The free camera draws no underwater overlay, as before Phase 7 when the camera was always a spectator; your
+     * view and another player's view keep vanilla's (the overlay and the air bubbles).
+     */
+    @Override
+    public boolean isInsideOfMaterial(Material material) {
+        return !RewindPlayback.view().freeCamera() && super.isInsideOfMaterial(material);
     }
 
     /** One-line hook: the parts' tab entry for the camera (Phase 13: the recorded identity), else vanilla's. */
@@ -321,8 +382,13 @@ public class RewindCamera extends EntityPlayerSP {
         return false;
     }
 
+    /**
+     * {@link DerivedFov} in your view (set by {@link CameraStatePart}), else 1; vanilla eases the FOV toward it. The
+     * camera overrides vanilla's method, so Cobblify's Dynamic FOV option ({@code AbstractClientPlayerFovMixin}) is
+     * applied here: with it off the view stays steady, as it was live.
+     */
     @Override
     public float getFovModifier() {
-        return 1.0f;
+        return CameraOptions.fovModifier(fovModifier);
     }
 }

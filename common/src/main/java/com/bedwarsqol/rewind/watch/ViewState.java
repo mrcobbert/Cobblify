@@ -17,8 +17,9 @@ import com.bedwarsqol.rewind.RewindFormat;
  *       screens; F5 does nothing there.</li>
  *   <li><b>The clean view</b> (the Clean View Key or F1 while watching) hides the HUD and recorded screens in every
  *       view until pressed again or key 1.</li>
- *   <li><b>The puppet</b> ({@link #puppetHidden}) keeps R2's rule until Phase 7 changes it: hidden in your view, while
- *       the recorded player is invisible, and before its first sample.</li>
+ *   <li><b>The puppet</b> ({@link #puppetHidden}) is hidden in your view's first person, while the recorded player
+ *       is invisible, and before its first sample.</li>
+ *   <li><b>The camera is a spectator</b> ({@link #cameraSpectator}) only in your view of a recorded spectator.</li>
  * </ul>
  *
  * {@link #version()} changes with every change, so a consumer can apply a change once. Pure; the client thread.
@@ -178,9 +179,23 @@ public final class ViewState {
         return view == View.YOU && !clean ? recordedScreen : RewindFormat.SCREEN_NONE;
     }
 
-    /** Whether the recorded player's puppet is not drawn (R2's rule until Phase 7). */
+    /**
+     * Whether the recorded player's puppet is not drawn (B4): in your view only in first person (the camera is you;
+     * F5's behind and front views show it as the recorded body), while the recorded player is invisible, and before
+     * its first sample.
+     */
     public boolean puppetHidden(boolean sampled, boolean invisible) {
-        return view == View.YOU || !sampled || invisible;
+        return view == View.YOU && perspective() == 0 || !sampled || invisible;
+    }
+
+    /**
+     * The camera's {@code isSpectator()} (amendment 1, B1): only in your view while the recorded game mode
+     * ({@code ViewGameType} id, {@link ViewGameType#NOT_SET} before any) is spectator. Vanilla reads it for the
+     * viewer in {@code Entity.isInvisibleToPlayer} (translucent invisibles), the bare arm's body parts, the water and
+     * fire overlays and terrain culling; never true in the free camera or another player's view.
+     */
+    public boolean cameraSpectator(int recordedGameMode) {
+        return view == View.YOU && recordedGameMode == ViewGameType.SPECTATOR;
     }
 
     /** Changes with every change of what the view shows. */

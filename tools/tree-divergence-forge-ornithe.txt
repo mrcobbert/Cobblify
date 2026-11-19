@@ -395,3 +395,5 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/PuppetSoundTest.java
 # Rewind parity Phase 9 (Ornithe only): recorded chest, shop and death screens (the recorded-window holder).
 one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreens.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedScreensTest.java
+# Rewind parity Phase 7 (Ornithe only): your view's camera state part (bob, hand sway, nausea, derived FOV, flags).
+one-sided main ornithe com/bedwarsqol/rewind/watch/CameraStatePart.java

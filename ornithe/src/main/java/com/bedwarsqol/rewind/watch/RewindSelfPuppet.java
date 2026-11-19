@@ -16,11 +16,12 @@ import net.minecraft.world.World;
  *
  * <p>Each world tick it takes {@link PuppetState}'s sample: it moves to the recorded position during the tick, like a
  * player the server moved, takes the recorded flags, swings when the recorded swing starts and wears each EQUIP change.
- * It is not drawn in your view (the camera is you) or while the recorded invisible flag is set.
+ * It is not drawn in your view's first person (the camera is you; F5 shows it) or while the recorded invisible flag is
+ * set.
  *
  * <p>Three one-line hooks for later phases (PLAN "B-seam"): {@link #playSound} asks the playback parts first (Phase
  * 8's {@code PuppetSounds}; vanilla's other-player sound is silent on a client), {@link #getPlayerInfo()} too (Phase
- * 13's {@code Identity}), and whether it is drawn is {@link ViewState#puppetHidden} (Phase 7 changes that rule).
+ * 13's {@code Identity}), and whether it is drawn is {@link ViewState#puppetHidden}.
  */
 public class RewindSelfPuppet extends EntityOtherPlayerMP {
 
