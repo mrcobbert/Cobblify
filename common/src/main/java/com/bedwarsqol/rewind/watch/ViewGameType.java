@@ -11,6 +11,8 @@ import com.bedwarsqol.rewind.RewindFormat;
  *   <li><b>Your view:</b> the recorded game mode, from S01, S07 and S2B reason 3 in their order of arrival (after a
  *       final death the spectator bar shows as you saw it); survival before any is recorded.</li>
  *   <li><b>Free camera:</b> always SPECTATOR, so no hand, hotbar, hearts or bars.</li>
+ *   <li><b>Another player's view</b> (Phase 14): always CREATIVE, so their hand and no hearts, hunger or XP bar
+ *       ({@link #forView(ViewState.View)}).</li>
  * </ul>
  * A view switch is only the other argument to {@link #forView}, so it takes effect at once. The recorded mode is
  * rebuilt by the feed, so after a seek it is the mode recorded at the target.
@@ -85,6 +87,19 @@ public final class ViewGameType {
             return SPECTATOR;
         }
         return recorded == NOT_SET ? SURVIVAL : recorded;
+    }
+
+    /**
+     * The controller's game type for {@code view}: your view the recorded mode, the free camera SPECTATOR, another
+     * player's view CREATIVE (Phase 14: vanilla draws the first-person hand, and no hearts, hunger, armour or XP bar,
+     * since those need survival or adventure; the hotbar, drawn for every mode but spectator, is cancelled by
+     * {@code GuiIngameRewindMixin}).
+     */
+    public int forView(ViewState.View view) {
+        if (view == ViewState.View.RIDDEN) {
+            return CREATIVE;
+        }
+        return forView(view == ViewState.View.YOU);
     }
 
     static int byId(int id) {

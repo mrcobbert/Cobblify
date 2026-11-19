@@ -95,6 +95,22 @@ public final class CameraController {
         viewChanged();
     }
 
+    /**
+     * The free camera starting at an exact eye pose (Phase 14: where another player's view was, when that player
+     * leaves the world or key 2 is pressed while riding).
+     */
+    public static void selectFreeCameraAt(double x, double eyeY, double z, float yaw, float pitch) {
+        free.x = x;
+        free.y = eyeY;
+        free.z = z;
+        free.yaw = yaw;
+        free.pitch = Math.max(-90f, Math.min(90f, pitch));
+        view().selectFree();
+        clearMove();
+        lastFrameNanos = System.nanoTime();
+        viewChanged();
+    }
+
     /** The controller's game type and the camera's view state follow the view at once (Rev 3 amendment 1). */
     private static void viewChanged() {
         PlaybackSink sink = RewindPlayback.currentSink();

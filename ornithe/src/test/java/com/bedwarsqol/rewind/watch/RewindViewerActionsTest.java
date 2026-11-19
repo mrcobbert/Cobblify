@@ -363,6 +363,12 @@ public class RewindViewerActionsTest {
         assertFalse("choosing closes the menu", controls.menuOpen());
         controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA, ViewerCameraControls.YOU, 0));
         assertEquals("select " + ViewerCameraControls.YOU, cameras.calls.get(cameras.calls.size() - 1));
+        // a player's row (Phase 14) goes to the ridden view, never to your view or the free camera
+        int before = cameras.calls.size();
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA, ViewerLayout.FIRST_PLAYER, 0));
+        assertEquals(before, cameras.calls.size());
+        assertFalse(controls.menuOpen());
         checked.add(ViewerLayout.Action.Kind.CAMERA);
 
         // a marker click jumps 3 s before it and highlights it

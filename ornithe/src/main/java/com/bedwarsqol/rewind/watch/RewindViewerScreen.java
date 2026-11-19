@@ -35,10 +35,14 @@ import java.util.List;
  *       camera; Esc closes the camera menu, else opens the Esc menu ({@link RewindEscScreen}); Tab held shows the
  *       recorded tab list (it holds the player-list binding); F5 cycles your view's perspective; F1 and the Clean
  *       View Key toggle the clean view ({@link ViewState}); 3 and Shift+3 ride the next and previous player (a
- *       playback part answers, Phase 14).</li>
+ *       playback part answers: {@link RiddenView}, Phase 14).</li>
  *   <li>Mouse: the bar's keys, marker icons and timeline ({@link ViewerLayout.Pointer}: a drag previews, the release
  *       seeks); right-click on the speed key steps down. In the free camera a drag off the bar looks around and the
- *       wheel sets the flight speed (Q2), and WASD, Space and Shift fly (Q1).</li>
+ *       wheel sets the flight speed (Q2), and WASD, Space and Shift fly (Q1); a click (not a drag, {@link PickRay})
+ *       on a player rides them.</li>
+ *   <li>Camera menu (Phase 14): You, Free camera, then every player another player's view can ride, each with their
+ *       face and their name in their team's colour ({@link RiddenView#players()}); while a player is ridden the key
+ *       shows them and their name sits in their team's colour under the bar (not in the clean view).</li>
  * </ul>
  *
  * <p>The session opens a new viewer after every rebuild behind the loading card; what must outlive one screen (marker
@@ -67,6 +71,10 @@ public final class RewindViewerScreen extends RewindScreen {
     private ViewerLayout layout;
     private int scale = 1;
     private boolean looking;
+    /** Click to ride (free camera): a press off the bar that has not moved more than 3 px. */
+    private final PickRay.Click click = new PickRay.Click();
+    /** The screen in GUI px, as the last frame laid it out. */
+    private float screenW, screenH;
     private long lastFrameNanos;
     private boolean mouseSeen;
     private int lastMouseX, lastMouseY;
@@ -110,6 +118,7 @@ public final class RewindViewerScreen extends RewindScreen {
     @Override
     public void onGuiClosed() {
         looking = false;
+        click.cancel();
         controls.pointer.cancel();
         holdTabList(false);
     }
@@ -125,6 +134,8 @@ public final class RewindViewerScreen extends RewindScreen {
         }
         scale = new ScaledResolution(mc).getScaleFactor();
         float sw = mc.displayWidth / (float) scale, sh = mc.displayHeight / (float) scale;
+        screenW = sw;
+        screenH = sh;
         int rawX = Mouse.getX(), rawY = Mouse.getY();
         if (mouseSeen && (rawX != lastMouseX || rawY != lastMouseY)) {
             controls.fade.mouseMoved(nowMs);
@@ -137,7 +148,17 @@ public final class RewindViewerScreen extends RewindScreen {
         RewindPlayback.drawUnder(width, height, mouseX, mouseY, partialTicks);
         ClientSettings cfg = BedwarsQol.config;
         canvas.begin(scale, 0f, 0f, mc.displayHeight, scale, cfg == null || cfg.minecraftFont());
-        layout = ViewerLayout.of(sw, sh, canvas, tl);
+        PlayerListModel players = RiddenView.players();
+        String[] names = new String[players.size()];
+        int[] colours = new int[names.length];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = players.get(i).name;
+            colours[i] = players.get(i).colour;
+        }
+        int riding = RiddenView.ridingIndex();
+        int option = controls.free() ? ViewerCameraControls.FREE
+                : riding >= 0 ? ViewerLayout.FIRST_PLAYER + riding : ViewerCameraControls.YOU;
+        layout = ViewerLayout.of(sw, sh, canvas, tl, names, option);
         boolean inside = Mouse.isInsideWindow();
         float alpha = controls.fade.update(nowMs, inside && layout.over(m[0], m[1]),
                 controls.pointer.dragging() || controls.menuOpen);
@@ -151,7 +172,8 @@ public final class RewindViewerScreen extends RewindScreen {
         s.playing = ticks != null && !ticks.paused();
         s.timeUs = controls.pointer.dragging() ? controls.pointer.previewUs() : controls.playheadUs();
         s.speed = ticks != null ? ticks.speed() : 1f;
-        s.camera = controls.free() ? ViewerCameraControls.FREE : ViewerCameraControls.YOU;
+        s.camera = option;
+        s.playerColours = colours;
         s.menuOpen = controls.menuOpen;
         if (inside && controls.fade.visible()) {
             s.hover = layout.hit(m[0], m[1], controls.menuOpen);
@@ -164,6 +186,9 @@ public final class RewindViewerScreen extends RewindScreen {
         s.alpha = alpha;
         s.accent = acc;
         RewindPainter.bar(canvas, layout, s);
+        if (riding >= 0 && !session.view().clean()) {
+            RewindPainter.riddenName(canvas, sw, names[riding], colours[riding]);
+        }
         canvas.end();
         drawFaces(RewindPainter.faces(layout, s), alpha);
         RewindPlayback.drawOver(width, height, mouseX, mouseY, partialTicks);
@@ -183,19 +208,21 @@ public final class RewindViewerScreen extends RewindScreen {
         return new float[]{(x + 0.5f) / scale, (mc.displayHeight - y - 0.5f) / scale};
     }
 
-    /** Your face (skin face and hat, 8 x 8) over the head frames the bar drew. */
+    /** Faces (skin face and hat, 8 x 8) over the head frames the bar drew: yours, or a listed player's. */
     private void drawFaces(List<float[]> faces, float alpha) {
         if (faces.isEmpty()) {
             return;
         }
-        ResourceLocation skin = skin();
         GlStateManager.enableTexture2D();
         GlStateManager.disableAlpha();
         GlStateManager.enableBlend();
         GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
         GlStateManager.color(1f, 1f, 1f, alpha);
-        mc.getTextureManager().bindTexture(skin);
         for (float[] f : faces) {
+            int option = (int) f[4];
+            ResourceLocation skin = option >= ViewerLayout.FIRST_PLAYER
+                    ? RiddenView.skin(option - ViewerLayout.FIRST_PLAYER) : skin();
+            mc.getTextureManager().bindTexture(skin != null ? skin : DefaultPlayerSkin.getDefaultSkinLegacy());
             GlStateManager.pushMatrix();
             GlStateManager.translate(f[0], f[1], 0f);
             Gui.drawScaledCustomSizeModalRect(0, 0, 8f, 8f, 8, 8, 8, 8, 64f, 64f);
@@ -207,10 +234,17 @@ public final class RewindViewerScreen extends RewindScreen {
         GlStateManager.enableAlpha();
     }
 
-    /** The camera's skin (your tab entry's), else the default one. */
+    /**
+     * The camera's skin (your tab entry's), else the default one. In another player's view the camera wears theirs
+     * (for the arm), so your face then comes from the recorded player's puppet.
+     */
     private ResourceLocation skin() {
-        if (mc.thePlayer instanceof AbstractClientPlayer) {
-            ResourceLocation r = ((AbstractClientPlayer) mc.thePlayer).getLocationSkin();
+        PlaybackSink sink = RewindPlayback.currentSink();
+        AbstractClientPlayer you = RiddenView.ridingIndex() >= 0 && sink != null && sink.puppet() != null
+                ? sink.puppet() : mc.thePlayer instanceof AbstractClientPlayer ? (AbstractClientPlayer) mc.thePlayer
+                : null;
+        if (you != null) {
+            ResourceLocation r = you.getLocationSkin();
             if (r != null) {
                 return r;
             }
@@ -280,6 +314,7 @@ public final class RewindViewerScreen extends RewindScreen {
             boolean right = button == 1;
             if (Mouse.getEventButtonState()) {
                 boolean live = controls.fade.visible();
+                boolean menuWasOpen = controls.menuOpen;
                 ViewerLayout.Part part = live ? l.hit(m[0], m[1], controls.menuOpen).part : ViewerLayout.Part.NONE;
                 if (live) {
                     ViewerLayout.Action a = controls.pointer.down(l, m[0], m[1], controls.menuOpen, right);
@@ -290,15 +325,22 @@ public final class RewindViewerScreen extends RewindScreen {
                 }
                 if (!right && part == ViewerLayout.Part.NONE && controls.free()) {
                     looking = true;
+                    if (!menuWasOpen) {
+                        click.press(m[0], m[1]); // a press that only closes the menu rides nobody
+                    }
                 }
             } else if (!right) {
                 looking = false;
                 controls.act(controls.pointer.up(l, m[0], m[1]));
+                if (click.release(m[0], m[1]) && controls.free()) {
+                    RiddenView.pick(m[0], m[1], screenW, screenH);
+                }
             }
         } else if (dx != 0 || dy != 0) {
             if (looking) {
                 ViewerCameraControls.get().look(dx, dy);
             }
+            click.move(m[0], m[1]);
             if (controls.pointer.dragging()) {
                 controls.pointer.move(l, m[0]);
             }
@@ -416,7 +458,7 @@ public final class RewindViewerScreen extends RewindScreen {
                     ViewerCameraControls.get().select(ViewerCameraControls.YOU);
                     break;
                 case VIEW_FREE:
-                    ViewerCameraControls.get().select(ViewerCameraControls.FREE);
+                    selectFree();
                     break;
                 case CYCLE_PERSPECTIVE:
                     if (session.view().cyclePerspective()) {
@@ -470,8 +512,13 @@ public final class RewindViewerScreen extends RewindScreen {
                     break;
                 case CAMERA:
                     menuOpen = false;
-                    ViewerCameraControls.get().select(a.index == ViewerCameraControls.FREE
-                            ? ViewerCameraControls.FREE : ViewerCameraControls.YOU);
+                    if (a.index >= ViewerLayout.FIRST_PLAYER) {
+                        RiddenView.ridePlayer(a.index - ViewerLayout.FIRST_PLAYER);
+                    } else if (a.index == ViewerCameraControls.FREE) {
+                        selectFree();
+                    } else {
+                        ViewerCameraControls.get().select(ViewerCameraControls.YOU);
+                    }
                     break;
                 case MARKER:
                     if (nav != null) jumpTo(nav.jump(a.index));
@@ -485,6 +532,13 @@ public final class RewindViewerScreen extends RewindScreen {
                 case NONE:
                 default:
                     break;
+            }
+        }
+
+        /** Key 2 or the menu's free camera: from another player's view it starts at their eye, else at your view's. */
+        private static void selectFree() {
+            if (!RiddenView.freeHere()) {
+                ViewerCameraControls.get().select(ViewerCameraControls.FREE);
             }
         }
 

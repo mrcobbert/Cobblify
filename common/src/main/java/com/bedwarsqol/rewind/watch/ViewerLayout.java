@@ -11,8 +11,9 @@ import java.util.List;
  * it out but at the top edge, so it never covers the hotbar, hearts or XP bar: a card {@value #EDGE} su from the
  * screen's sides and {@value #GAP} su below its top, {@value #BAR_H} su tall, holding the play/pause key, the timeline
  * (a recess with marker icons and the playhead), the time ({@code m:ss / m:ss}), the speed key and the camera key
- * (You, Free camera) with its menu opening downward below it; the free camera's speed bar sits under the bar
- * ({@link #flySpeedTop()}). R2 draws no export handles.
+ * with its menu opening downward below it (You, Free camera, then every player another player's view can ride, Phase
+ * 14); the free camera's speed bar and the ridden player's name sit under the bar ({@link #flySpeedTop()},
+ * {@link #riddenNameTop()}). R2 draws no export handles.
  *
  * <p>Times are microseconds from the game start, from 0 to the game's length (the timeline runs from the game start
  * to the recording's end, so its length equals the gallery's). Marker indexes are the order the markers were given in,
@@ -36,10 +37,20 @@ public final class ViewerLayout {
     public static final float STRIP_H = 10f;
     public static final float MARKER_STEP = 3f;
     public static final float MENU_ROW_H = 14f;
-    /** The camera key's options, in menu order; the index is the camera (0 your view, 1 free camera). */
+    /**
+     * The camera key's fixed options, in menu order; the index is the camera (0 your view, 1 free camera). The players
+     * follow from {@link #FIRST_PLAYER}.
+     */
     public static final String[] CAMERA_LABELS = {"You", "Free camera"};
     /** Space a head or the camera icon takes before an option's label. */
     public static final float CAMERA_ICON = 14f;
+    /** The camera option of the first player in the menu (Phase 14): You, Free camera, then the players. */
+    public static final int FIRST_PLAYER = 2;
+    /**
+     * Height kept clear above the screen's bottom edge: vanilla's hotbar, XP bar and the heart, armour, hunger and
+     * air rows reach 59 px up. A long camera menu opens another column instead of reaching into it.
+     */
+    public static final float HUD_CLEAR = 60f;
     private static final float[] SPEEDS = {0.25f, 0.5f, 1f, 2f, 4f};
 
     public enum Part { NONE, BAR, PLAY, STRIP, MARKER, SPEED, CAMERA, DROPDOWN, CAMERA_OPTION }
@@ -77,17 +88,45 @@ public final class ViewerLayout {
     private final float totalW;
     private final int[] kinds;
     private final float[] markerX, markerW;
+    /** Camera menu: every option's label, the key's option and label, rows per column, columns, column width. */
+    private final String[] options;
+    private final int keyOption;
+    private final String keyLabel;
+    private final int menuRows, menuCols;
+    private final float menuColW;
 
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds) {
+        this(screenW, screenH, m, lengthUs, markerUs, kinds, null, 0);
+    }
+
+    private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds,
+                         String[] players, int cameraOption) {
         this.metrics = m;
         this.lengthUs = Math.max(0L, lengthUs);
         float bx = EDGE, bw = screenW - 2 * EDGE, by = GAP;
         bar = new float[]{bx, by, bw, BAR_H};
         play = new float[]{bx + 5, by + 5, KEY, KEY};
+        int np = players == null ? 0 : players.length;
+        options = new String[CAMERA_LABELS.length + np];
+        System.arraycopy(CAMERA_LABELS, 0, options, 0, CAMERA_LABELS.length);
+        for (int i = 0; i < np; i++) options[FIRST_PLAYER + i] = players[i] == null ? "" : players[i];
+        keyOption = cameraOption >= 0 && cameraOption < options.length ? cameraOption : 0;
+        // The key is as wide as its widest fixed label, so riding a player never moves the bar; a longer name is cut
+        // to fit (whole characters), while the menu below grows to show it in full.
         float cw = 0;
-        for (String s : CAMERA_LABELS) cw = Math.max(cw, CAMERA_ICON + m.width(s, FONT));
-        float camW = 7 + cw + 6 + 6 + 7;
+        for (String s : CAMERA_LABELS) cw = Math.max(cw, m.width(s, FONT));
+        keyLabel = fit(m, options[keyOption], cw);
+        float camW = 7 + CAMERA_ICON + cw + 6 + 6 + 7;
         camera = new float[]{bx + bw - 5 - camW, by + 5, camW, KEY};
+        float colW = camW;
+        for (int i = FIRST_PLAYER; i < options.length; i++) {
+            colW = Math.max(colW, 7 + CAMERA_ICON + m.width(options[i], FONT) + 7);
+        }
+        menuColW = colW;
+        float menuTop = by + BAR_H + 3;
+        menuRows = Math.max(CAMERA_LABELS.length,
+                Math.min(options.length, (int) Math.floor((screenH - HUD_CLEAR - menuTop - 8) / MENU_ROW_H)));
+        menuCols = (options.length + menuRows - 1) / menuRows;
         float spW = m.width(speedLabel(0.25f), FONT) + 12;
         speed = new float[]{camera[0] - 4 - spW, by + 5, spW, KEY};
         String len = DateLabels.length(this.lengthUs);
@@ -131,6 +170,22 @@ public final class ViewerLayout {
 
     /** The bar for a loaded recording's timeline: its length and markers, counted from the game start. */
     public static ViewerLayout of(float screenW, float screenH, TextMetrics m, Timeline tl) {
+        return of(screenW, screenH, m, tl, null, 0);
+    }
+
+    /**
+     * A bar whose camera menu also lists {@code players} (Phase 14; menu order, null for none) and whose camera key
+     * shows option {@code camera} ({@link #camera()}).
+     */
+    public static ViewerLayout of(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs,
+                                  int[] kinds, String[] players, int camera) {
+        return new ViewerLayout(screenW, screenH, m, lengthUs, markerUs == null ? new long[0] : markerUs,
+                kinds == null ? new int[0] : kinds, players, camera);
+    }
+
+    /** {@link #of(float, float, TextMetrics, Timeline)} with the players in the camera menu. */
+    public static ViewerLayout of(float screenW, float screenH, TextMetrics m, Timeline tl, String[] players,
+                                  int camera) {
         List<Timeline.Marker> ms = tl.markers();
         long[] us = new long[ms.size()];
         int[] kinds = new int[ms.size()];
@@ -138,7 +193,32 @@ public final class ViewerLayout {
             us[i] = ms.get(i).timeUs - tl.gameStartUs();
             kinds[i] = ms.get(i).kind;
         }
-        return of(screenW, screenH, m, tl.lengthUs(), us, kinds);
+        return of(screenW, screenH, m, tl.lengthUs(), us, kinds, players, camera);
+    }
+
+    /** The number of camera options: You, Free camera, then one per player. */
+    public int cameraOptionCount() {
+        return options.length;
+    }
+
+    /** Option {@code option}'s label: "You", "Free camera" or the player's name. */
+    public String cameraLabel(int option) {
+        return options[option];
+    }
+
+    /** The option the camera key shows (0 your view, 1 free camera, {@link #FIRST_PLAYER} + i player i). */
+    public int camera() {
+        return keyOption;
+    }
+
+    /** The camera key's label: its option's, a player's name cut to the key's width. */
+    public String cameraKeyLabel() {
+        return keyLabel;
+    }
+
+    /** The line top of the ridden player's name: centred under the bar, where the free camera's speed bar sits. */
+    public static float riddenNameTop() {
+        return GAP + BAR_H + 6;
     }
 
     /** The top of the free camera's speed bar ({@code RewindPainter.flySpeed}): under the bar, centred. */
@@ -242,16 +322,31 @@ public final class ViewerLayout {
 
     // ------------------------------------------------------------------ camera menu
 
-    /** The camera menu's card {x, y, w, h}, opening downward below the camera key. */
+    /**
+     * The camera menu's card {x, y, w, h}, opening downward below the camera key, its right edge under the key's. One
+     * column as wide as the key or the longest name; when the rows would reach {@link #HUD_CLEAR} above the bottom
+     * edge, further rows open another column to the left.
+     */
     public float[] dropdown() {
-        float h = 1 + 3 + MENU_ROW_H * CAMERA_LABELS.length + 3 + 1;
-        return new float[]{camera[0], bar[1] + bar[3] + 3, camera[2], h};
+        int rows = Math.min(options.length, menuRows);
+        float w = menuCols * menuColW;
+        float x = Math.max(EDGE, camera[0] + camera[2] - w);
+        return new float[]{x, bar[1] + bar[3] + 3, w, 1 + 3 + MENU_ROW_H * rows + 3 + 1};
     }
 
-    /** {x, y, w, h} of the menu's row i. */
+    /** {x, y, w, h} of the menu's row i (option i): down the first column, then the next. */
     public float[] dropdownRow(int i) {
         float[] d = dropdown();
-        return new float[]{d[0] + 1, d[1] + 4 + MENU_ROW_H * i, d[2] - 2, MENU_ROW_H};
+        int col = i / menuRows, row = i % menuRows;
+        return new float[]{d[0] + 1 + col * menuColW, d[1] + 4 + MENU_ROW_H * row, menuColW - 2, MENU_ROW_H};
+    }
+
+    /** The longest prefix of {@code s} (whole characters) no wider than {@code w}. */
+    private static String fit(TextMetrics m, String s, float w) {
+        if (m.width(s, FONT) <= w) return s;
+        int n = s.length();
+        while (n > 0 && m.width(s.substring(0, n), FONT) > w) n--;
+        return s.substring(0, n);
     }
 
     // ------------------------------------------------------------------ hit test
@@ -268,7 +363,7 @@ public final class ViewerLayout {
     /** The topmost part under the point; the camera menu counts only while it is open. */
     public Hit hit(float x, float y, boolean menuOpen) {
         if (menuOpen) {
-            for (int i = 0; i < CAMERA_LABELS.length; i++) {
+            for (int i = 0; i < options.length; i++) {
                 if (in(dropdownRow(i), x, y)) return new Hit(Part.CAMERA_OPTION, i);
             }
             if (in(dropdown(), x, y)) return new Hit(Part.DROPDOWN, -1);
@@ -299,7 +394,10 @@ public final class ViewerLayout {
             SPEED_DOWN,
             /** Camera key clicked: open or close its menu. */
             CAMERA_MENU,
-            /** Camera option {@link #index} chosen (0 your view, 1 free camera); the menu closes. */
+            /**
+             * Camera option {@link #index} chosen (0 your view, 1 free camera, {@link #FIRST_PLAYER} + i the i-th
+             * player's view); the menu closes.
+             */
             CAMERA,
             /** Jump to marker {@link #index} ({@code MarkerNav}). */
             MARKER,

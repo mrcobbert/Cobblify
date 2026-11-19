@@ -28,7 +28,7 @@ import java.io.IOException;
  * <p><b>Boundary hook</b> (after every S01 and S07 that applied): S01 remembers the recorded entity id and gives the
  * camera {@link RewindCamera#RESERVED_ID}; both make the packet's game type the recorded game mode and put the
  * controller in the view's game type ({@link ViewGameType}: the recorded mode in your view, SPECTATOR in the free
- * camera); then the recorded player's puppet ({@link RewindSelfPuppet}) is added with the recorded id if the world
+ * camera, CREATIVE in another player's view); then the recorded player's puppet ({@link RewindSelfPuppet}) is added with the recorded id if the world
  * lacks it, and the new camera takes the current view's pose at once ({@link CameraController#restorePose}).
  *
  * <p>{@link #sessionHook} (S2B reason 3, never passed to vanilla): the recorded game mode changes and the controller
@@ -147,7 +147,7 @@ public final class PlaybackSink implements PacketSink {
     private void applyViewGameType() {
         if (mc.playerController != null && mc.thePlayer != null) {
             mc.playerController.setGameType(
-                    WorldSettings.GameType.getByID(viewType.forView(CameraController.yourView())));
+                    WorldSettings.GameType.getByID(viewType.forView(RewindPlayback.view().view())));
         }
     }
 
