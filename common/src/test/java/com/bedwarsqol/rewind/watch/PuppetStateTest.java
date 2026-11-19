@@ -14,9 +14,11 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
- * The recorded player's stand-in (PLAN section 4, Phase 4b): each world tick maps the track's last TICK to entity
- * fields, starts a swing exactly once per recorded swing (at the tick vanilla's {@code swingItem} ran), applies each
- * EQUIP change once, and is hidden in your view and while the recorded invisible flag is set.
+ * The recorded player's stand-in (PLAN section 4, Phase 4b; parity "Self state binding"): each world tick k maps
+ * tick k's end state (the last TICK stamped before the next tick's time) to entity fields, starts a swing exactly once
+ * per recorded swing (at the tick vanilla's {@code swingItem} ran: one tick of lookahead), applies each EQUIP change
+ * once in the tick it was stamped in, and is hidden in your view and while the recorded invisible flag is set. Ticks
+ * are the v1 table rebuilt from the fixture's TICK times ({@link #sample}).
  */
 public class PuppetStateTest {
 
@@ -26,6 +28,17 @@ public class PuppetStateTest {
     private final SelfTrackEncoder enc = new SelfTrackEncoder();
     private final SelfTrack.Builder b = new SelfTrack.Builder();
     private final PuppetState p = new PuppetState();
+    private SelfTrack tableTrack;
+    private TickTable table;
+
+    /** Tick {@code k} of the v1 table built from the TICK times of {@code s} (origin 1 ms before T). */
+    private boolean sample(SelfTrack s, long k) {
+        if (s != tableTrack) {
+            tableTrack = s;
+            table = TickTable.forRecording(T - 1_000, s, ExtRecords.EMPTY);
+        }
+        return p.sample(s, table, k);
+    }
 
     private void tick(long t, double x, int flags, int swingInt) {
         int n = enc.tick(x, 64, 0, 10f, 5f, 20f, flags, 0, swingInt, 0);
@@ -42,11 +55,11 @@ public class PuppetStateTest {
         b.record(t, RewindFormat.TAG_EQUIP, body, 0, body.length);
     }
 
-    /** Samples every grid tick from {@code from} on and returns the ticks at which a swing started. */
-    private List<Integer> swingTicks(SelfTrack s, long from, int count) {
+    /** Samples every tick from 0 on and returns the ticks at which a swing started. */
+    private List<Integer> swingTicks(SelfTrack s, int count) {
         List<Integer> out = new ArrayList<Integer>();
         for (int k = 0; k < count; k++) {
-            assertTrue(p.sample(s, from + k * TICK));
+            assertTrue(sample(s, k));
             if (p.swingStarted()) {
                 out.add(k);
             }
@@ -65,7 +78,7 @@ public class PuppetStateTest {
         b.record(T + TICK, RewindFormat.TAG_TICK, enc.buffer(), 0, n);
         SelfTrack s = b.build();
 
-        assertTrue(p.sample(s, T + 20_000));
+        assertTrue(sample(s, 0));
         assertEquals(3.5, p.x(), 0);
         assertEquals(70.25, p.y(), 0);
         assertEquals(-8.75, p.z(), 0);
@@ -79,7 +92,7 @@ public class PuppetStateTest {
         assertTrue(p.burning());
         assertFalse(p.invisible());
 
-        assertTrue(p.sample(s, T + TICK));
+        assertTrue(sample(s, 1));
         assertEquals(4.5, p.x(), 0);
         assertEquals(96f, p.headYaw(), 0);
         assertFalse(p.onGround());
@@ -89,14 +102,14 @@ public class PuppetStateTest {
         assertFalse(p.burning());
 
         // A long gap holds the last TICK.
-        assertTrue(p.sample(s, T + 40 * TICK));
+        assertTrue(sample(s, 40));
         assertEquals(4.5, p.x(), 0);
     }
 
     @Test
     public void noTrackNoSample() {
         b.segment(1);
-        assertFalse(p.sample(b.build(), T));
+        assertFalse(sample(b.build(), 0));
         assertFalse(p.swingStarted());
     }
 
@@ -111,11 +124,7 @@ public class PuppetStateTest {
         SelfTrack s = b.build();
         List<Integer> expected = new ArrayList<Integer>();
         expected.add(1);
-        assertEquals(expected, swingTicks(s, T, swing.length + 3));
-
-        // The grid need not line up with the client's ticks.
-        p.reset();
-        assertEquals(expected, swingTicks(s, T + 20_000, swing.length + 3));
+        assertEquals(expected, swingTicks(s, swing.length + 3));
     }
 
     @Test
@@ -129,7 +138,7 @@ public class PuppetStateTest {
         List<Integer> expected = new ArrayList<Integer>();
         expected.add(0);
         expected.add(4);
-        assertEquals(expected, swingTicks(s, T, swing.length + 2));
+        assertEquals(expected, swingTicks(s, swing.length + 2));
     }
 
     @Test
@@ -138,7 +147,7 @@ public class PuppetStateTest {
         for (int i = 0; i < 20; i++) {
             tick(T + i * TICK, i, 0, 0);
         }
-        assertTrue(swingTicks(b.build(), T, 25).isEmpty());
+        assertTrue(swingTicks(b.build(), 25).isEmpty());
     }
 
     @Test
@@ -151,7 +160,7 @@ public class PuppetStateTest {
         SelfTrack s = b.build();
         List<Integer> expected = new ArrayList<Integer>();
         expected.add(40);
-        assertEquals(expected, swingTicks(s, T, 45));
+        assertEquals(expected, swingTicks(s, 45));
     }
 
     @Test
@@ -160,11 +169,11 @@ public class PuppetStateTest {
         tick(T, 0, 0, 0);
         equip(T, RewindFormat.EQUIP_HELD, 1, 2, 3);
         equip(T, RewindFormat.EQUIP_HELMET, 9, 9);
-        equip(T + 120_000, RewindFormat.EQUIP_HELD, 4, 5);
+        equip(T + 120_000, RewindFormat.EQUIP_HELD, 4, 5); // stamped in tick 2's interval [99, 149) ms
         equip(T + 120_000, RewindFormat.EQUIP_HELD, 4, 6); // two changes in one tick: the later one
         SelfTrack s = b.build();
 
-        assertTrue(p.sample(s, T));
+        assertTrue(sample(s, 0));
         assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
         assertTrue(p.equipChanged(RewindFormat.EQUIP_HELMET));
         assertFalse(p.equipChanged(RewindFormat.EQUIP_BOOTS));
@@ -172,22 +181,20 @@ public class PuppetStateTest {
         assertArrayEquals(new byte[]{9, 9}, p.equipItem(RewindFormat.EQUIP_HELMET));
         assertNull(p.equipItem(RewindFormat.EQUIP_BOOTS));
 
-        for (long t : new long[]{T + TICK, T + 2 * TICK}) {
-            assertTrue(p.sample(s, t));
-            for (int slot = 0; slot < PuppetState.SLOTS; slot++) {
-                assertFalse("no change at " + t, p.equipChanged(slot));
-            }
+        assertTrue(sample(s, 1));
+        for (int slot = 0; slot < PuppetState.SLOTS; slot++) {
+            assertFalse("no change in tick 1", p.equipChanged(slot));
         }
-        assertTrue(p.sample(s, T + 3 * TICK));
-        assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
+        assertTrue(sample(s, 2));
+        assertTrue("the change is in the tick it was stamped in", p.equipChanged(RewindFormat.EQUIP_HELD));
         assertFalse(p.equipChanged(RewindFormat.EQUIP_HELMET));
         assertArrayEquals(new byte[]{4, 6}, p.equipItem(RewindFormat.EQUIP_HELD));
-        assertTrue(p.sample(s, T + 4 * TICK));
+        assertTrue(sample(s, 3));
         assertFalse(p.equipChanged(RewindFormat.EQUIP_HELD));
 
-        // After a restart (a fresh puppet) every recorded slot applies again, at its state for that time.
+        // After a restart (a fresh puppet) every recorded slot applies again, at its state for that tick.
         p.reset();
-        assertTrue(p.sample(s, T + 4 * TICK));
+        assertTrue(sample(s, 4));
         assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
         assertTrue(p.equipChanged(RewindFormat.EQUIP_HELMET));
         assertArrayEquals(new byte[]{4, 6}, p.equipItem(RewindFormat.EQUIP_HELD));
@@ -203,9 +210,9 @@ public class PuppetStateTest {
         tick(T + 10 * TICK, 0, 0, 0);
         equip(T + 10 * TICK, RewindFormat.EQUIP_HELD, 2);
         SelfTrack s = b.build();
-        assertTrue(p.sample(s, T + 9 * TICK));
+        assertTrue(sample(s, 9));
         assertArrayEquals(new byte[]{1}, p.equipItem(RewindFormat.EQUIP_HELD));
-        assertTrue(p.sample(s, T + 10 * TICK));
+        assertTrue(sample(s, 10));
         assertTrue(p.equipChanged(RewindFormat.EQUIP_HELD));
         assertArrayEquals(new byte[]{2}, p.equipItem(RewindFormat.EQUIP_HELD));
     }
@@ -218,10 +225,10 @@ public class PuppetStateTest {
         SelfTrack s = b.build();
         assertTrue(p.hidden(true)); // nothing sampled yet
         assertTrue(p.hidden(false));
-        assertTrue(p.sample(s, T));
+        assertTrue(sample(s, 0));
         assertFalse(p.hidden(false));
         assertTrue(p.hidden(true));
-        assertTrue(p.sample(s, T + TICK));
+        assertTrue(sample(s, 1));
         assertTrue(p.invisible());
         assertTrue(p.hidden(false));
         assertTrue(p.hidden(true));

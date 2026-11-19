@@ -14,7 +14,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/** TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release. */
+/**
+ * TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release.
+ * Parity B11 (Q1): the bar sits at the top edge and its camera menu and the flight-speed bar open downward, clear of
+ * the hotbar, hearts and XP bar.
+ */
 public class ViewerLayoutTest {
 
     static final long LEN = 406_600_000L;
@@ -33,9 +37,9 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void geometryAtNineSixtyMatchesTheMockup() {
+    public void geometryAtNineSixtyMatchesTheMockupAtTheTopEdge() {
         ViewerLayout l = plain(960);
-        float by = 540 - 2 - 26;
+        float by = 2;
         assertArrayEquals(new float[]{2, by, 956, 26}, l.bar, 0f);
         assertArrayEquals(new float[]{7, by + 5, 16, 16}, l.play, 0f);
         // camera key: 7 + widest (icon 14 + "Free camera") + 6 + 6 + 7
@@ -167,13 +171,13 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void cameraDropdownSitsAboveTheKey() {
+    public void cameraDropdownOpensDownwardBelowTheKey() {
         ViewerLayout l = plain(640);
         float[] dd = l.dropdown();
         assertEquals(l.camera[0], dd[0], 0f);
         assertEquals(l.camera[2], dd[2], 0f);
         assertEquals(1 + 3 + 2 * 14 + 3 + 1, dd[3], 0f);
-        assertEquals(l.bar[1] - 3 - dd[3], dd[1], 0f);
+        assertEquals(l.bar[1] + l.bar[3] + 3, dd[1], 0f);
         for (int i = 0; i < 2; i++) {
             float[] r = l.dropdownRow(i);
             assertArrayEquals(new float[]{dd[0] + 1, dd[1] + 4 + 14 * i, dd[2] - 2, 14}, r, 0f);
@@ -184,6 +188,49 @@ public class ViewerLayoutTest {
         }
         assertSame(ViewerLayout.Part.DROPDOWN, l.hit(dd[0] + 1, dd[1] + 1, true).part);
         assertEquals(Arrays.asList("You", "Free camera"), Arrays.asList(ViewerLayout.CAMERA_LABELS));
+    }
+
+    private static boolean intersects(float[] a, float[] b) {
+        return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+    }
+
+    /**
+     * B11: at GUI scales 1-4 of common windows, nothing the viewer draws (the bar, the open camera menu, the flight
+     * speed bar) touches vanilla's hotbar (182 x 22 at the bottom centre), XP bar (5 px above it) or the hearts,
+     * armour, hunger and air rows (up to 59 px above the bottom), as {@code GuiIngame} lays them out.
+     */
+    @Test
+    public void theBarItsMenuAndTheSpeedBarNeverCoverTheHotbarHeartsOrXpBar() {
+        int[][] displays = {{1920, 1080}, {1280, 720}, {854, 480}, {2560, 1440}, {1366, 768}};
+        for (int[] d : displays) {
+            for (int scale = 1; scale <= 4; scale++) {
+                float w = (float) Math.ceil(d[0] / (double) scale), h = (float) Math.ceil(d[1] / (double) scale);
+                if (w < 320 || h < 240) {
+                    continue; // vanilla never picks a scale that small
+                }
+                ViewerLayout l = ViewerLayout.of(w, h, GalleryModelTest.MC, LEN, new long[]{60_000_000L},
+                        new int[]{D});
+                float cx = w / 2f;
+                float[][] hud = {
+                        {cx - 91, h - 22, 182, 22},      // hotbar
+                        {cx - 91, h - 29, 182, 5},       // XP bar
+                        {cx - 91, h - 39, 81, 9},        // hearts
+                        {cx - 91, h - 49, 81, 9},        // a second heart row or armour
+                        {cx - 91, h - 59, 81, 9},        // absorption rows
+                        {cx + 10, h - 39, 81, 9},        // hunger
+                        {cx + 10, h - 49, 81, 9},        // air
+                };
+                float[] fly = {cx - 46, ViewerLayout.flySpeedTop() - 1, 92, 10};
+                String at = (int) w + "x" + (int) h + " scale " + scale;
+                for (float[] r : hud) {
+                    assertFalse(at + " bar", intersects(l.bar, r));
+                    assertFalse(at + " camera menu", intersects(l.dropdown(), r));
+                    assertFalse(at + " speed bar", intersects(fly, r));
+                }
+                assertTrue(at + ": the bar is at the top", l.bar[1] + l.bar[3] < h / 4f);
+                assertTrue(at + ": the speed bar is below the bar", fly[1] > l.bar[1] + l.bar[3]);
+            }
+        }
     }
 
     @Test

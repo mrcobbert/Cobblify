@@ -72,7 +72,12 @@ public class LoadedRecordingTest {
         assertEquals(RewindFormat.TICK_ALL, game.tickMask(0));
         assertTrue(game.tickTimeUs(0) < game.tickTimeUs(1) && game.tickTimeUs(1) < game.tickTimeUs(2));
         SelfTrack.Pose p = new SelfTrack.Pose();
-        assertTrue(r.selfTrack().pose(RecordingFixture.TRACK_US + 75_000, p));
+        // The v1 tick table puts ticks 1 ms before each TICK: half way through the second tick's interval.
+        TickTable t = r.timeline().ticks();
+        assertEquals(TickTable.Kind.V1, t.kind());
+        long at = RecordingFixture.TRACK_US + 74_000;
+        long j = t.tickOf(at + 1) - 1;
+        assertTrue(r.selfTrack().pose(t, j, t.partial(j, at), at, p));
         assertEquals(0.125, p.x, 1e-9);
         assertEquals(5f, p.yaw, 1e-6);
         r.close();

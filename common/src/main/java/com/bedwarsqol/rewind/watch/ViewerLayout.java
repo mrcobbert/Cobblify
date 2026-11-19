@@ -7,11 +7,12 @@ import com.bedwarsqol.rewind.RewindFormat;
 import java.util.List;
 
 /**
- * The viewer's bottom bar (G36, G45, G51; TASK A9, A10), in GUI px (su), as the mockup's {@code drawBar} lays it out:
- * a card {@value #EDGE} su from the screen's sides and {@value #GAP} su above its bottom, {@value #BAR_H} su tall,
- * holding the play/pause key, the timeline (a recess with marker icons and the playhead), the time
- * ({@code m:ss / m:ss}), the speed key and the camera key (You, Free camera) with its menu above it. R2 draws no
- * export handles.
+ * The viewer's bar (G36, G45, G51; TASK A9, A10; parity B11, Q1), in GUI px (su), as the mockup's {@code drawBar} lays
+ * it out but at the top edge, so it never covers the hotbar, hearts or XP bar: a card {@value #EDGE} su from the
+ * screen's sides and {@value #GAP} su below its top, {@value #BAR_H} su tall, holding the play/pause key, the timeline
+ * (a recess with marker icons and the playhead), the time ({@code m:ss / m:ss}), the speed key and the camera key
+ * (You, Free camera) with its menu opening downward below it; the free camera's speed bar sits under the bar
+ * ({@link #flySpeedTop()}). R2 draws no export handles.
  *
  * <p>Times are microseconds from the game start, from 0 to the game's length (the timeline runs from the game start
  * to the recording's end, so its length equals the gallery's). Marker indexes are the order the markers were given in,
@@ -80,7 +81,7 @@ public final class ViewerLayout {
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds) {
         this.metrics = m;
         this.lengthUs = Math.max(0L, lengthUs);
-        float bx = EDGE, bw = screenW - 2 * EDGE, by = screenH - GAP - BAR_H;
+        float bx = EDGE, bw = screenW - 2 * EDGE, by = GAP;
         bar = new float[]{bx, by, bw, BAR_H};
         play = new float[]{bx + 5, by + 5, KEY, KEY};
         float cw = 0;
@@ -138,6 +139,11 @@ public final class ViewerLayout {
             kinds[i] = ms.get(i).kind;
         }
         return of(screenW, screenH, m, tl.lengthUs(), us, kinds);
+    }
+
+    /** The top of the free camera's speed bar ({@code RewindPainter.flySpeed}): under the bar, centred. */
+    public static float flySpeedTop() {
+        return GAP + BAR_H + 6;
     }
 
     /** "0.25x", "0.5x", "1x", "2x", "4x". */
@@ -236,10 +242,10 @@ public final class ViewerLayout {
 
     // ------------------------------------------------------------------ camera menu
 
-    /** The camera menu's card {x, y, w, h}, above the camera key. */
+    /** The camera menu's card {x, y, w, h}, opening downward below the camera key. */
     public float[] dropdown() {
         float h = 1 + 3 + MENU_ROW_H * CAMERA_LABELS.length + 3 + 1;
-        return new float[]{camera[0], bar[1] - 3 - h, camera[2], h};
+        return new float[]{camera[0], bar[1] + bar[3] + 3, camera[2], h};
     }
 
     /** {x, y, w, h} of the menu's row i. */

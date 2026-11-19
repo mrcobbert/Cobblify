@@ -3,6 +3,7 @@ package com.bedwarsqol.rewind.watch;
 import com.mojang.authlib.GameProfile;
 import io.netty.buffer.Unpooled;
 import net.minecraft.client.entity.EntityOtherPlayerMP;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.PacketBuffer;
 import net.minecraft.world.World;
@@ -16,6 +17,10 @@ import net.minecraft.world.World;
  * <p>Each world tick it takes {@link PuppetState}'s sample: it moves to the recorded position during the tick, like a
  * player the server moved, takes the recorded flags, swings when the recorded swing starts and wears each EQUIP change.
  * It is not drawn in your view (the camera is you) or while the recorded invisible flag is set.
+ *
+ * <p>Three one-line hooks for later phases (PLAN "B-seam"): {@link #playSound} asks the playback parts first (Phase
+ * 8's {@code PuppetSounds}; vanilla's other-player sound is silent on a client), {@link #getPlayerInfo()} too (Phase
+ * 13's {@code Identity}), and whether it is drawn is {@link ViewState#puppetHidden} (Phase 7 changes that rule).
  */
 public class RewindSelfPuppet extends EntityOtherPlayerMP {
 
@@ -72,7 +77,21 @@ public class RewindSelfPuppet extends EntityOtherPlayerMP {
 
     @Override
     public boolean isInRangeToRender3d(double x, double y, double z) {
-        return !state.hidden(CameraController.yourView()) && super.isInRangeToRender3d(x, y, z);
+        return !RewindPlayback.view().puppetHidden(state.sampled(), state.invisible())
+                && super.isInRangeToRender3d(x, y, z);
+    }
+
+    @Override
+    public void playSound(String name, float volume, float pitch) {
+        if (!RewindPlayback.puppetSound(this, name, volume, pitch)) {
+            super.playSound(name, volume, pitch);
+        }
+    }
+
+    @Override
+    protected NetworkPlayerInfo getPlayerInfo() {
+        NetworkPlayerInfo info = RewindPlayback.playerInfo(this);
+        return info != null ? info : super.getPlayerInfo();
     }
 
     @Override

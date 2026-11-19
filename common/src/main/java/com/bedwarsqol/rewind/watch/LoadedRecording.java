@@ -153,6 +153,7 @@ public final class LoadedRecording {
     private final SelfTrack selfTrack;
     private final Timeline timeline;
     private final int trackMarkers;
+    private final ExtRecords ext;
 
     /** Created on the first inflate, so a quick check or a failed load holds no native zlib state. */
     private BlockCodec codec;
@@ -163,7 +164,8 @@ public final class LoadedRecording {
 
     private LoadedRecording(Problem problem, boolean tornTail, RecordingMeta meta, List<Segment> segments,
                             int skippedSegments, NetBlock[] netBlocks, long netRecords, long retainedNetBytes,
-                            long rawNetBytes, SelfTrack selfTrack, Timeline timeline, int trackMarkers) {
+                            long rawNetBytes, SelfTrack selfTrack, Timeline timeline, int trackMarkers,
+                            ExtRecords ext) {
         this.problem = problem;
         this.tornTail = tornTail;
         this.meta = meta;
@@ -176,6 +178,7 @@ public final class LoadedRecording {
         this.selfTrack = selfTrack;
         this.timeline = timeline;
         this.trackMarkers = trackMarkers;
+        this.ext = ext;
     }
 
     /**
@@ -235,6 +238,32 @@ public final class LoadedRecording {
     /** The recorded player's track over the playable segments (empty when there is none). */
     public SelfTrack selfTrack() {
         return selfTrack;
+    }
+
+    /** The format-v2 extension records ({@link ExtRecords#EMPTY} for a v1 file). */
+    public ExtRecords ext() {
+        return ext;
+    }
+
+    /** True if the recording holds at least one extension record of {@code tag} (a v1 file: never). */
+    public boolean has(int tag) {
+        return ext.has(tag);
+    }
+
+    /**
+     * This recording with extension records {@code e} (the seam Phase 10 fills from the file): the same segments,
+     * NET blocks and self track, and a timeline on the tick table built from {@code e}'s TICK_HEAD records when it
+     * has any ({@link TickTable#forRecording}). The returned object has its own inflate cache; use one of the two.
+     * A recording that cannot be played is returned unchanged.
+     */
+    LoadedRecording withExt(ExtRecords e) {
+        if (timeline == null) {
+            return this;
+        }
+        ExtRecords x = e == null ? ExtRecords.EMPTY : e;
+        Timeline t = timeline.withTicks(TickTable.forRecording(timeline.originUs(), selfTrack, x));
+        return new LoadedRecording(problem, tornTail, meta, segments, skippedSegments, netBlocks, netRecords,
+                retainedNetBytes, rawNetBytes, selfTrack, t, trackMarkers, x);
     }
 
     /** MARKER records found in the TRACK, before the timeline keeps those inside the game. */
@@ -401,7 +430,7 @@ public final class LoadedRecording {
 
     private static LoadedRecording failed(Problem p, boolean torn, RecordingMeta meta) {
         return new LoadedRecording(p, torn, meta, Collections.<Segment>emptyList(), 0, new NetBlock[0], 0, 0, 0,
-                new SelfTrack.Builder().build(), null, 0);
+                new SelfTrack.Builder().build(), null, 0, ExtRecords.EMPTY);
     }
 
     private static LoadedRecording read(File cbr, File json, boolean keepNet) {
@@ -589,11 +618,15 @@ public final class LoadedRecording {
         if (records == 0) {
             return failed(Problem.NO_NET, torn, meta);
         }
-        Timeline timeline = Timeline.build(origin, lastNet, gameStartRecord, backUs, markers, meta);
+        SelfTrack selfTrack = track.build();
+        // Phase 10 fills the extension records from the file here; a v1 file has none.
+        ExtRecords ext = ExtRecords.EMPTY;
+        Timeline timeline = Timeline.build(origin, lastNet, gameStartRecord, backUs, markers, meta)
+                .withTicks(TickTable.forRecording(origin, selfTrack, ext));
         Problem problem = timeline.startInsideData() ? null : Problem.START_OUTSIDE_DATA;
         return new LoadedRecording(problem, torn, meta, Collections.unmodifiableList(segments), skipped,
-                blocks.toArray(new NetBlock[0]), records, storedBytes, rawBytes, track.build(), timeline,
-                markers.size());
+                blocks.toArray(new NetBlock[0]), records, storedBytes, rawBytes, selfTrack, timeline,
+                markers.size(), ext);
     }
 
     private static List<byte[]> unmodifiable(List<byte[]> l) {

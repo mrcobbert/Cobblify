@@ -9,8 +9,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Your recorded eye position and camera rotation at any time: position one tick behind its latest TICK, held across
- * gaps, CAMERA rotation over TICK rotation, unwrapped yaw, and every segment starting from its own full TICK.
+ * Your recorded eye position and camera rotation (PLAN "Self state binding"): position = lerp(tick j-1's end state,
+ * tick j's, partial) over the recorded tick table, which is vanilla drawing the client player one tick behind its
+ * latest tick; held across gaps, CAMERA rotation at playback time over TICK rotation, unwrapped yaw, and every
+ * segment starting from its own full TICK. {@link #pose} turns a playback time into the tick and partial the
+ * scheduler would draw ({@link TickClock}).
  */
 public class SelfTrackTest {
 
@@ -38,10 +41,31 @@ public class SelfTrackTest {
         b.record(t, RewindFormat.TAG_CAMERA, body, 0, 8);
     }
 
-    private SelfTrack.Pose pose(SelfTrack s, long t) {
+    /** Heads exactly at the TICK times (a v2 table): tick i ends with TICK i. */
+    private static TickTable heads(SelfTrack s) {
+        java.util.List<Long> t = new java.util.ArrayList<Long>();
+        for (int g = 0; g < s.segmentCount(); g++) {
+            for (int i = 0; i < s.segment(g).tickCount(); i++) {
+                t.add(s.segment(g).tickTimeUs(i));
+            }
+        }
+        long[] a = new long[t.size()];
+        for (int i = 0; i < a.length; i++) {
+            a[i] = t.get(i);
+        }
+        return TickTable.v2(a[0], a, new int[a.length], new int[a.length], new int[a.length], a.length);
+    }
+
+    /** The pose the scheduler draws at playback time {@code t}: the last tick at or before t, by its interval. */
+    private static SelfTrack.Pose pose(SelfTrack s, TickTable table, long t) {
+        long j = table.tickOf(t + 1) - 1;
         SelfTrack.Pose p = new SelfTrack.Pose();
-        assertTrue(s.pose(t, p));
+        assertTrue(s.pose(table, j, table.partial(j, t), t, p));
         return p;
+    }
+
+    private static SelfTrack.Pose pose(SelfTrack s, long t) {
+        return pose(s, heads(s), t);
     }
 
     @Test
@@ -71,12 +95,14 @@ public class SelfTrackTest {
         tick(T + 50_000, 1, 64, 0, 0f, 0f, GROUND);
         tick(T + 2_050_000, 5, 64, 0, 0f, 0f, GROUND);
         SelfTrack s = b.build();
-        assertEquals(1, pose(s, T + 100_000).x, EPS);
-        assertEquals(1, pose(s, T + 1_000_000).x, EPS);
-        assertEquals(1, pose(s, T + 2_049_999).x, EPS);
-        assertEquals(1, pose(s, T + 2_050_000).x, EPS);
-        assertEquals(3, pose(s, T + 2_075_000).x, EPS);
-        assertEquals(5, pose(s, T + 9_000_000).x, EPS);
+        // As v1 plays it: ticks 1 ms before each TICK, the 2 s gap filled with 50 ms ticks that wrote nothing.
+        TickTable v1 = TickTable.forRecording(T - 1_000, s, ExtRecords.EMPTY);
+        assertEquals(TickTable.Kind.V1, v1.kind());
+        assertEquals(1, pose(s, v1, T + 100_000).x, EPS);
+        assertEquals(1, pose(s, v1, T + 1_000_000).x, EPS);
+        assertEquals(1, pose(s, v1, T + 2_049_000).x, EPS);
+        assertEquals(3, pose(s, v1, T + 2_074_000).x, EPS);
+        assertEquals(5, pose(s, v1, T + 9_000_000).x, EPS);
     }
 
     @Test
@@ -102,10 +128,10 @@ public class SelfTrackTest {
         camera(T + 300_000, 120f, 50f);
         tick(T + 400_000, 0, 64, 0, -45f, 5f, GROUND);
         SelfTrack s = b.build();
-        // Before the segment's first CAMERA: TICK rotation, interpolated like position.
+        // Before the segment's first CAMERA: TICK rotation, interpolated like position (heads 50 and 400 here).
         SelfTrack.Pose p = pose(s, T + 55_000);
-        assertEquals(2f, p.yaw, 1e-4);
-        assertEquals(-1f, p.pitch, 1e-4);
+        assertEquals(20f * 5 / 350, p.yaw, 1e-4);
+        assertEquals(-10f * 5 / 350, p.pitch, 1e-4);
         // From the first CAMERA on: CAMERA, interpolated with a next sample within 50 ms.
         assertEquals(90f, pose(s, T + 60_000).yaw, 1e-4);
         assertEquals(95f, pose(s, T + 70_000).yaw, 1e-4);
@@ -148,8 +174,8 @@ public class SelfTrackTest {
         assertEquals(70, p.y, EPS);
         assertEquals(30f, p.yaw, 1e-4);
         assertEquals(100.5, pose(s, T + 1_075_000).x, EPS);
-        // The old segment still answers for its own time.
-        assertEquals(1, pose(s, T + 500_000).x, EPS);
+        // The old segment still answers for its own time (its last tick, a freeze until the next segment's head).
+        assertEquals(0.5, pose(s, T + 50_000 + 475_000).x, EPS);
         assertEquals(90f, pose(s, T + 500_000).yaw, 1e-4);
     }
 
@@ -167,7 +193,7 @@ public class SelfTrackTest {
         assertEquals(GROUND, seg.flags(1));
         assertEquals(15f, seg.yaw(1), 0);
         SelfTrackEncoder.State st = new SelfTrackEncoder.State();
-        assertTrue(s.stateAt(T + 60_000, st));
+        assertTrue(s.tickState(heads(s), 1, st));
         assertEquals(15f, st.yaw, 0);
         assertEquals(4, st.heldSlot);
         assertEquals(-1, st.swingProgressInt);
@@ -197,7 +223,9 @@ public class SelfTrackTest {
         b.segment(1);
         camera(T, 10f, 0f);
         SelfTrack s = b.build();
-        assertFalse(s.pose(T, new SelfTrack.Pose()));
-        assertFalse(s.stateAt(T, new SelfTrackEncoder.State()));
+        TickTable g = TickTable.grid(T);
+        assertFalse(s.pose(g, 0, 0f, T, new SelfTrack.Pose()));
+        assertFalse(s.tickState(g, 0, new SelfTrackEncoder.State()));
+        assertFalse(s.swingStartsAt(g, 0));
     }
 }

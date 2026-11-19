@@ -313,8 +313,17 @@ public class TickFeedEquivalenceTest {
             return (int) Math.floor(x / 16.0);
         }
 
+        /** Local records applied since the last restart, by tag (BLOCK, CONT, ... in the model: a count). */
+        final Map<Integer, Integer> locals = new java.util.TreeMap<Integer, Integer>();
+
+        void local(int tag) {
+            Integer n = locals.get(tag);
+            locals.put(tag, n == null ? 1 : n + 1);
+        }
+
         /** A restart: the world is torn down; GUI state outside the world is reset (round 2 B2). */
         void restart() {
+            locals.clear();
             if (guiResetAtRestart) {
                 chat.clear();
                 titleTimer = 0;
@@ -344,8 +353,8 @@ public class TickFeedEquivalenceTest {
         }
 
         /** The tick's sample: the self track onto the camera (your view), as the Ornithe sink does. */
-        void sample(long timeUs) {
-            if (!hand.sample(TRACK, timeUs, 6)) {
+        void sample(TickTable table, long k) {
+            if (!hand.sample(TRACK, table, k, 6)) {
                 return;
             }
             cam.selected = hand.selectedSlot();
@@ -504,6 +513,7 @@ public class TickFeedEquivalenceTest {
                 sb.append('[').append(l[0]).append(" age ").append(l[1]).append(']');
             }
             sb.append(" cam=").append(cam.snapshot()).append(" mode=").append(mode.recorded());
+            sb.append(" locals=").append(locals);
             return sb.toString();
         }
     }
@@ -548,9 +558,21 @@ public class TickFeedEquivalenceTest {
         }
 
         @Override
+        public boolean window(int packetId, byte[] buf, int off, int len) {
+            trace.add("W t" + tick + " #" + feeder.recordIndex() + " id" + packetId);
+            return true;
+        }
+
+        @Override
+        public void local(int tag, long timeUs, byte[] buf, int off, int len) {
+            trace.add("L t" + tick + " tag" + tag + " at" + timeUs + " len" + len);
+            model.local(tag);
+        }
+
+        @Override
         public void sample(long t, long timeUs) {
             trace.add("S t" + t + " at" + timeUs);
-            model.sample(timeUs);
+            model.sample(tl.ticks(), t);
         }
 
         /** Rebuild: GUI reset, world gone, headers before tick 0. */
@@ -667,6 +689,101 @@ public class TickFeedEquivalenceTest {
             }
         }
         assertEquals(15 * 4 + 15 * 3, compared);
+    }
+
+    /**
+     * The same recording as format v2: a TICK_HEAD every client tick (7 ms off the 50 ms grid, a 400 ms freeze at
+     * 12 s, a span marked order-unknown at 18-19 s) whose handled counts lag the arrival stamps by up to 30 ms, and
+     * tick-scoped local records (BLOCK, USE, CONT) plus time-scoped ones (SOUND) that never enter the feed.
+     */
+    private LoadedRecording v2() throws Exception {
+        LoadedRecording r = recording();
+        com.bedwarsqol.rewind.ExtCodec c = new com.bedwarsqol.rewind.ExtCodec();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        // Per segment: the stamps of its client-handled records, in order.
+        List<List<Long>> handled = new ArrayList<List<Long>>();
+        NetCursor cur = r.newCursor();
+        while (!cur.atEnd()) {
+            while (handled.size() <= cur.segmentIndex()) {
+                handled.add(new ArrayList<Long>());
+            }
+            if (TickTable.clientHandled(cur.packetId())) {
+                handled.get(cur.segmentIndex()).add(cur.timeUs());
+            }
+            cur.advance();
+        }
+        int seg = handled.size() - 1; // every head after the last boundary belongs to the last segment
+        int count = 0;
+        long lag = 0;
+        Random rnd = new Random(42);
+        for (long t = O + 30_000L + 7_000L; t < END; t += Timeline.TICK_US) {
+            if (t > O + 12 * S && t < O + 12 * S + 400_000L) {
+                continue; // a freeze
+            }
+            lag = rnd.nextInt(30_000);
+            int now = count;
+            List<Long> stamps = handled.get(seg);
+            while (now < stamps.size() && stamps.get(now) <= t - lag) {
+                now++;
+            }
+            int flags = t > O + 18 * S && t < O + 19 * S
+                    ? com.bedwarsqol.rewind.RewindFormat.TICK_HEAD_ORDER_UNKNOWN : 0;
+            int n = c.tickHead(now - count, flags);
+            b.addEncoded(seg, t, com.bedwarsqol.rewind.RewindFormat.TAG_TICK_HEAD, c.buffer(), n);
+            count = now;
+            if ((t / Timeline.TICK_US) % 7 == 0) {
+                n = c.block(t, 1, 2, 0);
+                b.addEncoded(seg, t + 1_000L, com.bedwarsqol.rewind.RewindFormat.TAG_BLOCK, c.buffer(), n);
+                n = c.sound("dig.stone", 0f, 64f, 0f, 1f, 1f);
+                b.addEncoded(seg, t + 20_000L, com.bedwarsqol.rewind.RewindFormat.TAG_SOUND, c.buffer(), n);
+            }
+            if ((t / Timeline.TICK_US) % 11 == 0) {
+                n = c.use(72000);
+                b.addEncoded(seg, t + 2_000L, com.bedwarsqol.rewind.RewindFormat.TAG_USE, c.buffer(), n);
+                n = c.cont(5, 3, new byte[]{(byte) 0xFF, (byte) 0xFF}, 0, 2);
+                b.addEncoded(seg, t + 2_000L, com.bedwarsqol.rewind.RewindFormat.TAG_CONT, c.buffer(), n);
+            }
+        }
+        return r.withExt(b.build());
+    }
+
+    @Test
+    public void v2TracesWithHandledCountsAndLocalRecordsAreEqualForStraightPlayAndSeeks() throws Exception {
+        LoadedRecording r = v2();
+        Timeline tl = r.timeline();
+        assertEquals(TickTable.Kind.V2, tl.ticks().kind());
+        long start = tl.startTick();
+        long end = tl.endTick();
+        long[] targets = {tick(tl, O + 10 * S), tick(tl, O + 12 * S + 300_000L), tick(tl, O + 18 * S + 500_000L),
+                tick(tl, O + 25 * S), end};
+        int locals = 0;
+        for (long k : targets) {
+            for (long seed = 0; seed < 6; seed++) {
+                Harness straight = new Harness(r, seed).open().playTo(k);
+                Random pick = new Random(seed * 17 + k);
+                long j = start + (long) (pick.nextDouble() * (k - start));
+                Harness forward = new Harness(r, seed + 1000).open().playTo(j).seekTo(k);
+                assertEquals("v2 forward trace, K=" + k + " seed " + seed, straight.trace, forward.trace);
+                assertEquals(straight.model.snapshot(), forward.model.snapshot());
+                if (k < end) {
+                    long j2 = k + 1 + (long) (pick.nextDouble() * (end - k - 1));
+                    Harness backward = new Harness(r, seed + 2000).open().playTo(j2).seekTo(k);
+                    assertEquals("v2 backward trace, K=" + k + " seed " + seed, straight.trace, backward.trace);
+                    assertEquals(straight.model.snapshot(), backward.model.snapshot());
+                }
+                for (String e : straight.trace) {
+                    if (e.startsWith("L ")) {
+                        locals++;
+                        assertFalse("time-scoped records never enter the feed",
+                                e.contains(" tag" + com.bedwarsqol.rewind.RewindFormat.TAG_SOUND + " "));
+                    }
+                }
+            }
+        }
+        assertTrue("local records are in the traces", locals > 0);
+        assertNotEquals("the v2 order differs from the v1 stamp order somewhere",
+                new Harness(recording(), 1).open().playTo(tick(tl, O + 25 * S)).trace,
+                new Harness(r, 1).open().playTo(tick(tl, O + 25 * S)).trace);
     }
 
     @Test

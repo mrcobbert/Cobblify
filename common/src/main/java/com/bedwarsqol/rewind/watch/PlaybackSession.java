@@ -16,19 +16,25 @@ import java.util.function.LongSupplier;
  *   <li>Each frame until gate entry completes ({@link PlaybackGate#tryCompleteEntry}, the 3 s drain), so the card
  *       keeps drawing; then the restore state is captured ({@link PlaybackRestore}) and the file is loaded off the
  *       client thread after it has closed ({@link #awaitClosed}, at most {@link #CLOSE_WAIT_MS}).</li>
- *   <li>Restart (also every backward seek): GUI reset, F5 view 0, a fresh socketless connection, the start segment's
- *       headers, then a catch-up to the target with the game's own ticks.</li>
+ *   <li>Restart (also every backward seek): GUI reset, F5 view 0, HUD shown, F3 and smooth camera off (B3), a fresh
+ *       socketless connection, the start segment's headers, then a catch-up to the target with the game's own
+ *       ticks.</li>
  * </ol>
  *
- * <p><b>Frames and ticks</b> (round 2 I1). Vanilla's {@code runGameLoop} runs {@code runTick} while its counter is below
- * {@code timer.elapsedTicks}, re-reading it before every pass, and writes {@code isGamePaused} after the loop.
- * {@link #frameStart} (right after {@code Timer.updateTimer}) caps {@code elapsedTicks} at the ticks to the next stop
- * (1 during a catch-up, raised by {@link #tickEnd} one tick at a time while the frame's budget lasts: 24 ms behind the
- * card, 8 ms in view), sets the timer speed, and forces the pause flag for this frame's ticks. {@link #tickHead} feeds
- * the tick's records ({@link TickFeeder#feedForTick}) only when the world will tick, so every world tick has exactly
- * its records before it. {@link #tickEnd} at a stop sets {@code elapsedTicks} to the passes run, which ends vanilla's
- * loop after this tick: no tick runs past a seek target or the end, paused or not. {@link #afterPauseWrite} forces
- * the pause flag again after vanilla wrote it.
+ * <p><b>Frames and ticks</b> (round 2 I1; parity review B4). Vanilla's {@code runGameLoop} runs {@code runTick} while
+ * its counter is below {@code timer.elapsedTicks}, re-reading it before every pass, and writes {@code isGamePaused} after
+ * the loop. {@link #frameStart} (right after {@code Timer.updateTimer}) decides this frame's ticks: while WATCHING the
+ * recorded clock does ({@link TickClock}: playback time advances by wall time x speed, the ticks of the recorded
+ * {@link TickTable} it has reached are due, at most 10 and never past the end; {@code renderPartialTicks} is the share
+ * of the recorded interval reached; the timer speed stays 1), and the time-scoped extension records it has reached are
+ * dispatched ({@link PacketSink#timed}); during a catch-up {@code elapsedTicks} is 1, raised by {@link #tickEnd} one
+ * tick at a time while the frame's budget lasts (24 ms behind the card, 8 ms in view). It also writes the view's
+ * perspective, hidden HUD and F3 from {@link ViewState}, and forces the pause flag for this frame's ticks.
+ * {@link #tickHead} feeds the tick's records ({@link TickFeeder#feedForTick}) only when the world will tick, so every
+ * world tick has exactly its records before it. {@link #tickEnd} at a stop sets {@code elapsedTicks} to the passes run,
+ * which ends vanilla's loop after this tick: no tick runs past a seek target or the end, paused or not.
+ * {@link #afterPauseWrite} forces the pause flag again after vanilla wrote it. A seek or catch-up sets playback time to
+ * the time of the tick it lands on and plays no time-scoped record it passed.
  *
  * <p><b>Deferred work.</b> Seeks and exits asked for by screens (whose input may arrive inside a tick) are applied at
  * the next {@link #frameStart}, outside {@code runTick}, so a world is never rebuilt in the middle of a tick. A hook
@@ -176,6 +182,7 @@ public final class PlaybackSession {
     private final ClientOps ops;
     private final PlaybackGate gate;
     private final PlaybackRestore.Errors errors;
+    private final ViewState view = new ViewState();
 
     private State state = State.IDLE;
     private String id;
@@ -185,6 +192,7 @@ public final class PlaybackSession {
     private Timeline timeline;
     private TickFeeder feeder;
     private ReplayTicks ticks;
+    private TickClock clock;
     private PlaybackRestore restore;
     private boolean gateBegun;
     private boolean connectionOpen;
@@ -245,6 +253,7 @@ public final class PlaybackSession {
         clearSession();
         lastFailure = null;
         lastExit = null;
+        view.reset();
         id = recordingId;
         state = State.DISCONNECTING;
         openNanos = ops.nanoTime();
@@ -328,6 +337,7 @@ public final class PlaybackSession {
         timeline = recording.timeline();
         feeder = new TickFeeder(recording);
         ticks = new ReplayTicks(timeline.endTick());
+        clock = new TickClock(timeline.ticks());
         restart(SeekPlanner.opening(timeline));
     }
 
@@ -346,13 +356,19 @@ public final class PlaybackSession {
         }
     }
 
-    /** GUI reset, F5 view 0, a fresh connection, the headers, then the catch-up (PLAN section 3 step 5). */
+    /**
+     * GUI reset, F5 view 0, HUD shown, F3 and smooth camera off (B3), a fresh connection, the headers, then the
+     * catch-up (PLAN section 3 step 5).
+     */
     private void restart(SeekPlanner.Plan plan) {
         state = State.REBUILDING;
         behindCard = true;
         startCatchUp(true);
         ops.resetGui();
         ops.setThirdPersonView(0);
+        ops.setHideGui(false);
+        ops.setShowDebugInfo(false);
+        ops.setSmoothCamera(false);
         connectionOpen = true;
         ops.newConnection();
         feeder.restart();
@@ -384,6 +400,8 @@ public final class PlaybackSession {
 
     private void finishCatchUp() {
         state = State.WATCHING;
+        clock.set(timeline.timeOfTick(ticks.ticksRun()), ops.nanoTime());
+        clock.skipTimed(recording.ext());
         long ms = (ops.nanoTime() - catchUpNanos) / 1_000_000L;
         long ran = ticks.ticksRun() - catchUpFrom;
         if (!opened) {
@@ -406,13 +424,21 @@ public final class PlaybackSession {
             ops.setTimerSpeed(1f);
             ops.setElapsedTicks((int) Math.min(1L, ticks.ticksToNextStop()));
             ops.setGamePaused(false);
+            ops.setPartialTicks(1f);
             deadline = ops.nanoTime() + (behindCard ? CARD_BUDGET_NS : VIEW_BUDGET_NS);
         } else {
             boolean paused = ticks.paused();
-            ops.setTimerSpeed(paused ? 1f : ticks.speed());
-            ops.setElapsedTicks(ticks.frameTicks(ops.elapsedTicks()));
+            clock.advance(ops.nanoTime(), ticks.speed(), paused);
+            int due = paused ? 0 : clock.due(ticks.ticksRun(), ticks.ticksToNextStop());
+            ops.setTimerSpeed(1f);
+            ops.setElapsedTicks(due);
             ops.setGamePaused(paused);
+            ops.setPartialTicks(clock.partial(ticks.ticksRun() + due - 1));
+            clock.dispatchTimed(recording.ext(), ops.sink());
         }
+        ops.setThirdPersonView(view.perspective());
+        ops.setHideGui(view.hideGui());
+        ops.setShowDebugInfo(view.showDebug());
     }
 
     /** {@code runTick} HEAD: feeds the tick's records when the world will tick. */
@@ -686,6 +712,7 @@ public final class PlaybackSession {
         timeline = null;
         feeder = null;
         ticks = null;
+        clock = null;
         restore = null;
         gateBegun = false;
         connectionOpen = false;
@@ -775,15 +802,51 @@ public final class PlaybackSession {
     }
 
     /**
-     * The recording time the picture shows: the last tick run plus {@code partialTicks} of a tick (frozen while
-     * paused by vanilla). The camera pose of your view is taken at this time.
+     * The recording time the picture shows: playback time while WATCHING ({@link TickClock}, frozen while paused), the
+     * time of the next tick during a catch-up. The camera rotation of your view is taken at this time.
      */
-    public long renderTimeUs(float partialTicks) {
+    public long renderTimeUs() {
         if (timeline == null || ticks == null) {
             return 0;
         }
-        float p = Math.max(0f, Math.min(1f, partialTicks));
-        return timeline.timeOfTick(Math.max(0, ticks.ticksRun() - 1)) + (long) (p * Timeline.TICK_US);
+        if (state != State.WATCHING || clock == null) {
+            return timeline.timeOfTick(ticks.ticksRun());
+        }
+        return clock.playbackUs();
+    }
+
+    /** The last tick run, the tick the picture draws (-1 before any). */
+    public long renderTick() {
+        return ticks == null ? -1 : ticks.ticksRun() - 1;
+    }
+
+    /** The partial tick drawn: the share of {@link #renderTick()}'s recorded interval playback time has reached. */
+    public float renderPartial() {
+        if (ticks == null || timeline == null) {
+            return 0f;
+        }
+        if (state != State.WATCHING || clock == null) {
+            return 1f;
+        }
+        return clock.partial(ticks.ticksRun() - 1);
+    }
+
+    /** Your view's eye position and rotation for this frame ({@link SelfTrack#pose}); false without a TICK. */
+    public boolean yourPose(SelfTrack.Pose out) {
+        if (recording == null || timeline == null || ticks == null) {
+            return false;
+        }
+        return recording.selfTrack().pose(timeline.ticks(), renderTick(), renderPartial(), renderTimeUs(), out);
+    }
+
+    /** What the view shows (the viewer's keys and the playback parts read and change it). Reset by {@link #open}. */
+    public ViewState view() {
+        return view;
+    }
+
+    /** The recorded tick clock of the loaded recording, or null. */
+    public TickClock clock() {
+        return clock;
     }
 
     public Failure lastFailure() {

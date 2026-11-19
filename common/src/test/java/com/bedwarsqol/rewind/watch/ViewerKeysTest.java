@@ -78,6 +78,33 @@ public class ViewerKeysTest {
     }
 
     @Test
+    public void viewKeyCodesAreLwjglKeyboardCodes() {
+        assertEquals(4, ViewerKeys.KEY_3);
+        assertEquals(59, ViewerKeys.KEY_F1);
+        assertEquals(63, ViewerKeys.KEY_F5);
+    }
+
+    /** B4, D1, D6, Q3: F5 cycles the perspective, F1 and the Clean View Key toggle the clean view, 3 rides players. */
+    @Test
+    public void f5F1ThreeShiftThreeAndTheCleanViewKey() {
+        int clean = 47; // V, a binding the user chose
+        for (boolean free : new boolean[]{false, true}) {
+            assertEquals(Action.CYCLE_PERSPECTIVE, ViewerKeys.action(ViewerKeys.KEY_F5, false, free, clean));
+            assertEquals(Action.CLEAN_VIEW, ViewerKeys.action(ViewerKeys.KEY_F1, false, free, clean));
+            assertEquals(Action.CLEAN_VIEW, ViewerKeys.action(clean, false, free, clean));
+            assertEquals(Action.NEXT_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, false, free, clean));
+            assertEquals(Action.PREVIOUS_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, true, free, clean));
+            assertEquals("the three-argument form knows the fixed keys", Action.CYCLE_PERSPECTIVE,
+                    ViewerKeys.action(ViewerKeys.KEY_F5, false, free));
+            assertEquals(Action.NEXT_PLAYER, ViewerKeys.action(ViewerKeys.KEY_3, false, free));
+        }
+        assertEquals("unbound (0) is no key", Action.NONE, ViewerKeys.action(0, false, false, 0));
+        assertEquals("a fixed viewer key wins over the same binding", Action.TOGGLE_PLAY,
+                ViewerKeys.action(ViewerKeys.KEY_K, false, false, ViewerKeys.KEY_K));
+        assertEquals("a mouse binding never matches a key", Action.NONE, ViewerKeys.action(30, false, false, -100));
+    }
+
+    @Test
     public void bothShiftKeysAreTheModifier() {
         assertTrue(ViewerKeys.isShift(ViewerKeys.KEY_LSHIFT));
         assertTrue(ViewerKeys.isShift(ViewerKeys.KEY_RSHIFT));

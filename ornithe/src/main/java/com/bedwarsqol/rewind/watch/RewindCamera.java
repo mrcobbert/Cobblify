@@ -3,6 +3,7 @@ package com.bedwarsqol.rewind.watch;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.command.server.CommandBlockLogic;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
@@ -47,11 +48,28 @@ import java.util.Collection;
  * puppet, where S1C and S1D land) in your view, none of them in the free camera, so it never tilts or tints. Whether
  * the hand and bars are drawn at all is the controller's game type ({@link ViewGameType}). The camera never runs
  * vanilla's death tick, so health at 0 opens nothing.
+ *
+ * <p><b>Seams</b> (PLAN "B-seam"): the {@code displayGUI*} and close calls vanilla's window handlers make go to the
+ * installed {@link RecordedScreenHolder} ({@link #setScreenHolder}; none until Phase 9, so nothing opens), and
+ * {@link #getPlayerInfo()} asks the playback parts first ({@link RewindPlayback#playerInfo}; Phase 13's
+ * {@code Identity}), else vanilla's lookup.
  */
 public class RewindCamera extends EntityPlayerSP {
 
     /** The camera's entity id: no server ever sends a negative id for a real entity. */
     public static final int RESERVED_ID = -0x52574E44; // "RWND"
+
+    private static volatile RecordedScreenHolder screens = RecordedScreenHolder.NONE;
+
+    /** Installs where window calls go (Phase 9's {@code RecordedScreens}); null: {@link RecordedScreenHolder#NONE}. */
+    public static void setScreenHolder(RecordedScreenHolder holder) {
+        screens = holder == null ? RecordedScreenHolder.NONE : holder;
+    }
+
+    /** The installed holder. */
+    public static RecordedScreenHolder screenHolder() {
+        return screens;
+    }
 
     public RewindCamera(Minecraft mc, World world, NetHandlerPlayClient handler, StatFileWriter stats) {
         super(mc, world, handler, stats);
@@ -158,6 +176,13 @@ public class RewindCamera extends EntityPlayerSP {
         return true;
     }
 
+    /** One-line hook: the parts' tab entry for the camera (Phase 13: the recorded identity), else vanilla's. */
+    @Override
+    protected NetworkPlayerInfo getPlayerInfo() {
+        NetworkPlayerInfo info = RewindPlayback.playerInfo(this);
+        return info != null ? info : super.getPlayerInfo();
+    }
+
     @Override
     public void onUpdate() {
         holdPose();
@@ -196,7 +221,8 @@ public class RewindCamera extends EntityPlayerSP {
     public void respawnPlayer() {
     }
 
-    // Everything below would send a packet or open a screen in vanilla; the camera does neither.
+    // Everything below would send a packet or open a screen in vanilla; the camera does neither. Window opens and
+    // closes go to the recorded-window holder, which draws but never opens them.
 
     @Override
     public void swingItem() {
@@ -205,10 +231,12 @@ public class RewindCamera extends EntityPlayerSP {
 
     @Override
     public void closeScreen() {
+        screens.close(this); // vanilla would send C0D
     }
 
     @Override
     public void closeScreenAndDropStack() {
+        screens.close(this); // S2E
     }
 
     @Override
@@ -237,18 +265,22 @@ public class RewindCamera extends EntityPlayerSP {
 
     @Override
     public void displayGUIChest(IInventory inventory) {
+        screens.displayChest(this, inventory);
     }
 
     @Override
     public void displayGUIHorse(EntityHorse horse, IInventory inventory) {
+        screens.displayHorse(this, horse, inventory);
     }
 
     @Override
     public void displayGui(IInteractionObject object) {
+        screens.displayGui(this, object);
     }
 
     @Override
     public void displayVillagerTradeGui(IMerchant merchant) {
+        screens.displayMerchant(this, merchant);
     }
 
     @Override

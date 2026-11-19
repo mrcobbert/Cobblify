@@ -7,14 +7,16 @@ import java.util.Arrays;
 
 /**
  * The recorded player's hand, held item and hotbar for the camera in your view, one world tick at a time (PLAN
- * section 4.1, Rev 3 amendment 1). Pure; one instance per connection, fed every world tick from tick 0 of a restart,
- * so its state at a tick is the same however the tick was reached. It is fed in both views; only {@link #hurtTime}
- * depends on the view.
+ * section 4.1, Rev 3 amendment 1; parity "Self state binding"). Pure; one instance per connection, fed every world
+ * tick from tick 0 of a restart, so its state at a tick is the same however the tick was reached. It is fed in both
+ * views; only {@link #hurtTime} depends on the view. World tick k of the recording's {@link TickTable} takes tick k's
+ * end state: the samples stamped before T[k+1].
  *
  * <ul>
- *   <li><b>Selected slot</b> = TICK {@code heldSlot} (the last TICK at or before t).</li>
- *   <li><b>Hotbar and armour stacks:</b> every EQUIP event of t's segment up to t, in order, once each: a held stack
- *       goes to the hotbar slot selected when it was recorded (the client's own view, counts it predicted included),
+ *   <li><b>Selected slot</b> = TICK {@code heldSlot} of tick k's end state ({@link SelfTrack#tickState}).</li>
+ *   <li><b>Hotbar and armour stacks:</b> every EQUIP event of the segment stamped before T[k+1], in order, once each:
+ *       a held stack goes to the hotbar slot selected when it was recorded (the client's own view, counts it predicted
+ *       included),
  *       armour to its slot. Applying each event only once lets a later S2F for that slot replace it; a slot you
  *       switch away from keeps its last stack. The full state ({@link #hotbarItem}, {@link #armourItem}) is there
  *       for a camera made anew by an S01/S07. A window-0 inventory packet ({@link #inventoryPacket}) replaces the
@@ -22,7 +24,7 @@ import java.util.Arrays;
  *       inventory (code review 2, I2).</li>
  *   <li><b>Swing:</b> vanilla's {@code swingItem} (counter -1 unless a swing is in its first half) and
  *       {@code updateArmSwingProgress} (counter + 1, back to 0 at the swing's end), run at the tick each recorded
- *       swing started ({@link PuppetState#swingStartIn}: one TICK of lookahead). Repeated clicks restart it as in
+ *       swing started ({@link SelfTrack#swingStartsAt}: tick k+1 read as lookahead). Repeated clicks restart it as in
  *       vanilla.</li>
  *   <li><b>Item in use:</b> the using-item flag's rising tick starts it with the item's full duration, the count
  *       drops by one per tick, the falling tick clears it.</li>
@@ -37,7 +39,6 @@ public final class HandState {
 
     private final SelfTrackEncoder.State state = new SelfTrackEncoder.State();
     private boolean sampled;
-    private long lastUs;
     private int segment = -1;
     private int equipCursor = -1;
 
@@ -74,32 +75,31 @@ public final class HandState {
     private int useTicks;
 
     /**
-     * Takes the track's state for the world tick at {@code timeUs}.
+     * Takes the track's state for world tick {@code k} of {@code table}.
      *
      * @param swingEnd the swing's length ({@link #swingEnd}) from the recorded player's effects
      * @return false if the track has no TICK (nothing changes)
      */
-    public boolean sample(SelfTrack track, long timeUs, int swingEnd) {
+    public boolean sample(SelfTrack track, TickTable table, long k, int swingEnd) {
         hotbarChanged = 0;
         armourChanged = 0;
         swingStarted = false;
         useStarted = false;
-        int si = track == null ? -1 : track.segmentIndexAt(timeUs);
-        if (si < 0 || !track.stateAt(timeUs, state)) {
+        long before = table.timeOf(k + 1) - 1;
+        int si = track == null ? -1 : track.segmentIndexAt(before);
+        if (si < 0 || !track.tickState(table, k, state)) {
             return false;
         }
         SelfTrack.Segment s = track.segment(si);
-        long windowStart = sampled && timeUs > lastUs ? lastUs : timeUs - Timeline.TICK_US;
         if (si != segment) {
             segment = si;
             equipCursor = -1;
         }
         selected = Math.max(0, Math.min(HOTBAR - 1, state.heldSlot));
-        applyEquip(s, timeUs);
-        swing(PuppetState.swingStartIn(s, windowStart, timeUs), Math.max(1, swingEnd));
+        applyEquip(s, before);
+        swing(track.swingStartsAt(table, k), Math.max(1, swingEnd));
         use((state.flags & RewindFormat.FLAG_USING_ITEM) != 0);
         sampled = true;
-        lastUs = timeUs;
         return true;
     }
 

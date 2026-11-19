@@ -176,7 +176,7 @@ public final class RewindPainter {
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
 
-        // the camera menu, above its key
+        // the camera menu, below its key
         if (s.menuOpen) {
             float[] d = l.dropdown();
             card(c, d[0], d[1], d[2], d[3]);
@@ -220,7 +220,7 @@ public final class RewindPainter {
                                 SheetColors.Shades accent) {
         if (alpha <= 0.004f) return;
         int n = 10;
-        float segW = 8, w = n * (segW + 1) + 1, x = Math.round((screenW - w) / 2f), y = screenH - 60;
+        float segW = 8, w = n * (segW + 1) + 1, x = Math.round((screenW - w) / 2f), y = ViewerLayout.flySpeedTop();
         c.pushAlpha(alpha);
         c.fill(x - 1, y - 1, w + 2, 10, RIM);
         c.fill(x, y, w, 8, BLACK);

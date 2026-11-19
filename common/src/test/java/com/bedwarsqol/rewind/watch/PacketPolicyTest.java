@@ -7,8 +7,9 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * The packet policy table (PLAN section 2) over every protocol-47 clientbound id, with the rows marked
- * "(amendment 1)" that Phase 4c switched: 06, 09 and 1F pass to the camera, 2F and 30 pass only for window 0 (the
- * player inventory), and 2B reason 3 (game mode) is a session hook.
+ * "(amendment 1)" that Phase 4c switched: 06, 09 and 1F pass to the camera, 2F and 30 pass for window 0 (the
+ * player inventory), and 2B reason 3 (game mode) is a session hook. Parity Phase 5 (B10, coordinator amendment 2):
+ * 2D, 2E and 2F/30 for every other window are WINDOW, handed to the recorded-window holder.
  */
 public class PacketPolicyTest {
 
@@ -18,11 +19,13 @@ public class PacketPolicyTest {
             0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2C, 0x33, 0x34, 0x35, 0x38,
             0x3B, 0x3C, 0x3D, 0x3E, 0x41, 0x42, 0x44, 0x45, 0x47, 0x49};
     private static final int[] BOUNDARY = {0x01, 0x07};
-    private static final int[] DROP = {0x08, 0x2D, 0x2E, 0x31, 0x32, 0x36, 0x37, 0x39, 0x3A, 0x43, 0x48};
+    private static final int[] DROP = {0x08, 0x31, 0x32, 0x36, 0x37, 0x39, 0x3A, 0x43, 0x48};
+    /** Open and close window: for the recorded-window holder (Phase 9), never straight to vanilla. */
+    private static final int[] WINDOW = {0x2D, 0x2E};
     /** The "(amendment 1)" rows decided by window id: S2F set slot, S30 window items. */
     private static final int[] BY_WINDOW = {0x2F, 0x30};
-    /** Containers and screens: never reach the camera (amendment 1 keeps them dropped). */
-    private static final int[] CONTAINERS = {0x2D, 0x2E, 0x31, 0x32, 0x36, 0x39};
+    /** Window property, confirm transaction (would send C0F), sign editor, statistics, abilities: still dropped. */
+    private static final int[] CONTAINERS = {0x31, 0x32, 0x36, 0x37, 0x39};
     /** R1 never stores them; should one appear it is dropped. */
     private static final int[] NEVER_STORED = {0x00, 0x3F, 0x46};
     private static final int END = 0x40;
@@ -40,6 +43,9 @@ public class PacketPolicyTest {
         }
         if (id == END) {
             return Decision.END;
+        }
+        if (contains(WINDOW, id)) {
+            return Decision.WINDOW;
         }
         throw new AssertionError("id 0x" + Integer.toHexString(id) + " is in no row of the table");
     }
@@ -92,30 +98,38 @@ public class PacketPolicyTest {
         }
     }
 
+    /**
+     * Window 0 passes to the camera; every other window (a chest or shop, and S2F's cursor window -1) goes to the
+     * recorded-window holder, whose container shares the camera's inventory slots, so a player slot the server sets
+     * through the shop's window id reaches the hotbar (coordinator amendment 2).
+     */
     @Test
-    public void slotAndWindowItemsPassOnlyForThePlayerInventory() {
+    public void slotAndWindowItemsPassForThePlayerInventoryAndGoToTheWindowHolderForEveryOtherWindow() {
         for (int id : BY_WINDOW) {
             String label = "0x" + Integer.toHexString(id);
             assertEquals(label + " window 0", Decision.PASS, PacketPolicy.decide(id, 0, 0));
             assertEquals(label + " window 0, any second byte", Decision.PASS, PacketPolicy.decide(id, 0, 255));
             for (int window = 1; window <= 100; window++) {
-                assertEquals(label + " window " + window, Decision.DROP, PacketPolicy.decide(id, window, 0));
+                assertEquals(label + " window " + window, Decision.WINDOW, PacketPolicy.decide(id, window, 0));
             }
-            assertEquals(label + " window 255", Decision.DROP, PacketPolicy.decide(id, 255, 0));
+            assertEquals(label + " window 255", Decision.WINDOW, PacketPolicy.decide(id, 255, 0));
             assertEquals(label + " no window byte", Decision.DROP,
                     PacketPolicy.decide(id, PacketPolicy.NO_BYTE, PacketPolicy.NO_BYTE));
         }
         // S2F's cursor window is -1, a signed byte on the wire.
-        assertEquals(Decision.DROP, PacketPolicy.decide(new byte[]{0x2F, (byte) 0xFF, 0, 0, (byte) 0xFF, (byte) 0xFF},
-                0, 6));
+        assertEquals(Decision.WINDOW, PacketPolicy.decide(new byte[]{0x2F, (byte) 0xFF, 0, 0, (byte) 0xFF,
+                (byte) 0xFF}, 0, 6));
         assertEquals(Decision.PASS, PacketPolicy.decide(new byte[]{0x2F, 0, 0, 36, (byte) 0xFF, (byte) 0xFF}, 0, 6));
         assertEquals(Decision.PASS, PacketPolicy.decide(new byte[]{0x30, 0, 0, 0}, 0, 4));
-        assertEquals(Decision.DROP, PacketPolicy.decide(new byte[]{0x30, 3, 0, 0}, 0, 4));
+        assertEquals(Decision.WINDOW, PacketPolicy.decide(new byte[]{0x30, 3, 0, 0}, 0, 4));
         assertEquals(Decision.DROP, PacketPolicy.decide(new byte[]{0x2F}, 0, 1));
+        assertEquals("a shop window opens through the holder", Decision.WINDOW,
+                PacketPolicy.decide(new byte[]{0x2D, 7, 0}, 0, 3));
+        assertEquals(Decision.WINDOW, PacketPolicy.decide(new byte[]{0x2E, 7}, 0, 2));
     }
 
     @Test
-    public void gameModeIsASessionHookAndContainersStillDrop() {
+    public void gameModeIsASessionHookAndTheOtherContainerPacketsStillDrop() {
         assertEquals(Decision.SESSION_HOOK, PacketPolicy.decide(CHANGE_GAME_STATE, 3, 0));
         assertEquals(Decision.SESSION_HOOK, PacketPolicy.decide(new byte[]{0x2B, 3, 0x40, 0x40, 0, 0}, 0, 6));
         for (int id : CONTAINERS) {

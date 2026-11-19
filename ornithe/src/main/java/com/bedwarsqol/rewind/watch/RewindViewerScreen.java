@@ -23,16 +23,19 @@ import org.lwjgl.opengl.GL11;
 import java.util.List;
 
 /**
- * The viewer (G36, G37, G43, G45; TASK A8, A9, A10, A11): the recorded world with the bottom bar over it. Layout and
+ * The viewer (G36, G37, G43, G45; TASK A8, A9, A10, A11): the recorded world with the bar over it. Layout and
  * hit tests are {@link ViewerLayout}'s, drawing {@link RewindPainter#bar} and {@link RewindPainter#flySpeed}, in GUI px
- * (one sheet unit per GUI pixel); keys are {@link ViewerKeys}'s. The bar sits where the mockup puts it, over the
- * vanilla hotbar, and fades 2 s after the mouse stops ({@link BarFade}).
+ * (one sheet unit per GUI pixel); keys are {@link ViewerKeys}'s. The bar sits at the top edge, clear of the hotbar,
+ * hearts and XP bar (parity B11, Q1), and fades 2 s after the mouse stops ({@link BarFade}). The playback parts draw
+ * in two slots ({@link RewindPlayback#drawUnder} before the bar, {@link RewindPlayback#drawOver} after it).
  *
  * <ul>
  *   <li>Keys: Space (your view) and K play/pause; Left/Right 5 s, with Shift 30 s; comma/period previous/next marker
  *       ({@link MarkerNav}: 3 s before it, the marker highlighted); {@code [ ]} slower/faster; 1 your view, 2 free
  *       camera; Esc closes the camera menu, else opens the Esc menu ({@link RewindEscScreen}); Tab held shows the
- *       recorded tab list (it holds the player-list binding).</li>
+ *       recorded tab list (it holds the player-list binding); F5 cycles your view's perspective; F1 and the Clean
+ *       View Key toggle the clean view ({@link ViewState}); 3 and Shift+3 ride the next and previous player (a
+ *       playback part answers, Phase 14).</li>
  *   <li>Mouse: the bar's keys, marker icons and timeline ({@link ViewerLayout.Pointer}: a drag previews, the release
  *       seeks); right-click on the speed key steps down. In the free camera a drag off the bar looks around and the
  *       wheel sets the flight speed (Q2), and WASD, Space and Shift fly (Q1).</li>
@@ -131,6 +134,7 @@ public final class RewindViewerScreen extends RewindScreen {
         lastMouseY = rawY;
         float[] m = mouse(rawX, rawY);
 
+        RewindPlayback.drawUnder(width, height, mouseX, mouseY, partialTicks);
         ClientSettings cfg = BedwarsQol.config;
         canvas.begin(scale, 0f, 0f, mc.displayHeight, scale, cfg == null || cfg.minecraftFont());
         layout = ViewerLayout.of(sw, sh, canvas, tl);
@@ -162,6 +166,7 @@ public final class RewindViewerScreen extends RewindScreen {
         RewindPainter.bar(canvas, layout, s);
         canvas.end();
         drawFaces(RewindPainter.faces(layout, s), alpha);
+        RewindPlayback.drawOver(width, height, mouseX, mouseY, partialTicks);
     }
 
     private SheetColors.Shades accent(ClientSettings cfg) {
@@ -315,7 +320,8 @@ public final class RewindViewerScreen extends RewindScreen {
 
     @Override
     protected void keyTyped(char typedChar, int keyCode) {
-        controls.key(keyCode, isShiftKeyDown(), this::openEsc);
+        ClientSettings cfg = BedwarsQol.config;
+        controls.key(keyCode, isShiftKeyDown(), cfg == null ? 0 : cfg.rewindCleanViewKey, this::openEsc);
     }
 
     private void openEsc() {
@@ -375,9 +381,14 @@ public final class RewindViewerScreen extends RewindScreen {
             return nav == null ? -1 : nav.cursor(session.playheadTick());
         }
 
-        /** A key press ({@link ViewerKeys}); {@code openEsc} opens the Esc menu. */
+        /** A key press ({@link ViewerKeys}) with no Clean View Key bound; {@code openEsc} opens the Esc menu. */
         void key(int keyCode, boolean shift, Runnable openEsc) {
-            ViewerKeys.Action a = ViewerKeys.action(keyCode, shift, free());
+            key(keyCode, shift, 0, openEsc);
+        }
+
+        /** A key press; {@code cleanViewKey} is the user's Clean View Key (0 unbound). */
+        void key(int keyCode, boolean shift, int cleanViewKey, Runnable openEsc) {
+            ViewerKeys.Action a = ViewerKeys.action(keyCode, shift, free(), cleanViewKey);
             switch (a) {
                 case TOGGLE_PLAY:
                     session.togglePlay();
@@ -406,6 +417,21 @@ public final class RewindViewerScreen extends RewindScreen {
                     break;
                 case VIEW_FREE:
                     ViewerCameraControls.get().select(ViewerCameraControls.FREE);
+                    break;
+                case CYCLE_PERSPECTIVE:
+                    if (session.view().cyclePerspective()) {
+                        RewindPlayback.viewStateChanged();
+                    }
+                    break;
+                case CLEAN_VIEW:
+                    session.view().toggleClean();
+                    RewindPlayback.viewStateChanged();
+                    break;
+                case NEXT_PLAYER:
+                    RewindPlayback.cyclePlayer(1);
+                    break;
+                case PREVIOUS_PLAYER:
+                    RewindPlayback.cyclePlayer(-1);
                     break;
                 case ESC_MENU:
                     if (menuOpen) {

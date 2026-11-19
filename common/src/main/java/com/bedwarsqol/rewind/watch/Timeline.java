@@ -12,8 +12,9 @@ import java.util.List;
  * The time frame of a loaded recording, all on the recording's own clock (µs, the clock NET and TRACK share).
  *
  * <ul>
- *   <li><b>Origin:</b> the first NET record of the start segment. Tick k of playback stands for
- *       {@code origin + k x 50 ms}; every restart uses the same origin, so there is one tick grid.</li>
+ *   <li><b>Origin:</b> the first NET record of the start segment. Tick k of playback is tick k of the recording's
+ *       {@link TickTable} ({@link #ticks()}: the recorded tick heads for v2, rebuilt from the TICK records for v1,
+ *       R2's grid {@code origin + k x 50 ms} without either); every restart uses the same table.</li>
  *   <li><b>Game start:</b> the first GAME_START record's time minus its {@code backUs}; without one, the
  *       {@code .json gameStartUs}; without either, the origin.</li>
  *   <li><b>End:</b> the {@code .json endUs} when it lies after the game start; otherwise the last NET record.
@@ -54,13 +55,26 @@ public final class Timeline {
     private final long gameStartUs;
     private final long endUs;
     private final List<Marker> markers;
+    private final TickTable ticks;
 
-    private Timeline(long originUs, long lastNetUs, long gameStartUs, long endUs, List<Marker> markers) {
+    private Timeline(long originUs, long lastNetUs, long gameStartUs, long endUs, List<Marker> markers,
+                     TickTable ticks) {
         this.originUs = originUs;
         this.lastNetUs = lastNetUs;
         this.gameStartUs = gameStartUs;
         this.endUs = endUs;
         this.markers = markers;
+        this.ticks = ticks;
+    }
+
+    /** The same timeline on tick table {@code table} (its origin must be this timeline's). */
+    public Timeline withTicks(TickTable table) {
+        return new Timeline(originUs, lastNetUs, gameStartUs, endUs, markers, table);
+    }
+
+    /** The recorded tick table every tick number refers to. */
+    public TickTable ticks() {
+        return ticks;
     }
 
     /**
@@ -101,7 +115,8 @@ public final class Timeline {
             }
         }
         Collections.sort(kept, BY_TIME);
-        return new Timeline(originUs, lastNetUs, start, end, Collections.unmodifiableList(kept));
+        return new Timeline(originUs, lastNetUs, start, end, Collections.unmodifiableList(kept),
+                TickTable.grid(originUs));
     }
 
     /** The {@code RewindFormat.MARKER_*} code of a {@code .json} marker kind, or -1. */
@@ -149,14 +164,14 @@ public final class Timeline {
         return gameStartUs >= originUs && gameStartUs <= lastNetUs;
     }
 
-    /** The first tick whose time is at or after {@code tUs}: {@code ceil((t - origin) / 50 ms)}. */
+    /** The first tick whose time is at or after {@code tUs} ({@link TickTable#tickOf}). */
     public long tickOf(long tUs) {
-        return -Math.floorDiv(originUs - tUs, TICK_US);
+        return ticks.tickOf(tUs);
     }
 
-    /** The time tick {@code k} stands for: {@code origin + k x 50 ms}. */
+    /** T[k], the recorded head time of tick {@code k} ({@link TickTable#timeOf}). */
     public long timeOfTick(long k) {
-        return originUs + k * TICK_US;
+        return ticks.timeOf(k);
     }
 
     public long startTick() {

@@ -23,6 +23,10 @@ import static org.junit.Assert.assertTrue;
  * <p>Phase 2 adds the engine dry run: every record through the packet policy and the tick-locked feed, seek plans to
  * every marker and to 25/50/75/100 %, and the trace of straight play to the last tick against a seek to it (and a
  * backward seek to the middle against straight play's prefix).
+ *
+ * <p>Parity Phase 5 re-baselined it on the recorded tick table: every real (v1) file plays on the table rebuilt from
+ * its TICK records, so which records come before which tick differs from dev.96's 50 ms grid; the contract that
+ * straight play and seeks feed equal traces is unchanged and still checked on every file.
  */
 public class RealRecordingDryRunTest {
 
@@ -102,6 +106,7 @@ public class RealRecordingDryRunTest {
 
             Timeline t = r.timeline();
             assertNotNull(label + " timeline", t);
+            assertEquals(label + " v1 plays on the table rebuilt from its TICKs", TickTable.Kind.V1, t.ticks().kind());
             assertTrue(label + " start inside the data", t.startInsideData());
             assertTrue(label + " end after start", t.endUs() >= t.gameStartUs());
             for (Timeline.Marker m : t.markers()) {
@@ -118,7 +123,8 @@ public class RealRecordingDryRunTest {
                     + " ticks=" + track.tickCount() + " camera=" + track.cameraCount()
                     + " equip=" + track.equipCount() + " markers=" + t.markers().size()
                     + " startTick=" + t.startTick() + " endTick=" + t.endTick()
-                    + " lastNetTick=" + t.tickOf(t.lastNetUs()) + " loadMs=" + loadMs);
+                    + " lastNetTick=" + t.tickOf(t.lastNetUs()) + " tickTable=" + t.ticks().kind()
+                    + " tableEntries=" + t.ticks().entries() + " loadMs=" + loadMs);
             r.close();
         }
     }

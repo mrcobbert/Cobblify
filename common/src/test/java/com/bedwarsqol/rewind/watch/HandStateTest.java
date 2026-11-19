@@ -26,6 +26,20 @@ public class HandStateTest {
     private final SelfTrackEncoder enc = new SelfTrackEncoder();
     private final SelfTrack.Builder b = new SelfTrack.Builder();
     private final HandState h = new HandState();
+    private SelfTrack tableTrack;
+    private TickTable table;
+
+    /**
+     * Tick {@code i} of the fixture as playback runs it: the v1 table rebuilt from its TICK times (one every 50 ms
+     * from {@code T}), so tick i ends with the TICK written at {@code T + i x 50 ms}.
+     */
+    private boolean sample(SelfTrack s, int i) {
+        if (s != tableTrack) {
+            tableTrack = s;
+            table = TickTable.forRecording(T - 1_000, s, ExtRecords.EMPTY);
+        }
+        return h.sample(s, table, i, END);
+    }
 
     /** Vanilla 1.8.9's swing, as {@code EntityLivingBase} does it. */
     static final class VanillaSwing {
@@ -87,7 +101,7 @@ public class HandStateTest {
                 ref.swingItem(END);
             }
             ref.tick(END);
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
             String at = "tick " + i;
             assertEquals(at, click, h.swingStarted());
             assertEquals(at, ref.progress, h.swingProgressInt());
@@ -132,7 +146,7 @@ public class HandStateTest {
         SelfTrack s = b.build();
         int max = 72000; // a bow
         for (int i = 0; i < 40; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
             String at = "tick " + i;
             assertEquals(at, i >= 10 && i < 30, h.inUse());
             assertEquals(at, i == 10, h.useStarted());
@@ -164,7 +178,7 @@ public class HandStateTest {
         }
         SelfTrack s = b.build();
         for (int i = 0; i < 30; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
             for (int slot = 0; slot < HandState.HOTBAR; slot++) {
                 if (h.hotbarChanged(slot)) {
                     inventory[slot] = h.hotbarItem(slot);
@@ -216,7 +230,7 @@ public class HandStateTest {
         }
         SelfTrack s = b.build();
         for (int i = 0; i < 15; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
             int recorded = i < 3 ? 0 : Math.max(0, 13 - i);
             assertEquals("tick " + i, recorded, h.hurtTime(true));
             assertEquals("tick " + i, 0, h.hurtTime(false));
@@ -293,19 +307,19 @@ public class HandStateTest {
         }
         SelfTrack s = b.build();
         for (int i = 0; i < 20; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
         }
         assertArrayEquals("remembered before the S30", new byte[]{7, 1}, h.hotbarItem(1));
 
         // Tick 20: the S07 and the S30 (empty hotbar) are fed before the tick's sample.
         h.inventoryPacket(windowItems(0), 0, 4, T + 20 * TICK - 20_000L);
-        assertTrue(h.sample(s, T + 20 * TICK, END));
+        assertTrue(sample(s, 20));
         byte[][] cam = freshCameraCopy(new byte[HandState.HOTBAR][]);
         assertEquals(0, h.selectedSlot());
         assertEquals("no ghost sword in slot 1", null, cam[1]);
         assertArrayEquals("the newer EQUIP of the held slot still applies", empty, cam[0]);
         for (int i = 21; i < 30; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
             assertFalse("tick " + i, h.hotbarChanged(1));
             assertNull("tick " + i, h.hotbarItem(1));
         }
@@ -324,16 +338,16 @@ public class HandStateTest {
         equipAt(T + 7 * TICK, RewindFormat.EQUIP_HELD, 7, 4);               // after it
         SelfTrack s = b.build();
         for (int i = 0; i <= 4; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
         }
         h.inventoryPacket(windowItems(0), 0, 4, T + 4 * TICK + 20_000L);
-        assertTrue(h.sample(s, T + 5 * TICK, END));
+        assertTrue(sample(s, 5));
         assertFalse("the older EQUIP does not overwrite the S30's slot", h.hotbarChanged(2));
         assertNull(h.hotbarItem(2));
         assertFalse("nor its armour", h.armourChanged(RewindFormat.EQUIP_HELMET));
         assertNull(h.armourItem(RewindFormat.EQUIP_HELMET));
-        assertTrue(h.sample(s, T + 6 * TICK, END));
-        assertTrue(h.sample(s, T + 7 * TICK, END));
+        assertTrue(sample(s, 6));
+        assertTrue(sample(s, 7));
         assertTrue("a newer EQUIP applies", h.hotbarChanged(2));
         assertArrayEquals(new byte[]{7, 4}, h.hotbarItem(2));
     }
@@ -351,7 +365,7 @@ public class HandStateTest {
         equip(3, RewindFormat.EQUIP_HELD, 5, 16);
         SelfTrack s = b.build();
         for (int i = 0; i < 5; i++) {
-            assertTrue(h.sample(s, T + i * TICK, END));
+            assertTrue(sample(s, i));
         }
         h.inventoryPacket(setSlot(1, 37), 0, 6, T + 5 * TICK);              // a chest's window: ignored
         h.inventoryPacket(setSlot(0, 40), 0, 6, T + 5 * TICK);              // hotbar slot 4: nothing kept there
@@ -369,7 +383,7 @@ public class HandStateTest {
     @Test
     public void noTrackNoState() {
         b.segment(1);
-        assertFalse(h.sample(b.build(), T, END));
+        assertFalse(sample(b.build(), 0));
         assertEquals(0, h.selectedSlot());
         assertFalse(h.swingInProgress());
         assertFalse(h.inUse());

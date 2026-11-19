@@ -383,3 +383,7 @@ one-sided test ornithe com/bedwarsqol/rewind/LocalSoundCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/TickHeadCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/CaptureFailureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/HandledOrderTest.java
+# Rewind parity Phase 5 (Ornithe only): the playback seam later phases add parts to, and where the camera's window
+# calls go (the recorded-window holder).
+one-sided main ornithe com/bedwarsqol/rewind/watch/PlaybackPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreenHolder.java
