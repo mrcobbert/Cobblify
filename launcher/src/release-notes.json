@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.103",
+    "channel": "dev",
+    "date": "2026-11-19",
+    "sections": [
+      ["Fixes", [
+        "Rewind: the timeline bar is now at the bottom of the screen with the camera menu opening upward, and the play/pause symbol and the camera key's head and name are centred."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.102",
     "channel": "dev",
     "date": "2026-11-18",
