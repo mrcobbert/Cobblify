@@ -336,34 +336,59 @@ public class ViewCaptureTest {
 
     // ------------------------------------------------------------------ FOV
 
+    /**
+     * Code review 1, I2 and coordinator amendment 3: vanilla's {@code getFOVModifier} allocates (about 144 B a call),
+     * so the frame path reads it at most once per 16 ms. Driven through the frame's FOV source, the same rate limit
+     * production's renderer read goes through.
+     */
     @Test
-    public void fovIsReadAtMostEvery4MsAndWrittenOnChange() {
+    public void fovIsReadAtMostOncePer16MsAndWrittenOnChange() {
         ViewCapture v = new ViewCapture();
         Recorder s = new Recorder();
-        assertTrue("the first frame reads the FOV", v.fovDue(0));
+        ClientTrackCaptureTest.FakeFov fov = new ClientTrackCaptureTest.FakeFov();
         ViewCapture.Frame f = frame(0);
-        f.fovRead = true;
-        f.fov = 70f;
-        v.frame(s, f);
-        assertFalse("2 ms later: not yet", v.fovDue(2 * MS));
-        assertTrue("4 ms later: due", v.fovDue(4 * MS));
-        f.nanoTime = 4 * MS;
-        v.frame(s, f);
+        f.fovSource = fov;
+        // 1,000 frames 1 ms apart (1000 FPS): read at 0, 16, ..., 992 ms
+        for (int i = 0; i < 1000; i++) {
+            f.nanoTime = i * MS;
+            assertTrue(v.frame(s, f));
+            assertEquals("frame " + i + " read", i % 16 == 0, f.fovRead);
+        }
+        assertEquals("one read per 16 ms", 63, fov.reads);
         assertEquals("unchanged FOV: one record", 1, s.of(RewindFormat.TAG_FOV).size());
+
+        // 144 FPS: never two reads closer than 16 ms
+        fov.reads = 0;
+        long last = Long.MIN_VALUE;
+        for (int i = 0; i < 1440; i++) {
+            f.nanoTime = 2000 * MS + i * 6_944_444L;
+            v.frame(s, f);
+            if (f.fovRead) {
+                assertTrue("reads 16 ms apart", last == Long.MIN_VALUE || f.nanoTime - last >= 16 * MS);
+                last = f.nanoTime;
+            }
+        }
+        assertTrue("at most one read per 16 ms over 10 s: " + fov.reads, fov.reads <= 1 + 10_000 / 16);
+
+        // written on change only
         float[] sprint = {71.5f, 73f, 74.2f, 74.2f, 74.2f, 63.1f};
         for (int i = 0; i < sprint.length; i++) {
-            f.nanoTime = (8 + 4 * i) * MS;
-            f.fov = sprint[i];
+            f.nanoTime = 20_000 * MS + 16 * i * MS;
+            fov.value = sprint[i];
             v.frame(s, f);
         }
-        List<Rec> fov = s.of(RewindFormat.TAG_FOV);
-        assertEquals(5, fov.size());
-        assertEquals(63.1f, new ExtCodec.Fov().read(fov.get(4).body, 0, 4).degrees, 0f);
-        f.fovRead = false; // a frame that did not read it changes nothing
+        List<Rec> recs = s.of(RewindFormat.TAG_FOV);
+        assertEquals(5, recs.size());
+        assertEquals(63.1f, new ExtCodec.Fov().read(recs.get(4).body, 0, 4).degrees, 0f);
+
+        // no FOV source: a frame stating no read changes nothing
+        f.fovSource = null;
+        f.fovRead = false;
         f.fov = 10f;
-        f.nanoTime = 100 * MS;
+        f.nanoTime = 30_000 * MS;
         v.frame(s, f);
         assertEquals(5, s.of(RewindFormat.TAG_FOV).size());
+        assertEquals(16 * MS, ViewCapture.FOV_INTERVAL_NS);
     }
 
     // ------------------------------------------------------------------ INPUT and TAP

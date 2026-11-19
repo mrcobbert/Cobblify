@@ -563,6 +563,7 @@ public final class Rewind {
             return false;
         }
 
+        /** {@link ActionCapture.Sink}'s report; HUD failures arrive as {@code failed("hud", t)}. */
         @Override
         public void failed(Throwable cause) {
             failed("action", cause);
@@ -588,6 +589,12 @@ public final class Rewind {
     /** Whether format v2 capture writes now (tests). */
     boolean capturing() {
         return !muted() && capturing(conn);
+    }
+
+    /** Where the current connection's last capture failure happened ("action", "state", "hud", ...), or null (tests). */
+    String captureWhere() {
+        Conn c = conn;
+        return c == null ? null : c.captureWhere;
     }
 
     /** The Conn whose sink the capture classes hold (they are static: one client, one connection). */
@@ -654,8 +661,12 @@ public final class Rewind {
         }
     }
 
-    /** {@code CLIENT_TICK} (end of the tick): DIG, SETTINGS, IDENTITY, INV, USE and CONT, timed with the tick head. */
+    /**
+     * {@code CLIENT_TICK} (end of the tick): every local scope closed (whenever action capture is bound), then DIG,
+     * SETTINGS, IDENTITY, INV, USE and CONT, timed with the tick head.
+     */
     void captureTick(TickCapture work) {
+        ActionCapture.onClientTickEnd();
         Conn c = conn;
         if (muted() || !capturing(c)) {
             return;

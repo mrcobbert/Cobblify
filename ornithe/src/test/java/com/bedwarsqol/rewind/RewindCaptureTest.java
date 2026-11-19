@@ -261,7 +261,7 @@ public class RewindCaptureTest {
             consumer.start();
             try {
                 with.pipeline().fireChannelRead(Unpooled.wrappedBuffer(s01(1, 0)));
-                runDraining(with, pool, 300_000, ring);
+                runDraining(with, pool, 300_000, ring, p, consumer);
                 run(without, pool, 300_000);
                 long bestWith = Long.MAX_VALUE;
                 long bestWithout = Long.MAX_VALUE;
@@ -269,7 +269,7 @@ public class RewindCaptureTest {
                     long a = mx.getThreadAllocatedBytes(self);
                     run(without, pool, 100_000);
                     long b = mx.getThreadAllocatedBytes(self);
-                    runDraining(with, pool, 100_000, ring);
+                    runDraining(with, pool, 100_000, ring, p, consumer);
                     long c = mx.getThreadAllocatedBytes(self);
                     bestWithout = Math.min(bestWithout, b - a);
                     bestWith = Math.min(bestWith, c - b);
@@ -382,9 +382,11 @@ public class RewindCaptureTest {
 
     /**
      * {@link #run}, popping the handled-order ring every 500 frames on this thread as the client thread would (each
-     * entry with its own id), so the measured cost is a push and a pop per client-handled frame.
+     * entry with its own id), so the measured cost is a push and a pop per client-handled frame. At the same points it
+     * waits until {@code consumer} has returned every chunk handed off so far ({@link #awaitConsumer}).
      */
-    private static void runDraining(EmbeddedChannel ch, ByteBuf[] pool, int n, HandledRing ring) {
+    private static void runDraining(EmbeddedChannel ch, ByteBuf[] pool, int n, HandledRing ring,
+                                    RecordChunk.Producer producer, Consumer consumer) {
         ChannelPipeline p = ch.pipeline();
         for (int i = 0; i < n; i++) {
             p.fireChannelRead(pool[i % pool.length]);
@@ -393,7 +395,26 @@ public class RewindCaptureTest {
                 while ((id = ring.peekPacketId()) >= 0) {
                     ring.onHandled(id);
                 }
+                awaitConsumer(producer, consumer);
             }
+        }
+    }
+
+    /**
+     * Waits, allocating nothing, until the consumer has released every chunk the producer handed off. The writer
+     * stand-in is a yield loop that a loaded host can starve; without this the producer ran out of its six chunks
+     * ({@code FAIL_NO_CHUNK}) before any allocation was compared (code review 1, O1). 500 frames are far less than
+     * one chunk, so with this wait a slow consumer slows the run down and never fails it; what is measured and
+     * asserted is unchanged.
+     */
+    private static void awaitConsumer(RecordChunk.Producer producer, Consumer consumer) {
+        RecordChunk cur = producer.current();
+        if (cur == null) {
+            return;
+        }
+        int handedOff = cur.seq() - 1; // every roll after the first handed one chunk off
+        while (consumer.released.get() < handedOff) {
+            Thread.yield();
         }
     }
 
@@ -402,6 +423,8 @@ public class RewindCaptureTest {
         private final RecordChunk.Producer p;
         private final AtomicBoolean stop = new AtomicBoolean();
         final AtomicInteger chunks = new AtomicInteger();
+        /** Chunks returned to the producer's free ring. */
+        final AtomicInteger released = new AtomicInteger();
         volatile long threadId = -1;
         volatile CountDownLatch gate;
         private Thread thread;
@@ -444,6 +467,7 @@ public class RewindCaptureTest {
                 }
                 chunks.incrementAndGet();
                 p.release(c);
+                released.incrementAndGet();
             }
         }
     }

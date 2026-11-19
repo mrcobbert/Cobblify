@@ -150,7 +150,7 @@ public class HudModelCodecTest {
     public void malformedValuesAreAFormatError() {
         byte[][] bad = {
                 {(byte) RewindFormat.HUD_SESSION_STATS, 1, 1, 7, 0},           // line kind 7
-                {(byte) RewindFormat.HUD_TEAM_UPGRADES, 1, 1, 99, 0, 0, 0, 0, 0}, // row kind 99
+                {(byte) RewindFormat.HUD_TEAM_UPGRADES, 1, 1, 0, 0, 0},       // row cut after its label
                 {(byte) RewindFormat.HUD_HEIGHT_LIMIT, 1, 5, 1, 'a'},          // 5 rows promised, 1 there
                 {(byte) RewindFormat.HUD_PING, 1},                             // no text
                 {(byte) 0x7F, 1},                                              // not a module
@@ -163,6 +163,54 @@ public class HudModelCodecTest {
                 // ok
             }
         }
+    }
+
+    /** Code review 1, O5: the stored ids are fixed numbers (the ordinals the first v2 build wrote), not ordinals. */
+    @Test
+    public void teamRowIdsArePinned() {
+        int[] kinds = {HudModel.TEAM_KIND_HEADER, HudModel.TEAM_KIND_UPGRADE, HudModel.TEAM_KIND_TRAP,
+                HudModel.TEAM_KIND_NEXT, HudModel.TEAM_KIND_NONE};
+        assertEquals(Arrays.toString(kinds), "[0, 1, 2, 3, 4]");
+        assertEquals(0, HudModel.teamKindId(TeamUpgradeRows.Kind.HEADER));
+        assertEquals(1, HudModel.teamKindId(TeamUpgradeRows.Kind.UPGRADE));
+        assertEquals(2, HudModel.teamKindId(TeamUpgradeRows.Kind.TRAP));
+        assertEquals(3, HudModel.teamKindId(TeamUpgradeRows.Kind.NEXT));
+        assertEquals(4, HudModel.teamKindId(TeamUpgradeRows.Kind.NONE));
+        assertEquals(0, HudModel.teamStyleId(TeamUpgradeRows.Style.NORMAL));
+        assertEquals(1, HudModel.teamStyleId(TeamUpgradeRows.Style.DIM));
+        assertEquals(2, HudModel.teamStyleId(TeamUpgradeRows.Style.FIRED));
+        for (TeamUpgradeRows.Kind k : TeamUpgradeRows.Kind.values()) {
+            assertEquals(k, HudModel.teamKind(HudModel.teamKindId(k)));
+        }
+        for (TeamUpgradeRows.Style st : TeamUpgradeRows.Style.values()) {
+            assertEquals(st, HudModel.teamStyle(HudModel.teamStyleId(st)));
+        }
+        // the bytes on disk: a TRAP row in FIRED style stores 2 and 2
+        codec.beginHud(RewindFormat.HUD_TEAM_UPGRADES, RewindFormat.HUD_FLAG_ON_SCREEN);
+        HudModel.putTeamRows(codec, new TeamUpgradeRows.Row[]{new TeamUpgradeRows.Row(TeamUpgradeRows.Kind.TRAP,
+                "a", "", "", TeamUpgradeRows.Style.FIRED, 1f)}, 1);
+        int n = codec.end();
+        byte[] b = codec.buffer();
+        // len, module, flags, count, kind, "a" (len 1, 'a'), "" , "", style, alpha
+        assertEquals(2, b[4]);
+        assertEquals(2, b[9]);
+        assertEquals(11, n);
+    }
+
+    /** O5: a row id a later build added is not a format error: an unknown kind skips that row, an unknown style is NORMAL. */
+    @Test
+    public void unknownTeamRowIdsAreTolerated() {
+        byte[] body = {
+                (byte) RewindFormat.HUD_TEAM_UPGRADES, (byte) RewindFormat.HUD_FLAG_ON_SCREEN, 3,
+                1, 1, 'S', 0, 1, '4', 0, (byte) 255,        // UPGRADE "S" "" "4" NORMAL
+                9, 1, 'X', 0, 0, 0, (byte) 255,             // kind 9: unknown, skipped
+                2, 1, 'B', 0, 0, 7, (byte) 128,             // TRAP "B" style 7: unknown, NORMAL
+        };
+        HudModel.Values v = HudModel.decode(body, 0, body.length);
+        assertEquals(2, v.team.size());
+        assertEquals("UPGRADE|S||4|NORMAL", v.team.get(0).toString());
+        assertEquals("TRAP|B|||NORMAL", v.team.get(1).toString());
+        assertEquals(128, HudModel.alpha8(v.team.get(1).alpha));
     }
 
     @Test

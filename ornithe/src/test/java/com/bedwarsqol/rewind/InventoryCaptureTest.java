@@ -14,6 +14,9 @@ import net.minecraft.inventory.ContainerChest;
 import net.minecraft.inventory.InventoryBasic;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
+import net.minecraft.nbt.NBTTagString;
 import net.minecraft.network.PacketBuffer;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -212,6 +215,40 @@ public class InventoryCaptureTest {
         assertEquals(1, s.recs.size());
     }
 
+    /**
+     * Code review 1, O4: a tagged stack replaced by an equal copy (the server resent it) writes nothing; the copy is
+     * followed from then on, so a later in-place tag edit is still caught by the deep compare, and a copy whose tag
+     * differs is written at once.
+     */
+    @Test
+    public void aTaggedStackReplacedByAnEqualCopyWritesNothing() {
+        InventoryPlayer inv = fullInventory();
+        Own own = new Own();
+        StateCapture c = new StateCapture(StateCapture.DEEP_COMPARE_TICKS);
+        Recorder s = new Recorder();
+        tick(c, s, inv, own, own);
+        s.clear();
+        assertTrue(inv.mainInventory[0].getTagCompound() != null);
+        inv.mainInventory[0] = inv.mainInventory[0].copy(); // equal item, count, damage and tag content
+        for (int t = 0; t < 2 * StateCapture.DEEP_COMPARE_TICKS; t++) {
+            tick(c, s, inv, own, own);
+        }
+        assertEquals("an equal tagged copy writes nothing", 0, s.recs.size());
+
+        inv.mainInventory[0].getTagCompound().setString("edited", "in place"); // the copy is the one followed
+        for (int t = 0; t < StateCapture.DEEP_COMPARE_TICKS; t++) {
+            tick(c, s, inv, own, own);
+        }
+        assertEquals("an edit of the followed copy's tag is stored within a second", 1, s.recs.size());
+
+        ItemStack other = inv.mainInventory[0].copy();
+        other.getTagCompound().setString("edited", "again");
+        inv.mainInventory[0] = other; // a copy with a different tag
+        tick(c, s, inv, own, own);
+        assertEquals("a copy with another tag is stored at once", 2, s.recs.size());
+        assertArrayEquals(slotBytes(other), invBytes(s.recs.get(1)));
+    }
+
     @Test
     public void aSegmentResetWritesAll41Again() {
         InventoryPlayer inv = fullInventory();
@@ -300,6 +337,70 @@ public class InventoryCaptureTest {
             tick(c, s, inv, chest, own);
         }
         assertEquals(0, s.recs.size());
+    }
+
+    /** A shop-menu item with lore, as a server's menu holds it (a display tag with a Lore list). */
+    private static ItemStack lore(int i) {
+        ItemStack st = new ItemStack(i % 3 == 0 ? Items.paper : Item.getItemFromBlock(Blocks.stained_glass_pane), 1,
+                i % 16);
+        NBTTagCompound display = new NBTTagCompound();
+        display.setString("Name", "Menu item " + i);
+        NBTTagList lines = new NBTTagList();
+        lines.appendTag(new NBTTagString("Cost: " + (i * 4) + " Iron"));
+        lines.appendTag(new NBTTagString("Click to purchase!"));
+        display.setTag("Lore", lines);
+        NBTTagCompound tag = new NBTTagCompound();
+        tag.setTag("display", display);
+        st.setTagCompound(tag);
+        return st;
+    }
+
+    /**
+     * Code review 1, O4: a server that resends a 54-slot menu of lore-tagged items (S30 puts new stack objects in
+     * every slot, the player's own slots too) writes the window once: the second, identical resend writes 0 CONT and
+     * 0 INV records. A resend that changes one line writes that slot only.
+     */
+    @Test
+    public void aResent54SlotLoreMenuWritesNoContTheSecondTime() {
+        InventoryPlayer inv = fullInventory();
+        Own own = new Own();
+        InventoryBasic box = new InventoryBasic("Menu", false, 54);
+        for (int i = 0; i < 54; i++) {
+            box.setInventorySlotContents(i, lore(i));
+        }
+        ContainerChest menu = chest(inv, box, 9);
+        StateCapture c = new StateCapture(StateCapture.DEEP_COMPARE_TICKS);
+        Recorder s = new Recorder();
+        tick(c, s, inv, own, own);
+        tick(c, s, inv, menu, own);
+        assertEquals("the menu's first tick writes all 54", 54, s.of(RewindFormat.TAG_CONT).size());
+        s.clear();
+
+        for (int resend = 0; resend < 3; resend++) {
+            for (int i = 0; i < 54; i++) {
+                box.setInventorySlotContents(i, lore(i)); // S30: new objects, equal content
+            }
+            for (int i = 0; i < 36; i++) {
+                inv.mainInventory[i] = inv.mainInventory[i] == null ? null : inv.mainInventory[i].copy();
+            }
+            for (int t = 0; t < StateCapture.DEEP_COMPARE_TICKS; t++) {
+                tick(c, s, inv, menu, own);
+            }
+        }
+        assertEquals("an identical resend writes 0 CONT", 0, s.of(RewindFormat.TAG_CONT).size());
+        assertEquals("and 0 INV for the player's resent slots", 0, s.of(RewindFormat.TAG_INV).size());
+
+        ItemStack changed = lore(17);
+        changed.getTagCompound().getCompoundTag("display").setString("Name", "Menu item 17 (sold out)");
+        for (int i = 0; i < 54; i++) {
+            box.setInventorySlotContents(i, i == 17 ? changed : lore(i));
+        }
+        tick(c, s, inv, menu, own);
+        List<Rec> cont = s.of(RewindFormat.TAG_CONT);
+        assertEquals("one changed slot, one record", 1, cont.size());
+        ExtCodec.Cont d = new ExtCodec.Cont().read(cont.get(0).body, 0, cont.get(0).body.length);
+        assertEquals(17, d.slot);
+        assertArrayEquals(slotBytes(changed), Arrays.copyOfRange(d.buf, d.slotOff, d.slotOff + d.slotLen));
     }
 
     @Test
