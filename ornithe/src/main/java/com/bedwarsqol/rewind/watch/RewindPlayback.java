@@ -595,7 +595,7 @@ public final class RewindPlayback implements ClientOps {
             mc.loadWorld(null);
         }
         closeConnection();
-        connection = PlaybackConnection.open(mc, mc.getSession().getProfile());
+        connection = PlaybackConnection.open(mc, Identity.connectionProfile(mc.getSession().getProfile()));
         sink = new PlaybackSink(mc, connection);
         partsRestart();
     }

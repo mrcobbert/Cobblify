@@ -397,3 +397,9 @@ one-sided main ornithe com/bedwarsqol/rewind/watch/RecordedScreens.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedScreensTest.java
 # Rewind parity Phase 7 (Ornithe only): your view's camera state part (bob, hand sway, nausea, derived FOV, flags).
 one-sided main ornithe com/bedwarsqol/rewind/watch/CameraStatePart.java
+# Rewind parity Phase 13 (Ornithe only): the recorded identity for the playback connection, the camera and the puppet,
+# and the v2 hand part (recorded swings, item use, all 41 inventory slots), and the identity test. The v2 hand rules
+# themselves are in common (HandState).
+one-sided main ornithe com/bedwarsqol/rewind/watch/HandV2Part.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/Identity.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/IdentityTest.java

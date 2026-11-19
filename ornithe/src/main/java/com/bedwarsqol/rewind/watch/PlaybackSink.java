@@ -1,11 +1,9 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.feature.DiagLog;
-import com.mojang.authlib.GameProfile;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.network.NetHandlerPlayClient;
-import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.ai.attributes.AttributeModifier;
@@ -263,22 +261,13 @@ public final class PlaybackSink implements PacketSink {
         if (!puppetState.sample(track, table, tick)) {
             return false;
         }
-        RewindSelfPuppet p = new RewindSelfPuppet(world, puppetProfile(), puppetState);
+        RewindSelfPuppet p = new RewindSelfPuppet(world, Identity.puppetProfile(handler, mc.getSession().getProfile()),
+                puppetState);
         p.place();
         p.follow();
         world.addEntityToWorld(recordedEntityId, p);
         puppet = p;
         return true;
-    }
-
-    /**
-     * The tab entry's profile for the session's account (its skin), else the session profile (format gap 1). Phase 13
-     * moves this to {@code Identity} (the recorded profile when the recording has one).
-     */
-    private GameProfile puppetProfile() {
-        GameProfile own = mc.getSession().getProfile();
-        NetworkPlayerInfo info = own.getId() == null ? null : handler.getPlayerInfo(own.getId());
-        return info != null && info.getGameProfile() != null ? info.getGameProfile() : own;
     }
 
     private static SelfTrack track() {

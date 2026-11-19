@@ -1,8 +1,11 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.ExtCodec;
 import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 import org.junit.Test;
+
+import java.util.Arrays;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -16,6 +19,10 @@ import static org.junit.Assert.assertTrue;
  * tick including restarts by repeated clicks, item use from the using-item flag, the selected slot from TICK
  * {@code heldSlot}, EQUIP stacks applied once per change (so a later S2F for that slot wins), armour, and
  * {@code hurtTime} by view.
+ *
+ * <p><b>Format v2</b> (Phase 13, C9): a swing starts on the tick of a recorded OUT C0A, the item-use count is the
+ * recorded USE count (counted down between records), and all 41 inventory slots (36 main, 4 armour, the cursor) are
+ * the INV records' (they win over EQUIP), also when the state is first taken at a later tick (a seek).
  */
 public class HandStateTest {
 
@@ -387,5 +394,260 @@ public class HandStateTest {
         assertEquals(0, h.selectedSlot());
         assertFalse(h.swingInProgress());
         assertFalse(h.inUse());
+    }
+
+    // ------------------------------------------------------------------ format v2 (Phase 13, C9)
+
+    private final ExtCodec codec = new ExtCodec();
+    private final ExtRecords.Builder xb = new ExtRecords.Builder();
+    private int xseg;
+
+    /** Tick i's head, 1 ms before its TICK (so the table is the v2 heads, tick i = [T + i x 50 ms - 1 ms, ...)). */
+    private void head(int i) {
+        int n = codec.tickHead(0);
+        xb.addEncoded(xseg, T + i * TICK - 1_000, RewindFormat.TAG_TICK_HEAD, codec.buffer(), n);
+    }
+
+    /** An extension record stamped inside tick i (after its head, before its TICK). */
+    private void ext(int i, int tag, int n) {
+        xb.addEncoded(xseg, T + i * TICK - 500, tag, codec.buffer(), n);
+    }
+
+    private void out(int i, int packetId) {
+        ext(i, RewindFormat.TAG_OUT, codec.out(packetId, new byte[]{1, 2}, 0, packetId == 0x0A ? 0 : 2));
+    }
+
+    private void use(int i, int count) {
+        ext(i, RewindFormat.TAG_USE, codec.use(count));
+    }
+
+    private void inv(int i, int slot, byte[] item) {
+        ext(i, RewindFormat.TAG_INV, codec.inv(slot, item, 0, item.length));
+    }
+
+    /** A protocol-47 slot: item {@code id}, {@code count}, damage 0, no tag. */
+    private static byte[] item(int id, int count) {
+        return new byte[]{(byte) (id >> 8), (byte) id, (byte) count, 0, 0, 0};
+    }
+
+    private static final byte[] EMPTY = {(byte) 0xFF, (byte) 0xFF};
+
+    private ExtTrack xt;
+    private TickTable v2table;
+
+    private ExtTrack buildExt(SelfTrack s) {
+        ExtRecords r = xb.build();
+        xt = ExtTrack.of(r);
+        v2table = TickTable.forRecording(T - 1_000, s, r);
+        assertEquals(TickTable.Kind.V2, v2table.kind());
+        return xt;
+    }
+
+    private boolean sampleV2(HandState hs, SelfTrack s, int i) {
+        return hs.sample(s, xt, v2table, i, END);
+    }
+
+    @Test
+    public void v2ASwingStartsOnTheTickOfEachRecordedC0aNotOnTheTickCounters() {
+        b.segment(1);
+        // The TICK counters tell of one swing starting at tick 12 (they read 1 from tick 13); the C0As say 3, 5, 9.
+        int[] stored = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 1};
+        for (int i = 0; i < stored.length; i++) {
+            tick(i, 0, 0, stored[i] - 1, 0);
+            head(i);
+        }
+        out(3, 0x0A);
+        out(5, 0x0A); // mid-swing, first half: vanilla does not restart
+        out(7, 0x08); // a block placement, not a swing
+        out(9, 0x0A);
+        out(9, 0x0A); // two in one tick: one start
+        SelfTrack s = b.build();
+        buildExt(s);
+        VanillaSwing ref = new VanillaSwing();
+        for (int i = 0; i < stored.length; i++) {
+            boolean click = i == 3 || i == 5 || i == 9;
+            if (click) {
+                ref.swingItem(END);
+            }
+            ref.tick(END);
+            assertTrue(sampleV2(h, s, i));
+            String at = "tick " + i;
+            assertTrue(at, h.extSwing());
+            assertEquals(at, click, h.swingStarted());
+            assertEquals(at, ref.progress, h.swingProgressInt());
+            assertEquals(at, ref.inProgress, h.swingInProgress());
+            assertEquals(at, ref.swing, h.swingProgress(), 0f);
+            assertEquals(at, ref.prev, h.prevSwingProgress(), 0f);
+        }
+    }
+
+    @Test
+    public void v2ItemUseTakesTheRecordedCount() {
+        b.segment(1);
+        for (int i = 0; i < 40; i++) {
+            tick(i, i >= 10 && i < 30 ? RewindFormat.FLAG_USING_ITEM : 0, 0, -1, 0);
+            head(i);
+        }
+        use(10, 72000); // a bow draw starts at the full count
+        use(20, 32);    // the count jumps (a new item in use): the recorder writes it, playback takes it
+        use(30, 0);     // released
+        SelfTrack s = b.build();
+        buildExt(s);
+        for (int i = 0; i < 40; i++) {
+            assertTrue(sampleV2(h, s, i));
+            String at = "tick " + i;
+            assertTrue(at, h.extUse());
+            assertEquals(at, i >= 10 && i < 30, h.inUse());
+            if (h.inUse()) {
+                assertEquals(at, i < 20 ? 72000 - (i - 10) : 32 - (i - 20), h.useCount(72000));
+            }
+        }
+    }
+
+    @Test
+    public void v2AllFortyOneSlotsFollowTheInvRecordsAndWinOverEquip() {
+        b.segment(1);
+        byte[][] want = new byte[RewindFormat.INV_SLOTS][];
+        for (int i = 0; i < 12; i++) {
+            tick(i, 0, 0, -1, 0);
+            head(i);
+        }
+        for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+            inv(0, slot, slot % 5 == 4 ? EMPTY : item(slot + 1, 1)); // a segment's first tick: all 41
+        }
+        equip(0, RewindFormat.EQUIP_HELD, 7, 64);                    // disagrees with INV slot 0
+        equip(0, RewindFormat.EQUIP_HELMET, 9, 1);                   // and with INV slot 39
+        inv(4, 0, item(100, 5));
+        inv(4, 20, item(101, 1));
+        inv(4, 38, item(102, 1));
+        inv(4, 40, item(103, 2));
+        equip(6, RewindFormat.EQUIP_HELD, 7, 1);                     // INV still wins
+        inv(8, 40, EMPTY);
+        SelfTrack s = b.build();
+        buildExt(s);
+        int[][] changes = {{4, 0, 20, 38, 40}, {8, 40}};
+        for (int i = 0; i < 12; i++) {
+            boolean[] changed = new boolean[RewindFormat.INV_SLOTS];
+            if (i == 0) {
+                for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+                    want[slot] = slot % 5 == 4 ? EMPTY : item(slot + 1, 1);
+                    changed[slot] = true;
+                }
+            }
+            for (int[] c : changes) {
+                if (c[0] == i) {
+                    for (int j = 1; j < c.length; j++) {
+                        changed[c[j]] = true;
+                    }
+                }
+            }
+            if (i == 4) {
+                want[0] = item(100, 5);
+                want[20] = item(101, 1);
+                want[38] = item(102, 1);
+                want[40] = item(103, 2);
+            } else if (i == 8) {
+                want[40] = EMPTY;
+            }
+            assertTrue(sampleV2(h, s, i));
+            String at = "tick " + i;
+            assertTrue(at, h.extInventory());
+            for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+                assertArrayEquals(at + " slot " + slot, want[slot], h.invItem(slot));
+                assertEquals(at + " slot " + slot, changed[slot], h.invChanged(slot));
+            }
+            for (int slot = 0; slot < HandState.HOTBAR; slot++) {
+                assertArrayEquals(at + " hotbar " + slot, want[slot], h.hotbarItem(slot));
+                assertEquals(at + " hotbar " + slot, changed[slot], h.hotbarChanged(slot));
+            }
+            for (int e = RewindFormat.EQUIP_BOOTS; e <= RewindFormat.EQUIP_HELMET; e++) {
+                int slot = RewindFormat.INV_ARMOR_FIRST + e - RewindFormat.EQUIP_BOOTS;
+                assertArrayEquals(at + " armour " + e, want[slot], h.armourItem(e));
+                assertEquals(at + " armour " + e, changed[slot], h.armourChanged(e));
+            }
+        }
+    }
+
+    /** A state first taken at a later tick (a seek, a new connection) is the INV records' at that tick. */
+    @Test
+    public void v2InventoryFirstTakenLaterAndAcrossASegmentIsTheKeyedState() {
+        b.segment(1);
+        for (int i = 0; i < 10; i++) {
+            tick(i, 0, 0, -1, 0);
+            head(i);
+        }
+        for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+            inv(0, slot, item(slot + 1, 1));
+        }
+        inv(3, 12, item(200, 3));
+        inv(6, 40, item(201, 1));
+        b.segment(2);
+        enc.resetSegment();
+        xseg = 1;
+        for (int i = 10; i < 20; i++) {
+            tick(i, 0, 0, -1, 0);
+            head(i);
+        }
+        for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+            inv(10, slot, slot == 12 ? item(300, 1) : EMPTY);            // the new segment restates all 41
+        }
+        SelfTrack s = b.build();
+        buildExt(s);
+        for (int i = 0; i < 20; i++) {
+            assertTrue(sampleV2(h, s, i));
+            if (i == 7 || i == 15) {
+                HandState fresh = new HandState();
+                assertTrue(sampleV2(fresh, s, i));
+                for (int slot = 0; slot < RewindFormat.INV_SLOTS; slot++) {
+                    String at = "tick " + i + " slot " + slot;
+                    assertArrayEquals(at, h.invItem(slot), fresh.invItem(slot));
+                    assertTrue(at + ": a first sample hands over every slot", fresh.invChanged(slot));
+                }
+            }
+        }
+        assertArrayEquals(item(300, 1), h.invItem(12));
+        assertArrayEquals("segment 2 restated the cursor", EMPTY, h.invItem(40));
+        HandState at7 = new HandState();
+        assertTrue(sampleV2(at7, s, 7));
+        assertArrayEquals(item(200, 3), at7.invItem(12));
+        assertArrayEquals(item(201, 1), at7.invItem(40));
+        assertArrayEquals(item(1, 1), at7.invItem(0));
+    }
+
+    /** C10: no v2 record of a kind, no v2 path for it; a v1 recording plays exactly as before. */
+    @Test
+    public void withoutTheV2RecordsTheV1PathRunsUnchanged() {
+        b.segment(1);
+        for (int i = 0; i < 30; i++) {
+            tick(i, i >= 10 && i < 20 ? RewindFormat.FLAG_USING_ITEM : 0, i < 15 ? 1 : 4, i % 9 == 3 ? 0 : -1, 0);
+            head(i);
+        }
+        equip(0, RewindFormat.EQUIP_HELD, 7, 64);
+        equip(16, RewindFormat.EQUIP_HELD, 5, 2);
+        SelfTrack s = b.build();
+        ExtTrack headsOnly = buildExt(s);
+        assertFalse(HandState.usesExt(headsOnly));
+        assertFalse(HandState.usesExt(ExtTrack.EMPTY));
+        out(0, 0x0A);
+        assertTrue("an OUT record makes it a v2 hand", HandState.usesExt(ExtTrack.of(xb.build())));
+        HandState v1 = new HandState();
+        TickTable v1table = TickTable.forRecording(T - 1_000, s, ExtRecords.EMPTY);
+        for (int i = 0; i < 30; i++) {
+            assertTrue(h.sample(s, headsOnly, v1table, i, END));
+            assertTrue(v1.sample(s, v1table, i, END));
+            String at = "tick " + i;
+            assertFalse(at, h.extSwing() || h.extUse() || h.extInventory());
+            assertEquals(at, v1.swingStarted(), h.swingStarted());
+            assertEquals(at, v1.swingProgressInt(), h.swingProgressInt());
+            assertEquals(at, v1.inUse(), h.inUse());
+            assertEquals(at, v1.useCount(72000), h.useCount(72000));
+            assertEquals(at, v1.selectedSlot(), h.selectedSlot());
+            for (int slot = 0; slot < HandState.HOTBAR; slot++) {
+                assertEquals(at, v1.hotbarChanged(slot), h.hotbarChanged(slot));
+                assertArrayEquals(at, v1.hotbarItem(slot), h.hotbarItem(slot));
+            }
+            assertNull(h.invItem(0));
+        }
+        assertTrue(Arrays.equals(new byte[]{5, 2}, h.hotbarItem(4)));
     }
 }
