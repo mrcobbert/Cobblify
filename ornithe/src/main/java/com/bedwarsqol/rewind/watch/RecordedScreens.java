@@ -1,11 +1,15 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.RewindFormat;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiGameOver;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.GuiTextField;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.gui.inventory.GuiChest;
+import net.minecraft.client.gui.inventory.GuiInventory;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.entity.IMerchant;
@@ -54,11 +58,19 @@ import org.lwjgl.opengl.GL11;
  * and do nothing.
  *
  * <p><b>Never opened.</b> The held screens are never {@code mc.currentScreen}, so vanilla routes no input to them;
- * on top of that every input, update and close handler is a no-op ({@link HeldChest}, {@link HeldGameOver}), so
- * nothing they hold can send, close or open anything. Drawn only in your view with the clean view off, at the
- * {@link #cursorX}/{@link #cursorY} position (v1: off screen, so no hover and no carried stack; Phase 12: the
- * recorded mouse). All state follows the tick feed (displays, closes and ticks), so a seek lands on the screens
- * straight play shows.
+ * on top of that every input, update and close handler is a no-op ({@link HeldChest}, {@link HeldGameOver},
+ * {@link HeldInventory}), so nothing they hold can send, close or open anything. Drawn only in your view with the
+ * clean view off, at the {@link #cursorX}/{@link #cursorY} position (v1: off screen, so no hover and no carried
+ * stack). Window state follows the tick feed (displays, closes and ticks), so a seek lands on the screens straight
+ * play shows.
+ *
+ * <p><b>v2 recordings</b> (VIEW records; Phase 12, TASK C5, C6, B9) follow the recorded screen kind <b>by playback
+ * time</b> ({@link ViewTrack}), so a seek lands on it too: the death screen is held exactly while the recorded screen
+ * is the death screen (health no longer opens it); a window is drawn from its open until the first VIEW at or after
+ * its tick that names something else ({@link #closedByView}: the exact close, in that frame); the inventory screen
+ * ({@link HeldInventory}, vanilla's {@code GuiInventory} of the camera) while the recorded screen is the inventory;
+ * the chat input bar ({@link ChatBar}) with the recorded text while it is chat. The cursor, vanilla's hover
+ * highlight, tooltip and carried stack follow the recorded mouse, and {@link CursorPainter} draws the arrow there.
  */
 public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart {
 
@@ -88,6 +100,15 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
 
         /** The recorded game mode is spectator. */
         boolean recordedSpectator();
+
+        /** The recording's extension records by tag ({@code LoadedRecording.extTrack}). */
+        ExtTrack extTrack();
+
+        /** Playback time, the time the picture shows ({@code PlaybackSession.renderTimeUs}). */
+        long renderTimeUs();
+
+        /** The segment of the tick the picture shows ({@code TickTable.segment}; -1 unknown). */
+        int segment();
     }
 
     private static final Context SESSION = new Context() {
@@ -136,6 +157,22 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
             PlaybackSink s = RewindPlayback.currentSink();
             return s != null && s.recordedGameType() == WorldSettings.GameType.SPECTATOR;
         }
+
+        @Override
+        public ExtTrack extTrack() {
+            LoadedRecording r = RewindPlayback.session().recording();
+            return r == null ? ExtTrack.EMPTY : r.extTrack();
+        }
+
+        @Override
+        public long renderTimeUs() {
+            return RewindPlayback.session().renderTimeUs();
+        }
+
+        @Override
+        public int segment() {
+            return ViewPart.segmentNow(RewindPlayback.session());
+        }
     };
 
     private static final RecordedScreens INSTANCE = new RecordedScreens(SESSION);
@@ -151,6 +188,14 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
     private int deathTicks;
     private WindowCloseRule.Source source;
     private TickTable sourceTable;
+    /** v2: the recorded VIEW, MOUSE and CHAT_INPUT at playback time (Phase 12). */
+    private final ViewTrack recorded = new ViewTrack();
+    /** v2: the inventory screen while the recorded screen is the inventory, on {@link #inventoryOwner}'s slots. */
+    private HeldInventory inventory;
+    private RewindCamera inventoryOwner;
+    private long inventorySinceUs;
+    /** v2: the chat input bar while the recorded screen is chat. */
+    private final ChatBar chatBar = new ChatBar();
 
     RecordedScreens(Context context) {
         this.context = context;
@@ -301,6 +346,10 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
         deathTicks = 0;
         source = null;
         sourceTable = null;
+        recorded.reset();
+        inventory = null;
+        inventoryOwner = null;
+        chatBar.forget();
     }
 
     /** World tick k is about to run: the death screen from the recorded health, then the player's close. */
@@ -308,6 +357,17 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
     public void tick(long tick, long timeUs) {
         RewindCamera camera = camera();
         if (camera == null) {
+            return;
+        }
+        if (exact()) {
+            // v2: the recorded screen kind decides what is drawn (held()); dying still ends a window, as vanilla's
+            // GuiContainer.updateScreen does, and the player's close keeps its tick-scoped side (cursor stack)
+            if (context.health(camera) <= 0f && !context.recordedSpectator() && window != null) {
+                closeWindow(camera);
+            }
+            if (windowScreen != null && closeSource().closedBy(openTick, openUs, tick)) {
+                playerClosed(camera);
+            }
             return;
         }
         if (context.health(camera) <= 0f && !context.recordedSpectator()) {
@@ -341,18 +401,31 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
     /** The viewer's underlay: the held screen, in your view with the clean view off. */
     @Override
     public void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
-        GuiScreen s = screenToDraw();
         Minecraft mc = Minecraft.getMinecraft();
-        if (s == null || mc == null || !(mc.thePlayer instanceof RewindCamera)) {
+        if (mc == null || !(mc.thePlayer instanceof RewindCamera)) {
             return;
         }
-        if (s.width != width || s.height != height || !((Held) s).initialized()) {
-            s.setWorldAndResolution(mc, width, height); // first draw (death screen) or a resize
+        GuiScreen s = screenToDraw();
+        boolean chat = s == null && chatShown();
+        if (s == null && !chat) {
+            return;
         }
-        if (s == deathScreen) {
-            deathScreen.buttonsEnabled(deathTicks >= DEATH_BUTTON_TICKS);
+        int x = cursorX(width);
+        int y = cursorY(height);
+        if (s != null) {
+            if (s.width != width || s.height != height || !((Held) s).initialized()) {
+                s.setWorldAndResolution(mc, width, height); // first draw (death screen) or a resize
+            }
+            if (s == deathScreen) {
+                deathScreen.buttonsEnabled(deathButtonsEnabled());
+            }
+            s.drawScreen(x, y, partial);
+        } else {
+            chatBar.draw(chatField(width, height), width, height, chatBlinkTicks());
         }
-        s.drawScreen(cursorX(width), cursorY(height), partial);
+        if (x != OFF_SCREEN && y != OFF_SCREEN) {
+            CursorPainter.draw(cursorGuiX(width), cursorGuiY(height), new ScaledResolution(mc).getScaleFactor());
+        }
         // what vanilla's container screen leaves behind, put back for the viewer bar drawn next
         RenderHelper.disableStandardItemLighting();
         GlStateManager.disableLighting();
@@ -360,14 +433,50 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
         GlStateManager.clear(GL11.GL_DEPTH_BUFFER_BIT);
     }
 
-    /** The cursor's x for the held screen. v1 has no mouse position: off screen. Phase 12: the recorded MOUSE. */
+    /**
+     * The cursor's x for the held screen, in the GUI pixels vanilla hands {@code drawScreen}. v1 has no mouse
+     * position: off screen (no hover, no carried stack drawn). v2: the recorded MOUSE, which is the offset from the
+     * screen centre in quarter GUI pixels ({@code ViewCapture.mouseDx}), so {@code floor((2 x width + dx) / 4)} is
+     * the exact pixel vanilla drew at when the window had this size, and stays centred when it has another; centred
+     * before the open screen's first MOUSE (vanilla centres the cursor when a screen opens); off screen while no
+     * screen is open or when the recording has no MOUSE records.
+     */
     int cursorX(int width) {
-        return OFF_SCREEN;
+        if (!cursorKnown()) {
+            return OFF_SCREEN;
+        }
+        return Math.floorDiv(2 * width + (recorded.mouseShown() ? recorded.mouseDx() : 0),
+                RewindFormat.MOUSE_UNITS_PER_GUI_PX);
     }
 
-    /** The cursor's y; see {@link #cursorX}. */
+    /** The cursor's y; see {@link #cursorX} ({@code ViewCapture.mouseDy}, downwards). */
     int cursorY(int height) {
-        return OFF_SCREEN;
+        if (!cursorKnown()) {
+            return OFF_SCREEN;
+        }
+        return Math.floorDiv(2 * height + (recorded.mouseShown() ? recorded.mouseDy() : 0),
+                RewindFormat.MOUSE_UNITS_PER_GUI_PX);
+    }
+
+    /** The arrow's tip in GUI coordinates at the recorded quarter pixel (where the system cursor was drawn). */
+    private float cursorGuiX(int width) {
+        return (2 * width + (recorded.mouseShown() ? recorded.mouseDx() : 0))
+                / (float) RewindFormat.MOUSE_UNITS_PER_GUI_PX;
+    }
+
+    private float cursorGuiY(int height) {
+        return (2 * height + (recorded.mouseShown() ? recorded.mouseDy() : 0))
+                / (float) RewindFormat.MOUSE_UNITS_PER_GUI_PX;
+    }
+
+    /** A v2 recording with MOUSE records whose recorded screen is open now. */
+    private boolean cursorKnown() {
+        ExtTrack t = context.extTrack();
+        if (t == null || !t.has(RewindFormat.TAG_MOUSE) || !exact()) {
+            return false;
+        }
+        sync();
+        return recorded.hasView() && recorded.screenKind() != RewindFormat.SCREEN_NONE;
     }
 
     private static RewindCamera camera() {
@@ -377,9 +486,79 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
 
     // ================================================================== read by tests and later phases
 
-    /** The screen held now: the death screen over a window, or null. */
+    /**
+     * The screen held now. v1: the death screen over a window, or null. v2 ({@link #exact}), by playback time: the
+     * death screen while the recorded screen is the death screen; else the window from its open until the recorded
+     * close ({@link #closedByView}); else the inventory screen while the recorded screen is the inventory; else null.
+     */
     GuiScreen held() {
-        return deathScreen != null ? deathScreen : windowScreen;
+        if (!exact()) {
+            return deathScreen != null ? deathScreen : windowScreen;
+        }
+        sync();
+        int kind = recorded.hasView() ? recorded.screenKind() : RewindFormat.SCREEN_NONE;
+        if (kind == RewindFormat.SCREEN_DEATH) {
+            if (deathScreen == null) {
+                deathScreen = new HeldGameOver();
+            }
+            return deathScreen;
+        }
+        deathScreen = null;
+        if (windowScreen != null && !closedByView()) {
+            return windowScreen;
+        }
+        if (kind == RewindFormat.SCREEN_INVENTORY) {
+            return inventoryScreen();
+        }
+        inventory = null;
+        return null;
+    }
+
+    /** The recording holds VIEW records (v2): screens follow the recorded screen kind and close exactly. */
+    private boolean exact() {
+        ExtTrack t = context.extTrack();
+        return t != null && t.has(RewindFormat.TAG_VIEW);
+    }
+
+    /** The recorded view at playback time. */
+    private void sync() {
+        recorded.at(context.extTrack(), context.segment(), context.renderTimeUs());
+    }
+
+    /**
+     * v2's exact close: a VIEW record stamped at or after the head of the open's tick (the handler ran before that
+     * head, the recorder samples the screen after it) and at or before playback time names a screen that is not a
+     * container. Drawing stops in the first frame that reaches it; the tick-scoped side (the cursor stack, the
+     * container's routing) follows {@link #closeSource()} as on v1.
+     */
+    private boolean closedByView() {
+        if (!recorded.hasView()) {
+            return false;
+        }
+        int kind = recorded.screenKind();
+        if (kind == RewindFormat.SCREEN_CHEST || kind == RewindFormat.SCREEN_OTHER_CONTAINER) {
+            return false;
+        }
+        TickTable table = context.table();
+        long from = table == null ? openUs : table.timeOf(openTick);
+        return recorded.kindSinceUs() >= from;
+    }
+
+    /** The inventory screen of the current camera, one per recorded open (vanilla builds one per E). */
+    private GuiScreen inventoryScreen() {
+        RewindCamera camera = camera();
+        if (camera == null) {
+            return null;
+        }
+        if (inventory == null || inventoryOwner != camera || inventorySinceUs != recorded.kindSinceUs()) {
+            inventory = new HeldInventory(camera);
+            inventoryOwner = camera;
+            inventorySinceUs = recorded.kindSinceUs();
+            Minecraft mc = Minecraft.getMinecraft();
+            ScaledResolution size = new ScaledResolution(mc);
+            inventory.setWorldAndResolution(mc, size.getScaledWidth(), size.getScaledHeight());
+        }
+        return inventory;
     }
 
     /** What {@link #drawUnder} draws now: {@link #held()} in your view with the clean view off, else null. */
@@ -394,6 +573,53 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
     /** The routed window container, or null. */
     Container window() {
         return window;
+    }
+
+    /** v2: chat is open in the recording now, drawn in your view with the clean view off (C6). */
+    boolean chatShown() {
+        ViewState v = context.view();
+        if (v == null || !v.yourView() || v.clean() || !exact()) {
+            return false;
+        }
+        sync();
+        return recorded.chatShown();
+    }
+
+    /** The recorded chat text now (empty before this chat's first keystroke). Private player data: never logged. */
+    String chatText() {
+        sync();
+        return recorded.chatText();
+    }
+
+    int chatCursor() {
+        sync();
+        return recorded.chatCursor();
+    }
+
+    /** Vanilla's chat input field ({@code GuiChat.initGui}'s) holding the recorded text and cursor now. */
+    GuiTextField chatField(int width, int height) {
+        sync();
+        Minecraft mc = Minecraft.getMinecraft();
+        return chatBar.field(mc == null ? null : mc.fontRendererObj, width, height, recorded.kindSinceUs(),
+                recorded.chatText(), recorded.chatCursor());
+    }
+
+    /** Ticks the chat bar has been open (vanilla's {@code updateCursorCounter} runs once per tick). */
+    private long chatBlinkTicks() {
+        return ViewTrack.ticksBetween(context.table(), recorded.kindSinceUs(), context.renderTimeUs());
+    }
+
+    /**
+     * The death screen's buttons: vanilla's {@code GuiGameOver.updateScreen} enables them on its 20th tick. v1: 20
+     * world ticks at health 0. v2: 20 recorded ticks since the recorded death screen opened.
+     */
+    boolean deathButtonsEnabled() {
+        if (!exact()) {
+            return deathTicks >= DEATH_BUTTON_TICKS;
+        }
+        sync();
+        return ViewTrack.ticksBetween(context.table(), recorded.kindSinceUs(), context.renderTimeUs())
+                >= DEATH_BUTTON_TICKS;
     }
 
     // ================================================================== held screens
@@ -492,6 +718,161 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
         public void handleKeyboardInput() {
         }
     }
+
+    /**
+     * Vanilla's {@link GuiInventory} of the camera (Phase 12, C5), drawn as is: its own crafting grid, armour, main
+     * inventory and hotbar on the camera's {@code inventoryContainer}, the player model looking at the recorded
+     * cursor, the cursor stack at the cursor. Its {@code initGui} lays it out as vanilla's does (centred, moved right
+     * by active effects) without vanilla's two side effects: it never makes its container the camera's open container
+     * (the recorded windows own that) and never swaps itself for the creative inventory (which opens a screen). Every
+     * input, update and close handler does nothing.
+     */
+    static final class HeldInventory extends GuiInventory implements Held {
+        private boolean initialized;
+
+        HeldInventory(EntityPlayer player) {
+            super(player);
+        }
+
+        @Override
+        public void initGui() {
+            buttonList.clear();
+            guiLeft = (width - xSize) / 2;
+            guiTop = (height - ySize) / 2;
+            updateActivePotionEffects();
+            initialized = true;
+        }
+
+        @Override
+        public boolean initialized() {
+            return initialized;
+        }
+
+        @Override
+        protected void mouseClicked(int mouseX, int mouseY, int button) {
+        }
+
+        @Override
+        protected void mouseReleased(int mouseX, int mouseY, int state) {
+        }
+
+        @Override
+        protected void mouseClickMove(int mouseX, int mouseY, int button, long time) {
+        }
+
+        @Override
+        protected void handleMouseClick(Slot slot, int slotId, int button, int type) {
+        }
+
+        @Override
+        protected void keyTyped(char c, int key) {
+        }
+
+        @Override
+        protected boolean checkHotbarKeys(int key) {
+            return false;
+        }
+
+        @Override
+        protected void actionPerformed(GuiButton button) {
+        }
+
+        @Override
+        protected boolean handleComponentClick(IChatComponent component) {
+            return false;
+        }
+
+        @Override
+        public void sendChatMessage(String msg) {
+        }
+
+        @Override
+        public void sendChatMessage(String msg, boolean addToChat) {
+        }
+
+        @Override
+        public void confirmClicked(boolean result, int id) {
+        }
+
+        @Override
+        public void updateScreen() {
+        }
+
+        @Override
+        public void onGuiClosed() {
+        }
+
+        @Override
+        public void handleInput() {
+        }
+
+        @Override
+        public void handleMouseInput() {
+        }
+
+        @Override
+        public void handleKeyboardInput() {
+        }
+    }
+
+    /**
+     * The chat input bar (Phase 12, C6): what {@code GuiChat.drawScreen} draws for its input, vanilla's rectangle
+     * ({@code 2, height - 14} to {@code width - 2, height - 2}, half-transparent black) and vanilla's
+     * {@link GuiTextField} as {@code GuiChat.initGui} sets it up, holding the recorded text and cursor. Not a screen:
+     * no {@code GuiChat} is built, so nothing turns on key repeat, reads the live mouse for chat hovers or can send;
+     * the field is given the recorded text again every frame. One field per recorded chat, so its scroll follows the
+     * typing as vanilla's did; the cursor blinks on the recorded ticks.
+     */
+    static final class ChatBar {
+        private GuiTextField field;
+        private Object font;
+        private int width;
+        private int height;
+        private long sinceUs = Long.MIN_VALUE;
+        private long blinkTicks;
+
+        void forget() {
+            field = null;
+            sinceUs = Long.MIN_VALUE;
+        }
+
+        GuiTextField field(net.minecraft.client.gui.FontRenderer fr, int w, int h, long chatSinceUs, String text,
+                           int cursor) {
+            if (field == null || font != fr || width != w || height != h || sinceUs != chatSinceUs) {
+                field = new GuiTextField(0, fr, 4, h - 12, w - 4, 12);
+                field.setEnableBackgroundDrawing(false);
+                field.setFocused(true);
+                field.setCanLoseFocus(false);
+                font = fr;
+                width = w;
+                height = h;
+                sinceUs = chatSinceUs;
+                blinkTicks = 0;
+            }
+            String t = text == null ? "" : text;
+            field.setMaxStringLength(Math.max(VANILLA_CHAT_LENGTH, t.length()));
+            if (!t.equals(field.getText())) {
+                field.setText(t);
+            }
+            field.setCursorPosition(cursor);
+            return field;
+        }
+
+        void draw(GuiTextField f, int w, int h, long ticks) {
+            if (ticks < blinkTicks) {
+                blinkTicks = 0; // a seek back inside this chat: the blink restarts
+            }
+            for (long n = (ticks - blinkTicks) % 12; n > 0; n--) {
+                f.updateCursorCounter(); // only the counter mod 12 shows (6 on, 6 off)
+            }
+            blinkTicks = ticks;
+            Gui.drawRect(2, h - 14, w - 2, h - 2, Integer.MIN_VALUE);
+            f.drawTextBox();
+        }
+    }
+
+    /** {@code GuiChat.initGui}'s input length. */
+    static final int VANILLA_CHAT_LENGTH = 100;
 
     /** Vanilla's {@link GuiGameOver}, drawn as is; its buttons do nothing. */
     static final class HeldGameOver extends GuiGameOver implements Held {

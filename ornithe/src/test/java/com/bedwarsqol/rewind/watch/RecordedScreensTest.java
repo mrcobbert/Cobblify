@@ -10,11 +10,14 @@ import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiGameOver;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.inventory.GuiChest;
+import net.minecraft.client.gui.GuiTextField;
 import net.minecraft.client.gui.inventory.GuiContainer;
+import net.minecraft.client.gui.inventory.GuiInventory;
 import net.minecraft.client.multiplayer.PlayerControllerMP;
 import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.player.inventory.LocalBlockIntercommunication;
 import net.minecraft.client.settings.GameSettings;
+import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.init.Blocks;
@@ -32,6 +35,7 @@ import net.minecraft.network.play.server.S2DPacketOpenWindow;
 import net.minecraft.network.play.server.S2EPacketCloseWindow;
 import net.minecraft.network.play.server.S2FPacketSetSlot;
 import net.minecraft.network.play.server.S30PacketWindowItems;
+import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IChatComponent;
 import org.junit.After;
@@ -48,6 +52,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -132,10 +137,32 @@ public class RecordedScreensTest {
         TickTable table;
         float health = 20f;
         boolean spectator;
+        long renderUs;
+        private ExtRecords extTrackOf;
+        private ExtTrack extTrack = ExtTrack.EMPTY;
 
         @Override
         public ViewState view() {
             return view;
+        }
+
+        @Override
+        public ExtTrack extTrack() {
+            if (extTrackOf != ext) {
+                extTrackOf = ext;
+                extTrack = ExtTrack.of(ext);
+            }
+            return extTrack;
+        }
+
+        @Override
+        public long renderTimeUs() {
+            return renderUs;
+        }
+
+        @Override
+        public int segment() {
+            return 0;
         }
 
         @Override
@@ -226,6 +253,7 @@ public class RecordedScreensTest {
         c.inventoryContainer = new PlayerContainer(c.inventory);
         c.openContainer = c.inventoryContainer;
         set(EntityPlayerSP.class, c, "sendQueue", handler);
+        set(EntityLivingBase.class, c, "activePotionsMap", new HashMap<Integer, PotionEffect>());
         mc.thePlayer = c;
         return c;
     }
@@ -648,8 +676,10 @@ public class RecordedScreensTest {
         find(screen.getClass(), "keyTyped", "char,int").invoke(screen, '1', 2);
         if (screen instanceof GuiContainer) {
             Container c = ((GuiContainer) screen).inventorySlots;
+            int last = Math.min(60, c.inventorySlots.size() - 1);
             find(screen.getClass(), "handleMouseClick", "Slot,int,int,int").invoke(screen, c.getSlot(0), 0, 0, 0);
-            find(screen.getClass(), "handleMouseClick", "Slot,int,int,int").invoke(screen, c.getSlot(60), 60, 0, 1);
+            find(screen.getClass(), "handleMouseClick", "Slot,int,int,int").invoke(screen, c.getSlot(last), last, 0,
+                    1);
             find(screen.getClass(), "checkHotbarKeys", "int").invoke(screen, 2);
         }
     }
@@ -696,12 +726,324 @@ public class RecordedScreensTest {
 
     @Test
     public void recordedScreensNeverOpenAScreenOrSend() throws IOException {
-        String src = PlaybackIsolationScanTest.strip(PlaybackIsolationScanTest.read(
-                new File(PlaybackIsolationScanTest.mainRoot(), "com/bedwarsqol/rewind/watch/RecordedScreens.java")));
-        for (String banned : new String[]{"displayGuiScreen", "currentScreen =", "addToSendQueue", "sendPacket",
-                "playerController", "windowClick"}) {
-            assertFalse(banned, src.contains(banned));
+        for (String file : new String[]{"RecordedScreens", "ViewPart", "FovPart", "CursorPainter"}) {
+            String src = PlaybackIsolationScanTest.strip(PlaybackIsolationScanTest.read(new File(
+                    PlaybackIsolationScanTest.mainRoot(), "com/bedwarsqol/rewind/watch/" + file + ".java")));
+            for (String banned : new String[]{"displayGuiScreen", "currentScreen =", "addToSendQueue", "sendPacket",
+                    "playerController", "windowClick", "sendChatMessage("}) {
+                if (file.equals("RecordedScreens") && banned.equals("sendChatMessage(")) {
+                    continue; // the held screens override vanilla's sendChatMessage with no-ops
+                }
+                assertFalse(file + ": " + banned, src.contains(banned));
+            }
         }
+    }
+
+    /**
+     * Phase 12 (B13, C5, C6): the inventory screen and the chat input bar are drawn, never opened: never
+     * {@code mc.currentScreen}, every input handler a no-op, nothing reaches the playback channel, and typing into the
+     * bar's field (vanilla never would) does not outlive the next frame's recorded text.
+     */
+    @Test
+    public void theInventoryScreenAndTheChatBarAreNeverCurrentTakeNoInputAndSendNothing() throws Exception {
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, 100 * MS, RewindFormat.SCREEN_INVENTORY);
+        view(b, 200 * MS, RewindFormat.SCREEN_NONE);
+        view(b, 300 * MS, RewindFormat.SCREEN_CHAT);
+        chat(b, 310 * MS, "/ping", 5);
+        ctx.ext = b.build();
+        ctx.renderUs = 150 * MS;
+        GuiScreen inv = screens.held();
+        assertTrue(inv instanceof GuiInventory);
+        String[] before = inventory(camera.inventory);
+        Container open = camera.openContainer;
+
+        driveEveryHandler(inv);
+
+        assertEquals("nothing reached the playback channel", 0, connection.discarded());
+        assertNull("never mc.currentScreen", mc.currentScreen);
+        assertSame("no handler closed or replaced the open container", open, camera.openContainer);
+        assertSame(inv, screens.held());
+        assertArrayEquals(before, inventory(camera.inventory));
+
+        ctx.renderUs = 320 * MS;
+        GuiTextField field = screens.chatField(W, H);
+        assertEquals("/ping", field.getText());
+        field.writeText("x"); // what a key typed into it would do (textboxKeyTyped needs a live keyboard)
+        field.deleteFromCursor(-3);
+        assertEquals("/ping", screens.chatField(W, H).getText());
+        assertEquals(0, connection.discarded());
+        assertNull(mc.currentScreen);
+    }
+
+    // ------------------------------------------------------------------ Phase 12: v2 screens (C5, C6, B9 on v2)
+
+    private static final long MS = 1_000L;
+    private static final ExtCodec CODEC = new ExtCodec();
+
+    private static void view(ExtRecords.Builder b, long us, int kind) {
+        b.addEncoded(0, us, RewindFormat.TAG_VIEW, CODEC.buffer(), CODEC.view(0, 0, kind));
+    }
+
+    private static void mouse(ExtRecords.Builder b, long us, int dx, int dy) {
+        b.addEncoded(0, us, RewindFormat.TAG_MOUSE, CODEC.buffer(), CODEC.mouse(dx, dy));
+    }
+
+    private static void chat(ExtRecords.Builder b, long us, String text, int cursor) {
+        b.addEncoded(0, us, RewindFormat.TAG_CHAT_INPUT, CODEC.buffer(), CODEC.chatInput(text, cursor));
+    }
+
+    /** C5: the inventory screen (E) is drawn from the recorded open to the recorded close, on the camera's own slots. */
+    @Test
+    public void onAV2RecordingTheInventoryScreenIsDrawnFromTheRecordedOpenToTheRecordedClose() throws Exception {
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, 100 * MS, RewindFormat.SCREEN_NONE);
+        view(b, 200 * MS, RewindFormat.SCREEN_INVENTORY);
+        view(b, 300 * MS, RewindFormat.SCREEN_NONE);
+        view(b, 400 * MS, RewindFormat.SCREEN_INVENTORY);
+        ctx.ext = b.build();
+        Container own = camera.openContainer;
+
+        ctx.renderUs = 150 * MS;
+        assertNull(screens.held());
+        ctx.renderUs = 250 * MS;
+        GuiScreen inv = screens.held();
+        assertTrue("vanilla's inventory screen", inv instanceof GuiInventory);
+        assertSame("on the camera's own container", camera.inventoryContainer, ((GuiContainer) inv).inventorySlots);
+        assertEquals("initialized at the scaled size", W, inv.width);
+        assertEquals(H, inv.height);
+        assertSame("holding it never changes the open container", own, camera.openContainer);
+        assertSame(inv, screens.screenToDraw());
+        ctx.renderUs = 260 * MS;
+        assertSame("one screen while it stays open", inv, screens.held());
+
+        ctx.view.selectFree();
+        assertNull("not in the free camera", screens.screenToDraw());
+        ctx.view.selectYou();
+        ctx.view.cyclePerspective();
+        assertSame("F5 keeps recorded screens", inv, screens.screenToDraw());
+        ctx.view.toggleClean();
+        assertNull("not in the clean view", screens.screenToDraw());
+        ctx.view.selectYou();
+
+        ctx.renderUs = 350 * MS;
+        assertNull("the recorded close", screens.held());
+        ctx.renderUs = 450 * MS;
+        GuiScreen again = screens.held();
+        assertTrue(again instanceof GuiInventory);
+        assertNotSame("a new open is a new screen, as vanilla's E", inv, again);
+
+        screens.boundary();
+        RewindCamera fresh = newCamera(); // S07: a new camera
+        GuiScreen onFresh = screens.held();
+        assertSame("a new camera's inventory", fresh.inventoryContainer, ((GuiContainer) onFresh).inventorySlots);
+        assertNull(mc.currentScreen);
+    }
+
+    /** A v1 recording (no VIEW records) never holds an inventory screen. */
+    @Test
+    public void aV1RecordingHoldsNoInventoryScreen() {
+        ctx.renderUs = 5_000 * MS;
+        assertNull(screens.held());
+        assertFalse(screens.chatShown());
+    }
+
+    /**
+     * C5: the cursor is the recorded MOUSE, at the exact GUI pixel vanilla handed {@code drawScreen} while recording
+     * ({@code Mouse.getX() * scaledW / displayW}, {@code scaledH - Mouse.getY() * scaledH / displayH - 1}), through the
+     * recorder's own encoding, for every display size, GUI scale and position tried.
+     */
+    @Test
+    public void theCursorIsTheRecordedMouseAtVanillasExactPixel() throws Exception {
+        Class<?> capture = Class.forName("com.bedwarsqol.rewind.ViewCapture");
+        Method encodeX = capture.getDeclaredMethod("mouseDx", int.class, int.class, int.class);
+        Method encodeY = capture.getDeclaredMethod("mouseDy", int.class, int.class, int.class);
+        encodeX.setAccessible(true);
+        encodeY.setAccessible(true);
+        int[][] displays = {{854, 480}, {1366, 768}, {1920, 1080}, {2560, 1440}, {3456, 2234}, {1001, 777}};
+        int cases = 0;
+        for (int[] d : displays) {
+            for (int guiScale = 0; guiScale <= 4; guiScale++) {
+                mc.displayWidth = d[0];
+                mc.displayHeight = d[1];
+                mc.gameSettings.guiScale = guiScale;
+                net.minecraft.client.gui.ScaledResolution sr = new net.minecraft.client.gui.ScaledResolution(mc);
+                int sw = sr.getScaledWidth();
+                int sh = sr.getScaledHeight();
+                int[] xs = {0, 1, d[0] / 3, d[0] / 2, d[0] - 2, d[0] - 1};
+                int[] ys = {0, 1, d[1] / 3, d[1] / 2, d[1] - 2, d[1] - 1};
+                for (int mx : xs) {
+                    for (int my : ys) {
+                        int dx = (Integer) encodeX.invoke(null, mx, d[0], sw);
+                        int dy = (Integer) encodeY.invoke(null, my, d[1], sh);
+                        ExtRecords.Builder b = new ExtRecords.Builder();
+                        view(b, 10 * MS, RewindFormat.SCREEN_CHEST);
+                        mouse(b, 20 * MS, dx, dy);
+                        ctx.ext = b.build();
+                        ctx.renderUs = 30 * MS;
+                        String at = d[0] + "x" + d[1] + " scale " + guiScale + " mouse " + mx + "," + my;
+                        assertEquals(at, mx * sw / d[0], screens.cursorX(sw));
+                        assertEquals(at, sh - my * sh / d[1] - 1, screens.cursorY(sh));
+                        cases++;
+                    }
+                }
+            }
+        }
+        assertEquals(6 * 5 * 36, cases);
+    }
+
+    @Test
+    public void theCursorIsCentredBeforeTheScreensFirstMouseRecordAndOffScreenWithoutAScreenOrAMouseRecord() {
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, 10 * MS, RewindFormat.SCREEN_CHEST);
+        mouse(b, 11 * MS, 400, 200);
+        view(b, 30 * MS, RewindFormat.SCREEN_NONE);
+        view(b, 40 * MS, RewindFormat.SCREEN_INVENTORY);
+        ctx.ext = b.build();
+        ctx.renderUs = 20 * MS;
+        assertEquals((2 * W + 400) / 4, screens.cursorX(W));
+        assertEquals((2 * H + 200) / 4, screens.cursorY(H));
+        ctx.renderUs = 35 * MS;
+        assertEquals("no screen open", RecordedScreens.OFF_SCREEN, screens.cursorX(W));
+        ctx.renderUs = 45 * MS;
+        assertEquals("a new screen opens with the cursor centred, not where the chest left it", W / 2,
+                screens.cursorX(W));
+        assertEquals(H / 2, screens.cursorY(H));
+
+        b = new ExtRecords.Builder();
+        view(b, 10 * MS, RewindFormat.SCREEN_INVENTORY);
+        ctx.ext = b.build();
+        ctx.renderUs = 20 * MS;
+        assertEquals("a recording without MOUSE records", RecordedScreens.OFF_SCREEN, screens.cursorX(W));
+    }
+
+    /** C5: the recorded mouse is over the slot it was over (vanilla's hover highlight and tooltip read this slot). */
+    @Test
+    public void theRecordedMouseHoversTheSlotItWasOver() throws Exception {
+        feed(new S2DPacketOpenWindow(5, "minecraft:chest", title("Item Shop"), 54));
+        GuiContainer held = (GuiContainer) screens.held();
+        int left = (Integer) get(GuiContainer.class, held, "guiLeft");
+        int top = (Integer) get(GuiContainer.class, held, "guiTop");
+        Method slotAt = GuiContainer.class.getDeclaredMethod("getSlotAtPosition", int.class, int.class);
+        slotAt.setAccessible(true);
+        for (int index : new int[]{0, 13, 53, 54, 89}) {
+            Slot s = held.inventorySlots.getSlot(index);
+            int x = left + s.xDisplayPosition + 8;
+            int y = top + s.yDisplayPosition + 8;
+            ExtRecords.Builder b = new ExtRecords.Builder();
+            view(b, 10 * MS, RewindFormat.SCREEN_CHEST);
+            mouse(b, 20 * MS, 4 * x + 1 - 2 * W, 4 * y + 2 - 2 * H);
+            ctx.ext = b.build();
+            ctx.renderUs = 30 * MS;
+            assertSame("slot " + index, s, slotAt.invoke(held, screens.cursorX(W), screens.cursorY(H)));
+        }
+    }
+
+    /** The v2 close is exact: drawing stops in the first frame at or after the recorded close, not at the next tick. */
+    @Test
+    public void onAV2RecordingTheWindowStopsBeingDrawnInTheFrameOfTheRecordedClose() {
+        tableAndTrack();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, head(10) + 8_000L, RewindFormat.SCREEN_CHEST);
+        view(b, head(20) + 10_000L, RewindFormat.SCREEN_NONE);
+        ctx.ext = b.build();
+        openAt(5, 10);
+        ctx.renderUs = head(10) + 2_000L;
+        assertTrue("drawn from the open, before the first VIEW that names it", screens.screenToDraw() instanceof GuiChest);
+        for (long k = 10; k <= 20; k++) {
+            screens.tick(k, head(k));
+        }
+        ctx.renderUs = head(20) + 5_000L;
+        assertTrue(screens.screenToDraw() instanceof GuiChest);
+        ctx.renderUs = head(20) + 10_000L;
+        assertNull("the frame of the recorded close, before tick 21", screens.screenToDraw());
+        assertNotNull("the container stays routed until the server's close", screens.window());
+        ctx.renderUs = head(20) + 5_000L;
+        assertTrue("by playback time: a frame before the close still draws it", screens.screenToDraw() instanceof GuiChest);
+        screens.tick(21, head(21));
+        assertNull(screens.held());
+    }
+
+    /** B9 on v2: the death screen is held exactly while the recorded screen is the death screen. */
+    @Test
+    public void onAV2RecordingTheDeathScreenFollowsTheRecordedScreenKind() {
+        tableAndTrack();
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, head(10) + 8_000L, RewindFormat.SCREEN_DEATH);
+        view(b, head(40) + 8_000L, RewindFormat.SCREEN_NONE);
+        ctx.ext = b.build();
+        ctx.health = 0f;
+        screens.tick(10, head(10));
+        ctx.renderUs = head(10) + 2_000L;
+        assertNull("health alone does not open it on v2: the recorded screen does", screens.held());
+        ctx.renderUs = head(10) + 9_000L;
+        assertTrue(screens.held() instanceof GuiGameOver);
+        assertFalse(screens.deathButtonsEnabled());
+        ctx.health = 20f;
+        screens.tick(11, head(11));
+        ctx.renderUs = head(29) + 9_000L;
+        assertTrue("health above 0 does not end it", screens.held() instanceof GuiGameOver);
+        assertFalse("19 ticks after the open", screens.deathButtonsEnabled());
+        ctx.renderUs = head(30) + 9_000L;
+        assertTrue("20 ticks after the open, as vanilla's updateScreen", screens.deathButtonsEnabled());
+        ctx.renderUs = head(40) + 9_000L;
+        assertNull("the recorded close (Respawn)", screens.held());
+    }
+
+    /** C6: chat typing shows vanilla's input bar (its rectangle and text field) with the recorded text and cursor. */
+    @Test
+    public void chatTypingShowsVanillasInputBarWithTheRecordedText() {
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, 100 * MS, RewindFormat.SCREEN_CHAT);
+        chat(b, 120 * MS, "gg wp", 5);
+        chat(b, 140 * MS, "gg", 2);
+        view(b, 200 * MS, RewindFormat.SCREEN_NONE);
+        view(b, 300 * MS, RewindFormat.SCREEN_CHAT);
+        StringBuilder longText = new StringBuilder();
+        for (int i = 0; i < 150; i++) {
+            longText.append('a');
+        }
+        chat(b, 400 * MS, longText.toString(), 150);
+        ctx.ext = b.build();
+
+        ctx.renderUs = 50 * MS;
+        assertFalse(screens.chatShown());
+        ctx.renderUs = 110 * MS;
+        assertTrue(screens.chatShown());
+        assertEquals("an empty bar before the first keystroke", "", screens.chatText());
+        ctx.renderUs = 130 * MS;
+        assertEquals("gg wp", screens.chatText());
+        assertEquals(5, screens.chatCursor());
+        ctx.renderUs = 150 * MS;
+        assertEquals("gg", screens.chatText());
+        assertEquals(2, screens.chatCursor());
+        GuiTextField field = screens.chatField(W, H);
+        assertEquals("vanilla's field: x 4", 4, field.xPosition);
+        assertEquals("y height - 12", H - 12, field.yPosition);
+        assertEquals("width - 4 wide", W - 4, field.getWidth());
+        assertFalse(field.getEnableBackgroundDrawing());
+        assertTrue(field.isFocused());
+        assertEquals("gg", field.getText());
+        assertEquals(2, field.getCursorPosition());
+        assertNull("no screen is held for chat", screens.held());
+
+        ctx.view.selectFree();
+        assertFalse("your view only", screens.chatShown());
+        ctx.view.selectYou();
+        ctx.view.toggleClean();
+        assertFalse("not in the clean view", screens.chatShown());
+        ctx.view.selectYou();
+
+        ctx.renderUs = 250 * MS;
+        assertFalse(screens.chatShown());
+        ctx.renderUs = 310 * MS;
+        assertTrue(screens.chatShown());
+        assertEquals("a new chat starts empty", "", screens.chatText());
+        ctx.renderUs = 410 * MS;
+        assertEquals("a long line (Cobblify's chat length) is shown whole", 150,
+                screens.chatField(W, H).getText().length());
+        assertNull(mc.currentScreen);
+        assertEquals(0, connection.discarded());
     }
 
     // ------------------------------------------------------------------ real recordings (opt-in)
@@ -893,6 +1235,12 @@ public class RecordedScreensTest {
             }
         }
         throw new AssertionError("unbalanced " + signature);
+    }
+
+    private static Object get(Class<?> owner, Object target, String name) throws Exception {
+        Field f = owner.getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(target);
     }
 
     private static void set(Class<?> owner, Object target, String name, Object value) throws Exception {

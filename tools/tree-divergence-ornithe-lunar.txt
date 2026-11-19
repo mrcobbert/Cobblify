@@ -453,3 +453,8 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/ContainerPlaybackTest.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/RiddenView.java
 one-sided main ornithe com/bedwarsqol/mixin/GuiIngameRewindMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RiddenHandTest.java
+# Rewind parity Phase 12 (Ornithe only): recorded view, FOV and cursor parts (inventory screen and chat bar live in RecordedScreens).
+one-sided main ornithe com/bedwarsqol/rewind/watch/ViewPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/FovPart.java
+one-sided main ornithe com/bedwarsqol/rewind/watch/CursorPainter.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RecordedFovTest.java
