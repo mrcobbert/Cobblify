@@ -31,6 +31,9 @@ import java.util.function.Supplier;
  * reused {@link PacketBuffer} as vanilla would (allocates; the no-allocation rule is the remote path's).
  * S3F objects are never encoded: {@code writePacketData} would consume their payload's reader index.
  *
+ * <p><b>Handled order</b> (Rewind parity, A7): a session with a {@link HandledRing} pushes one entry per frame whose
+ * handler runs on the client thread, on both paths; a local packet the session does not encode is pushed unstored.
+ *
  * <p><b>Copying without allocation</b> (remote): heap buffers by {@code System.arraycopy} from the backing
  * array, buffers with a memory address by {@link ByteBuf#getBytes(int, byte[], int, int)}, anything else
  * by an 8-byte {@link ByteBuf#getLong(int)} loop.
@@ -182,6 +185,7 @@ public final class RewindCapture extends ChannelInboundHandlerAdapter {
             return;
         }
         if (!session.localWants(id)) {
+            session.onLocalUnstored(id); // its handler still runs on the client thread (handled order, A7)
             return;
         }
         PacketBuffer b = scratch;

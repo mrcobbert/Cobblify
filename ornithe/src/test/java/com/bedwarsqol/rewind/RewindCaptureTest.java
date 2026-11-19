@@ -122,6 +122,7 @@ public class RewindCaptureTest {
         return out;
     }
 
+    /** Every handler test runs with the handled-order ring on (Rewind parity Phase 2), as the recorder will. */
     static CaptureSession session(RecordChunk.Producer p, CaptureSession.Clock clock, final List<Object[]> locations) {
         return new CaptureSession(p, clock, new CaptureSession.LocationSink() {
             @Override
@@ -130,7 +131,7 @@ public class RewindCaptureTest {
                     locations.add(new Object[]{segment, payload});
                 }
             }
-        });
+        }, new HandledRing(null));
     }
 
     static CaptureSession session(RecordChunk.Producer p) {
@@ -255,11 +256,12 @@ public class RewindCaptureTest {
             EmbeddedChannel with = remotePipeline(withRx);
             EmbeddedChannel without = remotePipeline(withoutRx);
             RewindCapture.install(with, false, s);
+            HandledRing ring = s.handledRing();
             Consumer consumer = new Consumer(p);
             consumer.start();
             try {
                 with.pipeline().fireChannelRead(Unpooled.wrappedBuffer(s01(1, 0)));
-                run(with, pool, 300_000);
+                runDraining(with, pool, 300_000, ring);
                 run(without, pool, 300_000);
                 long bestWith = Long.MAX_VALUE;
                 long bestWithout = Long.MAX_VALUE;
@@ -267,16 +269,20 @@ public class RewindCaptureTest {
                     long a = mx.getThreadAllocatedBytes(self);
                     run(without, pool, 100_000);
                     long b = mx.getThreadAllocatedBytes(self);
-                    run(with, pool, 100_000);
+                    runDraining(with, pool, 100_000, ring);
                     long c = mx.getThreadAllocatedBytes(self);
                     bestWithout = Math.min(bestWithout, b - a);
                     bestWith = Math.min(bestWith, c - b);
                 }
                 consumer.stop();
-                assertFalse(kind + " session failed: " + s.failureCause(), s.failed());
+                assertFalse(kind + " session failed: " + s.failureCause() + " reason " + s.failureReason(), s.failed());
                 assertEquals(self, withRx.threadId);
                 assertNotEquals(self, consumer.threadId);
                 assertTrue(kind + " consumer saw chunks", consumer.chunks.get() > 0);
+                // the ring was pushed for every client-handled frame and popped in order: no overflow, no resync
+                assertEquals(kind + " ring overflows", 0, ring.overflows());
+                assertEquals(kind + " ring resyncs", 0, ring.resyncs());
+                assertTrue(kind + " ring popped", ring.handled() > 0);
                 assertEquals(kind + " every message delivered", 1 + 300_000 + 3 * 100_000, withRx.count);
                 double perPacket = (bestWith - bestWithout) / 100_000.0;
                 report.append(String.format("%s(array=%s, address=%s): with %d B, without %d B, %.4f B/packet; ",
@@ -291,6 +297,52 @@ public class RewindCaptureTest {
 
     /** Keeps the meter check's arrays from being optimised away. */
     static volatile Object sink;
+
+    /** A7: with nobody popping, the ring is full after 16 entries; every push after that is an overflow. */
+    @Test(timeout = 300_000)
+    public void aFullHandledRingAllocatesNothingPerPacketAndNeverFails() throws Exception {
+        com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        long self = Thread.currentThread().getId();
+        // one segment that is never copied (a dropped lobby run): every frame is pushed unstored, no chunk is used
+        ByteBuf[] pool = new ByteBuf[1000];
+        for (int i = 0; i < pool.length; i++) {
+            byte[] f = i % 50 == 0 ? frame(0x00, varInt(i)) : other(plainId(i), 4 + (i * 7919) % 1497);
+            pool[i] = buffer(Kind.HEAP, f);
+        }
+        final RecordChunk.Producer p = new RecordChunk.Producer(16 * 1024, 2, 2, 0);
+        PacketStats.Feed feed = new PacketStats.Feed();
+        HandledRing ring = new HandledRing(16, feed);
+        CaptureSession s = new CaptureSession(p, CaptureSession.NANO_CLOCK, null, ring);
+        Counting withRx = new Counting();
+        Counting withoutRx = new Counting();
+        EmbeddedChannel with = remotePipeline(withRx);
+        EmbeddedChannel without = remotePipeline(withoutRx);
+        RewindCapture.install(with, false, s);
+        with.pipeline().fireChannelRead(Unpooled.wrappedBuffer(s01(1, 0)));
+        s.skipSegment(1);
+        run(with, pool, 300_000);
+        run(without, pool, 300_000);
+        long bestWith = Long.MAX_VALUE;
+        long bestWithout = Long.MAX_VALUE;
+        for (int round = 0; round < 3; round++) {
+            long a = mx.getThreadAllocatedBytes(self);
+            run(without, pool, 100_000);
+            long b = mx.getThreadAllocatedBytes(self);
+            run(with, pool, 100_000);
+            long c = mx.getThreadAllocatedBytes(self);
+            bestWithout = Math.min(bestWithout, b - a);
+            bestWith = Math.min(bestWith, c - b);
+        }
+        assertFalse("session failed: " + s.failureCause() + " reason " + s.failureReason(), s.failed());
+        assertEquals("every message delivered", 1 + 300_000 + 3 * 100_000, withRx.count);
+        assertEquals(16, ring.size());
+        assertTrue("overflows counted: " + ring.overflows(), ring.overflows() > 500_000);
+        assertEquals(ring.overflows(), feed.handledCounters()[1]);
+        double perPacket = (bestWith - bestWithout) / 100_000.0;
+        System.out.println(String.format("RewindCapture full ring: with %d B, without %d B, %.4f B/packet",
+                bestWith, bestWithout, perPacket));
+        assertTrue("allocates " + perPacket + " B/packet", perPacket < 0.5);
+    }
 
     /** 1,000 mixed frames: sizes 4..1,500, S47 every 97, keep-alive every 50, a brand S3F, two boundaries. */
     private static ByteBuf[] allocationPool(Kind kind) {
@@ -325,6 +377,23 @@ public class RewindCaptureTest {
         ChannelPipeline p = ch.pipeline();
         for (int i = 0; i < n; i++) {
             p.fireChannelRead(pool[i % pool.length]);
+        }
+    }
+
+    /**
+     * {@link #run}, popping the handled-order ring every 500 frames on this thread as the client thread would (each
+     * entry with its own id), so the measured cost is a push and a pop per client-handled frame.
+     */
+    private static void runDraining(EmbeddedChannel ch, ByteBuf[] pool, int n, HandledRing ring) {
+        ChannelPipeline p = ch.pipeline();
+        for (int i = 0; i < n; i++) {
+            p.fireChannelRead(pool[i % pool.length]);
+            if (i % 500 == 499) {
+                int id;
+                while ((id = ring.peekPacketId()) >= 0) {
+                    ring.onHandled(id);
+                }
+            }
         }
     }
 
@@ -733,6 +802,41 @@ public class RewindCaptureTest {
         assertRecords(d.segment(1), encode(join), encode(time), encode(h0));
         assertArrayEquals(encode(h0), d.carry(2));
         assertRecords(d.segment(2), encode(nether), encode(h1), encode(sameNether), encode(time));
+    }
+
+    /** A7 on the single-player path: every client-handled packet is pushed, stored or not; S00 and S47 never. */
+    @Test
+    public void localPathPushesEveryClientHandledPacketToTheRing() throws Exception {
+        Received rx = new Received();
+        EmbeddedChannel ch = localPipeline(rx);
+        RecordChunk.Producer p = new RecordChunk.Producer(4096, 2, 4, 0);
+        CaptureSession s = session(p);
+        assertNotNull(RewindCapture.install(ch, true, s));
+        S01PacketJoinGame join = new S01PacketJoinGame(42, WorldSettings.GameType.SURVIVAL, false, 0,
+                EnumDifficulty.NORMAL, 20, WorldType.DEFAULT, false);
+        S03PacketTimeUpdate time = new S03PacketTimeUpdate(1000L, 6000L, true);
+        S3FPacketCustomPayload custom = new S3FPacketCustomPayload("MC|Brand",
+                new PacketBuffer(Unpooled.wrappedBuffer(new byte[]{1, 'x'})));
+        S07PacketRespawn nether = new S07PacketRespawn(-1, EnumDifficulty.NORMAL, WorldType.DEFAULT,
+                WorldSettings.GameType.SURVIVAL);
+        Object[] first = {join, time, custom, new S00PacketKeepAlive(5), s47Packet("H", "F"), nether, time};
+        for (Object o : first) {
+            ch.pipeline().fireChannelRead(o);
+        }
+        s.skipSegment(2);
+        ch.pipeline().fireChannelRead(time); // a dropped segment: pushed unstored
+        ch.checkException();
+        assertEquals(first.length + 1, rx.messages.size());
+
+        HandledRing ring = s.handledRing();
+        List<String> trace = new ArrayList<String>();
+        int id;
+        while ((id = ring.peekPacketId()) >= 0) {
+            ring.onHandled(id);
+            trace.add(ring.segment() + ":" + Integer.toHexString(id) + ":" + ring.handled());
+        }
+        assertEquals(Arrays.asList("1:1:1", "1:3:2", "1:3f:2", "2:7:1", "2:3:2", "2:3:2"), trace);
+        assertEquals(0, ring.resyncs());
     }
 
     static S47PacketPlayerListHeaderFooter s47Packet(String header, String footer) throws Exception {
