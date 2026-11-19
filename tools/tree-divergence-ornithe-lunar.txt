@@ -389,3 +389,14 @@ one-sided test ornithe com/bedwarsqol/rewind/ViewCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/InventoryCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/SnapshotCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/ClientTrackCaptureTest.java
+# Rewind parity Phase 4 (Ornithe only): the HUD painters' data source seam (the live game, or a recording),
+# the settings accessor the HUD, its font and the overlay placement read, and the recorder's HUD capture fed by
+# the painters. The tests pin the capture's records and cost, the settings scope and the recorded-draw entry.
+one-sided main ornithe com/bedwarsqol/hud/HudSource.java
+one-sided main ornithe com/bedwarsqol/hud/LiveHudSource.java
+one-sided main ornithe com/bedwarsqol/hud/HudSettings.java
+one-sided main ornithe com/bedwarsqol/rewind/HudCapture.java
+one-sided test ornithe com/bedwarsqol/rewind/HudCaptureTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudSettingsTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudRecordedRenderTest.java
+one-sided test ornithe com/bedwarsqol/hud/FakeClient.java

@@ -1,6 +1,5 @@
 package com.bedwarsqol.hud;
 
-import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
@@ -33,12 +32,14 @@ public final class OverlayScale {
 
     /** Scoreboard scale: the scoreboard item's scale (1.0 = vanilla's full size). */
     public static float scoreboardScale() {
-        return BedwarsQol.config == null ? OverlayItems.DEFAULT_SCALE : BedwarsQol.config.scoreboardHudScale;
+        ClientSettings cfg = HudSettings.active();
+        return cfg == null ? OverlayItems.DEFAULT_SCALE : cfg.scoreboardHudScale;
     }
 
     /** Whether the scoreboard item is shown (Edit HUD's Hide); hidden = vanilla's sidebar is not drawn. */
     public static boolean scoreboardShown() {
-        return BedwarsQol.config == null || BedwarsQol.config.scoreboardHudEnabled;
+        ClientSettings cfg = HudSettings.active();
+        return cfg == null || cfg.scoreboardHudEnabled;
     }
 
     /** The objective vanilla's sidebar shows: the player's team-colour slot first, then the sidebar slot. */
@@ -99,7 +100,7 @@ public final class OverlayScale {
         int sw = sr.getScaledWidth(), sh = sr.getScaledHeight();
         float[] rect = scoreboardRect(objective, sw, sh);
         if (rect == null) return;
-        float[] box = scoreboardBox(BedwarsQol.config, rect, sw, sh);
+        float[] box = scoreboardBox(HudSettings.active(), rect, sw, sh);
         applyTransform(rect, box, scoreboardScale());
     }
 
