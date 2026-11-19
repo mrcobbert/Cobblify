@@ -180,15 +180,6 @@ public final class TickTable {
         return v1(originUs, times, k);
     }
 
-    /**
-     * Whether vanilla runs this clientbound packet's handler on the client thread (so the recorder counts it in the
-     * handled order). The five it runs on the Netty thread (keep-alive 0x00, disconnect 0x40, compression 0x46, tab
-     * header/footer 0x47, resource pack 0x48) have no ordinal; the feed places them by their arrival stamp.
-     */
-    public static boolean clientHandled(int packetId) {
-        return packetId != 0x00 && packetId != 0x40 && packetId != 0x46 && packetId != 0x47 && packetId != 0x48;
-    }
-
     public Kind kind() {
         return kind;
     }

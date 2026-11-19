@@ -24,9 +24,9 @@ import java.util.List;
  *       playback time reaches their own stamp ({@link TickClock}, {@link PacketSink#timed}).</li>
  * </ul>
  *
- * <p>A v1 recording has {@link #EMPTY}. Phase 10 fills this from the file while loading; until then it is built in
- * memory ({@link Builder}) and attached with {@link LoadedRecording#withExt}. Immutable after {@link Builder#build};
- * reading allocates nothing.
+ * <p>A v1 recording has {@link #EMPTY}. {@link LoadedRecording} fills it from a v2 file while loading; tests build it
+ * in memory ({@link Builder}) and attach it with {@link LoadedRecording#withExt}. Immutable after
+ * {@link Builder#build}; reading allocates nothing.
  */
 public final class ExtRecords {
 

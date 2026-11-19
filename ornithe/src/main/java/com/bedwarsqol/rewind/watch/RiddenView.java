@@ -27,7 +27,8 @@ import net.minecraft.util.ResourceLocation;
  * does not draw them in first person ({@code RenderGlobal.renderEntities} skips the render view entity when
  * {@code thirdPersonView == 0}, javap-verified; {@link ViewState#perspective()} is 0 outside your view). Each tick and
  * frame the camera ({@code thePlayer}) is posed at their interpolated eye, so the sound listener, the hand's lighting
- * and turn follow them, and it is kept from being drawn there (its render distance weight is 0 while they are shown).
+ * and turn follow them; the camera itself is never drawn ({@code RewindCamera.isInRangeToRender3d}), so it shows
+ * nowhere around their eye.
  * The first-person hand always draws {@code thePlayer}, so the camera holds their item and copies their swing and use
  * ({@link Hand}). The controller's game type is CREATIVE in this view ({@link ViewGameType#forView(ViewState.View)}:
  * hand, but no hearts, hunger or XP bar, javap-verified) and {@code GuiIngameRewindMixin} cancels the hotbar
@@ -57,7 +58,7 @@ public final class RiddenView implements PlaybackPart {
     private final double[] dir = new double[3];
     /** The player the view shows now (the render view entity), or null. */
     private EntityPlayer shown;
-    /** The camera whose pose, weight and hand this view changed, or null. */
+    /** The camera whose pose and hand this view changed, or null. */
     private RewindCamera shownOn;
 
     private RiddenView() {
@@ -356,13 +357,12 @@ public final class RiddenView implements PlaybackPart {
 
     /**
      * Shows {@code ridden} for this tick or frame: vanilla views from them, the camera stands at their eye (at
-     * {@code partial}, as vanilla interpolates the render view entity) and is not drawn there, and holds their hand.
+     * {@code partial}, as vanilla interpolates the render view entity; the camera is never drawn) and holds their hand.
      */
     static void show(Minecraft mc, RewindCamera cam, EntityPlayer ridden, Hand hand, float partial) {
         if (mc.getRenderViewEntity() != ridden) {
             mc.setRenderViewEntity(ridden);
         }
-        cam.renderDistanceWeight = 0; // the camera at their eye is never drawn around the view
         double x = ridden.prevPosX + (ridden.posX - ridden.prevPosX) * partial;
         double y = ridden.prevPosY + (ridden.posY - ridden.prevPosY) * partial + ridden.getEyeHeight();
         double z = ridden.prevPosZ + (ridden.posZ - ridden.prevPosZ) * partial;
@@ -372,12 +372,11 @@ public final class RiddenView implements PlaybackPart {
         hand.apply(cam, ridden);
     }
 
-    /** The camera's own view again: the render view, its render distance and its own hand. */
+    /** The camera's own view again: the render view and its own hand. */
     static void hide(Minecraft mc, RewindCamera cam, Hand hand) {
         if (mc.getRenderViewEntity() != cam) {
             mc.setRenderViewEntity(cam);
         }
-        cam.renderDistanceWeight = 1.0; // vanilla's for a client player
         hand.restore(cam);
     }
 

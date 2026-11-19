@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.HandledRing;
 import com.bedwarsqol.rewind.RewindFormat;
 
 import java.util.List;
@@ -14,7 +15,7 @@ import java.util.List;
  *       where tick k is a v2 head with a known order, a client-handled record of the head's segment is handled when
  *       its ordinal (1-based, among the segment's client-handled stored records) is at most H[k], a record of an
  *       earlier segment always is and one of a later segment is not; a record vanilla handles on the Netty thread
- *       ({@link TickTable#clientHandled} false), a v1 tick, a continuation tick or a head marked order-unknown use the
+ *       ({@link HandledRing#clientHandled} false), a v1 tick, a continuation tick or a head marked order-unknown use the
  *       arrival rule (stamp at or before T[k]; R2's rule, with its stated error of one tick).</li>
  *   <li>the <b>local phase</b>: every tick-scoped extension record ({@link ExtRecords.Scope#TICK}) stamped before
  *       T[k+1] not fed yet, in stamp order ({@link PacketSink#local});</li>
@@ -153,7 +154,7 @@ public final class TickFeeder {
             if (position > highWater) {
                 highWater = position;
             }
-            if (TickTable.clientHandled(id)) {
+            if (HandledRing.clientHandled(id)) {
                 if (segment != ordinalSegment) {
                     ordinalSegment = segment;
                     ordinal = 0;
@@ -173,7 +174,7 @@ public final class TickFeeder {
 
     /** Whether the record under the cursor was handled before tick {@code k} (the class comment's rule). */
     private boolean handledBefore(long k, long limit) {
-        if (!table.orderKnown(k) || !TickTable.clientHandled(cursor.packetId())) {
+        if (!table.orderKnown(k) || !HandledRing.clientHandled(cursor.packetId())) {
             return cursor.timeUs() <= limit;
         }
         int segment = cursor.segmentIndex();

@@ -189,6 +189,12 @@ public class RiddenHandTest {
         assertNull(fresh.getHeldItem());
     }
 
+    /**
+     * Phase 7 and Phase 14 together (Phase 16): the camera is never drawn ({@code RewindCamera.isInRangeToRender3d} is
+     * always false, so {@code Render.shouldRender} skips it in every view), before, while and after another player is
+     * shown; riding does not touch the camera's render distance weight any more (Phase 14's {@code
+     * renderDistanceWeight = 0} only repeated what the camera already guarantees).
+     */
     @Test
     public void theCameraIsPosedAtTheRiddenEyeAndNotDrawnWhileTheyAreShown() throws Exception {
         Minecraft mc = fakeClient();
@@ -203,7 +209,8 @@ public class RiddenHandTest {
         ridden.rotationYaw = 100;
         ridden.prevRotationPitch = 10;
         ridden.rotationPitch = 20;
-        assertTrue("drawn before", cam.isInRangeToRender3d(cam.posX + 1, cam.posY, cam.posZ));
+        double weight = cam.renderDistanceWeight;
+        assertFalse("never drawn, also before riding", cam.isInRangeToRender3d(cam.posX + 1, cam.posY, cam.posZ));
 
         RiddenView.show(mc, cam, ridden, hand, 0.25f);
         assertSame("vanilla views from them", ridden, mc.getRenderViewEntity());
@@ -215,12 +222,22 @@ public class RiddenHandTest {
         assertEquals("no partial-tick drift", cam.posX, cam.prevPosX, 0);
         assertFalse("the camera is not drawn at their eye",
                 cam.isInRangeToRender3d(cam.posX + 0.5, cam.posY, cam.posZ));
+        assertEquals("riding leaves the render distance weight alone", weight, cam.renderDistanceWeight, 0);
         assertSame(bow, cam.getHeldItem());
 
         RiddenView.hide(mc, cam, hand);
         assertSame("back to the camera", cam, mc.getRenderViewEntity());
         assertSame(stone, cam.getHeldItem());
-        assertTrue(cam.isInRangeToRender3d(cam.posX + 1, cam.posY, cam.posZ));
+        assertFalse("still never drawn after leaving", cam.isInRangeToRender3d(cam.posX + 1, cam.posY, cam.posZ));
+        assertEquals(weight, cam.renderDistanceWeight, 0);
+    }
+
+    /** One rule for "the camera is not drawn": the camera's own override; the ridden view sets no weight of its own. */
+    @Test
+    public void theRiddenViewLeavesNotDrawingTheCameraToTheCamera() throws Exception {
+        String src = new String(Files.readAllBytes(repoFile(
+                "ornithe/src/main/java/com/bedwarsqol/rewind/watch/RiddenView.java").toPath()), StandardCharsets.UTF_8);
+        assertFalse("RiddenView writes no render distance weight", src.contains("renderDistanceWeight"));
     }
 
     /** The plan's isolation rule for Phase 14: selecting and riding a player writes nothing to the playback channel. */

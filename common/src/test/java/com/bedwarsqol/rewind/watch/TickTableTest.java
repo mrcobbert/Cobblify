@@ -1,6 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.rewind.ExtCodec;
+import com.bedwarsqol.rewind.HandledRing;
 import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 import org.junit.Test;
@@ -9,6 +10,7 @@ import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -166,7 +168,21 @@ public class TickTableTest {
     public void onlyTheNettyThreadHandlersCarryNoOrdinal() {
         for (int id = 0; id <= 0x49; id++) {
             boolean netty = id == 0x00 || id == 0x40 || id == 0x46 || id == 0x47 || id == 0x48;
-            assertEquals("id " + id, !netty, TickTable.clientHandled(id));
+            assertEquals("id " + id, !netty, HandledRing.clientHandled(id));
+        }
+    }
+
+    /**
+     * Phase 16: the recorder's rule ({@link HandledRing#clientHandled}) is the one definition of which packets carry a
+     * handled ordinal; playback's tick table and feeder read it instead of keeping a copy that could drift.
+     */
+    @Test
+    public void theHandledOrderRuleHasOneDefinition() {
+        for (java.lang.reflect.Method m : TickTable.class.getDeclaredMethods()) {
+            assertNotEquals("TickTable keeps no copy of HandledRing.clientHandled", "clientHandled", m.getName());
+        }
+        for (java.lang.reflect.Method m : TickFeeder.class.getDeclaredMethods()) {
+            assertNotEquals("nor does the feeder", "clientHandled", m.getName());
         }
     }
 }

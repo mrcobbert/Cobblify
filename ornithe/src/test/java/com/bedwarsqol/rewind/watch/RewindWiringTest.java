@@ -3,7 +3,13 @@ package com.bedwarsqol.rewind.watch;
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.rewind.Rewind;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
+
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -19,12 +25,25 @@ import static org.junit.Assert.assertTrue;
  */
 public class RewindWiringTest {
 
+    private List<PlaybackPart> partsBefore;
+    private RecordedScreenHolder holderBefore;
+
+    /** The wiring registers playback parts for the whole JVM; each test puts the registry back as it found it. */
+    @Before
+    public void rememberParts() throws Exception {
+        partsBefore = new ArrayList<PlaybackPart>(registry());
+        holderBefore = RewindCamera.screenHolder();
+    }
+
     @After
-    public void unwire() {
+    public void unwire() throws Exception {
         CameraController.selectYourView();
         ViewerCameraControls.set(null);
         RewindPlayback.setScreens(null);
         RewindPlayback.setFailureGallery(null);
+        registry().clear();
+        registry().addAll(partsBefore);
+        RewindCamera.setScreenHolder(holderBefore);
     }
 
     @Test
@@ -33,6 +52,48 @@ public class RewindWiringTest {
         assertSame("the viewer phase's screens", RewindViewerScreen.screens(), RewindPlayback.screens());
         assertSame("the camera controller answers the viewer", CameraController.controls(), ViewerCameraControls.get());
         assertNotNull("a failed session ends in the gallery", RewindPlayback.failureGallery());
+    }
+
+    /**
+     * Rewind parity Phase 16: ready registers every playback part, once each, in an order whose first-answer questions
+     * and same-tick writes come out right. {@code PuppetSounds} answers the puppet's sounds ahead of the derived steps
+     * (StepSoundPart registers it first); {@code RecordedScreens} is the camera's window holder before
+     * {@code ContainerPart} writes into its containers; {@code HandV2Part} puts the v2 hand on the camera before
+     * {@code RiddenView} puts another player's hand over it in their view; {@code RiddenView} answers the camera's
+     * tab entry (the ridden player's skin and arm model) before {@code Identity} answers it with the recorded one.
+     */
+    @Test
+    public void readyRegistersEveryPlaybackPartOnceInOrder() throws Exception {
+        List<PlaybackPart> registry = registry();
+        List<PlaybackPart> saved = new ArrayList<PlaybackPart>(registry);
+        RecordedScreenHolder holder = RewindCamera.screenHolder();
+        registry.clear(); // other test classes in this JVM may have registered single parts already
+        try {
+            BedwarsQol.wireRewindPlayback();
+            BedwarsQol.wireRewindPlayback(); // a second call registers nothing twice
+            List<String> got = new ArrayList<String>();
+            for (PlaybackPart p : RewindPlayback.parts()) {
+                got.add(p.getClass().getSimpleName());
+            }
+            assertEquals(Arrays.asList("CameraStatePart", "PuppetSounds", "StepSoundPart", "RecordedScreens",
+                    "DigPart", "BlockPart", "SoundPart", "ContainerPart", "ViewPart", "FovPart", "HandV2Part",
+                    "RiddenView", "Identity", "HudPlayback"), got);
+            assertTrue("the recorded screens hold the camera's windows",
+                    RewindCamera.screenHolder() instanceof RecordedScreens);
+            assertSame(StepSoundPart.instance(), RewindPlayback.parts().get(2));
+            assertSame(PuppetSounds.instance(), RewindPlayback.parts().get(1));
+        } finally {
+            registry.clear();
+            registry.addAll(saved);
+            RewindCamera.setScreenHolder(holder);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<PlaybackPart> registry() throws Exception {
+        Field f = RewindPlayback.class.getDeclaredField("PARTS");
+        f.setAccessible(true);
+        return (List<PlaybackPart>) f.get(null);
     }
 
     @Test

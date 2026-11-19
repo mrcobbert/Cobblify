@@ -1,5 +1,6 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.rewind.HandledRing;
 import com.bedwarsqol.rewind.RewindFormat;
 import com.bedwarsqol.rewind.SelfTrackEncoder;
 import org.junit.Rule;
@@ -789,7 +790,7 @@ public class TickFeedEquivalenceTest {
             while (handled.size() <= cur.segmentIndex()) {
                 handled.add(new ArrayList<Long>());
             }
-            if (TickTable.clientHandled(cur.packetId())) {
+            if (HandledRing.clientHandled(cur.packetId())) {
                 handled.get(cur.segmentIndex()).add(cur.timeUs());
             }
             cur.advance();

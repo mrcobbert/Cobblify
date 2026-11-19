@@ -4783,6 +4783,40 @@ def rewind_ext_problems(line, walked):
     return problems
 
 
+# Rewind parity Phase 16: what RW's scripted actions (rewind-watch-actions: dig, place, inventory, F5, a double chest
+# the server filled) must leave in the recording on top of rewind_ext_problems. CONT: a window's first tick writes its
+# filled own slots.
+RW_ACTION_EXT_MIN = (("Dig", 1), ("Block", 2), ("Sound", 1), ("Out", 1), ("View", 3), ("Mouse", 1), ("Cont", 1),
+                     ("Hud", 1))
+RW_ACTIONS_TIMEOUT_S = 30
+
+
+def rewind_action_problems(line):
+    """What the recording of RW's scripted actions lacks (empty: nothing), from RewindCheck's counts only."""
+    _, ext = rewind_ext_counts(line)
+    return ["%s=%d (at least %d)" % (name, ext.get(name, 0), least) for name, least in RW_ACTION_EXT_MIN
+            if ext.get(name, 0) < least]
+
+
+def rw_actions(s):
+    """RW's scripted actions while it records (bridge rewind-watch-actions). None: this bridge has none (an older
+    stage); else the final status. The caller runs the cleanup."""
+    pre, err = s.try_call("/probe", post={"name": "rewind-watch-actions", "args": "status"})
+    if pre is None:
+        s.note("this bridge has no rewind-watch-actions (stage a build with them)", err)
+        return None
+    s.probe("rewind-watch-actions", "start")
+    st = {}
+    deadline = time.time() + RW_ACTIONS_TIMEOUT_S
+    for _ in range(RW_ACTIONS_TIMEOUT_S * 20):
+        st = s.peek("rewind-watch-actions", "status") or {}
+        if st.get("done") or time.time() > deadline:
+            break
+        time.sleep(0.05)
+    s.step["commands"].append({"call": "/probe rewind-watch-actions status (last poll)", "result": st})
+    return st
+
+
 def smoke_rewind(s, cfg):
     """RW (PLAN A11): rejoin the smoke world with Rewind and Record Games on, walk 1 s, press the Marker Key, leave;
     the newest closed recording in cobdev's own Rewind folder must pass RewindCheck (complete, no torn tail, NET and
@@ -4791,11 +4825,13 @@ def smoke_rewind(s, cfg):
     s.begin("RW", "Rewind: a single-player session leaves a complete recording")
     if not cfg or not s.has(REWIND, "markerKeyPressed"):
         return s.unavailable(REWIND + " is not in this build")
-    on, rec = cfg + ".rewind", cfg + ".rewindRecordGames"
-    was = s.field(on).get("value"), s.field(rec).get("value")
+    on, rec, fps = cfg + ".rewind", cfg + ".rewindRecordGames", cfg + ".fpsEnabled"
+    was = s.field(on).get("value"), s.field(rec).get("value"), s.field(fps).get("value")
+    acted = None
     try:
         s.field(on, True)
         s.field(rec, True)
+        s.field(fps, True)  # one Cobblify HUD item on, so the recording holds HUD records to watch
         tu_reopen_world(s)  # recording starts with a connection made while it is on
         cleared = s.probe("rewind-clear")
         s.check("cobdev's own Rewind folder starts with no closed recording", cleared.get("left") == 0, cleared)
@@ -4810,6 +4846,19 @@ def smoke_rewind(s, cfg):
             time.sleep(1)
         finally:
             s.call("/keyhold", {"name": "key.forward", "state": "off", "raw": 1})
+        if watch:
+            # Rewind parity Phase 16: dig, place, the inventory, F5 and a double chest, while recording
+            acted = rw_actions(s)
+            if acted is not None:
+                s.check("RW actions: the stone dug, wool placed, inventory and F5 shown",
+                        acted.get("phase") == "DONE" and all(acted.get(k) for k in (
+                            "dug", "placed", "inventoryShown", "perspectiveShown")),
+                        {k: acted.get(k) for k in ("phase", "failure", "dug", "placed", "inventoryShown",
+                                                   "perspectiveShown")})
+                s.check("RW actions: the double chest opened with its 54 slots filled at its first tick (90 in all)",
+                        acted.get("chestOpened") and acted.get("chestSlots") == 90 and acted.get("chestFilled") == 54,
+                        {k: acted.get(k) for k in ("chestOpened", "chestSlots", "chestFilled")})
+                s.try_call("/probe", post={"name": "rewind-watch-actions", "args": "cleanup"})
         s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
         time.sleep(0.5)
         if watch:
@@ -4822,6 +4871,10 @@ def smoke_rewind(s, cfg):
         missing = rewind_ext_problems(r.get("line"), walked=True)
         s.check("format v2: heartbeat, settings, one identity, 41 inventory slots, view, FOV and walk input recorded",
                 r.get("found") and not missing, {"missing": missing, "counts": rewind_ext_counts(r.get("line"))[1]})
+        if acted is not None:
+            lacking = rewind_action_problems(r.get("line"))
+            s.check("format v2: the actions' dig, blocks, sounds, outbound packets, views, mouse, window and HUD",
+                    r.get("found") and not lacking, {"lacking": lacking})
         if watch and r.get("pass") is True:
             smoke_rewind_watch(s)  # watches this recording before the folder is cleared
             smoke_rewind_timings(s)
@@ -4829,6 +4882,7 @@ def smoke_rewind(s, cfg):
         s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
         s.field(on, was[0])
         s.field(rec, was[1])
+        s.field(fps, was[2])
         tu_save(s, cfg)
 
 
@@ -4838,8 +4892,10 @@ REWIND_PLAYBACK = "com.bedwarsqol.rewind.watch.RewindPlayback"
 RWW_ITEM = "minecraft:stone_sword"
 RWW_STAGE = os.path.join(SHARED, "cache", "rewind-stage")  # bridge Policy.REWIND_STAGE_TAIL
 TICKS_PER_S = 20
-# PLAN "Seek equivalence contract": the seven groups rewind-watch-snapshot hashes.
-CONTRACT_GROUPS = ("1-living", "2-entities", "3-chunks", "4-time", "5-scoreboard", "6-chat-titles", "7-camera")
+# PLAN "Seek equivalence contract": the groups rewind-watch-snapshot hashes; 8-11 are Rewind parity's (Phase 16):
+# the recorded view the session follows, the open window and held screen, the dig state, the recorded Cobblify HUD.
+CONTRACT_GROUPS = ("1-living", "2-entities", "3-chunks", "4-time", "5-scoreboard", "6-chat-titles", "7-camera",
+                   "8-view", "9-window", "10-dig", "11-hud")
 
 
 def rww_points(start, end):
@@ -4913,8 +4969,10 @@ def rww_seek(s, *args):
 def smoke_rewind_watch(s):
     """RWW (PLAN Phase 7): watch the single-player recording RW just made, in cobdev's own folder.
     1 open: WATCHING, gate on, failures 0, your view; 2 free camera moves while paused; 3 straight play, a forward
-    seek and a backward seek to the same tick K give equal hashes in all seven contract groups; 3b your view's hand
-    at the recorded swing, none of it in the free camera; 4 Quit to Title restores what playback changed and leaves
+    seek and a backward seek to the same tick K give equal hashes in every contract group (the seven of R2 and Rewind
+    parity's view, window, dig and HUD groups) and the recorded HUD shows at K; 3b your view's hand
+    at the recorded swing, none of it in the free camera; 3c (rww_parity) the recorded F5 and the double chest RW's
+    actions opened, 54 slots filled from its first tick; 4 Quit to Title restores what playback changed and leaves
     no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
     watching (every rebuild's join adds its own client settings and brand, nothing else)."""
     s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, exit)")
@@ -4972,8 +5030,11 @@ def smoke_rewind_watch(s):
         ticks = [((x or {}).get("counts") or {}).get("tick") for x in (snap_a, snap_b, snap_c)]
         s.check("3 all three snapshots are at K", ticks == [k, k, k], {"K": k, "ticks": ticks})
         differs = rww_differs(snap_a, snap_b, snap_c)
-        s.check("3 straight play, forward seek and backward seek agree in all seven contract groups", not differs,
+        s.check("3 straight play, forward seek and backward seek agree in every contract group", not differs,
                 {"differ": differs, "from": [fwd, back]})
+        s.check("3 the recorded Cobblify HUD shows at K (FPS on during RW)",
+                ((snap_a or {}).get("counts") or {}).get("hudItemsShown", 0) >= 1,
+                ((snap_a or {}).get("counts") or {}).get("hudItemsShown"))
         s.note("3 snapshot counts (excludedNonLiving are reported, not compared)", (snap_a or {}).get("counts"))
         missing = sorted(set((snap_a or {}).get("missing") or []))
         if missing:
@@ -5000,6 +5061,9 @@ def smoke_rewind_watch(s):
             s.shot("rww-free-camera", wait=500)
             s.call("/key", {"code": KEYS["1"]})
 
+        # 3c (Rewind parity Phase 16) the recorded F5 and the double chest RW's actions opened
+        rww_parity(s, st, end)
+
         # 4 Quit to Title
         s.probe("rewind-watch-quit")
         st = rww_wait(s, 30)
@@ -5017,6 +5081,31 @@ def smoke_rewind_watch(s):
         if opened:
             s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
             rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+
+
+def rww_parity(s, st, end):
+    """RWW 3c: your view follows the recorded F5; the double chest RW opened is held with its 54 slots filled and 90 in
+    all from its first tick, and the camera's own inventory is the same before and inside it. Ticks come from the
+    recording's VIEW records (rewind-watch-state); a recording without them (no actions) skips with a note."""
+    st = s.probe("rewind-watch-state") or st
+    persp, opened = st.get("perspectiveTick", -1), st.get("windowOpenTick", -1)
+    if persp is None or persp < 0 or opened is None or opened < 0:
+        s.note("3c the recording has no recorded F5 or chest window (RW's actions did not run)",
+               {"perspectiveTick": persp, "windowOpenTick": opened})
+        return
+    st = rww_seek(s, min(end, persp + 1))
+    s.check("3c your view follows the recorded F5 (third person)", st.get("thirdPersonView") == 1,
+            {"tick": persp + 1, "thirdPersonView": st.get("thirdPersonView")})
+    rww_seek(s, max(0, opened - 3))
+    before = s.probe("rewind-watch-window") or {}
+    rww_seek(s, min(end, opened))
+    inside = s.probe("rewind-watch-window") or {}
+    s.check("3c the double chest: held, 90 slots, its 54 filled, the camera's inventory untouched",
+            inside.get("held") == "chest" and inside.get("slots") == 90 and inside.get("ownFilled") == 54
+            and inside.get("inventory") is not None and inside.get("inventory") == before.get("inventory"),
+            {"held": inside.get("held"), "slots": inside.get("slots"), "ownFilled": inside.get("ownFilled"),
+             "inventorySame": inside.get("inventory") == before.get("inventory")})
+    s.shot("rww-double-chest", wait=500)
 
 
 def smoke_rewind_timings(s):

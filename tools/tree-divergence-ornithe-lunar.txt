@@ -465,3 +465,5 @@ one-sided test ornithe com/bedwarsqol/rewind/RewindClientCaptureBench.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/HudPlayback.java
 one-sided main ornithe com/bedwarsqol/hud/RecordedHudSource.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/HudPlaybackTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ViewParityTest.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java
