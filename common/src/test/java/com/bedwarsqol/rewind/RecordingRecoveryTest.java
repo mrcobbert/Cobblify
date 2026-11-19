@@ -40,6 +40,8 @@ public class RecordingRecoveryTest {
     public TemporaryFolder tmp = new TemporaryFolder();
 
     private static final long START_US = 1_000_000L;
+    /** A format version no build knows yet (2 became this build's own with format v2). */
+    private static final int FUTURE = RewindFormat.FORMAT_VERSION + 1;
 
     private enum Json { MISSING, INCOMPLETE }
 
@@ -79,10 +81,16 @@ public class RecordingRecoveryTest {
      */
     private static Crashed writeCrashed(File dir, String id, long baseEpochMs, boolean key, Json json,
                                         boolean withNet) throws IOException {
+        return writeCrashed(dir, id, baseEpochMs, key, json, withNet, RewindFormat.FORMAT_VERSION, null);
+    }
+
+    /** As above, with the header's {@code version} and {@code ext} extension records (tag, record bytes) in TRACK. */
+    private static Crashed writeCrashed(File dir, String id, long baseEpochMs, boolean key, Json json,
+                                        boolean withNet, int version, List<byte[]> ext) throws IOException {
         dir.mkdirs();
         BlockCodec codec = new BlockCodec();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] h = fileHeader(baseEpochMs, RewindFormat.FORMAT_VERSION);
+        byte[] h = fileHeader(baseEpochMs, version);
         out.write(h, 0, h.length);
         long startedAtMs = baseEpochMs + START_US / 1000;
         Crashed c;
@@ -115,6 +123,13 @@ public class RecordingRecoveryTest {
             track[p++] = RewindFormat.TAG_TICK;
             System.arraycopy(enc.buffer(), 0, track, p, n);
             p += n;
+        }
+        if (ext != null) {
+            for (byte[] e : ext) { // {tag, varint len, body...}, all at the last tick's time
+                p = RewindFormat.putVarInt(track, p, 0);
+                System.arraycopy(e, 0, track, p, e.length);
+                p += e.length;
+            }
         }
         if (key) {
             p = RewindFormat.putVarInt(track, p, 10);
@@ -216,7 +231,7 @@ public class RecordingRecoveryTest {
         // A future format version: left alone.
         String futureId = "20200103-120000-3333";
         byte[] future = new byte[64];
-        System.arraycopy(fileHeader(1_577_200_000_000L, 2), 0, future, 0, RewindFormat.FILE_HEADER_LENGTH);
+        System.arraycopy(fileHeader(1_577_200_000_000L, FUTURE), 0, future, 0, RewindFormat.FILE_HEADER_LENGTH);
         Files.write(new File(dir, futureId + ".cbr").toPath(), future);
 
         Fixture f = new Fixture(dir, lockedElsewhere(lockedId), 1_000_000L);
@@ -308,7 +323,7 @@ public class RecordingRecoveryTest {
         File dir = new File(tmp.getRoot(), "rewind");
         List<byte[]> bytes = new ArrayList<byte[]>();
         for (int i = 0; i < 11; i++) {
-            bytes.add(writeClosedVersion(dir, closedId(i), closedStart(i), 2, 2));
+            bytes.add(writeClosedVersion(dir, closedId(i), closedStart(i), FUTURE, FUTURE));
         }
         Fixture f = new Fixture(dir, null, 1_000_000L);
         f.writer.recoverAndPrune();
@@ -320,11 +335,11 @@ public class RecordingRecoveryTest {
         }
     }
 
-    /** An older v2 recording among ten newer v1 ones: it is not counted, so nothing is deleted; later closes keep it. */
+    /** An older future-version recording among ten newer ones: not counted, so nothing is deleted; later closes keep it. */
     @Test
     public void anOlderUnsupportedRecordingIsNotCountedAndNeverDeleted() throws IOException {
         File dir = new File(tmp.getRoot(), "rewind");
-        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), 2, 2);
+        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), FUTURE, FUTURE);
         for (int i = 1; i <= 10; i++) {
             writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
         }
@@ -332,7 +347,7 @@ public class RecordingRecoveryTest {
         f.writer.recoverAndPrune();
         assertEquals(0, f.writer.pruned());
         assertEquals(11, ids(dir).size());
-        // One more v1 game closes: the oldest v1 goes, the v2 stays.
+        // One more game closes: the oldest supported one goes, the future-version one stays.
         f.connect(true, 512, 16);
         f.advance(1_000);
         f.netBoundary(0, null, s01(9, 0));
@@ -345,16 +360,16 @@ public class RecordingRecoveryTest {
         assertEquals(1, f.writer.pruned());
         List<String> left = ids(dir);
         assertEquals(11 + 1 - 1, left.size());
-        assertTrue("the v2 recording stays", left.contains(closedId(0)));
-        assertFalse("the oldest v1 recording went", left.contains(closedId(1)));
+        assertTrue("the future-version recording stays", left.contains(closedId(0)));
+        assertFalse("the oldest supported recording went", left.contains(closedId(1)));
         assertArrayEquals(v2, Files.readAllBytes(new File(dir, closedId(0) + ".cbr").toPath()));
     }
 
-    /** A v1 {@code .cbr} with a v2 {@code .json}: the header decides, it is an ordinary v1 recording. */
+    /** A supported {@code .cbr} with a future-version {@code .json}: the header decides, it is an ordinary recording. */
     @Test
-    public void aV2JsonNextToAV1CbrIsAnOrdinaryRecording() throws IOException {
+    public void aFutureJsonNextToASupportedCbrIsAnOrdinaryRecording() throws IOException {
         File dir = new File(tmp.getRoot(), "rewind");
-        writeClosedVersion(dir, closedId(0), closedStart(0), RewindFormat.FORMAT_VERSION, 2);
+        writeClosedVersion(dir, closedId(0), closedStart(0), RewindFormat.FORMAT_VERSION, FUTURE);
         for (int i = 1; i <= 10; i++) {
             writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
         }
@@ -364,11 +379,11 @@ public class RecordingRecoveryTest {
         assertFalse(ids(dir).contains(closedId(0)));
     }
 
-    /** A v2 {@code .cbr} with a v1 {@code .json} that says complete: the header decides, it is left alone. */
+    /** A future-version {@code .cbr} with a supported {@code .json} that says complete: the header decides, left alone. */
     @Test
-    public void aV1JsonNextToAV2CbrIsLeftAlone() throws IOException {
+    public void aSupportedJsonNextToAFutureCbrIsLeftAlone() throws IOException {
         File dir = new File(tmp.getRoot(), "rewind");
-        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), 2, RewindFormat.FORMAT_VERSION);
+        byte[] v2 = writeClosedVersion(dir, closedId(0), closedStart(0), FUTURE, RewindFormat.FORMAT_VERSION);
         for (int i = 1; i <= 10; i++) {
             writeClosedVersion(dir, closedId(i), closedStart(i), RewindFormat.FORMAT_VERSION, RewindFormat.FORMAT_VERSION);
         }
@@ -403,6 +418,84 @@ public class RecordingRecoveryTest {
         assertArrayEquals(garbage, Files.readAllBytes(new File(dir, closedId(0) + ".cbr").toPath()));
         assertArrayEquals(noJsonBytes, Files.readAllBytes(new File(dir, noJson + ".cbr").toPath()));
         assertTrue(new File(dir, empty + ".cbr").isFile());
+    }
+
+    // ------------------------------------------------------------------ format v2 (A2)
+
+    private static int statsFormat(File dir, String id) throws IOException {
+        String json = new String(Files.readAllBytes(new File(dir, id + ".stats.json").toPath()),
+                java.nio.charset.StandardCharsets.UTF_8);
+        return new com.google.gson.JsonParser().parse(json).getAsJsonObject().get("format").getAsInt();
+    }
+
+    /** A crashed v1 game is finalized as v1: its header is untouched and its metadata and stats say format 1. */
+    @Test
+    public void aCrashedV1PrefixIsFinalizedInItsOwnVersion() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Crashed c = writeCrashed(dir, crashedId(0), crashedBase(0), true, Json.MISSING, true, 1, null);
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(1, f.writer.recovered());
+        File cbr = new File(dir, c.id + ".cbr");
+        byte[] after = Files.readAllBytes(cbr.toPath());
+        assertArrayEquals("no v2 header written over a v1 prefix",
+                Arrays.copyOf(c.bytes, RewindFormat.FILE_HEADER_LENGTH),
+                Arrays.copyOf(after, RewindFormat.FILE_HEADER_LENGTH));
+        assertEquals(1, RewindFormat.getU16(after, 8));
+        assertRecovered(dir, c, true);
+        assertEquals(1, RewindWriterTest.jsonOf(cbr).format);
+        assertEquals(1, read(cbr).endMeta.format);
+        assertEquals(1, statsFormat(dir, c.id));
+    }
+
+    /** A crashed v2 game keeps its extension records through recovery, and its metadata says format 2. */
+    @Test
+    public void aCrashedV2PrefixKeepsItsExtensionRecords() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        ExtCodec codec = new ExtCodec();
+        List<byte[]> ext = new ArrayList<byte[]>();
+        List<byte[]> bodies = new ArrayList<byte[]>();
+        int[] tags = {RewindFormat.TAG_TICK_HEAD, RewindFormat.TAG_SOUND, RewindFormat.TAG_USE, 0x7E};
+        for (int i = 0; i < tags.length; i++) {
+            int n;
+            if (i == 0) {
+                n = codec.tickHead(3);
+            } else if (i == 1) {
+                n = codec.sound("step.grass", 1f, 70f, 2f, 0.15f, 1f);
+            } else if (i == 2) {
+                n = codec.use(72_000);
+            } else {
+                n = codec.fov(70f); // a tag this build has no name for, same framing
+            }
+            byte[] rec = new byte[1 + n];
+            rec[0] = (byte) tags[i];
+            System.arraycopy(codec.buffer(), 0, rec, 1, n);
+            ext.add(rec);
+            bodies.add(ExtCodecTest.body(codec, n));
+        }
+        Crashed c = writeCrashed(dir, crashedId(1), crashedBase(1), false, Json.INCOMPLETE, true,
+                RewindFormat.FORMAT_VERSION, ext);
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.writer.recoverAndPrune();
+        assertEquals(1, f.writer.recovered());
+        File cbr = new File(dir, c.id + ".cbr");
+        assertRecovered(dir, c, false);
+        assertEquals(2, RewindFormat.getU16(Files.readAllBytes(cbr.toPath()), 8));
+        FileContents fc = read(cbr);
+        List<RewindWriterTest.TrackRec> found = new ArrayList<RewindWriterTest.TrackRec>();
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (RewindFormat.isExtensionTag(t.tag)) {
+                found.add(t);
+            }
+        }
+        assertEquals(tags.length, found.size());
+        for (int i = 0; i < tags.length; i++) {
+            assertEquals(tags[i], found.get(i).tag);
+            assertArrayEquals(bodies.get(i), found.get(i).body);
+        }
+        assertEquals(2, RewindWriterTest.jsonOf(cbr).format);
+        assertEquals(2, fc.endMeta.format);
+        assertEquals(2, statsFormat(dir, c.id));
     }
 
     @Test

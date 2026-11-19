@@ -16,7 +16,8 @@ import java.util.List;
  *       {@code origin + k x 50 ms}; every restart uses the same origin, so there is one tick grid.</li>
  *   <li><b>Game start:</b> the first GAME_START record's time minus its {@code backUs}; without one, the
  *       {@code .json gameStartUs}; without either, the origin.</li>
- *   <li><b>End:</b> the {@code .json endUs} when it lies after the game start; otherwise the last NET record.</li>
+ *   <li><b>End:</b> the {@code .json endUs} when it lies after the game start; otherwise the last NET record.
+ *       Playing to the end feeds every record up to it ({@link #endTick()}).</li>
  *   <li><b>Markers:</b> the TRACK MARKER records; without any, the {@code .json} markers. Only those inside
  *       {@code [game start, end]} are kept, in time order.</li>
  * </ul>
@@ -162,7 +163,12 @@ public final class Timeline {
         return tickOf(gameStartUs);
     }
 
+    /**
+     * The ticks run when playback reaches the end: one past {@link #tickOf tickOf(end)}, so the last tick fed (whose
+     * time is at or after the end) has handed over every record up to the end, also those in the final tick window
+     * (code review 2, I3). The picture then shows that tick's time, at most one tick past the end.
+     */
     public long endTick() {
-        return tickOf(endUs);
+        return tickOf(endUs) + 1;
     }
 }

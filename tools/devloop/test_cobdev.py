@@ -1236,6 +1236,38 @@ class MotionBlurMeasures(unittest.TestCase):
             self.assertFalse(ok, detail)
 
 
+class RewindExtCounts(unittest.TestCase):
+    LINE = ("blocks=8 tornTail=false complete=true segments=1 segmentsStartingAtBoundary=1 netRecords=43 "
+            "trackTicks=10 markerKey=1 formatVersion=2 extTickHead=31 extOut=0 extDig=0 extBlock=0 extSound=4 "
+            "extView=1 extMouse=0 extChatInput=0 extFov=1 extUse=0 extInv=41 extSettings=1 extIdentity=1 extInput=2 "
+            "extHud=3 extCont=0 extTap=0 extUnknown=0 unsupportedVersion=false pass=true")
+
+    def test_counts_are_read_from_the_summary_line(self):
+        fmt, ext = cobdev.rewind_ext_counts(self.LINE)
+        self.assertEqual(fmt, 2)
+        self.assertEqual(ext["TickHead"], 31)
+        self.assertEqual(ext["Inv"], 41)
+        self.assertEqual(ext["Unknown"], 0)
+        self.assertEqual(len(ext), 18)  # 17 tags and Unknown
+        self.assertEqual(cobdev.rewind_ext_counts(None), (None, {}))
+
+    def test_a_complete_v2_session_has_no_problem(self):
+        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, walked=True), [])
+
+    def test_each_missing_record_is_named(self):
+        v1 = "blocks=8 complete=true formatVersion=1 extUnknown=0 pass=true"
+        p = cobdev.rewind_ext_problems(v1, walked=True)
+        self.assertIn("formatVersion=1", p)
+        for name in ("TickHead", "Settings", "Identity", "View", "Fov"):
+            self.assertIn("no %s record" % name, p)
+        self.assertIn("no Input record while walking", p)
+        bad = self.LINE.replace("extInv=41", "extInv=7").replace("extIdentity=1", "extIdentity=2") \
+            .replace("extUnknown=0", "extUnknown=3").replace("extInput=2", "extInput=0")
+        p = cobdev.rewind_ext_problems(bad, walked=False)
+        self.assertEqual(p, ["Identity=2 (one per segment)", "Inv=7 (all 41 slots at the segment start)",
+                             "Unknown=3"])
+
+
 class MotionBlurHelpers(unittest.TestCase):
     def test_board_is_21_by_9_white_fill_then_black_cells(self):
         cmds = cobdev.mb_board_commands()
@@ -1428,7 +1460,7 @@ class RewindSmoke(unittest.TestCase):
         return s, calls, fields
 
     def test_with_playback_rw_records_a_swing_in_survival_then_hands_over_to_rww(self):
-        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": "complete=true"}
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}
         s, calls, fields = self.run_step(latest, playback=True)
         self.assertEqual(s.step["status"], "pass", s.step["checks"])
         self.assertEqual(self.watched, ["RWW", "RWW-time"])
@@ -1452,7 +1484,7 @@ class RewindSmoke(unittest.TestCase):
         self.assertEqual(self.watched, [])
 
     def test_a_passing_check_passes_and_settings_come_back(self):
-        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": "complete=true"}
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": RewindExtCounts.LINE}
         s, calls, fields = self.run_step(latest)
         self.assertEqual(s.step["status"], "pass", s.step["checks"])
         self.assertEqual(fields[self.CFG + ".rewind"], "false")
@@ -1465,6 +1497,16 @@ class RewindSmoke(unittest.TestCase):
         self.assertLess(paths.index("/invoke"), max(i for i, c in enumerate(calls) if c == ("/world", {"leave": "1"})))
         clears = [c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-clear"]
         self.assertEqual(len(clears), 2)  # before the session and after the check
+
+    def test_a_passing_v1_recording_fails_the_format_v2_check(self):
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True,
+                  "line": "complete=true formatVersion=1 pass=true"}
+        s, _, fields = self.run_step(latest)
+        self.assertEqual(s.step["status"], "fail")
+        failed = [c for c in s.step["checks"] if not c["ok"]]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("format v2", failed[0]["check"])
+        self.assertEqual(fields[self.CFG + ".rewind"], "false")
 
     def test_a_failing_check_fails_and_still_cleans_up(self):
         latest = {"ok": True, "found": True, "closed": 1, "exit": 16, "pass": False, "line": "markerKey=0"}

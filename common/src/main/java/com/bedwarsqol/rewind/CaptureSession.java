@@ -29,6 +29,10 @@ import java.util.concurrent.atomic.AtomicLongArray;
  *       every game's stats window sees its own (code review 3, O1).</li>
  *   <li><b>Copy</b> if the segment is copied: clock, reserve {@code [varint dtUs][varint len]}, copy, commit
  *       (which publishes the watermark).</li>
+ *   <li><b>Handled order</b> (Rewind parity, A7): with a {@link HandledRing}, every frame whose handler vanilla runs
+ *       on the client thread ({@link HandledRing#clientHandled}) pushes one entry: segment, id, whether it was stored
+ *       and its ordinal among the segment's stored client-handled records. Unstored frames (S3F, a dropped or failed
+ *       segment) are pushed too. A full ring is counted there and never fails the session.</li>
  * </ol>
  *
  * <p><b>Failure latch.</b> Any Throwable, no free chunk, or a frame larger than a chunk latches
@@ -40,8 +44,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * ({@link #resumedSegment()}, counted by {@link #resumeCount()}), so the rules attach a failure to the game that
  * owns that segment, not to whatever the client thread is tracking when it looks (code review 2, I2).
  *
- * <p><b>Threads.</b> {@link #onFrame}, {@link #localWants}, {@link #onLocalCustomPayload}, {@link #fail} and
- * {@link #close} run on the connection's Netty thread only. {@link #rearm} and {@link #skipSegment} are
+ * <p><b>Threads.</b> {@link #onFrame}, {@link #localWants}, {@link #onLocalCustomPayload}, {@link #onLocalUnstored},
+ * {@link #fail} and {@link #close} run on the connection's Netty thread only. {@link #rearm} and {@link #skipSegment} are
  * for the client thread. The rest are reads, safe from any thread. Steady state allocates nothing: the
  * only allocations are a larger {@code lastS47} or chunk carry, a new chunk while fewer than the cap
  * exist, and the copied payload of a {@code hyevent:location} frame (one per server switch). No I/O, no
@@ -107,6 +111,13 @@ public final class CaptureSession {
     private int rearmSeen;
     /** Length of the varint read by {@link #readVarInt}; Netty-thread scratch. */
     private int varIntLength;
+    /** Handled-order ring, or null (no handled order recorded). */
+    private final HandledRing handled;
+    /** Stored client-handled records of the current segment = the last stored one's ordinal. */
+    private int storedHandled;
+    /** The current frame's client-handled id (-1: none) and whether it was stored; pushed after the frame. */
+    private int pendingId = -1;
+    private boolean pendingStored;
 
     private volatile boolean failed;
     private volatile int failureReason;
@@ -127,12 +138,17 @@ public final class CaptureSession {
     private volatile int skipSegment = -1;
 
     public CaptureSession(RecordChunk.Producer producer, Clock clock, LocationSink sink) {
+        this(producer, clock, sink, null);
+    }
+
+    public CaptureSession(RecordChunk.Producer producer, Clock clock, LocationSink sink, HandledRing handled) {
         if (producer == null || clock == null) {
             throw new NullPointerException();
         }
         this.producer = producer;
         this.clock = clock;
         this.sink = sink;
+        this.handled = handled;
     }
 
     /**
@@ -145,13 +161,31 @@ public final class CaptureSession {
 
     // ================================================================== Netty thread
 
-    /** Steps 1-5 for one frame. Never throws: any failure latches. */
+    /** Steps 1-6 for one frame. Never throws: any failure latches. */
     public void onFrame(Frame f) {
         if (closed) {
             return;
         }
+        pendingId = -1;
+        pendingStored = false;
         try {
             frame(f);
+        } catch (Throwable t) {
+            fail(t);
+        }
+        if (pendingId >= 0) {
+            pushHandled(pendingId, pendingStored);
+        }
+    }
+
+    /** Step 6; also for a frame the local path never encodes. Never throws. */
+    private void pushHandled(int id, boolean stored) {
+        HandledRing r = handled;
+        if (r == null) {
+            return;
+        }
+        try {
+            r.push(segment, id, stored, storedHandled);
         } catch (Throwable t) {
             fail(t);
         }
@@ -165,6 +199,9 @@ public final class CaptureSession {
             return;
         }
         int p = varIntLength;
+        if (handled != null && HandledRing.clientHandled(id)) {
+            pendingId = id;
+        }
         // 2. boundary first
         if (id == RewindFormat.PACKET_JOIN_GAME) {
             if (len >= p + 6) {
@@ -212,6 +249,10 @@ public final class CaptureSession {
         }
         f.copyTo(0, producer.current().data(), at, len);
         producer.commit();
+        if (pendingId >= 0) {
+            storedHandled++;
+            pendingStored = true;
+        }
     }
 
     private void boundary(int dim) {
@@ -219,6 +260,7 @@ public final class CaptureSession {
         haveDimension = true;
         int seg = segment + 1;
         segment = seg;
+        storedHandled = 0;
         if (failed) {
             int requests = rearmRequests.get();
             if (requests != rearmSeen && producer.startSegment(seg, lastS47, 0, lastS47Length)) {
@@ -290,6 +332,7 @@ public final class CaptureSession {
             return;
         }
         countSkipped(RewindFormat.PACKET_CUSTOM_PAYLOAD, 0);
+        pushHandled(RewindFormat.PACKET_CUSTOM_PAYLOAD, false);
         if (channel != null) {
             for (int i = 0; i + RESTRICT.length <= channel.length(); i++) {
                 if (channel.regionMatches(true, i, "restrict", 0, RESTRICT.length)) {
@@ -350,6 +393,22 @@ public final class CaptureSession {
 
     public RecordChunk.Producer producer() {
         return producer;
+    }
+
+    /** The handled-order ring this session pushes to, or null. */
+    public HandledRing handledRing() {
+        return handled;
+    }
+
+    /**
+     * Local path, Netty thread: a packet {@link #localWants} declined still runs its handler on the client thread, so
+     * a client-handled one is pushed unstored. Never throws.
+     */
+    public void onLocalUnstored(int packetId) {
+        if (closed || handled == null || !HandledRing.clientHandled(packetId)) {
+            return;
+        }
+        pushHandled(packetId, false);
     }
 
     /** Boundaries seen so far; segment k is the stream from the k-th boundary (0 before the first). */

@@ -62,7 +62,17 @@
     "SoundHandlerRewindMixin",
     "EntityRendererRewindPlaybackMixin",
     "GuiNewChatAccessor",
-    "GuiIngameAccessor"
+    "GuiIngameAccessor",
+    "EntityRendererFovInvoker",
+    "GuiChatRewindAccessor",
+    "NetHandlerPlayClientRewindMixin",
+    "MinecraftRewindRecordMixin",
+    "EntityPlayerSPRewindMixin",
+    "PlayerControllerMPRewindAccessor",
+    "PlayerControllerMPRewindRecordMixin",
+    "WorldRewindMixin",
+    "SoundHandlerRewindRecordMixin",
+    "PacketThreadUtilRunMixin"
   ],
   "verbose": true
 }

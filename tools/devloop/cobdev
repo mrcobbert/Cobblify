@@ -4745,11 +4745,49 @@ def rewind_latest(s, timeout=20):
     return r
 
 
+# Rewind parity Phase 6 (cycle 2026-11-18-rewind-parity): the format v2 records a 1 s single-player RW session must
+# hold. Each segment starts with one IDENTITY, SETTINGS and all 41 INV slots; every tick has a TICK_HEAD; the first
+# frame states VIEW and FOV; holding the walk key changes INPUT.
+RW_EXT_REQUIRED = ("TickHead", "Settings", "Identity", "View", "Fov")
+
+
+def rewind_ext_counts(line):
+    """(formatVersion, {ext name: count}) from a RewindCheck summary line (rewind-latest's "line"; counts only)."""
+    fmt, ext = None, {}
+    for key, value in re.findall(r"\b(formatVersion|ext[A-Z][A-Za-z]*)=(\d+)", line or ""):
+        if key == "formatVersion":
+            fmt = int(value)
+        else:
+            ext[key[3:]] = int(value)
+    return fmt, ext
+
+
+def rewind_ext_problems(line, walked):
+    """What a format v2 RW recording lacks (empty: nothing): version 2, the per-segment records, the heartbeat, view
+    and FOV, all 41 inventory slots, walk input when the walk key was held, and no unknown extension tag."""
+    fmt, ext = rewind_ext_counts(line)
+    problems = []
+    if fmt != 2:
+        problems.append("formatVersion=%s" % fmt)
+    for name in RW_EXT_REQUIRED:
+        if ext.get(name, 0) < 1:
+            problems.append("no %s record" % name)
+    if ext.get("Identity", 0) > 1:
+        problems.append("Identity=%d (one per segment)" % ext["Identity"])
+    if ext.get("Inv", 0) < 41:
+        problems.append("Inv=%d (all 41 slots at the segment start)" % ext.get("Inv", 0))
+    if walked and ext.get("Input", 0) < 1:
+        problems.append("no Input record while walking")
+    if ext.get("Unknown", 0) != 0:
+        problems.append("Unknown=%d" % ext["Unknown"])
+    return problems
+
+
 def smoke_rewind(s, cfg):
     """RW (PLAN A11): rejoin the smoke world with Rewind and Record Games on, walk 1 s, press the Marker Key, leave;
     the newest closed recording in cobdev's own Rewind folder must pass RewindCheck (complete, no torn tail, NET and
-    TICK records, a KEY marker, every segment starting at its boundary packet). Counts only; the folder is cleared
-    before and after."""
+    TICK records, a KEY marker, every segment starting at its boundary packet) and hold the format v2 records of
+    rewind_ext_problems (Rewind parity Phase 6). Counts only; the folder is cleared before and after."""
     s.begin("RW", "Rewind: a single-player session leaves a complete recording")
     if not cfg or not s.has(REWIND, "markerKeyPressed"):
         return s.unavailable(REWIND + " is not in this build")
@@ -4781,6 +4819,9 @@ def smoke_rewind(s, cfg):
         s.check("leaving the world closed one recording", r.get("found") and r.get("closed") == 1, r)
         s.check("RewindCheck passes (complete, no torn tail, NET, TICK, KEY, boundary-first segments)",
                 r.get("pass") is True and r.get("exit") == 0, r.get("line"))
+        missing = rewind_ext_problems(r.get("line"), walked=True)
+        s.check("format v2: heartbeat, settings, one identity, 41 inventory slots, view, FOV and walk input recorded",
+                r.get("found") and not missing, {"missing": missing, "counts": rewind_ext_counts(r.get("line"))[1]})
         if watch and r.get("pass") is True:
             smoke_rewind_watch(s)  # watches this recording before the folder is cleared
             smoke_rewind_timings(s)

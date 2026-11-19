@@ -166,10 +166,10 @@ public class LoadedRecordingTest {
     public void unknownVersionNoNetNoHeaderAndStartOutsideTheDataEachGiveTheirReason() throws Exception {
         File dir = dir();
 
-        // Unknown format version: patch the header's version and its CRC.
+        // Unknown format version: patch the header's version and its CRC (3: no build knows it yet).
         byte[] good = RecordingFixture.realShaped().bytes();
         byte[] v2 = good.clone();
-        RewindFormat.putShort(v2, 8, 2);
+        RewindFormat.putShort(v2, 8, 3);
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(v2, 0, 24);
         RewindFormat.putInt(v2, 24, (int) crc.getValue());

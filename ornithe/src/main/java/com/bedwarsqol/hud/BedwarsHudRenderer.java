@@ -1,20 +1,14 @@
 package com.bedwarsqol.hud;
 
-import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.bedwars.GeneratorTracker;
 import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.ClickCounter;
 import com.bedwarsqol.feature.KeyFade;
-import com.bedwarsqol.feature.SessionStats;
-import com.bedwarsqol.feature.HeightLimitCore;
 import com.bedwarsqol.feature.HeightLimitWatch;
-import com.bedwarsqol.feature.SessionStatsWatch;
-import com.bedwarsqol.feature.TeamUpgradeCatalog;
-import com.bedwarsqol.feature.TeamUpgradeLifecycle;
 import com.bedwarsqol.feature.TeamUpgradeRows;
-import com.bedwarsqol.feature.TeamUpgradesWatch;
 import com.bedwarsqol.ornithe.MouseButtonEvent;
-import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.rewind.HudCapture;
+import com.bedwarsqol.rewind.RewindFormat;
 import net.minecraft.client.Minecraft;
 import com.bedwarsqol.gui.EditHudGui;
 import com.bedwarsqol.hud.HudLayout.Horizontal;
@@ -26,13 +20,10 @@ import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.gui.render.GuiRender;
 import com.bedwarsqol.gui.render.GuiTheme;
 import net.minecraft.client.settings.GameSettings;
-import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiNewChat;
 import net.minecraft.client.gui.ScaledResolution;
-import net.minecraft.client.network.NetHandlerPlayClient;
-import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.client.renderer.entity.RenderItem;
@@ -41,10 +32,8 @@ import net.minecraft.init.Items;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
-import net.minecraft.potion.PotionEffect;
 import net.minecraft.scoreboard.Scoreboard;
 import net.minecraft.util.ResourceLocation;
-import org.lwjgl.input.Mouse;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -73,6 +62,8 @@ public class BedwarsHudRenderer {
     public static final String TAB_LIST_HUD = "tablist";
     private static final int INV_COLS = 9;
     private static final int INV_ROWS = 3; // storage rows only — the hotbar is already on screen
+    /** The mini inventory's slots: its three storage rows. */
+    static final int MINI_INVENTORY_SLOTS = INV_COLS * INV_ROWS;
     // Inventory grid geometry (local pre-scale units). ONE gutter value (INV_GAP) is used everywhere:
     // between adjacent tiles AND between the panel edge and the outer tiles, so every gap is identical.
     // Tiles are sized larger than the 16px item (INV_ITEM_PAD breathing room on every side) so item
@@ -100,12 +91,31 @@ public class BedwarsHudRenderer {
 
     /** Cap order everywhere below: W, A, S, D, Space, LMB, RMB. */
     private static final int KS_W = 0, KS_A = 1, KS_S = 2, KS_D = 3, KS_SPACE = 4, KS_LMB = 5, KS_RMB = 6;
-    private static final KeyFade[] KS_FADES = new KeyFade[7];
+    static final KeyFade[] KS_FADES = new KeyFade[7];
     static {
         for (int i = 0; i < KS_FADES.length; i++) KS_FADES[i] = new KeyFade(KS_FADE_MS);
     }
-    private static final ClickCounter LEFT_CLICKS = new ClickCounter();
-    private static final ClickCounter RIGHT_CLICKS = new ClickCounter();
+    static final ClickCounter LEFT_CLICKS = new ClickCounter();
+    static final ClickCounter RIGHT_CLICKS = new ClickCounter();
+
+    /**
+     * Where the painters read what they show: the live game, or for the length of {@link #renderRecorded} a
+     * recording. Set only there, in try/finally, on the render thread.
+     */
+    private static HudSource source = LiveHudSource.INSTANCE;
+
+    /** The source in use (tests). */
+    static HudSource source() {
+        return source;
+    }
+
+    /**
+     * Whether a painter hands what it drew to Rewind's recorder ({@link HudCapture}): live play only, never Edit HUD,
+     * an example or a recording being drawn.
+     */
+    private static boolean live(boolean example) {
+        return !example && !editing && source == LiveHudSource.INSTANCE;
+    }
 
     // ----- HUD panel (every module with its Background switch on) -----
     // Lunar's flat, square see-through panel behind a HUD element (no border, no corner radius).
@@ -114,7 +124,9 @@ public class BedwarsHudRenderer {
 
     public void onRenderText() {
         ClientSettings cfg = hudSettings();
-        if (cfg != null) render(Minecraft.getMinecraft(), cfg, false);
+        if (cfg == null) return;
+        HudCapture.shared().frame();
+        render(Minecraft.getMinecraft(), cfg, false);
     }
 
     /**
@@ -128,10 +140,37 @@ public class BedwarsHudRenderer {
         if (cfg != null) drawSessionHud(Minecraft.getMinecraft(), cfg, false);
     }
 
+    /**
+     * Rewind's entry point: the Text pass ({@link #onRenderText}'s draw) with {@code settings} in effect for the HUD
+     * ({@link HudSettings#with}: font, widths, scale snapping, accent, backgrounds, placement) and every value read
+     * from {@code source}. The caller decides whether the HUD shows this frame. Nothing is handed to the recorder.
+     */
+    public static void renderRecorded(Minecraft mc, ClientSettings settings, HudSource source) {
+        withSource(settings, source, () -> render(mc, settings, false));
+    }
+
+    /** As {@link #renderRecorded} for the Post pass: Session Stats, over everything ({@link #onRenderPost}). */
+    public static void renderRecordedPost(Minecraft mc, ClientSettings settings, HudSource source) {
+        withSource(settings, source, () -> {
+            if (source.shows(SESSION_HUD)) drawSessionHud(mc, settings, false);
+        });
+    }
+
+    private static void withSource(ClientSettings settings, HudSource with, Runnable body) {
+        if (settings == null || with == null) return;
+        HudSource was = source;
+        source = with;
+        try {
+            HudSettings.with(settings, body);
+        } finally {
+            source = was;
+        }
+    }
+
     /** The settings when the in-game HUD draws this frame, sanitized; null when it does not. */
     private static ClientSettings hudSettings() {
         Minecraft mc = Minecraft.getMinecraft();
-        ClientSettings cfg = BedwarsQol.config;
+        ClientSettings cfg = HudSettings.active();
         if (mc == null || mc.thePlayer == null || cfg == null) return null;
         if (mc.gameSettings != null && mc.gameSettings.showDebugInfo) return null;
         if (mc.currentScreen instanceof EditHudGui) return null; // the editor draws its own preview
@@ -146,9 +185,11 @@ public class BedwarsHudRenderer {
         if (event.button == 0) {
             LEFT_CLICKS.click(now);
             KS_FADES[KS_LMB].tap(now);
+            HudCapture.shared().mousePress(event.button);
         } else if (event.button == 1) {
             RIGHT_CLICKS.click(now);
             KS_FADES[KS_RMB].tap(now);
+            HudCapture.shared().mousePress(event.button);
         }
     }
 
@@ -334,7 +375,7 @@ public class BedwarsHudRenderer {
     /** A raw LWJGL mouse x over the chat item, as vanilla's {@code getChatComponent} expects it over vanilla's chat. */
     public static int chatRawX(int rawX) {
         Minecraft mc = Minecraft.getMinecraft();
-        ClientSettings cfg = BedwarsQol.config;
+        ClientSettings cfg = HudSettings.active();
         HudBox box = chatBox(mc, cfg);
         if (box == null) return rawX;
         return ChatLayout.toVanillaRawX(rawX, new ScaledResolution(mc).getScaleFactor(), box.x, cfg.chatHudScale);
@@ -343,7 +384,7 @@ public class BedwarsHudRenderer {
     /** As {@link #chatRawX} for the raw mouse y (device px from the window's bottom). */
     public static int chatRawY(int rawY) {
         Minecraft mc = Minecraft.getMinecraft();
-        ClientSettings cfg = BedwarsQol.config;
+        ClientSettings cfg = HudSettings.active();
         HudBox box = chatBox(mc, cfg);
         if (box == null) return rawY;
         ScaledResolution r = new ScaledResolution(mc);
@@ -506,18 +547,19 @@ public class BedwarsHudRenderer {
      */
     private static void render(Minecraft mc, ClientSettings cfg, boolean editor) {
         PreviewData.Facts f = editor ? previewFacts(mc) : null;
-        if (cfg.potionStatusEnabled) drawPotionHud(mc, cfg, editor && sample(POTION_HUD, f));
-        if (cfg.armorTypeEnabled) drawArmorHud(mc, cfg, editor && sample(ARMOR_HUD, f));
-        drawInventoryHud(mc, cfg, editor && sample(INVENTORY_HUD, f));
-        drawTimerHud(mc, cfg, editor && sample(DIAMOND_TIMER_HUD, f), true);
-        drawTimerHud(mc, cfg, editor && sample(EMERALD_TIMER_HUD, f), false);
-        if (cfg.keystrokesEnabled) drawKeystrokesHud(mc, cfg, editor && sample(KEYSTROKES_HUD, f));
-        drawTextModule(mc, cfg, FPS_HUD, editor && sample(FPS_HUD, f));
-        drawTextModule(mc, cfg, CPS_HUD, editor && sample(CPS_HUD, f));
-        drawTextModule(mc, cfg, PING_HUD, editor && sample(PING_HUD, f));
-        drawHeightLimitHud(mc, cfg, editor && sample(HEIGHT_LIMIT_HUD, f));
+        HudSource s = source;
+        if (cfg.potionStatusEnabled && s.shows(POTION_HUD)) drawPotionHud(mc, cfg, editor && sample(POTION_HUD, f));
+        if (cfg.armorTypeEnabled && s.shows(ARMOR_HUD)) drawArmorHud(mc, cfg, editor && sample(ARMOR_HUD, f));
+        if (s.shows(INVENTORY_HUD)) drawInventoryHud(mc, cfg, editor && sample(INVENTORY_HUD, f));
+        if (s.shows(DIAMOND_TIMER_HUD)) drawTimerHud(mc, cfg, editor && sample(DIAMOND_TIMER_HUD, f), true);
+        if (s.shows(EMERALD_TIMER_HUD)) drawTimerHud(mc, cfg, editor && sample(EMERALD_TIMER_HUD, f), false);
+        if (cfg.keystrokesEnabled && s.shows(KEYSTROKES_HUD)) drawKeystrokesHud(mc, cfg, editor && sample(KEYSTROKES_HUD, f));
+        if (s.shows(FPS_HUD)) drawTextModule(mc, cfg, FPS_HUD, editor && sample(FPS_HUD, f));
+        if (s.shows(CPS_HUD)) drawTextModule(mc, cfg, CPS_HUD, editor && sample(CPS_HUD, f));
+        if (s.shows(PING_HUD)) drawTextModule(mc, cfg, PING_HUD, editor && sample(PING_HUD, f));
+        if (s.shows(HEIGHT_LIMIT_HUD)) drawHeightLimitHud(mc, cfg, editor && sample(HEIGHT_LIMIT_HUD, f));
         // Team Upgrades has nothing live outside an active game: the editor then shows its example (PreviewData's rule)
-        drawTeamUpgradesHud(mc, cfg, editor && teamUpgradesRows(cfg, false).isEmpty());
+        if (s.shows(TEAM_UPGRADES_HUD)) drawTeamUpgradesHud(mc, cfg, editor && teamUpgradesRows(cfg, false).isEmpty());
         // In game Session Stats draws later, over everything (onRenderPost); in the editor it is the top module.
         if (editor) drawSessionHud(mc, cfg, sample(SESSION_HUD, f));
     }
@@ -576,6 +618,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         List<PotionEntry> entries = potionEntries(mc, example);
         if (entries.isEmpty()) return;
+        if (live(example)) HudCapture.shared().offerShown(RewindFormat.HUD_POTION);
         drawPanel(cfg, POTION_HUD, box, cfg.potionHudScale, example);
         drawPotionImages(mc, cfg, entries, box.x, box.y);
     }
@@ -585,6 +628,7 @@ public class BedwarsHudRenderer {
         if (box == null) return;
         ItemStack leggings = currentLeggings(mc, example);
         if (leggings == null) return;
+        if (live(example)) HudCapture.shared().offerShown(RewindFormat.HUD_ARMOR);
         float e = ts(cfg.armorHudScale);
         float ix = box.x, iy = box.y;
         if (HudModules.background(cfg, ARMOR_HUD)) {
@@ -604,7 +648,7 @@ public class BedwarsHudRenderer {
     private static void drawPotionImages(Minecraft mc, ClientSettings cfg, List<PotionEntry> entries, float x, float y) {
         float e = ts(cfg.potionHudScale);
         float textX = x + (PotionRows.ICON + PotionRows.GAP) * e;
-        long now = Minecraft.getSystemTime();
+        long now = source.now();
         boolean requested = false;
         for (int i = 0; i < entries.size(); i++) {
             PotionEntry entry = entries.get(i);
@@ -1024,30 +1068,14 @@ public class BedwarsHudRenderer {
             out.add(new PotionEntry(Potion.jump, 4, 760, false));       // Jump Boost V 0:38
             return out;
         }
-
-        Collection<PotionEffect> active = mc.thePlayer.getActivePotionEffects();
-        if (active.isEmpty()) return Collections.emptyList();
-
-        List<PotionEntry> entries = new ArrayList<>(active.size());
-        for (PotionEffect eff : active) {
-            Potion potion = potionFor(eff);
-            if (potion == null) continue;
-            entries.add(new PotionEntry(potion, eff.getAmplifier(), eff.getDuration(), eff.getIsPotionDurationMax()));
-        }
-        return entries;
+        return source.potionEntries(mc);
     }
 
     private static ItemStack currentLeggings(Minecraft mc, boolean example) {
         if (example) return new ItemStack(Items.diamond_leggings);
-        ItemStack leggings = mc.thePlayer.inventory.armorInventory[1];
+        ItemStack leggings = source.currentLeggings(mc);
         if (leggings == null) return null;
         return materialName(leggings.getItem()) == null ? null : leggings;
-    }
-
-    private static Potion potionFor(PotionEffect eff) {
-        int id = eff.getPotionID();
-        if (id < 0 || id >= Potion.potionTypes.length) return null;
-        return Potion.potionTypes[id];
     }
 
     private static float lineWidth(FontRenderer fr, Line line) {
@@ -1072,7 +1100,7 @@ public class BedwarsHudRenderer {
 
     /** Whether a HUD's "In Game Only" is satisfied: an active BedWars game, or the edit preview. */
     private static boolean bedwarsActive(boolean example) {
-        return example || editing || HypixelContext.isInActiveBedwarsGame();
+        return example || editing || source.inGame();
     }
 
     private static HudBox inventoryBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
@@ -1093,6 +1121,7 @@ public class BedwarsHudRenderer {
     private static void drawInventoryHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = inventoryBox(mc, cfg, example, false);
         if (box == null) return;
+        if (live(example)) HudCapture.shared().offerShown(RewindFormat.HUD_INVENTORY);
         drawPanel(cfg, INVENTORY_HUD, box, cfg.inventoryHudScale, example);
         drawMiniInventory(mc, cfg, box.x, box.y, example);
     }
@@ -1134,8 +1163,8 @@ public class BedwarsHudRenderer {
 
     /** The three storage rows of the inventory (main slots 9..35). The hotbar is excluded. */
     private static ItemStack[] miniInventorySlots(Minecraft mc, boolean example) {
-        ItemStack[] out = new ItemStack[INV_COLS * INV_ROWS];
         if (example || mc.thePlayer == null) {
+            ItemStack[] out = new ItemStack[MINI_INVENTORY_SLOTS];
             out[0] = new ItemStack(Items.diamond_pickaxe);
             out[1] = new ItemStack(Items.shears);
             out[2] = new ItemStack(Items.bread, 6);
@@ -1146,11 +1175,7 @@ public class BedwarsHudRenderer {
             out[2 * INV_COLS] = new ItemStack(Items.diamond, 4);
             return out;
         }
-        ItemStack[] main = mc.thePlayer.inventory.mainInventory;
-        for (int i = 0; i < out.length; i++) {
-            out[i] = main[9 + i]; // skip the 9 hotbar slots
-        }
-        return out;
+        return source.miniInventorySlots(mc);
     }
 
     private static HudBox timerBox(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond, boolean all) {
@@ -1170,7 +1195,7 @@ public class BedwarsHudRenderer {
 
     private static Size timerSize(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
         float e = ts(diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale); // icon and number at the text scale
-        IconCount entry = timerEntry(example, diamond);
+        IconCount entry = timerEntry(timerSeconds(example, diamond), diamond);
         Size inner = iconCountsSize(mc, Collections.singletonList(entry), e);
         if (!HudModules.background(cfg, diamond ? DIAMOND_TIMER_HUD : EMERALD_TIMER_HUD)) return inner;
         // Minecraft's font ends every string on an empty column: drop it so both sides keep HPAD, as FPS does
@@ -1181,6 +1206,10 @@ public class BedwarsHudRenderer {
     private static void drawTimerHud(Minecraft mc, ClientSettings cfg, boolean example, boolean diamond) {
         HudBox box = timerBox(mc, cfg, example, diamond, false);
         if (box == null) return;
+        int seconds = timerSeconds(example, diamond);
+        if (live(example)) {
+            HudCapture.shared().offerTimer(diamond ? RewindFormat.HUD_DIAMOND_TIMER : RewindFormat.HUD_EMERALD_TIMER, seconds);
+        }
         float e = ts(diamond ? cfg.diamondTimerHudScale : cfg.emeraldTimerHudScale);
         float ix = box.x, iy = box.y;
         if (HudModules.background(cfg, box.id)) {
@@ -1188,19 +1217,19 @@ public class BedwarsHudRenderer {
             ix += TextModules.HPAD * e;
             iy += ICON_BOX_DY * e;
         }
-        drawIconCounts(mc, Collections.singletonList(timerEntry(example, diamond)), onDeviceGrid(mc, ix),
+        drawIconCounts(mc, Collections.singletonList(timerEntry(seconds, diamond)), onDeviceGrid(mc, ix),
                 onDeviceGrid(mc, iy), e);
     }
 
-    private static IconCount timerEntry(boolean example, boolean diamond) {
-        return new IconCount(new ItemStack(diamond ? Items.diamond : Items.emerald), timerValue(example, diamond));
+    /** The gem icon and the spawn countdown, e.g. "23s", rendered to the right of the icon ("--" while unknown). */
+    private static IconCount timerEntry(int seconds, boolean diamond) {
+        return new IconCount(new ItemStack(diamond ? Items.diamond : Items.emerald), seconds < 0 ? "--" : seconds + "s");
     }
 
-    /** Just the spawn countdown, e.g. "23s" — rendered to the right of the gem icon. */
-    private static String timerValue(boolean example, boolean diamond) {
-        if (example) return diamond ? "23s" : "47s";
-        int s = diamond ? GeneratorTracker.diamondSeconds() : GeneratorTracker.emeraldSeconds();
-        return s < 0 ? "--" : s + "s";
+    /** Seconds to the next spawn, negative while unknown; the example's 23 and 47 in the editor. */
+    private static int timerSeconds(boolean example, boolean diamond) {
+        if (example) return diamond ? 23 : 47;
+        return source.timerValue(diamond);
     }
 
     // ----- Height Limit (Lunar-style Map / Height Limit / Distance rows) -----
@@ -1209,7 +1238,7 @@ public class BedwarsHudRenderer {
     private static final BedwarsQolFont.Weight HEIGHT_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
 
     private static HudBox heightLimitBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !HeightLimitWatch.visible(cfg, example || editing)) return null;
+        if (!all && !source.heightLimitVisible(cfg, example || editing)) return null;
         Size size = heightLimitSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -1236,6 +1265,7 @@ public class BedwarsHudRenderer {
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         int label = GuiTheme.fromToken(cfg.guiAccent).base();
         List<String> rows = heightLimitRows(mc, example);
+        if (live(example)) HudCapture.shared().offerRows(RewindFormat.HUD_HEIGHT_LIMIT, rows);
         for (int i = 0; i < rows.size(); i++) {
             String row = rows.get(i);
             drawStatRow(row, alignedX(mc, box, row, scale, HEIGHT_ROW_WEIGHT), box.y + i * step, scale, HEIGHT_ROW_WEIGHT, label);
@@ -1271,21 +1301,14 @@ public class BedwarsHudRenderer {
      * feet level sits below it. Unknown values (a map not yet in the table and not yet learned) read "?".
      */
     private static List<String> heightLimitRows(Minecraft mc, boolean example) {
-        List<String> out = new ArrayList<>(3);
         if (example) {
+            List<String> out = new ArrayList<>(3);
             out.add("Map: Lighthouse");
             out.add("Height Limit: 110");
             out.add("Distance: 27");
             return out;
         }
-        HeightLimitCore core = HeightLimitWatch.core();
-        String map = core.map();
-        int limit = core.limit();
-        int distance = mc.thePlayer == null ? -1 : core.distance(mc.thePlayer.posY);
-        out.add("Map: " + (map == null ? "?" : map));
-        out.add("Height Limit: " + (limit < 0 ? "?" : Integer.toString(limit)));
-        out.add("Distance: " + (distance < 0 ? "?" : Integer.toString(distance)));
-        return out;
+        return source.heightLimitRows(mc);
     }
 
     // ----- Team Upgrades (upgrades and trap queue, Session Stats look) -----
@@ -1320,9 +1343,7 @@ public class BedwarsHudRenderer {
     /** The rows to draw: the example in the editor; in game the visible state's, empty outside an active game. */
     private static List<TeamUpgradeRows.Row> teamUpgradesRows(ClientSettings cfg, boolean example) {
         if (example) return TeamUpgradeRows.example(teamUpgradesLayout(cfg));
-        TeamUpgradeLifecycle lifecycle = TeamUpgradesWatch.lifecycle();
-        return TeamUpgradeRows.rows(lifecycle.visible(), teamUpgradesLayout(cfg),
-                TeamUpgradeCatalog.bracket(lifecycle.mode()), System.currentTimeMillis());
+        return source.teamUpgradesRows(teamUpgradesLayout(cfg));
     }
 
     /**
@@ -1387,6 +1408,7 @@ public class BedwarsHudRenderer {
         // panel holds that box's edge nearest the screen side, as in game.
         HudBox box = teamUpgradesBox(mc, cfg, teamUpgradesSize(scale, rows));
         if (box == null) return;
+        if (live(example)) HudCapture.shared().offerTeamRows(RewindFormat.HUD_TEAM_UPGRADES, rows);
         drawPanel(cfg, TEAM_UPGRADES_HUD, box, scale, example);
         scale = ts(scale);
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
@@ -1435,7 +1457,7 @@ public class BedwarsHudRenderer {
     // ----- Session Stats (Lunar-style game + session tally) -----
 
     private static HudBox sessionBox(Minecraft mc, ClientSettings cfg, boolean example, boolean all) {
-        if (!all && !SessionStatsWatch.visible(cfg, example || editing)) return null;
+        if (!all && !source.sessionVisible(cfg, example || editing)) return null;
         Size size = sessionSize(mc, cfg, example);
         if (size.width <= 0f || size.height <= 0f) return null;
         ScaledResolution r = new ScaledResolution(mc);
@@ -1458,6 +1480,7 @@ public class BedwarsHudRenderer {
         int header = GuiTheme.fromToken(cfg.guiAccent).base();
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);
+        if (live(example)) HudCapture.shared().offerLines(RewindFormat.HUD_SESSION_STATS, lines, SESSION_LINE_VIEW);
         for (int i = 0; i < lines.size(); i++) {
             Line line = lines.get(i);
             float lx = alignedX(mc, box, line.primary, scale, line.weight);
@@ -1471,24 +1494,33 @@ public class BedwarsHudRenderer {
     private static final BedwarsQolFont.Weight SESSION_ROW_WEIGHT = BedwarsQolFont.Weight.REGULAR;
     private static final BedwarsQolFont.Weight SESSION_HEADER_WEIGHT = BedwarsQolFont.Weight.BOLD;
 
+    /** A session line as Rewind stores it: its text, a header by its weight (as {@link #drawSessionHud} draws it). */
+    private static final HudModel.LineView<Line> SESSION_LINE_VIEW = new HudModel.LineView<Line>() {
+        @Override
+        public String text(Line line) {
+            return line.primary;
+        }
+
+        @Override
+        public int kind(Line line) {
+            return line.weight == SESSION_HEADER_WEIGHT ? HudModel.LINE_HEADER : HudModel.LINE_ROW;
+        }
+    };
+
     /**
      * Lunar's Hypixel Bedwars panel, row for row: a SemiBold "Game" header over kills/finals/beds,
      * a SemiBold "Session" header over the four counter/ratio rows, a blank spacer, then winstreak,
      * games and the clock. Every row is one string at one size; drawSessionHud colours it.
      */
     private static List<Line> sessionLines(boolean example) {
-        SessionStats s = example ? null : SessionStatsWatch.core();
-        int gFinals = example ? 1 : s.gameFinals();
-        int gBeds = example ? 1 : s.gameBeds();
-        int gKills = example ? 3 : s.gameKills();
-        String finals = example ? "12 / FKDR: 3.00" : s.finalKills() + " / FKDR: " + SessionStats.formatRatio(s.fkdr());
-        String beds = example ? "5 / BBLR: 2.50" : s.beds() + " / BBLR: " + SessionStats.formatRatio(s.bblr());
-        String kills = example ? "40 / KDR: 2.00" : s.kills() + " / KDR: " + SessionStats.formatRatio(s.kdr());
-        String wins = example ? "3 / WLR: 3.00" : s.wins() + " / WLR: " + SessionStats.formatRatio(s.wlr());
-        int streak = example ? 2 : s.winstreak();
-        int games = example ? 4 : s.games();
-        String time = example ? "12:34" : s.elapsed(System.currentTimeMillis());
+        if (!example) return source.sessionLines();
+        return sessionLines(1, 1, 3, "12 / FKDR: 3.00", "5 / BBLR: 2.50", "40 / KDR: 2.00", "3 / WLR: 3.00", 2, 4,
+                "12:34");
+    }
 
+    /** The panel's lines from its numbers, each tally already formatted ({@code "12 / FKDR: 3.00"}). */
+    static List<Line> sessionLines(int gFinals, int gBeds, int gKills, String finals, String beds, String kills,
+                                   String wins, int streak, int games, String time) {
         List<Line> out = new ArrayList<>(13);
         out.add(new Line("Game", SESSION_HEADER_WEIGHT));
         out.add(new Line("Kills: " + gKills, SESSION_ROW_WEIGHT));
@@ -1543,25 +1575,19 @@ public class BedwarsHudRenderer {
      * without its Background).
      */
     private static List<TextModules.Seg> textSegs(Minecraft mc, ClientSettings cfg, String id, boolean example) {
-        List<TextModules.Seg> segs = TextModules.labelled(textRuns(mc, id, example), HudModules.label(cfg, id));
+        return textSegs(cfg, id, textRuns(mc, id, example));
+    }
+
+    private static List<TextModules.Seg> textSegs(ClientSettings cfg, String id, List<TextModules.Seg> runs) {
+        List<TextModules.Seg> segs = TextModules.labelled(runs, HudModules.label(cfg, id));
         return HudModules.brackets(cfg, id) ? TextModules.bracketed(segs) : segs;
     }
 
     private static List<TextModules.Seg> textRuns(Minecraft mc, String id, boolean example) {
-        if (FPS_HUD.equals(id)) return TextModules.fps(example ? TextModules.EXAMPLE_FPS : Minecraft.getDebugFPS());
-        if (CPS_HUD.equals(id)) {
-            if (example) return TextModules.cps(TextModules.EXAMPLE_CPS_LEFT, TextModules.EXAMPLE_CPS_RIGHT);
-            long now = Minecraft.getSystemTime();
-            return TextModules.cps(LEFT_CLICKS.cps(now), RIGHT_CLICKS.cps(now));
-        }
-        return TextModules.ping(example ? TextModules.EXAMPLE_PING : pingValue(mc));
-    }
-
-    /** The player's own latency as the tab list shows it (only read: no packet is sent), or "--". */
-    private static String pingValue(Minecraft mc) {
-        NetHandlerPlayClient net = mc.getNetHandler();
-        NetworkPlayerInfo info = net == null || mc.thePlayer == null ? null : net.getPlayerInfo(mc.thePlayer.getUniqueID());
-        return TextModules.pingText(mc.isSingleplayer(), info != null, info == null ? 0 : info.getResponseTime());
+        if (!example) return source.textRuns(mc, id);
+        if (FPS_HUD.equals(id)) return TextModules.fps(TextModules.EXAMPLE_FPS);
+        if (CPS_HUD.equals(id)) return TextModules.cps(TextModules.EXAMPLE_CPS_LEFT, TextModules.EXAMPLE_CPS_RIGHT);
+        return TextModules.ping(TextModules.EXAMPLE_PING);
     }
 
     /**
@@ -1595,9 +1621,14 @@ public class BedwarsHudRenderer {
      * shadowed.
      */
     private static void drawTextModule(Minecraft mc, ClientSettings cfg, String id, boolean example) {
-        List<TextModules.Seg> segs = textSegs(mc, cfg, id, example);
+        List<TextModules.Seg> runs = textRuns(mc, id, example);
+        List<TextModules.Seg> segs = textSegs(cfg, id, runs);
         HudBox box = textBox(mc, cfg, id, segs, false);
         if (box == null) return;
+        if (live(example)) {
+            HudCapture.shared().offerRuns(FPS_HUD.equals(id) ? RewindFormat.HUD_FPS
+                    : CPS_HUD.equals(id) ? RewindFormat.HUD_CPS : RewindFormat.HUD_PING, runs);
+        }
         float e = ts(HudModules.get(cfg, id).scale);
         boolean background = HudModules.background(cfg, id);
         int accent = GuiTheme.fromToken(cfg.guiAccent).base();
@@ -1656,8 +1687,9 @@ public class BedwarsHudRenderer {
     private static void drawKeystrokesHud(Minecraft mc, ClientSettings cfg, boolean example) {
         HudBox box = keystrokesBox(mc, cfg, example, false);
         if (box == null) return;
+        if (live(example)) HudCapture.shared().offerShown(RewindFormat.HUD_KEYSTROKES);
         boolean[] held = keyStates(mc, example);
-        long now = Minecraft.getSystemTime();
+        long now = source.now();
         boolean background = HudModules.background(cfg, KEYSTROKES_HUD);
         int accent = GuiTheme.fromToken(cfg.guiAccent).base();
         float e = ts(cfg.keystrokesHudScale);
@@ -1671,7 +1703,7 @@ public class BedwarsHudRenderer {
         }
         for (int i = 0; i < KeystrokesLayout.CAPS.length; i++) {
             // The editor preview shows a still frame and must not disturb the live fades.
-            float level = example || editing ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
+            float level = example || editing ? (held[i] ? 1f : 0f) : source.keyFade(i).level(held[i], now);
             float[] r = KeystrokesLayout.CAPS[i];
             int fill = KeyCapStyle.fill(level, background, accent);
             if ((fill >>> 24) != 0) {
@@ -1711,19 +1743,7 @@ public class BedwarsHudRenderer {
                     GameSettings.isKeyDown(g.keyBindBack), GameSettings.isKeyDown(g.keyBindRight),
                     GameSettings.isKeyDown(g.keyBindJump), false, false};
         }
-        boolean inGame = mc.currentScreen == null;
-        return new boolean[]{
-                isDown(mc.gameSettings.keyBindForward),
-                isDown(mc.gameSettings.keyBindLeft),
-                isDown(mc.gameSettings.keyBindBack),
-                isDown(mc.gameSettings.keyBindRight),
-                isDown(mc.gameSettings.keyBindJump),
-                inGame && Mouse.isButtonDown(0),
-                inGame && Mouse.isButtonDown(1)};
-    }
-
-    private static boolean isDown(KeyBinding kb) {
-        return kb != null && kb.isKeyDown();
+        return source.keyStates(mc);
     }
 
     private static void drawIconCounts(Minecraft mc, List<IconCount> entries, float x, float y, float scale) {
@@ -1876,7 +1896,7 @@ public class BedwarsHudRenderer {
         }
     }
 
-    private static final class Line {
+    static final class Line {
         final String primary;
         final String secondary;
         /** Weight the row is measured and drawn in; SemiBold unless a module asks otherwise. */
@@ -1901,7 +1921,7 @@ public class BedwarsHudRenderer {
         }
     }
 
-    private static final class PotionEntry {
+    static final class PotionEntry {
         final Potion potion;
         final int durationTicks;
         final boolean max;

@@ -53,14 +53,14 @@ public class SeekPlannerTest {
     public void targetsAreClampedToTheTimeline() {
         Timeline tl = Timeline.build(0, 60 * S, 10 * S, 0, null, null);
         assertEquals(200, tl.startTick());
-        assertEquals(1200, tl.endTick());
+        assertEquals(1201, tl.endTick()); // tick 1200 (60 s) fed too (code review 2, I3)
         assertEquals(200, SeekPlanner.clamp(tl, 0));
-        assertEquals(1200, SeekPlanner.clamp(tl, 5000));
+        assertEquals(1201, SeekPlanner.clamp(tl, 5000));
         assertEquals(700, SeekPlanner.clamp(tl, 700));
         assertEquals(200, SeekPlanner.tickForTime(tl, 3 * S));
         assertEquals(401, SeekPlanner.tickForTime(tl, 20 * S + 10));
         assertEquals("Left 5 s", 600, SeekPlanner.relative(tl, 700, -5 * S));
-        assertEquals("Shift+Right 30 s", 1200, SeekPlanner.relative(tl, 700, 30 * S));
+        assertEquals("Shift+Right 30 s", 1201, SeekPlanner.relative(tl, 700, 30 * S));
         assertEquals("Shift+Left 30 s near the start", 200, SeekPlanner.relative(tl, 300, -30 * S));
     }
 

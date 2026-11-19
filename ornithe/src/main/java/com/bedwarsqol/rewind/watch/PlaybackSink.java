@@ -78,6 +78,9 @@ public final class PlaybackSink implements PacketSink {
         last = p;
         try {
             health.applied(p, recordedEntityId, camera());
+            // A window-0 S30/S2F replaces older EQUIP history (code review 2, I2): a fresh camera's full copy
+            // then never puts an obsolete stack over the inventory the server just sent.
+            hand.inventoryPacket(buf, off, len, feedTimeUs());
         } catch (RuntimeException e) {
             handFailed(e);
         }

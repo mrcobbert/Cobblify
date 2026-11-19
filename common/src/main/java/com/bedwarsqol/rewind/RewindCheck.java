@@ -12,7 +12,8 @@ import java.util.Map;
  * {@code java -cp <mod jar> com.bedwarsqol.rewind.RewindCheck <file.cbr>}.
  *
  * <p>The line holds numbers and booleans only: never a packet body, name, chat line, map, server or
- * the file path.
+ * the file path. For format v2 it also gives the version and a count per extension tag ({@code ext<Name>=n},
+ * {@code extUnknown=n}); extension records add no pass criterion.
  *
  * <p>Exit 0 only if the recording is complete, has no torn tail, holds at least one NET record, one
  * TICK and one KEY marker, and every segment's first NET record is S01 or S07. Otherwise the exit code
@@ -52,6 +53,35 @@ public final class RewindCheck {
         public int markerBedBroken;
         public int markerBedLost;
         public boolean unsupportedVersion;
+        /** The file header's format version (0 if the header could not be read). */
+        public int formatVersion;
+        /** Extension records ({@code tag >= 0x20}) whose tag this build has no name for. */
+        public long extUnknown;
+        private final long[] ext = new long[RewindFormat.EXT_TAGS.length];
+
+        /** Records of a known extension tag (format v2); 0 for any other tag. */
+        public long extCount(int tag) {
+            int i = extIndex(tag);
+            return i >= 0 ? ext[i] : 0;
+        }
+
+        void countExt(int tag) {
+            int i = extIndex(tag);
+            if (i >= 0) {
+                ext[i]++;
+            } else {
+                extUnknown++;
+            }
+        }
+
+        private static int extIndex(int tag) {
+            for (int i = 0; i < RewindFormat.EXT_TAGS.length; i++) {
+                if (RewindFormat.EXT_TAGS[i] == tag) {
+                    return i;
+                }
+            }
+            return -1;
+        }
 
         public int exitCode() {
             if (unsupportedVersion) {
@@ -80,6 +110,10 @@ public final class RewindCheck {
         }
 
         public String line() {
+            StringBuilder exts = new StringBuilder();
+            for (int i = 0; i < RewindFormat.EXT_TAGS.length; i++) {
+                exts.append(" ext").append(RewindFormat.extName(RewindFormat.EXT_TAGS[i])).append('=').append(ext[i]);
+            }
             return "blocks=" + blocks
                     + " tornTail=" + tornTail
                     + " complete=" + complete
@@ -95,6 +129,9 @@ public final class RewindCheck {
                     + " markerFinalKill=" + markerFinalKill
                     + " markerBedBroken=" + markerBedBroken
                     + " markerBedLost=" + markerBedLost
+                    + " formatVersion=" + formatVersion
+                    + exts
+                    + " extUnknown=" + extUnknown
                     + " unsupportedVersion=" + unsupportedVersion
                     + " pass=" + (exitCode() == 0);
         }
@@ -108,6 +145,7 @@ public final class RewindCheck {
         RecordingReader r = RecordingReader.open(file);
         try {
             s.unsupportedVersion = r.unsupportedVersion();
+            s.formatVersion = r.header() != null ? r.header().formatVersion : 0;
             RecordingReader.Block b;
             while ((b = r.next()) != null) {
                 s.blocks++;
@@ -200,6 +238,9 @@ public final class RewindCheck {
                 }
                 break;
             default:
+                if (RewindFormat.isExtensionTag(tag)) {
+                    s.countExt(tag);
+                }
                 break;
         }
     }

@@ -14,7 +14,12 @@ import com.bedwarsqol.rewind.watch.PlaybackGate;
 import com.bedwarsqol.rewind.watch.RecordingLibrary;
 import com.bedwarsqol.rewind.watch.WatchEntryRules;
 import com.bedwarsqol.stats.HypixelContext;
+import com.bedwarsqol.stats.EligibilitySnapshot;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.Gui;
@@ -25,6 +30,7 @@ import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.network.INetHandler;
 import net.minecraft.network.NetworkManager;
+import net.minecraft.network.play.server.S3FPacketCustomPayload;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
@@ -45,7 +51,10 @@ import java.util.function.Supplier;
  * <p><b>Per connection.</b> {@code SERVER_CONNECT} (Netty thread) installs {@link RewindCapture} when Rewind and
  * Record Games are on and the connection is single-player or Hypixel, with a fresh NET producer, then posts the
  * connection to the client thread through Minecraft's task queue, ahead of every play packet. There the rules get
- * {@code onConnect}, the writer {@code attach} (fresh TRACK producer and stats feed), in that order.
+ * {@code onConnect}, the writer {@code attach} (fresh TRACK producer and stats feed), in that order. With Rewind on, a
+ * Hypixel connection also gets a read-only {@link LocationTap}: a connection that is not recorded (Record Games off,
+ * from the start or turned off later) still tells the rules its worlds, locations and sidebar, so they know when the
+ * run is a lobby for Watch Last Game (code review 2, I4). Nothing of it is recorded.
  *
  * <p><b>Client thread.</b>
  * <ul>
@@ -64,13 +73,20 @@ import java.util.function.Supplier;
  *   <li>{@code GAME_LINE}: the player's own classified game lines (results and automatic markers).</li>
  *   <li>A CAMERA sample from {@code EntityRenderer.renderWorld} HEAD, at most every 4 ms and only on change.</li>
  *   <li>{@code HUD_POST}: the Marker Key flash, the only thing Rewind ever draws.</li>
+ *   <li><b>Format v2 capture</b> (Phase 6): at connect every capture class is bound to one {@link CaptureSink} over
+ *       the TRACK producer ({@link ActionCapture} with the session's {@link HandledRing}, {@link StateCapture},
+ *       {@link ViewCapture}, the HUD's {@link HudCapture} and its taps); each WORLD_LOAD starts the segment in all of
+ *       them; {@code runTick} HEAD writes the heartbeat and the HUD's tick head, {@code CLIENT_TICK} the end-of-tick
+ *       state, the frame sample the view state, each timed into the stats feed. Disconnect, Record Games off and a
+ *       stopped recorder unbind them all, so playback (which settles the disconnect first) finds every hook
+ *       inert.</li>
  * </ul>
  *
  * <p><b>Failures.</b> The event dispatcher does not catch, so every listener here catches Throwable: a recorder bug
  * never breaks the connection, the tick or world loading. A failure ends recording for the game that owns it through
  * the rules and is logged with ids and counts only, written by the writer thread (no file I/O here). No
- * packet is ever sent or changed; with Rewind or Record Games off nothing is installed, no writer exists and no file
- * is written.
+ * packet is ever sent or changed; with Rewind off nothing is installed; with Record Games off only the read-only
+ * location tap is, no writer exists and no file is written.
  *
  * <p><b>While a recording plays</b> ({@link PlaybackGate#muted()}, Rewind R2) the recorder ignores everything: no
  * connection is installed or attached, and world loads, locations, ticks, self-track and camera samples, game lines
@@ -109,7 +125,9 @@ public final class Rewind {
         final boolean local;
         /** Null: this connection is not recorded. */
         final CaptureSession session;
-        final PacketStats.Feed feed = new PacketStats.Feed();
+        /** A {@link LocationTap} was installed: while not recorded, its worlds still reach the rules (review 2, I4). */
+        final boolean tapped;
+        final PacketStats.Feed feed;
         RecordChunk.Producer track;
         /** WORLD_LOADs so far = the current TRACK segment. */
         int boundaries;
@@ -133,12 +151,24 @@ public final class Rewind {
         boolean ended;
         /** The rules themselves threw: nothing more is done for this connection. */
         boolean dead;
+        /** Format v2 capture's sink while this connection's capture is bound (client thread), else null. */
+        CaptureSink sink;
+        /** A capture hook failed or had no room in the current segment: v2 capture is off until the next one. */
+        boolean captureFailed;
+        /** The hook failure the next settle logs (where, cause), or null. */
+        String captureWhere;
+        Throwable captureFailure;
+        /** Time of the v2 work at the current tick's head, added to the end-of-tick work's (one sample per tick). */
+        long headNs;
 
-        Conn(Object handle, Channel channel, boolean local, CaptureSession session) {
+        Conn(Object handle, Channel channel, boolean local, CaptureSession session, boolean tapped,
+             PacketStats.Feed feed) {
             this.handle = handle;
             this.channel = channel;
             this.local = local;
             this.session = session;
+            this.tapped = tapped;
+            this.feed = feed;
         }
     }
 
@@ -185,18 +215,22 @@ public final class Rewind {
             return null; // no connection is recorded while a recording plays
         }
         CaptureSession session = null;
+        final PacketStats.Feed feed = new PacketStats.Feed();
         try {
             session = RewindCapture.installIfEligible(channel, rewindOn, recordGames, local, address,
                     new Supplier<CaptureSession>() {
                         @Override
                         public CaptureSession get() {
-                            return newSession();
+                            return newSession(feed);
                         }
                     });
         } catch (Throwable t) {
             nettyError = t;
         }
-        final Conn c = new Conn(handle, channel, local, session);
+        // Code review 2, I4: the lobby is known without recording.
+        boolean tapped = rewindOn && !local && EligibilitySnapshot.isExactHypixelHost(address)
+                && LocationTap.install(channel, this);
+        final Conn c = new Conn(handle, channel, local, session, tapped, feed);
         try {
             clientThread.execute(new Runnable() {
                 @Override
@@ -214,7 +248,8 @@ public final class Rewind {
         return session;
     }
 
-    private CaptureSession newSession() {
+    /** A capture session with its handled-order ring (format v2, A7), whose counters go to {@code feed}. */
+    private CaptureSession newSession(PacketStats.Feed feed) {
         RecordChunk.Producer net = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, NET_INITIAL_CHUNKS, MAX_CHUNKS,
                 clock.nowUs());
         final CaptureSession[] self = new CaptureSession[1];
@@ -229,7 +264,7 @@ public final class Rewind {
                     }
                 });
             }
-        });
+        }, new HandledRing(feed));
         self[0] = s;
         return s;
     }
@@ -271,16 +306,18 @@ public final class Rewind {
             if (old != null) {
                 execute(old, commands); // the previous connection's CLOSE and DROPs, under its generation
                 old.ended = true;
+                releaseCapture(old);
             } else if (writer != null) {
                 writer.submitAll(commands);
             }
-            conn = recording ? c : new Conn(c.handle, c.channel, c.local, null);
+            conn = recording ? c : new Conn(c.handle, c.channel, c.local, null, c.tapped, c.feed);
             if (recording) {
                 c.track = new RecordChunk.Producer(RewindFormat.CHUNK_CAPACITY, TRACK_INITIAL_CHUNKS, MAX_CHUNKS, now);
                 // seenCaptureFailures stays 0: a capture failure latched on Netty before this task ran (initial
                 // world data, chunks exhausted before attach) is reported to the rules by the first settle, with
                 // the segment it latched in (code review 2, I2).
                 writer.attach(c.session.producer(), c.track, c.feed);
+                bindCapture(c);
                 log("rewind: connect local=" + c.local + " recording=true");
             }
         } catch (Throwable t) {
@@ -291,7 +328,17 @@ public final class Rewind {
     /** {@code WORLD_LOAD}: the next boundary of this connection was applied on the client thread. */
     void onWorldLoad(SnapshotSource source) {
         Conn c = conn;
-        if (muted() || !recording(c)) {
+        if (muted()) {
+            return;
+        }
+        if (!recording(c)) {
+            if (followed(c)) {
+                try {
+                    rules.onBoundary(clock.nowUs(), ++c.boundaries); // not recorded: no command (review 2, I4)
+                } catch (Throwable t) {
+                    failure("world", t);
+                }
+            }
             return;
         }
         Throwable snapshotError = null;
@@ -304,6 +351,7 @@ public final class Rewind {
             }
             sampler.resetSegment();
             cameraSampled = false;
+            startCaptureSegment(c, segment);
             try {
                 CarryOverEncoder.Snapshot s = source == null ? null : source.capture();
                 if (s != null) {
@@ -339,6 +387,22 @@ public final class Rewind {
     }
 
     /**
+     * A {@code hyevent:location} from {@link LocationTap} (client thread): only for the current connection while it is
+     * not recorded (a recorded one gets its locations, with their segment, from the capture handler).
+     */
+    private void observedLocation(Channel channel, byte[] payload) {
+        Conn c = conn;
+        if (muted() || !followed(c) || c.channel != channel) {
+            return;
+        }
+        try {
+            rules.onLocation(clock.nowUs(), c.boundaries, HypixelLocationCodec.decodeLocation(payload));
+        } catch (Throwable t) {
+            failure("location", t);
+        }
+    }
+
+    /**
      * {@code CLIENT_TICK}. {@code recordSetting} is Rewind and Record Games both on; the Bed Wars flags are the
      * existing sidebar detection.
      */
@@ -362,12 +426,17 @@ public final class Rewind {
                 return;
             }
             if (!recording(c)) {
+                releaseCapture(c);
+                if (followed(c)) {
+                    rules.tick(now, bedwarsQueue, bedwarsActive); // not recorded: no command (review 2, I4)
+                }
                 return;
             }
             if (!recordSetting) {
                 bridgeFeed(c); // as above: bridge before the CLOSE
                 settle(c, now);
                 execute(c, rules.onRecordSetting(now, false));
+                releaseCapture(c);
                 log("rewind: record games off");
                 return;
             }
@@ -409,6 +478,7 @@ public final class Rewind {
             execute(c, rules.onDisconnect(now, false)); // GAME_END is still committed before CLOSE
         }
         c.ended = true;
+        releaseCapture(c);
     }
 
     /** Self-track work on the current segment, if it is recorded. */
@@ -444,6 +514,193 @@ public final class Rewind {
         } catch (Throwable t) {
             failure("camera", t);
         }
+    }
+
+    // ================================================================== format v2 capture (Phase 6)
+
+    /** The v2 capture work at the end of a client tick (production: {@link Game}'s, reading Minecraft). */
+    public interface TickCapture {
+        void endOfTick();
+    }
+
+    /** The v2 capture work of one rendered frame (production: {@link Game}'s). */
+    public interface FrameCapture {
+        void frame(float partialTicks, long nanoTime);
+    }
+
+    /**
+     * The sink every format v2 capture class appends through (one per recorded connection; client thread): records
+     * go to the connection's TRACK producer, stamped with the TRACK clock, while the current segment is recorded and
+     * no recording plays. All three sinks share the framing {@code buf[0, len) = varint bodyLen | body}, which is
+     * exactly what follows the tag on disk ({@link RecordChunk.Producer#appendTrack}).
+     *
+     * <p>A full producer or a throwing hook ends v2 capture for the segment at once ({@link Conn#captureFailed}) and
+     * marks a TRACK failure, which the next settle reports to the rules (the game fails, its prefix stays readable).
+     * Nothing here logs, allocates or touches a file; the hooked game call goes on.
+     */
+    final class CaptureSink implements ActionCapture.Sink, StateCapture.Sink, HudCapture.Sink {
+        private final Conn c;
+
+        CaptureSink(Conn c) {
+            this.c = c;
+        }
+
+        @Override
+        public boolean recording() {
+            return conn == c && !muted() && capturing(c);
+        }
+
+        @Override
+        public boolean append(int tag, byte[] buf, int len) {
+            if (!recording()) {
+                return false;
+            }
+            if (c.track.appendTrack(clock.nowUs(), tag, buf, 0, len)) {
+                return true;
+            }
+            c.captureFailed = true;
+            trackFailed(c);
+            return false;
+        }
+
+        /** {@link ActionCapture.Sink}'s report; HUD failures arrive as {@code failed("hud", t)}. */
+        @Override
+        public void failed(Throwable cause) {
+            failed("action", cause);
+        }
+
+        @Override
+        public void failed(String where, Throwable t) {
+            if (c.captureFailed || conn != c || muted() || !trackOpen(c)) {
+                return; // one report per segment; nothing to fail outside a recorded segment
+            }
+            c.captureFailed = true;
+            c.captureWhere = where;
+            c.captureFailure = t;
+            trackFailed(c);
+        }
+    }
+
+    /** v2 capture is on for {@code c}: its sink is bound, its segment recorded and no capture failure since. */
+    private boolean capturing(Conn c) {
+        return c != null && c.sink != null && !c.captureFailed && trackOpen(c);
+    }
+
+    /** Whether format v2 capture writes now (tests). */
+    boolean capturing() {
+        return !muted() && capturing(conn);
+    }
+
+    /** Where the current connection's last capture failure happened ("action", "state", "hud", ...), or null (tests). */
+    String captureWhere() {
+        Conn c = conn;
+        return c == null ? null : c.captureWhere;
+    }
+
+    /** The Conn whose sink the capture classes hold (they are static: one client, one connection). */
+    private Conn captureOwner;
+
+    /** Binds every capture class to {@code c} at connect (client thread; that thread becomes the hooks' thread). */
+    private void bindCapture(Conn c) {
+        CaptureSink s = new CaptureSink(c);
+        c.sink = s;
+        captureOwner = c;
+        ActionCapture.bind(s, c.session.handledRing(), c.feed);
+        StateCapture.install(s);
+        ViewCapture.install(s);
+        HudCapture.shared().setSink(null); // set at the first segment start
+        HudCapture.shared().setTapReceiver(ViewCapture::mousePressed);
+    }
+
+    /** Segment {@code segment} of {@code c} opened (WORLD_LOAD): every capture class starts it, failures re-armed. */
+    private void startCaptureSegment(Conn c, int segment) {
+        if (c.sink == null || captureOwner != c) {
+            return;
+        }
+        c.captureFailed = false;
+        c.headNs = 0;
+        ActionCapture.startSegment(segment);
+        StateCapture.resetSegment();
+        ViewCapture.resetSegment();
+        HudCapture.shared().setSink(c.sink);
+    }
+
+    /** Capture of {@code c} ends (disconnect, Record Games off, the recorder stopped): every hook is inert again. */
+    private void releaseCapture(Conn c) {
+        if (c == null || c.sink == null) {
+            return;
+        }
+        c.sink = null;
+        if (captureOwner == c) {
+            captureOwner = null;
+            unbindCapture();
+        }
+    }
+
+    /** Every capture class unbound: no sink, no ring, no HUD capture. */
+    static void unbindCapture() {
+        ActionCapture.unbind();
+        StateCapture.install(null);
+        ViewCapture.install(null);
+        HudCapture.shared().setSink(null);
+    }
+
+    /**
+     * {@code Minecraft.runTick} HEAD: the TICK_HEAD heartbeat and the handled-order head ({@link ActionCapture}, which
+     * also closes every local scope whenever it is bound) and the HUD's tick head. Its time joins the end-of-tick
+     * work's in one per-tick sample.
+     */
+    void captureTickHead() {
+        Conn c = conn;
+        boolean timed = !muted() && capturing(c);
+        long t0 = timed ? System.nanoTime() : 0L;
+        ActionCapture.onRunTickHead();
+        HudCapture.shared().tickHead();
+        if (timed) {
+            c.headNs = System.nanoTime() - t0;
+        }
+    }
+
+    /**
+     * {@code CLIENT_TICK} (end of the tick): every local scope closed (whenever action capture is bound), then DIG,
+     * SETTINGS, IDENTITY, INV, USE and CONT, timed with the tick head.
+     */
+    void captureTick(TickCapture work) {
+        ActionCapture.onClientTickEnd();
+        Conn c = conn;
+        if (muted() || !capturing(c)) {
+            return;
+        }
+        long t0 = System.nanoTime();
+        try {
+            work.endOfTick();
+        } catch (Throwable t) {
+            CaptureSink s = c.sink;
+            if (s != null) {
+                s.failed("tick", t);
+            }
+        }
+        long head = c.headNs;
+        c.headNs = 0;
+        c.feed.clientTick.add(head + System.nanoTime() - t0);
+    }
+
+    /** One rendered frame of a recorded segment: VIEW, FOV, INPUT, MOUSE and CHAT_INPUT, timed. */
+    void captureFrame(FrameCapture work, float partialTicks, long nanoTime) {
+        Conn c = conn;
+        if (muted() || !capturing(c)) {
+            return;
+        }
+        long t0 = System.nanoTime();
+        try {
+            work.frame(partialTicks, nanoTime);
+        } catch (Throwable t) {
+            CaptureSink s = c.sink;
+            if (s != null) {
+                s.failed("frame", t);
+            }
+        }
+        c.feed.clientFrame.add(System.nanoTime() - t0);
     }
 
     /** A classified own game line ({@code GAME_LINE}). */
@@ -506,6 +763,86 @@ public final class Rewind {
 
     private boolean recording(Conn c) {
         return c != null && !c.ended && !c.dead && c.session != null && writer != null && rules.active();
+    }
+
+    /**
+     * A live server connection that is not recorded: its worlds, locations and sidebar still reach the rules, which
+     * follow whether the run is a lobby and emit nothing (code review 2, I4).
+     */
+    private boolean followed(Conn c) {
+        return c != null && c.tapped && !c.ended && !c.dead && !recording(c);
+    }
+
+    /** Whether the client tick should read the Bed Wars sidebar for the rules (recorded, or followed). */
+    boolean readsSidebar() {
+        Conn c = conn;
+        return recording(c) || followed(c);
+    }
+
+    /**
+     * Reads (never consumes, never releases) {@code hyevent:location} payloads as vanilla's decoder hands them on, and
+     * posts a copy to the client thread ({@link #observedLocation}); passes every message on. Installed before
+     * {@code packet_handler} on a Hypixel connection while Rewind is on (code review 2, I4).
+     */
+    static final class LocationTap extends ChannelInboundHandlerAdapter {
+        static final String NAME = "cobblify_rewind_location";
+        private static final String PACKET_HANDLER = "packet_handler";
+
+        private final Rewind rewind;
+        private final Channel channel;
+
+        private LocationTap(Rewind rewind, Channel channel) {
+            this.rewind = rewind;
+            this.channel = channel;
+        }
+
+        /**
+         * Never throws. Returns false without a {@code packet_handler}, when one is already there or on failure.
+         */
+        static boolean install(Channel channel, Rewind rewind) {
+            try {
+                ChannelPipeline p = channel == null ? null : channel.pipeline();
+                if (p == null || p.get(PACKET_HANDLER) == null || p.get(NAME) != null) {
+                    return false;
+                }
+                p.addBefore(PACKET_HANDLER, NAME, new LocationTap(rewind, channel));
+                return true;
+            } catch (Throwable t) {
+                rewind.nettyError = t;
+                return false;
+            }
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+            if (msg instanceof S3FPacketCustomPayload) {
+                try {
+                    S3FPacketCustomPayload p = (S3FPacketCustomPayload) msg;
+                    if (HypixelLocationCodec.LOCATION_CHANNEL.equals(p.getChannelName())) {
+                        final byte[] data = copy(p.getBufferData());
+                        rewind.clientThread.execute(new Runnable() {
+                            @Override
+                            public void run() {
+                                rewind.observedLocation(channel, data);
+                            }
+                        });
+                    }
+                } catch (Throwable t) {
+                    rewind.nettyError = t;
+                }
+            }
+            super.channelRead(ctx, msg);
+        }
+
+        private static byte[] copy(ByteBuf buf) {
+            if (buf == null) {
+                return new byte[0];
+            }
+            ByteBuf view = buf.duplicate(); // its own reader index: vanilla and other taps still see it all
+            byte[] out = new byte[view.readableBytes()];
+            view.readBytes(out);
+            return out;
+        }
     }
 
     /** The current TRACK segment is recorded: a boundary was applied and the rules did not drop it. */
@@ -672,6 +1009,10 @@ public final class Rewind {
                 execute(c, rules.onWriterFailure(now, id));
             }
         }
+        if (c.captureFailure != null) {
+            log("rewind: capture failure in " + c.captureWhere + " " + name(c.captureFailure));
+            c.captureFailure = null;
+        }
         if (c.trackFailedSeg > 0) {
             int segment = c.trackFailedSeg;
             c.trackFailedSeg = 0;
@@ -725,6 +1066,7 @@ public final class Rewind {
             execute(c, rules.onClientFailure(now, c.boundaries));
         } catch (Throwable again) {
             c.dead = true;
+            releaseCapture(c);
             log("rewind: recorder stopped for this connection " + name(again));
             try {
                 RewindCapture.remove(c.channel);
@@ -794,15 +1136,33 @@ public final class Rewind {
         }
     }
 
-    /** {@code EntityRenderer.renderWorld} HEAD (mixin). Never throws. */
+    /**
+     * {@code EntityRenderer.renderWorld} HEAD (mixin): the CAMERA sample and the frame's v2 view capture. Never
+     * throws.
+     */
     public static void onRenderWorld(float partialTicks) {
         try {
             Rewind r = instance;
             if (r != null && r.trackOpen()) {
                 Game.camera(r, partialTicks);
+                r.captureFrame(Game.VIEW, partialTicks, System.nanoTime());
             }
         } catch (Throwable ignored) {
             // a frame is never broken by the recorder
+        }
+    }
+
+    /** {@code Minecraft.runTick} HEAD (mixin): the v2 tick head ({@link #captureTickHead}). Never throws. */
+    public static void onRunTickHead() {
+        try {
+            Rewind r = instance;
+            if (r != null) {
+                r.captureTickHead();
+            } else {
+                ActionCapture.onRunTickHead();
+            }
+        } catch (Throwable ignored) {
+            // a tick is never broken by the recorder
         }
     }
 
@@ -911,6 +1271,24 @@ public final class Rewind {
             }
         };
 
+        /** End of a client tick: the dig state, then the per-tick client state. */
+        private static final TickCapture TICK = new TickCapture() {
+            @Override
+            public void endOfTick() {
+                Minecraft mc = Minecraft.getMinecraft();
+                ActionCapture.onTickEnd(mc.playerController, mc.objectMouseOver);
+                StateCapture.tick(mc);
+            }
+        };
+
+        /** One frame's view state. */
+        static final FrameCapture VIEW = new FrameCapture() {
+            @Override
+            public void frame(float partialTicks, long nanoTime) {
+                ViewCapture.frame(Minecraft.getMinecraft(), partialTicks, nanoTime);
+            }
+        };
+
         private Game() {
         }
 
@@ -994,9 +1372,10 @@ public final class Rewind {
             }
             try {
                 boolean on = recordSetting();
-                boolean recorded = r.recording(r.conn);
-                r.tick(on, recorded && HypixelContext.isInBedwarsQueue(), recorded && HypixelContext.isInActiveBedwarsGame());
+                boolean sidebar = r.readsSidebar();
+                r.tick(on, sidebar && HypixelContext.isInBedwarsQueue(), sidebar && HypixelContext.isInActiveBedwarsGame());
                 r.selfTrack(PLAYER);
+                r.captureTick(TICK);
                 pollMarkerKey(r, Minecraft.getMinecraft());
             } catch (Throwable t) {
                 r.failure("tick", t);

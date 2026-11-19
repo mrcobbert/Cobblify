@@ -357,9 +357,12 @@ public final class RecordingStore {
         return RecordingReader.headerVersion(h, n);
     }
 
-    /** Whether {@code id.cbr} is in the format this build reads and writes (and so may recover or delete it). */
+    /**
+     * Whether {@code id.cbr} is in a format this build reads (version 1 or 2), and so may list, recover or delete it.
+     * Any other version, or an unreadable header, is left alone.
+     */
     public boolean supportedCbr(String id) {
-        return cbrVersion(id) == RewindFormat.FORMAT_VERSION;
+        return RewindFormat.supportedVersion(cbrVersion(id));
     }
 
     public void writeMeta(String id, RecordingMeta meta) throws IOException {

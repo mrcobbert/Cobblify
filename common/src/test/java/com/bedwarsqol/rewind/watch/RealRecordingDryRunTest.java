@@ -234,9 +234,8 @@ public class RealRecordingDryRunTest {
             assertEquals(label + " no failures", 0, straightFeeder.failures());
             assertEquals(end, ticks.ticksRun());
             long reached = straightFeeder.recordsPassed();
-            if (t.tickOf(t.lastNetUs()) < end) {
-                assertEquals(label + " every record reached by the end tick", r.netRecordCount(), reached);
-            }
+            // Code review 2, I3: no unreached tail; the final tick window is fed too.
+            assertEquals(label + " every record reached by the end tick", r.netRecordCount(), reached);
 
             // A seek straight to the last tick (one catch-up from a fresh start).
             TickFeeder seekFeeder = new TickFeeder(r);

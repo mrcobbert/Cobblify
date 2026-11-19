@@ -215,7 +215,7 @@ public class RecordingFormatTest {
         RecordingReader r = read(file);
         RecordingReader.FileHeader h = r.header();
         assertNotNull(h);
-        assertEquals(1, h.formatVersion);
+        assertEquals("the writer's header names format v2", 2, h.formatVersion);
         assertEquals(0, h.flags);
         assertEquals(47, h.protocol);
         assertEquals(BASE_EPOCH_MS, h.baseEpochMs);
@@ -444,12 +444,12 @@ public class RecordingFormatTest {
     @Test
     public void anUnknownFormatVersionIsFlaggedAndNotRead() throws IOException {
         byte[] file = smallFile().bytes();
-        file[9] = 2; // formatVersion = 2
+        file[9] = 3; // formatVersion = 3: no build knows it yet
         BlockCodec codec = new BlockCodec();
         RewindFormat.putInt(file, 24, (int) codec.crc(file, 0, 24));
         RecordingReader r = read(file);
         assertNotNull(r.header());
-        assertEquals(2, r.header().formatVersion);
+        assertEquals(3, r.header().formatVersion);
         assertTrue(r.unsupportedVersion());
         assertNull(r.next());
         assertEquals(RecordingReader.Stop.UNSUPPORTED_VERSION, r.stop());
@@ -472,7 +472,7 @@ public class RecordingFormatTest {
     @Test
     public void aMalformedRecordInsideAValidBlockStopsThere() throws IOException {
         byte[] badNet = {0, 50, 0x01, 0x02}; // dt 0, len 50, only 2 bytes follow
-        byte[] badTrack = {0, 0x7F};         // unknown tag
+        byte[] badTrack = {0, 0x10};         // unknown old-style tag (0x08-0x1F have no length to skip by)
         byte[] badHeader = {5, 0};           // unknown source
         for (Object[] c : new Object[][]{{RewindFormat.BLOCK_NET, badNet}, {RewindFormat.BLOCK_TRACK, badTrack},
                 {RewindFormat.BLOCK_HEADER, badHeader}}) {

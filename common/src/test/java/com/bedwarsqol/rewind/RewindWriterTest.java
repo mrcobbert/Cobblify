@@ -561,6 +561,76 @@ public class RewindWriterTest {
         assertEquals(2, s.segmentsStartingAtBoundary);
     }
 
+    // ------------------------------------------------------------------ format v2 (A1)
+
+    /**
+     * A new recording names format 2; its v1 records and every extension record come back byte for byte with their
+     * times, and the metadata and stats say format 2 and count each extension tag (numbers only).
+     */
+    @Test
+    public void aNewRecordingIsFormatTwoAndEveryExtensionRecordRoundTripsByteForByte() throws IOException {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 1_000_000L);
+        f.connect(true, 4096, 16);
+        f.advance(1_000);
+        f.netBoundary(0, null, s01(9, 0));
+        f.clientBoundary(0, snapshot(0));
+        f.tick(1);
+        List<RecordingFormatV2Test.Rec> ext = RecordingFormatV2Test.extRecords(0);
+        int i = 0;
+        for (RecordingFormatV2Test.Rec r : ext) {
+            f.advance(500);
+            assertTrue(f.track.appendTrack(f.clock.nowUs, r.tag, r.appended, 0, r.appended.length));
+            f.trackSent.add(new TrackRec(f.track.segment(), f.clock.nowUs, r.tag, r.body));
+            if (++i % 4 == 0) {
+                f.advance(50_000);
+                f.tick(1 + i);
+                f.net(packet(0x20, 12, i));
+            }
+        }
+        f.step();
+        f.advance(3_000_000L);
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+
+        File cbr = onlyCbr(dir);
+        assertEquals("file header names format 2", 2, RewindFormat.getU16(Files.readAllBytes(cbr.toPath()), 8));
+        FileContents fc = read(cbr);
+        assertTrue(fc.complete);
+        assertFalse(fc.tornTail);
+        assertNetEquals(f.netSent, fc.net);
+        assertTrackEquals(f.trackSent, fc.track);
+        assertEquals(2, jsonOf(cbr).format);
+        assertEquals(2, fc.endMeta.format);
+
+        String stats = new String(Files.readAllBytes(new File(dir, jsonOf(cbr).id + ".stats.json").toPath()),
+                StandardCharsets.UTF_8);
+        com.google.gson.JsonObject so = new com.google.gson.JsonParser().parse(stats).getAsJsonObject();
+        assertEquals(2, so.get("format").getAsInt());
+        com.google.gson.JsonArray er = so.getAsJsonArray("extRecords");
+        assertEquals("one row per extension tag written", ext.size(), er.size());
+        for (RecordingFormatV2Test.Rec r : ext) {
+            boolean found = false;
+            for (com.google.gson.JsonElement e : er) {
+                com.google.gson.JsonObject o = e.getAsJsonObject();
+                if (o.get("tag").getAsInt() == r.tag) {
+                    found = true;
+                    assertEquals("count of " + r.tag, 1, o.get("count").getAsLong());
+                    assertEquals("body bytes of " + r.tag, r.body.length, o.get("bytes").getAsLong());
+                }
+            }
+            assertTrue("stats row for " + r.tag, found);
+        }
+
+        RewindCheck.Summary s = RewindCheck.summarize(cbr);
+        assertEquals(2, s.formatVersion);
+        for (RecordingFormatV2Test.Rec r : ext) {
+            assertEquals(1, s.extCount(r.tag));
+        }
+        assertTrue(s.line(), s.line().contains(" formatVersion=2"));
+        assertTrue(s.line(), s.line().contains(" extTickHead=1"));
+    }
+
     // ------------------------------------------------------------------ code review 1, I5
 
     /**
@@ -823,6 +893,50 @@ public class RewindWriterTest {
         f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
         f.step();
         assertTrue("the sidebar opened a file before the location", sawFile);
+        assertEquals("no file for a replay-viewer visit: " + names(dir), 0, names(dir).size());
+        assertEquals(0, f.writer.pendingBytes());
+    }
+
+    /**
+     * Code review 2, I1 end to end, the reviewer's timings: connect 0; segment 1 at 1 s; the Bed Wars sidebar opens a
+     * file by 12 s; a world boundary (segment 2) inside the replay viewer at 12.5 s; the first location, for segment 2,
+     * at 13 s says REPLAY; disconnect at 90 s. Nothing of the replay viewer visit is left on disk.
+     */
+    @Test
+    public void aReplayLocationAfterACandidateBoundaryLeavesNoFile() {
+        File dir = new File(tmp.getRoot(), "rewind");
+        Fixture f = new Fixture(dir, null, 0L);
+        f.connect(false, 256, 64);
+        f.advance(1_000_000L);
+        f.netBoundary(1, null, s01(5, 0));
+        f.clientBoundary(1, snapshot(0));
+        int i = 0;
+        boolean switched = false;
+        boolean located = false;
+        boolean sawFile = false;
+        while (f.clock.nowUs < 90_000_000L) {
+            f.advance(100_000L);
+            if (!switched && f.clock.nowUs >= 12_500_000L) {
+                switched = true;
+                sawFile = !names(dir).isEmpty();
+                f.netBoundary(2, null, s07(1));
+                f.clientBoundary(2, snapshot(1));
+            }
+            f.net(packet(0x02, 40, i));
+            f.tick(i++);
+            if (!located && f.clock.nowUs >= 13_000_000L) {
+                located = true;
+                f.submit(f.rules.onLocation(f.clock.nowUs, 2,
+                        new Location("fakeReplay8", "REPLAY", null, "BEDWARS_EIGHT_ONE", "Fakeland")));
+            }
+            f.submit(f.rules.tick(f.clock.nowUs, false, f.clock.nowUs >= 12_000_000L));
+            f.step();
+        }
+        f.advance(RewindWriter.SYNC_INTERVAL_US);
+        f.step();
+        f.submit(f.rules.onDisconnect(f.clock.nowUs, false));
+        f.step();
+        assertTrue("the sidebar opened a file before the boundary", sawFile);
         assertEquals("no file for a replay-viewer visit: " + names(dir), 0, names(dir).size());
         assertEquals(0, f.writer.pendingBytes());
     }

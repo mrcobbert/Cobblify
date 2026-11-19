@@ -519,4 +519,63 @@ public class TickFeederTest {
             // expected
         }
     }
+
+    // ---------------- code review 2, I3: the final tick window ----------------
+
+    /** Runs ticks as the session does (beginTick, feed, finishTick) until the catch-up or play reaches its stop. */
+    private static void runTicks(ReplayTicks ticks, LogSink sink, boolean catchUp) {
+        while (catchUp ? ticks.catchingUp() : !ticks.atEnd()) {
+            long k = ticks.beginTick();
+            sink.feed(k);
+            ticks.finishTick();
+        }
+    }
+
+    private static int applied(LogSink sink, int packetId) {
+        int n = 0;
+        for (Event e : sink.of(Event.APPLY)) {
+            if (e.packetId == packetId) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * The reviewer's inputs: origin 0, end 200,000 us, and a title (S45) at 199,999 us, inside the final tick window.
+     * Straight play to the end and a seek to the end both apply it before playback pauses there, and every NET record
+     * is fed. Also for a recovered file whose end falls back to its last NET time (no {@code .json} end).
+     */
+    @Test
+    public void thePacketInTheFinalTickWindowIsAppliedBeforeTheEndPause() throws Exception {
+        for (long metaEnd : new long[]{200_000L, 0L}) {
+            String at = "meta end " + metaEnd;
+            LoadedRecording r = new Rec().segment(1, standardHeader0(), standardHeader1())
+                    .at(0L, RecordingFixture.joinGame(0))
+                    .at(199_999L, p(0x45, 2))
+                    .load(tmp.newFolder(), 0L, metaEnd);
+            Timeline tl = r.timeline();
+            assertEquals(at, 0L, tl.originUs());
+
+            TickFeeder straight = new TickFeeder(r);
+            LogSink played = new LogSink(straight);
+            ReplayTicks ticks = new ReplayTicks(tl.endTick());
+            straight.feedHeaders(played);
+            runTicks(ticks, played, false);
+            assertTrue(at + ": paused at the end", ticks.paused() && ticks.atEnd());
+            assertEquals(at + ": straight play applied the final title", 1, applied(played, 0x45));
+            assertEquals(at + ": every NET record fed", r.netRecordCount(), straight.recordsPassed());
+
+            TickFeeder seek = new TickFeeder(r);
+            LogSink seeked = new LogSink(seek);
+            ReplayTicks seekTicks = new ReplayTicks(tl.endTick());
+            seek.feedHeaders(seeked);
+            seekTicks.seek(SeekPlanner.plan(0, SeekPlanner.clamp(tl, Long.MAX_VALUE)));
+            runTicks(seekTicks, seeked, true);
+            assertTrue(at + ": a seek to the end pauses there", seekTicks.paused() && seekTicks.atEnd());
+            assertEquals(at + ": the seek applied the final title", 1, applied(seeked, 0x45));
+            assertEquals(at + ": every NET record fed", r.netRecordCount(), seek.recordsPassed());
+            assertEquals(at + ": the same ticks", ticks.ticksRun(), seekTicks.ticksRun());
+        }
+    }
 }

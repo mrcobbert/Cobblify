@@ -376,3 +376,49 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/PlaybackCameraStateTest.java
 # Rewind R2 Phase 4b (Ornithe only): your view, the free camera and the recorded player's puppet in playback.
 one-sided main ornithe com/bedwarsqol/rewind/watch/RewindSelfPuppet.java
 one-sided main ornithe com/bedwarsqol/rewind/watch/CameraController.java
+
+# Rewind parity Phase 3 (Ornithe only): the recorder's per-frame view state (VIEW, MOUSE, CHAT_INPUT, FOV, INPUT,
+# TAP), per-tick client state (USE, INV, CONT, SETTINGS, IDENTITY) and the settings snapshot, the FOV invoker and
+# chat-bar accessor they read through, and their capture and allocation tests.
+one-sided main ornithe com/bedwarsqol/rewind/ViewCapture.java
+one-sided main ornithe com/bedwarsqol/rewind/StateCapture.java
+one-sided main ornithe com/bedwarsqol/rewind/SettingsSnapshot.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererFovInvoker.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiChatRewindAccessor.java
+one-sided test ornithe com/bedwarsqol/rewind/ViewCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/InventoryCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/SnapshotCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/ClientTrackCaptureTest.java
+# Rewind parity Phase 4 (Ornithe only): the HUD painters' data source seam (the live game, or a recording),
+# the settings accessor the HUD, its font and the overlay placement read, and the recorder's HUD capture fed by
+# the painters. The tests pin the capture's records and cost, the settings scope and the recorded-draw entry.
+one-sided main ornithe com/bedwarsqol/hud/HudSource.java
+one-sided main ornithe com/bedwarsqol/hud/LiveHudSource.java
+one-sided main ornithe com/bedwarsqol/hud/HudSettings.java
+one-sided main ornithe com/bedwarsqol/rewind/HudCapture.java
+one-sided test ornithe com/bedwarsqol/rewind/HudCaptureTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudSettingsTest.java
+one-sided test ornithe com/bedwarsqol/hud/HudRecordedRenderTest.java
+one-sided test ornithe com/bedwarsqol/hud/FakeClient.java
+# Rewind parity Phase 2 (Ornithe only): the recorder's own-action capture for format v2 (outbound packets, dig
+# state, predicted blocks, own sounds, the tick heartbeat and the handled-order pops), its read-only mixins and
+# their tests. Inert until the recorder wiring binds a sink.
+one-sided main ornithe com/bedwarsqol/rewind/ActionCapture.java
+one-sided main ornithe com/bedwarsqol/mixin/NetHandlerPlayClientRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftRewindRecordMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerSPRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/PlayerControllerMPRewindAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/PlayerControllerMPRewindRecordMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/WorldRewindMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/SoundHandlerRewindRecordMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/PacketThreadUtilRunMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/RecordingCaptureSink.java
+one-sided test ornithe com/bedwarsqol/rewind/OutboundCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/DigCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/LocalSoundCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/TickHeadCaptureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/CaptureFailureTest.java
+one-sided test ornithe com/bedwarsqol/rewind/HandledOrderTest.java
+# Rewind parity Phase 6 (recorder wiring): Ornithe-only recorder tests and the opt-in client capture bench.
+one-sided test ornithe com/bedwarsqol/rewind/RewindReadOnlyScanTest.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindClientCaptureBench.java

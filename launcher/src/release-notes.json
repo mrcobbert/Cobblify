@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.19.0-dev.97",
+    "channel": "dev",
+    "date": "2026-11-18",
+    "sections": [
+      ["New", [
+        "Rewind recorder upgrade (Prism): new recordings also save what you did yourself: block breaking and placing, your own sounds, F5/F1/F3/Tab, inventory and chest screens with the cursor, chat typing, exact FOV, your skin, and what your Cobblify HUD showed. Watching looks the same as dev.96 for now; the next build uses the new data. Recordings made from this build on cannot be opened by dev.95 or dev.96."
+      ]],
+      ["Fixes", [
+        "Rewind: the last moment of a game now plays, old items no longer linger in the hotbar after a respawn, Watch Last Game shows with Record Games off, and Hypixel replay-viewer sessions are no longer kept as games."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.96",
     "channel": "dev",
     "date": "2026-11-18",

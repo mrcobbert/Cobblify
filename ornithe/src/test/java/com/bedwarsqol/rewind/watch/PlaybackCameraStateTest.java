@@ -142,6 +142,19 @@ public class PlaybackCameraStateTest {
         assertTrue("S01/S07 reset it: " + boundary, boundary.contains("health.reset()"));
     }
 
+    /**
+     * Code review 2, I2: every applied window-0 inventory packet (S30, S2F) reaches HandState with its record time, so a
+     * fresh camera's full copy only restores EQUIP stacks newer than the server's inventory.
+     */
+    @Test
+    public void theSinkReportsEveryAppliedInventoryPacketToHandState() throws Exception {
+        String text = source("com/bedwarsqol/rewind/watch/PlaybackSink.java");
+        String apply = body(text, "boolean\\s+apply\\s*\\(");
+        assertTrue("apply reports the processed packet's bytes and time: " + apply, apply.matches(
+                "(?s).*p\\.processPacket\\(handler\\);.*hand\\.inventoryPacket\\s*\\(\\s*buf\\s*,\\s*off\\s*,\\s*len\\s*,"
+                        + "\\s*feedTimeUs\\(\\)\\s*\\).*"));
+    }
+
     // ------------------------------------------------------------------ O1
 
     @Test

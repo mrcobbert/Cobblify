@@ -23,7 +23,6 @@ import java.util.concurrent.atomic.AtomicLongArray;
  */
 public final class PacketStats {
 
-    public static final int FORMAT = 1;
     /** S01/S07 entries kept per file; {@code boundaryCount} still counts every one. */
     public static final int MAX_BOUNDARIES = 256;
     /** Segments listed in {@code headerPackets}. */
@@ -39,12 +38,16 @@ public final class PacketStats {
             "captureTimingMeasured", "trackNsPerTickMean", "trackNsPerTickMax",
             "cameraNsPerFrameMean", "cameraNsPerFrameMax", "writerMsPerMiB", "peakPendingBytes",
             "locations", "lobbyOverridden", "visitsWithoutLocation", "bedwarsVisitsWithoutStart",
-            "shortVisitsDropped", "startSource"));
+            "shortVisitsDropped", "startSource",
+            "extRecords", "clientTickNsMean", "clientTickNsMax", "clientFrameNsMean", "clientFrameNsMax",
+            "outNsMean", "outNsMax", "handledResyncs", "handledOverflows", "orderUnknownTicks"));
 
     /**
      * Keys of the objects inside each array-valued key. In {@code locations}, {@code serverTypeCode} is
      * {@link RewindGameRules#serverTypeCode}: 0 absent, 1 BEDWARS, 2 MAIN, 3 TOURNAMENT, 4 SKYBLOCK, 5 HOUSING,
      * 6 other, 7 REPLAY (Hypixel's replay viewer, always {@code verdict} 1; files written before R2 log it as 6).
+     * In {@code extRecords} (format v2), {@code tag} is a TRACK extension tag ({@code RewindFormat.TAG_*} 0x20 and up),
+     * {@code count} its records and {@code bytes} their body bytes (length prefix, tag and time not included).
      */
     public static final Map<String, List<String>> ARRAY_ITEM_KEYS;
 
@@ -56,6 +59,7 @@ public final class PacketStats {
         m.put("headerPackets", Collections.unmodifiableList(Arrays.asList("segment", "source0", "source1")));
         m.put("locations", Collections.unmodifiableList(Arrays.asList("segment", "dtUsFromBoundary",
                 "hasServerType", "serverTypeCode", "hasLobbyName", "hasMode", "hasMap", "verdict")));
+        m.put("extRecords", Collections.unmodifiableList(Arrays.asList("tag", "count", "bytes")));
         ARRAY_ITEM_KEYS = Collections.unmodifiableMap(m);
     }
 
@@ -86,6 +90,13 @@ public final class PacketStats {
     private long storedBytes;
     private boolean restrictChannelSeen;
     private final long[] timings = new long[4]; // track mean,max; camera mean,max
+    private final long[] clientTimings = new long[6]; // client tick mean,max; frame mean,max; out mean,max
+    private final long[] extCount = new long[IDS];
+    private final long[] extBytes = new long[IDS];
+    private long handledResyncs;
+    private long handledOverflows;
+    private long orderUnknownTicks;
+    private int format = RewindFormat.FORMAT_VERSION;
     private long writerNs;
     private long writerRawBytes;
     private long peakPendingBytes;
@@ -156,9 +167,10 @@ public final class PacketStats {
 
     /**
      * Adds {@code o} (a segment's stats as it joins a game) to this one. Every accumulated field is carried: counts
-     * and bytes, boundaries, headers, peaks, the restrict flag, writer work, raw and stored bytes and the pending
-     * peak (code review 2, O1). The game-level values that {@code finish} sets once for the whole file (length,
-     * start, segments, timings, rules stats) are not merged.
+     * and bytes, boundaries, headers, peaks, the restrict flag, writer work, raw and stored bytes, the pending
+     * peak (code review 2, O1) and the extension record counts. The game-level values that {@code finish} sets once
+     * for the whole file (length, start, segments, timings, handled-order counters, rules stats, format) are not
+     * merged.
      */
     public void merge(PacketStats o) {
         for (int i = 0; i < IDS; i++) {
@@ -200,6 +212,10 @@ public final class PacketStats {
         rawBytes += o.rawBytes;
         storedBytes += o.storedBytes;
         peakPendingBytes = Math.max(peakPendingBytes, o.peakPendingBytes);
+        for (int i = 0; i < IDS; i++) {
+            extCount[i] += o.extCount[i];
+            extBytes[i] += o.extBytes[i];
+        }
     }
 
     public void setGame(long gameStartUs, long lengthUs) {
@@ -246,6 +262,37 @@ public final class PacketStats {
         runStats = s;
     }
 
+    /** One extension TRACK record (format v2) of {@code tag} with a body of {@code bodyBytes}. */
+    public void addExt(int tag, int bodyBytes) {
+        if (tag >= 0 && tag < IDS) {
+            extCount[tag]++;
+            extBytes[tag] += bodyBytes;
+        }
+    }
+
+    /** The recording's format version; a recovered prefix keeps its own (default {@link RewindFormat#FORMAT_VERSION}). */
+    public void setFormat(int format) {
+        this.format = format;
+    }
+
+    /** Mean and max ns of the v2 capture per client tick, per frame and per stored outbound packet. */
+    public void setClientTimings(long tickMean, long tickMax, long frameMean, long frameMax, long outMean,
+                                 long outMax) {
+        clientTimings[0] = tickMean;
+        clientTimings[1] = tickMax;
+        clientTimings[2] = frameMean;
+        clientTimings[3] = frameMax;
+        clientTimings[4] = outMean;
+        clientTimings[5] = outMax;
+    }
+
+    /** Handled-order counters of a game (PLAN "Handled order"): packet-id resyncs, ring overflows, unknown ticks. */
+    public void setHandledOrder(long resyncs, long overflows, long unknownTicks) {
+        handledResyncs = resyncs;
+        handledOverflows = overflows;
+        orderUnknownTicks = unknownTicks;
+    }
+
     // ---------------------------------------------------------------- reading (tests, writer)
 
     public long count(int id) {
@@ -258,6 +305,14 @@ public final class PacketStats {
 
     public long boundaryCount() {
         return boundaryCount;
+    }
+
+    public long extCount(int tag) {
+        return tag >= 0 && tag < IDS ? extCount[tag] : 0;
+    }
+
+    public long extBytes(int tag) {
+        return tag >= 0 && tag < IDS ? extBytes[tag] : 0;
     }
 
     public long netRecords() {
@@ -276,7 +331,7 @@ public final class PacketStats {
         long pb = Math.max(peakBytes, secondBytes);
         StringBuilder sb = new StringBuilder(4096);
         sb.append('{');
-        num(sb, "format", FORMAT);
+        num(sb, "format", format);
         num(sb, "lengthUs", lengthUs);
         num(sb, "gameStartUs", gameStartUs);
         num(sb, "segments", segments);
@@ -347,6 +402,28 @@ public final class PacketStats {
         num(sb, "bedwarsVisitsWithoutStart", r != null ? r.bedwarsVisitsWithoutStart : 0);
         num(sb, "shortVisitsDropped", r != null ? r.shortVisitsDropped : 0);
         num(sb, "startSource", r != null && r.startSource != null ? r.startSource.code : 0);
+        key(sb, "extRecords").append('[');
+        boolean firstExt = true;
+        for (int i = 0; i < IDS; i++) {
+            if (extCount[i] == 0 && extBytes[i] == 0) continue;
+            if (!firstExt) sb.append(',');
+            firstExt = false;
+            sb.append('{');
+            num(sb, "tag", i);
+            num(sb, "count", extCount[i]);
+            num(sb, "bytes", extBytes[i]);
+            end(sb).append('}');
+        }
+        sb.append("],");
+        num(sb, "clientTickNsMean", clientTimings[0]);
+        num(sb, "clientTickNsMax", clientTimings[1]);
+        num(sb, "clientFrameNsMean", clientTimings[2]);
+        num(sb, "clientFrameNsMax", clientTimings[3]);
+        num(sb, "outNsMean", clientTimings[4]);
+        num(sb, "outNsMax", clientTimings[5]);
+        num(sb, "handledResyncs", handledResyncs);
+        num(sb, "handledOverflows", handledOverflows);
+        num(sb, "orderUnknownTicks", orderUnknownTicks);
         end(sb).append('}');
         return sb.toString();
     }
@@ -437,9 +514,10 @@ public final class PacketStats {
 
     /**
      * What the writer cannot see in chunks: packets the capture handler skipped (S00, S3F, S46), whether
-     * a Replay|Restrict-style channel was seen, and the self-track and camera timings. Each method is for
-     * one owner thread (capture handler: {@link #skipped}, {@link #restrictChannelSeen}; client thread:
-     * {@link #track}, {@link #camera}); no allocation, no locks.
+     * a Replay|Restrict-style channel was seen, the self-track and camera timings, and (format v2) the capture
+     * timings per tick, frame and outbound packet and the handled-order counters. Each method is for
+     * one owner thread (capture handler: {@link #skipped}, {@link #restrictChannelSeen}, {@link #handledOverflow};
+     * client thread: the timers, {@link #handledResync}, {@link #orderUnknownTick}); no allocation, no locks.
      * Cumulative; the writer takes per-game differences.
      */
     public static final class Feed {
@@ -448,6 +526,30 @@ public final class PacketStats {
         private final AtomicLong restrictSeen = new AtomicLong();
         public final Timer track = new Timer();
         public final Timer camera = new Timer();
+        /** Client thread: the v2 capture work of one client tick (format v2, A13). */
+        public final Timer clientTick = new Timer();
+        /** Client thread: the v2 capture work of one frame. */
+        public final Timer clientFrame = new Timer();
+        /** Client thread: storing one outbound packet (OUT). */
+        public final Timer out = new Timer();
+        private final AtomicLong handledResyncs = new AtomicLong();
+        private final AtomicLong handledOverflows = new AtomicLong();
+        private final AtomicLong orderUnknownTicks = new AtomicLong();
+
+        /** Client thread: a handled-order pop had to skip entries to find the running packet's id. */
+        public void handledResync() {
+            handledResyncs.lazySet(handledResyncs.get() + 1);
+        }
+
+        /** Capture thread: the handled-order ring was full and an entry could not be pushed. */
+        public void handledOverflow() {
+            handledOverflows.lazySet(handledOverflows.get() + 1);
+        }
+
+        /** Client thread: a TICK_HEAD was written with the order marked unknown. */
+        public void orderUnknownTick() {
+            orderUnknownTicks.lazySet(orderUnknownTicks.get() + 1);
+        }
 
         /** Capture thread: a skipped packet {@code id} of {@code len} bytes. */
         public void skipped(int id, int len) {
@@ -474,6 +576,14 @@ public final class PacketStats {
         long restrictSeen() {
             return restrictSeen.get();
         }
+
+        Timer[] timers() {
+            return new Timer[]{track, camera, clientTick, clientFrame, out};
+        }
+
+        long[] handledCounters() {
+            return new long[]{handledResyncs.get(), handledOverflows.get(), orderUnknownTicks.get()};
+        }
     }
 
     /** Writer side: a {@link Feed}'s values at the start of a stats window. */
@@ -481,8 +591,10 @@ public final class PacketStats {
         private final long[] skippedCount = new long[IDS];
         private final long[] skippedBytes = new long[IDS];
         private long restrict;
-        private final long[] timerCount = new long[2];
-        private final long[] timerTotal = new long[2];
+        private static final int TIMERS = 5;
+        private final long[] timerCount = new long[TIMERS];
+        private final long[] timerTotal = new long[TIMERS];
+        private final long[] handled = new long[3];
 
         /** Starts a new window at the feed's current values. */
         void reset(Feed f) {
@@ -494,12 +606,14 @@ public final class PacketStats {
                 skippedBytes[i] = f.skippedBytes(i);
             }
             restrict = f.restrictSeen();
-            Timer[] t = {f.track, f.camera};
-            for (int i = 0; i < 2; i++) {
+            Timer[] t = f.timers();
+            for (int i = 0; i < TIMERS; i++) {
                 timerCount[i] = t[i].count();
                 timerTotal[i] = t[i].totalNs();
                 t[i].requestReset();
             }
+            long[] h = f.handledCounters();
+            System.arraycopy(h, 0, handled, 0, handled.length);
         }
 
         /** Starts a window at zero: for a fresh feed whose counts all belong to the current window. */
@@ -509,6 +623,7 @@ public final class PacketStats {
             restrict = 0;
             Arrays.fill(timerCount, 0);
             Arrays.fill(timerTotal, 0);
+            Arrays.fill(handled, 0);
         }
 
         /** Adds what the feed gathered since {@link #reset} to {@code s}. */
@@ -524,15 +639,18 @@ public final class PacketStats {
                 }
             }
             s.setRestrictChannelSeen(f.restrictSeen() > restrict);
-            Timer[] t = {f.track, f.camera};
-            long[] v = new long[4];
-            for (int i = 0; i < 2; i++) {
+            Timer[] t = f.timers();
+            long[] v = new long[2 * TIMERS];
+            for (int i = 0; i < TIMERS; i++) {
                 long n = t[i].count() - timerCount[i];
                 long total = t[i].totalNs() - timerTotal[i];
                 v[2 * i] = n > 0 ? total / n : 0;
                 v[2 * i + 1] = n > 0 ? t[i].maxNs() : 0;
             }
             s.setTimings(v[0], v[1], v[2], v[3]);
+            s.setClientTimings(v[4], v[5], v[6], v[7], v[8], v[9]);
+            long[] h = f.handledCounters();
+            s.setHandledOrder(h[0] - handled[0], h[1] - handled[1], h[2] - handled[2]);
         }
     }
 }

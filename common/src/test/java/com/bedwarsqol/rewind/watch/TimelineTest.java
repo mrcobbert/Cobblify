@@ -129,7 +129,8 @@ public class TimelineTest {
         assertEquals(-1, t.tickOf(ORIGIN - 50_000));
         assertEquals(ORIGIN + 150_000L, t.timeOfTick(3));
         assertEquals(t.tickOf(t.gameStartUs()), t.startTick());
-        assertEquals(t.tickOf(t.endUs()), t.endTick());
+        // code review 2, I3: one past the end's tick, so the final tick window is fed
+        assertEquals(t.tickOf(t.endUs()) + 1, t.endTick());
     }
 
     @Test

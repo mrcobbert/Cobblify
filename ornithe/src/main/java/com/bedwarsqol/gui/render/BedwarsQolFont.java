@@ -1,7 +1,7 @@
 package com.bedwarsqol.gui.render;
 
-import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.hud.HudSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.ScaledResolution;
@@ -63,9 +63,9 @@ public final class BedwarsQolFont {
 
     // ------------------------------------------------------------------ Minecraft's font (the Font setting)
 
-    /** Whether text is Minecraft's own font. */
+    /** Whether text is Minecraft's own font (the HUD's settings in effect: {@link HudSettings#active}). */
     public static boolean minecraft() {
-        ClientSettings c = BedwarsQol.config;
+        ClientSettings c = HudSettings.active();
         return c != null && c.minecraftFont();
     }
 

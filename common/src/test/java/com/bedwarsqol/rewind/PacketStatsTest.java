@@ -123,8 +123,12 @@ public class PacketStatsTest {
     }
 
     private static JsonObject countOf(JsonObject root, String array, int id) {
+        return countOf(root, array, "id", id);
+    }
+
+    private static JsonObject countOf(JsonObject root, String array, String key, int id) {
         for (JsonElement e : root.getAsJsonArray(array)) {
-            if (e.getAsJsonObject().get("id").getAsInt() == id) {
+            if (e.getAsJsonObject().get(key).getAsInt() == id) {
                 return e.getAsJsonObject();
             }
         }
@@ -217,6 +221,17 @@ public class PacketStatsTest {
         f.trackRecord(RewindFormat.TAG_INFO, enc.buffer(), n);
         n = enc.info(RewindFormat.INFO_MODE_LABEL, "Solo " + PLAYER);
         f.trackRecord(RewindFormat.TAG_INFO, enc.buffer(), n);
+        // Format v2 records that hold private text: typed chat, own name, a sound name. Counted, never copied.
+        ExtCodec ext = new ExtCodec();
+        n = ext.chatInput(CHAT + " " + SERVER, 3);
+        f.trackRecord(RewindFormat.TAG_CHAT_INPUT, ext.buffer(), n);
+        n = ext.identity(1L, 2L, PLAYER, "skin" + MAP, "");
+        f.trackRecord(RewindFormat.TAG_IDENTITY, ext.buffer(), n);
+        n = ext.sound(SERVER_NAME, 1f, 2f, 3f, 1f, 1f);
+        f.trackRecord(RewindFormat.TAG_SOUND, ext.buffer(), n);
+        f.feed.clientTick.add(4_000);
+        f.feed.clientFrame.add(300);
+        f.feed.out.add(70);
         for (int i = 0; i < 20; i++) {
             f.advance(50_000);
             f.net(packet(0x12, 20, i));
@@ -239,6 +254,13 @@ public class PacketStatsTest {
         assertTrue(o.get("restrictChannelSeen").getAsBoolean());
         assertEquals(900, o.get("trackNsPerTickMax").getAsLong());
         assertEquals(80, o.get("cameraNsPerFrameMax").getAsLong());
+        assertEquals(4_000, o.get("clientTickNsMax").getAsLong());
+        assertEquals(300, o.get("clientFrameNsMean").getAsLong());
+        assertEquals(70, o.get("outNsMax").getAsLong());
+        assertEquals(1, countOf(o, "extRecords", "tag", RewindFormat.TAG_CHAT_INPUT).get("count").getAsLong());
+        assertEquals(1, countOf(o, "extRecords", "tag", RewindFormat.TAG_IDENTITY).get("count").getAsLong());
+        assertEquals(1, countOf(o, "extRecords", "tag", RewindFormat.TAG_SOUND).get("count").getAsLong());
+        assertEquals(2, o.get("format").getAsInt());
         assertCaptureTimingUnavailable(o);
         assertEquals(1, o.getAsJsonArray("boundaries").size());
         assertEquals(1, o.get("segments").getAsInt());
@@ -268,6 +290,8 @@ public class PacketStatsTest {
         p.setRestrictChannelSeen(true);
         p.addWriterWork(1_000_000L, 1_048_576L);
         p.setPeakPendingBytes(12_345L);
+        p.addExt(RewindFormat.TAG_SOUND, 40);
+        p.addExt(RewindFormat.TAG_TICK_HEAD, 1);
         return p;
     }
 
@@ -290,5 +314,66 @@ public class PacketStatsTest {
         PacketStats game = new PacketStats();
         game.merge(pending);
         assertEquals(pending.toJson(), game.toJson());
+    }
+
+    // ------------------------------------------------------------------ format v2 (A13)
+
+    /** The v2 fields: per-tag extension counts and body bytes, tick, frame and send timings, handled-order counters. */
+    @Test
+    public void theV2FieldsAreNumbersOnlyUnderTheFixedSchema() {
+        PacketStats s = new PacketStats();
+        s.addExt(RewindFormat.TAG_TICK_HEAD, 1);
+        s.addExt(RewindFormat.TAG_TICK_HEAD, 3);
+        s.addExt(RewindFormat.TAG_SOUND, 25);
+        s.addExt(0x7F, 9); // a tag this build has no name for still counts
+        PacketStats.Feed feed = new PacketStats.Feed();
+        PacketStats.FeedWindow w = new PacketStats.FeedWindow();
+        w.zero();
+        feed.clientTick.add(1_000);
+        feed.clientTick.add(3_000);
+        feed.clientFrame.add(200);
+        feed.out.add(50);
+        feed.out.add(150);
+        feed.handledResync();
+        feed.handledOverflow();
+        feed.orderUnknownTick();
+        feed.orderUnknownTick();
+        w.applyTo(feed, s);
+
+        JsonObject o = assertSchema(s.toJson());
+        assertEquals("a new file's stats say format 2", 2, o.get("format").getAsInt());
+        JsonObject th = countOf(o, "extRecords", "tag", RewindFormat.TAG_TICK_HEAD);
+        assertEquals(2, th.get("count").getAsLong());
+        assertEquals(4, th.get("bytes").getAsLong());
+        assertEquals(25, countOf(o, "extRecords", "tag", RewindFormat.TAG_SOUND).get("bytes").getAsLong());
+        assertEquals(1, countOf(o, "extRecords", "tag", 0x7F).get("count").getAsLong());
+        assertEquals(3, o.getAsJsonArray("extRecords").size());
+        assertEquals(2_000, o.get("clientTickNsMean").getAsLong());
+        assertEquals(3_000, o.get("clientTickNsMax").getAsLong());
+        assertEquals(200, o.get("clientFrameNsMean").getAsLong());
+        assertEquals(200, o.get("clientFrameNsMax").getAsLong());
+        assertEquals(100, o.get("outNsMean").getAsLong());
+        assertEquals(150, o.get("outNsMax").getAsLong());
+        assertEquals(1, o.get("handledResyncs").getAsLong());
+        assertEquals(1, o.get("handledOverflows").getAsLong());
+        assertEquals(2, o.get("orderUnknownTicks").getAsLong());
+
+        // A recovered v1 game keeps its own version in the stats.
+        s.setFormat(1);
+        assertEquals(1, assertSchema(s.toJson()).get("format").getAsInt());
+
+        // A second window counts only what came after it started.
+        PacketStats s2 = new PacketStats();
+        w.reset(feed);
+        feed.handledResync();
+        feed.clientTick.add(500);
+        w.applyTo(feed, s2);
+        JsonObject o2 = assertSchema(s2.toJson());
+        assertEquals(1, o2.get("handledResyncs").getAsLong());
+        assertEquals(0, o2.get("orderUnknownTicks").getAsLong());
+        assertEquals(500, o2.get("clientTickNsMean").getAsLong());
+        assertEquals(500, o2.get("clientTickNsMax").getAsLong());
+        assertEquals(0, o2.get("outNsMean").getAsLong());
+        assertEquals(0, o2.getAsJsonArray("extRecords").size());
     }
 }

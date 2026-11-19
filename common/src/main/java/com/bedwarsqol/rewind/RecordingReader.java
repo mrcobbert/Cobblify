@@ -13,7 +13,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Streaming reader of a {@code .cbr} recording (format v1, see {@link RewindFormat}). JDK only: the
+ * Streaming reader of a {@code .cbr} recording (formats v1 and v2, see {@link RewindFormat}). JDK only: the
  * G6 reader check runs it from the plain mod jar.
  *
  * <p>{@link #next()} returns blocks in file order with their payload inflated. It stops, without
@@ -176,7 +176,7 @@ public final class RecordingReader implements Closeable {
         }
         header = new FileHeader(RewindFormat.getU16(h, 8), RewindFormat.getU16(h, 10), RewindFormat.getInt(h, 12),
                 RewindFormat.getLong(h, 16));
-        if (header.formatVersion != RewindFormat.FORMAT_VERSION) {
+        if (!RewindFormat.supportedVersion(header.formatVersion)) {
             finish(Stop.UNSUPPORTED_VERSION, false);
             return;
         }
@@ -185,8 +185,8 @@ public final class RecordingReader implements Closeable {
 
     /**
      * The format version named by a file header in {@code h[0, len)}, or -1 if it is short, has another magic or a
-     * bad CRC (an unreadable header). Callers that may delete or rewrite a recording act only on
-     * {@link RewindFormat#FORMAT_VERSION}; anything else is left alone (code review 2, I5).
+     * bad CRC (an unreadable header). Callers that may delete or rewrite a recording act only on a
+     * {@link RewindFormat#supportedVersion}; anything else is left alone (code review 2, I5).
      */
     public static int headerVersion(byte[] h, int len) {
         if (h == null || len < RewindFormat.FILE_HEADER_LENGTH || h.length < RewindFormat.FILE_HEADER_LENGTH) {
@@ -397,15 +397,25 @@ public final class RecordingReader implements Closeable {
         return t;
     }
 
-    /** As {@link #walkNet}, for TRACK records. */
+    /**
+     * As {@link #walkNet}, for TRACK records. An extension record ({@link RewindFormat#isExtensionTag}), known or
+     * not, reaches the visitor as its body without the length prefix; a visitor ignores tags it does not use.
+     */
     public static long walkTrack(byte[] buf, int off, int end, long baseTimeUs, TrackVisitor v) {
         RewindFormat.Cursor c = new RewindFormat.Cursor(buf, off, end);
         long t = baseTimeUs;
         while (c.hasMore()) {
             t += c.uvarInt();
             int tag = c.u8();
-            int at = c.pos();
-            int len = trackBodyLength(tag, buf, at, end);
+            int at;
+            int len;
+            if (RewindFormat.isExtensionTag(tag)) {
+                len = c.length(RewindFormat.MAX_EXT_BODY_LENGTH);
+                at = c.pos();
+            } else {
+                at = c.pos();
+                len = trackBodyLength(tag, buf, at, end);
+            }
             c.skip(len);
             v.track(t, tag, buf, at, len);
         }
@@ -413,13 +423,18 @@ public final class RecordingReader implements Closeable {
     }
 
     /**
-     * Length of a TRACK body of {@code tag} starting at {@code buf[off]} and ending by {@code end}. TRACK
-     * bodies carry no length prefix, so EQUIP walks the protocol-47 slot and its NBT.
+     * Length of the TRACK bytes after {@code tag}, starting at {@code buf[off]} and ending by {@code end}. v1
+     * bodies carry no length prefix, so EQUIP walks the protocol-47 slot and its NBT; an extension record is its
+     * varint length plus that many body bytes (the length prefix is included in the result).
      *
-     * @throws RewindFormat.FormatException for an unknown tag or a cut body
+     * @throws RewindFormat.FormatException for an unknown old-style tag (0x08-0x1F, or 0) or a cut body
      */
     public static int trackBodyLength(int tag, byte[] buf, int off, int end) {
         RewindFormat.Cursor c = new RewindFormat.Cursor(buf, off, end);
+        if (RewindFormat.isExtensionTag(tag)) {
+            c.skip(c.length(RewindFormat.MAX_EXT_BODY_LENGTH));
+            return c.pos() - off;
+        }
         switch (tag) {
             case RewindFormat.TAG_TICK: {
                 int mask = c.u8();
@@ -454,6 +469,18 @@ public final class RecordingReader implements Closeable {
             default:
                 throw new RewindFormat.FormatException("tag " + tag);
         }
+        return c.pos() - off;
+    }
+
+    /**
+     * Length of the protocol-47 item slot at {@code buf[off]}, which must end by {@code end} (INV, CONT and EQUIP
+     * bodies hold one).
+     *
+     * @throws RewindFormat.FormatException if it is cut or its NBT is malformed
+     */
+    public static int itemSlotLength(byte[] buf, int off, int end) {
+        RewindFormat.Cursor c = new RewindFormat.Cursor(buf, off, end);
+        skipItemSlot(c);
         return c.pos() - off;
     }
 
