@@ -4,6 +4,7 @@ import com.bedwarsqol.feature.SessionChatLine;
 import com.bedwarsqol.rewind.watch.PlaybackGate;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -13,6 +14,7 @@ import java.io.File;
 import static com.bedwarsqol.rewind.CaptureSessionTest.s01;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -163,6 +165,66 @@ public class RewindIgnoresPlaybackTest {
         h.advance(RewindWriter.SYNC_INTERVAL_US);
         h.step();
         assertTrue(RewindWriterTest.jsonOf(cbr).complete);
+    }
+
+    // ------------------------------------------------------------------ A16: the format v2 capture hooks
+
+    @BeforeClass
+    public static void bootstrapMinecraft() {
+        InventoryCaptureTest.bootstrap();
+    }
+
+    @After
+    public void releaseCapture() {
+        RewindIntegrationTest.V2.reset();
+    }
+
+    @Test
+    public void theV2HooksWriteNothingAndPopNothingWhileARecordingPlays() throws Exception {
+        RewindIntegrationTest.Harness h = RewindIntegrationTest.openGame(new File(tmp.getRoot(), "rewind"));
+        RewindIntegrationTest.V2 v = new RewindIntegrationTest.V2();
+        v.rounds(h, 0, 3); // live: recorded
+        assertTrue(h.rewind.capturing());
+        h.step();
+
+        gate.enter();
+        long gateOnUs = h.clock.nowUs;
+        assertFalse("no capture while a recording plays", h.rewind.capturing());
+        HandledRing ring = h.session.handledRing();
+        assertNotNull("the connection's capture session has a handled-order ring", ring);
+        v.rounds(h, 3, 4); // every hook, muted
+        h.net(CaptureSessionTest.other(RewindIntegrationTest.V2.DRAINED_ID, 12));
+        int queued = ring.size();
+        assertTrue(queued > 0);
+        ActionCapture.onPacketRun(RewindIntegrationTest.V2.DRAINED_ID);
+        assertEquals("the ring is not popped while muted", queued, ring.size());
+        gate.exit();
+
+        File cbr = RewindIntegrationTest.finish(h);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        assertTrue("the live rounds were recorded", RewindIntegrationTest.extTotal(fc) > 0);
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (RewindFormat.isExtensionTag(t.tag)) {
+                assertTrue(RewindFormat.extName(t.tag) + " written while a recording played", t.timeUs <= gateOnUs);
+            }
+        }
+    }
+
+    @Test
+    public void settlingTheDisconnectBeforePlaybackUnbindsEveryCaptureHook() throws Exception {
+        RewindIntegrationTest.Harness h = RewindIntegrationTest.openGame(new File(tmp.getRoot(), "rewind"));
+        assertTrue("action capture bound at connect", ActionCapture.bound());
+        assertTrue("state capture installed at connect", StateCapture.installed());
+        assertTrue("view capture installed at connect", ViewCapture.installed());
+        assertTrue("HUD capture on for the segment", HudCapture.shared().active());
+        h.ch.close();
+        h.rewind.closeDisconnected();
+        gate.enter();
+        assertFalse(ActionCapture.bound());
+        assertFalse(StateCapture.installed());
+        assertFalse(ViewCapture.installed());
+        assertFalse("the HUD sink is cleared for playback", HudCapture.shared().active());
     }
 
     @Test

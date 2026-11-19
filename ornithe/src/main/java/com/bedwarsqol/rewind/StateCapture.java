@@ -80,6 +80,11 @@ public final class StateCapture {
         INSTANCE.reset();
     }
 
+    /** Whether a sink is installed. */
+    static boolean installed() {
+        return sink != null;
+    }
+
     /** End of a client tick of a recorded segment. Inert with no sink, while a recording plays, or with no player. */
     public static void tick(Minecraft mc) {
         Sink s = sink;
@@ -97,6 +102,19 @@ public final class StateCapture {
         } catch (Throwable t) {
             s.failed("state", t);
         }
+    }
+
+    /**
+     * {@link #tick(Minecraft)} with the player's values already read (tests and the bench drive the installed sink
+     * through it without a client). Same guards.
+     */
+    static void tick(int useCount, InventoryPlayer playerInv, Container open, Container own, SettingsSnapshot settings,
+                     GameProfile profile) {
+        Sink s = sink;
+        if (s == null || PlaybackGate.muted()) {
+            return;
+        }
+        INSTANCE.tick(s, useCount, playerInv, open, own, settings, profile);
     }
 
     // ------------------------------------------------------------------ instance (testable without a client)

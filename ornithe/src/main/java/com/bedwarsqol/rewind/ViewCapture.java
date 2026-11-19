@@ -114,6 +114,23 @@ public final class ViewCapture {
         }
     }
 
+    /** Whether a sink is installed. */
+    static boolean installed() {
+        return sink != null;
+    }
+
+    /**
+     * {@link #frame(Minecraft, float, long)} with the frame's values already read (tests and the bench drive the
+     * installed sink through it without a client). Same guards.
+     */
+    static void frame(Frame f) {
+        StateCapture.Sink s = sink;
+        if (s == null || PlaybackGate.muted() || f == null) {
+            return;
+        }
+        INSTANCE.frame(s, f);
+    }
+
     /**
      * A mouse press the Keystrokes HUD was told about ({@code BedwarsHudRenderer.onMouse}, button 0 left, 1 right):
      * one TAP record now. Other buttons are not stored. Inert with no sink or while a recording plays.
