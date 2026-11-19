@@ -41,7 +41,8 @@ import java.util.HashMap;
  *       and after ({@code Block.BLOCK_STATE_IDS}, the id S23 carries) and the cause.</li>
  *   <li>{@link #onSound} ({@code SoundHandler.playSound} HEAD): one SOUND for a positioned, non-repeating,
  *       distance-attenuated sound played inside a local scope. Names are cached as UTF-8 per {@link ResourceLocation}.</li>
- *   <li>{@link #onTickEnd} (the recorder's end-of-tick sample): one DIG when the dig state changed.</li>
+ *   <li>{@link #onTickEnd} (the recorder's end-of-tick sample): one DIG when the dig state changed;
+ *       {@link #onClientTickEnd} (every end of tick while bound) closes every local scope again.</li>
  *   <li>{@link #onPacketRun} ({@code PacketThreadUtil$1.run} HEAD): pops the ring for a play packet about to run.</li>
  * </ul>
  *
@@ -218,6 +219,20 @@ public final class ActionCapture {
         } catch (Throwable t) {
             fail(t);
         }
+    }
+
+    /**
+     * End of the client tick ({@code CLIENT_TICK}): closes every local scope again, whenever capture is bound. A scope
+     * whose RETURN hook was skipped (another mod's cancelling HEAD injector, or a throw) would otherwise stay open
+     * until the next {@code runTick} HEAD, across the next frame's packet drain, and store server block changes and
+     * sounds as the player's own (code review 1, O2). Nothing is written.
+     */
+    public static void onClientTickEnd() {
+        if (sink == null) {
+            return;
+        }
+        SCOPE.reset();
+        blockDepth = 0;
     }
 
     // ================================================================== handled order

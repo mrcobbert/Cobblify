@@ -50,6 +50,18 @@ public class ClientTrackCaptureTest {
         }
     }
 
+    /** A FOV source that allocates nothing and counts its reads. */
+    static final class FakeFov implements ViewCapture.FovSource {
+        float value = 70f;
+        long reads;
+
+        @Override
+        public float fov(float partialTicks) {
+            reads++;
+            return value;
+        }
+    }
+
     /** Keeps the meter check's arrays from being optimised away. */
     static volatile Object sink;
 
@@ -121,7 +133,12 @@ public class ClientTrackCaptureTest {
         final SettingsSnapshot snap = new SettingsSnapshot();
         final StateCapture state = new StateCapture(0); // deep compares off here; measured below
         final Counting out = new Counting();
-        final com.mojang.authlib.GameProfile profile = SnapshotCaptureTest.profile();
+        // the IDENTITY lookup each tick: a handler whose own entry has not arrived (waiting), and one where it has
+        final net.minecraft.client.network.NetHandlerPlayClient waiting = SnapshotCaptureTest.handler();
+        SnapshotCaptureTest.listed(waiting, new com.mojang.authlib.GameProfile(
+                java.util.UUID.fromString("00000000-0000-0000-0000-0000000000aa"), "Other"));
+        final net.minecraft.client.network.NetHandlerPlayClient listed = SnapshotCaptureTest.handler();
+        SnapshotCaptureTest.listed(listed, SnapshotCaptureTest.profile());
 
         long empty = measure(new Body() {
             @Override
@@ -133,21 +150,22 @@ public class ClientTrackCaptureTest {
             @Override
             public void run(int i) {
                 snap.read(gs, 480, 270, 1920, 1080, cfg);
-                state.tick(out, 0, inv, (i & 1024) == 0 ? own : shop, own, snap, profile);
+                state.tick(out, 0, inv, (i & 1024) == 0 ? own : shop, own, snap,
+                        StateCapture.ownTabProfile((i & 4096) == 0 ? waiting : listed, SnapshotCaptureTest.SELF));
             }
         }, N);
         long recordsAfterTicks = out.records;
 
         final ViewCapture view = new ViewCapture();
         final ViewCapture.Frame f = new ViewCapture.Frame();
-        f.fovRead = true;
-        f.fov = 70f;
+        final FakeFov fov = new FakeFov();
+        f.fovSource = fov; // through the real rate limit (code review 1, I2)
         f.keys = RewindFormat.INPUT_W;
         final String typed = "gg wp";
         long frames = measure(new Body() {
             @Override
             public void run(int i) {
-                f.nanoTime = i * 5 * MS;
+                f.nanoTime += 5 * MS; // monotonic across measure's rounds, as the rate limits need
                 int phase = (i >> 10) % 3; // in game, a chest open, chat open: each held for 1,024 frames
                 f.screenOpen = phase != 0;
                 f.screenKind = phase == 0 ? RewindFormat.SCREEN_NONE : phase == 1 ? RewindFormat.SCREEN_CHEST
@@ -157,7 +175,6 @@ public class ClientTrackCaptureTest {
                 f.chatOpen = phase == 2;
                 f.chatText = phase == 2 ? typed : null;
                 f.chatCursor = 5;
-                view.fovDue(f.nanoTime);
                 view.frame(out, f);
             }
         }, N);
@@ -205,24 +222,25 @@ public class ClientTrackCaptureTest {
 
         final ViewCapture view = new ViewCapture();
         final ViewCapture.Frame f = new ViewCapture.Frame();
-        f.fovRead = true;
+        final FakeFov fov = new FakeFov();
+        f.fovSource = fov;
         f.screenOpen = true;
         f.screenKind = RewindFormat.SCREEN_CHEST;
         before = out.records;
         long frames = measure(new Body() {
             @Override
             public void run(int i) {
-                f.nanoTime = i * 9 * MS;               // past the 8 ms mouse limit every frame
-                f.fov = 70f + (i & 15) * 0.25f;        // sprint FOV easing
+                f.nanoTime += 9 * MS;                  // past the 8 ms mouse limit every frame (monotonic)
+                fov.value = 70f + (i & 15) * 0.25f;    // sprint FOV easing
                 f.mouseDx = i & 255;                   // the cursor moves
                 f.mouseDy = -(i & 127);
                 f.keys = (i & 1) == 0 ? RewindFormat.INPUT_W : RewindFormat.INPUT_W | RewindFormat.INPUT_LMB;
                 f.perspective = (i >> 4) % 3;
-                view.fovDue(f.nanoTime);
                 view.frame(out, f);
             }
         }, N);
         assertTrue("every frame wrote records", out.records - before >= 4L * 3 * N);
+        assertTrue("the FOV was read through the rate limit: " + fov.reads, fov.reads > 0);
 
         System.out.println("ClientTrackCapture changing: ticks " + ticks + " B, frames " + frames + " B, empty "
                 + empty + " B per " + N);

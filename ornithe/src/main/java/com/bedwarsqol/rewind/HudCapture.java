@@ -29,8 +29,12 @@ public final class HudCapture {
         /** Appends one extension record {@code buf[0, len)} ({@code varint len | body}); false when there was no room. */
         boolean append(int tag, byte[] buf, int len);
 
-        /** Capture failed and is off until the next {@link #setSink}. */
-        default void failed(Throwable cause) {
+        /**
+         * Capture failed and is off until the next {@link #setSink}; {@code where} is {@code "hud"}. (Its own
+         * signature, not {@code failed(Throwable)}: the recorder's sink also implements {@link ActionCapture.Sink},
+         * whose {@code failed(Throwable)} reports "action".)
+         */
+        default void failed(String where, Throwable cause) {
         }
     }
 
@@ -293,7 +297,7 @@ public final class HudCapture {
     private void fail(Throwable t) {
         Sink s = sink;
         sink = null;
-        if (s != null) s.failed(t);
+        if (s != null) s.failed("hud", t);
     }
 
     /** A number run's value (digits with an optional minus), -1 when there is none. */

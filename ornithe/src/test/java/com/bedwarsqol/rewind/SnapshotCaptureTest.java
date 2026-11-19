@@ -5,6 +5,8 @@ import com.bedwarsqol.rewind.ViewCaptureTest.Rec;
 import com.bedwarsqol.rewind.ViewCaptureTest.Recorder;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
+import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.settings.GameSettings;
 import net.minecraft.entity.player.InventoryPlayer;
 import org.junit.BeforeClass;
@@ -12,6 +14,7 @@ import org.junit.Test;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -232,10 +235,45 @@ public class SnapshotCaptureTest {
 
     // ------------------------------------------------------------------ through the per-tick capture
 
+    static final UUID SELF = UUID.fromString("0f8fad5b-d9cb-469f-a165-70867728950e");
+
+    /** The own tab entry's profile as S38 fills it: with the signed {@code textures} property. */
     static GameProfile profile() {
-        GameProfile p = new GameProfile(UUID.fromString("0f8fad5b-d9cb-469f-a165-70867728950e"), "Steve_Test");
+        GameProfile p = new GameProfile(SELF, "Steve_Test");
         p.getProperties().put("textures", new Property("textures", "eyJ0ZXh0dXJlcyI6e319", "c2lnbmF0dXJl"));
         return p;
+    }
+
+    /** The login profile as S02 builds it ({@code new GameProfile(uuid, name)}): never any property. */
+    static GameProfile loginProfile() {
+        return new GameProfile(SELF, "Steve_Test");
+    }
+
+    /** The play handler vanilla makes at login success, holding the login profile and an empty tab list. */
+    static NetHandlerPlayClient handler() {
+        return new NetHandlerPlayClient(null, null, null, loginProfile());
+    }
+
+    /** A tab entry put in the handler's list as S38 ADD_PLAYER does (a new NetworkPlayerInfo each time). */
+    @SuppressWarnings("unchecked")
+    static void listed(NetHandlerPlayClient net, GameProfile p) {
+        try {
+            java.lang.reflect.Field f = NetHandlerPlayClient.class.getDeclaredField("playerInfoMap");
+            f.setAccessible(true);
+            ((Map<UUID, NetworkPlayerInfo>) f.get(net)).put(p.getId(), new NetworkPlayerInfo(p));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    static GameProfile skin(String value, String signature) {
+        GameProfile p = new GameProfile(SELF, "Steve_Test");
+        p.getProperties().put("textures", new Property("textures", value, signature));
+        return p;
+    }
+
+    private static ExtCodec.Identity identity(Rec r) {
+        return new ExtCodec.Identity().read(r.body, 0, r.body.length);
     }
 
     @Test
@@ -245,13 +283,18 @@ public class SnapshotCaptureTest {
         SettingsSnapshot snap = new SettingsSnapshot();
         InventoryPlayer inv = InventoryCaptureTest.fullInventory();
         InventoryCaptureTest.Own own = new InventoryCaptureTest.Own();
-        GameProfile profile = profile();
+        // code review 1, I1: the skin is on the own tab entry, never on the login profile the player entity holds
+        NetHandlerPlayClient net = handler();
+        listed(net, new GameProfile(UUID.fromString("00000000-0000-0000-0000-0000000000aa"), "Other"));
+        listed(net, profile());
+        assertTrue("the login profile has no textures", net.getGameProfile().getProperties().isEmpty());
         StateCapture c = new StateCapture(StateCapture.DEEP_COMPARE_TICKS);
         Recorder s = new Recorder();
         for (int t = 0; t < 30; t++) {
             snap.read(gs, 480, 270, 1920, 1080, cfg);
-            assertTrue(c.tick(s, 0, inv, own, own, snap, profile));
+            assertTrue(c.tick(s, 0, inv, own, own, snap, StateCapture.ownTabProfile(net, SELF)));
         }
+        GameProfile profile = profile();
         List<Rec> settings = s.of(RewindFormat.TAG_SETTINGS);
         assertEquals(1, settings.size());
         assertEquals(SettingsSnapshot.keys().length, decode(settings.get(0)).count);
@@ -267,7 +310,7 @@ public class SnapshotCaptureTest {
 
         cfg.dynamicFov = !cfg.dynamicFov; // mid-game change
         snap.read(gs, 480, 270, 1920, 1080, cfg);
-        c.tick(s, 0, inv, own, own, snap, profile);
+        c.tick(s, 0, inv, own, own, snap, StateCapture.ownTabProfile(net, SELF));
         settings = s.of(RewindFormat.TAG_SETTINGS);
         assertEquals(2, settings.size());
         ExtCodec.Settings changed = decode(settings.get(1));
@@ -277,11 +320,60 @@ public class SnapshotCaptureTest {
 
         c.reset();
         snap.read(gs, 480, 270, 1920, 1080, cfg);
-        c.tick(s, 0, inv, own, own, snap, profile);
+        c.tick(s, 0, inv, own, own, snap, StateCapture.ownTabProfile(net, SELF));
         settings = s.of(RewindFormat.TAG_SETTINGS);
         assertEquals(3, settings.size());
         assertEquals("a new segment states every key", SettingsSnapshot.keys().length, decode(settings.get(2)).count);
         assertEquals(2, s.of(RewindFormat.TAG_IDENTITY).size());
+        assertEquals("eyJ0ZXh0dXJlcyI6e319", identity(s.of(RewindFormat.TAG_IDENTITY).get(1)).skinValue);
+    }
+
+    /**
+     * Code review 1, I1: the own tab entry often arrives after the segment's first tick. IDENTITY waits for it
+     * (nothing written meanwhile), is written once it is there, and again only when the textures change (a new
+     * S38 ADD_PLAYER for the player with another skin), not for a resent equal entry.
+     */
+    @Test
+    public void identityWaitsForTheOwnTabEntryAndIsRewrittenOnlyWhenTheSkinChanges() {
+        InventoryCaptureTest.Own own = new InventoryCaptureTest.Own();
+        InventoryPlayer inv = new InventoryPlayer(null);
+        NetHandlerPlayClient net = handler();
+        listed(net, new GameProfile(UUID.fromString("00000000-0000-0000-0000-0000000000aa"), "Other"));
+        StateCapture c = new StateCapture(StateCapture.DEEP_COMPARE_TICKS);
+        Recorder s = new Recorder();
+        for (int t = 0; t < 10; t++) {
+            assertTrue(c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF)));
+        }
+        assertEquals("no own tab entry yet: no IDENTITY", 0, s.of(RewindFormat.TAG_IDENTITY).size());
+
+        listed(net, profile());
+        for (int t = 0; t < 10; t++) {
+            c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF));
+        }
+        List<Rec> ids = s.of(RewindFormat.TAG_IDENTITY);
+        assertEquals("written once the entry is there", 1, ids.size());
+        assertEquals(SELF, new UUID(identity(ids.get(0)).uuidMost, identity(ids.get(0)).uuidLeast));
+        assertEquals("Steve_Test", identity(ids.get(0)).name);
+        assertEquals("eyJ0ZXh0dXJlcyI6e319", identity(ids.get(0)).skinValue);
+        assertEquals("c2lnbmF0dXJl", identity(ids.get(0)).skinSignature);
+
+        listed(net, profile()); // the server re-adds the player with the same skin
+        c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF));
+        assertEquals("an equal skin is not written again", 1, s.of(RewindFormat.TAG_IDENTITY).size());
+
+        listed(net, skin("bmV3U2tpbg==", "bmV3U2ln")); // and with another skin
+        for (int t = 0; t < 5; t++) {
+            c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF));
+        }
+        ids = s.of(RewindFormat.TAG_IDENTITY);
+        assertEquals("a changed skin is written once", 2, ids.size());
+        assertEquals("bmV3U2tpbg==", identity(ids.get(1)).skinValue);
+        assertEquals("bmV3U2ln", identity(ids.get(1)).skinSignature);
+
+        c.reset(); // next segment: stated again
+        c.tick(s, 0, inv, own, own, null, StateCapture.ownTabProfile(net, SELF));
+        assertEquals(3, s.of(RewindFormat.TAG_IDENTITY).size());
+        assertEquals("bmV3U2tpbg==", identity(s.of(RewindFormat.TAG_IDENTITY).get(2)).skinValue);
     }
 
     @Test

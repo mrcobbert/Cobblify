@@ -21,7 +21,8 @@ import java.util.List;
  *   <li>Map Info: varint n, n strings, each row as shown.</li>
  *   <li>Session Stats: varint n, n x (u8 kind {@link #LINE_ROW} or {@link #LINE_HEADER}, string text).</li>
  *   <li>Upgrades &amp; Traps: varint n, n x (u8 kind, string label, string value, string right, u8 style, u8 alpha
- *       0-255), the {@link TeamUpgradeRows.Row} fields.</li>
+ *       0-255), the {@link TeamUpgradeRows.Row} fields; kind and style are the fixed {@code TEAM_KIND_*} and
+ *       {@code TEAM_STYLE_*} ids. Decoding skips a row of unknown kind and draws an unknown style as NORMAL.</li>
  *   <li>Potion, Armor, Inventory, Keystrokes: nothing (playback has the effects, armour and inventory; Keystrokes
  *       comes from the INPUT and TAP records).</li>
  * </ul>
@@ -42,8 +43,18 @@ public final class HudModel {
     public static final int SHAPE_LINES = 5;
     public static final int SHAPE_TEAM = 6;
 
-    private static final TeamUpgradeRows.Kind[] KINDS = TeamUpgradeRows.Kind.values();
-    private static final TeamUpgradeRows.Style[] STYLES = TeamUpgradeRows.Style.values();
+    /*
+     * Upgrades & Traps row ids as stored. Fixed numbers, not enum ordinals, so reordering or adding a constant in
+     * TeamUpgradeRows never changes what a recording means. The values equal the ordinals the first v2 build wrote.
+     */
+    public static final int TEAM_KIND_HEADER = 0;
+    public static final int TEAM_KIND_UPGRADE = 1;
+    public static final int TEAM_KIND_TRAP = 2;
+    public static final int TEAM_KIND_NEXT = 3;
+    public static final int TEAM_KIND_NONE = 4;
+    public static final int TEAM_STYLE_NORMAL = 0;
+    public static final int TEAM_STYLE_DIM = 1;
+    public static final int TEAM_STYLE_FIRED = 2;
 
     private HudModel() {
     }
@@ -107,12 +118,56 @@ public final class HudModel {
         c.putVarInt(n);
         for (int i = 0; i < n; i++) {
             TeamUpgradeRows.Row r = rows[i];
-            c.putU8(r.kind.ordinal());
+            c.putU8(teamKindId(r.kind));
             c.putString(r.label);
             c.putString(r.value);
             c.putString(r.right);
-            c.putU8(r.style.ordinal());
+            c.putU8(teamStyleId(r.style));
             c.putU8(alpha8(r.alpha));
+        }
+    }
+
+    /** The stored id of a row kind. */
+    public static int teamKindId(TeamUpgradeRows.Kind kind) {
+        switch (kind) {
+            case HEADER: return TEAM_KIND_HEADER;
+            case UPGRADE: return TEAM_KIND_UPGRADE;
+            case TRAP: return TEAM_KIND_TRAP;
+            case NEXT: return TEAM_KIND_NEXT;
+            case NONE: return TEAM_KIND_NONE;
+            default: throw new IllegalArgumentException("row kind " + kind);
+        }
+    }
+
+    /** The row kind of a stored id; null for an id this build does not know. */
+    public static TeamUpgradeRows.Kind teamKind(int id) {
+        switch (id) {
+            case TEAM_KIND_HEADER: return TeamUpgradeRows.Kind.HEADER;
+            case TEAM_KIND_UPGRADE: return TeamUpgradeRows.Kind.UPGRADE;
+            case TEAM_KIND_TRAP: return TeamUpgradeRows.Kind.TRAP;
+            case TEAM_KIND_NEXT: return TeamUpgradeRows.Kind.NEXT;
+            case TEAM_KIND_NONE: return TeamUpgradeRows.Kind.NONE;
+            default: return null;
+        }
+    }
+
+    /** The stored id of a row style. */
+    public static int teamStyleId(TeamUpgradeRows.Style style) {
+        switch (style) {
+            case NORMAL: return TEAM_STYLE_NORMAL;
+            case DIM: return TEAM_STYLE_DIM;
+            case FIRED: return TEAM_STYLE_FIRED;
+            default: throw new IllegalArgumentException("row style " + style);
+        }
+    }
+
+    /** The row style of a stored id; null for an id this build does not know. */
+    public static TeamUpgradeRows.Style teamStyle(int id) {
+        switch (id) {
+            case TEAM_STYLE_NORMAL: return TeamUpgradeRows.Style.NORMAL;
+            case TEAM_STYLE_DIM: return TeamUpgradeRows.Style.DIM;
+            case TEAM_STYLE_FIRED: return TeamUpgradeRows.Style.FIRED;
+            default: return null;
         }
     }
 
@@ -225,15 +280,17 @@ public final class HudModel {
             case SHAPE_TEAM: {
                 int n = count(c);
                 for (int i = 0; i < n; i++) {
-                    int k = c.u8();
-                    if (k >= KINDS.length) throw new RewindFormat.FormatException("row kind");
+                    // an id a later build added is not an error: an unknown kind skips its row, an unknown style
+                    // draws NORMAL (code review 1, O5)
+                    TeamUpgradeRows.Kind kind = teamKind(c.u8());
                     String label = c.string(RewindFormat.MAX_STRING_BYTES);
                     String value = c.string(RewindFormat.MAX_STRING_BYTES);
                     String right = c.string(RewindFormat.MAX_STRING_BYTES);
-                    int s = c.u8();
-                    if (s >= STYLES.length) throw new RewindFormat.FormatException("row style");
+                    TeamUpgradeRows.Style style = teamStyle(c.u8());
                     int alpha = c.u8();
-                    v.team.add(new TeamUpgradeRows.Row(KINDS[k], label, value, right, STYLES[s], alpha / 255f));
+                    if (kind == null) continue;
+                    if (style == null) style = TeamUpgradeRows.Style.NORMAL;
+                    v.team.add(new TeamUpgradeRows.Row(kind, label, value, right, style, alpha / 255f));
                 }
                 break;
             }

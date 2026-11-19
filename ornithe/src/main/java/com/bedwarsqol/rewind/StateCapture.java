@@ -7,6 +7,8 @@ import com.mojang.authlib.properties.Property;
 import io.netty.buffer.Unpooled;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.inventory.Container;
 import net.minecraft.inventory.Slot;
@@ -29,19 +31,25 @@ import java.util.UUID;
  *   <li><b>INV</b>: slots 0-35 main, 36-39 armour (boots to helmet), 40 the cursor stack. Per slot the last stack
  *       reference, item, count, damage and tag reference are kept and compared every tick (vanilla changes damage and
  *       count on the same object), and every {@link #DEEP_COMPARE_TICKS} ticks a tagged slot's tag is compared with
- *       a copy kept at its last write, which catches a tag edited in place within a second. An untagged stack that
- *       is a different but equal object is followed without a record. The segment's first tick writes all 41.</li>
+ *       a copy kept at its last write, which catches a tag edited in place within a second. A stack that is a
+ *       different but equal object (same item, count and damage; for a tagged one, tag content equal to that copy,
+ *       compared only when the reference changed) is followed without a record. The segment's first tick writes all
+ *       41.</li>
  *   <li><b>CONT</b>: while {@code openContainer} is not the inventory container, the window's own slots (not the
  *       player's inventory, which INV covers) the same way, measured from the empty window vanilla's S2D creates, so
  *       a window's first tick writes its filled slots and a local click's prediction is stored at its tick, before
  *       the server answers.</li>
  *   <li><b>SETTINGS</b> ({@link SettingsSnapshot}): every key on the segment's first tick, then the changed keys.</li>
- *   <li><b>IDENTITY</b>: own UUID, name and {@code textures} property, once per segment.</li>
+ *   <li><b>IDENTITY</b>: own UUID, name and {@code textures} property (value and signature), read from the player's
+ *       own tab entry ({@link #ownTabProfile}; the login profile never has the property). Written once the entry is
+ *       there (it may arrive after the segment's first tick; nothing is written or allocated while waiting), and again
+ *       within the segment only if a new entry carries different textures.</li>
  * </ul>
  *
  * <p><b>Cost.</b> Client thread only. An unchanged tick allocates nothing, and neither does a change on an untagged
  * stack. Serializing a tagged stack (vanilla's NBT writer, plus the kept tag copy), the deep compare (an iterator per
- * tagged slot, once a second) and the once-per-segment identity are the allocating cases.
+ * tagged slot, once a second, and for a tagged stack replaced by another object) and reading a new tab entry's
+ * textures for IDENTITY are the allocating cases.
  *
  * <p><b>Wiring.</b> Inert until a sink is {@link #install installed} (Phase 6): {@link #tick(Minecraft)} returns at
  * once with no sink or while a recording plays. The wiring calls {@link #resetSegment()} when a TRACK segment
@@ -70,12 +78,22 @@ public final class StateCapture {
     private static final StateCapture INSTANCE = new StateCapture(DEEP_COMPARE_TICKS);
     private static final SettingsSnapshot SETTINGS = new SettingsSnapshot();
 
-    /** Installs (or, with null, removes) the sink. Client thread. */
+    /**
+     * Installs (or, with null, removes) the sink. Client thread. Removing it also drops every kept reference (the last
+     * open window, and through it the player and the world; the per-slot stacks and tags; the tab profile), so a
+     * released capture retains nothing (code review 1, O3).
+     */
     public static void install(Sink s) {
         sink = s;
+        if (s == null) {
+            INSTANCE.reset();
+        }
     }
 
-    /** A TRACK segment starts: the next tick writes IDENTITY, every SETTINGS key and all 41 INV slots again. */
+    /**
+     * A TRACK segment starts: the next tick writes every SETTINGS key and all 41 INV slots again, and IDENTITY once the
+     * own tab entry is there.
+     */
     public static void resetSegment() {
         INSTANCE.reset();
     }
@@ -98,7 +116,7 @@ public final class StateCapture {
             }
             SETTINGS.read(mc, BedwarsQol.config);
             INSTANCE.tick(s, p.getItemInUseCount(), p.inventory, p.openContainer, p.inventoryContainer, SETTINGS,
-                    p.getGameProfile());
+                    ownTabProfile(p.sendQueue, p.getUniqueID()));
         } catch (Throwable t) {
             s.failed("state", t);
         }
@@ -109,12 +127,31 @@ public final class StateCapture {
      * through it without a client). Same guards.
      */
     static void tick(int useCount, InventoryPlayer playerInv, Container open, Container own, SettingsSnapshot settings,
-                     GameProfile profile) {
+                     GameProfile tabProfile) {
         Sink s = sink;
         if (s == null || PlaybackGate.muted()) {
             return;
         }
-        INSTANCE.tick(s, useCount, playerInv, open, own, settings, profile);
+        INSTANCE.tick(s, useCount, playerInv, open, own, settings, tabProfile);
+    }
+
+    /**
+     * The profile of the player's own tab entry ({@code NetHandlerPlayClient.getPlayerInfo(uuid)}), the one S38 filled
+     * with the signed {@code textures} property and the one vanilla draws the skin from; null while the entry has not
+     * arrived. The login profile the player entity holds never has properties (code review 1, I1). A map lookup:
+     * allocates nothing.
+     */
+    static GameProfile ownTabProfile(NetHandlerPlayClient net, UUID self) {
+        if (net == null || self == null) {
+            return null;
+        }
+        NetworkPlayerInfo info = net.getPlayerInfo(self);
+        return info == null ? null : info.getGameProfile();
+    }
+
+    /** Whether capture still holds a reference to game objects (tests). */
+    static boolean holdsReferences() {
+        return INSTANCE.holds();
     }
 
     // ------------------------------------------------------------------ instance (testable without a client)
@@ -126,7 +163,11 @@ public final class StateCapture {
     private final Slots cont = new Slots(128);
 
     private boolean segmentStart = true;
-    private boolean identityDue = true;
+    /** The tab profile IDENTITY was last checked against (a new S38 ADD_PLAYER makes a new one), or null. */
+    private GameProfile identityProfile;
+    /** The textures value and signature of this segment's last IDENTITY; null before the first. */
+    private String identitySkin;
+    private String identitySig;
     private long ticks;
     private int lastUse;
     private Container window;
@@ -137,9 +178,15 @@ public final class StateCapture {
         this.deepEvery = deepEvery;
     }
 
+    boolean holds() {
+        return window != null || identityProfile != null || inv.holds() || cont.holds();
+    }
+
     void reset() {
         segmentStart = true;
-        identityDue = true;
+        identityProfile = null;
+        identitySkin = null;
+        identitySig = null;
         ticks = 0;
         lastUse = 0;
         window = null;
@@ -149,19 +196,17 @@ public final class StateCapture {
     }
 
     /**
-     * One tick: IDENTITY (once per segment), SETTINGS, INV, USE, CONT. Returns false when the sink failed or threw
-     * (a throw is reported to {@link Sink#failed} once).
+     * One tick: IDENTITY, SETTINGS, INV, USE, CONT. {@code tabProfile} is the own tab entry's profile
+     * ({@link #ownTabProfile}), null while it has not arrived. Returns false when the sink failed or threw (a throw is
+     * reported to {@link Sink#failed} once).
      */
     boolean tick(Sink s, int useCount, InventoryPlayer playerInv, Container open, Container own,
-                 SettingsSnapshot settings, GameProfile profile) {
+                 SettingsSnapshot settings, GameProfile tabProfile) {
         try {
             boolean first = segmentStart;
             boolean deep = deepEvery > 0 && ticks % deepEvery == 0;
-            if (identityDue && profile != null) {
-                if (!identity(s, profile)) {
-                    return false;
-                }
-                identityDue = false;
+            if (tabProfile != null && tabProfile != identityProfile && !identity(s, tabProfile)) {
+                return false;
             }
             if (settings != null) {
                 int n = settings.write(codec, first);
@@ -187,8 +232,13 @@ public final class StateCapture {
         }
     }
 
+    /**
+     * A tab profile not checked yet (the segment's first sight of the entry, or a new entry from a later S38): writes
+     * IDENTITY when this segment has none yet or the textures differ from the last one written. Reads the property map
+     * (allocates), so it runs only when the entry object changed, never per tick.
+     */
     private boolean identity(Sink s, GameProfile profile) {
-        UUID id = profile.getId();
+        identityProfile = profile;
         String skin = "";
         String sig = "";
         for (Property p : profile.getProperties().get("textures")) {
@@ -196,9 +246,18 @@ public final class StateCapture {
             sig = p.getSignature() == null ? "" : p.getSignature();
             break;
         }
+        if (skin.equals(identitySkin) && sig.equals(identitySig)) {
+            return true;
+        }
+        UUID id = profile.getId();
         int n = codec.identity(id == null ? 0L : id.getMostSignificantBits(),
                 id == null ? 0L : id.getLeastSignificantBits(), profile.getName(), skin, sig);
-        return s.append(RewindFormat.TAG_IDENTITY, codec.buffer(), n);
+        if (!s.append(RewindFormat.TAG_IDENTITY, codec.buffer(), n)) {
+            return false;
+        }
+        identitySkin = skin;
+        identitySig = sig;
+        return true;
     }
 
     private boolean inventory(Sink s, InventoryPlayer p, boolean force, boolean deep) {
@@ -299,6 +358,15 @@ public final class StateCapture {
             Arrays.fill(tagCopy, null);
         }
 
+        boolean holds() {
+            for (int i = 0; i < ref.length; i++) {
+                if (ref[i] != null || item[i] != null || tagRef[i] != null || tagCopy[i] != null) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** Grows to {@code n} slots (only for a window larger than any vanilla one). */
         void ensure(int n) {
             if (n <= ref.length) {
@@ -324,10 +392,17 @@ public final class StateCapture {
             NBTTagCompound tag = st.getTagCompound();
             if (st != r) {
                 if (st.getItem() != item[i] || st.stackSize != size[i] || st.getItemDamage() != damage[i]
-                        || tag != null || tagRef[i] != null) {
+                        || (tag == null) != (tagRef[i] == null)) {
                     return true;
                 }
-                ref[i] = st; // an equal untagged stack in another object: follow it, nothing to store
+                // Another object, same item, count and damage (a server resend). Untagged: equal. Tagged: compare the
+                // content with the copy kept at the last write, only now that the reference changed (code review 1,
+                // O4); the kept copy stays, so a later in-place edit of the new tag is still caught by the deep compare.
+                if (tag != null && !tag.equals(tagCopy[i])) {
+                    return true;
+                }
+                ref[i] = st; // an equal stack in another object: follow it, nothing to store
+                tagRef[i] = tag;
                 return false;
             }
             if (st.getItem() != item[i] || st.stackSize != size[i] || st.getItemDamage() != damage[i]

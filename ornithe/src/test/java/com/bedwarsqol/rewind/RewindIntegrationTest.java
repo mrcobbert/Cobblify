@@ -2010,6 +2010,11 @@ public class RewindIntegrationTest {
      * game (the prefix stays readable), nothing more is written for it, and the connection is untouched.
      */
     private void assertHookFailureFailsOnlyRecording(String name, Runnable hook) throws Exception {
+        assertHookFailureFailsOnlyRecording(name, name, hook);
+    }
+
+    /** As above; {@code where} is the place the diagnostic line names (code review 1, O6). */
+    private void assertHookFailureFailsOnlyRecording(String name, String where, Runnable hook) throws Exception {
         V2.reset();
         Harness h = openGame(new File(tmp.getRoot(), "fail-" + name));
         current = h.rewind;
@@ -2020,6 +2025,7 @@ public class RewindIntegrationTest {
         long failUs = h.clock.nowUs;
         hook.run(); // must not throw
         assertFalse(name + ": capture stops at once", h.rewind.capturing());
+        assertEquals(name + ": the failure is reported where it happened", where, h.rewind.captureWhere());
         v.rounds(h, 3, 2); // written nowhere
         h.tick(false, true);
         assertFalse(name + ": the failure closed the game", h.rewind.rules().gameOpen());
@@ -2043,7 +2049,7 @@ public class RewindIntegrationTest {
     @Test
     public void aThrowInsideTheSoundHookFailsTheGameAndThePlayCallGoesOn() throws Exception {
         final DigCaptureTest.MapWorld world = new DigCaptureTest.MapWorld(true);
-        assertHookFailureFailsOnlyRecording("sound", new Runnable() {
+        assertHookFailureFailsOnlyRecording("sound", "action", new Runnable() {
             @Override
             public void run() {
                 ActionCapture.enterLocal();
@@ -2124,6 +2130,61 @@ public class RewindIntegrationTest {
                         });
             }
         });
+    }
+
+    /**
+     * Code review 1, O2: another mod's cancellable HEAD injector on {@code clickMouse} (or a throw) skips Cobblify's
+     * RETURN hook, leaving a local scope open. The end-of-tick capture closes it, so the next frame's packet drain
+     * (server block changes and positioned sounds) is not stored as the player's own.
+     */
+    @Test
+    public void aLocalScopeLeftOpenBySkippedReturnClosesAtTheEndOfTheTick() throws Exception {
+        V2.reset();
+        Harness h = openGame(new File(tmp.getRoot(), "scope"));
+        V2 v = new V2();
+        v.rounds(h, 0, 3);
+        h.advance(1_000);
+        ActionCapture.enterLocal(); // clickMouse HEAD ran; its RETURN never does
+        assertTrue(ActionCapture.scope().local());
+        h.rewind.captureTick(new Rewind.TickCapture() {
+            @Override
+            public void endOfTick() {
+            }
+        });
+        assertFalse("the end of the tick closes every local scope", ActionCapture.scope().local());
+        h.advance(5_000);
+        long drainUs = h.clock.nowUs;
+        // the next frame's scheduled-task drain: a server sound and a server block change
+        ActionCapture.onSound(v.step);
+        v.world.change(new BlockPos(40, 70, 40), Blocks.gold_block.getDefaultState());
+        assertSame(Blocks.gold_block.getDefaultState(), v.world.getBlockState(new BlockPos(40, 70, 40)));
+        File cbr = finish(h);
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        assertTrue("own records before", ext(fc, RewindFormat.TAG_SOUND).size() > 0);
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (t.tag == RewindFormat.TAG_SOUND || t.tag == RewindFormat.TAG_BLOCK) {
+                assertTrue(RewindFormat.extName(t.tag) + " from the drain stored as own", t.timeUs < drainUs);
+            }
+        }
+    }
+
+    /**
+     * Code review 1, O3: releasing capture (a disconnect, Record Games off) drops what the state and view capture
+     * kept: the last open window (and through it the player and the world), the per-slot stacks and typed text.
+     */
+    @Test
+    public void releasingCaptureDropsTheWindowStacksAndTypedText() throws Exception {
+        V2.reset();
+        Harness h = openGame(new File(tmp.getRoot(), "release"));
+        V2 v = new V2();
+        v.rounds(h, 0, 3); // a chest open, chat typed
+        assertTrue("state capture holds the open window and stacks", StateCapture.holdsReferences());
+        assertTrue("view capture holds the typed text", ViewCapture.holdsReferences());
+        h.rewind.tick(false, false, false); // Record Games off: capture released
+        assertFalse(StateCapture.installed());
+        assertFalse("no window, stack or tag kept after release", StateCapture.holdsReferences());
+        assertFalse("no renderer or typed text kept after release", ViewCapture.holdsReferences());
     }
 
     /** The harness of the running failure test (the hook runs inside it). */

@@ -14,6 +14,7 @@ import net.minecraft.client.gui.inventory.GuiChest;
 import net.minecraft.client.gui.inventory.GuiContainer;
 import net.minecraft.client.gui.inventory.GuiInventory;
 import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.renderer.EntityRenderer;
 import net.minecraft.client.settings.GameSettings;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.scoreboard.Scoreboard;
@@ -32,7 +33,7 @@ import org.lwjgl.input.Mouse;
  *   <li><b>CHAT_INPUT</b>: only while chat is open, the input text and cursor, measured from an empty bar.</li>
  *   <li><b>FOV</b>: the final world FOV through {@code EntityRenderer.getFOVModifier(partial, true)}
  *       ({@link EntityRendererFovInvoker}), so every mod's change (Zoom, Dynamic FOV, potions, bow, water) is in it;
- *       read at most every {@link #FOV_INTERVAL_NS}, as the camera sample.</li>
+ *       read at most every {@link #FOV_INTERVAL_NS} (16 ms).</li>
  *   <li><b>INPUT</b>: W, A, S, D, jump and the two mouse buttons as the Keystrokes HUD reads them.</li>
  *   <li><b>TAP</b>: {@link #mousePressed} is the receiving end of {@code BedwarsHudRenderer.onMouse}: one record per
  *       press, stamped when the event is processed, so a click shorter than a frame is still stored.</li>
@@ -40,8 +41,9 @@ import org.lwjgl.input.Mouse;
  * VIEW and FOV are stated on a segment's first frame; INPUT is measured from nothing held.
  *
  * <p><b>Cost.</b> Client thread only. The capture itself allocates nothing per frame, changed or not; the FOV read
- * runs vanilla's {@code getFOVModifier} (which allocates a {@code BlockPos} for its water check, and Cobblify's Zoom
- * injector its callback info) at most every 4 ms.
+ * runs vanilla's {@code getFOVModifier} (which allocates two {@code Vec3} and a {@code BlockPos} for its eye-block
+ * check, and Cobblify's Zoom injector its callback info and a boxed float, about 144 B) at most once per 16 ms, the
+ * one named allocating case of the frame path (TASK A12, coordinator amendment 3).
  *
  * <p><b>Wiring.</b> Inert until a sink is {@link #install installed} (Phase 6): every entry point returns at once with
  * no sink or while a recording plays. Phase 6 calls {@link #resetSegment()} when a TRACK segment starts and
@@ -52,16 +54,53 @@ public final class ViewCapture {
 
     /** MOUSE is written at most this often while the cursor moves. */
     static final long MOUSE_INTERVAL_NS = 8_000_000L;
-    /** The FOV is read at most this often (the camera sample's limit). */
-    static final long FOV_INTERVAL_NS = 4_000_000L;
+    /**
+     * The FOV is read at most this often: vanilla's {@code getFOVModifier} allocates (about 144 B a call, its eye-block
+     * lookup plus Zoom's callback info), so at most ~9 KB/s; playback interpolates FOV between samples up to 50 ms
+     * apart (code review 1, I2; coordinator amendment 3).
+     */
+    static final long FOV_INTERVAL_NS = 16_000_000L;
 
     private static StateCapture.Sink sink;
     private static final ViewCapture INSTANCE = new ViewCapture();
     private static final Frame FRAME = new Frame();
+    private static final RendererFov RENDERER_FOV = new RendererFov();
 
-    /** Installs (or, with null, removes) the sink. Client thread. */
+    /** Where a frame's FOV is read from: the game's renderer in production, a fake in tests. */
+    interface FovSource {
+        /** The final world FOV for this frame ({@code getFOVModifier(partialTicks, true)}). */
+        float fov(float partialTicks);
+    }
+
+    /** {@code EntityRenderer.getFOVModifier} through the invoker (one reused instance, nothing allocated here). */
+    private static final class RendererFov implements FovSource {
+        EntityRenderer renderer;
+
+        @Override
+        public float fov(float partialTicks) {
+            return ((EntityRendererFovInvoker) renderer).bedwarsqol$getFOVModifier(partialTicks, true);
+        }
+    }
+
+    /** Whether capture still holds a reference to game objects or typed text (tests). */
+    static boolean holdsReferences() {
+        return RENDERER_FOV.renderer != null || FRAME.fovSource != null || FRAME.chatText != null
+                || INSTANCE.lastText != null || kindClass != null;
+    }
+
+    /**
+     * Installs (or, with null, removes) the sink. Client thread. Removing it also drops what was kept: the renderer,
+     * the last typed chat text and the screen class (code review 1, O3).
+     */
     public static void install(StateCapture.Sink s) {
         sink = s;
+        if (s == null) {
+            INSTANCE.reset();
+            RENDERER_FOV.renderer = null;
+            FRAME.fovSource = null;
+            FRAME.chatText = null;
+            kindClass = null;
+        }
     }
 
     /** A TRACK segment starts: the next frame states VIEW and FOV again; INPUT, MOUSE and chat start over. */
@@ -90,10 +129,10 @@ public final class ViewCapture {
                     | (gs.smoothCamera ? RewindFormat.VIEW_SMOOTH_CAMERA : 0);
             f.screenKind = screenKind(screen);
             f.keys = keys(gs, screen == null);
-            f.fovRead = mc.entityRenderer != null && INSTANCE.fovDue(nanoTime);
-            if (f.fovRead) {
-                f.fov = ((EntityRendererFovInvoker) mc.entityRenderer).bedwarsqol$getFOVModifier(partialTicks, true);
-            }
+            f.partialTicks = partialTicks;
+            RENDERER_FOV.renderer = mc.entityRenderer;
+            f.fovSource = mc.entityRenderer == null ? null : RENDERER_FOV;
+            f.fovRead = false;
             f.screenOpen = screen != null;
             if (screen != null && mc.displayWidth > 0 && mc.displayHeight > 0) {
                 f.mouseDx = mouseDx(Mouse.getX(), mc.displayWidth, screen.width);
@@ -234,6 +273,13 @@ public final class ViewCapture {
         int flags;
         int screenKind;
         int keys;
+        /** The frame's partial ticks, handed to {@link #fovSource}. */
+        float partialTicks;
+        /**
+         * Where the FOV is read from, rate-limited by {@link #fovDue}; null: {@link #fovRead} and {@link #fov} are
+         * taken as given (tests that state a read).
+         */
+        FovSource fovSource;
         /** The FOV was read this frame ({@link #fovDue}); {@link #fov} holds it. */
         boolean fovRead;
         float fov;
@@ -291,6 +337,13 @@ public final class ViewCapture {
     /** One frame. Returns false when the sink failed or threw (a throw is reported to {@link StateCapture.Sink#failed}). */
     boolean frame(StateCapture.Sink s, Frame f) {
         try {
+            FovSource src = f.fovSource;
+            if (src != null) {
+                f.fovRead = fovDue(f.nanoTime);
+                if (f.fovRead) {
+                    f.fov = src.fov(f.partialTicks);
+                }
+            }
             return view(s, f) && fov(s, f) && input(s, f) && mouse(s, f) && chat(s, f);
         } catch (Throwable t) {
             s.failed("view", t);

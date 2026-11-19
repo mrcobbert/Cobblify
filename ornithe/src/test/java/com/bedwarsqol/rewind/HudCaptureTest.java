@@ -43,7 +43,8 @@ public class HudCaptureTest {
         }
 
         @Override
-        public void failed(Throwable t) {
+        public void failed(String where, Throwable t) {
+            assertEquals("hud", where);
             failures++;
             cause = t;
         }
@@ -320,7 +321,7 @@ public class HudCaptureTest {
             }
 
             @Override
-            public void failed(Throwable cause) {
+            public void failed(String where, Throwable cause) {
                 failed[0]++;
             }
         });
