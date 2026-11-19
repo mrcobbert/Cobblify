@@ -419,3 +419,6 @@ one-sided test ornithe com/bedwarsqol/rewind/LocalSoundCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/TickHeadCaptureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/CaptureFailureTest.java
 one-sided test ornithe com/bedwarsqol/rewind/HandledOrderTest.java
+# Rewind parity Phase 6 (recorder wiring): Ornithe-only recorder tests and the opt-in client capture bench.
+one-sided test ornithe com/bedwarsqol/rewind/RewindReadOnlyScanTest.java
+one-sided test ornithe com/bedwarsqol/rewind/RewindClientCaptureBench.java

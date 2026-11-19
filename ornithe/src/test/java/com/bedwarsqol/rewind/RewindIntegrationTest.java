@@ -1,8 +1,23 @@
 package com.bedwarsqol.rewind;
 
+import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.feature.SessionChatLine;
+import com.mojang.authlib.GameProfile;
 import io.netty.channel.embedded.EmbeddedChannel;
+import net.minecraft.client.audio.ISound;
+import net.minecraft.client.settings.GameSettings;
+import net.minecraft.entity.player.InventoryPlayer;
+import net.minecraft.init.Blocks;
+import net.minecraft.init.Items;
+import net.minecraft.inventory.ContainerChest;
+import net.minecraft.inventory.InventoryBasic;
+import net.minecraft.item.ItemStack;
+import net.minecraft.network.Packet;
+import net.minecraft.util.BlockPos;
+import net.minecraft.util.ResourceLocation;
+import org.junit.After;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -41,6 +56,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -101,8 +117,12 @@ public class RewindIntegrationTest {
             });
         }
 
+        /** The last connect's capture session, or null. */
+        CaptureSession session;
+
         CaptureSession connect(boolean rewindOn, boolean record) {
             CaptureSession s = rewind.onServerConnect(ch, null, false, "mc.hypixel.net", rewindOn, record);
+            session = s;
             runClient();
             return s;
         }
@@ -1713,6 +1733,448 @@ public class RewindIntegrationTest {
             assertEquals("no writer is ever made", 0, h.writersMade);
             assertFalse(dir.exists());
             assertEquals(h.fired, h.rx.messages.size());
+        }
+    }
+
+    // ================================================================== Phase 6: format v2 capture, wired
+
+    @BeforeClass
+    public static void bootstrapMinecraft() {
+        InventoryCaptureTest.bootstrap();
+    }
+
+    @After
+    public void releaseCapture() {
+        V2.reset();
+    }
+
+    /**
+     * One client tick of every format v2 capture hook, driven through the production wiring (the sink {@link Rewind}
+     * installs at connect) with real vanilla objects and fake values only. Each {@link #round} touches all 17
+     * extension tags: TICK_HEAD (runTick head), OUT, SOUND and BLOCK (own actions), HUD and TAP (the painters'
+     * hand-offs), VIEW, FOV, INPUT, MOUSE and CHAT_INPUT (frame), DIG, INV, USE, CONT, SETTINGS and IDENTITY (end of
+     * tick).
+     */
+    static final class V2 {
+        static final int DRAINED_ID = 0x15;
+        final InventoryPlayer inv = InventoryCaptureTest.fullInventory();
+        final InventoryCaptureTest.Own own = new InventoryCaptureTest.Own();
+        final InventoryBasic box = new InventoryBasic("Fake Chest", false, 27);
+        final ContainerChest chest = new ContainerChest(inv, box, null);
+        final GameSettings gs = SnapshotCaptureTest.gameSettings();
+        final ClientSettings cfg = SnapshotCaptureTest.clientSettings();
+        final SettingsSnapshot snap = new SettingsSnapshot();
+        final GameProfile profile = SnapshotCaptureTest.profile();
+        final DigCaptureTest.MapWorld world = new DigCaptureTest.MapWorld(true);
+        final List<Packet<?>> nine;
+        final ISound step = LocalSoundCaptureTest.sound(new ResourceLocation("dig.stone"), false,
+                ISound.AttenuationType.LINEAR, 1.5f, 64f, -2.5f);
+        final ViewCapture.Frame frame = new ViewCapture.Frame();
+        long frameNs = 1_000_000_000L;
+
+        V2() {
+            try {
+                nine = OutboundCaptureTest.nineStored();
+            } catch (IOException e) {
+                throw new AssertionError(e);
+            }
+            chest.windowId = 3;
+        }
+
+        /** Everything capture-related back to unbound (static state shared by every test in this JVM). */
+        static void reset() {
+            Rewind.unbindCapture();
+            ActionCapture.unbind();
+            StateCapture.install(null);
+            ViewCapture.install(null);
+            HudCapture.shared().setSink(null);
+            HudCapture.shared().setTapReceiver(null);
+        }
+
+        /** {@code n} rounds, 50 ms apart. */
+        void rounds(Harness h, int from, int n) {
+            for (int i = from; i < from + n; i++) {
+                round(h, i);
+            }
+        }
+
+        void round(final Harness h, final int i) {
+            h.advance(50_000);
+            h.rewind.captureTickHead();
+            // a server packet captured, then handled by the client before the next tick head
+            h.net(other(DRAINED_ID, 12));
+            ActionCapture.onPacketRun(DRAINED_ID);
+            h.advance(1_000);
+            ActionCapture.onSend(nine.get(i % nine.size()));
+            ActionCapture.enterLocal();
+            ActionCapture.onSound(step);
+            world.change(new BlockPos(2, 64 + i, 0), Blocks.stone.getDefaultState());
+            ActionCapture.exitLocal();
+            HudCapture.shared().frame();
+            HudCapture.shared().offerTimer(RewindFormat.HUD_DIAMOND_TIMER, 30 - i);
+            HudCapture.shared().mousePress(i & 1);
+            h.advance(16_000);
+            frameNs += 20_000_000L;
+            h.rewind.captureFrame(new Rewind.FrameCapture() {
+                @Override
+                public void frame(float partialTicks, long nanoTime) {
+                    ViewCapture.Frame f = frame;
+                    f.nanoTime = nanoTime;
+                    f.perspective = i % 3;
+                    f.flags = (i & 1) == 0 ? 0 : RewindFormat.VIEW_F3;
+                    f.screenKind = RewindFormat.SCREEN_CHAT;
+                    f.keys = i & 0x7F;
+                    f.fovRead = true;
+                    f.fov = 70f + i;
+                    f.screenOpen = true;
+                    f.mouseDx = 4 * i;
+                    f.mouseDy = -2 * i;
+                    f.chatOpen = true;
+                    f.chatText = "fake typing " + i;
+                    f.chatCursor = i;
+                    ViewCapture.frame(f);
+                }
+            }, 0.5f, frameNs);
+            h.advance(16_000);
+            h.rewind.captureTick(new Rewind.TickCapture() {
+                @Override
+                public void endOfTick() {
+                    ActionCapture.dig(true, new BlockPos(5, 63, 5), 1, 0.1f * (i % 10) + 0.01f);
+                    inv.mainInventory[2].stackSize = 1 + i % 7;
+                    box.setInventorySlotContents(i % 27, new ItemStack(Items.iron_ingot, 1 + i % 5));
+                    snap.read(gs, 480, 270, 1920, 1080, cfg);
+                    StateCapture.tick(i == 1 ? 72000 : 0, inv, chest, own, snap, profile);
+                }
+            });
+        }
+    }
+
+    /** The format v2 decoder of each extension tag; throws on a malformed body. */
+    static void decodeExt(RewindWriterTest.TrackRec t) {
+        byte[] b = t.body;
+        switch (t.tag) {
+            case RewindFormat.TAG_TICK_HEAD: new ExtCodec.TickHead().read(b, 0, b.length); break;
+            case RewindFormat.TAG_OUT: new ExtCodec.Out().read(b, 0, b.length); break;
+            case RewindFormat.TAG_DIG: new ExtCodec.Dig().read(b, 0, b.length); break;
+            case RewindFormat.TAG_BLOCK: new ExtCodec.Block().read(b, 0, b.length); break;
+            case RewindFormat.TAG_SOUND: new ExtCodec.Sound().read(b, 0, b.length); break;
+            case RewindFormat.TAG_VIEW: new ExtCodec.View().read(b, 0, b.length); break;
+            case RewindFormat.TAG_MOUSE: new ExtCodec.Mouse().read(b, 0, b.length); break;
+            case RewindFormat.TAG_CHAT_INPUT: new ExtCodec.ChatInput().read(b, 0, b.length); break;
+            case RewindFormat.TAG_FOV: new ExtCodec.Fov().read(b, 0, b.length); break;
+            case RewindFormat.TAG_USE: new ExtCodec.Use().read(b, 0, b.length); break;
+            case RewindFormat.TAG_INV: new ExtCodec.Inv().read(b, 0, b.length); break;
+            case RewindFormat.TAG_SETTINGS: new ExtCodec.Settings().read(b, 0, b.length); break;
+            case RewindFormat.TAG_IDENTITY: new ExtCodec.Identity().read(b, 0, b.length); break;
+            case RewindFormat.TAG_INPUT: new ExtCodec.Input().read(b, 0, b.length); break;
+            case RewindFormat.TAG_HUD: new ExtCodec.Hud().read(b, 0, b.length); break;
+            case RewindFormat.TAG_CONT: new ExtCodec.Cont().read(b, 0, b.length); break;
+            case RewindFormat.TAG_TAP: new ExtCodec.Tap().read(b, 0, b.length); break;
+            default: throw new AssertionError("not an extension tag " + t.tag);
+        }
+    }
+
+    static List<RewindWriterTest.TrackRec> ext(RewindWriterTest.FileContents fc, int tag) {
+        List<RewindWriterTest.TrackRec> out = new ArrayList<RewindWriterTest.TrackRec>();
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (t.tag == tag) {
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    static int extTotal(RewindWriterTest.FileContents fc) {
+        int n = 0;
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (RewindFormat.isExtensionTag(t.tag)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** The connection ends; the writer closes the file. */
+    static File finish(Harness h) {
+        h.ch.close();
+        h.advance(1_000);
+        h.tick(false, false);
+        h.step();
+        h.advance(RewindWriter.SYNC_INTERVAL_US);
+        h.step();
+        return RewindWriterTest.onlyCbr(h.dir);
+    }
+
+    @Test
+    public void aV2GameThroughTheRealWriterHoldsEveryExtensionTagAndPassesRewindCheck() throws Exception {
+        Harness h = openGame(new File(tmp.getRoot(), "rewind"));
+        assertTrue("capture is on for the recorded segment", h.rewind.capturing());
+        V2 v = new V2();
+        v.rounds(h, 0, 6);
+        h.rewind.onMarkerKey(); // RewindCheck's pass needs a KEY marker
+        v.rounds(h, 6, 6);
+        File cbr = finish(h);
+
+        h.ch.checkException();
+        assertEquals("every message reached packet_handler", h.fired, h.rx.messages.size());
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(fc.complete);
+        assertFalse(fc.tornTail);
+        RewindCheck.Summary s = RewindCheck.summarize(cbr);
+        assertEquals(s.line(), 0, s.exitCode());
+        assertEquals(RewindFormat.FORMAT_VERSION, s.formatVersion);
+        assertEquals(0, s.extUnknown);
+        for (int tag : RewindFormat.EXT_TAGS) {
+            List<RewindWriterTest.TrackRec> recs = ext(fc, tag);
+            assertTrue(RewindFormat.extName(tag) + " records in the file", recs.size() > 0);
+            assertEquals(RewindFormat.extName(tag) + " counted by RewindCheck", recs.size(), s.extCount(tag));
+            for (RewindWriterTest.TrackRec t : recs) {
+                assertEquals("in the game's segment", 1, t.segment);
+                decodeExt(t);
+            }
+        }
+
+        // values round-trip as captured
+        assertEquals("one TICK_HEAD per runTick head", 12, ext(fc, RewindFormat.TAG_TICK_HEAD).size());
+        ExtCodec.TickHead head = new ExtCodec.TickHead();
+        byte[] last = ext(fc, RewindFormat.TAG_TICK_HEAD).get(11).body;
+        head.read(last, 0, last.length);
+        assertEquals("the previous round's drained packet", 1, head.handled);
+        assertEquals("a clean count", 0, head.flags);
+        List<RewindWriterTest.TrackRec> outs = ext(fc, RewindFormat.TAG_OUT);
+        assertEquals(12, outs.size());
+        ExtCodec.Out out = new ExtCodec.Out();
+        for (int i = 0; i < outs.size(); i++) {
+            Packet<?> p = v.nine.get(i % v.nine.size());
+            out.read(outs.get(i).body, 0, outs.get(i).body.length);
+            assertEquals(OutboundCaptureTest.serverboundId(p), out.packetId);
+            assertArrayEquals("OUT " + i + " holds vanilla's bytes", OutboundCaptureTest.data(p),
+                    Arrays.copyOfRange(out.buf, out.dataOff, out.dataOff + out.dataLen));
+        }
+        assertEquals("IDENTITY once per segment", 1, ext(fc, RewindFormat.TAG_IDENTITY).size());
+        assertTrue("INV: all 41 slots on the first tick", ext(fc, RewindFormat.TAG_INV).size() >= 41);
+        ExtCodec.Sound snd = new ExtCodec.Sound();
+        byte[] sb = ext(fc, RewindFormat.TAG_SOUND).get(0).body;
+        snd.read(sb, 0, sb.length);
+        assertEquals("minecraft:dig.stone", snd.name);
+        ExtCodec.Tap tap = new ExtCodec.Tap();
+        byte[] tb = ext(fc, RewindFormat.TAG_TAP).get(0).body;
+        tap.read(tb, 0, tb.length);
+        assertEquals(RewindFormat.TAP_LMB, tap.button);
+        ExtCodec.Use use = new ExtCodec.Use();
+        byte[] ub = ext(fc, RewindFormat.TAG_USE).get(0).body;
+        use.read(ub, 0, ub.length);
+        assertEquals("a bow draw is stored in full", 72000, use.count);
+
+        // stats: numbers only, every new record type counted, the timings filled
+        File stats = new File(h.dir, cbr.getName().replace(".cbr", ".stats.json"));
+        String json = new String(Files.readAllBytes(stats.toPath()), StandardCharsets.UTF_8);
+        com.google.gson.JsonObject o = new com.google.gson.JsonParser().parse(json).getAsJsonObject();
+        assertEquals(RewindFormat.FORMAT_VERSION, o.get("format").getAsInt());
+        Set<Integer> counted = new TreeSet<Integer>();
+        for (com.google.gson.JsonElement e : o.getAsJsonArray("extRecords")) {
+            com.google.gson.JsonObject r = e.getAsJsonObject();
+            assertTrue(r.get("count").getAsLong() > 0);
+            assertTrue(r.get("bytes").getAsLong() > 0);
+            counted.add(r.get("tag").getAsInt());
+        }
+        for (int tag : RewindFormat.EXT_TAGS) {
+            assertTrue(RewindFormat.extName(tag) + " in the stats", counted.contains(tag));
+        }
+        for (String k : new String[]{"clientTickNsMax", "clientFrameNsMax", "outNsMax"}) {
+            assertTrue(k + " measured: " + o.get(k), o.get(k).getAsLong() > 0);
+        }
+        for (String secret : new String[]{"Steve_Test", "fake typing", "dig.stone", "Fake Chest"}) {
+            assertFalse("no player text in the stats: " + secret, json.contains(secret));
+        }
+    }
+
+    /** A sound whose name lookup throws: a capture hook failure inside {@code SoundHandler.playSound}. */
+    private static ISound throwingSound() {
+        final ISound base = LocalSoundCaptureTest.sound(new ResourceLocation("dig.stone"), false,
+                ISound.AttenuationType.LINEAR, 0, 64, 0);
+        return (ISound) java.lang.reflect.Proxy.newProxyInstance(ISound.class.getClassLoader(),
+                new Class<?>[]{ISound.class}, new java.lang.reflect.InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) throws Throwable {
+                        if (m.getName().equals("getSoundLocation")) {
+                            throw new IllegalStateException("fake capture bug");
+                        }
+                        return m.invoke(base, args);
+                    }
+                });
+    }
+
+    /**
+     * A14: {@code hook} throws inside capture. It returns normally, capture stops at once, the next settle fails the
+     * game (the prefix stays readable), nothing more is written for it, and the connection is untouched.
+     */
+    private void assertHookFailureFailsOnlyRecording(String name, Runnable hook) throws Exception {
+        V2.reset();
+        Harness h = openGame(new File(tmp.getRoot(), "fail-" + name));
+        current = h.rewind;
+        V2 v = new V2();
+        v.rounds(h, 0, 3);
+        assertTrue(h.rewind.capturing());
+        h.advance(1_000);
+        long failUs = h.clock.nowUs;
+        hook.run(); // must not throw
+        assertFalse(name + ": capture stops at once", h.rewind.capturing());
+        v.rounds(h, 3, 2); // written nowhere
+        h.tick(false, true);
+        assertFalse(name + ": the failure closed the game", h.rewind.rules().gameOpen());
+        assertTrue(name + ": the connection is untouched", h.ch.isOpen());
+        File cbr = finish(h);
+        h.ch.checkException();
+        assertEquals(name + ": every message passed", h.fired, h.rx.messages.size());
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(cbr);
+        assertTrue(name + ": the prefix is a complete file", fc.complete);
+        assertTrue(name + ": failed", RewindWriterTest.jsonOf(cbr).failed);
+        assertTrue(name + ": records before the failure", extTotal(fc) > 0);
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (RewindFormat.isExtensionTag(t.tag)) {
+                assertTrue(name + ": " + RewindFormat.extName(t.tag) + " written after the failure",
+                        t.timeUs <= failUs);
+            }
+        }
+        V2.reset();
+    }
+
+    @Test
+    public void aThrowInsideTheSoundHookFailsTheGameAndThePlayCallGoesOn() throws Exception {
+        final DigCaptureTest.MapWorld world = new DigCaptureTest.MapWorld(true);
+        assertHookFailureFailsOnlyRecording("sound", new Runnable() {
+            @Override
+            public void run() {
+                ActionCapture.enterLocal();
+                ActionCapture.onSound(throwingSound());
+                assertTrue("the block change inside the same click still happens",
+                        world.change(new BlockPos(9, 70, 9), Blocks.dirt.getDefaultState()));
+                ActionCapture.exitLocal();
+                assertSame(Blocks.dirt.getDefaultState(), world.getBlockState(new BlockPos(9, 70, 9)));
+            }
+        });
+    }
+
+    @Test
+    public void aThrowInsideTheEndOfTickCaptureFailsTheGame() throws Exception {
+        assertHookFailureFailsOnlyRecording("tick", new Runnable() {
+            @Override
+            public void run() {
+                instanceUnderTest().captureTick(new Rewind.TickCapture() {
+                    @Override
+                    public void endOfTick() {
+                        throw new IllegalStateException("fake tick capture bug");
+                    }
+                });
+            }
+        });
+    }
+
+    @Test
+    public void aThrowInsideTheInventoryCaptureFailsTheGame() throws Exception {
+        assertHookFailureFailsOnlyRecording("state", new Runnable() {
+            @Override
+            public void run() {
+                final InventoryPlayer broken = new InventoryPlayer(null);
+                broken.mainInventory = null;
+                instanceUnderTest().captureTick(new Rewind.TickCapture() {
+                    @Override
+                    public void endOfTick() {
+                        StateCapture.tick(0, broken, null, null, null, null);
+                    }
+                });
+            }
+        });
+    }
+
+    @Test
+    public void aThrowInsideTheFrameCaptureFailsTheGame() throws Exception {
+        assertHookFailureFailsOnlyRecording("frame", new Runnable() {
+            @Override
+            public void run() {
+                instanceUnderTest().captureFrame(new Rewind.FrameCapture() {
+                    @Override
+                    public void frame(float partialTicks, long nanoTime) {
+                        throw new IllegalStateException("fake frame capture bug");
+                    }
+                }, 0.5f, System.nanoTime());
+            }
+        });
+    }
+
+    @Test
+    public void aThrowInsideAHudHandOffFailsTheGameAndThePainterGoesOn() throws Exception {
+        assertHookFailureFailsOnlyRecording("hud", new Runnable() {
+            @Override
+            public void run() {
+                HudCapture.shared().tickHead();
+                HudCapture.shared().frame();
+                HudCapture.shared().offerLines(RewindFormat.HUD_SESSION_STATS, Arrays.asList("x"),
+                        new com.bedwarsqol.hud.HudModel.LineView<String>() {
+                            @Override
+                            public String text(String line) {
+                                throw new IllegalStateException("fake painter value bug");
+                            }
+
+                            @Override
+                            public int kind(String line) {
+                                return com.bedwarsqol.hud.HudModel.LINE_ROW;
+                            }
+                        });
+            }
+        });
+    }
+
+    /** The harness of the running failure test (the hook runs inside it). */
+    private Rewind instanceUnderTest() {
+        return current;
+    }
+
+    private Rewind current;
+
+    @Test
+    public void recordGamesOffCapturesNothingAndTurningItOffUnbindsCapture() throws Exception {
+        // off from the start: nothing is bound, nothing written
+        V2.reset();
+        Harness off = new Harness(new File(tmp.getRoot(), "off"));
+        assertNull(off.connect(true, false));
+        off.boundary(s01(701, 0), 0);
+        assertFalse(off.rewind.capturing());
+        assertFalse("no action capture", ActionCapture.bound());
+        assertFalse("no state capture", StateCapture.installed());
+        assertFalse("no view capture", ViewCapture.installed());
+        assertFalse("no HUD capture", HudCapture.shared().active());
+        new V2().rounds(off, 0, 3);
+        off.step();
+        assertEquals(0, off.writersMade);
+        assertTrue(off.ids().isEmpty());
+
+        // turned off mid-game: capture is unbound with the CLOSE, nothing follows
+        Harness h = openGame(new File(tmp.getRoot(), "mid"));
+        V2 v = new V2();
+        v.rounds(h, 0, 3);
+        assertTrue(h.rewind.capturing());
+        assertTrue(ActionCapture.bound());
+        h.advance(1_000);
+        long offUs = h.clock.nowUs;
+        h.rewind.tick(false, false, false);
+        assertFalse(h.rewind.capturing());
+        assertFalse(ActionCapture.bound());
+        assertFalse(StateCapture.installed());
+        assertFalse(ViewCapture.installed());
+        assertFalse(HudCapture.shared().active());
+        v.rounds(h, 3, 3);
+        h.step();
+        h.advance(RewindWriter.SYNC_INTERVAL_US);
+        h.step();
+        RewindWriterTest.FileContents fc = RewindWriterTest.read(RewindWriterTest.onlyCbr(h.dir));
+        assertTrue(fc.complete);
+        assertTrue(extTotal(fc) > 0);
+        for (RewindWriterTest.TrackRec t : fc.track) {
+            if (RewindFormat.isExtensionTag(t.tag)) {
+                assertTrue("written after Record Games went off", t.timeUs <= offUs);
+            }
         }
     }
 }

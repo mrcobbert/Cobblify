@@ -1,6 +1,7 @@
 package com.bedwarsqol.mixin;
 
 import com.bedwarsqol.rewind.ActionCapture;
+import com.bedwarsqol.rewind.Rewind;
 import net.minecraft.client.Minecraft;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -10,7 +11,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Rewind's recorder hooks in {@code Minecraft} (format v2, PLAN section A):
  * <ul>
- *   <li>{@code runTick} HEAD: the TICK_HEAD heartbeat with the handled count, and every local scope closed;</li>
+ *   <li>{@code runTick} HEAD: the TICK_HEAD heartbeat with the handled count, every local scope closed, and the HUD
+ *       capture's tick head ({@link Rewind#onRunTickHead});</li>
  *   <li>{@code clickMouse}, {@code rightClickMouse}, {@code sendClickBlockToController}: a local scope from HEAD to
  *       every return (attack, dig, place, use), so their block changes and sounds are the player's own.</li>
  * </ul>
@@ -21,7 +23,7 @@ public abstract class MinecraftRewindRecordMixin {
 
     @Inject(method = "runTick", at = @At("HEAD"), require = 1)
     private void bedwarsqol$rewindRecordTickHead(CallbackInfo ci) {
-        ActionCapture.onRunTickHead();
+        Rewind.onRunTickHead();
     }
 
     @Inject(method = "clickMouse", at = @At("HEAD"), require = 1)
