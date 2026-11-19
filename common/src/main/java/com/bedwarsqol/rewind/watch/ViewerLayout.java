@@ -8,12 +8,13 @@ import java.util.List;
 
 /**
  * The viewer's bar (G36, G45, G51; TASK A9, A10; parity B11, Q1), in GUI px (su), as the mockup's {@code drawBar} lays
- * it out but at the top edge, so it never covers the hotbar, hearts or XP bar: a card {@value #EDGE} su from the
- * screen's sides and {@value #GAP} su below its top, {@value #BAR_H} su tall, holding the play/pause key, the timeline
- * (a recess with marker icons and the playhead), the time ({@code m:ss / m:ss}), the speed key and the camera key
- * with its menu opening downward below it (You, Free camera, then every player another player's view can ride, Phase
- * 14); the free camera's speed bar and the ridden player's name sit under the bar ({@link #flySpeedTop()},
- * {@link #riddenNameTop()}). R2 draws no export handles.
+ * it out, at the bottom edge (the user's call after watching dev.102; it covers the hotbar only while it shows and
+ * fades when the mouse rests, {@code BarFade}): a card {@value #EDGE} su from the screen's sides and {@value #GAP} su
+ * above its bottom, {@value #BAR_H} su tall, holding the play/pause key, the timeline (a recess with marker icons and
+ * the playhead), the time ({@code m:ss / m:ss}), the speed key and the camera key with its menu opening upward above
+ * it (You, Free camera, then every player another player's view can ride, Phase 14); the free camera's speed bar and
+ * the ridden player's name sit at the top of the screen ({@link #flySpeedTop()}, {@link #riddenNameTop()}). R2 draws
+ * no export handles.
  *
  * <p>Times are microseconds from the game start, from 0 to the game's length (the timeline runs from the game start
  * to the recording's end, so its length equals the gallery's). Marker indexes are the order the markers were given in,
@@ -46,11 +47,8 @@ public final class ViewerLayout {
     public static final float CAMERA_ICON = 14f;
     /** The camera option of the first player in the menu (Phase 14): You, Free camera, then the players. */
     public static final int FIRST_PLAYER = 2;
-    /**
-     * Height kept clear above the screen's bottom edge: vanilla's hotbar, XP bar and the heart, armour, hunger and
-     * air rows reach 59 px up. A long camera menu opens another column instead of reaching into it.
-     */
-    public static final float HUD_CLEAR = 60f;
+    /** The line top of the ridden player's name and the top of the free camera's speed bar. */
+    public static final float TOP_LINE = 6f;
     private static final float[] SPEEDS = {0.25f, 0.5f, 1f, 2f, 4f};
 
     public enum Part { NONE, BAR, PLAY, STRIP, MARKER, SPEED, CAMERA, DROPDOWN, CAMERA_OPTION }
@@ -103,7 +101,7 @@ public final class ViewerLayout {
                          String[] players, int cameraOption) {
         this.metrics = m;
         this.lengthUs = Math.max(0L, lengthUs);
-        float bx = EDGE, bw = screenW - 2 * EDGE, by = GAP;
+        float bx = EDGE, bw = screenW - 2 * EDGE, by = screenH - GAP - BAR_H;
         bar = new float[]{bx, by, bw, BAR_H};
         play = new float[]{bx + 5, by + 5, KEY, KEY};
         int np = players == null ? 0 : players.length;
@@ -123,9 +121,9 @@ public final class ViewerLayout {
             colW = Math.max(colW, 7 + CAMERA_ICON + m.width(options[i], FONT) + 7);
         }
         menuColW = colW;
-        float menuTop = by + BAR_H + 3;
+        // the menu opens upward from 3 su above the bar and stops GAP below the screen's top; more rows, more columns
         menuRows = Math.max(CAMERA_LABELS.length,
-                Math.min(options.length, (int) Math.floor((screenH - HUD_CLEAR - menuTop - 8) / MENU_ROW_H)));
+                Math.min(options.length, (int) Math.floor((by - 3 - GAP - 8) / MENU_ROW_H)));
         menuCols = (options.length + menuRows - 1) / menuRows;
         float spW = m.width(speedLabel(0.25f), FONT) + 12;
         speed = new float[]{camera[0] - 4 - spW, by + 5, spW, KEY};
@@ -216,14 +214,14 @@ public final class ViewerLayout {
         return keyLabel;
     }
 
-    /** The line top of the ridden player's name: centred under the bar, where the free camera's speed bar sits. */
+    /** The line top of the ridden player's name: centred at the top, where the free camera's speed bar sits. */
     public static float riddenNameTop() {
-        return GAP + BAR_H + 6;
+        return TOP_LINE;
     }
 
-    /** The top of the free camera's speed bar ({@code RewindPainter.flySpeed}): under the bar, centred. */
+    /** The top of the free camera's speed bar ({@code RewindPainter.flySpeed}): at the top, centred. */
     public static float flySpeedTop() {
-        return GAP + BAR_H + 6;
+        return TOP_LINE;
     }
 
     /** "0.25x", "0.5x", "1x", "2x", "4x". */
@@ -323,15 +321,16 @@ public final class ViewerLayout {
     // ------------------------------------------------------------------ camera menu
 
     /**
-     * The camera menu's card {x, y, w, h}, opening downward below the camera key, its right edge under the key's. One
-     * column as wide as the key or the longest name; when the rows would reach {@link #HUD_CLEAR} above the bottom
-     * edge, further rows open another column to the left.
+     * The camera menu's card {x, y, w, h}, opening upward above the camera key, its right edge over the key's. One
+     * column as wide as the key or the longest name; when the rows would reach the screen's top, further rows open
+     * another column to the left.
      */
     public float[] dropdown() {
         int rows = Math.min(options.length, menuRows);
         float w = menuCols * menuColW;
         float x = Math.max(EDGE, camera[0] + camera[2] - w);
-        return new float[]{x, bar[1] + bar[3] + 3, w, 1 + 3 + MENU_ROW_H * rows + 3 + 1};
+        float h = 1 + 3 + MENU_ROW_H * rows + 3 + 1;
+        return new float[]{x, bar[1] - 3 - h, w, h};
     }
 
     /** {x, y, w, h} of the menu's row i (option i): down the first column, then the next. */

@@ -25,8 +25,8 @@ import java.util.List;
 /**
  * The viewer (G36, G37, G43, G45; TASK A8, A9, A10, A11): the recorded world with the bar over it. Layout and
  * hit tests are {@link ViewerLayout}'s, drawing {@link RewindPainter#bar} and {@link RewindPainter#flySpeed}, in GUI px
- * (one sheet unit per GUI pixel); keys are {@link ViewerKeys}'s. The bar sits at the top edge, clear of the hotbar,
- * hearts and XP bar (parity B11, Q1), and fades 2 s after the mouse stops ({@link BarFade}). The playback parts draw
+ * (one sheet unit per GUI pixel); keys are {@link ViewerKeys}'s. The bar sits at the bottom edge (it covers the
+ * hotbar only while it shows) and fades 2 s after the mouse stops ({@link BarFade}). The playback parts draw
  * in two slots ({@link RewindPlayback#drawUnder} before the bar, {@link RewindPlayback#drawOver} after it).
  *
  * <ul>
@@ -43,7 +43,7 @@ import java.util.List;
  *       on a player rides them.</li>
  *   <li>Camera menu (Phase 14): You, Free camera, then every player another player's view can ride, each with their
  *       face and their name in their team's colour ({@link RiddenView#players()}); while a player is ridden the key
- *       shows them and their name sits in their team's colour under the bar (not in the clean view).</li>
+ *       shows them and their name sits in their team's colour at the top (not in the clean view).</li>
  * </ul>
  *
  * <p>The session opens a new viewer after every rebuild behind the loading card; what must outlive one screen (marker

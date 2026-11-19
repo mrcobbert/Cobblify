@@ -139,14 +139,14 @@ public final class RewindPainter {
             pix(c, icon, TEXT_HI, l.play[0] + 6, by + 7 + 3, false);
         } else {
             raisedFace(c, l.play[0], l.play[1], 16, 16, playHover);
-            pix(c, icon, TEXT_HI, l.play[0] + 6, l.play[1] + 2, false);
+            pix(c, icon, TEXT_HI, l.play[0] + 6, l.play[1] + 3, false); // 1 su above, 2 below, as a key's label
         }
 
         // camera key: the current camera, a chevron
         float camX = l.camera[0], camW = l.camera[2];
         boolean camHover = is(s.hover, ViewerLayout.Part.CAMERA, -1);
         boolean camDown = (is(s.pressed, ViewerLayout.Part.CAMERA, -1) && camHover) || s.menuOpen;
-        float cy = camDown ? by + 8 : by + 6;
+        float cy = camDown ? by + 8 : by + 7; // the head frame fills the raised face, under its top edge
         if (camDown) pressedBox(c, camX, by + 7, camW, 14, camHover ? FACE_HOVER : FACE, SH, SH2);
         else raisedFace(c, camX, by + 5, camW, 16, camHover);
         String keyLabel = s.camera == l.camera() ? l.cameraKeyLabel() // a long name cut to the key
@@ -184,7 +184,7 @@ public final class RewindPainter {
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
 
-        // the camera menu, below its key: You, Free camera, then a row per player
+        // the camera menu, above its key: You, Free camera, then a row per player
         if (s.menuOpen) {
             float[] d = l.dropdown();
             card(c, d[0], d[1], d[2], d[3]);
@@ -210,7 +210,7 @@ public final class RewindPainter {
         boolean camDown = (is(s.pressed, ViewerLayout.Part.CAMERA, -1) && is(s.hover, ViewerLayout.Part.CAMERA, -1))
                 || s.menuOpen;
         if (s.camera != 1) {
-            out.add(new float[]{l.camera[0] + 7 + 1, (camDown ? l.bar[1] + 8 : l.bar[1] + 6) + 1, 8, 8, s.camera});
+            out.add(new float[]{l.camera[0] + 7 + 1, (camDown ? l.bar[1] + 8 : l.bar[1] + 7) + 1, 8, 8, s.camera});
         }
         if (s.menuOpen) {
             for (int i = 0; i < l.cameraOptionCount(); i++) {
@@ -247,7 +247,7 @@ public final class RewindPainter {
     }
 
     /**
-     * Another player's view (Phase 14): their name in their team's colour, centred under the bar
+     * Another player's view (Phase 14): their name in their team's colour, centred at the top
      * ({@link ViewerLayout#riddenNameTop()}), whether or not the bar shows.
      */
     public static void riddenName(Canvas c, float screenW, String name, int colour) {
