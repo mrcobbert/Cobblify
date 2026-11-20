@@ -12,7 +12,8 @@ import com.bedwarsqol.feature.SessionHoldKey;
  *   <li>Left/Right: 5 s; with Shift: 30 s.</li>
  *   <li>Comma/period: previous/next marker. {@code [} {@code ]}: slower/faster.</li>
  *   <li>1: your view (it also ends the F5 and clean-view overrides); 2: free camera; 3: the next player's view,
- *       Shift+3 the previous one (Phase 14 rides them). Esc: the Esc menu. Tab (held): the recorded tab list.</li>
+ *       Shift+3 the previous one (Phase 14 rides them). Esc: the Esc menu (in the free camera it first lets the
+ *       cursor go). Tab (held): the recorded tab list.</li>
  *   <li>F5: first person, behind, front in your view (B4). F1 and the Clean View Key the user bound, a key or a
  *       mouse button ({@link #mouseAction}): the clean view (Q3, D6).</li>
  * </ul>
@@ -113,7 +114,7 @@ public final class ViewerKeys {
     /**
      * The action of a mouse button press: {@link Action#CLEAN_VIEW} when the user bound the Clean View Key to that
      * button ({@code cleanViewKey} encoded as {@link SessionHoldKey#bindingForMouse}), else none. The left button
-     * (0) never: it is the bar, the free camera's look drag and click to ride.
+     * (0) never: it is the bar, click to ride and taking the cursor back in the free camera.
      */
     public static Action mouseAction(int button, int cleanViewKey) {
         if (button > 0 && SessionHoldKey.isMouse(cleanViewKey) && SessionHoldKey.mouseButton(cleanViewKey) == button) {

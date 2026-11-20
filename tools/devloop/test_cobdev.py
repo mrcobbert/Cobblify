@@ -1252,18 +1252,18 @@ class RewindExtCounts(unittest.TestCase):
         self.assertEqual(cobdev.rewind_ext_counts(None), (None, {}))
 
     def test_a_complete_v2_session_has_no_problem(self):
-        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, walked=True), [])
+        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, moved=True), [])
 
     def test_each_missing_record_is_named(self):
         v1 = "blocks=8 complete=true formatVersion=1 extUnknown=0 pass=true"
-        p = cobdev.rewind_ext_problems(v1, walked=True)
+        p = cobdev.rewind_ext_problems(v1, moved=True)
         self.assertIn("formatVersion=1", p)
         for name in ("TickHead", "Settings", "Identity", "View", "Fov"):
             self.assertIn("no %s record" % name, p)
-        self.assertIn("no Input record while walking", p)
+        self.assertIn("no Input record though the jump binding was held", p)
         bad = self.LINE.replace("extInv=41", "extInv=7").replace("extIdentity=1", "extIdentity=2") \
             .replace("extUnknown=0", "extUnknown=3").replace("extInput=2", "extInput=0")
-        p = cobdev.rewind_ext_problems(bad, walked=False)
+        p = cobdev.rewind_ext_problems(bad, moved=False)
         self.assertEqual(p, ["Identity=2 (one per segment)", "Inv=7 (all 41 slots at the segment start)",
                              "Unknown=3"])
 
@@ -1277,7 +1277,7 @@ class RewindActionCounts(unittest.TestCase):
 
     def test_a_recording_of_every_action_has_no_problem(self):
         self.assertEqual(cobdev.rewind_action_problems(self.LINE), [])
-        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, walked=True), [])
+        self.assertEqual(cobdev.rewind_ext_problems(self.LINE, moved=True), [])
 
     def test_each_short_count_is_named_with_its_minimum(self):
         p = cobdev.rewind_action_problems(RewindExtCounts.LINE)
@@ -1445,7 +1445,8 @@ class RewindSmoke(unittest.TestCase):
     CFG = "com.bedwarsqol.BedwarsQol.config"
 
     DONE = {"ok": True, "phase": "DONE", "done": True, "failure": None, "dug": True, "placed": True,
-            "inventoryShown": True, "perspectiveShown": True, "chestOpened": True, "chestSlots": 90, "chestFilled": 54}
+            "inventoryShown": True, "perspectiveShown": True, "chestOpened": True, "chestSlots": 90, "chestFilled": 54,
+            "jumped": True}
 
     def run_step(self, latest, present=True, playback=False, actions=None, cleanup=None, poll_error=None):
         calls = []
@@ -1506,17 +1507,16 @@ class RewindSmoke(unittest.TestCase):
         seq = [(c[0], c[1].get(key[c[0]])) for c in calls if c[0] in key]
         i_survival = seq.index(("/command", "/gamemode 0"))
         i_swing = seq.index(("/probe", "rewind-watch-swing"))
-        i_walk = seq.index(("/keyhold", "on"))
         i_creative = seq.index(("/command", "/gamemode 1"))
         i_leave = max(i for i, c in enumerate(calls) if c == ("/world", {"leave": "1"}))
         self.assertLess(i_survival, i_swing)
-        self.assertLess(i_swing, i_walk)
-        self.assertLess(i_walk, i_creative)
-        # Rewind parity Phase 16: the actions run while recording, after the walk; their cleanup before the leave
+        # a raw keyhold never sets a binding, so RW holds none: the actions' jump is what writes INPUT
+        self.assertFalse([c for c in calls if c[0] == "/keyhold"])
+        # Rewind parity Phase 16: the actions run while recording, after the swing; their cleanup before the leave
         acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
         self.assertEqual(acts, ["status", "start", "cleanup"])
         i_start = seq.index(("/probe", "rewind-watch-actions"))
-        self.assertLess(i_walk, i_start)
+        self.assertLess(i_swing, i_start)
         self.assertLess(i_start, i_creative)
         self.assertEqual(fields[self.CFG + ".fpsEnabled"], "false")  # the HUD item is put back
         self.assertIn(("/field", {"path": self.CFG + ".fpsEnabled", "value": "true"}), calls)
@@ -1537,6 +1537,21 @@ class RewindSmoke(unittest.TestCase):
             "format v2: the actions' dig, blocks, sounds, outbound packets, views, mouse, window and HUD"])
         acts = [c[1]["args"] for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-watch-actions"]
         self.assertEqual(acts[-1], "cleanup")
+
+    def test_the_jump_must_happen_and_leave_an_input_record(self):
+        line = RewindActionCounts.LINE
+        latest = {"ok": True, "found": True, "closed": 1, "exit": 0, "pass": True, "line": line}
+        s, _, _ = self.run_step(latest, playback=True, actions=dict(self.DONE, jumped=False))
+        self.assertEqual([c["check"] for c in s.step["checks"] if not c["ok"]],
+                         ["RW actions: the stone dug, wool placed, inventory and F5 shown, one jump"])
+        latest = dict(latest, line=line.replace("extInput=2", "extInput=0"))
+        s, _, _ = self.run_step(latest, playback=True)
+        failed = [c for c in s.step["checks"] if not c["ok"]]
+        self.assertEqual([c["check"] for c in failed], ["format v2: heartbeat, settings, one identity, 41 inventory "
+                                                        "slots, view, FOV and held input recorded"])
+        # without the actions (no playback) nothing holds a binding, so no INPUT record is asked for
+        s, _, _ = self.run_step(latest)
+        self.assertEqual(s.step["status"], "pass", s.step["checks"])
 
     def test_the_actions_cleanup_runs_after_a_failure_and_its_result_is_checked(self):
         # review code-2 I1: the cleanup is in a finally (a failure between start and cleanup would leave the stone,
@@ -1573,9 +1588,7 @@ class RewindSmoke(unittest.TestCase):
         self.assertEqual(fields[self.CFG + ".rewind"], "false")
         self.assertEqual(fields[self.CFG + ".rewindRecordGames"], "true")
         paths = [c[0] for c in calls]
-        hold = [c[1] for c in calls if c[0] == "/keyhold"]
-        self.assertEqual(hold, [{"name": "key.forward", "state": "on", "raw": 1},
-                                {"name": "key.forward", "state": "off", "raw": 1}])
+        self.assertFalse([c for c in calls if c[0] == "/keyhold"])
         self.assertIn(("/invoke", {"path": cobdev.REWIND + ".markerKeyPressed", "args": ""}), calls)
         self.assertLess(paths.index("/invoke"), max(i for i, c in enumerate(calls) if c == ("/world", {"leave": "1"})))
         clears = [c for c in calls if c[0] == "/probe" and c[1]["name"] == "rewind-clear"]

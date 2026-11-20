@@ -71,7 +71,6 @@ final class RewindWatchProbes {
     static final String SESSION = "com.bedwarsqol.rewind.watch.PlaybackSession";
     static final String PUPPET_STATE = "com.bedwarsqol.rewind.watch.PuppetState";
     static final String PLANNER = "com.bedwarsqol.rewind.watch.SeekPlanner";
-    static final String SELF_STATE = "com.bedwarsqol.rewind.SelfTrackEncoder$State";
     static final String TIMER_ACCESSOR = "com.bedwarsqol.mixin.MinecraftTimerAccessor";
     static final String CHAT_ACCESSOR = "com.bedwarsqol.mixin.GuiNewChatAccessor";
     static final String REWIND_CAMERA = "com.bedwarsqol.rewind.watch.RewindCamera";
@@ -332,9 +331,11 @@ final class RewindWatchProbes {
         if (track != null && timeline != null) {
             long t = ((Number) call(timeline, "timeOfTick", ((Number) call(session, "playheadTick")).longValue()))
                     .longValue();
-            Object st = cls(SELF_STATE).getConstructor().newInstance();
-            if (Boolean.TRUE.equals(call(track, "stateAt", t, st))) {
-                out.put("recordedSlot", st.getClass().getField("heldSlot").get(st));
+            int seg = ((Number) call(track, "segmentIndexAt", t)).intValue();
+            Object segment = seg < 0 ? null : call(track, "segment", seg);
+            int tick = segment == null ? -1 : ((Number) call(segment, "tickIndexAt", t)).intValue();
+            if (tick >= 0) {
+                out.put("recordedSlot", call(segment, "heldSlot", tick));
             }
         }
     }

@@ -129,10 +129,10 @@ public class RewindPainterTest {
         SheetFixtures.Recorder open = new SheetFixtures.Recorder(new SheetFixtures.MinecraftMetrics(2f));
         RewindPainter.BarState s = state(65_000_000L);
         s.menuOpen = true;
-        s.camera = 1;
+        s.camera = ViewerLayout.FREE;
         s.speed = 0.25f;
         RewindPainter.bar(open, viewer(open), s);
-        assertEquals(Arrays.asList("Free camera", "0.25x", "1:05", " / 6:47", "You", "Free camera"), texts(open));
+        assertEquals(Arrays.asList("Free camera", "0.25x", "1:05", " / 6:47", "Free camera", "You"), texts(open));
     }
 
     /** Phase 14 (D1, D3): the players in the camera menu, the key showing the ridden one, their faces and name. */
@@ -147,7 +147,7 @@ public class RewindPainterTest {
         s.playerColours = new int[]{red, blue};
         s.menuOpen = true;
         RewindPainter.bar(r, l, s);
-        assertEquals(Arrays.asList("Bob", "1x", "1:05", " / 6:47", "You", "Free camera", "amy", "Bob"), texts(r));
+        assertEquals(Arrays.asList("Bob", "1x", "1:05", " / 6:47", "Free camera", "You", "amy", "Bob"), texts(r));
         assertEquals("the key's name in the team colour", blue, (int) r.textColours.get(0));
         assertEquals(red, (int) r.textColours.get(6));
         assertEquals(blue, (int) r.textColours.get(7));
@@ -159,7 +159,7 @@ public class RewindPainterTest {
         List<float[]> faces = RewindPainter.faces(l, s);
         assertEquals("the key, You, amy and Bob (the free camera has no face)", 4, faces.size());
         assertEquals(ViewerLayout.FIRST_PLAYER + 1, faces.get(0)[4], 0f);
-        assertEquals(0, faces.get(1)[4], 0f);
+        assertEquals(ViewerLayout.YOU, faces.get(1)[4], 0f);
         assertEquals(ViewerLayout.FIRST_PLAYER, faces.get(2)[4], 0f);
         assertEquals(amy[0] + 7, faces.get(2)[0], 0f);
         assertEquals(amy[1] + 3, faces.get(2)[1], 0f);

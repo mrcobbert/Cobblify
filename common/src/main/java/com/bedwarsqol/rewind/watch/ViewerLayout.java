@@ -38,14 +38,18 @@ public final class ViewerLayout {
     public static final float STRIP_H = 10f;
     public static final float MARKER_STEP = 3f;
     public static final float MENU_ROW_H = 14f;
+    /** The free camera's option: the menu's first row. */
+    public static final int FREE = 0;
+    /** Your view's option. */
+    public static final int YOU = 1;
     /**
-     * The camera key's fixed options, in menu order; the index is the camera (0 your view, 1 free camera). The players
-     * follow from {@link #FIRST_PLAYER}.
+     * The camera key's fixed options, in menu order; the index is the camera ({@link #FREE}, {@link #YOU}). The
+     * players follow from {@link #FIRST_PLAYER}.
      */
-    public static final String[] CAMERA_LABELS = {"You", "Free camera"};
+    public static final String[] CAMERA_LABELS = {"Free camera", "You"};
     /** Space a head or the camera icon takes before an option's label. */
     public static final float CAMERA_ICON = 14f;
-    /** The camera option of the first player in the menu (Phase 14): You, Free camera, then the players. */
+    /** The camera option of the first player in the menu (Phase 14): Free camera, You, then the players. */
     public static final int FIRST_PLAYER = 2;
     /** The line top of the ridden player's name and the top of the free camera's speed bar. */
     public static final float TOP_LINE = 6f;
@@ -94,7 +98,7 @@ public final class ViewerLayout {
     private final float menuColW;
 
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds) {
-        this(screenW, screenH, m, lengthUs, markerUs, kinds, null, 0);
+        this(screenW, screenH, m, lengthUs, markerUs, kinds, null, YOU);
     }
 
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds,
@@ -108,7 +112,7 @@ public final class ViewerLayout {
         options = new String[CAMERA_LABELS.length + np];
         System.arraycopy(CAMERA_LABELS, 0, options, 0, CAMERA_LABELS.length);
         for (int i = 0; i < np; i++) options[FIRST_PLAYER + i] = players[i] == null ? "" : players[i];
-        keyOption = cameraOption >= 0 && cameraOption < options.length ? cameraOption : 0;
+        keyOption = cameraOption >= 0 && cameraOption < options.length ? cameraOption : YOU;
         // The key is as wide as its widest fixed label, so riding a player never moves the bar; a longer name is cut
         // to fit (whole characters), while the menu below grows to show it in full.
         float cw = 0;
@@ -168,7 +172,7 @@ public final class ViewerLayout {
 
     /** The bar for a loaded recording's timeline: its length and markers, counted from the game start. */
     public static ViewerLayout of(float screenW, float screenH, TextMetrics m, Timeline tl) {
-        return of(screenW, screenH, m, tl, null, 0);
+        return of(screenW, screenH, m, tl, null, YOU);
     }
 
     /**
@@ -204,7 +208,7 @@ public final class ViewerLayout {
         return options[option];
     }
 
-    /** The option the camera key shows (0 your view, 1 free camera, {@link #FIRST_PLAYER} + i player i). */
+    /** The option the camera key shows ({@link #FREE}, {@link #YOU}, {@link #FIRST_PLAYER} + i player i). */
     public int camera() {
         return keyOption;
     }
@@ -394,7 +398,7 @@ public final class ViewerLayout {
             /** Camera key clicked: open or close its menu. */
             CAMERA_MENU,
             /**
-             * Camera option {@link #index} chosen (0 your view, 1 free camera, {@link #FIRST_PLAYER} + i the i-th
+             * Camera option {@link #index} chosen ({@link #FREE}, {@link #YOU}, {@link #FIRST_PLAYER} + i the i-th
              * player's view); the menu closes.
              */
             CAMERA,

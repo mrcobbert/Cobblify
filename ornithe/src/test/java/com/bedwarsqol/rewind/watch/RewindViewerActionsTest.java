@@ -271,6 +271,39 @@ public class RewindViewerActionsTest {
         assertEquals(1, escOpened);
         checked.add(ViewerKeys.Action.ESC_MENU);
 
+        // the free camera holds the cursor (mouse look, as the game); Esc lets it go before it opens the Esc menu,
+        // a click on the world takes it back, every other view leaves it free
+        assertFalse("your view: the cursor is free", controls.grabWanted());
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA, ViewerCameraControls.FREE, 0));
+        assertTrue("entering the free camera takes the cursor", controls.grabWanted());
+        assertTrue(controls.grabWanted());
+        key(ViewerKeys.KEY_K, false);
+        assertTrue("a viewer key keeps it", controls.grabWanted());
+        key(ViewerKeys.KEY_K, false);
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertFalse("Esc lets it go", controls.grabWanted());
+        assertEquals("and opens no Esc menu", 1, escOpened);
+        assertTrue("still the free camera", controls.free());
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        assertTrue("the bar is usable with the cursor free", controls.menuOpen());
+        assertFalse(controls.grabWanted());
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        controls.grabCursor();
+        assertTrue("a click on the world takes it back", controls.grabWanted());
+        key(ViewerKeys.KEY_ESCAPE, false);
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertEquals("a second Esc opens the Esc menu", 2, escOpened);
+        controls.grabCursor();
+        key(ViewerKeys.KEY_1, false);
+        assertFalse("your view frees the cursor", controls.grabWanted());
+        controls.grabCursor();
+        assertFalse("a click takes no cursor outside the free camera", controls.grabWanted());
+        key(ViewerKeys.KEY_2, false);
+        assertTrue("key 2 takes it again", controls.grabWanted());
+        key(ViewerKeys.KEY_1, false);
+        assertFalse(controls.grabWanted());
+
         // Tab: held per frame (the player-list binding), never a session command
         p = session.playheadTick();
         wasPaused = paused();
@@ -279,7 +312,7 @@ public class RewindViewerActionsTest {
         assertEquals(p, session.playheadTick());
         assertEquals(wasPaused, paused());
         assertEquals(calls, cameras.calls.size());
-        assertEquals(1, escOpened);
+        assertEquals(2, escOpened);
         assertTrue(RewindViewerScreen.Controls.tabListHeld(ViewerKeys.KEY_TAB, true));
         assertFalse(RewindViewerScreen.Controls.tabListHeld(ViewerKeys.KEY_TAB, false));
         checked.add(ViewerKeys.Action.TAB_LIST);

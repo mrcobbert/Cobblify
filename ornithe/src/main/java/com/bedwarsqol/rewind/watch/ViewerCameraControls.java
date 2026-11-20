@@ -7,14 +7,14 @@ package com.bedwarsqol.rewind.watch;
  * {@link Unwired} stands in: it remembers the chosen camera and flight speed and moves nothing.
  *
  * <p>Client thread only. Cameras are numbered as the bar's camera key lists them ({@link ViewerLayout#CAMERA_LABELS}):
- * {@link #YOU}, {@link #FREE}.
+ * {@link #FREE}, {@link #YOU}.
  */
 public interface ViewerCameraControls {
 
-    /** Your view: your recorded eye position and camera rotation. */
-    int YOU = 0;
     /** The free camera. */
-    int FREE = 1;
+    int FREE = ViewerLayout.FREE;
+    /** Your view: your recorded eye position and camera rotation. */
+    int YOU = ViewerLayout.YOU;
 
     /**
      * Makes {@code camera} ({@link #YOU} or {@link #FREE}) the active camera; the free camera starts where your view
@@ -37,8 +37,8 @@ public interface ViewerCameraControls {
     void move(int forward, int strafe, int vertical, double seconds);
 
     /**
-     * Turns the free camera by a drag of {@code dx, dy} mouse pixels (LWJGL's deltas: dy positive = the mouse moved
-     * up), Q2. The controller applies the user's sensitivity and invert setting ({@link FreeCameraMath#look}).
+     * Turns the free camera by a mouse movement of {@code dx, dy} pixels (LWJGL's deltas: dy positive = the mouse
+     * moved up). The controller applies the user's sensitivity and invert setting ({@link FreeCameraMath#look}).
      */
     void look(double dx, double dy);
 

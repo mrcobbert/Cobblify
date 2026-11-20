@@ -37,7 +37,10 @@ import java.util.concurrent.FutureTask;
  *       dig every tick); it lets go and puts the focus back once the stone is air or the step ends; places wool on the
  *       block below it through
  *       {@code rightClickMouse}, shows the inventory screen for 10 ticks, F5 for 10 ticks, then opens the chest the
- *       same way (the server sends the window and its 90 stacks back to back) and closes it after 10 ticks.</li>
+ *       same way (the server sends the window and its 90 stacks back to back) and closes it after 10 ticks; last it
+ *       holds the jump binding for 4 ticks, so the recording has an INPUT record (a raw {@code keyhold} sets the
+ *       keyboard state only, which the recorder, like the Keystrokes HUD in game, does not read) and the player
+ *       lands where they stood.</li>
  * </ol>
  * {@code status} reports the progress (flags and counts only); {@code cleanup} puts the three blocks, the player's
  * inventory and any dropped item back, so the smoke world is as before. Every tick of the script checks it is still in
@@ -46,10 +49,12 @@ import java.util.concurrent.FutureTask;
  */
 final class RewindActions {
 
-    private enum Phase { SETUP, DIG, PLACE, INVENTORY, PERSPECTIVE, CHEST, DONE, FAILED }
+    private enum Phase { SETUP, DIG, PLACE, INVENTORY, PERSPECTIVE, CHEST, JUMP, DONE, FAILED }
 
     private static final int WAIT_TICKS = 10;
     private static final int DIG_TIMEOUT_TICKS = 100;
+    private static final int JUMP_HOLD_TICKS = 4;
+    private static final int JUMP_TIMEOUT_TICKS = 40;
 
     private static volatile Run run;
     private static volatile boolean hookRegistered;
@@ -61,7 +66,8 @@ final class RewindActions {
     private static final class Run {
         volatile Phase phase = Phase.SETUP;
         volatile String failure;
-        volatile boolean dug, placed, inventoryShown, perspectiveShown, chestOpened;
+        volatile boolean dug, placed, inventoryShown, perspectiveShown, chestOpened, jumped;
+        boolean jumpHeld;
         volatile int chestSlots, chestFilled;
         FutureTask<Object> setup;
         int ticks;
@@ -96,6 +102,7 @@ final class RewindActions {
             out.put("chestOpened", r.chestOpened);
             out.put("chestSlots", r.chestSlots);
             out.put("chestFilled", r.chestFilled);
+            out.put("jumped", r.jumped);
         }
         return out;
     }
@@ -160,6 +167,7 @@ final class RewindActions {
                 fail(r, "cleaned up before the end"); // stop the script first (lets go of the attack button)
             }
             releaseDig(r);
+            releaseJump(r);
             if (mc.thePlayer != null && mc.currentScreen != null) mc.thePlayer.closeScreen();
             mc.gameSettings.thirdPersonView = 0;
             return mc.thePlayer.getUniqueID();
@@ -304,9 +312,23 @@ final class RewindActions {
                 }
                 if (r.chestOpened && r.ticks >= WAIT_TICKS) {
                     p.closeScreen();
-                    next(r, Phase.DONE);
+                    next(r, Phase.JUMP);
                 } else if (!r.chestOpened && r.ticks > 40) {
                     fail(r, "the chest did not open");
+                }
+                return;
+            case JUMP:
+                if (r.ticks <= JUMP_HOLD_TICKS) {
+                    r.jumpHeld = true;
+                    KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), true);
+                } else {
+                    releaseJump(r);
+                }
+                if (!p.onGround) r.jumped = true;
+                if (r.ticks > JUMP_HOLD_TICKS && p.onGround) {
+                    next(r, Phase.DONE); // jumped stays false if the player never left the ground: the step fails
+                } else if (r.ticks > JUMP_TIMEOUT_TICKS) {
+                    fail(r, "the player did not land after the jump");
                 }
                 return;
             default:
@@ -322,6 +344,14 @@ final class RewindActions {
         r.failure = why;
         r.phase = Phase.FAILED;
         releaseDig(r);
+        releaseJump(r);
+    }
+
+    /** Lets go of the jump binding, if the script held it. Client thread. */
+    private static void releaseJump(Run r) {
+        if (r == null || !r.jumpHeld) return;
+        r.jumpHeld = false;
+        KeyBinding.setKeyBindState(Minecraft.getMinecraft().gameSettings.keyBindJump.getKeyCode(), false);
     }
 
     /**
