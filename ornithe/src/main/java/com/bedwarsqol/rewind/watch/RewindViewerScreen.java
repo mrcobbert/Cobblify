@@ -137,6 +137,12 @@ public final class RewindViewerScreen extends RewindScreen {
         screenW = sw;
         screenH = sh;
         boolean grabbed = holdCursor(controls.grabWanted() && Display.isActive());
+        if (grabbed) { // the mouse look, read as vanilla's MouseHelper reads it: once a frame
+            int dx = Mouse.getDX(), dy = Mouse.getDY();
+            if (dx != 0 || dy != 0) {
+                ViewerCameraControls.get().look(dx, dy);
+            }
+        }
         int rawX = Mouse.getX(), rawY = Mouse.getY();
         if (!grabbed && mouseSeen && (rawX != lastMouseX || rawY != lastMouseY)) {
             controls.fade.mouseMoved(nowMs);
@@ -216,6 +222,8 @@ public final class RewindViewerScreen extends RewindScreen {
                 Mouse.setCursorPosition(Display.getWidth() / 2, Display.getHeight() / 2);
             }
             Mouse.setGrabbed(hold);
+            Mouse.getDX(); // what moved before the hold turns nothing
+            Mouse.getDY();
         }
         return hold;
     }
@@ -325,10 +333,7 @@ public final class RewindViewerScreen extends RewindScreen {
         int button = Mouse.getEventButton();
         int dx = Mouse.getEventDX(), dy = Mouse.getEventDY();
         int wheel = Mouse.getEventDWheel();
-        if (Mouse.isGrabbed()) { // the free camera's mouse look: no bar under a held cursor
-            if (dx != 0 || dy != 0) {
-                ViewerCameraControls.get().look(dx, dy);
-            }
+        if (Mouse.isGrabbed()) { // the free camera holds the cursor (it looks in drawRewind): no bar under it
             if (button > 0 && Mouse.getEventButtonState()) {
                 cleanViewButton(l, button, m, true);
             } else if (button == 0 && Mouse.getEventButtonState()) {
