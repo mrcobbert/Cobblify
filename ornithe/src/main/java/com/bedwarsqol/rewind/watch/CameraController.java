@@ -20,7 +20,7 @@ import java.lang.ref.WeakReference;
  *   <li>{@link #move(int, int, int)}: the movement keys held this frame (call it every frame while the free camera is
  *       up; each call drives the next drawn frame only, so nothing keeps flying once the calls stop), or
  *       {@link #moveFromKeyBindings()}, which reads the user's forward/back/left/right/jump/sneak bindings;</li>
- *   <li>{@link #look(double, double)}: a drag in mouse pixels (Q2: drag to look, the cursor stays);</li>
+ *   <li>{@link #look(double, double)}: a mouse movement in pixels (the viewer holds the cursor in the free camera);</li>
  *   <li>{@link #scroll(int)}: the mouse wheel changes the flight speed; {@link #speedLevel()} and
  *       {@link #speedBarAlpha()} feed {@code RewindPainter.flySpeed}.</li>
  * </ul>
@@ -33,8 +33,8 @@ import java.lang.ref.WeakReference;
 public final class CameraController {
 
     /** The camera key's index of each view ({@code ViewerLayout.CAMERA_LABELS}). */
-    public static final int YOUR_VIEW = 0;
-    public static final int FREE_CAMERA = 1;
+    public static final int YOUR_VIEW = ViewerLayout.YOU;
+    public static final int FREE_CAMERA = ViewerLayout.FREE;
     /** The longest frame step the free camera moves by (a hitch or the loading card does not jump it). */
     static final double MAX_STEP_SECONDS = 0.25;
 
@@ -183,7 +183,7 @@ public final class CameraController {
         }
     }
 
-    /** Turns the free camera by a drag of {@code dx, dy} mouse pixels (dy positive = up, as LWJGL reports it). */
+    /** Turns the free camera by {@code dx, dy} mouse pixels (dy positive = up, as LWJGL reports it). */
     public static void look(double dx, double dy) {
         if (!view().freeCamera()) {
             return;

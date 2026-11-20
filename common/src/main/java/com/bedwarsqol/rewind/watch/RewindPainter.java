@@ -101,10 +101,10 @@ public final class RewindPainter {
         public long timeUs;
         public float speed = 1f;
         /**
-         * The camera option shown on the key: 0 your view, 1 free camera ({@link ViewerLayout#CAMERA_LABELS}),
+         * The camera option shown on the key: {@link ViewerLayout#FREE}, {@link ViewerLayout#YOU},
          * {@link ViewerLayout#FIRST_PLAYER} + i the i-th player's view; as the layout's {@code camera()}.
          */
-        public int camera;
+        public int camera = ViewerLayout.YOU;
         /** Each listed player's team colour (ARGB), in menu order; null or missing entries: white. */
         public int[] playerColours;
         public boolean menuOpen;
@@ -151,7 +151,7 @@ public final class RewindPainter {
         else raisedFace(c, camX, by + 5, camW, 16, camHover);
         String keyLabel = s.camera == l.camera() ? l.cameraKeyLabel() // a long name cut to the key
                 : s.camera >= 0 && s.camera < l.cameraOptionCount() ? l.cameraLabel(s.camera)
-                : ViewerLayout.CAMERA_LABELS[0];
+                : ViewerLayout.CAMERA_LABELS[ViewerLayout.YOU];
         cameraOption(c, s, s.camera, keyLabel, camX + 7, cy, 10, acc);
         chevron(c, camX + camW - 13, cy + 3, true, TEXT_HI);
 
@@ -184,7 +184,7 @@ public final class RewindPainter {
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
 
-        // the camera menu, above its key: You, Free camera, then a row per player
+        // the camera menu, above its key: Free camera, You, then a row per player
         if (s.menuOpen) {
             float[] d = l.dropdown();
             card(c, d[0], d[1], d[2], d[3]);
@@ -200,7 +200,7 @@ public final class RewindPainter {
 
     /**
      * Where the screen draws faces (8 x 8, the skin's face and hat layers) over the head frames this bar drew, as
-     * {x, y, 8, 8, option}: option 0 is your face, {@link ViewerLayout#FIRST_PLAYER} + i the i-th player's. On the
+     * {x, y, 8, 8, option}: option {@link ViewerLayout#YOU} is your face, {@link ViewerLayout#FIRST_PLAYER} + i the i-th player's. On the
      * camera key when it shows your view or a player's, and on the menu's rows for you and every player when the menu
      * is open.
      */
@@ -209,12 +209,12 @@ public final class RewindPainter {
         if (s.alpha <= 0.004f) return out;
         boolean camDown = (is(s.pressed, ViewerLayout.Part.CAMERA, -1) && is(s.hover, ViewerLayout.Part.CAMERA, -1))
                 || s.menuOpen;
-        if (s.camera != 1) {
+        if (s.camera != ViewerLayout.FREE) {
             out.add(new float[]{l.camera[0] + 7 + 1, (camDown ? l.bar[1] + 8 : l.bar[1] + 7) + 1, 8, 8, s.camera});
         }
         if (s.menuOpen) {
             for (int i = 0; i < l.cameraOptionCount(); i++) {
-                if (i == 1) continue;
+                if (i == ViewerLayout.FREE) continue;
                 float[] r = l.dropdownRow(i);
                 out.add(new float[]{r[0] + 6 + 1, r[1] + 2 + 1, 8, 8, i});
             }
@@ -235,7 +235,7 @@ public final class RewindPainter {
     private static void cameraOption(Canvas c, BarState s, int option, String label, float x, float y, float h,
                                      SheetColors.Shades acc) {
         int colour = TEXT_HI;
-        if (option == 1) {
+        if (option == ViewerLayout.FREE) {
             pix(c, ART_CAMERA, TEXT_HI, x + 1, y + (h - 6) / 2f, false);
         } else if (option >= ViewerLayout.FIRST_PLAYER) {
             colour = playerColour(s, option);

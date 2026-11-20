@@ -121,26 +121,4 @@ public class PickRayTest {
         d = dir(0, 0, 70, w, h, w / 2f, h / 2f);
         assertEquals("between them: nobody", -1, PickRay.nearest(0, 65.62, 0, d, boxes, 2, PickRay.REACH));
     }
-
-    @Test
-    public void aClickIsAPressAndReleaseWithinThreePixels() {
-        PickRay.Click c = new PickRay.Click();
-        assertFalse("no press", c.release(10, 10));
-        c.press(10, 10);
-        assertTrue(c.down());
-        assertTrue(c.release(12, 12));
-        assertFalse(c.down());
-        c.press(10, 10);
-        assertFalse("4 px: a drag", c.release(14, 10));
-        c.press(10, 10);
-        c.move(20, 10);
-        c.move(10, 10);
-        assertFalse("dragged away and back: still a drag", c.release(10, 10));
-        c.press(10, 10);
-        c.move(13, 10);
-        assertTrue("exactly 3 px", c.release(13, 10));
-        c.press(10, 10);
-        c.cancel();
-        assertFalse(c.release(10, 10));
-    }
 }

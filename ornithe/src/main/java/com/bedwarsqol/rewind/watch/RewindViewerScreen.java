@@ -18,6 +18,7 @@ import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.util.ResourceLocation;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.GL11;
 
 import java.util.List;
@@ -32,16 +33,19 @@ import java.util.List;
  * <ul>
  *   <li>Keys: Space (your view) and K play/pause; Left/Right 5 s, with Shift 30 s; comma/period previous/next marker
  *       ({@link MarkerNav}: 3 s before it, the marker highlighted); {@code [ ]} slower/faster; 1 your view, 2 free
- *       camera; Esc closes the camera menu, else opens the Esc menu ({@link RewindEscScreen}); Tab held shows the
+ *       camera; Esc closes the camera menu, else lets the free camera's cursor go, else opens the Esc menu
+ *       ({@link RewindEscScreen}); Tab held shows the
  *       recorded tab list (it holds the player-list binding); F5 cycles your view's perspective; F1 and the Clean
  *       View Key (a key or a mouse button) toggle the clean view ({@link ViewState}: no HUD, hand or recorded screen;
  *       the bar still shows on mouse move); 3 and Shift+3 ride the next and previous player (a
  *       playback part answers: {@link RiddenView}, Phase 14).</li>
  *   <li>Mouse: the bar's keys, marker icons and timeline ({@link ViewerLayout.Pointer}: a drag previews, the release
- *       seeks); right-click on the speed key steps down. In the free camera a drag off the bar looks around and the
- *       wheel sets the flight speed (Q2), and WASD, Space and Shift fly (Q1); a click (not a drag, {@link PickRay})
- *       on a player rides them.</li>
- *   <li>Camera menu (Phase 14): You, Free camera, then every player another player's view can ride, each with their
+ *       seeks); right-click on the speed key steps down. The free camera holds the cursor as the game does: the
+ *       mouse looks around, the wheel sets the flight speed, WASD, Space and Shift fly (Q1), and a click on the
+ *       player under the crosshair rides them ({@link PickRay}). Esc lets the cursor go for the bar (every viewer
+ *       key works either way); a click on the world then rides the player under the cursor, else takes the cursor
+ *       back ({@link Controls#grabWanted}).</li>
+ *   <li>Camera menu (Phase 14): Free camera, You, then every player another player's view can ride, each with their
  *       face and their name in their team's colour ({@link RiddenView#players()}); while a player is ridden the key
  *       shows them and their name sits in their team's colour at the top (not in the clean view).</li>
  * </ul>
@@ -71,9 +75,6 @@ public final class RewindViewerScreen extends RewindScreen {
     private final McCanvas canvas = new McCanvas();
     private ViewerLayout layout;
     private int scale = 1;
-    private boolean looking;
-    /** Click to ride (free camera): a press off the bar that has not moved more than 3 px. */
-    private final PickRay.Click click = new PickRay.Click();
     /** The screen in GUI px, as the last frame laid it out. */
     private float screenW, screenH;
     private long lastFrameNanos;
@@ -113,13 +114,11 @@ public final class RewindViewerScreen extends RewindScreen {
         Keyboard.enableRepeatEvents(false);
         lastFrameNanos = 0;
         mouseSeen = false;
-        looking = false;
     }
 
     @Override
     public void onGuiClosed() {
-        looking = false;
-        click.cancel();
+        holdCursor(false);
         controls.pointer.cancel();
         holdTabList(false);
     }
@@ -137,11 +136,18 @@ public final class RewindViewerScreen extends RewindScreen {
         float sw = mc.displayWidth / (float) scale, sh = mc.displayHeight / (float) scale;
         screenW = sw;
         screenH = sh;
+        boolean grabbed = holdCursor(controls.grabWanted() && Display.isActive());
+        if (grabbed) { // the mouse look, read as vanilla's MouseHelper reads it: once a frame
+            int dx = Mouse.getDX(), dy = Mouse.getDY();
+            if (dx != 0 || dy != 0) {
+                ViewerCameraControls.get().look(dx, dy);
+            }
+        }
         int rawX = Mouse.getX(), rawY = Mouse.getY();
-        if (mouseSeen && (rawX != lastMouseX || rawY != lastMouseY)) {
+        if (!grabbed && mouseSeen && (rawX != lastMouseX || rawY != lastMouseY)) {
             controls.fade.mouseMoved(nowMs);
         }
-        mouseSeen = true;
+        mouseSeen = !grabbed;
         lastMouseX = rawX;
         lastMouseY = rawY;
         float[] m = mouse(rawX, rawY);
@@ -160,7 +166,7 @@ public final class RewindViewerScreen extends RewindScreen {
         int option = controls.free() ? ViewerCameraControls.FREE
                 : riding >= 0 ? ViewerLayout.FIRST_PLAYER + riding : ViewerCameraControls.YOU;
         layout = ViewerLayout.of(sw, sh, canvas, tl, names, option);
-        boolean inside = Mouse.isInsideWindow();
+        boolean inside = !grabbed && Mouse.isInsideWindow(); // a held cursor points at nothing
         float alpha = controls.fade.update(nowMs, inside && layout.over(m[0], m[1]),
                 controls.pointer.dragging() || controls.menuOpen);
         SheetColors.Shades acc = accent(cfg);
@@ -202,6 +208,24 @@ public final class RewindViewerScreen extends RewindScreen {
             accentShades = SheetColors.Shades.of(a.base() & 0xFFFFFF);
         }
         return accentShades;
+    }
+
+    /**
+     * Holds the cursor for the free camera's mouse look, or lets it go at the screen's centre (as vanilla's
+     * {@code MouseHelper} does). @return whether it is held now
+     */
+    private boolean holdCursor(boolean hold) {
+        if (Mouse.isGrabbed() != hold) {
+            if (hold) {
+                controls.pointer.cancel();
+            } else {
+                Mouse.setCursorPosition(Display.getWidth() / 2, Display.getHeight() / 2);
+            }
+            Mouse.setGrabbed(hold);
+            Mouse.getDX(); // what moved before the hold turns nothing
+            Mouse.getDY();
+        }
+        return hold;
     }
 
     /** A cursor position in GUI px (sheet units), as the settings sheet reads it. */
@@ -308,10 +332,22 @@ public final class RewindViewerScreen extends RewindScreen {
         float[] m = mouse(Mouse.getEventX(), Mouse.getEventY());
         int button = Mouse.getEventButton();
         int dx = Mouse.getEventDX(), dy = Mouse.getEventDY();
+        int wheel = Mouse.getEventDWheel();
+        if (Mouse.isGrabbed()) { // the free camera holds the cursor (it looks in drawRewind): no bar under it
+            if (button > 0 && Mouse.getEventButtonState()) {
+                cleanViewButton(l, button, m, true);
+            } else if (button == 0 && Mouse.getEventButtonState()) {
+                RiddenView.pick(screenW / 2f, screenH / 2f, screenW, screenH); // the player under the crosshair
+            }
+            if (wheel != 0) {
+                controls.scroll(wheel, nowMs);
+            }
+            return;
+        }
         if (button != -1 || dx != 0 || dy != 0) {
             controls.fade.mouseMoved(nowMs);
         }
-        if (button > 0 && Mouse.getEventButtonState() && cleanViewButton(l, button, m)) {
+        if (button > 0 && Mouse.getEventButtonState() && cleanViewButton(l, button, m, false)) {
             return;
         }
         if (button == 0 || button == 1) {
@@ -327,29 +363,20 @@ public final class RewindViewerScreen extends RewindScreen {
                         click();
                     }
                 }
-                if (!right && part == ViewerLayout.Part.NONE && controls.free()) {
-                    looking = true;
-                    if (!menuWasOpen) {
-                        click.press(m[0], m[1]); // a press that only closes the menu rides nobody
-                    }
+                // a press on the world (one that only closes the menu does nothing more): the player under the
+                // cursor is ridden, else the free camera takes the cursor back
+                if (!right && part == ViewerLayout.Part.NONE && controls.free() && !menuWasOpen
+                        && !RiddenView.pick(m[0], m[1], screenW, screenH)) {
+                    controls.grabCursor();
                 }
             } else if (!right) {
-                looking = false;
                 controls.act(controls.pointer.up(l, m[0], m[1]));
-                if (click.release(m[0], m[1]) && controls.free()) {
-                    RiddenView.pick(m[0], m[1], screenW, screenH);
-                }
             }
         } else if (dx != 0 || dy != 0) {
-            if (looking) {
-                ViewerCameraControls.get().look(dx, dy);
-            }
-            click.move(m[0], m[1]);
             if (controls.pointer.dragging()) {
                 controls.pointer.move(l, m[0]);
             }
         }
-        int wheel = Mouse.getEventDWheel();
         if (wheel != 0) {
             controls.scroll(wheel, nowMs);
         }
@@ -357,14 +384,15 @@ public final class RewindViewerScreen extends RewindScreen {
 
     /**
      * A press of the mouse button the Clean View Key is bound to ({@link ViewerKeys#mouseAction}) toggles the clean
-     * view, except a right click on the bar, which stays the bar's. @return true if it did
+     * view, except a right click on the bar, which stays the bar's ({@code grabbed}: no bar under a held cursor).
+     * @return true if it did
      */
-    private boolean cleanViewButton(ViewerLayout l, int button, float[] m) {
+    private boolean cleanViewButton(ViewerLayout l, int button, float[] m, boolean grabbed) {
         ClientSettings cfg = BedwarsQol.config;
         if (ViewerKeys.mouseAction(button, cfg == null ? 0 : cfg.rewindCleanViewKey) != ViewerKeys.Action.CLEAN_VIEW) {
             return false;
         }
-        if (button == 1 && controls.fade.visible()
+        if (!grabbed && button == 1 && controls.fade.visible()
                 && l.hit(m[0], m[1], controls.menuOpen).part != ViewerLayout.Part.NONE) {
             return false;
         }
@@ -390,7 +418,6 @@ public final class RewindViewerScreen extends RewindScreen {
 
     private void openEsc() {
         controls.pointer.cancel();
-        looking = false;
         RewindPlayback.display(new RewindEscScreen(session, this, RewindEscScreen.opened(session)));
     }
 
@@ -398,7 +425,8 @@ public final class RewindViewerScreen extends RewindScreen {
 
     /**
      * The viewer's actions on the session and the cameras, and the state that outlives one viewer screen: the marker
-     * cursor ({@link MarkerNav}), the bar's fade and pointer, the camera menu and the last scroll. Minecraft-free.
+     * cursor ({@link MarkerNav}), the bar's fade and pointer, the camera menu, the free camera's hold on the cursor
+     * and the last scroll. Minecraft-free.
      */
     static final class Controls {
         final PlaybackSession session;
@@ -407,6 +435,9 @@ public final class RewindViewerScreen extends RewindScreen {
         final BarFade fade = new BarFade();
         final ViewerLayout.Pointer pointer = new ViewerLayout.Pointer();
         boolean menuOpen;
+        /** The free camera holds the cursor (mouse look) unless Esc let it go. */
+        private boolean grab;
+        private boolean wasFree;
         private boolean scrolled;
         private long lastScrollMs;
 
@@ -424,6 +455,29 @@ public final class RewindViewerScreen extends RewindScreen {
 
         boolean menuOpen() {
             return menuOpen;
+        }
+
+        /**
+         * Whether the cursor is to be held this frame (call once a frame): entering the free camera, however it
+         * happens, takes it; Esc lets it go ({@link #key}) and a click on the world takes it back
+         * ({@link #grabCursor}); every other view leaves it free.
+         */
+        boolean grabWanted() {
+            boolean free = free();
+            if (free != wasFree) {
+                wasFree = free;
+                grab = free;
+            }
+            if (grab && free) {
+                menuOpen = false;
+                return true;
+            }
+            return false;
+        }
+
+        /** A click on the world in the free camera: the mouse looks around again. */
+        void grabCursor() {
+            grab = free();
         }
 
         /** Tab shows the recorded tab list while it is down (the player-list binding is held). */
@@ -500,6 +554,9 @@ public final class RewindViewerScreen extends RewindScreen {
                 case ESC_MENU:
                     if (menuOpen) {
                         menuOpen = false;
+                    } else if (grab && free()) {
+                        grab = false; // the cursor comes back, with the bar
+                        fade.mouseMoved(System.nanoTime() / 1_000_000L);
                     } else if (openEsc != null) {
                         openEsc.run();
                     }

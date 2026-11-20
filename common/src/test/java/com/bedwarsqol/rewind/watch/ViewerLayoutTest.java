@@ -187,7 +187,11 @@ public class ViewerLayoutTest {
             assertSame("closed: no dropdown", ViewerLayout.Part.NONE, l.hit(r[0] + 5, r[1] + 5, false).part);
         }
         assertSame(ViewerLayout.Part.DROPDOWN, l.hit(dd[0] + 1, dd[1] + 1, true).part);
-        assertEquals(Arrays.asList("You", "Free camera"), Arrays.asList(ViewerLayout.CAMERA_LABELS));
+        assertEquals("the free camera is the menu's first row", Arrays.asList("Free camera", "You"),
+                Arrays.asList(ViewerLayout.CAMERA_LABELS));
+        assertEquals(0, ViewerLayout.FREE);
+        assertEquals(1, ViewerLayout.YOU);
+        assertEquals("a bar without a chosen camera shows your view", ViewerLayout.YOU, l.camera());
     }
 
     private static boolean intersects(float[] a, float[] b) {
@@ -227,10 +231,10 @@ public class ViewerLayoutTest {
     }
 
     @Test
-    public void theCameraMenuListsYouFreeCameraAndEveryPlayer() {
-        ViewerLayout l = withPlayers(640, 540, new String[]{"Alice", "Bob"}, 0);
+    public void theCameraMenuListsFreeCameraYouAndEveryPlayer() {
+        ViewerLayout l = withPlayers(640, 540, new String[]{"Alice", "Bob"}, ViewerLayout.YOU);
         assertEquals(4, l.cameraOptionCount());
-        assertEquals(Arrays.asList("You", "Free camera", "Alice", "Bob"), Arrays.asList(l.cameraLabel(0),
+        assertEquals(Arrays.asList("Free camera", "You", "Alice", "Bob"), Arrays.asList(l.cameraLabel(0),
                 l.cameraLabel(1), l.cameraLabel(2), l.cameraLabel(3)));
         assertEquals(2, ViewerLayout.FIRST_PLAYER);
         float[] dd = l.dropdown();
@@ -251,16 +255,16 @@ public class ViewerLayoutTest {
         ViewerLayout.Action a = p.up(l, bob[0] + 3, bob[1] + 3);
         assertSame(ViewerLayout.Action.Kind.CAMERA, a.kind);
         assertEquals(3, a.index);
-        // no players: You and Free camera only
-        assertEquals(2, withPlayers(640, 540, new String[0], 0).cameraOptionCount());
-        assertEquals(2, withPlayers(640, 540, null, 0).cameraOptionCount());
+        // no players: Free camera and You only
+        assertEquals(2, withPlayers(640, 540, new String[0], ViewerLayout.YOU).cameraOptionCount());
+        assertEquals(2, withPlayers(640, 540, null, ViewerLayout.YOU).cameraOptionCount());
     }
 
     @Test
     public void aLongNameWidensTheMenuNotTheKey() {
         String longName = "Abcdefghijklmnop";
         ViewerLayout plain = plain(640);
-        ViewerLayout l = withPlayers(640, 540, new String[]{longName}, 0);
+        ViewerLayout l = withPlayers(640, 540, new String[]{longName}, ViewerLayout.YOU);
         assertArrayEquals("the bar does not move", plain.camera, l.camera, 0f);
         assertEquals(plain.stripW, l.stripW, 0f);
         float[] dd = l.dropdown();
@@ -271,10 +275,10 @@ public class ViewerLayoutTest {
 
     @Test
     public void theKeyShowsTheRiddenPlayerWithTheNameTrimmedToFit() {
-        ViewerLayout you = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, 0);
-        assertEquals(0, you.camera());
+        ViewerLayout you = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, ViewerLayout.YOU);
+        assertEquals(ViewerLayout.YOU, you.camera());
         assertEquals("You", you.cameraKeyLabel());
-        assertEquals("Free camera", withPlayers(640, 540, new String[]{"Bob"}, 1).cameraKeyLabel());
+        assertEquals("Free camera", withPlayers(640, 540, new String[]{"Bob"}, ViewerLayout.FREE).cameraKeyLabel());
         ViewerLayout bob = withPlayers(640, 540, new String[]{"Bob", "Abcdefghijklmnop"}, 2);
         assertEquals(2, bob.camera());
         assertEquals("Bob", bob.cameraKeyLabel());
@@ -302,7 +306,7 @@ public class ViewerLayoutTest {
             for (int scale = 1; scale <= 4; scale++) {
                 float w = (float) Math.ceil(d[0] / (double) scale), h = (float) Math.ceil(d[1] / (double) scale);
                 if (w < 320 || h < 240) continue;
-                ViewerLayout l = withPlayers(w, h, players, 0);
+                ViewerLayout l = withPlayers(w, h, players, ViewerLayout.YOU);
                 assertEquals(17, l.cameraOptionCount());
                 String at = (int) w + "x" + (int) h + " scale " + scale;
                 float[] dd = l.dropdown();

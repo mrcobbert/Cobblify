@@ -1,8 +1,8 @@
 package com.bedwarsqol.rewind.watch;
 
 /**
- * Click to ride (PLAN "R3 Watch full"; TASK D2): in the free camera a click (a press and release within
- * {@value #CLICK_SLOP} px, not a drag, not on the bar) rides the player under the cursor.
+ * Click to ride (PLAN "R3 Watch full"; TASK D2): in the free camera a click rides the player under the crosshair
+ * (the screen's centre, while the camera holds the cursor) or under the free cursor (not on the bar).
  *
  * <ul>
  *   <li>{@link #direction}: the cursor as a world direction, by vanilla's projection: {@code gluPerspective} with the
@@ -12,7 +12,6 @@ package com.bedwarsqol.rewind.watch;
  *   <li>{@link #nearest}: the ray against the players' boxes, each grown by vanilla's pick border ({@value #BORDER},
  *       {@code Entity.getCollisionBorderSize}), within {@value #REACH} blocks; the nearest is ridden. Blocks do not
  *       stop the ray.</li>
- *   <li>{@link Click}: the press-to-release rule.</li>
  * </ul>
  *
  * Pure.
@@ -20,7 +19,6 @@ package com.bedwarsqol.rewind.watch;
 public final class PickRay {
 
     public static final double REACH = 96;
-    public static final float CLICK_SLOP = 3f;
     public static final double BORDER = 0.1;
 
     private PickRay() {
@@ -98,44 +96,5 @@ public final class PickRay {
             }
         }
         return best;
-    }
-
-    /**
-     * A click, not a drag: the button went down and came up without the cursor ever leaving {@value #CLICK_SLOP} px
-     * of where it went down.
-     */
-    public static final class Click {
-        private boolean down;
-        private boolean moved;
-        private float x0, y0;
-
-        public void press(float x, float y) {
-            down = true;
-            moved = false;
-            x0 = x;
-            y0 = y;
-        }
-
-        public void move(float x, float y) {
-            if (!down) return;
-            float dx = x - x0, dy = y - y0;
-            if (dx * dx + dy * dy > CLICK_SLOP * CLICK_SLOP) moved = true;
-        }
-
-        /** The button came up at (x, y): true for a click. */
-        public boolean release(float x, float y) {
-            move(x, y);
-            boolean click = down && !moved;
-            down = false;
-            return click;
-        }
-
-        public void cancel() {
-            down = false;
-        }
-
-        public boolean down() {
-            return down;
-        }
     }
 }
