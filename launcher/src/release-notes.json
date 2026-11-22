@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.108",
+    "channel": "dev",
+    "date": "2026-11-22",
+    "sections": [
+      ["Changes", [
+        "Split: CHECK now shows over the forge only. Nothing appears above your crosshair unless you have just respawned."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.107",
     "channel": "dev",
     "date": "2026-11-22",
