@@ -197,6 +197,8 @@ public class ClientSettings {
 
     /** Split: a red "SPLIT 5..1" over your home forge for 5 seconds after a teammate's non-final death. */
     public boolean splitEnabled = true;
+    /** Split's Crosshair Cue row: the same countdown above the crosshair right after your own respawn. */
+    public boolean splitHudCue = true;
 
     /** Rewind (Ornithe build): the module switch; recording needs it and {@link #rewindRecordGames} both on. */
     public boolean rewind = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_ENABLED;

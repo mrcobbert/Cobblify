@@ -132,6 +132,63 @@ public class SplitRulesTest {
     }
 
     @Test
+    public void hudCueRunsFromOwnRespawnWhileATeammateIsStillDead() {
+        SplitRules r = new SplitRules();
+        assertEquals(5_000L, SplitRules.RESPAWN_MS);
+        assertEquals(5_000L, SplitRules.HUD_AFTER_RESPAWN_MS);
+        r.onOwnDeath(T0);
+        assertTrue(r.onDeath('c', 'c', false, T0 + 3_000L));
+        assertFalse("still dead", r.hudCue(T0 + 4_999L));
+        assertTrue("respawned", r.hudCue(T0 + 5_000L));
+        assertTrue(r.hudCue(T0 + 7_999L));
+        assertFalse("teammate window over", r.hudCue(T0 + 8_000L));
+    }
+
+    @Test
+    public void noHudCueWithoutAnOwnDeath() {
+        SplitRules r = new SplitRules();
+        assertTrue(r.onDeath('c', 'c', false, T0));
+        for (long t = T0; t < T0 + SplitRules.WINDOW_MS + 1_000L; t += 250L) {
+            assertFalse("at +" + (t - T0), r.hudCue(t));
+        }
+    }
+
+    @Test
+    public void noHudCueWhenTheTeammateDiedFirst() {
+        SplitRules r = new SplitRules();
+        assertTrue(r.onDeath('c', 'c', false, T0));
+        r.onOwnDeath(T0 + 2_000L);
+        for (long t = T0; t < T0 + 15_000L; t += 250L) {
+            assertFalse("at +" + (t - T0), r.hudCue(t));
+        }
+    }
+
+    @Test
+    public void hudCueEndsFiveSecondsAfterRespawn() {
+        SplitRules r = new SplitRules();
+        r.onOwnDeath(T0);
+        assertTrue(r.onDeath('c', 'c', false, T0 + 3_000L));
+        assertTrue(r.onDeath('c', 'c', false, T0 + 9_500L));
+        assertTrue(r.active(T0 + 10_000L));
+        assertTrue(r.hudCue(T0 + 9_999L));
+        assertFalse(r.hudCue(T0 + 10_000L));
+    }
+
+    @Test
+    public void resetForgetsTheOwnDeath() {
+        SplitRules r = new SplitRules();
+        r.onOwnDeath(T0);
+        r.onDeath('c', 'c', false, T0 + 3_000L);
+        assertTrue(r.hudCue(T0 + 5_000L));
+        r.reset();
+        assertFalse(r.hudCue(T0 + 5_000L));
+        // a teammate death after the reset, with no own death recorded since, gives no cue
+        r.onDeath('c', 'c', false, T0 + 5_000L);
+        assertTrue(r.active(T0 + 6_000L));
+        assertFalse(r.hudCue(T0 + 6_000L));
+    }
+
+    @Test
     public void leadingColourReadsTheFirstTeamCode() {
         assertEquals('c', SplitRules.leadingColour("\u00a7r\u00a7cSteve \u00a7r\u00a77was killed by \u00a7r\u00a79Alex\u00a7r\u00a77."));
         assertEquals('c', SplitRules.leadingColour("\u00a7r\u00a7CSteve \u00a7r\u00a77was killed by Alex."));
