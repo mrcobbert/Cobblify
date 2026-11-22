@@ -19,8 +19,6 @@ final class SettingsBindings implements SheetValues {
 
     private static final String[] SIZES = {"Small", "Medium", "Large"};
     private static final int[] TNT_RADII = {5, 10, 15, 20, 30};
-    private static final int[] OVERLAY_ALPHA = {0x40, 0x80, 0xC0};
-    private static final String[] OPACITIES = {"Low", "Medium", "High"};
 
     static ClientSettings settings() {
         if (BedwarsQol.config == null) {
@@ -81,7 +79,7 @@ final class SettingsBindings implements SheetValues {
             case "clutchBlocks": return c.clutchBlockDamage;
             case "blockOverlay": return c.blockOverlayEnabled;
             case "boSee": return c.blockOverlaySeeThrough;
-            case "boWhite": return c.blockOverlayWhite;
+            case "boInGame": return c.blockOverlayInGameOnly;
             case "tabHF": return c.tabHideHeaderFooter;
             case "chatStack": return c.chatStackSpam;
             case "stackTime": return c.chatStackTimeBased;
@@ -143,7 +141,7 @@ final class SettingsBindings implements SheetValues {
             case "clutchBlocks": c.clutchBlockDamage = v; break;
             case "blockOverlay": c.blockOverlayEnabled = v; break;
             case "boSee": c.blockOverlaySeeThrough = v; break;
-            case "boWhite": c.blockOverlayWhite = v; break;
+            case "boInGame": c.blockOverlayInGameOnly = v; break;
             case "tabHF": c.tabHideHeaderFooter = v; break;
             case "chatStack": c.chatStackSpam = v; break;
             case "stackTime": c.chatStackTimeBased = v; break;
@@ -190,13 +188,11 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": return String.valueOf(TNT_RADII[nearest(TNT_RADII, c.tntFuseRadius)]);
             case "boStyle": return SheetSchema.row(id).options()[clamp(c.blockOverlayStyle, 0, 2)];
-            case "boOpacity": return OPACITIES[nearest(OVERLAY_ALPHA, (c.blockOverlayColor >>> 24) & 0xFF)];
             case "hudSize": return SIZES[clamp(c.defaultTextSize, 0, 2)];
             case "sbSize": return SIZES[clamp(c.scoreboardSize, 0, 2)];
             case "tabSize": return SIZES[clamp(c.styledTabListSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
             case "font": return c.minecraftFont() ? "Minecraft" : "Modern";
-            case "accent": return GuiTheme.fromToken(c.guiAccent).label();
             default: return "";
         }
     }
@@ -211,16 +207,35 @@ final class SettingsBindings implements SheetValues {
         switch (id) {
             case "tntRadius": c.tntFuseRadius = TNT_RADII[i]; break;
             case "boStyle": c.blockOverlayStyle = i; break;
-            case "boOpacity": c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | (OVERLAY_ALPHA[i] << 24); break;
             case "hudSize": c.setHudSize(i); break;
             case "sbSize": c.scoreboardSize = i; break;
             case "tabSize": c.styledTabListSize = i; break;
             case "guiSize": c.guiSize = i; break;
             case "font": c.guiFont = "Minecraft".equals(option) ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
-            case "accent": c.guiAccent = GuiTheme.Accent.values()[i].token(); break;
             default: return;
         }
         c.save();
+    }
+
+    @Override
+    public int color(String id) {
+        ClientSettings c = settings();
+        switch (id) {
+            case "accent": return GuiTheme.color(c.guiAccent) & 0xFFFFFF;
+            case "boColor": return c.blockOverlayColor & 0xFFFFFF;
+            default: return 0xFFFFFF;
+        }
+    }
+
+    /** Like a number, a colour is written by {@link #save()}: a drag across the picker writes the file once. */
+    @Override
+    public void setColor(String id, int rgb) {
+        ClientSettings c = settings();
+        switch (id) {
+            case "accent": c.guiAccent = GuiTheme.hexToken(rgb); break;
+            case "boColor": c.blockOverlayColor = (c.blockOverlayColor & 0xFF000000) | (rgb & 0xFFFFFF); break;
+            default: break;
+        }
     }
 
     @Override
@@ -232,6 +247,8 @@ final class SettingsBindings implements SheetValues {
             case "handZ": return c.handPosZ;
             case "handScale": return c.handScale;
             case "stackWindow": return c.chatStackWindowSec;
+            // the highlight's alpha as a percentage
+            case "boOpacity": return Math.round(((c.blockOverlayColor >>> 24) & 0xFF) * 100.0 / 255.0);
             default: return 0;
         }
     }
@@ -246,6 +263,9 @@ final class SettingsBindings implements SheetValues {
             case "handZ": c.handPosZ = f; break;
             case "handScale": c.handScale = f; break;
             case "stackWindow": c.chatStackWindowSec = f; break;
+            case "boOpacity":
+                c.blockOverlayColor = (c.blockOverlayColor & 0x00FFFFFF) | ((int) Math.round(v * 255.0 / 100.0) << 24);
+                break;
             default: break;
         }
     }

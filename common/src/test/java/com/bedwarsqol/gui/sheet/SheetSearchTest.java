@@ -44,12 +44,10 @@ public class SheetSearchTest {
     @Test
     public void settingsSectionsMatchByRow() {
         List<SheetSearch.Hit> hits = SheetSearch.search("accent", values);
-        // Block Overlay's White ("instead of your accent") matches too; the Settings page lists its Accent row
-        assertEquals(2, hits.size());
-        SheetSearch.Hit settings = hits.get(1);
+        assertEquals(1, hits.size());
+        SheetSearch.Hit settings = hits.get(0);
         assertEquals("settings", settings.section.category().id);
         assertEquals("accent", settings.rows.iterator().next().id);
-        assertEquals("boWhite", hits.get(0).rows.iterator().next().id);
     }
 
     @Test

@@ -1,7 +1,7 @@
 package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
-import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
 import net.minecraft.block.state.IBlockState;
@@ -20,7 +20,7 @@ import org.lwjgl.opengl.GL11;
 
 /**
  * Replaces the vanilla black block-selection outline with a custom highlight on the block the
- * player is looking at: the settings accent (or white), with configurable opacity, draw style
+ * player is looking at: its own colour, with configurable opacity, draw style
  * (outline / fill / both) and an optional see-through (depth-disabled) mode.
  *
  * <p>This renders in <b>world space</b>: {@link BlockHighlightEvent} fires while the camera
@@ -40,6 +40,8 @@ public class BlockOverlayRenderer {
 
     public void onDrawBlockHighlight(BlockHighlightEvent event) {
         if (BedwarsQol.config == null || !BedwarsQol.config.blockOverlayEnabled) return;
+        // In Game Only: outside a Bed Wars game the vanilla outline is left alone
+        if (BedwarsQol.config.blockOverlayInGameOnly && !HypixelContext.isInActiveBedwarsGame()) return;
 
         MovingObjectPosition target = event.target;
         if (target == null || target.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK) return;
@@ -72,9 +74,7 @@ public class BlockOverlayRenderer {
         AxisAlignedBB aabb = box.offset(-eyeX, -eyeY, -eyeZ);
 
         int style = BedwarsQol.config.blockOverlayStyle; // 0 = outline, 1 = fill, 2 = both
-        // the settings accent, or white; the stored colour only carries the Opacity
-        int rgb = BedwarsQol.config.blockOverlayWhite ? 0xFFFFFF : GuiTheme.fromToken(BedwarsQol.config.guiAccent).base();
-        int color = (BedwarsQol.config.blockOverlayColor & 0xFF000000) | (rgb & 0xFFFFFF);
+        int color = BedwarsQol.config.blockOverlayColor; // ARGB: its own colour, the alpha its Opacity
         int a = (color >>> 24) & 0xFF;
         int r = (color >> 16) & 0xFF;
         int g = (color >> 8) & 0xFF;

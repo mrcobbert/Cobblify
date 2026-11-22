@@ -28,6 +28,8 @@ public final class SheetPainter {
         public SheetValues values;
         public SheetMotion motion;
         public long now;
+        /** The open picker's hue, saturation and brightness ({@link SheetState}). */
+        public float pickH, pickS, pickV;
     }
 
     /** Minecraft's text-field caret: an underscore 1 su after the text, 5 su wide and 1 su thick, under the baseline. */
@@ -265,8 +267,17 @@ public final class SheetPainter {
             case OPTION:
                 option(c, n, y, p);
                 break;
-            case SWATCH:
-                swatch(c, n, y, p);
+            case CHIP:
+                chip(c, n, y, p);
+                break;
+            case SV:
+                square(c, n, y, p);
+                break;
+            case HUE:
+                hueBar(c, n, y, p);
+                break;
+            case HEX:
+                field(c, n, y, p);
                 break;
             case SLIDER:
                 slider(c, n, y, p);
@@ -447,19 +458,20 @@ public final class SheetPainter {
         c.fill(x + 1f, y + 1f, w - 2f, h - 2f, PIT);
         c.fill(x + 1f, y + 1f, w - 2f, 1f, BLACK);
         float lt = y + 1f + (h - 2f - n.font.size) / 2f;
-        boolean editing = n.type == T.VALUE && n.id.equals(p.editing);
+        boolean editing = (n.type == T.VALUE || n.type == T.HEX) && n.id.equals(p.editing);
         String s = editing ? p.editText : n.text;
         float tw = c.width(s, n.font);
         // while typing, the right-aligned value makes room for the caret after it
         float caretRoom = editing ? caretWidth(c, n.font) : 0f;
-        float tx = n.type == T.VALUE ? x + w - 1f - 4f - tw - caretRoom : x + (w - tw) / 2f;
+        float tx = n.type == T.VALUE ? x + w - 1f - 4f - tw - caretRoom : x + (w - tw - caretRoom) / 2f;
         c.text(s, tx, lt, n.font.size, n.font, TEXT_HI);
         if (editing && p.caretOn) caret(c, tx + tw, n.font, lt, n.font.size, p.accent.base);
         if (n.disabled) c.endDisabled();
         if (n.on || editing || n == p.focus) outline(c, x, y, w, h, 1f);
     }
 
-    private static void swatch(Canvas c, Node n, float y, Paint p) {
+    /** A colour row's chip: a raised tile of its colour, pressed in while its picker is open. */
+    private static void chip(Canvas c, Node n, float y, Paint p) {
         if (n.disabled) c.beginDisabled(backdrop(n));
         boolean hover = !n.disabled && n == p.hover;
         float k = hover ? 1.08f : 1f;
@@ -476,6 +488,38 @@ public final class SheetPainter {
             c.fill(n.x + 1f, y + n.h - 3f, n.w - 2f, 2f, 0x73000000);
         }
         if (n.disabled) c.endDisabled();
+        if (n == p.focus) outline(c, n.x, y, n.w, n.h, 1f);
+    }
+
+    /**
+     * The saturation and brightness square: a recess holding the field, and over the picked point a 7 su square
+     * marker, black outside and white inside, open in the middle so the colour under it shows.
+     */
+    private static void square(Canvas c, Node n, float y, Paint p) {
+        float x = n.x, w = n.w, h = n.h;
+        c.fill(x - 1f, y - 1f, w + 2f, h + 2f, RIM);
+        c.fill(x, y, w, h, BLACK);
+        float ix = x + 1f, iy = y + 1f, iw = w - 2f, ih = h - 2f;
+        c.field(ix, iy, iw, ih, ColorPick.FIELD_SV, p.pickH);
+        // the marker's middle su sits on the picked pixel and stays inside the field
+        float mx = ix + p.pickS * (iw - 1f), my = iy + (1f - p.pickV) * (ih - 1f);
+        c.pushClip(ix, iy, iw, ih);
+        ring(c, mx - 3f, my - 3f, 7f, 7f, BLACK);
+        ring(c, mx - 2f, my - 2f, 5f, 5f, 0xFFFFFFFF);
+        ring(c, mx - 1f, my - 1f, 3f, 3f, BLACK);
+        c.popClip();
+        if (n == p.focus) outline(c, x, y, w, h, 1f);
+    }
+
+    /** The hue bar: a slider whose 10 su track holds the spectrum, with the slider's knob. */
+    private static void hueBar(Canvas c, Node n, float y, Paint p) {
+        float x = n.x, w = n.w, ty = y + 3f;
+        c.fill(x - 1f, ty - 1f, w + 2f, 12f, RIM);
+        c.fill(x, ty, w, 10f, BLACK);
+        c.field(x + 1f, ty + 1f, w - 2f, 8f, ColorPick.FIELD_HUE, 0f);
+        boolean hover = n == p.hover || n == p.pressed;
+        raisedBox(c, x + p.pickH * w - 4f, y + 1f, 8f, 16f, hover ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
+                KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
         if (n == p.focus) outline(c, n.x, y, n.w, n.h, 1f);
     }
 

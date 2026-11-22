@@ -3,6 +3,7 @@ package com.bedwarsqol.gui.sheet;
 import static com.bedwarsqol.gui.sheet.SheetFixtures.find;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -35,6 +36,8 @@ public class SheetControllerTest {
         public void editHud() { editHud++; }
         public void toast(String message) { toasts.add(message); }
         public void setKey(String id, int binding) { keys.add(binding); }
+        String clip = "";
+        public String clipboard() { return clip; }
         public long now() { return now; }
     }
 
@@ -47,6 +50,84 @@ public class SheetControllerTest {
     private void click(Node n) {
         c.pointerDown(n, n.x + n.w / 2f, 0);
         c.pointerUp(n);
+    }
+
+    @Test
+    public void theChipOpensAndClosesItsPicker() {
+        state.category = "settings";
+        click(find(frame(), T.CHIP, "accent"));
+        assertEquals("accent", state.picker);
+        Frame f = frame();
+        assertNotNull(find(f, T.SV, "accent"));
+        // the picker starts on the stored colour
+        assertEquals(0xF0770F, ColorPick.rgb(state.pickH, state.pickS, state.pickV));
+        click(find(f, T.CHIP, "accent"));
+        assertNull(state.picker);
+        assertEquals("closing writes the file", 1, values.saves);
+    }
+
+    @Test
+    public void draggingTheSquareAndTheHueBarSetsTheColourAndSavesOnce() {
+        state.category = "settings";
+        click(find(frame(), T.CHIP, "accent"));
+        Frame f = frame();
+        Node sv = find(f, T.SV, "accent"), hue = find(f, T.HUE, "accent");
+        // the field's top right pixel is the pure hue; its bottom edge is black
+        c.pointerDown(sv, sv.x + sv.w + 20f, sv.y - 20f, 0);
+        assertEquals(1f, state.pickS, 0f);
+        assertEquals(1f, state.pickV, 0f);
+        c.pointerDrag(sv.x + sv.w + 20f, sv.y + sv.h + 20f);
+        assertEquals(0x000000, values.color("accent"));
+        assertEquals(0, values.saves);
+        c.pointerUp(null);
+        assertEquals(1, values.saves);
+        // black keeps the hue and saturation on show, so the next drag starts where the eye is
+        frame();
+        assertEquals(1f, state.pickS, 0f);
+        c.pointerDown(sv, sv.x + sv.w + 20f, sv.y - 20f, 0);
+        c.pointerUp(sv);
+        c.pointerDown(hue, hue.x + hue.w / 3f, hue.y, 0);
+        c.pointerUp(hue);
+        assertEquals("a third along the spectrum is green", 0x00FF00, values.color("accent"));
+    }
+
+    @Test
+    public void aHexIsTypedOrPastedIntoItsField() {
+        state.category = "settings";
+        click(find(frame(), T.CHIP, "accent"));
+        Node hex = find(frame(), T.HEX, "accent");
+        c.pointerDown(hex, hex.x + 2f, hex.y + 2f, 0);
+        c.pointerUp(hex);
+        assertEquals("accent", c.editing());
+        for (char ch : "#12aB".toCharArray()) c.key(ch, 0, false, false, false, RSHIFT);
+        assertEquals("the first key replaces the selected text", "#12AB", c.editText());
+        assertEquals("not a colour yet", 0xF0770F, values.color("accent"));
+        c.key('z', 0, false, false, false, RSHIFT);
+        for (char ch : "cd9".toCharArray()) c.key(ch, 0, false, false, false, RSHIFT);
+        assertEquals("seven characters at most, hex digits only", "#12ABCD", c.editText());
+        assertEquals(0x12ABCD, values.color("accent"));
+        host.clip = " ff8800 ";
+        c.key((char) 22, SheetController.KEY_V, true, false, false, RSHIFT);
+        assertEquals("#FF8800", c.editText());
+        assertEquals(0xFF8800, values.color("accent"));
+        host.clip = "not a colour";
+        c.key((char) 22, SheetController.KEY_V, true, false, false, RSHIFT);
+        assertEquals(0xFF8800, values.color("accent"));
+        int saves = values.saves;
+        c.key('\r', SheetController.KEY_RETURN, false, false, false, RSHIFT);
+        assertNull(c.editing());
+        assertEquals(saves + 1, values.saves);
+        // the picker follows the typed colour
+        frame();
+        assertEquals(0xFF8800, ColorPick.rgb(state.pickH, state.pickS, state.pickV));
+    }
+
+    @Test
+    public void leavingThePageClosesThePicker() {
+        state.category = "settings";
+        click(find(frame(), T.CHIP, "accent"));
+        click(find(frame(), T.CATEGORY, "visuals"));
+        assertNull(state.picker);
     }
 
     @Test

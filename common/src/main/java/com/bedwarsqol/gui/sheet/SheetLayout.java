@@ -46,7 +46,9 @@ public final class SheetLayout {
     public enum T {
         BRAND, VERSION, SEARCH, CLOSE, CATEGORY, HERO, RESET_POSITIONS,
         RESULTS, DIVIDER, PATH, OPEN, NAME, DESC, MODULE_TOGGLE, WELL,
-        LABEL, ROW_DESC, TOGGLE, OPTION, SWATCH, SLIDER, VALUE, KEY, BUTTON, MORE
+        LABEL, ROW_DESC, TOGGLE, OPTION, SLIDER, VALUE, KEY, BUTTON, MORE,
+        /** A colour row's chip, and its open picker: the square, the hue bar and the hex field. */
+        CHIP, SV, HUE, HEX
     }
 
     public static final class Node {
@@ -55,7 +57,7 @@ public final class SheetLayout {
         /** Row, module or category id. */
         public String id;
         public String text = "";
-        /** Option or swatch index; the category index. */
+        /** Option index; the category index. */
         public int index = -1;
         public SheetFont font;
         /** Line-box top and height for text nodes (su, same space as y). */
@@ -83,7 +85,8 @@ public final class SheetLayout {
         public boolean interactive() {
             switch (type) {
                 case SEARCH: case CLOSE: case CATEGORY: case HERO: case RESET_POSITIONS: case MODULE_TOGGLE: case TOGGLE:
-                case OPTION: case SWATCH: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
+                case OPTION: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
+                case CHIP: case SV: case HUE: case HEX:
                     return !disabled;
                 case OPEN:
                     return open; // a leaf's header holds a spacer, not an open button
@@ -441,6 +444,15 @@ public final class SheetLayout {
                 ctl.font = SheetFont.FIELD;
                 break;
             }
+            case COLOR: {
+                // a square chip as tall as the toggles it sits among
+                bh = inWell ? 12f : 14f;
+                bw = bh;
+                ctl = new Node(T.CHIP, 0, 0, bw, bh);
+                ctl.color = 0xFF000000 | values.color(r.id);
+                ctl.chosen = !disabled && r.id.equals(state.picker);
+                break;
+            }
             case KEY: {
                 String label = capturing ? "Press a key" : values.keyLabel(r.id);
                 bw = Math.max(capturing ? 52f : 30f, tm.width(label, SheetFont.FIELD) + 10f);
@@ -517,26 +529,17 @@ public final class SheetLayout {
                 blockH = 16f - 2f;
                 break;
             }
-            case SWATCH: {
-                String[] opts = r.options();
-                int[] colors = r.colors();
-                String chosen = values.choice(r.id);
-                // 15 su swatches 3 su apart, wrapping into as many rows as the palette needs
-                int perRow = Math.max(1, (int) ((right - left - 1f + 3f) / 18f));
-                int rows = (opts.length + perRow - 1) / perRow;
-                for (int i = 0; i < opts.length; i++) {
-                    float x = left + 1f + (i % perRow) * 18f;
-                    Node s = new Node(T.SWATCH, x, by + (i / perRow) * 18f, 15f, 15f);
-                    s.id = r.id;
-                    s.index = i;
-                    s.text = opts[i];
-                    s.color = 0xFF000000 | colors[i];
-                    s.chosen = opts[i].equals(chosen);
-                    s.disabled = disabled;
-                    s.well = inWell;
-                    f.body.add(s);
-                }
-                blockH = rows * 18f - 3f - 2f;
+            case COLOR: {
+                if (disabled || !r.id.equals(state.picker)) break;
+                // the square, then the hue bar with the hex field at its right, the field's rim on the row's edge; the bar
+                // stops a knob's overhang short of it
+                float hexX = right - 1f - HEX_W;
+                float barX = left + 4f, barW = hexX - 1f - 4f - 4f - barX;
+                f.body.add(picker(T.SV, r.id, left + 1f, by + 1f, right - left - 2f, SV_H, inWell));
+                float y0 = by + 1f + SV_H + 1f + 4f;
+                f.body.add(picker(T.HUE, r.id, barX, y0, barW, 16f, inWell));
+                blockH = y0 + 16f - by;
+                f.body.add(hex(r.id, hexX, y0 + 1f, inWell));
                 break;
             }
             case SLIDER: {
@@ -553,6 +556,22 @@ public final class SheetLayout {
         }
         float h = pad + row1 + (blockH > 0f ? 5f + blockH : 0f) + pad;
         return y + h;
+    }
+
+    /** The picker's square is this tall inside its border; its hex field this wide. */
+    private static final float SV_H = 56f, HEX_W = 52f;
+    private static Node picker(T type, String id, float x, float y, float w, float h, boolean well) {
+        Node n = new Node(type, x, y, w, h);
+        n.id = id;
+        n.well = well;
+        return n;
+    }
+
+    private Node hex(String id, float x, float y, boolean well) {
+        Node n = picker(T.HEX, id, x, y, HEX_W, 14f, well);
+        n.text = ColorPick.hex(values.color(id));
+        n.font = SheetFont.FIELD;
+        return n;
     }
 
     /**

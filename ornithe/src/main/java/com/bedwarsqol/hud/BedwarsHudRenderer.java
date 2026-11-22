@@ -1265,7 +1265,7 @@ public class BedwarsHudRenderer {
         drawPanel(cfg, HEIGHT_LIMIT_HUD, box, scale, example);
         scale = ts(scale);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
-        int label = GuiTheme.fromToken(cfg.guiAccent).base();
+        int label = GuiTheme.color(cfg.guiAccent);
         List<String> rows = heightLimitRows(mc, example);
         if (live(example)) HudCapture.shared().offerRows(RewindFormat.HUD_HEIGHT_LIMIT, rows);
         for (int i = 0; i < rows.size(); i++) {
@@ -1413,7 +1413,7 @@ public class BedwarsHudRenderer {
         if (live(example)) HudCapture.shared().offerTeamRows(RewindFormat.HUD_TEAM_UPGRADES, rows);
         drawPanel(cfg, TEAM_UPGRADES_HUD, box, scale, example);
         scale = ts(scale);
-        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        int header = GuiTheme.color(cfg.guiAccent);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         for (int i = 0; i < rows.size(); i++) {
             TeamUpgradeRows.Row row = rows.get(i);
@@ -1479,7 +1479,7 @@ public class BedwarsHudRenderer {
         drawPanel(cfg, SESSION_HUD, box, scale, example);
         scale = ts(scale);
         // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
-        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        int header = GuiTheme.color(cfg.guiAccent);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);
         if (live(example)) HudCapture.shared().offerLines(RewindFormat.HUD_SESSION_STATS, lines, SESSION_LINE_VIEW);
@@ -1633,7 +1633,7 @@ public class BedwarsHudRenderer {
         }
         float e = ts(HudModules.get(cfg, id).scale);
         boolean background = HudModules.background(cfg, id);
-        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        int accent = GuiTheme.color(cfg.guiAccent);
         float ox = box.x, oy = box.y;
         if (background) {
             GuiRender.rect(box.x, box.y, box.right(), box.bottom(), HudBackground.FILL);
@@ -1693,7 +1693,7 @@ public class BedwarsHudRenderer {
         boolean[] held = keyStates(mc, example);
         long now = source.now();
         boolean background = HudModules.background(cfg, KEYSTROKES_HUD);
-        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        int accent = GuiTheme.color(cfg.guiAccent);
         float e = ts(cfg.keystrokesHudScale);
         float ox = box.x, oy = box.y, trail = 0f;
         if (BedwarsQolFont.minecraft()) {

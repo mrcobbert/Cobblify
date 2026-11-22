@@ -6,7 +6,11 @@ import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.Tessellator;
 import net.minecraft.client.renderer.WorldRenderer;
 import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
+import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL12;
+
+import java.nio.IntBuffer;
 
 /**
  * The sheet's {@link Canvas} on Minecraft's GL: everything is drawn in device pixels (the GUI matrix is undone),
@@ -129,6 +133,58 @@ public final class McCanvas implements Canvas {
         wr.pos(x2, y2, 0).color(r, g, b, a).endVertex();
         wr.pos(x2, y1, 0).color(r, g, b, a).endVertex();
         wr.pos(x1, y1, 0).color(r, g, b, a).endVertex();
+    }
+
+    // ------------------------------------------------------------------ colour fields
+
+    /** One of the picker's gradient fields as a texture: its pixels come from {@link ColorPick}, one per device px. */
+    private static final class Field {
+        int texture = -1, w, h;
+        float hue = Float.NaN;
+    }
+
+    /** Shared by every canvas, so reopening the sheet makes no new textures. */
+    private static final Field[] FIELDS = {new Field(), new Field()};
+
+    @Override
+    public void field(float x, float y, float w, float h, int kind, float hue) {
+        int x1 = Math.round(px(x)), x2 = Math.round(px(x + w));
+        int y1 = Math.round(py(y)), y2 = Math.round(py(y + h));
+        int pw = x2 - x1, ph = y2 - y1;
+        if (pw <= 0 || ph <= 0 || kind < 0 || kind >= FIELDS.length) return;
+        flush();
+        Field f = FIELDS[kind];
+        if (f.texture < 0) f.texture = GL11.glGenTextures();
+        GlStateManager.enableTexture2D();
+        GlStateManager.bindTexture(f.texture);
+        if (f.w != pw || f.h != ph || f.hue != hue) {
+            int[] rgb = new int[pw * ph];
+            ColorPick.field(kind, hue, rgb, pw, ph);
+            IntBuffer buf = BufferUtils.createIntBuffer(pw * ph);
+            for (int i = 0; i < rgb.length; i++) buf.put(0xFF000000 | rgb[i]);
+            buf.flip();
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL12.GL_TEXTURE_MAX_LEVEL, 0);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, pw, ph, 0, GL12.GL_BGRA,
+                    GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+            f.w = pw;
+            f.h = ph;
+            f.hue = hue;
+        }
+        // texel for pixel: the quad covers exactly pw x ph device pixels
+        GlStateManager.color(1f, 1f, 1f, alpha);
+        Tessellator tess = Tessellator.getInstance();
+        WorldRenderer wr = tess.getWorldRenderer();
+        wr.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_TEX);
+        wr.pos(x1, y2, 0).tex(0, 1).endVertex();
+        wr.pos(x2, y2, 0).tex(1, 1).endVertex();
+        wr.pos(x2, y1, 0).tex(1, 0).endVertex();
+        wr.pos(x1, y1, 0).tex(0, 0).endVertex();
+        tess.draw();
+        GlStateManager.color(1f, 1f, 1f, 1f);
     }
 
     // ------------------------------------------------------------------ strokes

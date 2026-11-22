@@ -127,8 +127,13 @@ final class SheetFixtures {
             fills.add(new float[]{x, y, w, h});
             colours.add(argb);
         }
+        /** Gradient fields drawn: {x, y, w, h, kind, hue}. */
+        final java.util.List<float[]> fields = new java.util.ArrayList<float[]>();
         @Override public void stroke(float[] points, float width, int argb) { }
         @Override public void ring(float cx, float cy, float r, float width, int argb) { }
+        @Override public void field(float x, float y, float w, float h, int kind, float hue) {
+            fields.add(new float[]{x, y, w, h, kind, hue});
+        }
         @Override public void text(String s, float x, float lineTop, float lineHeight, SheetFont font, int argb) {
             texts.add(new Object[]{s, x, lineTop});
             textColours.add(argb);
@@ -156,13 +161,14 @@ final class SheetFixtures {
         final Map<String, Integer> keys = new HashMap<String, Integer>();
         /** Platform-only ids this tree opts in to ({@link SheetValues#hasPlatformOnly}); none by default. */
         final Set<String> platformOnly = new HashSet<String>();
+        final Map<String, Integer> colors = new HashMap<String, Integer>();
         int saves, runs;
         String lastRun;
 
         Values() {
             for (String id : ("potion armor inventory genTimers keystrokes session mapInfo potionInGame armorInGame "
                     + "inventoryInGame genTimersInGame keystrokesInGame mapInfoInGame sessionHold handPos tnt noEsc "
-                    + "blockOverlay boSee boWhite tabHF splitInbound").split(" ")) v.put(id, false);
+                    + "blockOverlay boSee boInGame tabHF splitInbound").split(" ")) v.put(id, false);
             for (String id : ("chatStack stackTime stackBlanks chatNotify notifyMention notifyInc notifyBed notifyBg "
                     + "chatUnlimited chatKeep "
                     + "chatCopy chatLong incKey stats statsNametag statsTab statsHover statsChat statsRank statsReport "
@@ -175,13 +181,14 @@ final class SheetFixtures {
             v.put("stackWindow", 5.0);
             v.put("tntRadius", "10");
             v.put("boStyle", "Both");
-            v.put("boOpacity", "Medium");
+            v.put("boOpacity", 50.0);
             v.put("hudSize", "Medium");
             v.put("sbSize", "Large");
             v.put("tabSize", "Large");
             v.put("guiSize", "Large");
             v.put("font", "Modern");
-            v.put("accent", "Orange");
+            colors.put("accent", 0xF0770F);
+            colors.put("boColor", 0xC0DCFF);
             missing.add("incAlert");
             missing.add("bedAlert");
             missing.add("bgAlert");
@@ -227,6 +234,17 @@ final class SheetFixtures {
         @Override
         public void setNumber(String id, double value) {
             v.put(id, value);
+        }
+
+        @Override
+        public int color(String id) {
+            Integer c = colors.get(id);
+            return c == null ? 0xFFFFFF : c;
+        }
+
+        @Override
+        public void setColor(String id, int rgb) {
+            colors.put(id, rgb);
         }
 
         @Override

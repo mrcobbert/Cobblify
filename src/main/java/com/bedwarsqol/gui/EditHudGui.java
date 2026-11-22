@@ -143,7 +143,7 @@ public class EditHudGui extends GuiScreen {
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         long now = Minecraft.getSystemTime();
         ClientSettings cfg = settings();
-        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        int accent = GuiTheme.color(cfg.guiAccent);
         float open = Math.min(1f, (now - openedMs) / (float) OPEN_FADE_MS);
 
         GuiRender.rect(0, 0, width, height, fade(DIM, open));

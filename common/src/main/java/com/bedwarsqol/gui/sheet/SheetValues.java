@@ -23,10 +23,19 @@ public interface SheetValues {
 
     void setOn(String id, boolean on);
 
-    /** The chosen option name of an option row or swatch row. */
+    /** The chosen option name of an option row. */
     String choice(String id);
 
     void setChoice(String id, String option);
+
+    /** A colour row's RGB. */
+    default int color(String id) {
+        return 0xFFFFFF;
+    }
+
+    /** Set a colour row; like a number it is written on {@link #save()}, so a drag writes the file once. */
+    default void setColor(String id, int rgb) {
+    }
 
     double number(String id);
 

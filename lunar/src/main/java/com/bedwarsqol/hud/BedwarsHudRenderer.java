@@ -645,7 +645,7 @@ public class BedwarsHudRenderer {
         drawHudBackground(box, scale, example); // always on: the 13-row panel is unreadable over the world without it
         scale = ts(scale);
         // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
-        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        int header = GuiTheme.color(cfg.guiAccent);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);
         for (int i = 0; i < lines.size(); i++) {

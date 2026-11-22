@@ -17,7 +17,7 @@ public final class RewindLoadingScreen extends RewindScreen {
 
     private final PlaybackSession session;
     private final McCanvas canvas = new McCanvas();
-    private GuiTheme.Accent accent;
+    private int accent = -1;
     private SheetColors.Shades accentShades = SheetColors.Shades.of(0xC0DCFF);
 
     RewindLoadingScreen(PlaybackSession session) {
@@ -36,10 +36,10 @@ public final class RewindLoadingScreen extends RewindScreen {
     }
 
     private SheetColors.Shades accent(ClientSettings cfg) {
-        GuiTheme.Accent a = GuiTheme.fromToken(cfg == null ? null : cfg.guiAccent);
+        int a = SheetColors.legible(GuiTheme.color(cfg == null ? null : cfg.guiAccent));
         if (a != accent) {
             accent = a;
-            accentShades = SheetColors.Shades.of(a.base() & 0xFFFFFF);
+            accentShades = SheetColors.Shades.of(a);
         }
         return accentShades;
     }

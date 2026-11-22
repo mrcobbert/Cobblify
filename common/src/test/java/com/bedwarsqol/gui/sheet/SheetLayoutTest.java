@@ -186,9 +186,16 @@ public class SheetLayoutTest {
         assertEquals(28f, first.x, 0f);
         assertEquals(226f, last.x + last.w, 1e-4f);
         assertEquals((198f + 2f) / 3f, first.w, 1e-4f);
-        // the overlay takes the accent: no palette, only a White switch
-        for (Node n : f.body) assertFalse(n.type == T.SWATCH);
-        assertNotNull(find(f, T.TOGGLE, "boWhite"));
+        // the overlay has its own colour: a square chip as tall as the well's toggles, on their right edge
+        Node chip = find(f, T.CHIP, "boColor"), see = find(f, T.TOGGLE, "boSee");
+        assertEquals(12f, chip.w, 0f);
+        assertEquals(12f, chip.h, 0f);
+        assertEquals(see.x + see.w, chip.x + chip.w, 0f);
+        assertEquals(0xFFC0DCFF, chip.color);
+        // Opacity is a slider, and In Game Only opens the well
+        assertNotNull(find(f, T.SLIDER, "boOpacity"));
+        assertTrue(find(f, T.TOGGLE, "boInGame").y < see.y);
+        assertNull("closed until its chip is pressed", find(f, T.SV, "boColor"));
     }
 
     @Test
@@ -285,20 +292,41 @@ public class SheetLayoutTest {
     }
 
     @Test
-    public void accentSwatchesWrapTwelveToARow() {
+    public void anOpenPickerUnfoldsUnderItsRow() {
         state.category = "settings";
+        Frame closed = layout();
+        Node chip = find(closed, T.CHIP, "accent");
+        assertEquals("a square as tall as a toggle", 14f, chip.w, 0f);
+        assertEquals(14f, chip.h, 0f);
+        assertEquals(SheetLayout.WIDTH - 9f, chip.x + chip.w, 0f);
+        assertFalse(chip.chosen);
+        assertNull(find(closed, T.SV, "accent"));
+        state.picker = "accent";
         Frame f = layout();
-        java.util.List<Node> sw = new java.util.ArrayList<Node>();
-        for (Node n : f.body) if (n.type == T.SWATCH) sw.add(n);
-        assertEquals(40, sw.size());
-        assertEquals(sw.get(0).y, sw.get(11).y, 0f);
-        assertEquals(sw.get(0).x, sw.get(12).x, 0f);
-        assertEquals(sw.get(0).y + 18f, sw.get(12).y, 0f);
-        assertEquals(sw.get(0).x + 11 * 18f, sw.get(11).x, 0f);
-        assertTrue("the last column ends inside the row", sw.get(11).x + 15f <= SheetLayout.WIDTH - 9f);
-        assertEquals(sw.get(0).y + 3 * 18f, sw.get(38).y, 0f);
-        assertEquals("Dark Grey closes the neutrals row", sw.get(36).y, sw.get(39).y, 0f);
-        assertEquals(sw.get(0).x + 3 * 18f, sw.get(39).x, 0f);
+        Node sv = find(f, T.SV, "accent"), hue = find(f, T.HUE, "accent"), hex = find(f, T.HEX, "accent");
+        assertTrue(find(f, T.CHIP, "accent").chosen);
+        // the square spans the row inside its 1 su rim; the hue bar and the hex field share the line under it
+        assertEquals(19f + 1f, sv.x, 0f);
+        assertEquals(SheetLayout.WIDTH - 9f - 1f, sv.x + sv.w, 0f);
+        assertTrue(sv.y > find(f, T.LABEL, "accent").y);
+        assertTrue(hue.y > sv.y + sv.h);
+        assertEquals(hue.y + 1f, hex.y, 0f);
+        assertEquals(SheetLayout.WIDTH - 9f - 1f, hex.x + hex.w, 0f);
+        assertTrue("the knob's overhang stays clear of the field's rim", hue.x + hue.w + 4f <= hex.x - 1f);
+        assertEquals("#F0770F", hex.text);
+        assertTrue("the rows grow by the picker", f.contentHeight > closed.contentHeight + sv.h);
+    }
+
+    @Test
+    public void aSwitchedOffModuleShowsNoPicker() {
+        state.category = "visuals";
+        state.open.add("blockOverlay");
+        state.picker = "boColor";
+        Frame f = layout();
+        assertTrue(find(f, T.CHIP, "boColor").disabled);
+        assertNull(find(f, T.SV, "boColor"));
+        values.setOn("blockOverlay", true);
+        assertNotNull(find(layout(), T.SV, "boColor"));
     }
 
     @Test

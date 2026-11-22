@@ -40,7 +40,7 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     private float unit = 2f, originX;
     private long openedAt = -1, closingAt = -1, lastFrame;
     private int heldButton = -1;
-    private GuiTheme.Accent accent;
+    private int accent = -1;
     private String toast;
     private long toastAt;
 
@@ -108,10 +108,10 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
         frame = layout.layout(mc.displayHeight / unit, "v" + BedwarsQol.VERSION);
         controller.frame(frame);
         advanceScroll(now);
-        GuiTheme.Accent a = GuiTheme.fromToken(SettingsBindings.settings().guiAccent);
+        int a = SheetColors.legible(GuiTheme.color(SettingsBindings.settings().guiAccent));
         if (a != accent) {
             accent = a;
-            paint.accent = SheetColors.Shades.of(a.base() & 0xFFFFFF);
+            paint.accent = SheetColors.Shades.of(a);
         }
         paint.values = values;
         paint.motion = motion;
@@ -129,7 +129,10 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
         paint.searchFocused = controller.searchFocused();
         paint.editing = controller.editing();
         paint.editText = controller.editText();
-        paint.caretOn = (now / 300L) % 2L == 0L; // vanilla's text-field blink: 6 ticks on, 6 off
+        paint.caretOn = (now / 300L) % 2L == 0L;
+        paint.pickH = state.pickH;
+        paint.pickS = state.pickS;
+        paint.pickV = state.pickV; // vanilla's text-field blink: 6 ticks on, 6 off
         SheetPainter.paint(canvas, frame, paint);
         canvas.end();
         drawToast(now, sf);
@@ -190,13 +193,13 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
             SheetLayout.Node n = SheetLayout.hit(frame, sx, sy, paint.scroll);
             if (Mouse.getEventButtonState()) {
                 heldButton = button;
-                controller.pointerDown(n, sx, button);
+                controller.pointerDown(n, sx, sy - frame.bodyTop + paint.scroll, button);
             } else if (button == heldButton) {
                 heldButton = -1;
                 if (button == 0) controller.pointerUp(n);
             }
         } else if (heldButton == 0) {
-            controller.pointerDrag(sx);
+            controller.pointerDrag(sx, sy - frame.bodyTop + paint.scroll);
         }
         int wheel = Mouse.getEventDWheel();
         if (wheel != 0 && sx >= 0f) controller.wheel(-wheel / 120f);
@@ -232,6 +235,12 @@ public class SettingsGui extends GuiScreen implements SheetController.Host {
     public void toast(String message) {
         toast = message;
         toastAt = System.currentTimeMillis();
+    }
+
+    @Override
+    public String clipboard() {
+        String s = getClipboardString();
+        return s == null ? "" : s;
     }
 
     @Override

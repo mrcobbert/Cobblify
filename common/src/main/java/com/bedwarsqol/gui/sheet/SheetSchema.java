@@ -1,6 +1,5 @@
 package com.bedwarsqol.gui.sheet;
 
-import com.bedwarsqol.gui.render.GuiTheme;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -22,7 +21,7 @@ public final class SheetSchema {
     private SheetSchema() {
     }
 
-    public enum Kind { TOGGLE, SEG, SWATCH, SLIDER, KEY, ACTION }
+    public enum Kind { TOGGLE, SEG, COLOR, SLIDER, KEY, ACTION }
 
     public static final class Row {
         public final String id;
@@ -161,11 +160,8 @@ public final class SheetSchema {
         return r;
     }
 
-    private static Row swatch(String id, String name, String desc, String kw, String[] names, int[] colors) {
-        Row r = new Row(id, Kind.SWATCH, name, desc, kw);
-        r.opts = names;
-        r.colors = colors;
-        return r;
+    private static Row color(String id, String name, String desc, String kw) {
+        return new Row(id, Kind.COLOR, name, desc, kw);
     }
 
     private static Row slider(String id, String name, String desc, double min, double max, double step, int decimals, String unit) {
@@ -216,20 +212,6 @@ public final class SheetSchema {
         Row r = toggle(id, "Background", desc);
         r.hudItem = hudItem;
         return r;
-    }
-
-    private static String[] accentNames() {
-        GuiTheme.Accent[] all = GuiTheme.Accent.values();
-        String[] out = new String[all.length];
-        for (int i = 0; i < all.length; i++) out[i] = all[i].label();
-        return out;
-    }
-
-    private static int[] accentColors() {
-        GuiTheme.Accent[] all = GuiTheme.Accent.values();
-        int[] out = new int[all.length];
-        for (int i = 0; i < all.length; i++) out[i] = all[i].base() & 0xFFFFFF;
-        return out;
     }
 
     public static final List<Category> CATS;
@@ -312,10 +294,11 @@ public final class SheetSchema {
                         toggle("clutchBlocks", "Block Damage", "Fireballs break blocks; glass and end stone hold"))));
         cats.add(category("visuals", "Visuals",
                 module("blockOverlay", "Block Overlay", "Highlight targeted block", "outline selection highlight",
+                        inGame("boInGame", "Hide it in lobbies"),
                         toggle("boSee", "See-Through", "Show it through other blocks"),
                         seg("boStyle", "Style", "How the block is marked", null, "Outline", "Fill", "Both"),
-                        seg("boOpacity", "Opacity", "How strong the fill is", null, "Low", "Medium", "High"),
-                        toggle("boWhite", "White", "White instead of your accent", "colour color")),
+                        slider("boOpacity", "Opacity", "How strong the highlight is", 5, 100, 5, 0, "%"),
+                        color("boColor", "Color", "Colour of the highlight", "colour color hex")),
                 module("fullbright", "Fullbright", "See clearly in caves and at night; key in Controls",
                         "brightness gamma night vision light dark"),
                 module("itemPhysics", "Item Physics", "Dropped items lie flat and tumble", "drops ground physic"),
@@ -394,8 +377,7 @@ public final class SheetSchema {
                         seg("tabSize", "Tab List Size", "Size of the player list", "players", "Small", "Medium", "Large"),
                         seg("guiSize", "GUI Size", "Size of this menu", "menu scale", "Small", "Medium", "Large"),
                         seg("font", "Font", "Text in this menu and the HUD", "minecraft typeface text", "Minecraft", "Modern"),
-                        swatch("accent", "Accent", "Colour for on, selected and highlights", "colour color theme",
-                                accentNames(), accentColors()))}));
+                        color("accent", "Accent", "Colour for on and selected", "colour color theme highlight hex"))}));
         CATS = Collections.unmodifiableList(cats);
         for (Category c : CATS) {
             for (Module m : c.modules) {
