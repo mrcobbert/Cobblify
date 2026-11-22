@@ -16,7 +16,7 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * The Ornithe sheet lists Split and its Crosshair Cue row, both on by default (also for a config saved before they
- * existed), and each row writes its setting.
+ * existed), and its Teammate Returning row, off by default; each row writes its setting.
  */
 public class SettingsBindingsSplitTest {
 
@@ -45,6 +45,8 @@ public class SettingsBindingsSplitTest {
         assertTrue(SheetSchema.shows(new SettingsBindings(), "split"));
         assertTrue(new SettingsBindings().has("splitHud"));
         assertTrue(SheetSchema.shows(new SettingsBindings(), "splitHud"));
+        assertTrue(new SettingsBindings().has("splitInbound"));
+        assertTrue(SheetSchema.shows(new SettingsBindings(), "splitInbound"));
     }
 
     @Test
@@ -61,6 +63,27 @@ public class SettingsBindingsSplitTest {
         assertTrue(new SettingsBindings().on("splitHud"));
         ClientSettings old = new Gson().fromJson("{\"suppressEscMenu\":true,\"splitEnabled\":true}", ClientSettings.class);
         assertTrue(old.splitHudCue);
+    }
+
+    @Test
+    public void teammateReturningOffByDefault() {
+        assertFalse(new ClientSettings().splitInbound);
+        assertFalse(new SettingsBindings().on("splitInbound"));
+        ClientSettings old = new Gson().fromJson("{\"suppressEscMenu\":true,\"splitEnabled\":true}", ClientSettings.class);
+        assertFalse(old.splitInbound);
+    }
+
+    @Test
+    public void theTeammateReturningRowWritesTheSetting() {
+        SettingsBindings values = new SettingsBindings();
+        values.setOn("splitInbound", true);
+        assertTrue(BedwarsQol.config.splitInbound);
+        assertTrue(values.on("splitInbound"));
+        assertTrue("the module switch is separate", BedwarsQol.config.splitEnabled);
+        assertTrue("the crosshair cue is separate", BedwarsQol.config.splitHudCue);
+        values.setOn("splitInbound", false);
+        assertFalse(BedwarsQol.config.splitInbound);
+        assertFalse(values.on("splitInbound"));
     }
 
     @Test

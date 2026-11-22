@@ -162,7 +162,7 @@ final class SheetFixtures {
         Values() {
             for (String id : ("potion armor inventory genTimers keystrokes session mapInfo potionInGame armorInGame "
                     + "inventoryInGame genTimersInGame keystrokesInGame mapInfoInGame sessionHold handPos tnt noEsc "
-                    + "blockOverlay boSee boWhite tabHF").split(" ")) v.put(id, false);
+                    + "blockOverlay boSee boWhite tabHF splitInbound").split(" ")) v.put(id, false);
             for (String id : ("chatStack stackTime stackBlanks chatNotify notifyMention notifyInc notifyBed notifyBg "
                     + "chatUnlimited chatKeep "
                     + "chatCopy chatLong incKey stats statsNametag statsTab statsHover statsChat statsRank statsReport "

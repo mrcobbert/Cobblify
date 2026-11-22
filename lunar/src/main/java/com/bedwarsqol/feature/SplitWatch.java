@@ -10,7 +10,9 @@ import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.entity.RenderManager;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityItem;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Items;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -27,13 +29,17 @@ import org.lwjgl.opengl.GL11;
  * Split: for {@link SplitRules#WINDOW_MS} after a teammate's non-final death, draws a red
  * {@code SPLIT n} countdown in the world above the player's home forge, while the player is near it.
  * After the player's own respawn, while a teammate is still dead, the same countdown is also drawn on
- * the HUD above the crosshair ({@link SplitRules#hudCue}).
+ * the HUD above the crosshair ({@link SplitRules#hudCue}). With the Teammate Returning row on, a
+ * yellow {@code CHECK} is drawn in both places when a teammate comes back to base toward the forge
+ * ({@link SplitInbound}), unless the countdown is running.
  *
  * <p>The death comes from chat ({@link SessionChatLine#deathVictim}); the victim is a teammate when
  * their scoreboard colour (or, failing that, the line's leading colour code) equals the player's own
  * and the victim is not the player. The home forge is the nearest iron/gold item seen within
  * {@link SplitRules#LEARN_RANGE} while alive in a game, learned whether or not the module is enabled
- * and locked for the game. Observe-only: no chat event is cancelled or edited.
+ * and locked for the game. Once it is locked, teammates' distances to it feed {@link SplitInbound}
+ * on every scan, also whether or not the module is enabled. Observe-only: no chat event is
+ * cancelled or edited.
  *
  * <p>Weave's chat event fires from {@code GuiNewChat}, which never sees action-bar lines, and
  * {@link RenderWorldEvent} fires in {@code renderWorldPass} just before the hand, where Forge's
@@ -45,11 +51,13 @@ public final class SplitWatch {
     private static final double LABEL_LIFT = 1.25;
     private static final float TEXT_SCALE = 2.0F;
     private static final int COLOUR = 0xFFFF5555;
+    private static final int CHECK_COLOUR = 0xFFFFFF55;
     private static final float HUD_SCALE = 2.0f;
     /** Pixels above screen centre; TNT Fuse sits at 30 on Ornithe, so the two stay apart. */
     private static final float HUD_CROSSHAIR_OFFSET = 48f;
 
     private static final SplitRules RULES = new SplitRules();
+    private static final SplitInbound INBOUND = new SplitInbound();
 
     private int ticks;
 
@@ -71,7 +79,10 @@ public final class SplitWatch {
             char colour = TeamColors.code(victim);
             if (colour == 0) colour = SplitRules.leadingColour(event.getMessage().getFormattedText());
             boolean counted = RULES.onDeath(colour, SessionStatsWatch.ownTeamCode(), false, now);
-            if (counted) DiagLog.log("split: teammate death");
+            if (counted) {
+                INBOUND.arm(victim);
+                DiagLog.log("split: teammate death");
+            }
         } catch (Throwable ignored) {
             // never propagate into the chat pipeline
         }
@@ -84,14 +95,17 @@ public final class SplitWatch {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.theWorld == null || mc.thePlayer == null || !HypixelContext.isInActiveBedwarsGame()) {
             RULES.reset();
+            INBOUND.reset();
             return;
         }
-        if (!RULES.hasForge()) learnForge(mc);
+        if (RULES.hasForge()) scanTeammates(mc);
+        else learnForge(mc);
     }
 
     @SubscribeEvent
     public void onWorldLoad(WorldEvent.Load event) {
         RULES.reset();
+        INBOUND.reset();
     }
 
     @SubscribeEvent
@@ -100,42 +114,89 @@ public final class SplitWatch {
         if (cfg == null || !cfg.splitEnabled) return;
         if (!HypixelContext.isOnHypixel() || !HypixelContext.isInActiveBedwarsGame()) return;
         long now = System.currentTimeMillis();
-        if (!RULES.active(now) || !RULES.hasForge()) return;
+        if (!RULES.hasForge()) return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null || mc.thePlayer == null) return;
         EntityPlayerSP player = mc.thePlayer;
-        if (!RULES.nearForge(player.posX, player.posY, player.posZ)) return;
-        int seconds = RULES.secondsLeft(now);
-        if (seconds <= 0) return;
-        drawLabel(mc, "\u00a7lSPLIT " + seconds);
+        if (RULES.active(now)) {
+            if (!RULES.nearForge(player.posX, player.posY, player.posZ)) return;
+            int seconds = RULES.secondsLeft(now);
+            if (seconds <= 0) return;
+            drawLabel(mc, "\u00a7lSPLIT " + seconds, COLOUR);
+        } else if (inboundCue(cfg, player, now)) {
+            drawLabel(mc, "\u00a7lCHECK", CHECK_COLOUR);
+        }
     }
 
     /**
      * The HUD overlay pass {@code BedwarsHudRenderer} draws on: after the player's own respawn, while a teammate is
      * still dead, the same countdown above the crosshair, because a freshly respawned player runs at the forge
-     * without looking at it.
+     * without looking at it; and the Teammate Returning {@code CHECK} in the same spot (not tied to the Crosshair Cue
+     * row).
      */
     @SubscribeEvent
     public void onRenderOverlay(RenderGameOverlayEvent.Post event) {
         try {
             ClientSettings cfg = BedwarsQol.config;
-            if (cfg == null || !cfg.splitEnabled || !cfg.splitHudCue) return;
+            if (cfg == null || !cfg.splitEnabled) return;
             Minecraft mc = Minecraft.getMinecraft();
             if (mc == null || mc.theWorld == null || mc.thePlayer == null || mc.currentScreen != null) return;
             if (!HypixelContext.isInActiveBedwarsGame()) return;
             long now = System.currentTimeMillis();
-            if (!RULES.hudCue(now)) return;
-            int seconds = RULES.secondsLeft(now);
-            if (seconds <= 0) return;
-            if (RULES.hasForge() && !RULES.nearForge(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) return;
-            String text = "SPLIT " + seconds;
+            String text;
+            int colour;
+            if (RULES.active(now)) {
+                if (!cfg.splitHudCue || !RULES.hudCue(now)) return;
+                int seconds = RULES.secondsLeft(now);
+                if (seconds <= 0) return;
+                if (RULES.hasForge() && !RULES.nearForge(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) return;
+                text = "SPLIT " + seconds;
+                colour = COLOUR;
+            } else if (inboundCue(cfg, mc.thePlayer, now)) {
+                text = "CHECK";
+                colour = CHECK_COLOUR;
+            } else {
+                return;
+            }
             ScaledResolution sr = new ScaledResolution(mc);
             float x = sr.getScaledWidth() / 2f - BedwarsQolFont.width(text, HUD_SCALE, BedwarsQolFont.Weight.MEDIUM) / 2f;
             float y = sr.getScaledHeight() / 2f - HUD_CROSSHAIR_OFFSET;
-            BedwarsQolFont.draw(text, x, y, HUD_SCALE, COLOUR, true, BedwarsQolFont.Weight.MEDIUM);
+            BedwarsQolFont.draw(text, x, y, HUD_SCALE, colour, true, BedwarsQolFont.Weight.MEDIUM);
         } catch (Throwable ignored) {
             // a failed draw never breaks the frame
         }
+    }
+
+    /** Feeds every teammate's distance to the forge to {@link SplitInbound}, then closes the scan. */
+    private static void scanTeammates(Minecraft mc) {
+        EntityPlayerSP player = mc.thePlayer;
+        char own = SessionStatsWatch.ownTeamCode();
+        if (own == 0) return; // own team unknown: no one can be told apart, so no scan marks anyone away
+        long now = System.currentTimeMillis();
+        for (EntityPlayer other : mc.theWorld.playerEntities) {
+            if (other == null || other == player) continue;
+            String name = other.getName();
+            if (name == null) continue;
+            char code = TeamColors.code(name);
+            if (code == 0 || Character.toLowerCase(code) != Character.toLowerCase(own)) continue;
+            if (SessionStatsWatch.isLocalName(name)) continue;
+            if (INBOUND.observe(name, distToForge(other), now)) DiagLog.log("split: inbound cue");
+        }
+        INBOUND.endScan(now);
+    }
+
+    /** 3-D distance from an entity to the locked forge. */
+    private static double distToForge(Entity e) {
+        double dx = e.posX - RULES.forgeX(), dy = e.posY - RULES.forgeY(), dz = e.posZ - RULES.forgeZ();
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * Whether the Teammate Returning {@code CHECK} shows: the row is on, the countdown is not running
+     * (it wins), and a teammate's cue is live while the player stands at the forge.
+     */
+    private static boolean inboundCue(ClientSettings cfg, EntityPlayerSP player, long now) {
+        return cfg.splitInbound && !RULES.active(now) && RULES.hasForge() && INBOUND.cue(distToForge(player), now);
     }
 
     /** Offers the nearest dropped iron/gold ingot to the rules, which lock it when in range and learnable. */
@@ -167,10 +228,10 @@ public final class SplitWatch {
 
     /**
      * A camera-facing billboard at forge + {@link #LABEL_LIFT}, shaped like
-     * {@code NametagStats.drawLineAbove} but with no background, bold red text at twice the nametag
+     * {@code NametagStats.drawLineAbove} but with no background, bold text at twice the nametag
      * scale, and the depth test off for the whole draw so it shows through walls.
      */
-    private static void drawLabel(Minecraft mc, String text) {
+    private static void drawLabel(Minecraft mc, String text, int colour) {
         RenderManager rm = mc.getRenderManager();
         FontRenderer fr = rm == null ? null : rm.getFontRenderer();
         if (fr == null) return;
@@ -193,7 +254,7 @@ public final class SplitWatch {
         GlStateManager.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
         GlStateManager.enableTexture2D();
 
-        fr.drawString(text, -fr.getStringWidth(text) / 2, 0, COLOUR);
+        fr.drawString(text, -fr.getStringWidth(text) / 2, 0, colour);
 
         GlStateManager.enableDepth();
         GlStateManager.depthMask(true);

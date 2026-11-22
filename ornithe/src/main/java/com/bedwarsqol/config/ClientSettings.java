@@ -199,6 +199,8 @@ public class ClientSettings {
     public boolean splitEnabled = true;
     /** Split's Crosshair Cue row: the same countdown above the crosshair right after your own respawn. */
     public boolean splitHudCue = true;
+    /** Split's Teammate Returning row: a yellow "CHECK" when a teammate comes back to base toward the forge. Off by default. */
+    public boolean splitInbound = false;
 
     /** Rewind (Ornithe build): the module switch; recording needs it and {@link #rewindRecordGames} both on. */
     public boolean rewind = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_ENABLED;

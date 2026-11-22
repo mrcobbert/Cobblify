@@ -106,6 +106,8 @@ public class ClientSettings {
     public boolean splitEnabled = true;
     /** Split's Crosshair Cue row: the same countdown above the crosshair right after your own respawn. */
     public boolean splitHudCue = true;
+    /** Split's Teammate Returning row: a yellow "CHECK" when a teammate comes back to base toward the forge. Off by default. */
+    public boolean splitInbound = false;
 
     // --- Chat module (Lunar keeps only the call alerts and the inc key; Lunar Client ships the generic chat
     // QOL natively, so Unlimited/Keep History/Stack Spam/Copy Chat/mention sound live in the Forge tree only) ---
