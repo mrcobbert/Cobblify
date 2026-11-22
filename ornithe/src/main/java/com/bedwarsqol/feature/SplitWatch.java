@@ -2,11 +2,13 @@ package com.bedwarsqol.feature;
 
 import com.bedwarsqol.BedwarsQol;
 import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.gui.render.BedwarsQolFont;
 import com.bedwarsqol.ornithe.ChatReceivedEvent;
 import com.bedwarsqol.stats.HypixelContext;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.FontRenderer;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.entity.RenderManager;
 import net.minecraft.entity.item.EntityItem;
@@ -19,7 +21,8 @@ import org.lwjgl.opengl.GL11;
 /**
  * Split: for {@link SplitRules#WINDOW_MS} after a teammate's non-final death in a Hypixel Bed Wars game, a red
  * {@code SPLIT 5} ... {@code SPLIT 1} countdown is drawn in the world above the player's home forge, while the player
- * is within {@link SplitRules#NEAR_RANGE} blocks of it.
+ * is within {@link SplitRules#NEAR_RANGE} blocks of it. After the player's own respawn, while a teammate is still dead,
+ * the same countdown is also drawn on the HUD above the crosshair ({@link SplitRules#hudCue}).
  *
  * <p>The death comes from chat ({@link SessionChatLine#deathVictim}); the victim is a teammate when their team colour
  * (scoreboard, else the line's first colour code) equals the player's own and they are not the player. The home forge
@@ -33,6 +36,9 @@ public final class SplitWatch {
     private static final double LABEL_HEIGHT = 1.25;
     private static final float SCALE = 0.016666668F * 1.6F * 2.0F;
     private static final int COLOUR = 0xFFFF5555;
+    private static final float HUD_SCALE = 2.0f;
+    /** Pixels above screen centre; TNT Fuse sits at 30, so the two stay apart. */
+    private static final float HUD_CROSSHAIR_OFFSET = 48f;
 
     private static final SplitRules RULES = new SplitRules();
 
@@ -52,10 +58,14 @@ public final class SplitWatch {
             String plain = EnumChatFormatting.getTextWithoutFormattingCodes(event.message.getUnformattedText());
             String victim = SessionChatLine.deathVictim(plain);
             if (victim == null) return;
+            long now = System.currentTimeMillis();
+            if (SessionStatsWatch.isLocalName(victim)) {
+                RULES.onOwnDeath(now);
+                return;
+            }
             char victimColour = TeamColors.code(victim);
             if (victimColour == 0) victimColour = SplitRules.leadingColour(event.message.getFormattedText());
-            boolean counted = RULES.onDeath(victimColour, SessionStatsWatch.ownTeamCode(),
-                    SessionStatsWatch.isLocalName(victim), System.currentTimeMillis());
+            boolean counted = RULES.onDeath(victimColour, SessionStatsWatch.ownTeamCode(), false, now);
             if (counted) DiagLog.log("split: teammate death");
         } catch (Throwable ignored) {
             // never propagate into the chat pipeline
@@ -117,6 +127,32 @@ public final class SplitWatch {
             int seconds = RULES.secondsLeft(now);
             if (seconds <= 0) return;
             draw(mc, "§lSPLIT " + seconds);
+        } catch (Throwable ignored) {
+            // a failed draw never breaks the frame
+        }
+    }
+
+    /**
+     * HUD text pass ({@code ModEvents.HUD_TEXT}): after the player's own respawn, while a teammate is still dead, the
+     * same countdown above the crosshair, because a freshly respawned player runs at the forge without looking at it.
+     */
+    public void onRenderHud() {
+        try {
+            ClientSettings cfg = BedwarsQol.config;
+            if (cfg == null || !cfg.splitEnabled || !cfg.splitHudCue) return;
+            Minecraft mc = Minecraft.getMinecraft();
+            if (mc == null || mc.theWorld == null || mc.thePlayer == null || mc.currentScreen != null) return;
+            if (!HypixelContext.isInActiveBedwarsGame()) return;
+            long now = System.currentTimeMillis();
+            if (!RULES.hudCue(now)) return;
+            int seconds = RULES.secondsLeft(now);
+            if (seconds <= 0) return;
+            if (RULES.hasForge() && !RULES.nearForge(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) return;
+            String text = "SPLIT " + seconds;
+            ScaledResolution sr = new ScaledResolution(mc);
+            float x = sr.getScaledWidth() / 2f - BedwarsQolFont.width(text, HUD_SCALE, BedwarsQolFont.Weight.MEDIUM) / 2f;
+            float y = sr.getScaledHeight() / 2f - HUD_CROSSHAIR_OFFSET;
+            BedwarsQolFont.draw(text, x, y, HUD_SCALE, COLOUR, true, BedwarsQolFont.Weight.MEDIUM);
         } catch (Throwable ignored) {
             // a failed draw never breaks the frame
         }

@@ -59,7 +59,7 @@ public class SheetPlatformOnlyTest {
         return new Tree(new HashSet<String>(Arrays.asList(
                 "inventory", "genTimers", "session", "mapInfo", "handPos", "handX", "noEsc", "tabHF",
                 "incAlert", "bedAlert", "bgAlert", "incKey", "stats", "nickUtils", "tagUtils", "partyJoin",
-                "split", "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
+                "split", "splitHud", "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
     }
 
     @Test
@@ -447,8 +447,17 @@ public class SheetPlatformOnlyTest {
         assertEquals("Split", m.name);
         assertEquals("SPLIT over your forge when a teammate dies", m.desc);
         assertTrue("split has search keywords", m.kw != null && m.kw.contains("forge"));
-        assertTrue("no sub-rows", m.rows.isEmpty());
+        assertEquals("one sub-row", 1, m.rows.size());
+        SheetSchema.Row hud = m.rows.get(0);
+        assertEquals("splitHud", hud.id);
+        assertEquals(SheetSchema.Kind.TOGGLE, hud.kind);
+        assertEquals("Crosshair Cue", hud.name);
+        assertEquals("Also above your crosshair right after you respawn", hud.desc);
+        assertEquals("hud respawn", hud.kw);
+        assertTrue(SheetSchema.row("splitHud") == hud);
         assertFalse(SheetSchema.platformOnly("split"));
+        assertFalse(SheetSchema.platformOnly("splitHud"));
+        assertTrue(SheetSchema.shows(lunar(), "splitHud"));
         List<SheetSchema.Module> mods = m.category().modules;
         assertEquals("follows partyJoin", mods.indexOf(SheetSchema.module("partyJoin")) + 1, mods.indexOf(m));
         assertEquals("precedes rewind", mods.indexOf(m) + 1, mods.indexOf(SheetSchema.module("rewind")));

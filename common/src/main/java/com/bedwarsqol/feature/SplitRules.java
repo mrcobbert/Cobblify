@@ -11,16 +11,22 @@ public final class SplitRules {
     public static final long WINDOW_MS = 5_000L;
     public static final double LEARN_RANGE = 16.0;
     public static final double NEAR_RANGE = 32.0;
+    public static final long RESPAWN_MS = 5_000L;
+    public static final long HUD_AFTER_RESPAWN_MS = 5_000L;
 
     private boolean dead;
     private long deathMs;
+    private boolean ownDead;
+    private long ownDeathMs;
     private boolean locked;
     private double forgeX, forgeY, forgeZ;
 
-    /** Forgets the death time and the forge. */
+    /** Forgets the death times (teammate and own) and the forge. */
     public void reset() {
         dead = false;
         deathMs = 0L;
+        ownDead = false;
+        ownDeathMs = 0L;
         locked = false;
         forgeX = forgeY = forgeZ = 0;
     }
@@ -71,6 +77,23 @@ public final class SplitRules {
         if (!locked) return false;
         double dx = forgeX - px, dy = forgeY - py, dz = forgeZ - pz;
         return dx * dx + dy * dy + dz * dz <= NEAR_RANGE * NEAR_RANGE;
+    }
+
+    /** Records the player's own non-final death. {@link #reset()} forgets it. */
+    public void onOwnDeath(long nowMs) {
+        ownDead = true;
+        ownDeathMs = nowMs;
+    }
+
+    /**
+     * Whether the HUD cue shows: a teammate's window is {@link #active} and the player respawned from a
+     * recorded own death within the last {@link #HUD_AFTER_RESPAWN_MS}, that is {@code nowMs} in
+     * [ownDeathMs + {@link #RESPAWN_MS}, ownDeathMs + RESPAWN_MS + HUD_AFTER_RESPAWN_MS).
+     */
+    public boolean hudCue(long nowMs) {
+        if (!ownDead || !active(nowMs)) return false;
+        long respawn = ownDeathMs + RESPAWN_MS;
+        return nowMs >= respawn && nowMs - respawn < HUD_AFTER_RESPAWN_MS;
     }
 
     public boolean hasForge() {

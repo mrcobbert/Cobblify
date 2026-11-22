@@ -159,6 +159,7 @@ public class BedwarsQol implements ClientModInitializer {
         ModEvents.CHAT.register(split::onChat);
         ModEvents.CLIENT_TICK.register(mc -> split.onClientTick());
         ModEvents.WORLD_LAST.register(split::onRenderWorldLast);
+        ModEvents.HUD_TEXT.register(partialTicks -> split.onRenderHud());
         GameRosterChat rosterChat = new GameRosterChat();
         ModEvents.CHAT.register(EventPriority.HIGHEST, true, rosterChat::onChat);
         NickUtils nickUtils = new NickUtils();
