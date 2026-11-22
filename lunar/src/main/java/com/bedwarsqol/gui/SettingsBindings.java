@@ -163,7 +163,6 @@ final class SettingsBindings implements SheetValues {
             case "tabSize": return SIZES[clamp(c.styledTabListSize, 0, 2)];
             case "guiSize": return SIZES[clamp(c.guiSize, 0, 2)];
             case "font": return c.minecraftFont() ? "Minecraft" : "Modern";
-            case "accent": return GuiTheme.fromToken(c.guiAccent).label();
             default: return "";
         }
     }
@@ -181,10 +180,28 @@ final class SettingsBindings implements SheetValues {
             case "tabSize": c.styledTabListSize = i; break;
             case "guiSize": c.guiSize = i; break;
             case "font": c.guiFont = "Minecraft".equals(option) ? GuiTheme.FONT_MINECRAFT : GuiTheme.FONT_MODERN; break;
-            case "accent": c.guiAccent = GuiTheme.Accent.values()[i].token(); break;
             default: return;
         }
         c.save();
+    }
+
+    @Override
+    public int color(String id) {
+        ClientSettings c = settings();
+        switch (id) {
+            case "accent": return GuiTheme.color(c.guiAccent) & 0xFFFFFF;
+            default: return 0xFFFFFF;
+        }
+    }
+
+    /** Like a number, a colour is written by {@link #save()}: a drag across the picker writes the file once. */
+    @Override
+    public void setColor(String id, int rgb) {
+        ClientSettings c = settings();
+        switch (id) {
+            case "accent": c.guiAccent = GuiTheme.hexToken(rgb); break;
+            default: break;
+        }
     }
 
     @Override

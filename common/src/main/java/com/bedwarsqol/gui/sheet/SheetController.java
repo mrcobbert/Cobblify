@@ -28,6 +28,11 @@ public final class SheetController {
 
         void toast(String message);
 
+        /** The system clipboard's text, for pasting a hex colour; empty when there is none. */
+        default String clipboard() {
+            return "";
+        }
+
         /** Store a key row's binding (0 clears it). */
         void setKey(String id, int binding);
 
@@ -37,7 +42,7 @@ public final class SheetController {
     // LWJGL key codes
     public static final int KEY_ESCAPE = 1, KEY_BACK = 14, KEY_TAB = 15, KEY_RETURN = 28, KEY_A = 30, KEY_F = 33,
             KEY_SPACE = 57, KEY_HOME = 199, KEY_UP = 200, KEY_LEFT = 203, KEY_RIGHT = 205, KEY_END = 207,
-            KEY_DOWN = 208, KEY_DELETE = 211, KEY_NUMPADENTER = 156;
+            KEY_DOWN = 208, KEY_DELETE = 211, KEY_NUMPADENTER = 156, KEY_V = 47;
 
     private static final float WHEEL_STEP = 39f;
     private static final long CONFIRM_MS = 3000;
@@ -60,6 +65,8 @@ public final class SheetController {
     private String editing;
     private String editText = "";
     private boolean editSelected;
+    /** The field being typed in is a colour's hex field, not a number. */
+    private boolean editHex;
     private Frame frame;
 
     public SheetController(SheetState st, SheetValues values, Host host) {
@@ -84,6 +91,7 @@ public final class SheetController {
     public void frame(Frame f) {
         this.frame = f;
         if (st.confirm != null && host.now() > st.confirmUntil) st.confirm = null;
+        syncPicker();
     }
 
     public String pressed() {
@@ -112,8 +120,20 @@ public final class SheetController {
 
     // ------------------------------------------------------------------ pointer
 
-    /** A mouse button went down on {@code n} (null: nothing interactive), at sheet x {@code x}. */
+    /** As {@link #pointerDown(Node, float, float, int)} for controls that only read x. */
     public void pointerDown(Node n, float x, int button) {
+        pointerDown(n, x, 0f, button);
+    }
+
+    public void pointerDrag(float x) {
+        pointerDrag(x, 0f);
+    }
+
+    /**
+     * A mouse button went down on {@code n} (null: nothing interactive), at sheet x {@code x} and body content y
+     * {@code y} (the y a body node's own {@code y} is in).
+     */
+    public void pointerDown(Node n, float x, float y, int button) {
         if (st.capture != null) {
             // Left click cancels the capture; any other button becomes the binding.
             if (button != 0) host.setKey(st.capture, SessionHoldKey.bindingForMouse(button));
@@ -141,24 +161,71 @@ public final class SheetController {
             dragX = n.x;
             dragW = n.w;
             focus = key(n);
-            drag(x);
+            drag(x, y);
             return;
         }
-        if (n.type == T.VALUE) {
+        if (n.type == T.SV || n.type == T.HUE) {
+            host.click();
+            dragging = n;
+            focus = key(n);
+            drag(x, y);
+            return;
+        }
+        if (n.type == T.VALUE || n.type == T.HEX) {
             editing = n.id;
+            editHex = n.type == T.HEX;
             editText = n.text;
             editSelected = true;
             focus = key(n);
         }
     }
 
-    public void pointerDrag(float x) {
-        if (dragging != null) drag(x);
+    public void pointerDrag(float x, float y) {
+        if (dragging != null) drag(x, y);
     }
 
-    private void drag(float x) {
-        Row r = SheetSchema.row(dragging.id);
-        values.setNumber(r.id, SheetFormat.atFraction(r, (x - dragX) / dragW));
+    private void drag(float x, float y) {
+        Node n = dragging;
+        if (n.type == T.SLIDER) {
+            Row r = SheetSchema.row(n.id);
+            values.setNumber(r.id, SheetFormat.atFraction(r, (x - dragX) / dragW));
+            return;
+        }
+        if (n.type == T.SV) {
+            // the field is the square less its 1 su border; a pixel's centre picks that pixel's colour
+            st.pickS = clamp((x - (n.x + 1f) - 0.5f) / (n.w - 3f), 0f, 1f);
+            st.pickV = 1f - clamp((y - (n.y + 1f) - 0.5f) / (n.h - 3f), 0f, 1f);
+        } else {
+            st.pickH = clamp((x - n.x) / n.w, 0f, 1f);
+        }
+        applyPick(n.id);
+    }
+
+    /** Store the picker's hue, saturation and brightness as the row's colour. */
+    private void applyPick(String id) {
+        st.pickRgb = ColorPick.rgb(st.pickH, st.pickS, st.pickV);
+        values.setColor(id, st.pickRgb);
+    }
+
+    /**
+     * Take the picker's hue, saturation and brightness from the stored colour when it is not the colour they stand
+     * for (the picker just opened, or a hex was typed), and close a picker whose row is gone or disabled.
+     */
+    private void syncPicker() {
+        if (st.picker == null) return;
+        Row r = SheetSchema.row(st.picker);
+        if (r == null) {
+            st.picker = null;
+            return;
+        }
+        int rgb = values.color(st.picker) & 0xFFFFFF;
+        if (rgb == st.pickRgb) return;
+        float[] hsv = ColorPick.hsv(rgb);
+        // a grey has no hue and black no saturation: keep the ones on show
+        if (hsv[1] > 0f) st.pickH = hsv[0];
+        if (hsv[2] > 0f) st.pickS = hsv[1];
+        st.pickV = hsv[2];
+        st.pickRgb = rgb;
     }
 
     /** The button came up over {@code n}; a press and release on the same control is a click. */
@@ -171,7 +238,8 @@ public final class SheetController {
         }
         String was = pressed;
         pressed = null;
-        if (n == null || was == null || !was.equals(key(n)) || n.type == T.SEARCH || n.type == T.VALUE) return;
+        if (n == null || was == null || !was.equals(key(n)) || n.type == T.SEARCH || n.type == T.VALUE
+                || n.type == T.HEX) return;
         activate(n);
     }
 
@@ -185,7 +253,18 @@ public final class SheetController {
         if (n.disabled) return;
         host.click();
         switch (n.type) {
+            case CHIP:
+                if (n.id.equals(st.picker)) {
+                    st.picker = null;
+                    values.save();
+                } else {
+                    st.picker = n.id;
+                    st.pickRgb = -1;
+                    syncPicker();
+                }
+                break;
             case CATEGORY:
+                st.picker = null;
                 st.category = n.id;
                 setQuery("");
                 st.capture = null;
@@ -199,7 +278,6 @@ public final class SheetController {
                 values.setOn(n.id, !values.on(n.id));
                 break;
             case OPTION:
-            case SWATCH:
                 values.setChoice(n.id, SheetSchema.row(n.id).options()[n.index]);
                 break;
             case KEY:
@@ -272,7 +350,7 @@ public final class SheetController {
             return true;
         }
         if (held && code == KEY_ESCAPE) return true;
-        if (editing != null && editKey(ch, code, shift)) return true;
+        if (editing != null && editKey(ch, code, shift, ctrl)) return true;
         if (code == settingsKey && settingsKey > 0 && !typing()) {
             if (held) return true;
             closeSheet();
@@ -315,9 +393,25 @@ public final class SheetController {
                 return true;
             }
         }
+        if (f != null && (f.type == T.SV || f.type == T.HUE)) {
+            // arrows step by a hundredth (Shift: a tenth): the hue on its bar; on the square, saturation across and
+            // brightness up
+            float step = shift ? 0.1f : 0.01f, dx = code == KEY_RIGHT ? step : code == KEY_LEFT ? -step : 0f;
+            float dy = code == KEY_UP ? step : code == KEY_DOWN ? -step : 0f;
+            if (dx != 0f || dy != 0f) {
+                if (f.type == T.SV) {
+                    st.pickS = clamp(st.pickS + dx, 0f, 1f);
+                    st.pickV = clamp(st.pickV + dy, 0f, 1f);
+                } else st.pickH = clamp(st.pickH + dx + dy, 0f, 1f);
+                applyPick(f.id);
+                values.save();
+                return true;
+            }
+        }
         if (f != null && focusVisible && (code == KEY_SPACE || code == KEY_RETURN || code == KEY_NUMPADENTER)) {
             if (f.type == T.SEARCH) searchFocused = true;
-            else if (f.type == T.VALUE) {
+            else if (f.type == T.VALUE || f.type == T.HEX) {
+                editHex = f.type == T.HEX;
                 editing = f.id;
                 editText = f.text;
                 editSelected = true;
@@ -374,6 +468,7 @@ public final class SheetController {
         boolean changed = !q.equals(st.query);
         st.query = q;
         if (changed) {
+            st.picker = null;
             st.showAll.clear();
             st.capture = null;
             st.scroll = st.scrollShown = 0f;
@@ -382,7 +477,8 @@ public final class SheetController {
 
     // ------------------------------------------------------------------ value field
 
-    private boolean editKey(char ch, int code, boolean shift) {
+    private boolean editKey(char ch, int code, boolean shift, boolean ctrl) {
+        if (editHex) return hexKey(ch, code, ctrl);
         Row r = SheetSchema.row(editing);
         if (code == KEY_RETURN || code == KEY_NUMPADENTER) {
             commitEdit();
@@ -417,9 +513,57 @@ public final class SheetController {
         return ch != 0;
     }
 
+    /**
+     * A key in a hex field: hex digits and {@code #}, seven characters at most; Ctrl+V pastes. The colour follows
+     * the text once it has six digits, and Enter or leaving the field applies and saves it.
+     */
+    private boolean hexKey(char ch, int code, boolean ctrl) {
+        if (code == KEY_RETURN || code == KEY_NUMPADENTER) {
+            commitEdit();
+            return true;
+        }
+        if (code == KEY_ESCAPE) {
+            editing = null;
+            return true;
+        }
+        if (code == KEY_TAB) {
+            commitEdit();
+            return false;
+        }
+        String text = editText;
+        if (ctrl && code == KEY_V) {
+            String clip = host.clipboard();
+            if (clip == null || ColorPick.parse(clip) < 0) return true;
+            text = ColorPick.hex(ColorPick.parse(clip));
+        } else if (code == KEY_BACK) {
+            text = editSelected || text.isEmpty() ? "" : text.substring(0, text.length() - 1);
+        } else if (!ctrl && (Character.digit(ch, 16) >= 0 || ch == '#')) {
+            if (editSelected) text = "";
+            if (ch == '#' ? text.isEmpty() : text.length() < (text.startsWith("#") ? 7 : 6)) {
+                text += Character.toUpperCase(ch);
+            }
+        } else {
+            return ch != 0;
+        }
+        editText = text;
+        editSelected = false;
+        // six digits are a colour as they stand; the three-digit short form waits for Enter, or it would flash by
+        int rgb = ColorPick.parse(text);
+        if (rgb >= 0 && text.length() >= 6) values.setColor(editing, rgb);
+        return true;
+    }
+
     /** Apply the typed value (as the prototype's {@code commitVal}) and leave the field. */
     private void commitEdit() {
         if (editing == null) return;
+        if (editHex) {
+            int rgb = ColorPick.parse(editText);
+            if (rgb >= 0) values.setColor(editing, rgb);
+            editing = null;
+            editHex = false;
+            values.save();
+            return;
+        }
         Row r = SheetSchema.row(editing);
         editing = null;
         String s = editText.replace(',', '.').replaceAll("[^0-9.+-]", "");
@@ -438,7 +582,8 @@ public final class SheetController {
         if (n.disabled) return false;
         switch (n.type) {
             case SEARCH: case CLOSE: case CATEGORY: case HERO: case RESET_POSITIONS: case MODULE_TOGGLE: case TOGGLE:
-            case OPTION: case SWATCH: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
+            case OPTION: case SLIDER: case VALUE: case KEY: case BUTTON: case MORE:
+            case CHIP: case SV: case HUE: case HEX:
                 return true;
             case OPEN:
                 return n.open;

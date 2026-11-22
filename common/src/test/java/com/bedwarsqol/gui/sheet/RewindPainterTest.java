@@ -39,6 +39,7 @@ public class RewindPainterTest {
         @Override public void fill(float x, float y, float w, float h, int argb) { rec.fill(x, y, w, h, argb); }
         @Override public void stroke(float[] points, float width, int argb) { rec.stroke(points, width, argb); }
         @Override public void ring(float cx, float cy, float r, float width, int argb) { rec.ring(cx, cy, r, width, argb); }
+        @Override public void field(float x, float y, float w, float h, int kind, float hue) { rec.field(x, y, w, h, kind, hue); }
         @Override public void text(String s, float x, float lineTop, float lineHeight, SheetFont font, int argb) {
             rec.text(s, x, lineTop, lineHeight, font, argb);
         }

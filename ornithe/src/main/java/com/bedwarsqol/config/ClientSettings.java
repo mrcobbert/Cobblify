@@ -22,7 +22,7 @@ public class ClientSettings {
      * a file written before the stamp existed reads 0 and migrates exactly once; a fresh instance
      * migrates as a no-op. Older builds ignore the key.
      */
-    static final int CURRENT_SETTINGS_VERSION = 5;
+    static final int CURRENT_SETTINGS_VERSION = 6;
     public int settingsVersion = 0;
 
     /**
@@ -344,9 +344,11 @@ public class ClientSettings {
 
     /** Custom highlight on the block you're looking at. */
     public boolean blockOverlayEnabled = false;
-    public int blockOverlayColor = 0x804A90E2;  // ARGB; only the alpha (Opacity) is used, the colour is the accent
+    public int blockOverlayColor = 0x80C0DCFF;  // ARGB: the highlight's own colour, its alpha the Opacity
     /** Draw the overlay white instead of in the accent. */
     public boolean blockOverlayWhite = false;
+    /** Draw the highlight only during a Bed Wars game; elsewhere the vanilla outline shows. */
+    public boolean blockOverlayInGameOnly = false;
     public int blockOverlayStyle = 2;           // 0 = outline, 1 = fill, 2 = both
     public boolean blockOverlaySeeThrough = false;
     public float blockOverlayLineWidth = 2.0f;
@@ -452,6 +454,8 @@ public class ClientSettings {
      * <li>v5: Seraph closed its API (October 2026). Its saved keys ({@code seraphTags} and the
      * pre-v2 {@code seraph*} sub-options) are dropped; nothing else changes. The v2 step above still
      * reads them for a file older than v2.</li>
+     * <li>v6: Block Overlay has its own colour. It takes the one it drew in (white with the old White switch,
+     * else the accent it followed), and the accent itself may now be any {@code #rrggbb}.</li>
      * </ul>
      */
     void migrate() {
@@ -479,6 +483,11 @@ public class ClientSettings {
             if (atDefault(heightLimitHudX, heightLimitHudY, heightLimitHudAnchor, 5, 5, 3)) heightLimitHudAnchor = HudPlacement.AUTO;
         }
         if (settingsVersion < 4) blockOverlayWhite = (blockOverlayColor & 0xFFFFFF) == 0xFFFFFF;
+        if (settingsVersion < 6) {
+            // the highlight keeps the colour it drew in: white, or the accent it followed
+            int rgb = blockOverlayWhite ? 0xFFFFFF : GuiTheme.color(guiAccent) & 0xFFFFFF;
+            blockOverlayColor = (blockOverlayColor & 0xFF000000) | rgb;
+        }
         // Outside the version steps (no settingsVersion bump): a saved Size row becomes the item's scale
         // whenever it is present, the same on-screen size it drew at.
         if (scoreboardSize != null) scoreboardHudScale = OverlayItems.legacySizeScale(scoreboardSize);

@@ -828,7 +828,7 @@ public class BedwarsHudRenderer {
         drawHudBackground(box, scale, example); // always on: the 13-row panel is unreadable over the world without it
         scale = ts(scale);
         // Headers in the settings menu's accent, rows in the neutral stat colours; each row keeps its weight.
-        int header = GuiTheme.fromToken(cfg.guiAccent).base();
+        int header = GuiTheme.color(cfg.guiAccent);
         float step = (TEXT_HEIGHT + LINE_GAP) * scale;
         List<Line> lines = sessionLines(example);
         for (int i = 0; i < lines.size(); i++) {
@@ -905,7 +905,7 @@ public class BedwarsHudRenderer {
             // The editor preview shows a still frame and must not disturb the live fades.
             level[i] = example ? (held[i] ? 1f : 0f) : KS_FADES[i].level(held[i], now);
         }
-        int accent = GuiTheme.fromToken(cfg.guiAccent).base();
+        int accent = GuiTheme.color(cfg.guiAccent);
         String leftCps = (example ? 12 : LEFT_CLICKS.cps(now)) + " CPS";
         String rightCps = (example ? 3 : RIGHT_CLICKS.cps(now)) + " CPS";
 

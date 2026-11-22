@@ -15,6 +15,12 @@ public interface Canvas extends TextMetrics {
     /** An anti-aliased stroked circle. */
     void ring(float cx, float cy, float r, float width, int argb);
 
+    /**
+     * One of the colour picker's gradient fields ({@link ColorPick#field}) over the rect, a computed colour per
+     * device pixel, drawn opaque.
+     */
+    void field(float x, float y, float w, float h, int kind, float hue);
+
     /** Draw text whose CSS line box starts at {@code lineTop} and is {@code lineHeight} tall. */
     void text(String s, float x, float lineTop, float lineHeight, SheetFont font, int argb);
 

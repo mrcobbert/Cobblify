@@ -317,4 +317,38 @@ public class ClientSettingsConfigTest {
         off.sanitize();
         assertFalse(off.blockOverlayWhite);
     }
+
+    @Test
+    public void theBlockOverlayKeepsTheColourItDrewInWhenItGetsItsOwn() {
+        ClientSettings white = GSON.fromJson("{\"settingsVersion\":5,\"blockOverlayWhite\":true,\"guiAccent\":\"red\","
+                + "\"blockOverlayColor\":" + 0xC04A90E2 + "}", ClientSettings.class);
+        white.sanitize();
+        assertEquals("white stays white, at its opacity", 0xC0FFFFFF, white.blockOverlayColor);
+        ClientSettings accent = GSON.fromJson("{\"settingsVersion\":5,\"guiAccent\":\"red\","
+                + "\"blockOverlayColor\":" + 0x404A90E2 + "}", ClientSettings.class);
+        accent.sanitize();
+        assertEquals("it followed the accent, so it takes the accent's colour", 0x40E5484D, accent.blockOverlayColor);
+        ClientSettings fresh = new ClientSettings();
+        fresh.sanitize();
+        assertEquals("a fresh install starts on the default accent's colour", 0x80C0DCFF, fresh.blockOverlayColor);
+        assertFalse(fresh.blockOverlayInGameOnly);
+        // stamped files are never touched again: a picked colour sticks
+        ClientSettings picked = GSON.fromJson("{\"settingsVersion\":6,\"blockOverlayWhite\":true,"
+                + "\"blockOverlayColor\":" + 0x80123456 + "}", ClientSettings.class);
+        picked.sanitize();
+        assertEquals(0x80123456, picked.blockOverlayColor);
+    }
+
+    @Test
+    public void theAccentIsANamedTokenOrAnyPickedColour() {
+        ClientSettings picked = GSON.fromJson("{\"guiAccent\":\" #12ABcd \"}", ClientSettings.class);
+        picked.sanitize();
+        assertEquals("#12abcd", picked.guiAccent);
+        assertEquals(0xFF12ABCD, GuiTheme.color(picked.guiAccent));
+        assertEquals("a named accent from an older file still reads", 0xFFE5484D, GuiTheme.color("red"));
+        ClientSettings junk = GSON.fromJson("{\"guiAccent\":\"#12abcz\"}", ClientSettings.class);
+        junk.sanitize();
+        assertEquals("pale-blue", junk.guiAccent);
+        assertEquals("#00000a", GuiTheme.hexToken(0x00000A));
+    }
 }

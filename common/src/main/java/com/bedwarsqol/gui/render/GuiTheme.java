@@ -117,11 +117,40 @@ public final class GuiTheme {
     }
 
     /**
-     * Coerce an arbitrary token to a known accent token. Trims + lowercases; null, empty, and unknown all
-     * collapse to {@code "pale-blue"} (the default accent).
+     * Coerce a stored accent: a picked colour stays {@code #rrggbb}; a named token is trimmed and lowercased; null,
+     * empty and unknown all collapse to {@code "pale-blue"} (the default accent).
      */
     public static String normalizeToken(String token) {
-        return fromToken(token).token();
+        int rgb = hex(token);
+        return rgb >= 0 ? hexToken(rgb) : fromToken(token).token();
+    }
+
+    /**
+     * The opaque ARGB of a stored accent: a picked colour ({@code #rrggbb}), or one of the named accents an older
+     * settings file holds. Anything else is the default accent.
+     */
+    public static int color(String token) {
+        int rgb = hex(token);
+        return rgb >= 0 ? 0xFF000000 | rgb : fromToken(token).base();
+    }
+
+    /** How a picked accent is stored: {@code #rrggbb}, lower case. */
+    public static String hexToken(int rgb) {
+        return "#" + Integer.toHexString(0x1000000 | (rgb & 0xFFFFFF)).substring(1);
+    }
+
+    /** The RGB of a {@code #rrggbb} token, or -1 when {@code token} is not one. */
+    private static int hex(String token) {
+        if (token == null) return -1;
+        String t = token.trim();
+        if (t.length() != 7 || t.charAt(0) != '#') return -1;
+        int v = 0;
+        for (int i = 1; i < 7; i++) {
+            int d = Character.digit(t.charAt(i), 16);
+            if (d < 0) return -1;
+            v = (v << 4) | d;
+        }
+        return v;
     }
 
     /** Font tokens: the bundled Inter or Minecraft's own font (the default), for the settings menu and the HUD. */

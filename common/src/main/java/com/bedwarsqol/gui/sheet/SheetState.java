@@ -22,6 +22,14 @@ public final class SheetState {
     /** The action row waiting for its second press, or null, and when that wait ends (ms). */
     public String confirm;
     public long confirmUntil;
+    /** The colour row whose picker is open, or null; one at a time. */
+    public String picker;
+    /**
+     * The open picker's hue, saturation and brightness (0..1) and the colour they stand for. Kept apart from the
+     * stored RGB so the hue survives a drag through grey or black.
+     */
+    public float pickH, pickS, pickV;
+    public int pickRgb = -1;
     /** Scroll target in sheet units; the drawn scroll eases toward it. */
     public float scroll;
     public float scrollShown;

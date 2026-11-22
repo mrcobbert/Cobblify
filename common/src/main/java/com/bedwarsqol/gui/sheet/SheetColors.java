@@ -64,6 +64,18 @@ public final class SheetColors {
         }
     }
 
+    /**
+     * An accent the sheet can show: {@code rgb} itself when it stands 3:1 against the sheet's ground, else the same
+     * hue lifted in OKLab lightness until it does, so a near-black pick still marks what is on.
+     */
+    public static int legible(int rgb) {
+        int c = rgb & 0xFFFFFF;
+        for (int i = 1; i <= 60 && GuiTheme.contrast(c, GROUND & 0xFFFFFF) < 3.0; i++) {
+            c = Oklab.shade(rgb & 0xFFFFFF, 0.015 * i, 1.0) & 0xFFFFFF;
+        }
+        return c;
+    }
+
     /** Vanilla Minecraft's GUI text shadow for text of colour {@code argb}: the same colour at a quarter brightness. */
     public static int textShadow(int argb) {
         return (argb & 0xFF000000) | ((argb & 0xFCFCFC) >> 2);
