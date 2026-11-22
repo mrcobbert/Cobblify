@@ -4973,6 +4973,9 @@ def rww_seek(s, *args):
     return rww_wait(s)
 
 
+RWW_COUNTER_SLACK_TICKS = 60  # 3 s of title-screen ticks around the open and the quit
+
+
 def smoke_rewind_watch(s):
     """RWW (PLAN Phase 7): watch the single-player recording RW just made, in cobdev's own folder.
     1 open: WATCHING, gate on, failures 0, your view; 2 free camera moves while paused; 3 straight play, a forward
@@ -5080,8 +5083,14 @@ def smoke_rewind_watch(s):
                 {"title": title, "state": st.get("state")})
         restored = {key: [pre.get(key), st.get(key)] for key in ("timerSpeed", "thirdPersonView", "chatLines",
                                                                     "updateCounter")}
-        s.check("4 timer speed, F5 view, chat lines and update counter are back", all(
-            v[0] == v[1] for v in restored.values()), restored)
+        # The update counter ticks on the title screen too, so it moves between this step's first probe and the
+        # open, and again after the quit: "back" is the value before, plus those few ticks (never playback's own
+        # count, which starts at 0).
+        counter = restored["updateCounter"]
+        counter_back = (isinstance(counter[0], int) and isinstance(counter[1], int)
+                        and 0 <= counter[1] - counter[0] <= RWW_COUNTER_SLACK_TICKS)
+        s.check("4 timer speed, F5 view, chat lines and update counter are back", counter_back and all(
+            v[0] == v[1] for key, v in restored.items() if key != "updateCounter"), restored)
         after = (s.probe("rewind-latest") or {}).get("closed")
         s.check("4 watching recorded nothing", after == files_before, {"before": files_before, "after": after})
     finally:

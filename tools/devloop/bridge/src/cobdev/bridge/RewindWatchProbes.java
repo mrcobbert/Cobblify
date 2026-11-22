@@ -260,7 +260,9 @@ final class RewindWatchProbes {
         out.put("active", active);
         out.put("state", String.valueOf(call(session, "state")));
         out.put("muted", call(cls(GATE), "muted"));
-        out.put("camera", ((Number) call(cls(CAMERA), "cameraIndex")).intValue() == 1 ? "FREE" : "YOU");
+        // The camera numbers moved once (free camera first); read the constant instead of repeating its value.
+        int freeCamera = cls(CAMERA).getField("FREE_CAMERA").getInt(null);
+        out.put("camera", ((Number) call(cls(CAMERA), "cameraIndex")).intValue() == freeCamera ? "FREE" : "YOU");
         out.put("lastFailure", String.valueOf(call(session, "lastFailure")));
         out.put("lastExit", String.valueOf(call(session, "lastExit")));
         out.put("command", command);
