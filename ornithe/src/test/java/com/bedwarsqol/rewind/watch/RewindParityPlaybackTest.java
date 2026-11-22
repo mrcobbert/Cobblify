@@ -16,11 +16,16 @@ import net.minecraft.block.state.IBlockState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.SoundHandler;
+import net.minecraft.client.entity.EntityOtherPlayerMP;
 import net.minecraft.client.multiplayer.PlayerControllerMP;
+import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.particle.EffectRenderer;
 import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.settings.GameSettings;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Blocks;
 import net.minecraft.init.Bootstrap;
 import net.minecraft.init.Items;
@@ -38,6 +43,8 @@ import net.minecraft.network.play.server.S30PacketWindowItems;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
+import net.minecraft.util.IntHashMap;
+import net.minecraft.world.IWorldAccess;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldProviderSurface;
 import net.minecraft.world.WorldSettings;
@@ -56,6 +63,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +73,8 @@ import java.util.UUID;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -1002,5 +1012,104 @@ public class RewindParityPlaybackTest {
         frame(0);
         assertFalse("nothing plays: vanilla's overlay, nothing added", HudPlayback.skipsOverlay(mc));
         assertEquals(2, p.overlays);
+    }
+
+    // ------------------------------------------------------------------ D4: the ridden player leaves
+
+    static final int OTHER_ID = 4242;
+    private static final GameProfile OTHER = new GameProfile(new UUID(21L, 22L), "FakeOther");
+
+    /**
+     * Another player in the playback world, as vanilla's S0C and S38 handlers leave them: in the world's entity map
+     * and player list with a tab entry (the S0C spawn's chunk bookkeeping is left out: the test world has no chunks).
+     * The world's collections the constructor would make are made here, so vanilla's own removal can run on it.
+     */
+    private EntityOtherPlayerMP spawnOther() throws Exception {
+        BlockPredictionTest.Client.set(WorldClient.class, world, "mc", mc);
+        BlockPredictionTest.Client.set(WorldClient.class, world, "entityList", new HashSet<Entity>());
+        BlockPredictionTest.Client.set(WorldClient.class, world, "entitySpawnQueue", new HashSet<Entity>());
+        BlockPredictionTest.Client.set(World.class, world, "entitiesById", new IntHashMap<Entity>());
+        BlockPredictionTest.Client.set(World.class, world, "playerEntities", new ArrayList<EntityPlayer>());
+        BlockPredictionTest.Client.set(World.class, world, "worldAccesses", new ArrayList<IWorldAccess>());
+        EntityOtherPlayerMP p = new EntityOtherPlayerMP(world, OTHER);
+        p.setEntityId(OTHER_ID);
+        Field byId = World.class.getDeclaredField("entitiesById");
+        byId.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        IntHashMap<Entity> ids = (IntHashMap<Entity>) byId.get(world);
+        ids.addKey(OTHER_ID, p);
+        world.playerEntities.add(p);
+        Field list = WorldClient.class.getDeclaredField("entityList");
+        list.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Set<Entity> entities = (java.util.Set<Entity>) list.get(world);
+        entities.add(p);
+        Field info = NetHandlerPlayClient.class.getDeclaredField("playerInfoMap");
+        info.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<UUID, NetworkPlayerInfo> tab = (Map<UUID, NetworkPlayerInfo>) info.get(connection.handler());
+        tab.put(OTHER.getId(), new NetworkPlayerInfo(OTHER));
+        return p;
+    }
+
+    private static void assertEye(String what, RewindCamera cam, double x, double eyeY, double z, float yaw,
+                                  float pitch) {
+        assertEquals(what + " x", x, cam.posX, 1e-9);
+        assertEquals(what + " eye y", eyeY, cam.posY + cam.getEyeHeight(), 1e-9);
+        assertEquals(what + " z", z, cam.posZ, 1e-9);
+        assertEquals(what + " yaw", yaw, cam.rotationYaw, 1e-4f);
+        assertEquals(what + " pitch", pitch, cam.rotationPitch, 1e-4f);
+    }
+
+    /**
+     * TASK D4 (outcome review I1): when the ridden player leaves the world the view becomes the free camera where the
+     * ridden view was. The client path, not the model alone: key 3 ({@link RewindPlayback#cyclePlayer}) rides another
+     * player of the playback world, vanilla's S13 removal ({@code WorldClient.removeEntityFromWorld}) takes them out,
+     * and the next drawn frame ({@code RiddenView.follow} -> {@code toFree} -> {@link
+     * CameraController#selectFreeCameraAt}) is the free camera at their last eye and head turn, viewed from the
+     * camera; playback keeps running and the free camera stays there.
+     */
+    @Test
+    public void whenTheRiddenPlayerLeavesTheViewBecomesTheFreeCameraWhereItWas() throws Exception {
+        open(writeRecording(tmp.newFolder("rewind")));
+        frame(1);
+        EntityOtherPlayerMP other = spawnOther();
+        other.setPositionAndRotation(20.5, 70, -8.25, 135f, -20f);
+        RewindCamera cam = (RewindCamera) mc.thePlayer;
+
+        assertTrue("key 3 rides the other player", RewindPlayback.cyclePlayer(1));
+        assertEquals(OTHER_ID, RewindPlayback.view().riddenEntityId());
+        frame(1);
+        assertSame("vanilla views from them", other, mc.getRenderViewEntity());
+        assertEye("the camera at their eye", cam, 20.5, 70.0 + other.getEyeHeight(), -8.25, 135f, -20f);
+
+        other.setPositionAndRotation(21.0, 70.5, -9.0, 140f, -25f); // where they are last seen
+        frame(1);
+        assertEye("following them", cam, 21.0, 70.5 + (double) other.getEyeHeight(), -9.0, 140f, -25f);
+        double lastEyeY = 70.5 + (double) other.getEyeHeight();
+
+        assertSame("vanilla's S13 removal", other, world.removeEntityFromWorld(OTHER_ID));
+        assertNull("they left the world", world.getEntityByID(OTHER_ID));
+        long ticks = session.ticks().ticksRun();
+        frame(1);
+        assertTrue("the free camera", RewindPlayback.view().freeCamera());
+        assertEquals(CameraController.FREE_CAMERA, CameraController.cameraIndex());
+        assertEquals("nobody is ridden any more", -1, RewindPlayback.view().riddenEntityId());
+        assertSame("viewed from the camera again", cam, mc.getRenderViewEntity());
+        assertSame("the same camera", cam, mc.thePlayer);
+        assertEye("where the ridden view was", cam, 21.0, lastEyeY, -9.0, 140f, -25f);
+
+        for (int i = 0; i < 5; i++) {
+            frame(1);
+        }
+        assertEquals("playback keeps running", PlaybackSession.State.WATCHING, session.state());
+        assertFalse(session.ticks().paused());
+        assertEquals("a tick per frame", ticks + 6, session.ticks().ticksRun());
+        assertTrue("the free camera still", RewindPlayback.view().freeCamera());
+        assertEye("the free camera stays there", cam, 21.0, lastEyeY, -9.0, 140f, -25f);
+
+        assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
+        assertEquals("nothing reached the playback channel", 0, connection.discarded());
+        assertTrue(connection.channel().outboundMessages().isEmpty());
     }
 }
