@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.106",
+    "channel": "dev",
+    "date": "2026-11-22",
+    "sections": [
+      ["New", [
+        "Split: if you die and a teammate dies after you, SPLIT also shows above your crosshair from the moment you respawn until they do. It is the Crosshair Cue switch under Split, on by default."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.105",
     "channel": "dev",
     "date": "2026-11-21",
