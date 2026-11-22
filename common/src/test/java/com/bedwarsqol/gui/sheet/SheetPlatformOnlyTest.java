@@ -59,7 +59,7 @@ public class SheetPlatformOnlyTest {
         return new Tree(new HashSet<String>(Arrays.asList(
                 "inventory", "genTimers", "session", "mapInfo", "handPos", "handX", "noEsc", "tabHF",
                 "incAlert", "bedAlert", "bgAlert", "incKey", "stats", "nickUtils", "tagUtils", "partyJoin",
-                "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
+                "split", "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
     }
 
     @Test
@@ -437,6 +437,27 @@ public class SheetPlatformOnlyTest {
             assertFalse(q, SheetSearch.search(q, ornithe).isEmpty());
         }
         assertEquals("rewind", SheetSearch.search("rewind", ornithe).get(0).module.id);
+    }
+
+    @Test
+    public void splitIsASharedHypixelModuleBetweenPartyJoinAndRewind() {
+        SheetSchema.Module m = SheetSchema.module("split");
+        assertTrue("split is in the schema", m != null);
+        assertEquals("hypixel", m.category().id);
+        assertEquals("Split", m.name);
+        assertEquals("SPLIT over your forge when a teammate dies", m.desc);
+        assertTrue("split has search keywords", m.kw != null && m.kw.contains("forge"));
+        assertTrue("no sub-rows", m.rows.isEmpty());
+        assertFalse(SheetSchema.platformOnly("split"));
+        List<SheetSchema.Module> mods = m.category().modules;
+        assertEquals("follows partyJoin", mods.indexOf(SheetSchema.module("partyJoin")) + 1, mods.indexOf(m));
+        assertEquals("precedes rewind", mods.indexOf(m) + 1, mods.indexOf(SheetSchema.module("rewind")));
+        assertTrue(SheetSchema.shows(acceptsEverything, "split"));
+        assertTrue(SheetSchema.shows(lunar(), "split"));
+        assertTrue(SheetSchema.shows(new Tree(null, true), "split"));
+        List<String> lunarHypixel = modules(lunar(), "hypixel");
+        assertEquals("split", lunarHypixel.get(lunarHypixel.size() - 1));
+        assertEquals("split", SheetSearch.search("split", lunar()).get(0).module.id);
     }
 
     /** The module toggles a page draws, in order. */

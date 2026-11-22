@@ -327,6 +327,31 @@ public class SessionChatLineTest {
         assertNull(SessionChatLine.parse("Steve was killed by Self.", null));
     }
 
+    // ---- death victim (Split) ----
+
+    @Test
+    public void deathVictimNamesTheVictimOfANonFinalDeath() {
+        assertEquals("Steve", SessionChatLine.deathVictim("Steve was killed by Alex."));
+        assertEquals("Steve", SessionChatLine.deathVictim("Steve fell into the void."));
+        assertEquals("Steve", SessionChatLine.deathVictim("Steve's heart was pierced by Alex."));
+        assertEquals("Steve", SessionChatLine.deathVictim("  Steve was fried by Alex's Golem.  "));
+    }
+
+    @Test
+    public void deathVictimIgnoresEverythingElse() {
+        assertNull(SessionChatLine.deathVictim("Steve was killed by Alex. FINAL KILL!"));
+        assertNull(SessionChatLine.deathVictim("Steve fell into the void. FINAL KILL!"));
+        assertNull(SessionChatLine.deathVictim("Steve disconnected."));
+        assertNull(SessionChatLine.deathVictim("Steve reconnected."));
+        assertNull(SessionChatLine.deathVictim("Steve purchased Iron Forge"));
+        assertNull(SessionChatLine.deathVictim("Steve: I fell into the void."));
+        assertNull(SessionChatLine.deathVictim("BED DESTRUCTION > Blue Bed was destroyed by Steve!"));
+        assertNull(SessionChatLine.deathVictim("TEAM ELIMINATED > Blue Team has been eliminated!"));
+        assertNull(SessionChatLine.deathVictim("You will respawn in 5 seconds!"));
+        assertNull(SessionChatLine.deathVictim(""));
+        assertNull(SessionChatLine.deathVictim(null));
+    }
+
     @Test
     public void killerExtraction() {
         assertEquals("Self", SessionChatLine.killerOf("was killed by Self"));

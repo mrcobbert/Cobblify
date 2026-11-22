@@ -102,6 +102,9 @@ public class ClientSettings {
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
     public boolean partyJoinAlert = true;
 
+    /** Split: red "SPLIT n" above the home forge for 5 s after a teammate's non-final death. */
+    public boolean splitEnabled = true;
+
     // --- Chat module (Lunar keeps only the call alerts and the inc key; Lunar Client ships the generic chat
     // QOL natively, so Unlimited/Keep History/Stack Spam/Copy Chat/mention sound live in the Forge tree only) ---
 

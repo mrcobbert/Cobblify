@@ -156,3 +156,6 @@ one-sided res forge mcmod.info
 # MinecraftChatClearMixin, C01PacketChatMessageMixin); the Lunar config has no
 # refmap and asks for minVersion 0.8.
 divergent res mixins.bedwarsqol.json
+
+# Split (0.19.0): teammate-death SPLIT label over the home forge. Ornithe and Lunar only; Forge is retiring.
+one-sided main lunar com/bedwarsqol/feature/SplitWatch.java

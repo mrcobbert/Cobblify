@@ -174,10 +174,24 @@ public final class SessionStatsWatch {
 
     /** The player's team colour word from the scoreboard, under the nick first while nicked. */
     private static String ownTeamWord() {
+        return SessionChatLine.teamForColourCode(ownTeamCode());
+    }
+
+    /** The player's team colour code from the scoreboard, under the nick first while nicked; 0 when unknown. */
+    static char ownTeamCode() {
         String nick = nickName();
         char code = nick == null ? 0 : TeamColors.code(nick);
         if (code == 0) code = TeamColors.code(selfName());
-        return SessionChatLine.teamForColourCode(code);
+        return code;
+    }
+
+    /** Whether {@code name} is the local player, by account name or current nick (case-insensitive). */
+    static boolean isLocalName(String name) {
+        if (name == null) return false;
+        String self = selfName();
+        if (self != null && name.equalsIgnoreCase(self)) return true;
+        String nick = nickName();
+        return nick != null && name.equalsIgnoreCase(nick);
     }
 
     public void onClientTick() {

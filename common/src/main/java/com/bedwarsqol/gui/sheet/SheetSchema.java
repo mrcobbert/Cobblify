@@ -377,6 +377,7 @@ public final class SheetSchema {
                         toggle("tagSound", "Alert Sound", "Play a sound with the chat alert", "sound")),
                 module("autoGg", "Auto GG", "Say gg when a game ends", "gg"),
                 module("partyJoin", "Party Join Alert", "Warns when a party queues", "queue"),
+                module("split", "Split", "SPLIT over your forge when a teammate dies", "forge generator teammate death respawn"),
                 module("rewind", "Rewind", "Records your games", "replay recording",
                         toggle("rewindRecord", "Record Games", "Save every game you play", "record"),
                         new Row("rewindMarkerKey", Kind.KEY, "Marker Key", "Mark a moment in the game", "bookmark"),

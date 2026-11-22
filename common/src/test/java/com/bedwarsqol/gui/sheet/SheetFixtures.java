@@ -167,7 +167,7 @@ final class SheetFixtures {
                     + "chatUnlimited chatKeep "
                     + "chatCopy chatLong incKey stats statsNametag statsTab statsHover statsChat statsRank statsReport "
                     + "nickUtils nickNotify autoDenick tagUtils tagUrchin tagTab tagNametag tagChat tagSound "
-                    + "autoGg partyJoin").split(" ")) v.put(id, true);
+                    + "autoGg partyJoin split").split(" ")) v.put(id, true);
             v.put("handX", 0.0);
             v.put("handY", 0.0);
             v.put("handZ", 0.0);

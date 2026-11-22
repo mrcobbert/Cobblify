@@ -17,6 +17,7 @@ import com.bedwarsqol.feature.PartyJoinAlert;
 import com.bedwarsqol.feature.PauseKeyHandler;
 import com.bedwarsqol.feature.QueueAlert;
 import com.bedwarsqol.feature.SettingsKeyHandler;
+import com.bedwarsqol.feature.SplitWatch;
 import com.bedwarsqol.feature.SweatReport;
 import com.bedwarsqol.feature.UrchinAlert;
 import com.bedwarsqol.hud.BedwarsHudRenderer;
@@ -56,6 +57,7 @@ public class BedwarsQol implements ModInitializer {
         EventBus.subscribe(OutgoingChat.get());
         EventBus.subscribe(new SweatReport());
         EventBus.subscribe(new PartyJoinAlert());
+        EventBus.subscribe(new SplitWatch());
         EventBus.subscribe(new GameRosterChat());
         EventBus.subscribe(new NickUtils());
         EventBus.subscribe(new ChatNameTags());
