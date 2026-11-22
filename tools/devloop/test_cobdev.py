@@ -1667,6 +1667,17 @@ class RewindWatchHelpers(unittest.TestCase):
         self.assertEqual(cobdev.rww_differs(partial, partial, partial), ["7-camera"])
         self.assertEqual(cobdev.rww_differs(None, same, same), list(cobdev.CONTRACT_GROUPS))
 
+    def test_the_fov_setting_used_differs_from_the_recording_and_the_players_own(self):
+        self.assertEqual(cobdev.rww_fov_setting(70.0, 70.0), 110.0)
+        self.assertEqual(cobdev.rww_fov_setting(100.0, 70.0), 30.0)
+        self.assertEqual(cobdev.rww_fov_setting(110.0, 30.0), 50.0)
+        for recorded in (30.0, 47.5, 70.0, 82.25, 96.0, 110.0, 126.5):
+            for own in (30.0, 70.0, 90.0, 110.0):
+                v = cobdev.rww_fov_setting(recorded, own)
+                self.assertTrue(30.0 <= v <= 110.0)
+                self.assertGreaterEqual(abs(v - recorded), 15, (recorded, own))
+                self.assertGreaterEqual(abs(v - own), 15, (recorded, own))
+
     def test_ms_per_game_minute_of_the_target(self):
         self.assertEqual(cobdev.ms_per_game_minute(6000, 6 * 1200), 1000.0)
         self.assertEqual(cobdev.ms_per_game_minute(500, 0), 500 * 1200.0)  # never divides by zero
@@ -1696,6 +1707,8 @@ class FakePlayback(cobdev.Smoke):
 
     START, END, SWING = 20, 1000, 50
     PERSPECTIVE, WINDOW = 300, 400
+    # RW's one FOV record (extFov=1): from its first tick on your view's world FOV is RECORDED_FOV
+    FOV_TICK, RECORDED_FOV, OWN_FOV = 22, 70.0, 90.0
 
     def __init__(self):
         super().__init__("dev", "test")
@@ -1703,6 +1716,28 @@ class FakePlayback(cobdev.Smoke):
                    "chatLines": 3, "updateCounter": 77, "landedMs": -1, "stoppedAt": -1, "discarded": None}
         self.pose = 0
         self.closed = 1
+        self.fov_setting = self.OWN_FOV
+        self.fov_saved = None
+        self.fov_sets = []
+
+    def applied_fov(self):
+        """getFOVModifier's world pass: the recorded FOV in your view once it is recorded, else the setting."""
+        if self.st.get("camera") == "YOU" and self.st.get("playhead", -1) >= self.FOV_TICK:
+            return self.RECORDED_FOV
+        return self.fov_setting
+
+    def _fov(self, args):
+        if args[:1] == ["set"]:
+            if self.fov_saved is None:
+                self.fov_saved = self.fov_setting
+            self.fov_setting = float(args[1])
+            self.fov_sets.append(self.fov_setting)
+        elif args == ["restore"]:
+            if self.fov_saved is not None:
+                self.fov_setting, self.fov_saved = self.fov_saved, None
+        recorded = self.RECORDED_FOV if self.st.get("playhead", -1) >= self.FOV_TICK else None
+        return {"ok": True, "setting": self.fov_setting, "applied": self.applied_fov(), "recorded": recorded,
+                "interpolating": False, "fovRecords": 1, "firstFovTick": self.FOV_TICK, "camera": self.st.get("camera")}
 
     def _state(self):
         return dict(self.st, pose="p%d" % self.pose)
@@ -1772,6 +1807,8 @@ class FakePlayback(cobdev.Smoke):
             return {"ok": True}
         if name == "rewind-watch-swing":
             return {"ok": True, "slot": 1}
+        if name == "rewind-watch-fov":
+            return self._fov(args)
         return {"ok": True}
 
     def peek(self, name, *args):
@@ -1804,8 +1841,64 @@ class RewindWatchDryRun(unittest.TestCase):
         self.assertEqual(step["id"], "RWW")
         failed = [c["check"] for c in step["checks"] if not c["ok"]]
         self.assertEqual(failed, [])
-        self.assertEqual(len(step["checks"]), 17)
+        self.assertEqual(len(step["checks"]), 22)
         self.assertEqual(step["shots"], ["rww-your-view", "rww-free-camera", "rww-double-chest"])
+
+    FOV_CHECKS = ["3d RW recorded a FOV and your view is past it (one sample, not between two)",
+                  "3d the client's FOV setting is changed to differ from the recorded FOV",
+                  "3d your view: the world FOV is the recorded FOV, not the client's setting",
+                  "3d free camera: the world FOV follows the client's setting, not the recording",
+                  "3d the client's FOV setting is put back"]
+
+    def test_your_views_fov_is_the_recorded_one_whatever_the_setting_and_the_setting_comes_back(self):
+        s = FakePlayback()
+        step = self.run_step(s)
+        checks = {c["check"]: c["ok"] for c in step["checks"]}
+        self.assertEqual([checks.get(c) for c in self.FOV_CHECKS], [True] * 5)
+        self.assertEqual(len(s.fov_sets), 1)
+        changed = s.fov_sets[0]
+        self.assertGreaterEqual(abs(changed - s.RECORDED_FOV), 15)
+        self.assertGreaterEqual(abs(changed - s.OWN_FOV), 15)
+        self.assertEqual(s.fov_setting, s.OWN_FOV)
+        self.assertIsNone(s.fov_saved)
+
+    def test_a_view_that_follows_the_setting_fails_the_fov_check_and_still_puts_it_back(self):
+        class Live(FakePlayback):
+            def applied_fov(self):
+                return self.fov_setting  # the recorded FOV never applied
+        s = Live()
+        step = self.run_step(s)
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["3d your view: the world FOV is the recorded FOV, not the client's setting"])
+        self.assertEqual(s.fov_setting, s.OWN_FOV)
+
+    def test_a_setting_left_changed_fails(self):
+        class Sticky(FakePlayback):
+            def _fov(self, args):
+                return super()._fov([] if args == ["restore"] else args)
+        step = self.run_step(Sticky())
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["3d the client's FOV setting is put back"])
+
+    def test_a_recording_with_no_fov_record_fails_3d_and_changes_no_setting(self):
+        class NoFov(FakePlayback):
+            FOV_TICK = 10 ** 6
+        s = NoFov()
+        step = self.run_step(s)
+        failed = [c["check"] for c in step["checks"] if not c["ok"]]
+        self.assertEqual(failed, ["3d RW recorded a FOV and your view is past it (one sample, not between two)"])
+        self.assertEqual(s.fov_sets, [])
+
+    def test_a_check_in_the_middle_that_raises_still_puts_the_setting_back(self):
+        class Broken(FakePlayback):
+            def call(self, path, params=None, post=None, timeout=60):
+                if path == "/key" and params["code"] == cobdev.KEYS["2"] and self.fov_saved is not None:
+                    raise cobdev.ApiError("the game went away")
+                return super().call(path, params, post, timeout)
+        s = Broken()
+        with self.assertRaises(cobdev.ApiError):
+            self.run_step(s)
+        self.assertEqual(s.fov_setting, s.OWN_FOV)
 
     def test_a_backward_seek_that_differs_fails_step_3(self):
         class Drift(FakePlayback):

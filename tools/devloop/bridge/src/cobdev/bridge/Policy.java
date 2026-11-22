@@ -285,11 +285,19 @@ final class Policy {
      * chest the server filled with 54 stacks, then puts the world and the inventory back on cleanup) and
      * {@code rewind-watch-window} (while a recording plays: the held recorded screen, its slot counts and a hash of
      * the camera's inventory).
+     *
+     * <p>{@code rewind-watch-fov} (TASK C7, while a recording plays): the world FOV the frame uses, the client's FOV
+     * setting and the recording's own FOV at the playback time; {@code rewind-watch-fov set DEGREES} changes the
+     * client's FOV setting for this session only (never written to options.txt; the first value is kept) and
+     * {@code rewind-watch-fov restore} puts that value back.
      */
     static final java.util.List<String> REWIND_WATCH_PROBES = java.util.Arrays.asList("rewind-watch-swing",
             "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek", "rewind-watch-play-to",
             "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage", "rewind-watch-actions",
-            "rewind-watch-window");
+            "rewind-watch-window", "rewind-watch-fov");
+    /** Vanilla's FOV slider range, the only values {@code rewind-watch-fov set} writes. */
+    static final float FOV_MIN = 30f;
+    static final float FOV_MAX = 110f;
     /** {@code rewind-watch-actions}' one argument. */
     static final java.util.List<String> REWIND_ACTIONS = java.util.Arrays.asList("start", "status", "cleanup");
     /** The longest seek {@code rewind-watch-seek by MS} takes, either way: a day. */
@@ -334,6 +342,24 @@ final class Policy {
             throw new Refused("probe rewind-watch-swing ITEM (e.g. minecraft:stone_sword)");
         }
         return args.get(0);
+    }
+
+    /**
+     * {@code rewind-watch-fov}: null for a read, an empty array for {@code restore}, {DEGREES} for {@code set DEGREES}
+     * (vanilla's slider range, 30 to 110).
+     */
+    static float[] rewindFov(java.util.List<String> args) {
+        if (args.isEmpty()) return null;
+        if (args.size() == 1 && "restore".equals(args.get(0))) return new float[0];
+        if (args.size() == 2 && "set".equals(args.get(0))) {
+            try {
+                float v = Float.parseFloat(args.get(1));
+                if (v >= FOV_MIN && v <= FOV_MAX) return new float[]{v};
+            } catch (NumberFormatException ignored) {
+                // refused below
+            }
+        }
+        throw new Refused("probe rewind-watch-fov, rewind-watch-fov set DEGREES (30 to 110) or rewind-watch-fov restore");
     }
 
     /** {@code rewind-watch-actions start|status|cleanup}: the one word, else refused. */

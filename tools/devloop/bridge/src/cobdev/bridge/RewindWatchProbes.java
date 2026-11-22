@@ -78,6 +78,7 @@ final class RewindWatchProbes {
     static final String HUD_PLAYBACK = "com.bedwarsqol.rewind.watch.HudPlayback";
     static final String FORMAT = "com.bedwarsqol.rewind.RewindFormat";
     static final String VIEW_DECODER = "com.bedwarsqol.rewind.ExtCodec$View";
+    static final String FOV_DECODER = "com.bedwarsqol.rewind.ExtCodec$Fov";
     /** The longest a play-to may wait for its tick before the caller gives up (it can always quit). */
     private static final long TICK_US = 50_000L;
 
@@ -99,6 +100,7 @@ final class RewindWatchProbes {
         if ("rewind-watch-swing".equals(name)) return swing(args);
         if ("rewind-watch-stage".equals(name)) return stage(args);
         if ("rewind-watch-actions".equals(name)) return RewindActions.run(args);
+        if ("rewind-watch-fov".equals(name)) return fov(args);
         return Bridge.onMain(() -> {
             Bridge.requireLocal();
             switch (name) {
@@ -439,6 +441,116 @@ final class RewindWatchProbes {
         out.put("ownFilled", filled);
         out.put("inventory", hash(inventory(cam)));
         return out;
+    }
+
+    /** The client's own FOV setting before the first {@code rewind-watch-fov set}, or NaN; put back on restore. */
+    private static float savedFov = Float.NaN;
+    /** PLAN "FovPart": samples at most this far apart are interpolated ({@code ViewTrack.fovAt}). */
+    private static final long FOV_LERP_MAX_US = 50_000L;
+
+    /**
+     * {@code rewind-watch-fov [set DEGREES | restore]} (TASK C7). {@code restore} puts the client's own FOV setting
+     * back (any time, and only if a {@code set} changed it) and reports it. The others need a playing recording:
+     * {@code set} changes the client's FOV setting for this session (never saved to options.txt), then both report
+     * {@code setting}, {@code applied} (what the frame's world pass uses: {@code getFOVModifier(partial, true)} with
+     * every injector, as {@code probe fov} reads it), and the recording's own FOV, read here from its FOV records and
+     * not through playback's code:
+     * {@code recorded} (the last sample at or before the playback time, null before the first),
+     * {@code interpolating} (the next sample is close enough that playback blends the two),
+     * {@code firstFovTick} (the first tick after the first sample, -1 for none) and {@code fovRecords}.
+     */
+    private static Map<String, Object> fov(List<String> args) throws Exception {
+        float[] set = Policy.rewindFov(args);
+        return Bridge.onMain(() -> {
+            Bridge.requireLocal();
+            Minecraft mc = Bridge.mc();
+            Map<String, Object> out = Bridge.ok();
+            if (set != null && set.length == 0) { // restore: also after the session ended, so it is never stuck
+                if (!Float.isNaN(savedFov)) {
+                    mc.gameSettings.fovSetting = savedFov;
+                    savedFov = Float.NaN;
+                }
+                out.put("setting", mc.gameSettings.fovSetting);
+                return out;
+            }
+            Object session = requirePlaying();
+            if (set != null) {
+                if (Float.isNaN(savedFov)) savedFov = mc.gameSettings.fovSetting;
+                mc.gameSettings.fovSetting = set[0];
+            }
+            out.put("setting", mc.gameSettings.fovSetting);
+            out.put("saved", Float.isNaN(savedFov) ? null : savedFov);
+            Object timer = timer(mc);
+            float partial = timer == null ? 1f : timer.getClass().getField("renderPartialTicks").getFloat(timer);
+            Method m = fovModifier();
+            try {
+                out.put("applied", m.invoke(mc.entityRenderer, partial, true));
+            } catch (InvocationTargetException e) {
+                throw e.getCause() instanceof Exception ? (Exception) e.getCause() : e;
+            }
+            int freeCamera = cls(CAMERA).getField("FREE_CAMERA").getInt(null);
+            out.put("camera", ((Number) call(cls(CAMERA), "cameraIndex")).intValue() == freeCamera ? "FREE" : "YOU");
+            Object rec = call(session, "recording");
+            Object timeline = call(session, "timeline");
+            long now = ((Number) call(session, "renderTimeUs")).longValue();
+            out.put("playhead", call(session, "playheadTick"));
+            Float recorded = null;
+            boolean interpolating = false;
+            long firstTick = -1;
+            int count = 0;
+            if (rec != null && timeline != null) {
+                Object ext = call(rec, "ext");
+                int tagFov = cls(FORMAT).getField("TAG_FOV").getInt(null);
+                Object decoder = cls(FOV_DECODER).getConstructor().newInstance();
+                Field degrees = decoder.getClass().getField("degrees");
+                byte[] buf = (byte[]) call(ext, "buffer");
+                int n = ((Number) call(ext, "size")).intValue();
+                long lastAt = Long.MIN_VALUE;
+                long nextAt = Long.MAX_VALUE;
+                long firstAt = Long.MAX_VALUE;
+                for (int i = 0; i < n; i++) {
+                    if (((Number) call(ext, "tag", i)).intValue() != tagFov) continue;
+                    count++;
+                    long t = ((Number) call(ext, "timeUs", i)).longValue();
+                    firstAt = Math.min(firstAt, t);
+                    if (t > now) {
+                        nextAt = Math.min(nextAt, t);
+                    } else if (t >= lastAt) {
+                        call(decoder, "read", buf, ((Number) call(ext, "offset", i)).intValue(),
+                                ((Number) call(ext, "length", i)).intValue());
+                        recorded = degrees.getFloat(decoder);
+                        lastAt = t;
+                    }
+                }
+                if (count > 0) firstTick = ((Number) call(timeline, "tickOf", firstAt)).longValue() + 1;
+                interpolating = recorded != null && nextAt != Long.MAX_VALUE && nextAt - lastAt <= FOV_LERP_MAX_US;
+            }
+            out.put("recorded", recorded);
+            out.put("interpolating", interpolating);
+            out.put("firstFovTick", firstTick);
+            out.put("fovRecords", count);
+            return out;
+        });
+    }
+
+    /**
+     * Vanilla's {@code EntityRenderer.getFOVModifier(float, boolean)} under any name (MCP in dev, intermediary in
+     * prod): the one float (float, boolean) method that no mixin added. Cobblify's invoker adds
+     * {@code bedwarsqol$getFOVModifier} with the same signature, so a lookup by signature alone finds two.
+     */
+    private static Method fovModifier() {
+        Method found = null;
+        for (Method m : net.minecraft.client.renderer.EntityRenderer.class.getDeclaredMethods()) {
+            if (m.getReturnType() != float.class || m.isSynthetic() || m.getName().indexOf('$') >= 0
+                    || !Arrays.equals(m.getParameterTypes(), new Class<?>[]{float.class, boolean.class})) {
+                continue;
+            }
+            if (found != null) throw new IllegalStateException("more than one EntityRenderer FOV method");
+            found = m;
+        }
+        if (found == null) throw new IllegalStateException("no EntityRenderer FOV method; Minecraft changed?");
+        found.setAccessible(true);
+        return found;
     }
 
     private static String heldKind(Object held) {
