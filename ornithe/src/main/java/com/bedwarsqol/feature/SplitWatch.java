@@ -195,21 +195,13 @@ public final class SplitWatch {
             if (mc == null || mc.theWorld == null || mc.thePlayer == null || mc.currentScreen != null) return;
             if (!HypixelContext.isInActiveBedwarsGame()) return;
             long now = System.currentTimeMillis();
-            String text;
-            int colour;
-            if (RULES.active(now)) {
-                if (!cfg.splitHudCue || !RULES.hudCue(now)) return;
-                int seconds = RULES.secondsLeft(now);
-                if (seconds <= 0) return;
-                if (RULES.hasForge() && !RULES.nearForge(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) return;
-                text = "SPLIT " + seconds;
-                colour = COLOUR;
-            } else if (inboundCue(cfg, mc.thePlayer, now)) {
-                text = "CHECK";
-                colour = CHECK_COLOUR;
-            } else {
-                return;
-            }
+            // Only right after the player's own respawn: any other time they can see the forge label.
+            if (!cfg.splitHudCue || !RULES.hudCue(now)) return;
+            int seconds = RULES.secondsLeft(now);
+            if (seconds <= 0) return;
+            if (RULES.hasForge() && !RULES.nearForge(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) return;
+            String text = "SPLIT " + seconds;
+            int colour = COLOUR;
             ScaledResolution sr = new ScaledResolution(mc);
             float x = sr.getScaledWidth() / 2f - BedwarsQolFont.width(text, HUD_SCALE, BedwarsQolFont.Weight.MEDIUM) / 2f;
             float y = sr.getScaledHeight() / 2f - HUD_CROSSHAIR_OFFSET;
