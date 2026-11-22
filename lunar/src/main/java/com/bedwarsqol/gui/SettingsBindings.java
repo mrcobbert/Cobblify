@@ -31,6 +31,7 @@ final class SettingsBindings implements SheetValues {
             "stats", "statsNametag", "statsTab", "statsHover", "statsChat", "statsRank", "statsReport",
             "nickUtils", "nickNotify", "autoDenick",
             "tagUtils", "tagUrchin", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin", "split", "splitHud",
+            "splitInbound",
             "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent"));
 
     static ClientSettings settings() {
@@ -101,6 +102,7 @@ final class SettingsBindings implements SheetValues {
             case "partyJoin": return c.partyJoinAlert;
             case "split": return c.splitEnabled;
             case "splitHud": return c.splitHudCue;
+            case "splitInbound": return c.splitInbound;
             default: return false;
         }
     }
@@ -146,6 +148,7 @@ final class SettingsBindings implements SheetValues {
             case "partyJoin": c.partyJoinAlert = v; break;
             case "split": c.splitEnabled = v; break;
             case "splitHud": c.splitHudCue = v; break;
+            case "splitInbound": c.splitInbound = v; break;
             default: return;
         }
         c.save();

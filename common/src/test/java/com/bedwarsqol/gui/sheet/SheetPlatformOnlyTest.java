@@ -59,7 +59,7 @@ public class SheetPlatformOnlyTest {
         return new Tree(new HashSet<String>(Arrays.asList(
                 "inventory", "genTimers", "session", "mapInfo", "handPos", "handX", "noEsc", "tabHF",
                 "incAlert", "bedAlert", "bgAlert", "incKey", "stats", "nickUtils", "tagUtils", "partyJoin",
-                "split", "splitHud", "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
+                "split", "splitHud", "splitInbound", "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent")), false);
     }
 
     @Test
@@ -447,7 +447,7 @@ public class SheetPlatformOnlyTest {
         assertEquals("Split", m.name);
         assertEquals("SPLIT over your forge when a teammate dies", m.desc);
         assertTrue("split has search keywords", m.kw != null && m.kw.contains("forge"));
-        assertEquals("one sub-row", 1, m.rows.size());
+        assertEquals("two sub-rows", 2, m.rows.size());
         SheetSchema.Row hud = m.rows.get(0);
         assertEquals("splitHud", hud.id);
         assertEquals(SheetSchema.Kind.TOGGLE, hud.kind);
@@ -458,6 +458,15 @@ public class SheetPlatformOnlyTest {
         assertFalse(SheetSchema.platformOnly("split"));
         assertFalse(SheetSchema.platformOnly("splitHud"));
         assertTrue(SheetSchema.shows(lunar(), "splitHud"));
+        SheetSchema.Row inbound = m.rows.get(1);
+        assertEquals("splitInbound", inbound.id);
+        assertEquals(SheetSchema.Kind.TOGGLE, inbound.kind);
+        assertEquals("Teammate Returning", inbound.name);
+        assertEquals("CHECK when a teammate comes back to base toward the forge", inbound.desc);
+        assertEquals("inbound behind arrive", inbound.kw);
+        assertTrue(SheetSchema.row("splitInbound") == inbound);
+        assertFalse(SheetSchema.platformOnly("splitInbound"));
+        assertTrue(SheetSchema.shows(lunar(), "splitInbound"));
         List<SheetSchema.Module> mods = m.category().modules;
         assertEquals("follows partyJoin", mods.indexOf(SheetSchema.module("partyJoin")) + 1, mods.indexOf(m));
         assertEquals("precedes rewind", mods.indexOf(m) + 1, mods.indexOf(SheetSchema.module("rewind")));

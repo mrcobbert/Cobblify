@@ -221,6 +221,7 @@ final class SettingsBindings implements SheetValues {
             case "partyJoin": return c.partyJoinAlert;
             case "split": return c.splitEnabled;
             case "splitHud": return c.splitHudCue;
+            case "splitInbound": return c.splitInbound;
             case "rewind": return c.rewind;
             case "rewindRecord": return c.rewindRecordGames;
             default: return false;
@@ -332,6 +333,7 @@ final class SettingsBindings implements SheetValues {
             case "partyJoin": c.partyJoinAlert = v; break;
             case "split": c.splitEnabled = v; break;
             case "splitHud": c.splitHudCue = v; break;
+            case "splitInbound": c.splitInbound = v; break;
             case "rewind": c.rewind = v; break;
             case "rewindRecord": c.rewindRecordGames = v; break;
             default: return;
