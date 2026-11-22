@@ -30,7 +30,7 @@ final class SettingsBindings implements SheetValues {
             "incAlert", "bedAlert", "bgAlert", "incKey",
             "stats", "statsNametag", "statsTab", "statsHover", "statsChat", "statsRank", "statsReport",
             "nickUtils", "nickNotify", "autoDenick",
-            "tagUtils", "tagUrchin", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin",
+            "tagUtils", "tagUrchin", "tagTab", "tagNametag", "tagChat", "tagSound", "partyJoin", "split",
             "hudSize", "sbSize", "tabSize", "guiSize", "font", "accent"));
 
     static ClientSettings settings() {
@@ -99,6 +99,7 @@ final class SettingsBindings implements SheetValues {
             case "tagChat": return c.tagChatAlert;
             case "tagSound": return c.tagAlertSound;
             case "partyJoin": return c.partyJoinAlert;
+            case "split": return c.splitEnabled;
             default: return false;
         }
     }
@@ -142,6 +143,7 @@ final class SettingsBindings implements SheetValues {
             case "tagChat": c.tagChatAlert = v; break;
             case "tagSound": c.tagAlertSound = v; break;
             case "partyJoin": c.partyJoinAlert = v; break;
+            case "split": c.splitEnabled = v; break;
             default: return;
         }
         c.save();

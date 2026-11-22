@@ -471,3 +471,7 @@ one-sided main ornithe com/bedwarsqol/hud/RecordedHudSource.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/HudPlaybackTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/ViewParityTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java
+
+# Split (0.19.0): same rules (common SplitRules), ModEvents vs Weave event plumbing.
+divergent main com/bedwarsqol/feature/SplitWatch.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSplitTest.java

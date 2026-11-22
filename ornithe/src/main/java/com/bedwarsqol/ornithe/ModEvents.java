@@ -33,6 +33,12 @@ public final class ModEvents {
      * return early when {@code com.bedwarsqol.hud.TabHudGate.hidesHud()} is true.
      */
     public static final EventDispatcher<Float> HUD_POST = new EventDispatcher<>();
+    /**
+     * End of the world pass, partial ticks, just before the "hand" profiler section in
+     * {@code EntityRenderer.renderWorldPass} (Forge {@code RenderWorldLastEvent}): the world is drawn, the held item
+     * and HUD are not. Camera-relative drawing uses {@code RenderManager.viewerPosX/Y/Z}.
+     */
+    public static final EventDispatcher<Float> WORLD_LAST = new EventDispatcher<>();
     /** In-game mouse loop (Forge {@code MouseEvent}). */
     public static final EventDispatcher<MouseButtonEvent> MOUSE = new EventDispatcher<>();
     /** After a living entity's name tag pass (Forge {@code RenderLivingEvent.Specials.Post}). */

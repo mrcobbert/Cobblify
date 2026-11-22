@@ -170,6 +170,24 @@ public final class SessionChatLine {
     }
 
     /**
+     * The victim of a NON-final death line, whoever died: the first token when the line has the death
+     * shape, carries no {@code FINAL KILL!}, and its tail either names a killer or is one of the
+     * no-killer deaths ({@code fell into the void.}). Null for player-typed lines ({@code :}), for
+     * {@code >} system lines (BED DESTRUCTION, TEAM ELIMINATED, channel prefixes), for final kills
+     * and for everything else ({@code disconnected.}, {@code purchased Iron Forge}).
+     */
+    public static String deathVictim(String plain) {
+        if (plain == null) return null;
+        String line = plain.trim();
+        if (line.isEmpty() || line.indexOf(':') >= 0 || line.indexOf('>') >= 0) return null;
+        Matcher d = DEATH_LINE.matcher(line);
+        if (!d.matches() || d.group(3) != null) return null;
+        String tail = d.group(2).trim();
+        if (killerOf(tail) != null || SELF_DEATH_NO_KILLER.matcher(tail).matches()) return d.group(1);
+        return null;
+    }
+
+    /**
      * The nick a Hypixel nick line sets: the name for {@code You are now nicked as X!}, {@code ""}
      * for {@code Your nick has been reset!}, {@code null} for any other line (Lunar's
      * NicknameListener reads the same two lines).

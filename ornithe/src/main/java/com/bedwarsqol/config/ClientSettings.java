@@ -195,6 +195,9 @@ public class ClientSettings {
     /** Party Join Alert: red "Party Joined" in chat when a premade team queues a 2s/3s/4s game. */
     public boolean partyJoinAlert = true;
 
+    /** Split: a red "SPLIT 5..1" over your home forge for 5 seconds after a teammate's non-final death. */
+    public boolean splitEnabled = true;
+
     /** Rewind (Ornithe build): the module switch; recording needs it and {@link #rewindRecordGames} both on. */
     public boolean rewind = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_ENABLED;
     /** Rewind's Record Games row. */

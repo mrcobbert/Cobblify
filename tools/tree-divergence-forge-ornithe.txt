@@ -435,3 +435,7 @@ one-sided main ornithe com/bedwarsqol/hud/RecordedHudSource.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/HudPlaybackTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/ViewParityTest.java
 one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java
+
+# Split (0.19.0): Ornithe and Lunar only; Forge is retiring.
+one-sided main ornithe com/bedwarsqol/feature/SplitWatch.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSplitTest.java
