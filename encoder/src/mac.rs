@@ -228,14 +228,17 @@ impl Encoder {
         "unknown"
     }
 
-    pub fn frame(&mut self, bgra_bottom_up: &[u8]) -> Result<(), Failure> {
+    /// Queues one frame and appends what the inputs accept; waits only while too many frames are
+    /// held, and stops waiting when `cancelled` (the input closed) turns true.
+    pub fn frame(&mut self, bgra_bottom_up: &[u8], cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
+        crate::test_frame_stall();
         let buffer = unsafe { self.pixel_buffer(bgra_bottom_up)? };
         self.pending_video.push_back((buffer, self.frames_in));
         self.frames_in += 1;
-        self.pump(false, &|| false)
+        self.pump(false, cancelled)
     }
 
-    pub fn sound(&mut self, pcm: &[u8]) -> Result<(), Failure> {
+    pub fn sound(&mut self, pcm: &[u8], cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
         if pcm.is_empty() || self.audio.is_none() {
             return Ok(());
         }
@@ -243,13 +246,13 @@ impl Encoder {
         let buffer = unsafe { self.sample_buffer(pcm, samples)? };
         self.samples_in += samples;
         self.pending_audio.push_back(buffer);
-        self.pump(false, &|| false)
+        self.pump(false, cancelled)
     }
 
     /// Drains and finishes the file. A closed input (`cancelled`) ends the wait at once: the caller
     /// deletes the file and exits, so the writer is not cancelled here (`cancelWriting` blocks
     /// until pending writes complete). A native call that blocks anyway is ended by main.rs's
-    /// watcher.
+    /// input thread.
     pub fn finish(mut self, cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
         self.pump(true, cancelled)?;
         crate::test_finish_stall();
@@ -281,7 +284,8 @@ impl Encoder {
         Ok(())
     }
 
-    /// Nothing to let go of when the watcher ends the run: macOS deletes a file that is still open.
+    /// Nothing to let go of when the input thread ends the run: macOS deletes a file that is still
+    /// open.
     pub fn release(&self) -> Release {
         Release
     }
@@ -426,11 +430,34 @@ impl Encoder {
     }
 }
 
-/// What main.rs's watcher lets go of before it deletes the file (nothing on macOS).
+/// What main.rs's input thread lets go of before it deletes the file (nothing on macOS).
 pub struct Release;
 
 impl Release {
     pub fn release(&self) {}
+}
+
+/// The input's other end has closed (the game quit, crashed or cancelled), also while unread bytes
+/// are still in the pipe: `poll` reports POLLHUP for a pipe whose writers are all gone. Asked by
+/// main.rs's input thread while it holds a packet back (code review 2 I2).
+pub fn input_closed() -> bool {
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    extern "C" {
+        fn poll(fds: *mut PollFd, nfds: u32, timeout: i32) -> i32;
+    }
+    const POLLIN: i16 = 0x0001;
+    const POLLERR: i16 = 0x0008;
+    const POLLHUP: i16 = 0x0010;
+    const POLLNVAL: i16 = 0x0020;
+    let mut fd = PollFd { fd: 0, events: POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd, no wait.
+    let n = unsafe { poll(&mut fd, 1, 0) };
+    n > 0 && fd.revents & (POLLHUP | POLLERR | POLLNVAL) != 0
 }
 
 /// s16 little-endian interleaved stereo at 48 kHz.

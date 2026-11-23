@@ -5,8 +5,9 @@
 //! sizes and frame rates each codec can open.
 //! `cobblify-encode encode --out P --width W --height H --fps N --codec h264|hevc --bitrate BPS`
 //! reads packets from stdin (see `protocol`). Exit 0 done, 2 error, 3 cancelled. Stdin must stay
-//! open until the final `done` or `error` line: closing it earlier cancels, also after the finish
-//! packet. On error or cancel the output file is deleted.
+//! open until the final `done` or `error` line: closing it earlier cancels, at any time (within
+//! 2 s, also while the encoder blocks), also after the finish packet. On error or cancel the
+//! output file is deleted.
 //!
 //! No network code: the dependency tree holds only OS framework bindings.
 
@@ -44,10 +45,10 @@ mod platform {
         pub fn kind(&self) -> &'static str {
             "none"
         }
-        pub fn frame(&mut self, _: &[u8]) -> Result<(), Failure> {
+        pub fn frame(&mut self, _: &[u8], _: &dyn Fn() -> bool) -> Result<(), Failure> {
             Err(Failure::new("unsupported_os"))
         }
-        pub fn sound(&mut self, _: &[u8]) -> Result<(), Failure> {
+        pub fn sound(&mut self, _: &[u8], _: &dyn Fn() -> bool) -> Result<(), Failure> {
             Err(Failure::new("unsupported_os"))
         }
         pub fn finish(self, _: &dyn Fn() -> bool) -> Result<(), Failure> {
@@ -62,12 +63,16 @@ mod platform {
     impl Release {
         pub fn release(&self) {}
     }
+    pub fn input_closed() -> bool {
+        false
+    }
 }
 
 use args::{Codec, Command, EncodeArgs};
 use protocol::{Packet, PacketReader, ReadError};
 use std::io::{BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -131,46 +136,72 @@ fn encode(a: &EncodeArgs) -> u8 {
         }
     };
     say(&protocol::ready_line(enc.kind()));
-    let stdin = std::io::stdin().lock();
-    let mut reader = PacketReader::new(BufReader::with_capacity(1 << 20, stdin), a.frame_len());
+    // The input is read on its own thread from the start (code review 2 I2): input that closes
+    // before our final line is a cancel at any time, also while a frame write or the finish blocks
+    // without looking at the flag; the input thread then ends the helper itself.
+    let ended = Arc::new(Mutex::new(false));
+    let closed = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::sync_channel::<Input>(INPUT_QUEUE);
+    let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
+    {
+        let input = InputThread {
+            frame_len: a.frame_len(),
+            tx,
+            recycle: recycle_rx,
+            out: a.out.clone(),
+            release: enc.release(),
+            ended: ended.clone(),
+            closed: closed.clone(),
+        };
+        std::thread::spawn(move || input.run());
+    }
+    let cancelled = || closed.load(Ordering::SeqCst);
     let mut frames: u64 = 0;
     loop {
-        let step = match reader.next() {
-            Ok(Packet::Frame(bgra)) => enc.frame(bgra).map(|_| {
-                frames += 1;
-                say(&protocol::frames_line(frames));
-            }),
-            Ok(Packet::Sound(pcm)) => enc.sound(pcm),
-            Ok(Packet::Finish) => break,
-            Err(ReadError::Cancelled) => {
-                enc.abort();
-                remove(&a.out);
-                return EXIT_CANCELLED;
+        if cancelled() {
+            return cancel(enc, &a.out);
+        }
+        let input = match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(i) => i,
+            Err(RecvTimeoutError::Timeout) => continue,
+            // the input thread ends only after the input closed (it set the flag first)
+            Err(RecvTimeoutError::Disconnected) => return cancel(enc, &a.out),
+        };
+        let step = match input {
+            Input::Frame(bgra) => {
+                let r = enc.frame(&bgra, &cancelled).map(|_| {
+                    frames += 1;
+                    say(&protocol::frames_line(frames));
+                });
+                let _ = recycle_tx.send(bgra);
+                r
             }
-            Err(e) => Err(Failure::new(e.code())),
+            Input::Sound(pcm) => enc.sound(&pcm, &cancelled),
+            Input::Finish => break,
+            Input::Bad(code) => Err(Failure::new(code)),
         };
         if let Err(f) = step {
+            if cancelled() {
+                return cancel(enc, &a.out);
+            }
             enc.abort();
             remove(&a.out);
+            end(&ended);
             say(&protocol::error_line(f.code, f.status));
             return EXIT_ERROR;
         }
     }
-    drop(reader);
     if frames == 0 {
         enc.abort();
         remove(&a.out);
+        end(&ended);
         say(&protocol::error_line("no_frames", None));
         return EXIT_ERROR;
     }
-    // Input that closes before our final line is still a cancel, also while finishing. The native
-    // finish may block without looking at the flag; the watcher then ends the helper itself.
-    let ended = Arc::new(Mutex::new(false));
-    let closed = watch_for_close(a.out.clone(), enc.release(), ended.clone());
-    let cancelled = || closed.load(Ordering::SeqCst);
     let result = enc.finish(&cancelled);
-    // From here the watcher leaves the ending to us (it holds this lock while it ends the helper).
-    *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    // From here the input thread leaves the ending to us (it holds this lock while it ends the
+    // helper).
+    end(&ended);
     if cancelled() {
         remove(&a.out);
         return EXIT_CANCELLED;
@@ -200,31 +231,105 @@ pub fn test_finish_stall() {
     }
 }
 
-/// After the input closes during the finish, the finish has this long to see the flag and end the
-/// run itself; then the watcher ends it (TASK X3: gone within 2 s, its file removed).
-const FINISH_CANCEL_GRACE: Duration = Duration::from_millis(700);
+/// Test hook (encoder/tests): `COBBLIFY_ENCODE_TEST_FRAME_STALL_MS` blocks every frame write for
+/// that long without looking at the input, as a readiness wait or a `WriteSample` that does not
+/// return would (code review 2 I2). Unset in the game; values over 60 s are ignored.
+pub fn test_frame_stall() {
+    if let Some(ms) = std::env::var("COBBLIFY_ENCODE_TEST_FRAME_STALL_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if ms <= 60_000 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+}
 
-/// Reads (and ignores) stdin on a thread; the flag turns true when it closes. If the finish has not
-/// ended `FINISH_CANCEL_GRACE` later (a native call that blocks without looking at the flag, code
-/// review 1 I2), the watcher releases the writer's file (`release`), removes the output and its
-/// side files and exits the process with the cancel code, holding `ended`'s lock so the main
-/// thread cannot report done meanwhile.
-fn watch_for_close(out: PathBuf, release: platform::Release, ended: Arc<Mutex<bool>>) -> Arc<AtomicBool> {
-    let closed = Arc::new(AtomicBool::new(false));
-    let flag = closed.clone();
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buf = [0u8; 4096];
+/// The input closed: the writer is dropped unfinished and the file removed (a blocking native
+/// cancel is ended by the input thread).
+fn cancel(enc: platform::Encoder, out: &Path) -> u8 {
+    enc.abort();
+    remove(out);
+    EXIT_CANCELLED
+}
+
+/// The main thread is about to report its own ending: the input thread no longer ends the run.
+fn end(ended: &Mutex<bool>) {
+    *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
+}
+
+/// After the input closes, the main thread has this long to see the flag and end the run itself;
+/// then the input thread ends it (TASK X3: gone within 2 s, its file removed).
+const CANCEL_GRACE: Duration = Duration::from_millis(700);
+
+/// Packets read ahead of the encoder. While the queue is full the input thread waits without
+/// reading, so a slow encoder still holds the game back through the pipe.
+const INPUT_QUEUE: usize = 2;
+
+/// What the input thread hands the main thread.
+enum Input {
+    Frame(Vec<u8>),
+    Sound(Vec<u8>),
+    Finish,
+    /// A packet that breaks the protocol (its error code).
+    Bad(&'static str),
+}
+
+/// Reads stdin for the whole run (code review 2 I2). Packets go to the main thread through a
+/// queue of `INPUT_QUEUE`; while it is full the thread asks the system whether the input's other
+/// end has closed (`platform::input_closed`, which sees it also with unread bytes left in the
+/// pipe) instead of reading on. After the finish packet (or a bad one) it reads on until the input
+/// closes. Once it has closed: the flag turns true, and if the main thread has not ended the run
+/// `CANCEL_GRACE` later (a native call that blocks without looking at the flag: a readiness wait,
+/// `WriteSample`, `cancelWriting`, `finishWriting`, `Finalize`), this thread releases the writer's
+/// file (`release`), removes the output and its side files and exits the process with the cancel
+/// code, holding `ended`'s lock so the main thread cannot report done meanwhile.
+struct InputThread {
+    frame_len: usize,
+    tx: SyncSender<Input>,
+    recycle: Receiver<Vec<u8>>,
+    out: PathBuf,
+    release: platform::Release,
+    ended: Arc<Mutex<bool>>,
+    closed: Arc<AtomicBool>,
+}
+
+/// How handing a packet over went.
+enum Handed {
+    Yes,
+    InputClosed,
+    MainGone,
+}
+
+impl InputThread {
+    fn run(self) {
+        let stdin = std::io::stdin().lock();
+        let mut reader = PacketReader::new(BufReader::with_capacity(1 << 20, stdin), self.frame_len);
         loop {
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+            let item = match reader.next() {
+                Ok(Packet::Frame(bgra)) => {
+                    let mut v = self.recycle.try_recv().unwrap_or_default();
+                    v.clear();
+                    v.extend_from_slice(bgra);
+                    Input::Frame(v)
+                }
+                Ok(Packet::Sound(pcm)) => Input::Sound(pcm.to_vec()),
+                Ok(Packet::Finish) => Input::Finish,
+                Err(ReadError::Cancelled) => break,
+                Err(e) => Input::Bad(e.code()),
+            };
+            let last = matches!(item, Input::Finish | Input::Bad(_));
+            match self.hand_over(item) {
+                Handed::Yes if last => {
+                    drain(reader.get_mut());
+                    break;
+                }
+                Handed::Yes => {}
+                Handed::InputClosed => break,
+                Handed::MainGone => return,
             }
         }
-        flag.store(true, Ordering::SeqCst);
-        let deadline = Instant::now() + FINISH_CANCEL_GRACE;
+        self.closed.store(true, Ordering::SeqCst);
+        let InputThread { tx, out, release, ended, .. } = self;
+        drop(tx);
+        let deadline = Instant::now() + CANCEL_GRACE;
         while Instant::now() < deadline {
             if *ended.lock().unwrap_or_else(|e| e.into_inner()) {
                 return;
@@ -239,8 +344,37 @@ fn watch_for_close(out: PathBuf, release: platform::Release, ended: Arc<Mutex<bo
         delete_tries(&out, 15);
         remove_side_files(&out);
         std::process::exit(EXIT_CANCELLED as i32);
-    });
-    closed
+    }
+
+    /// Queues `item` for the main thread; while the queue is full, polls whether the input closed.
+    fn hand_over(&self, mut item: Input) -> Handed {
+        loop {
+            match self.tx.try_send(item) {
+                Ok(()) => return Handed::Yes,
+                Err(TrySendError::Disconnected(_)) => return Handed::MainGone,
+                Err(TrySendError::Full(back)) => {
+                    if platform::input_closed() {
+                        return Handed::InputClosed;
+                    }
+                    item = back;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+}
+
+/// Reads and drops input until it closes.
+fn drain<R: Read>(input: &mut R) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match input.read(&mut buf) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
 }
 
 /// Deletes the output file and the writer's staging files beside it, retrying briefly while the
@@ -320,7 +454,7 @@ fn can_open(out: &Path, codec: Codec, w: u32, h: u32, fps: u32) -> bool {
         Err(_) => return false,
     };
     let frame = vec![0u8; a.frame_len()];
-    if enc.frame(&frame).is_err() {
+    if enc.frame(&frame, &|| false).is_err() {
         enc.abort();
         return false;
     }

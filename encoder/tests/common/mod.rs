@@ -118,6 +118,12 @@ impl Helper {
         self.stdin.take();
     }
 
+    /// The helper's input, to write (and close) from another thread.
+    #[allow(dead_code)]
+    pub fn take_stdin(&mut self) -> ChildStdin {
+        self.stdin.take().expect("stdin open")
+    }
+
     /// Waits for exit; panics after `timeout`. Collects the remaining status lines.
     pub fn wait(&mut self, timeout: Duration) -> (ExitStatus, Duration) {
         let start = Instant::now();
