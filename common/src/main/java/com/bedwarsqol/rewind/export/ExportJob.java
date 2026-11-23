@@ -16,7 +16,8 @@ import java.util.Locale;
  *
  * <ul>
  *   <li><b>PREPARING</b> ({@link #prepare}): a stale {@code .partial.mp4} of the same name is deleted, the helper starts
- *       with the bit rate of the chosen quality ({@link ExportQuality}) and writes to the partial file. Once it is
+ *       with the bit rate of the chosen quality ({@link ExportQuality}) and writes to this job's own partial file
+ *       ({@link ExportFileName#partial(File, String)}). Once it is
  *       ready: every sound still playing stops ({@link Game#stopSounds}, once), the sound tap turns on, and the
  *       session begins the export (its seek and pre-roll).</li>
  *   <li><b>SETTLING</b>: the seek and the 1 s pre-roll are drawn, never sent; their sounds are discarded
@@ -30,7 +31,8 @@ import java.util.Locale;
  *       sound is sent (to {@link ExportPlan#audioSamples()}), then finish; on the helper's {@code done} the partial
  *       file is renamed to the final name.</li>
  *   <li><b>DONE</b>, <b>CANCELLED</b>, <b>FAILED</b>(code): cancel and failure close the helper's input (it deletes
- *       its file) and delete the partial file as well; the session ends; the tap turns off.</li>
+ *       its file) and delete the partial file as well; the session ends (before it began: the viewer is paused inside
+ *       the range, {@link Session#park}); the tap turns off. A render error ({@link #renderError}) is a failure.</li>
  * </ul>
  * Game thread.
  */
@@ -63,6 +65,9 @@ public final class ExportJob {
 
         /** {@code endExport()}. */
         void end();
+
+        /** {@code pauseInside(plan)}: the export ended before {@link #begin} (TASK P7). */
+        void park(ExportPlan plan);
     }
 
     /** The game around the job. */
@@ -123,6 +128,8 @@ public final class ExportJob {
         public String codec = "h264";
         /** The final file ({@link ExportFileName#pick}). */
         public File out;
+        /** The partial file's token ({@link ExportFileName#partial(File, String)}); null: a new one (the product). */
+        public String partialToken;
         /** The helper to run ({@link HelperStore#find}); null with {@link #helperProblem} when there is none. */
         public File helper;
         public String helperProblem;
@@ -152,6 +159,7 @@ public final class ExportJob {
     private State state = State.PREPARING;
     private String failure;
     private String cancelAsked;
+    private String renderFailure;
     private boolean begun;
     private long preparedMs;
     private long finishMs;
@@ -185,7 +193,9 @@ public final class ExportJob {
         this.game = game;
         this.encoders = encoders;
         this.files = files;
-        this.partial = ExportFileName.partial(request.out);
+        // its own partial name: a cancelled helper's late cleanup cannot reach the next export (code review 2 I1)
+        this.partial = ExportFileName.partial(request.out,
+                request.partialToken != null ? request.partialToken : ExportFileName.newToken());
         this.bps = ExportQuality.bitsPerSecond(request.width, request.height, plan.fps(), request.quality,
                 request.codec);
         this.log = new SoundLog(plan.startUs(), plan.endUs());
@@ -218,6 +228,10 @@ public final class ExportJob {
     /** Once per pass, before the frame. */
     public void pass(long nowMs) {
         if (finished()) {
+            return;
+        }
+        if (renderFailure != null) {
+            fail(renderFailure);
             return;
         }
         if (cancelAsked != null) {
@@ -344,6 +358,16 @@ public final class ExportJob {
         }
     }
 
+    /**
+     * Drawing, reading back or preparing a frame threw (the game's render hooks; TASK U6): the export ends FAILED with
+     * {@code <where>-<exception class>} at the next pass, its file deleted.
+     */
+    public void renderError(String where, Throwable t) {
+        if (!finished() && renderFailure == null) {
+            renderFailure = where + "-" + (t == null ? "error" : t.getClass().getSimpleName());
+        }
+    }
+
     // ------------------------------------------------------------------ state
 
     public State state() {
@@ -412,10 +436,10 @@ public final class ExportJob {
     /** A counts-only summary for the log. */
     public String summary() {
         return String.format(Locale.ROOT, "frames=%d/%d rule=%s settleCapped=%d frame0Draws=%d frame0Ms=%d"
-                        + " queueWaits=%d queueCapped=%d draws=%d renderFps=%.2f soundsMissing=%d soundsDropped=%d"
-                        + " bitrate=%d",
+                        + " queueWaits=%d queueCapped=%d draws=%d renderFps=%.2f soundsMissing=%d soundsUndecodable=%d"
+                        + " soundsDropped=%d bitrate=%d",
                 sent, plan.frames(), rule(), settleCapped, frameZeroDraws, frameZeroMs, queueWaits, queueCapped, draws,
-                renderFps(), mixer.missing(), log.dropped(), bps);
+                renderFps(), log.missing(), log.undecodable() + mixer.missing(), log.dropped(), bps);
     }
 
     // ------------------------------------------------------------------ inside
@@ -482,6 +506,8 @@ public final class ExportJob {
         }
         if (begun) {
             session.end();
+        } else {
+            session.park(plan);
         }
         game.soundTap(null);
     }

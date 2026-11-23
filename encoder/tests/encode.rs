@@ -114,8 +114,102 @@ fn closing_input_after_finish_but_before_done_cancels_and_deletes_the_file() {
     let (status, took) = helper.wait(Duration::from_secs(10));
     println!("cancel while finishing: exit {:?} after {:?}", status.code(), took);
     assert_eq!(status.code(), Some(3), "{:?}", helper.seen);
+    assert!(took <= Duration::from_secs(2), "exit took {took:?}");
     assert!(!helper.seen.iter().any(|l| l.contains("\"done\"")), "no done line");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing left in the folder");
+}
+
+/// Code review 1 I2 (TASK X3): the native finalization blocks for 5 s without looking at the
+/// input (the test hook `COBBLIFY_ENCODE_TEST_FINISH_STALL_MS` holds it, as a slow
+/// `finishWriting` or `Finalize` would) and the input closes 300 ms into it: the helper still
+/// exits within 2 s and leaves nothing behind, also on Windows where the writer holds the file.
+#[test]
+fn closing_input_during_a_slow_native_finish_exits_within_2_s_and_deletes_the_file() {
+    let _g = serial();
+    let dir = scratch("cancel-slow-finish");
+    let out = dir.join("slow.partial.mp4");
+    let args: Vec<String> = [
+        "encode", "--out", &out.to_string_lossy(), "--width", "640", "--height", "360", "--fps", "60",
+        "--codec", "h264", "--bitrate", "4000000",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut helper = Helper::start_env(&args, &[("COBBLIFY_ENCODE_TEST_FINISH_STALL_MS", "5000")]);
+    helper.line(Duration::from_secs(20)).expect("ready");
+    for i in 0..30u32 {
+        helper.send(1, &to_protocol_bgra(&pattern_rgb(640, 360, i), 640, 360)).unwrap();
+        helper.send(2, &tone_left(i as u64 * 800, (i as u64 + 1) * 800)).unwrap();
+    }
+    helper.send(3, &[]).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    helper.close_stdin();
+    let (status, took) = helper.wait(Duration::from_secs(15));
+    println!("cancel during a slow finish: exit {:?} after {:?}", status.code(), took);
+    assert_eq!(status.code(), Some(3), "{:?}", helper.seen);
+    assert!(took <= Duration::from_secs(2), "exit took {took:?}");
+    assert!(!helper.seen.iter().any(|l| l.contains("\"done\"")), "no done line");
+    assert!(!out.exists(), "partial file removed");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing left in the folder");
+}
+
+/// Code review 2 I2 (TASK X3): every frame write blocks for 10 s without looking at the input (the
+/// test hook `COBBLIFY_ENCODE_TEST_FRAME_STALL_MS`, as a readiness wait or a `WriteSample` that does
+/// not return would) and the input closes while the first one is blocked: with nothing queued
+/// behind it, and with frames queued behind it and more bytes still unread in the pipe (the game
+/// crashed while the helper was behind). Either way the helper exits within 2 s with the cancel
+/// code and leaves nothing behind.
+#[test]
+fn closing_input_while_a_frame_write_blocks_exits_within_2_s_and_deletes_the_file() {
+    let _g = serial();
+    for (case, frames, extra) in [("one frame", 1usize, 0usize), ("frames queued and bytes unread", 4, 1000)] {
+        let dir = scratch(if frames == 1 { "cancel-stalled-frame" } else { "cancel-stalled-queue" });
+        let out = dir.join("stalled.partial.mp4");
+        let args: Vec<String> = [
+            "encode", "--out", &out.to_string_lossy(), "--width", "640", "--height", "360", "--fps", "60",
+            "--codec", "h264", "--bitrate", "4000000",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut helper = Helper::start_env(&args, &[("COBBLIFY_ENCODE_TEST_FRAME_STALL_MS", "10000")]);
+        helper.line(Duration::from_secs(20)).expect("ready");
+        // The writes block once the helper stops taking input, so they run on their own thread, as
+        // the game's writer does; the input closes when they are all written.
+        let mut stdin = helper.take_stdin();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let frame = to_protocol_bgra(&pattern_rgb(640, 360, 0), 640, 360);
+            let mut ok = true;
+            for _ in 0..frames {
+                ok &= stdin.write_all(&[1]).is_ok()
+                    && stdin.write_all(&(frame.len() as u32).to_le_bytes()).is_ok()
+                    && stdin.write_all(&frame).is_ok();
+            }
+            if extra > 0 {
+                // the start of one more frame that never completes
+                let mut partial = vec![1u8];
+                partial.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+                partial.extend_from_slice(&frame[..extra - 5]);
+                ok &= stdin.write_all(&partial).is_ok();
+            }
+            ok &= stdin.flush().is_ok();
+            drop(stdin);
+            let _ = tx.send((ok, Instant::now()));
+        });
+        let (written, closed_at) = rx
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap_or_else(|_| panic!("{case}: the helper stopped taking input"));
+        assert!(written, "{case}: the helper took the input");
+        let (status, _) = helper.wait(Duration::from_secs(15));
+        let took = closed_at.elapsed();
+        println!("cancel while a frame write blocks ({case}): exit {:?} after {:?}", status.code(), took);
+        assert_eq!(status.code(), Some(3), "{case}: {:?}", helper.seen);
+        assert!(took <= Duration::from_secs(2), "{case}: exit took {took:?} after the input closed");
+        assert!(!out.exists(), "{case}: partial file removed");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "{case}: nothing left in the folder");
+    }
 }
 
 #[test]

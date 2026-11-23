@@ -195,7 +195,10 @@ impl Encoder {
         self.kind
     }
 
-    pub fn frame(&mut self, bgra_bottom_up: &[u8]) -> Result<(), Failure> {
+    /// Converts and writes one frame. `WriteSample` may block while the encoder is behind; a
+    /// closed input is then seen by main.rs's input thread, which ends the run.
+    pub fn frame(&mut self, bgra_bottom_up: &[u8], _cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
+        crate::test_frame_stall();
         let len = yuv::nv12_len(self.width, self.height);
         let start = self.frames_in * HNS_PER_SECOND / self.fps;
         let end = (self.frames_in + 1) * HNS_PER_SECOND / self.fps;
@@ -212,7 +215,7 @@ impl Encoder {
         Ok(())
     }
 
-    pub fn sound(&mut self, pcm: &[u8]) -> Result<(), Failure> {
+    pub fn sound(&mut self, pcm: &[u8], _cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
         let Some(stream) = self.audio else { return Ok(()) };
         if pcm.is_empty() {
             return Ok(());
@@ -243,6 +246,7 @@ impl Encoder {
     }
 
     pub fn finish(self, cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
+        crate::test_finish_stall();
         let result = unsafe { self.writer.Finalize().map_err(hr("finish_failed")) };
         drop(self.writer);
         let _ = unsafe { self.file.Close() };
@@ -251,10 +255,104 @@ impl Encoder {
         faststart::move_index_first(&self.out, cancelled).map(|_| ()).map_err(|e| Failure::new(e.code()))
     }
 
+    /// The file's byte stream, for main.rs's input thread: when a closed input finds a native call
+    /// still running it closes the stream so the file can be deleted before the process exits.
+    pub fn release(&self) -> Release {
+        Release(self.file.clone())
+    }
+
     /// Drops the writer without finalizing and closes the file so the caller can delete it.
     pub fn abort(self) {
         drop(self.writer);
         let _ = unsafe { self.file.Close() };
+    }
+}
+
+/// The output's byte stream, closed from the input thread. COM is initialised multithreaded
+/// (`init`), so the stream may be called from any thread of the process.
+pub struct Release(IMFByteStream);
+
+// SAFETY: an MTA object; `init` joins the process to the multithreaded apartment and the input
+// thread belongs to it implicitly.
+unsafe impl Send for Release {}
+
+impl Release {
+    pub fn release(&self) {
+        let _ = unsafe { self.0.Close() };
+    }
+}
+
+/// The input's other end has closed (the game quit, crashed or cancelled), also while unread bytes
+/// are still in the pipe (code review 2 I2). Anonymous pipes are named pipes underneath:
+/// `NtQueryInformationFile(FilePipeLocalInformation)` reports `FILE_PIPE_CLOSING_STATE` once the
+/// other end is closed. If that call is unavailable, `PeekNamedPipe` failing with
+/// `ERROR_BROKEN_PIPE` (other end closed, nothing left) is the answer. Only asked by main.rs's
+/// input thread while it does not read (a synchronous read would hold the pipe meanwhile).
+pub fn input_closed() -> bool {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct IoStatusBlock {
+        status: usize,
+        information: usize,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(dead_code)]
+    struct FilePipeLocalInformation {
+        named_pipe_type: u32,
+        named_pipe_configuration: u32,
+        maximum_instances: u32,
+        current_instances: u32,
+        inbound_quota: u32,
+        read_data_available: u32,
+        outbound_quota: u32,
+        write_quota_available: u32,
+        named_pipe_state: u32,
+        named_pipe_end: u32,
+    }
+    type NtQueryInformationFile =
+        unsafe extern "system" fn(*mut c_void, *mut IoStatusBlock, *mut c_void, u32, i32) -> i32;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn PeekNamedPipe(pipe: *mut c_void, buf: *mut c_void, size: u32, read: *mut u32, avail: *mut u32, left: *mut u32) -> i32;
+        fn GetLastError() -> u32;
+    }
+    const FILE_PIPE_LOCAL_INFORMATION: i32 = 24;
+    const FILE_PIPE_CLOSING_STATE: u32 = 4;
+    const ERROR_BROKEN_PIPE: u32 = 109;
+
+    let handle = std::io::stdin().as_raw_handle() as *mut c_void;
+    // SAFETY: ntdll is loaded in every process; the function pointer has NtQueryInformationFile's
+    // documented signature; the buffers are ours and sized as passed.
+    unsafe {
+        let ntdll: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+        let module = GetModuleHandleW(ntdll.as_ptr());
+        if !module.is_null() {
+            let f = GetProcAddress(module, b"NtQueryInformationFile\0".as_ptr());
+            if !f.is_null() {
+                let query: NtQueryInformationFile = std::mem::transmute(f);
+                let mut io = IoStatusBlock { status: 0, information: 0 };
+                let mut info = FilePipeLocalInformation::default();
+                let status = query(
+                    handle,
+                    &mut io,
+                    &mut info as *mut _ as *mut c_void,
+                    std::mem::size_of::<FilePipeLocalInformation>() as u32,
+                    FILE_PIPE_LOCAL_INFORMATION,
+                );
+                if status >= 0 {
+                    return info.named_pipe_state == FILE_PIPE_CLOSING_STATE;
+                }
+            }
+        }
+        let mut avail = 0u32;
+        let ok = PeekNamedPipe(handle, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut avail, std::ptr::null_mut());
+        ok == 0 && GetLastError() == ERROR_BROKEN_PIPE
     }
 }
 

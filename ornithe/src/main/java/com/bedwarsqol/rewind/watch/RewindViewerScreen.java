@@ -549,6 +549,9 @@ public final class RewindViewerScreen extends RewindScreen {
 
             /** Shows the folder that holds the last finished file. */
             void openFolder();
+
+            /** Export mode opened: unfinished files a crash left in the export folder are removed (TASK F2). */
+            void sweep();
         }
 
         private static Exporter exporter;
@@ -650,6 +653,7 @@ public final class RewindViewerScreen extends RewindScreen {
             pointer.range(r);
             panel = new ExportPanelModel(exporter().stored());
             started = false;
+            exporter().sweep();
         }
 
         /** Leaves export mode (the range and the panel are forgotten). */
@@ -773,7 +777,8 @@ public final class RewindViewerScreen extends RewindScreen {
             if (timeline == null) {
                 return 0;
             }
-            long t = timeline.timeOfTick(session.playheadTick()) - timeline.gameStartUs();
+            // the session's playhead time: inside a recorded freeze it is the picture's time (code review 2 I3)
+            long t = session.playheadUs() - timeline.gameStartUs();
             return Math.max(0L, Math.min(timeline.lengthUs(), t));
         }
 
@@ -1013,6 +1018,11 @@ public final class RewindViewerScreen extends RewindScreen {
         @Override
         public void openFolder() {
             RewindExport.openFolder();
+        }
+
+        @Override
+        public void sweep() {
+            RewindExport.sweepPartials();
         }
     }
 }

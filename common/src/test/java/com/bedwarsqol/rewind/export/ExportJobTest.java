@@ -3,7 +3,9 @@ package com.bedwarsqol.rewind.export;
 import com.bedwarsqol.rewind.export.audio.Mixer;
 import com.bedwarsqol.rewind.export.audio.SoundEvent;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -33,11 +35,15 @@ public class ExportJobTest {
     static final int W = 64;
     static final int H = 36;
 
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
+
     /** Everything the fakes saw, in order. */
     final List<String> events = new ArrayList<String>();
     final Set<File> files = new HashSet<File>();
     final File out = new File("/exports/Solo - Map - 2026-11-22 10.00.00.mp4");
-    final File partial = new File("/exports/Solo - Map - 2026-11-22 10.00.00.partial.mp4");
+    /** The fake-file tests give their job the token {@code job}. */
+    final File partial = new File("/exports/Solo - Map - 2026-11-22 10.00.00.job.partial.mp4");
 
     FakeSession session;
     FakeGame game;
@@ -162,6 +168,11 @@ public class ExportJobTest {
         public void end() {
             events.add("end");
             ended = true;
+        }
+
+        @Override
+        public void park(ExportPlan p) {
+            events.add("park");
         }
     }
 
@@ -290,6 +301,7 @@ public class ExportJobTest {
         r.quality = quality;
         r.codec = "h264";
         r.out = out;
+        r.partialToken = "job";
         r.helper = new File("/bin/cobblify-encode-0123");
         return r;
     }
@@ -625,6 +637,213 @@ public class ExportJobTest {
         pass();
         assertEquals(ExportJob.State.FAILED, job.state());
         assertEquals("helper-timeout", job.failure());
+    }
+
+    /**
+     * Code review 1 I1 (TASK F2), through the production name picker: a partial file left by a crash is removed by the
+     * next export, which gets its name back; a partial of another name (yesterday's) goes too; finished files stay.
+     */
+    @Test
+    public void aPartialLeftByACrashIsRemovedByTheNextExportWhichGetsItsName() {
+        File dir = out.getParentFile();
+        File yesterday = new File(dir, "Solo - Map - 2026-11-21 09.00.00.partial.mp4");
+        File finished = new File(dir, "Solo - Map - 2026-11-21 08.00.00.mp4");
+        File other = new File(dir, "notes.txt");
+        files.add(partial);
+        files.add(yesterday);
+        files.add(finished);
+        files.add(other);
+        File chosen = ExportFileName.pickAfterSweep(dir, "Solo - Map - 2026-11-22 10.00.00",
+                files.toArray(new File[0]), fakeFiles::exists, fakeFiles::delete);
+        assertEquals("the crashed export's name is free again", out, chosen);
+        assertFalse("the crashed partial is gone", files.contains(partial));
+        assertFalse("yesterday's partial is gone", files.contains(yesterday));
+        assertTrue(files.contains(finished));
+        assertTrue(files.contains(other));
+        ExportJob.Request r = request(new ExportPlan(0, 200_000L, 60), "high");
+        r.out = chosen;
+        job(r);
+        assertEquals(partial.getAbsolutePath(), startArgs.get(startArgs.indexOf("--out") + 1));
+    }
+
+    /** Export mode's sweep: every partial in the folder, nothing else; a missing folder is no error. */
+    @Test
+    public void theSweepRemovesEveryPartialAndNothingElse() {
+        File dir = out.getParentFile();
+        File upper = new File(dir, "Duels - 2026-11-20 10.00.00 (2).PARTIAL.MP4");
+        files.add(partial);
+        files.add(upper);
+        files.add(out);
+        assertEquals(2, ExportFileName.sweep(files.toArray(new File[0]), fakeFiles::delete));
+        assertEquals(new HashSet<File>(Arrays.asList(out)), files);
+        assertEquals(0, ExportFileName.sweep(null, fakeFiles::delete));
+    }
+
+    /**
+     * Code review 1 I4 (TASK U6): an exception while a frame is drawn, read back or begun (the game's render hooks)
+     * ends the export FAILED with its code, not CANCELLED: the key turns red. No file is left and the session ends.
+     */
+    @Test
+    public void aRenderErrorEndsFailedNotCancelled() {
+        for (ExportJob.State at : new ExportJob.State[]{ExportJob.State.SETTLING, ExportJob.State.RENDERING,
+                ExportJob.State.FINISHING}) {
+            fresh();
+            job(request(new ExportPlan(0, 200_000L, 60), "high"));
+            encoder.status = ExportJob.Encoder.Status.READY;
+            runUntil(at, 100);
+            job.renderError("frame", new IllegalStateException("GL"));
+            pass();
+            assertEquals(at + "", ExportJob.State.FAILED, job.state());
+            assertEquals("frame-IllegalStateException", job.failure());
+            assertTrue(at + ": the helper's input closed", encoder.cancelled);
+            assertFalse(at + ": no file", files.contains(partial) || files.contains(out));
+            assertTrue(at + ": the session ends", events.contains("end"));
+        }
+        // Esc and a render error in one pass: the error wins
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        encoder.status = ExportJob.Encoder.Status.READY;
+        runUntil(ExportJob.State.RENDERING, 100);
+        job.cancel("esc");
+        job.renderError("window", new RuntimeException());
+        pass();
+        assertEquals(ExportJob.State.FAILED, job.state());
+        assertEquals("window-RuntimeException", job.failure());
+    }
+
+    /**
+     * Code review 1 I3 (TASK P7): an export that ends before the session began it (cancelled while the helper starts,
+     * the helper missing or never ready) still leaves the viewer paused inside the range; one that began ends the
+     * session's export instead.
+     */
+    @Test
+    public void anExportEndedBeforeItsSeekStillParksTheViewerInsideTheRange() {
+        ExportJob.Request r = request(new ExportPlan(0, 200_000L, 60), "high");
+        r.helper = null;
+        job(r);
+        assertEquals(ExportJob.State.FAILED, job.state());
+        assertTrue("parked: " + events, events.contains("park"));
+        assertFalse(events.contains("end"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        job.cancel("esc");
+        pass();
+        assertEquals(ExportJob.State.CANCELLED, job.state());
+        assertTrue(events.contains("park"));
+        assertFalse(events.contains("end"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        now += ExportJob.START_TIMEOUT_MS + 1;
+        pass();
+        assertEquals("helper-timeout", job.failure());
+        assertTrue(events.contains("park"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        encoder.status = ExportJob.Encoder.Status.READY;
+        runUntil(ExportJob.State.RENDERING, 100);
+        job.cancel("esc");
+        pass();
+        assertTrue(events.contains("end"));
+        assertFalse("begun: the session's own end", events.contains("park"));
+    }
+
+    /** The real file system. */
+    static final ExportJob.Files REAL_FILES = new ExportJob.Files() {
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
+
+        @Override
+        public boolean delete(File f) {
+            return f.delete();
+        }
+
+        @Override
+        public boolean rename(File from, File to) {
+            return from.renameTo(to);
+        }
+    };
+
+    /** A job as RewindExport makes it: production HelperProcess running FakeHelper {@code mode}, real files. */
+    ExportJob realJob(File out, final String mode, final List<HelperProcess> helpers) {
+        ExportJob.Request r = request(new ExportPlan(0, 100_000L, 60), "high");
+        r.out = out;
+        r.partialToken = null; // a new token, as RewindExport leaves it
+        session = new FakeSession();
+        job = new ExportJob(r, session, game, args -> {
+            String p = args.get(args.indexOf("--out") + 1);
+            List<String> c = new ArrayList<String>();
+            c.add(new File(System.getProperty("java.home"), "bin/java").getAbsolutePath());
+            c.add("-cp");
+            c.add(System.getProperty("java.class.path"));
+            c.add(FakeHelper.class.getName());
+            c.add(mode);
+            c.add(p);
+            c.add("--out");
+            c.add(p);
+            HelperProcess h = new HelperProcess(c, W * H * 4, HelperProcess.processBuilder(), 10_000);
+            helpers.add(h);
+            h.start();
+            return h;
+        }, REAL_FILES, IMPULSE);
+        job.prepare(now);
+        return job;
+    }
+
+    /** Passes (each after 5 ms of real time) until {@code done} or 20 s. */
+    void passWhile(java.util.function.BooleanSupplier more) throws InterruptedException {
+        long end = System.currentTimeMillis() + 20_000;
+        while (more.getAsBoolean() && !job.finished() && System.currentTimeMillis() < end) {
+            Thread.sleep(5);
+            pass();
+        }
+    }
+
+    /**
+     * Code review 2 I1 (TASK F2, U6): an export is cancelled while its helper is slow to go (one that never reads and
+     * is killed after 2 s, so the game's reaper deletes afterwards; one that deletes its own file 1 s after its input
+     * closed, as the real helper's cancel does). A new export of the same mode and map starts in the same second, so
+     * it gets the same name through the production picker. The old helper's late cleanup must not touch the new
+     * export's unfinished file: it survives the old helper's end and the new export publishes.
+     */
+    @Test
+    public void aCancelledHelpersLateCleanupNeverDeletesTheNextExportsFile() throws Exception {
+        for (String mode : new String[]{"stall-out", "slow-cancel"}) {
+            fresh();
+            File dir = tmp.newFolder(mode);
+            String base = "Solo - Map - 2026-11-22 10.00.00";
+            List<HelperProcess> helpers = new ArrayList<HelperProcess>();
+            File first = ExportFileName.pickAfterSweep(dir, base, dir.listFiles(), File::exists, File::delete);
+            ExportJob a = realJob(first, mode, helpers);
+            passWhile(() -> a.state() == ExportJob.State.PREPARING);
+            assertEquals(mode, ExportJob.State.SETTLING, a.state());
+            assertTrue(mode + ": the old helper made its file", a.partialFile().exists());
+            a.cancel("esc");
+            pass();
+            assertEquals(ExportJob.State.CANCELLED, a.state());
+            assertTrue(mode + ": the old helper is still there", helpers.get(0).alive());
+
+            File second = ExportFileName.pickAfterSweep(dir, base, dir.listFiles(), File::exists, File::delete);
+            assertEquals(mode + ": the same second gives the same name", first, second);
+            ExportJob b = realJob(second, "ok", helpers);
+            passWhile(() -> b.state() == ExportJob.State.PREPARING);
+            assertEquals(mode, ExportJob.State.SETTLING, b.state());
+            long end = System.currentTimeMillis() + 10_000;
+            while (helpers.get(0).alive() && System.currentTimeMillis() < end) {
+                Thread.sleep(10);
+            }
+            assertFalse(mode + ": the old helper is gone", helpers.get(0).alive());
+            Thread.sleep(500); // its cleanup, after it went
+            assertTrue(mode + ": the new export's unfinished file survives the old helper's cleanup",
+                    b.partialFile().exists());
+            passWhile(() -> true);
+            assertEquals(mode + " (failure " + b.failure() + ")", ExportJob.State.DONE, b.state());
+            assertTrue(mode + ": published", second.exists() && second.length() > 0);
+        }
     }
 
     @Test

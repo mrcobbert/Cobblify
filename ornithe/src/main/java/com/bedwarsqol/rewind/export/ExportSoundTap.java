@@ -22,7 +22,8 @@ import net.minecraft.util.ResourceLocation;
  *       lookups, the time from {@link Context#eventTimeUs()} (plus {@code delay x 50 ms}), volume
  *       {@code clamp(sound x entry, 0, 1)} and pitch {@code clamp(sound x entry, 0.5, 2)} (the game's volume sliders
  *       are ignored, PLAN D5), range {@code 16 x max(1, sound volume)} and the listener at that moment. A sound whose
- *       variant is unknown or whose file cannot be decoded is counted and left out.</li>
+ *       variant is unknown or whose file cannot be decoded is left out and counted, here and in the export's sound log
+ *       (the export's log line, {@code ExportJob.summary()}).</li>
  * </ul>
  *
  * Nothing here throws into the hook.
@@ -131,6 +132,7 @@ public final class ExportSoundTap {
                 record(l, c, sound, delayTicks);
             } catch (RuntimeException e) {
                 missing++;
+                l.countMissing();
             }
             return true;
         }
@@ -148,6 +150,7 @@ public final class ExportSoundTap {
         Variant v = lookups.pick(sound);
         if (v == null) {
             missing++;
+            l.countMissing();
             return;
         }
         if (v.streaming) {
@@ -156,6 +159,7 @@ public final class ExportSoundTap {
         }
         if (lookups.decode(v.key) == null) {
             undecodable++;
+            l.countUndecodable();
             return;
         }
         float sv = sound.getVolume();

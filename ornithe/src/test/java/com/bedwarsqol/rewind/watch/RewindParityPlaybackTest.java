@@ -64,6 +64,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -473,6 +474,7 @@ public class RewindParityPlaybackTest {
         boolean smoothCamera;
         int difficulty = 2;
         int counter;
+        int exportStarts;
 
         @Override public RecordingMeta readMeta(String id) { return null; }
         @Override public boolean connected() { return false; }
@@ -525,6 +527,7 @@ public class RewindParityPlaybackTest {
 
         @Override
         public void exportStart() {
+            exportStarts++;
             for (PlaybackPart p : RewindPlayback.parts()) {
                 p.exportStart();
             }
@@ -661,6 +664,10 @@ public class RewindParityPlaybackTest {
     void newWorld() {
         try {
             world = BlockPredictionTest.MapWorld.create();
+            // as vanilla's constructor leaves a WorldClient: a ridden player is looked up there (code review 2 I4)
+            BlockPredictionTest.Client.set(WorldClient.class, world, "mc", mc);
+            BlockPredictionTest.Client.set(World.class, world, "entitiesById", new IntHashMap<Entity>());
+            BlockPredictionTest.Client.set(World.class, world, "playerEntities", new ArrayList<EntityPlayer>());
             BlockPredictionTest.Client.set(World.class, world, "provider", new WorldProviderSurface());
             BlockPredictionTest.Client.set(World.class, world, "worldInfo",
                     RecordedScreensTest.allocate(WorldInfo.class));
@@ -1245,5 +1252,101 @@ public class RewindParityPlaybackTest {
         assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
         assertEquals("nothing reached the playback channel", 0, connection.discarded());
         assertTrue(connection.channel().outboundMessages().isEmpty());
+    }
+
+    // ------------------------------------------------------------------ code review 2 I4: the view at Export
+
+    /** One segment of {@code ticks} ticks 50 ms apart and nothing else (other players are put in by hand). */
+    File writePlainRecording(File dir, int ticks) throws Exception {
+        RecordingFixture.WriterRun w = new RecordingFixture.WriterRun(dir, 10_000_000L);
+        w.connect(16_384);
+        w.advance(1_000);
+        w.boundary(0, RecordingFixture.joinGame(0), 0);
+        w.open();
+        ExtCodec c = new ExtCodec();
+        int pending = 1;
+        long base = w.nowUs + 10_000L;
+        for (int i = 0; i < ticks; i++) {
+            w.nowUs = base + i * TICK_US;
+            ext(w, c, RewindFormat.TAG_TICK_HEAD, c.tickHead(pending));
+            pending = 0;
+            w.advance(1_000);
+            int n = w.enc.tick(0.1 * i, 64, 0, 0f, 0f, 0f, RewindFormat.FLAG_ON_GROUND, 1, -1, 0);
+            if (n > 0) {
+                w.track(RewindFormat.TAG_TICK, Arrays.copyOf(w.enc.buffer(), n));
+            }
+            w.advance(10_000);
+            w.step();
+        }
+        return w.close();
+    }
+
+    /**
+     * Runs {@code plan} on the production session and parts until its last frame was captured; the other player is
+     * put into the rebuilt world once the export's seek has landed and its pre-roll reaches {@code spawnUs} (never:
+     * MAX). Returns, per captured frame,
+     * whether that frame was drawn from the other player (ridden, viewed from them) or "free" / "you".
+     */
+    List<String> exportViews(ExportPlan plan, long spawnUs) throws Exception {
+        assertTrue(session.beginExport(plan));
+        int starts = ops.exportStarts;
+        List<String> views = new ArrayList<String>();
+        boolean spawned = false;
+        for (int i = 0; i < 20_000; i++) {
+            ops.nanos += 20_000_000L; // wall time passes: the export's steps are paced to it (PLAN Revision 4.1)
+            if (!spawned && ops.exportStarts > starts && session.state() == PlaybackSession.State.WATCHING
+                    && mc.theWorld != null && session.renderTimeUs() >= spawnUs) {
+                assertTrue("put in during the uncaptured pre-roll", session.exportPreroll());
+                EntityOtherPlayerMP other = spawnOther();
+                other.setPositionAndRotation(20.5, 70, -8.25, 135f, -20f);
+                spawned = true;
+            }
+            frame(0);
+            long f = session.exportFrame();
+            if (f < 0) {
+                continue;
+            }
+            boolean fromThem = RewindPlayback.view().riddenEntityId() == OTHER_ID
+                    && mc.getRenderViewEntity() != null && mc.getRenderViewEntity().getEntityId() == OTHER_ID;
+            views.add(fromThem ? "ridden" : RewindPlayback.view().freeCamera() ? "free" : "you");
+            session.advanceExportFrame();
+            if (f == plan.frames() - 1) {
+                session.endExport();
+                return views;
+            }
+        }
+        throw new AssertionError("the export never ended");
+    }
+
+    /**
+     * Code review 2 I4 (TASK P3), the reviewer's recording: the other player spawns at 5.5 s and stays through 7 s.
+     * Watching at 7 s their view is selected, then [6 s, 7 s) is exported; the export rebuilds to its pre-roll start
+     * at 5 s, where they are not in the world yet. The uncaptured pre-roll must not give up that view (watching would,
+     * once settled, for a player who left): every captured frame is drawn from them. A player still absent when the
+     * captured range starts is left as watching leaves them: frame 0 is the free camera.
+     */
+    @Test
+    public void thePreRollKeepsTheRiddenViewSelectedAtExportForAPlayerWhoSpawnsBeforeTheRange() throws Exception {
+        open(writePlainRecording(tmp.newFolder("rewind"), 160));
+        long t0 = session.timeline().timeOfTick(session.timeline().startTick());
+        while (session.renderTimeUs() < t0 + 7_000_000L) {
+            frame(1);
+        }
+        EntityOtherPlayerMP other = spawnOther();
+        other.setPositionAndRotation(20.5, 70, -8.25, 135f, -20f);
+        assertTrue("key 3 rides the other player", RewindPlayback.cyclePlayer(1));
+        frame(0);
+        assertSame("their view is selected when Export is pressed", other, mc.getRenderViewEntity());
+
+        ExportPlan plan = new ExportPlan(t0 + 6_000_000L, t0 + 7_000_000L, 60);
+        List<String> views = exportViews(plan, t0 + 5_500_000L);
+        assertEquals(60, views.size());
+        assertEquals("every captured frame from the view selected at Export: " + views,
+                Collections.nCopies(60, "ridden"), views);
+
+        // still absent at the range start: watching's own rule, the free camera from frame 0 on
+        List<String> absent = exportViews(plan, Long.MAX_VALUE);
+        assertEquals(Collections.nCopies(60, "free"), absent);
+        assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
     }
 }

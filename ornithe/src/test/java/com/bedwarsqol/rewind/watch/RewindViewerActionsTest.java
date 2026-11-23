@@ -149,6 +149,11 @@ public class RewindViewerActionsTest {
             calls.add("openFolder");
         }
 
+        @Override
+        public void sweep() {
+            calls.add("sweep");
+        }
+
         /** The running export ended with {@code s}. */
         void end(ExportJob.State s) {
             active = false;
@@ -606,7 +611,7 @@ public class RewindViewerActionsTest {
         fresh.openExport();
         assertEquals(fromStart(900) - 10_000_000L, fresh.range().startUs());
         assertEquals(fromStart(900) + 5_000_000L, fresh.range().endUs());
-        assertTrue(exporter.calls.isEmpty());
+        assertFalse("nothing started", exporter.calls.contains("start"));
     }
 
     @Test
@@ -615,6 +620,8 @@ public class RewindViewerActionsTest {
         controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.MARKER, 2, 0));
         settle();
         controls.openExport();
+        assertEquals("export mode sweeps the folder (F2)", Arrays.asList("sweep"), exporter.calls);
+        exporter.calls.clear();
         ExportPanelModel p = controls.panel();
         p.probe(matrix());
         p.route(RenderRoute.Route.OWN, 1280, 720);
@@ -710,6 +717,7 @@ public class RewindViewerActionsTest {
 
         RewindViewerScreen.Controls c = new RewindViewerScreen.Controls(session);
         c.openExport();
+        exporter.calls.clear();
         assertEquals(0, c.range().startUs());
         ExportPanelModel p = c.panel();
         p.probe(matrix());
@@ -720,6 +728,20 @@ public class RewindViewerActionsTest {
         assertEquals(Arrays.asList("start"), exporter.calls);
         assertEquals("never before the first tick (beginExport refuses that)", first, exporter.startUs);
         assertEquals(session.timeline().gameStartUs() + c.range().endUs(), exporter.endUs);
+    }
+
+    /** Code review 1 I1 (TASK F2): opening export mode, from the viewer or the gallery, sweeps the export folder. */
+    @Test
+    public void openingExportModeSweepsTheExportFolder() {
+        assertFalse(exporter.calls.contains("sweep"));
+        controls.openExport();
+        assertEquals(Arrays.asList("sweep"), exporter.calls);
+        controls.leaveExport();
+        exporter.calls.clear();
+        RewindViewerScreen.requestExport(PlaybackSessionTest.ID);
+        RewindViewerScreen.Controls c = new RewindViewerScreen.Controls(session);
+        assertTrue(c.exportMode());
+        assertEquals(Arrays.asList("sweep"), exporter.calls);
     }
 
     @Test

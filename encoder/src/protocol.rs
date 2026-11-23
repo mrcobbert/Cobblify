@@ -62,6 +62,11 @@ impl<R: Read> PacketReader<R> {
         PacketReader { inner, frame_len, buf: Vec::new() }
     }
 
+    /// The input underneath (to read on after the last packet).
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.inner
+    }
+
     /// Reads the next packet. The returned slice is valid until the next call.
     pub fn next(&mut self) -> Result<Packet<'_>, ReadError> {
         let mut header = [0u8; 5];

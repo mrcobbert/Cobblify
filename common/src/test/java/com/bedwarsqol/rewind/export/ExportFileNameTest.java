@@ -10,11 +10,12 @@ import java.util.TimeZone;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * {@link ExportFileName} (TASK F1): {@code <mode> - <map> - <yyyy-MM-dd HH.mm.ss>.mp4} in local time at the start; a
  * missing mode or map is left out; characters a file name cannot hold are replaced; a taken name gets {@code (2)}; the
- * unfinished file is {@code <name>.partial.mp4} (F2).
+ * unfinished file is {@code <name>.<token>.partial.mp4}, the token one export's own (F2).
  */
 public class ExportFileNameTest {
 
@@ -58,5 +59,9 @@ public class ExportFileNameTest {
     @Test
     public void thePartialFileSitsNextToTheFinalOne() {
         assertEquals(new File("/x/A (2).partial.mp4"), ExportFileName.partial(new File("/x/A (2).mp4")));
+        assertEquals(new File("/x/A (2).k3.partial.mp4"), ExportFileName.partial(new File("/x/A (2).mp4"), "k3"));
+        String t1 = ExportFileName.newToken(), t2 = ExportFileName.newToken();
+        assertFalse("each export its own", t1.equals(t2));
+        assertTrue(t1, t1.matches("[0-9a-z]+"));
     }
 }

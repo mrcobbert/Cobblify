@@ -114,6 +114,28 @@ public class RewindWiringTest {
         assertEquals("nothing ended yet in this JVM", null, e.outcome());
     }
 
+    /**
+     * Code review 1 I4 (TASK U6): the export's render hooks report an exception as a render error (the export ends
+     * FAILED, {@code ExportJobTest.aRenderErrorEndsFailedNotCancelled}), never as a cancel. The hooks need a running
+     * export in a real game, so the wiring is read from the source.
+     */
+    @Test
+    public void theExportsRenderHooksFailTheExportOnAnException() throws Exception {
+        java.io.File src = null;
+        for (String d : new String[]{"src/main/java", "ornithe/src/main/java"}) {
+            java.io.File f = new java.io.File(d, "com/bedwarsqol/rewind/export/RewindExport.java");
+            if (f.isFile()) {
+                src = f;
+            }
+        }
+        assertNotNull("RewindExport.java from " + new java.io.File(".").getAbsolutePath(), src);
+        String code = new String(java.nio.file.Files.readAllBytes(src.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        for (String where : new String[]{"begin", "frame", "window"}) {
+            assertTrue(where + " fails the export", code.contains("x.job.renderError(\"" + where + "\", t);"));
+            assertFalse(where + " is not a cancel", code.contains("job.cancel(\"" + where + "-"));
+        }
+    }
+
     @Test
     public void playbackReadsThroughTheRecordersStore() {
         assertSame(Rewind.store(), RewindPlayback.store());

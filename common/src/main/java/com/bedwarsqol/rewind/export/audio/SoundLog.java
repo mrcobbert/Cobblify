@@ -22,6 +22,8 @@ public final class SoundLog {
     /** Not yet taken, sorted by start time; equal times keep the order they were logged in. */
     private final List<SoundEvent> pending = new ArrayList<>();
     private int dropped;
+    private int missing;
+    private int undecodable;
 
     /**
      * @param startUs the range start (frame 0's time)
@@ -76,5 +78,25 @@ public final class SoundLog {
     /** Sounds left out because they started outside the range. */
     public int dropped() {
         return dropped;
+    }
+
+    /** The sound tap left a sound out: its variant is unknown or could not be looked up (TASK S5). */
+    public void countMissing() {
+        missing++;
+    }
+
+    /** The sound tap left a sound out: its file cannot be found or decoded (TASK S5). */
+    public void countUndecodable() {
+        undecodable++;
+    }
+
+    /** Sounds left out because their variant was unknown ({@link #countMissing}). */
+    public int missing() {
+        return missing;
+    }
+
+    /** Sounds left out because their file could not be decoded ({@link #countUndecodable}). */
+    public int undecodable() {
+        return undecodable;
     }
 }

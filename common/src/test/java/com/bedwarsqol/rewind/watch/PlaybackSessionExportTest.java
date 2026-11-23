@@ -181,11 +181,21 @@ public class PlaybackSessionExportTest {
         tickSounds.clear();
     }
 
+    /**
+     * Wall time that passes once, between the next {@code frameStart()} that runs ticks and its first
+     * {@code tickHead()} (a slow frame start, before Minecraft runs the requested ticks); 0: none.
+     */
+    long stallBeforeTicksNs;
+
     /** One {@code runGameLoop} pass, {@code wallNs} after the last. */
     void frame(long wallNs) {
         ops.nanos += wallNs;
         session.frameStart();
         for (int j = 0; j < ops.elapsed; j++) { // re-read before every pass
+            if (stallBeforeTicksNs > 0) {
+                ops.nanos += stallBeforeTicksNs;
+                stallBeforeTicksNs = 0;
+            }
             session.tickHead();
             if (ops.world && !ops.paused) {
                 worldTicks++;
@@ -600,6 +610,128 @@ public class PlaybackSessionExportTest {
         session.setPaused(false);
         frame(EVEN_NS);
         assertEquals(p + EVEN_NS / 1000, session.renderTimeUs());
+    }
+
+    /**
+     * Code review 1 I3 (TASK P7): an export ended before frame 0 (cancelled or failed in its pre-roll, or before its
+     * seek landed) returns paused inside the selected range, by the picture and by the viewer's playhead, and stays
+     * there.
+     */
+    @Test
+    public void endingBeforeFrameZeroReturnsPausedInsideTheRange() throws IOException {
+        recording(every50(3_000_000L), 3_000_000L, null);
+        open();
+        ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 2_000_000L, 60);
+        for (String when : new String[]{"pre-roll", "seek"}) {
+            watchTo(2_500_000L);
+            assertTrue(session.beginExport(plan));
+            if (when.equals("pre-roll")) {
+                for (int i = 0; i < 10_000 && !(session.state() == PlaybackSession.State.WATCHING
+                        && session.exportPreroll() && session.renderTimeUs() >= ORIGIN + 216_666L
+                        && session.renderTimeUs() < plan.startUs()); i++) {
+                    frame(EVEN_NS);
+                }
+                assertTrue(when, session.exportPreroll());
+                assertTrue(when + ": in the pre-roll", session.renderTimeUs() < plan.startUs());
+            }
+            session.endExport();
+            for (int i = 0; i < 200 && (session.state() != PlaybackSession.State.WATCHING || i < 3); i++) {
+                frame(EVEN_NS);
+            }
+            assertEquals(when, PlaybackSession.State.WATCHING, session.state());
+            assertTrue(when + ": paused", session.ticks().paused());
+            long p = session.renderTimeUs();
+            long head = session.timeline().timeOfTick(session.playheadTick());
+            assertTrue(when + ": the picture at " + (p - ORIGIN) + " us, inside the range",
+                    p >= plan.startUs() && p < plan.endUs());
+            assertTrue(when + ": the playhead at " + (head - ORIGIN) + " us, inside the range",
+                    head >= plan.startUs() && head < plan.endUs());
+            frame(5_000_000_000L);
+            frame(EVEN_NS);
+            assertEquals(when + ": it stays", p, session.renderTimeUs());
+            session.setPaused(false);
+        }
+    }
+
+    /**
+     * Code review 1 I3 (TASK P7): an export that never began (its helper failed or Esc came while it started) leaves
+     * the viewer paused inside the range too: from straight play outside it, and without a move from inside it.
+     */
+    @Test
+    public void anExportThatNeverBeganPausesInsideTheRange() throws IOException {
+        recording(every50(3_000_000L), 3_000_000L, null);
+        open();
+        ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 2_000_000L, 60);
+        watchTo(2_500_000L);
+        assertFalse(session.ticks().paused());
+        session.pauseInside(plan);
+        for (int i = 0; i < 200 && (session.state() != PlaybackSession.State.WATCHING || i < 3); i++) {
+            frame(EVEN_NS);
+        }
+        assertTrue("paused", session.ticks().paused());
+        long p = session.renderTimeUs();
+        assertTrue("at " + (p - ORIGIN) + " us, inside the range", p >= plan.startUs() && p < plan.endUs());
+        long head = session.timeline().timeOfTick(session.playheadTick());
+        assertTrue("the playhead inside the range", head >= plan.startUs() && head < plan.endUs());
+
+        session.setPaused(false);
+        frame(EVEN_NS);
+        frame(EVEN_NS);
+        long inside = session.renderTimeUs();
+        session.pauseInside(plan);
+        frame(EVEN_NS);
+        assertTrue(session.ticks().paused());
+        assertEquals("inside already: it stays", inside, session.renderTimeUs());
+    }
+
+    /** The reviewer's legal v2 freeze: tick heads at 0, 1 s and 5 s only, 6 s long; the range [2 s, 3 s) holds no tick. */
+    static final long[] FREEZE_HEADS = {0L, 1_000_000L, 5_000_000L};
+
+    void assertParkedInside(String when, ExportPlan plan) {
+        for (int i = 0; i < 10; i++) {
+            frame(EVEN_NS);
+        }
+        for (int i = 0; i < 200 && session.state() != PlaybackSession.State.WATCHING; i++) {
+            frame(EVEN_NS);
+        }
+        assertEquals(when, PlaybackSession.State.WATCHING, session.state());
+        assertTrue(when + ": paused", session.ticks().paused());
+        long p = session.renderTimeUs();
+        assertTrue(when + ": the picture at " + (p - ORIGIN) + " us, inside the range",
+                p >= plan.startUs() && p < plan.endUs());
+        long head = session.playheadUs();
+        assertTrue(when + ": the viewer's playhead at " + (head - ORIGIN) + " us, inside the range",
+                head >= plan.startUs() && head < plan.endUs());
+        frame(5_000_000_000L);
+        frame(EVEN_NS);
+        assertEquals(when + ": it stays", p, session.renderTimeUs());
+    }
+
+    /**
+     * Code review 2 I3 (TASK P7), the reviewer's fixture: no recorded tick lies inside the range, so parking on "the
+     * first tick at or after the start" leaves it (that tick is at 5 s). An export cancelled in its pre-roll, and one
+     * that never began ({@code pauseInside}), still leave the viewer paused at a time inside the range, by the picture
+     * and by the playhead.
+     */
+    @Test
+    public void terminationParksInsideARangeThatHoldsNoTick() throws IOException {
+        ExportPlan plan = new ExportPlan(ORIGIN + 2_000_000L, ORIGIN + 3_000_000L, 60);
+        recording(FREEZE_HEADS, 6_000_000L, null);
+        open();
+        assertTrue(session.beginExport(plan));
+        for (int i = 0; i < 40; i++) {
+            frame(EVEN_NS);
+        }
+        assertTrue("cancelled in the pre-roll", session.exportPreroll());
+        assertTrue(session.renderTimeUs() < plan.startUs());
+        session.endExport();
+        assertParkedInside("pre-roll", plan);
+
+        client();
+        recording(FREEZE_HEADS, 6_000_000L, null);
+        open();
+        session.pauseInside(plan);
+        assertParkedInside("never began", plan);
     }
 
     /** {@code eventTimeUs()}: the running tick's time inside a tick, a record's stamp inside its dispatch, else P. */
