@@ -201,7 +201,13 @@ final class RewindWatchProbes {
         long run = ((Number) call(ticks, "ticksRun")).longValue();
         if (k <= run) throw new Refused("play-to " + k + " is not ahead of the playhead (" + run + ")");
         registerTickHook();
-        for (int i = 0; i < 8; i++) call(session, "faster");
+        if (Policy.rewindPlayToRealSpeed(args)) {
+            int def = cls("com.bedwarsqol.rewind.watch.ReplayTicks").getField("DEFAULT_SPEED_INDEX").getInt(null);
+            for (int i = 0; i < 16 && ((Number) call(ticks, "speedIndex")).intValue() > def; i++) call(session, "slower");
+            for (int i = 0; i < 16 && ((Number) call(ticks, "speedIndex")).intValue() < def; i++) call(session, "faster");
+        } else {
+            for (int i = 0; i < 8; i++) call(session, "faster");
+        }
         stoppedAt = -1;
         stopAt = k;
         markCommand("play-to", k);

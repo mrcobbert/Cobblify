@@ -241,6 +241,62 @@ public final class PolicyTest {
         refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("tv", "1920", "1080", "60", "60", "rule", "0",
                 "0", "0", "a")));
         refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080")));
+        checks++;
+        Object[] chatOff = Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "paced",
+                "2500u250", "0", "0", "k11-x", "chat-off"));
+        same("false,2500250,2500", chatOff[10] + "," + chatOff[11] + "," + chatOff[6]);
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "rule", "0",
+                "0", "0", "a", "chat-maybe")));
+
+        checks++;
+        if (Policy.rewindPlayTo(java.util.Arrays.asList("40", "1x")) != 40
+                || !Policy.rewindPlayToRealSpeed(java.util.Arrays.asList("40", "1x"))
+                || Policy.rewindPlayToRealSpeed(java.util.Arrays.asList("40"))) {
+            fail("play-to TICK 1x");
+        }
+        refusedCall(() -> Policy.rewindPlayTo(java.util.Arrays.asList("40", "2x")));
+
+        // Rewind Export Phase 5 (step RWE): exports only into the dev client's own export folder, bounded arguments.
+        String dir = "/Users/Shared/cobblify-dev/exports/rwe";
+        checks++;
+        Object[] st = Policy.exportStart("{\"startUs\":1025000,\"endUs\":4035000,\"height\":1080,\"fps\":60,"
+                + "\"quality\":\"high\",\"codec\":\"h264\",\"chat\":false,\"route\":\"own\",\"helper\":\"jar\"}", dir);
+        same("1025000,4035000,0,1080,60,high,h264,false,own,jar", st[0] + "," + st[1] + "," + st[2] + "," + st[3] + ","
+                + st[4] + "," + st[5] + "," + st[6] + "," + st[7] + "," + st[8] + "," + st[9]);
+        Object[] small = Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"width\":640,\"height\":360,"
+                + "\"fps\":60,\"codec\":\"hevc\"}", dir);
+        same("640x360 hevc", small[2] + "x" + small[3] + " " + small[6]);
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":60}", null));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":60}",
+                "/Users/p/Movies"));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":60}",
+                "/Users/Shared/cobblify-dev/exports/../../p"));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1000,\"fps\":60}", dir));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":5,\"endUs\":5,\"height\":1080,\"fps\":60}", dir));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":50}", dir));
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":60,"
+                + "\"out\":\"x\"}", dir)); // unknown key
+        refusedCall(() -> Policy.exportStart("{\"startUs\":0,\"endUs\":1000000,\"height\":1080,\"fps\":60,"
+                + "\"helper\":\"/bin/sh\"}", dir));
+        refusedCall(() -> Policy.exportStart("[1,2]", dir));
+        same("cobdev test 123", Policy.exportChatText(java.util.Arrays.asList("type", "cobdev test 123")));
+        same("null", String.valueOf(Policy.exportChatText(java.util.Arrays.asList("close"))));
+        refusedCall(() -> Policy.exportChatText(java.util.Arrays.asList("type", "/op me")));
+        refusedCall(() -> Policy.exportChatText(java.util.Arrays.asList("type", "A")));
+        refusedCall(() -> Policy.exportChatText(java.util.Arrays.asList("cobdev test")));
+        checks++;
+        int[] box = Policy.exportRegion(java.util.Arrays.asList("rwe-on", "frame-00010", "rwe-off", "frame-00010", "0",
+                "900", "600", "1079"));
+        same("0,900,600,1079", box[0] + "," + box[1] + "," + box[2] + "," + box[3]);
+        refusedCall(() -> Policy.exportRegion(java.util.Arrays.asList("rwe-on", "frame-00010", "../x", "frame-00010",
+                "0", "0", "1", "1")));
+        refusedCall(() -> Policy.exportRegion(java.util.Arrays.asList("rwe-on", "frame-00010", "rwe-off", "frame-00010",
+                "5", "0", "1", "1")));
+        same("k11-x,31,k11-ref-0,8", String.join(",", java.util.Arrays.asList(
+                java.util.Arrays.stream(Policy.exportK11(java.util.Arrays.asList("k11-x", "31", "k11-ref-0", "8")))
+                        .map(String::valueOf).toArray(String[]::new))));
+        refusedCall(() -> Policy.exportK11(java.util.Arrays.asList("k11-x", "0", "k11-ref-0", "8")));
+        refusedCall(() -> Policy.exportK11(java.util.Arrays.asList("k11-x", "31", "k11-ref-0", "99")));
         allowed(Policy.exportRun("dev-own-1"));
         refused(Policy.exportRun("../etc"));
         refused(Policy.exportRun("A"));
