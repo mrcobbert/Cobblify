@@ -115,6 +115,8 @@ final class RewindExportProbes {
                     return liveSound(args);
                 case "rewind-export-chat-type":
                     return chatType(args);
+                case "rewind-export-ui":
+                    return ui();
                 default:
                     throw new Refused("unknown probe " + name);
             }
@@ -322,13 +324,19 @@ final class RewindExportProbes {
         return out;
     }
 
-    /** {@code rewind-export-shot RUN NAME}: the main framebuffer (the last whole frame) as RUN/NAME.png. */
+    /**
+     * {@code rewind-export-shot RUN NAME [window]}: the main framebuffer (the last whole frame) as RUN/NAME.png; with
+     * {@code window}, what the window last showed: its back buffer between frames, which still holds the frame just
+     * swapped on this machine (an export's preview and filling key are drawn into the window only, never into the
+     * main framebuffer; Phase 7 step RWU).
+     */
     private static Map<String, Object> shot(List<String> args) throws Exception {
-        if (args.size() != 2) throw new Refused("probe rewind-export-shot RUN NAME");
+        boolean window = args.size() == 3 && "window".equals(args.get(2));
+        if (args.size() != 2 && !window) throw new Refused("probe rewind-export-shot RUN NAME [window]");
         File dir = new File(Policy.exportFolder(args.get(0)));
         Refused.check(Policy.exportName(args.get(1)));
         prepare(dir);
-        Object[] f = Bridge.readFrame();
+        Object[] f = window ? frontBuffer() : Bridge.readFrame();
         int w = (Integer) f[0], h = (Integer) f[1];
         int[] px = (int[]) f[2];
         write(new File(dir, args.get(1) + ".png"), w, h, px);
@@ -344,6 +352,23 @@ final class RewindExportProbes {
         out.put("maxLuma", max);
         out.put("meanLuma", sum / (double) px.length);
         return out;
+    }
+
+    /** The window's back buffer between frames, as {@link Bridge#readFrame} returns a frame. */
+    private static Object[] frontBuffer() {
+        Minecraft mc = Minecraft.getMinecraft();
+        int w = mc.displayWidth, h = mc.displayHeight;
+        IntBuffer buf = BufferUtils.createIntBuffer(w * h);
+        int bound = GL11.glGetInteger(0x8CA6);
+        OpenGlHelper.glBindFramebuffer(OpenGlHelper.GL_FRAMEBUFFER, 0);
+        GL11.glReadBuffer(GL11.GL_BACK);
+        GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
+        GL11.glReadPixels(0, 0, w, h, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+        GL11.glReadBuffer(GL11.GL_BACK);
+        OpenGlHelper.glBindFramebuffer(OpenGlHelper.GL_FRAMEBUFFER, bound);
+        int[] px = new int[w * h];
+        buf.get(px);
+        return new Object[]{w, h, px};
     }
 
     private static Map<String, Object> clean() throws Exception {
@@ -1054,5 +1079,128 @@ final class RewindExportProbes {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Object enumValue(Class<?> type, String name) {
         return Enum.valueOf((Class) type, name);
+    }
+
+    // ------------------------------------------------------------------ step RWU (Phase 7): export mode's screens
+
+    static final String VIEWER = "com.bedwarsqol.rewind.watch.RewindViewerScreen";
+    static final String ESC = "com.bedwarsqol.rewind.watch.RewindEscScreen";
+    static final String GALLERY = "com.bedwarsqol.rewind.watch.RewindGalleryScreen";
+    static final String ROW = "com.bedwarsqol.rewind.export.ExportPanelModel$Row";
+    static final String ESC_KEY = "com.bedwarsqol.rewind.watch.EscMenuModel$Key";
+
+    /**
+     * {@code rewind-export-ui}: the open Rewind screen's rects (GUI px, {x, y, w, h}) as its last frame laid them out,
+     * and export mode's state: the range, the panel's key state, fill and chosen values, the playhead. Read only.
+     */
+    private static Map<String, Object> ui() throws Exception {
+        Minecraft mc = Minecraft.getMinecraft();
+        GuiScreen cur = mc.currentScreen;
+        Map<String, Object> out = Bridge.ok();
+        out.put("screen", cur == null ? null : cur.getClass().getSimpleName());
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        out.put("scaleFactor", sf);
+        out.put("gui", Arrays.asList(mc.displayWidth / (float) sf, mc.displayHeight / (float) sf));
+        out.put("display", Arrays.asList(mc.displayWidth, mc.displayHeight));
+        out.put("exportActive", RewindWatchProbes.call(RewindWatchProbes.cls(EXPORT), "active"));
+        out.put("sessionRoute", String.valueOf(RewindWatchProbes.call(RewindWatchProbes.cls(EXPORT), "sessionRoute")));
+        out.put("routeChecked", RewindWatchProbes.call(RewindWatchProbes.cls(EXPORT), "routeChecked"));
+        if (cur == null) return out;
+        String name = cur.getClass().getName();
+        if (name.equals(ESC)) {
+            Object layout = raw(cur, "layout");
+            Map<String, Object> keys = new java.util.LinkedHashMap<>();
+            if (layout != null) {
+                for (Object k : RewindWatchProbes.cls(ESC_KEY).getEnumConstants()) {
+                    keys.put(String.valueOf(k), floats((float[]) RewindWatchProbes.call(layout, "key", k)));
+                }
+            }
+            out.put("esc", keys);
+        } else if (name.equals(GALLERY)) {
+            Object layout = raw(cur, "layout");
+            if (layout != null) {
+                out.put("galleryExport", floats((float[]) raw(layout, "export")));
+                out.put("galleryWatch", floats((float[]) raw(layout, "watch")));
+            }
+        } else if (name.equals(VIEWER)) {
+            Object controls = raw(cur, "controls");
+            Object layout = raw(cur, "layout");
+            Object pl = raw(cur, "panelLayout");
+            boolean mode = (Boolean) RewindWatchProbes.call(controls, "exportMode");
+            out.put("exportMode", mode);
+            out.put("busy", RewindWatchProbes.call(controls, "exportBusy"));
+            out.put("playheadUs", RewindWatchProbes.call(controls, "playheadUs"));
+            Object session = raw(controls, "session");
+            out.put("playheadTick", RewindWatchProbes.call(session, "playheadTick"));
+            Object ticks = RewindWatchProbes.call(session, "ticks");
+            out.put("paused", ticks == null ? null : RewindWatchProbes.call(ticks, "paused"));
+            Object nav = raw(controls, "nav");
+            if (nav != null && ((Integer) RewindWatchProbes.call(nav, "count")) > 0) {
+                Object timeline = raw(controls, "timeline");
+                long start = ((Number) RewindWatchProbes.call(timeline, "gameStartUs")).longValue();
+                out.put("firstMarkerUs", ((Number) RewindWatchProbes.call(nav, "markerUs", 0)).longValue() - start);
+                out.put("firstMarkerTick", RewindWatchProbes.call(nav, "markerTick", 0));
+                out.put("lengthUs", RewindWatchProbes.call(timeline, "lengthUs"));
+            }
+            if (layout != null) {
+                out.put("bar", floats((float[]) raw(layout, "bar")));
+                if (mode) {
+                    out.put("handle0", floats((float[]) RewindWatchProbes.call(layout, "handle", 0)));
+                    out.put("handle1", floats((float[]) RewindWatchProbes.call(layout, "handle", 1)));
+                }
+            }
+            if (mode) {
+                Object range = RewindWatchProbes.call(controls, "range");
+                out.put("range", Arrays.asList(RewindWatchProbes.call(range, "startUs"),
+                        RewindWatchProbes.call(range, "endUs"), RewindWatchProbes.call(range, "lengthUs")));
+                Object panel = RewindWatchProbes.call(controls, "panel");
+                out.put("keyState", String.valueOf(RewindWatchProbes.call(panel, "keyState")));
+                out.put("fill", RewindWatchProbes.call(panel, "fill"));
+                Map<String, Object> rows = new java.util.LinkedHashMap<>();
+                for (Object r : RewindWatchProbes.cls(ROW).getEnumConstants()) {
+                    Map<String, Object> row = new java.util.LinkedHashMap<>();
+                    row.put("options", RewindWatchProbes.call(panel, "options", r));
+                    row.put("chosen", RewindWatchProbes.call(panel, "chosen", r));
+                    List<Object> avail = new ArrayList<>();
+                    int n = ((List<?>) RewindWatchProbes.call(panel, "options", r)).size();
+                    for (int i = 0; i < n; i++) avail.add(RewindWatchProbes.call(panel, "available", r, i));
+                    row.put("available", avail);
+                    if (pl != null) {
+                        List<Object> rects = new ArrayList<>();
+                        int count = (Integer) RewindWatchProbes.call(pl, "count", r);
+                        for (int i = 0; i < count; i++) rects.add(floats((float[]) RewindWatchProbes.call(pl, "option", r, i)));
+                        row.put("rects", rects);
+                    }
+                    rows.put(String.valueOf(r), row);
+                }
+                out.put("rows", rows);
+                if (pl != null) {
+                    out.put("panel", Arrays.asList(raw(pl, "x"), raw(pl, "y"), raw(pl, "w"), raw(pl, "h")));
+                    out.put("toggle", floats((float[]) RewindWatchProbes.call(pl, "toggle")));
+                    out.put("key", floats((float[]) RewindWatchProbes.call(pl, "key")));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static List<Float> floats(float[] a) {
+        if (a == null) return null;
+        List<Float> out = new ArrayList<>();
+        for (float f : a) out.add(f);
+        return out;
+    }
+
+    private static Object raw(Object o, String name) throws Exception {
+        for (Class<?> k = o.getClass(); k != null; k = k.getSuperclass()) {
+            try {
+                java.lang.reflect.Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(o);
+            } catch (NoSuchFieldException ignored) {
+                // up
+            }
+        }
+        throw new Refused(o.getClass().getName() + " has no field " + name);
     }
 }

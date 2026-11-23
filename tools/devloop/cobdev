@@ -5885,6 +5885,369 @@ def smoke_rewind_export_pipeline(s, cfg, mode):
         tu_save(s, cfg)
 
 
+# Rewind Export Phase 7 (PLAN Phase 7, step RWU): export mode driven through the real screens with cobdev's input. The
+# Esc menu's Export, the handles (a drag), the panel's rows clicked, a full export from its key (progress, Open Folder,
+# never pressed: it would open a Finder window in the user's session), the gallery's Export, Failed with the helper
+# moved away, and shots at GUI scales 1-3 (and three window sizes in dev mode). Shots are copied to RWU_SHOTS.
+RWU_SHOTS = os.path.join(SHARED, "shots", "export-p7")
+RWU_ESC_KEYS = ["RESUME", "REJOIN", "EXPORT", "GALLERY", "QUIT"]
+
+
+def rwu_ui(s):
+    return s.peek("rewind-export-ui") or {}
+
+
+def rwu_until(s, pred, timeout=20.0):
+    deadline = time.time() + timeout
+    ui = {}
+    while time.time() < deadline:
+        ui = rwu_ui(s)
+        try:
+            if pred(ui):
+                return ui
+        except (KeyError, TypeError, IndexError):
+            pass
+        time.sleep(0.2)
+    s.step["commands"].append({"call": "/probe rewind-export-ui (last poll)", "result": ui})
+    return ui
+
+
+def rwu_click(s, r, settle=0.4):
+    s.call("/click", {"x": int(r[0] + r[2] / 2), "y": int(r[1] + r[3] / 2)})
+    time.sleep(settle)
+
+
+def rwu_shot(s, name, window=False):
+    """A shot of the last frame (or, with window, of what the window shows: an export draws its preview and key into
+    the window only) copied to RWU_SHOTS."""
+    os.makedirs(RWU_SHOTS, exist_ok=True)
+    dst = os.path.join(RWU_SHOTS, "%s-%s.png" % (s.report["mode"], name))
+    if window:
+        s.probe("rewind-export-shot", "rwu", name, "window")
+        path = os.path.join(EXPORTS, "spike", "rwu", name + ".png")
+        s.step["shots"].append(path)
+    else:
+        path, _ = s.shot("rwu-" + name)
+    shutil.copyfile(path, dst)
+    s.step.setdefault("results", {}).setdefault("shots", []).append(dst)
+    return dst
+
+
+def rwu_export(s, ui, on_running=None, timeout=300):
+    """Clicks the panel's key and follows the export: (final state, new files, progress seen, ui while running)."""
+    files = set(rwe_files())
+    rwu_click(s, ui["key"], settle=0)
+    prog = {}
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        prog = rwe_state(s).get("export") or {}
+        if (prog.get("active") and float(prog.get("progress") or 0) >= 0.3) or prog.get("outcome"):
+            break
+        time.sleep(0.1)
+    mid = rwu_ui(s)
+    if on_running:
+        on_running()
+    st = rwe_wait(s, timeout)
+    return st, sorted(set(rwe_files()) - files), prog, mid
+
+
+def rwu_range(length, start, end):
+    """ExportRange's constructor: inside the game, at least 1 s."""
+    if length <= 1000000:
+        return [0, length]
+    a = min(max(start, 0), length - 1000000)
+    return [a, min(max(end, a + 1000000), length)]
+
+
+def rwu_around(length, c):
+    c = min(max(c, 0), length)
+    return rwu_range(length, c - 10000000, min(length, c + 5000000))
+
+
+def rwu_layout_ok(ui):
+    """The panel inside the screen and above the bar; the handles on the bar."""
+    p, bar, gui = ui.get("panel"), ui.get("bar"), ui.get("gui")
+    if not (p and bar and gui):
+        return False
+    return (p[0] >= 0 and p[1] >= 0 and p[0] + p[2] <= gui[0] + 0.01 and p[1] + p[3] <= bar[1] + 0.01
+            and bar[1] + bar[3] <= gui[1] + 0.01)
+
+
+def smoke_rewind_export_ui(s, cfg, mode):
+    """RWU (Rewind Export PLAN Phase 7): export mode through the real screens (TASK U1-U6)."""
+    s.begin("RWU", "Rewind Export UI: Esc menu Export, handles, panel, export key, gallery Export, Failed (%s)" % mode)
+    if not cfg or not s.has(REWIND_EXPORT, "matrix"):
+        return s.unavailable(REWIND_EXPORT + ".matrix is not in this build")
+    keys = (cfg + ".rewind", cfg + ".rewindRecordGames")
+    ex_keys = tuple(cfg + ".rewindExport" + k for k in ("Height", "Fps", "Quality", "Codec", "Chat"))
+    was = [s.field(k).get("value") for k in keys + ex_keys]
+    st0 = s.status()
+    old_scale = st0.get("guiScaleSetting")
+    old_display = st0.get("display")
+    real = [int(x) for x in str(old_display).split("x")] if old_display and "x" in str(old_display) else None
+    helper = os.path.join(os.path.realpath(os.path.join(SHARED, "current")), "bin", "cobblify-encode")
+    hidden = helper + ".rwu-hidden"
+    opened = False
+    res = s.step.setdefault("results", {})
+    try:
+        for k in keys:
+            s.field(k, True)
+        for k, v in zip(ex_keys, (1080, 60, "high", "h264", True)):  # the defaults, as a first export finds them
+            s.field(k, v)
+        s.call("/scale", {"n": 2})
+        if mode == "dev":
+            s.call("/size", {"w": 1280, "h": 720})
+        tu_reopen_world(s)
+        r = rwe_record_fixture(s, cfg)
+        if not s.check("the fixture recording closed and passes RewindCheck", r.get("found") and r.get("pass"),
+                       r.get("line")):
+            return
+        st = rwe_open(s)
+        opened = True
+        if not s.check("the fixture opens to WATCHING", st.get("state") == "WATCHING", st.get("state")):
+            return
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("paused") is True)
+        playhead = ui.get("playheadUs") or 0
+
+        # U1: the Esc menu's keys, and its Export opens export mode
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindEscScreen" and u.get("esc"))
+        esc = ui.get("esc") or {}
+        s.check("U1 the Esc menu has Resume, Rejoin, Export, Gallery, Quit to Title", list(esc) == RWU_ESC_KEYS,
+                list(esc))
+        rwu_shot(s, "esc-menu")
+        rwu_click(s, esc["EXPORT"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("exportMode")
+                       and u.get("keyState") == "EXPORT", timeout=40)
+        rng = ui.get("range") or [0, 0, 0]
+        res["route"] = {"sessionRoute": ui.get("sessionRoute"), "routeChecked": ui.get("routeChecked")}
+        s.check("U1 Export opens export mode, paused, its probe answered (the key reads Export)",
+                ui.get("exportMode") and ui.get("paused") is True and ui.get("keyState") == "EXPORT",
+                {k: ui.get(k) for k in ("screen", "exportMode", "paused", "keyState")})
+        s.check("U3 no marker jumped to: the handles 10 s before and 5 s after the playhead",
+                rng[:2] == rwu_around(rng[2], playhead), {"range": rng, "playheadUs": playhead})
+        s.note("the off-screen start-up check ran on opening", res["route"])
+        rows = ui.get("rows") or {}
+        want_res = (["720p", "1080p", "1440p", "4K"] if ui.get("sessionRoute") == "OWN"
+                    else ["%dx%d" % ((ui["display"][0] & ~1), (ui["display"][1] & ~1))])
+        s.check("U4 five rows with their values; first time 1080p, 60, High, H.264, Chat on",
+                rows.get("RESOLUTION", {}).get("options") == want_res
+                and rows.get("FRAME_RATE", {}).get("options") == ["30", "60", "120", "240"]
+                and rows.get("QUALITY", {}).get("options") == ["Standard", "High", "Max"]
+                and rows.get("CODEC", {}).get("options") in (["H.264", "HEVC"], ["H.264"])
+                and rows.get("CHAT", {}).get("options") == ["On", "Off"]
+                and [rows[k]["chosen"] for k in ("FRAME_RATE", "QUALITY", "CODEC", "CHAT")] == [1, 1, 0, 0]
+                and (ui.get("sessionRoute") != "OWN" or rows["RESOLUTION"]["chosen"] == 1),
+                {k: [v.get("options"), v.get("chosen"), v.get("available")] for k, v in rows.items()})
+        s.check("U3 the panel sits inside the screen above the bar", rwu_layout_ok(ui),
+                {k: ui.get(k) for k in ("panel", "bar", "gui")})
+        rwu_shot(s, "panel")
+
+        # GUI scales 1-3 (and three window sizes in dev mode): the panel stays inside the screen above the bar
+        sizes = [(854, 480), (1280, 720), (1920, 1080)] if mode == "dev" else [None]
+        looks = []
+        for size in sizes:
+            if size:
+                s.call("/size", {"w": size[0], "h": size[1]})
+            for n in (1, 2, 3):
+                s.call("/scale", {"n": n})
+                time.sleep(0.6)
+                u = rwu_until(s, lambda x: x.get("panel") and x.get("exportMode"), timeout=10)
+                tag = "s%d-%s" % (n, "%dx%d" % size if size else "window")
+                rwu_shot(s, tag)
+                looks.append({"shot": tag, "scaleFactor": u.get("scaleFactor"), "gui": u.get("gui"),
+                              "ok": rwu_layout_ok(u)})
+        res["looks"] = looks
+        s.check("U3 at GUI scales 1-3%s the panel is inside the screen above the bar"
+                % (" and three window sizes" if mode == "dev" else ""), all(x["ok"] for x in looks), looks)
+        s.call("/scale", {"n": 2})
+        if mode == "dev" and real:  # the window's real size again: the window shot reads its real drawable
+            s.call("/size", {"w": real[0], "h": real[1]})
+        time.sleep(0.6)
+        ui = rwu_until(s, lambda u: u.get("handle1") and u.get("panel"))
+
+        # U3: a drag of the end handle moves it and never seeks
+        h0, h1 = ui["handle0"], ui["handle1"]
+        before = ui.get("range")
+        x0, x1, y = h0[0] + h0[2] / 2, h1[0] + h1[2] / 2, int(h1[1] + h1[3] / 2)
+        to = int(x0 + (x1 - x0) * 0.35)
+        s.call("/down", {"x": int(x1), "y": y})
+        s.call("/drag", {"x": int((x1 + to) / 2), "y": y})
+        s.call("/drag", {"x": to, "y": y})
+        s.call("/up", {"x": to, "y": y})
+        time.sleep(0.4)
+        ui = rwu_until(s, lambda u: u.get("range") and u["range"][1] < before[1])
+        after = ui.get("range") or before
+        s.check("U3 dragging the end handle moves the end only, at least 1 s after the start, and does not seek",
+                after[0] == before[0] and before[1] > after[1] >= after[0] + 1000000
+                and ui.get("playheadUs") == playhead and ui.get("paused") is True,
+                {"before": before, "after": after, "playheadUs": [playhead, ui.get("playheadUs")]})
+        rwu_shot(s, "handle-drag")
+
+        # U4: rows clicked (each pick shows), then 720p, 30, Standard, H.264, Chat on for the export
+        picks = []
+
+        def pick(row, i):
+            u = rwu_ui(s)
+            rect = (u.get("rows") or {}).get(row, {}).get("rects") or []
+            if i < len(rect):
+                rwu_click(s, rect[i])
+            u = rwu_ui(s)
+            picks.append([row, i, u.get("rows", {}).get(row, {}).get("chosen")])
+            return u
+
+        pick("QUALITY", 2)
+        u = rwu_ui(s)
+        rwu_click(s, u["toggle"])
+        u = rwu_ui(s)
+        picks.append(["CHAT", "toggle", u["rows"]["CHAT"]["chosen"]])
+        rwu_shot(s, "panel-rows")
+        rwu_click(s, u["toggle"])
+        u = rwu_ui(s)
+        picks.append(["CHAT", "toggle", u["rows"]["CHAT"]["chosen"]])
+        own = u.get("sessionRoute") == "OWN"
+        if own:
+            pick("RESOLUTION", 0)
+        pick("FRAME_RATE", 0)
+        pick("QUALITY", 0)
+        res["picks"] = picks
+        s.check("U4 a click picks the option (Max; Chat off then on; 720p; 30; Standard)",
+                picks[0][2] == 2 and picks[1][2] == 1 and picks[2][2] == 0
+                and all(p[2] == p[1] for p in picks[3:]), picks)
+
+        # U5: the key fills while the window shows the frames; then Open Folder (not pressed)
+        ui = rwu_ui(s)
+        st_x, new, prog, mid = rwu_export(s, ui, on_running=lambda: rwu_shot(s, "progress", window=True))
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "OPEN_FOLDER",
+                       timeout=30)
+        s.check("U5 while it runs the export screen is current and the key fills",
+                mid.get("screen") == "RewindExportScreen" and prog.get("active") is True,
+                {"screen": mid.get("screen"), "progress": prog.get("progress")})
+        s.check("U5 the export ends done, one new file; back in export mode, the key reads Open Folder, paused",
+                st_x.get("outcome") == "done" and len(new) == 1 and ui.get("exportMode")
+                and ui.get("keyState") == "OPEN_FOLDER" and ui.get("paused") is True,
+                {"outcome": st_x.get("outcome"), "files": new, "keyState": ui.get("keyState")})
+        if new:
+            v, _ = rwe_streams(ffprobe_json(os.path.join(RWE_DIR, new[0])))
+            want = "1280x720" if own else "%sx%s" % (st_x.get("width"), st_x.get("height"))
+            got = "%sx%s" % (v.get("width"), v.get("height"))
+            s.check("U4 the file has the panel's choice (%s, 30 fps)" % want,
+                    got == want and v.get("r_frame_rate") == "30/1", {"size": got, "rate": v.get("r_frame_rate")})
+        stored = [s.field(k).get("value") for k in ex_keys]
+        s.check("U4 the values exported with are remembered", stored[1:] == [30, "standard", "h264", True]
+                and (stored[0] == 720 or not own), stored)
+        rwu_shot(s, "open-folder")
+
+        # U5: Esc while it runs cancels it (no file) and returns to export mode with the key reading Export
+        pick("QUALITY", 1)  # a changed row makes the key read Export again
+        ui = rwu_ui(s)
+        files = set(os.listdir(RWE_DIR))
+        rwu_click(s, ui["key"], settle=0)
+        prog = {}
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            prog = rwe_state(s).get("export") or {}
+            if (prog.get("active") and float(prog.get("progress") or 0) >= 0.1) or prog.get("outcome"):
+                break
+            time.sleep(0.1)
+        s.call("/key", {"code": KEYS["esc"]})
+        st_c = rwe_wait(s, 60)
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "EXPORT",
+                       timeout=30)
+        time.sleep(1.0)
+        left = sorted(set(os.listdir(RWE_DIR)) - files)
+        s.check("U5 Esc while it runs cancels it: no file left, back in export mode, the key reads Export",
+                str(st_c.get("outcome", "")) == "cancelled-esc" and not left and ui.get("exportMode")
+                and ui.get("keyState") == "EXPORT",
+                {"outcome": st_c.get("outcome"), "progressAtEsc": prog.get("progress"), "left": left,
+                 "keyState": ui.get("keyState")})
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and not u.get("exportMode"))
+        s.check("U5 Esc after the export leaves export mode", ui.get("exportMode") is False, ui.get("exportMode"))
+
+        # U2: the gallery's Export opens the game in export mode, paused at its first marker
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindEscScreen" and u.get("esc"))
+        rwu_click(s, ui["esc"]["GALLERY"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindGalleryScreen" and u.get("galleryExport"))
+        rwu_shot(s, "gallery")
+        rwu_click(s, ui["galleryExport"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("exportMode")
+                       and u.get("firstMarkerTick") is not None and u.get("playheadTick") == u.get("firstMarkerTick")
+                       and u.get("keyState") == "EXPORT", timeout=90)
+        rng = ui.get("range") or [0, 0, 0]
+        s.check("U2 the gallery's Export: export mode, paused, the playhead at the first marker, the handles around it",
+                ui.get("exportMode") and ui.get("paused") is True
+                and ui.get("playheadTick") == ui.get("firstMarkerTick")
+                and rng[:2] == rwu_around(rng[2], ui.get("firstMarkerUs") or 0),
+                {k: ui.get(k) for k in ("exportMode", "paused", "playheadTick", "firstMarkerTick", "firstMarkerUs",
+                                         "range")})
+        rwu_shot(s, "gallery-export")
+
+        # U2: a full export from the gallery's export mode (the start handle dragged to a 3 s range first)
+        h0, h1 = ui["handle0"], ui["handle1"]
+        rng0 = ui.get("range")
+        y = int(h0[1] + h0[3] / 2)
+        x0, x1 = h0[0] + h0[2] / 2, h1[0] + h1[2] / 2
+        to = int(x1 - (x1 - x0) * 0.3)
+        s.call("/down", {"x": int(x0), "y": y})
+        s.call("/drag", {"x": int((x0 + to) / 2), "y": y})
+        s.call("/drag", {"x": to, "y": y})
+        s.call("/up", {"x": to, "y": y})
+        time.sleep(0.4)
+        ui = rwu_until(s, lambda u: u.get("range") and u["range"][0] > rng0[0])
+        rng1 = ui.get("range") or rng0
+        s.check("U3 dragging the start handle moves the start only and does not seek",
+                rng1[1] == rng0[1] and rng1[0] > rng0[0] and ui.get("playheadTick") == ui.get("firstMarkerTick"),
+                {"before": rng0, "after": rng1})
+        st_g, new_g, _, _ = rwu_export(s, ui)
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "OPEN_FOLDER",
+                       timeout=30)
+        s.check("U2 the export from the gallery's export mode ends done with one new file",
+                st_g.get("outcome") == "done" and len(new_g) == 1 and ui.get("keyState") == "OPEN_FOLDER",
+                {"outcome": st_g.get("outcome"), "files": new_g})
+        pick("QUALITY", 0)
+        ui = rwu_ui(s)
+
+        # U6: the helper moved away: Failed in red, no file; the game stays usable
+        files = set(os.listdir(RWE_DIR))
+        moved = os.path.isfile(helper)
+        if moved:
+            os.rename(helper, hidden)
+        rwu_click(s, ui["key"])
+        ui = rwu_until(s, lambda u: u.get("keyState") == "FAILED" and not u.get("busy"), timeout=30)
+        st_f = rwe_state(s).get("export") or {}
+        if moved:
+            os.rename(hidden, helper)
+        left = sorted(set(os.listdir(RWE_DIR)) - files)
+        s.check("U6 with the helper gone the key reads Failed, the outcome names it, no file is left",
+                moved and ui.get("keyState") == "FAILED" and st_f.get("outcome") == "failed-helper-missing" and not left,
+                {"keyState": ui.get("keyState"), "outcome": st_f.get("outcome"), "left": left, "moved": moved})
+        rwu_shot(s, "failed")
+        s.call("/key", {"code": KEYS["left"]})  # 5 s back (the playhead stands at the range's end, the game's end)
+        time.sleep(0.8)
+        ui2 = rwu_ui(s)
+        s.check("U6 the game stays usable after Failed (a seek works)",
+                (ui2.get("playheadUs") or 0) < (ui.get("playheadUs") or 0), [ui.get("playheadUs"),
+                                                                            ui2.get("playheadUs")])
+    finally:
+        if os.path.isfile(hidden) and not os.path.exists(helper):
+            os.rename(hidden, helper)
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        for k, v in zip(keys + ex_keys, was):
+            if v is not None:
+                s.field(k, v)
+        if old_scale is not None:
+            s.try_call("/scale", {"n": old_scale})
+        if mode == "dev" and real:
+            s.try_call("/size", {"w": real[0], "h": real[1]})
+        tu_save(s, cfg)
+
+
 def rwx_spike_chat(s, run, at_us, chat, frames=1):
     """One product-rule spike capture of `frames` frames from at_us (from the first tick), Chat on or off."""
     s.probe("rewind-export-spike", "own", RWX_W, RWX_H, RWX_FPS, frames, "paced", rwe_spike_start(at_us), 0, 0, run,
@@ -6448,7 +6811,11 @@ def cmd_smoke(args):
                   lambda: smoke_rewind_export(s, cfg_box.get("cfg"), mode)]
     elif args.only == "rewind-export" and not args.boot_only:
         steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
-                  lambda: smoke_rewind_export_pipeline(s, cfg_box.get("cfg"), mode)]
+                  lambda: smoke_rewind_export_pipeline(s, cfg_box.get("cfg"), mode),
+                  lambda: smoke_rewind_export_ui(s, cfg_box.get("cfg"), mode)]
+    elif args.only == "rewind-export-ui" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind_export_ui(s, cfg_box.get("cfg"), mode)]
     elif args.only == "rewind-export-k11" and not args.boot_only:
         steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
                   lambda: smoke_rewind_export_k11(s, cfg_box.get("cfg"), mode)]
@@ -6640,10 +7007,11 @@ def build_parser():
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
     p.add_argument("--only", choices=["overlays", "team-upgrades", "rewind", "motion-blur", "rewind-export-spike",
-                                      "rewind-export", "rewind-export-k11"],
+                                      "rewind-export", "rewind-export-k11", "rewind-export-ui"],
                    help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look;"
                         " rewind: RW, RWW, RWW-time; motion-blur: MB, MB-cut, MB-still, MB-turn;"
-                        " rewind-export-spike: RWX; rewind-export: RWE; rewind-export-k11: RWX-K11)")
+                        " rewind-export-spike: RWX; rewind-export: RWE then RWU; rewind-export-k11: RWX-K11;"
+                        " rewind-export-ui: RWU)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

@@ -382,7 +382,8 @@ final class Policy {
      * box of differing pixels); {@code -stats RUN} (luma variance per frame and frame-to-frame difference);
      * {@code -grid watch|log} (per drawn frame: wall time and luma-grid change, with the last ticks' wall times: K10);
      * {@code -terrain} (the playing recording's ticks with chunk data and block changes); {@code -env} (loaded mods
-     * and the renderer config files the game wrote: K10's readiness search); {@code -clean} (toggles the clean view).
+     * and the renderer config files the game wrote: K10's readiness search); {@code -clean} (toggles the clean view);
+     * {@code -ui} (Phase 7: the open Rewind screen's rects in GUI px and export mode's state, read only).
      * Counts, flags, ticks and hashes only.
      */
     static final java.util.List<String> REWIND_EXPORT_PROBES = java.util.Arrays.asList("rewind-export-spike",
@@ -391,7 +392,9 @@ final class Policy {
             "rewind-export-terrain", "rewind-export-env", "rewind-export-clean",
             // Phase 5 (step RWE and the K11 rerun)
             "rewind-export-start", "rewind-export-state", "rewind-export-live-sound", "rewind-export-chat-type",
-            "rewind-export-k11", "rewind-export-region");
+            "rewind-export-k11", "rewind-export-region",
+            // Phase 7 (step RWU: export mode's screens, read only)
+            "rewind-export-ui");
     /** The only folder the spike writes and reads (cobdev stage creates {@code exports/} world-writable). */
     static final String EXPORT_ROOT = "/Users/Shared/cobblify-dev/exports/spike";
     private static final java.util.regex.Pattern EXPORT_RUN = java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9-]{0,31}$");
