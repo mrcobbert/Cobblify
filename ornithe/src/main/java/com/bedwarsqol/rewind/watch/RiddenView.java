@@ -246,7 +246,8 @@ public final class RiddenView implements PlaybackPart {
 
     /**
      * The ridden view now: shows the ridden player when they are in the world; when they are gone, waits while
-     * playback is not settled, else ({@code mayLeave}, a drawn frame) becomes the free camera where the view was.
+     * playback is not settled (a catch-up, an export's seek or pre-roll), else ({@code mayLeave}, a drawn frame)
+     * becomes the free camera where the view was.
      */
     private void follow(float partial, boolean mayLeave) {
         int id = RewindPlayback.view().riddenEntityId();
@@ -262,7 +263,10 @@ public final class RiddenView implements PlaybackPart {
             return;
         }
         EntityPlayer e = ridden(mc.theWorld, id);
-        boolean settled = mayLeave && RewindPlayback.session().state() == PlaybackSession.State.WATCHING;
+        PlaybackSession s = RewindPlayback.session();
+        // an export's seek and pre-roll are not settled either (code review 2 I4): they draw earlier moments that are
+        // never captured, so a player who is not there yet must not cost the view selected when Export was pressed
+        boolean settled = mayLeave && s.state() == PlaybackSession.State.WATCHING && !s.exportPreroll();
         if (e != null) {
             if (shownOn != null && shownOn != cam) {
                 forget();
