@@ -199,6 +199,13 @@ public class RecordedScreensTest {
         public boolean recordedSpectator() {
             return spectator;
         }
+
+        java.util.Set<com.bedwarsqol.rewind.export.ExportLayers.Layer> layers;
+
+        @Override
+        public java.util.Set<com.bedwarsqol.rewind.export.ExportLayers.Layer> exportLayers() {
+            return layers;
+        }
     }
 
     private Field theMinecraft;
@@ -988,6 +995,59 @@ public class RecordedScreensTest {
         assertTrue("20 ticks after the open, as vanilla's updateScreen", screens.deathButtonsEnabled());
         ctx.renderUs = head(40) + 9_000L;
         assertNull("the recorded close (Respawn)", screens.held());
+    }
+
+    /**
+     * Rewind Export review I4 (TASK P5): with recorded chat open and text typed, an export frame with Chat off makes no
+     * {@code chatBar.draw} (so no {@code drawTextBox}) call, one with Chat on does, and outside an export nothing
+     * changes. {@code drawUnder} draws the bar only through that gate.
+     */
+    @Test
+    public void anExportFrameWithChatOffDrawsNoChatInputBar() throws Exception {
+        ExtRecords.Builder b = new ExtRecords.Builder();
+        view(b, 100 * MS, RewindFormat.SCREEN_CHAT);
+        chat(b, 120 * MS, "cobdev test 123", 15);
+        ctx.ext = b.build();
+        ctx.renderUs = 130 * MS;
+        ctx.view.recorded(0, 0, RewindFormat.SCREEN_CHAT); // what the session's view part applies from the VIEW record
+        assertTrue(screens.chatShown());
+        final int[] draws = {0};
+        final String[] text = {null};
+        screens.chatBar = new RecordedScreens.ChatBar() {
+            @Override
+            void draw(GuiTextField f, int w, int h, long ticks) {
+                draws[0]++;
+                text[0] = f.getText();
+            }
+        };
+
+        ctx.layers = null; // watching
+        assertTrue(screens.drawChatInput(W, H));
+        assertEquals(1, draws[0]);
+        assertEquals("cobdev test 123", text[0]);
+
+        ctx.layers = com.bedwarsqol.rewind.export.ExportLayers.of(ctx.view, true);
+        assertTrue("Chat on: drawn as watched", screens.drawChatInput(W, H));
+        assertEquals(2, draws[0]);
+
+        ctx.layers = com.bedwarsqol.rewind.export.ExportLayers.of(ctx.view, false);
+        assertFalse("Chat off: no input bar", screens.drawChatInput(W, H));
+        assertEquals("no chatBar.draw, so no drawTextBox", 2, draws[0]);
+
+        ctx.layers = null;
+        assertTrue(screens.drawChatInput(W, H));
+        assertEquals("after the export, as before", 3, draws[0]);
+
+        String src = new String(java.nio.file.Files.readAllBytes(new File(PlaybackIsolationScanTest.mainRoot(),
+                "com/bedwarsqol/rewind/watch/RecordedScreens.java").toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        int calls = 0;
+        for (int i = src.indexOf("chatBar.draw("); i >= 0; i = src.indexOf("chatBar.draw(", i + 1)) {
+            calls++;
+        }
+        assertEquals("one chatBar.draw call site, inside the gate", 1, calls);
+        int gate = src.indexOf("boolean drawChatInput(");
+        int site = src.indexOf("chatBar.draw(");
+        assertTrue(gate >= 0 && site > gate && site < src.indexOf("\n    }\n", gate));
     }
 
     /** C6: chat typing shows vanilla's input bar (its rectangle and text field) with the recorded text and cursor. */

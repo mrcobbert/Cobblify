@@ -1127,6 +1127,7 @@ public class RewindParityPlaybackTest {
         }
         assertTrue(session.beginExport(new ExportPlan(start, start + 1_000_000L, 60)));
         for (int i = 0; i < 1_000 && session.exportFrame() != 0; i++) {
+            ops.nanos += 20_000_000L; // wall time passes: the export's steps are paced to it (PLAN Revision 4.1)
             frame(0);
         }
         assertEquals(0, session.exportFrame());

@@ -306,7 +306,7 @@ public class PlaybackSessionExportTest {
 
     /**
      * Begins {@code plan} and draws until its last frame was captured; every drawn frame is listed (pre-roll frames
-     * with index -1). {@code wall} is the wall time before each frame (cycled); {@code atFrame} runs before a frame.
+     * with index -1), except passes the real-time floor held ({@link PlaybackSession#exportWaiting}). {@code wall} is the wall time before each frame (cycled); {@code atFrame} runs before a frame.
      */
     List<Shown> export(ExportPlan plan, long[] wall, Runnable atFrame5) {
         assertTrue(session.beginExport(plan));
@@ -314,6 +314,11 @@ public class PlaybackSessionExportTest {
         int w = 0;
         for (int guard = 0; guard < 100_000; guard++) {
             frame(wall[w++ % wall.length]);
+            if (session.exportWaiting()) {
+                // the real-time floor (PLAN Revision 4.1) held this pass: nothing stepped, nothing to capture
+                assertEquals(-1, session.exportFrame());
+                continue;
+            }
             Shown s = shown();
             out.add(s);
             if (s.frame < 0) {

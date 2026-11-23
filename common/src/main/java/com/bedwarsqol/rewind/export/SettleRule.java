@@ -3,21 +3,22 @@ package com.bedwarsqol.rewind.export;
 import java.nio.ByteBuffer;
 
 /**
- * When a held export frame may be taken (Rewind Export PLAN Solution 2 "Settle rule", reviews I6 and r2-B1).
+ * When frame 0 of an export may be taken (Rewind Export PLAN Revision 4 and 4.1; reduced from Rev 3's settle rule).
  *
- * <p>After a tick that applied a terrain packet of a held class, and before frame 0, the same frame is drawn again
- * until it settles. {@link #bestEffort}: at least {@code holdMs} of wall time has passed since that tick <b>and</b> the
- * last {@value #STABLE_DRAWS} draws differ by at most {@value #MAX_MEAN_DIFF} mean on a {@value #GRID_W}x{@value
- * #GRID_H} luma grid; a draw that differs restarts the count. This is best effort only: a mesh slower than the hold is
- * taken stale. {@link #readySignal}: the renderer says its terrain is ready, then {@value #STABLE_DRAWS} stable draws;
- * no hold. Either way the {@value #CAP_MS} ms cap ends it ({@link State#CAPPED}, counted in the export log).
+ * <p>The seek to the range start runs faster than real time and loads chunks, so frame 0 is drawn again, time held,
+ * until the last {@value #STABLE_DRAWS} draws differ by at most {@value #MAX_MEAN_DIFF} mean on a {@value #GRID_W}x{@value
+ * #GRID_H} luma grid; a draw that differs restarts the count. On the vanilla renderer its chunk-queue signal is an extra
+ * wait only ({@code queue-wait}): a draw while the queues are busy does not count. It is never proof that a mesh is done
+ * (review r3-B2), and the stable picture is not either (review r2-B1). The {@value #CAP_MS} ms cap ends it
+ * ({@link State#CAPPED}, counted in the export log as {@code settleCapped}).
  *
- * <p>The hold per packet class is measured, not guessed (PLAN Phase 2 check K10); see the HANDOFF Phase 2 block for the
- * numbers. One instance per held frame; times are milliseconds on any monotonic clock. Pure.
+ * <p>Mid-range frames have no hold: the session paces every step to real time instead, so a terrain change gets at
+ * least the real time it had when watching at 1x (Revision 4.1). One instance per frame 0; times are milliseconds on
+ * any monotonic clock. Pure.
  */
 public final class SettleRule {
 
-    /** The longest a frame is held. */
+    /** The longest frame 0 is held. */
     public static final long CAP_MS = 2000;
     /** Draws in a row that must agree. */
     public static final int STABLE_DRAWS = 3;
@@ -26,72 +27,48 @@ public final class SettleRule {
     public static final int GRID_W = 64;
     public static final int GRID_H = 36;
 
-    /*
-     * Holds per packet class: 2 x the largest mesh latency L measured, at least 50 ms (PLAN Phase 2 check K10,
-     * 2026-11-22). Mac (Apple silicon), cobdev --prod client (Argentum 1.0.3-beta.8, Sarcio, Pylon, Slipstream), smoke
-     * world fixture, window path, playhead stepped onto each tick and held 2.2 s, two clean runs: chunk data
-     * (0x21/0x26) n=14 each, max 220 / 219 ms, median 32 / 36.5 ms; block changes (0x22/0x23) n=6 each, max 17 / 124
-     * ms, median 16 / 16 ms. Best effort on this machine only: the block maximum moved 7x between two runs, and a slower
-     * machine or a bigger backlog can exceed the hold without the cap firing (review r2-B1).
-     */
-    /** Hold after a tick with chunk data (S21 0x21, S26 0x26). */
-    public static final long HOLD_CHUNK_MS = 440;
-    /** Hold after a tick with block changes (S22 0x22, S23 0x23). */
-    public static final long HOLD_BLOCK_MS = 248;
-
-    /** Where a held frame is. */
+    /** Where frame 0 is. */
     public enum State { SETTLING, SETTLED, CAPPED }
 
-    private final boolean signal;
-    private final long holdMs;
     private final long startMs;
     private float[] last;
     private int stable;
     private long lastMs;
     private boolean capped;
 
-    private SettleRule(boolean signal, long holdMs, long startMs) {
-        this.signal = signal;
-        this.holdMs = Math.max(0, holdMs);
+    private SettleRule(long startMs) {
         this.startMs = startMs;
         this.lastMs = startMs;
     }
 
-    /** The best-effort rule: {@code holdMs} after {@code startMs} (the terrain tick's wall time), then stability. */
-    public static SettleRule bestEffort(long holdMs, long startMs) {
-        return new SettleRule(false, holdMs, startMs);
+    /** The frame-0 rule, from frame 0's first draw at {@code startMs}. */
+    public static SettleRule frameZero(long startMs) {
+        return new SettleRule(startMs);
     }
 
-    /** The ready-signal rule: no hold; stable draws count only while the renderer says ready. */
-    public static SettleRule readySignal(long startMs) {
-        return new SettleRule(true, 0, startMs);
-    }
-
-    /** One more draw of the held frame (best effort: the renderer's readiness is not known). */
+    /** One more draw of frame 0 (no queue signal). */
     public State offer(float[] grid, long nowMs) {
         return offer(grid, nowMs, true);
     }
 
     /**
-     * One more draw of the held frame.
+     * One more draw of frame 0.
      *
      * @param grid  its luma grid ({@link #grid})
      * @param nowMs when it was drawn
-     * @param ready the renderer's readiness signal (ignored by the best-effort rule)
+     * @param ready the vanilla renderer's chunk queues read idle (true where there is no such signal)
      */
     public State offer(float[] grid, long nowMs, boolean ready) {
         lastMs = nowMs;
-        if (signal && !ready) {
+        if (!ready) {
             stable = 0;
-            last = grid;
         } else if (last == null || stable == 0 || diff(last, grid) > MAX_MEAN_DIFF) {
             stable = 1;
-            last = grid;
         } else {
             stable++;
-            last = grid;
         }
-        if (stable >= STABLE_DRAWS && nowMs - startMs >= holdMs) {
+        last = grid;
+        if (stable >= STABLE_DRAWS) {
             return State.SETTLED;
         }
         if (nowMs - startMs >= CAP_MS) {

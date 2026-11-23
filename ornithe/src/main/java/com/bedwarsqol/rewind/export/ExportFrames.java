@@ -24,8 +24,9 @@ import java.nio.ByteBuffer;
  * target again. {@link #readBack} after the frame returns; {@link #end} puts everything back and binds the main
  * framebuffer as vanilla left it at @269.
  *
- * <p><b>Per export</b> ({@link Restore}): Motion Blur suppressed, vsync off and the frame limit at maximum, all put back
- * in one place. Game thread only.
+ * <p><b>Per export</b> ({@link #saveExportSettings}): Motion Blur suppressed, vsync off and the frame limit at maximum,
+ * all put back through one {@link ExportRestore}. The WINDOW route reads the window instead ({@link #readWindow}).
+ * Game thread only.
  */
 final class ExportFrames {
 
@@ -58,8 +59,11 @@ final class ExportFrames {
         return inFrame;
     }
 
-    /** Before {@code updateCameraAndRender}: sizes, screen and target for this frame. */
+    /** Before {@code updateCameraAndRender}: sizes, screen and target for this frame (OWN route only). */
     void begin(boolean clearMain) {
+        if (target == null) {
+            return;
+        }
         if (clearMain) {
             GlStateManager.clearColor(0f, 0f, 0f, 1f);
             GlStateManager.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
@@ -138,34 +142,46 @@ final class ExportFrames {
         GlStateManager.clear(GL11.GL_COLOR_BUFFER_BIT);
     }
 
-    /** What an export changes for its whole length, put back by {@link #restore()} exactly once. */
-    static final class Restore {
-        private final Minecraft mc;
-        private final boolean motionBlurSuppressed;
-        private final boolean vsync;
-        private final int limitFramerate;
-        private boolean restored;
-
-        Restore(Minecraft mc) {
-            this.mc = mc;
-            motionBlurSuppressed = MotionBlur.suppressed();
-            vsync = mc.gameSettings.enableVsync;
-            limitFramerate = mc.gameSettings.limitFramerate;
-            MotionBlur.suppress(true);
-            mc.gameSettings.enableVsync = false;
-            Display.setVSyncEnabled(false);
-            mc.gameSettings.limitFramerate = UNLIMITED_FPS;
-        }
-
-        void restore() {
-            if (restored) {
-                return;
-            }
-            restored = true;
-            MotionBlur.suppress(motionBlurSuppressed);
+    /**
+     * What an export changes for its whole length (Motion Blur suppressed, vsync off, the frame limit at maximum),
+     * each registered in {@code restore} right after it is changed, so one {@link ExportRestore#restore()} puts it back.
+     */
+    static void saveExportSettings(final Minecraft mc, ExportRestore restore) {
+        final boolean motionBlurSuppressed = MotionBlur.suppressed();
+        MotionBlur.suppress(true);
+        restore.add("motionBlur", () -> MotionBlur.suppress(motionBlurSuppressed));
+        final boolean vsync = mc.gameSettings.enableVsync;
+        mc.gameSettings.enableVsync = false;
+        Display.setVSyncEnabled(false);
+        restore.add("vsync", () -> {
             mc.gameSettings.enableVsync = vsync;
             Display.setVSyncEnabled(vsync);
-            mc.gameSettings.limitFramerate = limitFramerate;
+        });
+        final int limitFramerate = mc.gameSettings.limitFramerate;
+        mc.gameSettings.limitFramerate = UNLIMITED_FPS;
+        restore.add("limitFramerate", () -> mc.gameSettings.limitFramerate = limitFramerate);
+    }
+
+    /** {@link #readWindow}'s first GL error. */
+    static int lastWindowError;
+    private static ByteBuffer windowPixels;
+
+    /**
+     * The WINDOW route's read-back at {@code updateDisplay} HEAD: the window's back buffer, {@code w x h} from its
+     * bottom-left corner (BGRA, bottom row first), in a reused direct buffer positioned at 0.
+     */
+    static ByteBuffer readWindow(Minecraft mc, int w, int h) {
+        int n = w * h * 4;
+        if (windowPixels == null || windowPixels.capacity() < n) {
+            windowPixels = BufferUtils.createByteBuffer(n);
         }
+        windowPixels.clear();
+        OpenGlHelper.glBindFramebuffer(OpenGlHelper.GL_FRAMEBUFFER, 0);
+        GL11.glReadBuffer(GL11.GL_BACK);
+        GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
+        GL11.glReadPixels(0, 0, w, h, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, windowPixels);
+        lastWindowError = GL11.glGetError();
+        windowPixels.position(0).limit(n);
+        return windowPixels;
     }
 }

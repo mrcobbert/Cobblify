@@ -249,6 +249,12 @@ public final class PlaybackSession {
     private boolean tailAsked;
     /** The next pre-roll frame on the export's grid ({@link #gridTime}; negative). */
     private long prerollGrid;
+    /** The export's steps keep to real time (Rewind Export PLAN Revision 4.1); off only for raw timing runs. */
+    private boolean exportPaced;
+    /** Wall time ({@link ClientOps#nanoTime}) the last step was really applied, or the seek landed; MIN: not yet. */
+    private long exportAppliedNs;
+    /** This pass held the next step back (the real-time floor). */
+    private boolean exportWaiting;
 
     public PlaybackSession(ClientOps ops, PlaybackGate gate) {
         this.ops = ops;
@@ -436,6 +442,9 @@ public final class PlaybackSession {
 
     private void finishCatchUp() {
         state = State.WATCHING;
+        if (export != null) {
+            exportAppliedNs = ops.nanoTime(); // the seek landed: the first step waits from here (Revision 4.1)
+        }
         if (!seekInPlace) {
             clock.set(timeline.timeOfTick(ticks.ticksRun()), ops.nanoTime());
             clock.skipTimed(recording.ext());
@@ -773,6 +782,7 @@ public final class PlaybackSession {
         worldTicked = false;
         export = null;
         exportStage = null;
+        exportWaiting = false;
     }
 
     private void log(String line) {
@@ -797,9 +807,25 @@ public final class PlaybackSession {
      * {@code plan.timeOfFrame(i)}, runs every tick recorded at or before it ({@link TickClock#dueAll}), writes the
      * partial tick and dispatches the timed records reached; the index moves only on {@link #advanceExportFrame}.
      *
+     * <p><b>Real-time floor</b> (PLAN Revision 4, as amended by 4.1 r3-B1): a step that moves playback time from t to
+     * t' (the first step after the seek, every pre-roll step, every frame) is not applied before {@code t' - t} of wall
+     * time ({@link ClientOps#nanoTime}) has passed since the previous step was really applied (the first step: one
+     * frame interval after the seek landed). Until then the pass is drawn again at t, with nothing run and nothing to
+     * capture ({@link #exportWaiting()}). So a terrain packet applied at wall w is followed by the frame for recording
+     * time T + d no earlier than w + d, stall or not; a slow machine is never held back. The tail is not paced: it
+     * captures nothing.
+     *
      * @return false (nothing changes) unless a world plays, no export runs and the start is not before the first tick
      */
     public boolean beginExport(ExportPlan plan) {
+        return beginExport(plan, true);
+    }
+
+    /**
+     * {@link #beginExport(ExportPlan)}, with the real-time floor off when {@code paced} is false (raw render-speed runs
+     * of the cobdev spike only; the product always paces).
+     */
+    public boolean beginExport(ExportPlan plan, boolean paced) {
         if (plan == null || !playing() || export != null || timeline == null || clock == null) {
             return false;
         }
@@ -812,6 +838,9 @@ public final class PlaybackSession {
         exportIndex = 0;
         exportTaken = false;
         tailAsked = false;
+        exportPaced = paced;
+        exportAppliedNs = Long.MIN_VALUE;
+        exportWaiting = false;
         exportPreUs = Math.max(first, plan.startUs() - ExportPlan.PREROLL_US);
         ticks.setPaused(false);
         seekTarget = SeekPlanner.clamp(timeline, timeline.ticks().tickOf(exportPreUs + 1));
@@ -824,11 +853,30 @@ public final class PlaybackSession {
     /** The frame of a running export's fixed step (WATCHING): see {@link #beginExport}. */
     private void exportControl() {
         ExportPlan plan = export;
+        long now = ops.nanoTime();
+        exportWaiting = false;
+        if (exportPaced) {
+            long next = nextStepUs(plan);
+            if (next != Long.MIN_VALUE) {
+                long delta = exportStage == ExportStage.SEEKING ? (1_000_000L + plan.fps() - 1) / plan.fps()
+                        : Math.max(0, next - clock.playbackUs());
+                if (exportAppliedNs == Long.MIN_VALUE) {
+                    exportAppliedNs = now; // no landing seen (the seek finished before beginExport's frame)
+                }
+                if (now - exportAppliedNs < delta * 1000L) {
+                    exportWaiting = true;
+                    holdStep();
+                    return;
+                }
+            }
+        }
         long t = Long.MIN_VALUE;
+        boolean stepped = false;
         if (exportStage == ExportStage.SEEKING) {
             ops.exportStart();
             clock.step(exportPreUs);
             clock.seatTimed(recording.ext(), exportPreUs);
+            stepped = true;
             if (exportPreUs < plan.startUs()) {
                 exportStage = ExportStage.PREROLL;
                 prerollGrid = firstGridAfter(plan, exportPreUs);
@@ -838,6 +886,7 @@ public final class PlaybackSession {
             }
         } else if (exportStage == ExportStage.PREROLL) {
             t = gridTime(plan, prerollGrid++);
+            stepped = true;
             if (t >= plan.startUs()) {
                 // Records stamped after the last pre-roll frame but before the start still belong to the pre-roll
                 // (their sounds are discarded); they reach the parts before frame 0 is drawn, with their own
@@ -851,6 +900,7 @@ public final class PlaybackSession {
             exportTaken = false;
             if (exportIndex + 1 < plan.frames()) {
                 exportIndex++;
+                stepped = true;
             } else {
                 exportStage = ExportStage.LAST_TAKEN;
             }
@@ -864,6 +914,9 @@ public final class PlaybackSession {
         } else if (t == Long.MIN_VALUE) {
             t = clock.playbackUs(); // after the last frame: hold
         }
+        if (stepped) {
+            exportAppliedNs = now;
+        }
         clock.step(t);
         int due = clock.dueAll(ticks.ticksRun(), ticks.ticksToNextStop());
         ops.setTimerSpeed(1f);
@@ -871,6 +924,32 @@ public final class PlaybackSession {
         ops.setGamePaused(false);
         ops.setPartialTicks(clock.partial(ticks.ticksRun() + due - 1));
         clock.dispatchTimed(recording.ext(), ops.sink());
+    }
+
+    /**
+     * The recording time the next step of this pass would move playback time to, or MIN when this pass applies no
+     * paced step (frame i drawn again before it was captured, the last frame captured, the tail).
+     */
+    private long nextStepUs(ExportPlan plan) {
+        switch (exportStage) {
+            case SEEKING:
+                return exportPreUs;
+            case PREROLL:
+                return Math.min(gridTime(plan, prerollGrid), plan.startUs());
+            case FRAMES:
+                return exportTaken && exportIndex + 1 < plan.frames() ? plan.timeOfFrame(exportIndex + 1)
+                        : Long.MIN_VALUE;
+            default:
+                return Long.MIN_VALUE;
+        }
+    }
+
+    /** A pass the real-time floor held: drawn again where playback time stands, nothing run, nothing dispatched. */
+    private void holdStep() {
+        ops.setTimerSpeed(1f);
+        ops.setElapsedTicks(0);
+        ops.setGamePaused(false);
+        ops.setPartialTicks(clock.partial(ticks.ticksRun() - 1));
     }
 
     /** The export's frame grid, also before frame 0: {@code start + floor(i x 1e6 / fps)}, any i. */
@@ -885,6 +964,14 @@ public final class PlaybackSession {
             i++;
         }
         return i;
+    }
+
+    /**
+     * This pass's next step was held back by the real-time floor ({@link #beginExport}): the picture is drawn again
+     * where playback time stands and is not captured.
+     */
+    public boolean exportWaiting() {
+        return export != null && exportWaiting;
     }
 
     /** An export is running ({@link #beginExport} until {@link #endExport} or the session's end). */
@@ -903,7 +990,7 @@ public final class PlaybackSession {
      * the pre-roll), after the last frame was taken, and the tail. Only these frames are captured.
      */
     public long exportFrame() {
-        return export != null && exportStage == ExportStage.FRAMES ? exportIndex : -1;
+        return export != null && exportStage == ExportStage.FRAMES && !exportWaiting ? exportIndex : -1;
     }
 
     /**
@@ -952,6 +1039,7 @@ public final class PlaybackSession {
         }
         export = null;
         exportStage = null;
+        exportWaiting = false;
         if (ticks != null) {
             ticks.setPaused(true);
         }

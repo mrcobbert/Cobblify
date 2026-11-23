@@ -76,7 +76,8 @@
     "GuiIngameRewindMixin",
     "EntityXPOrbRewindMixin",
     "MinecraftRewindExportMixin",
-    "EntityRendererRewindExportMixin"
+    "EntityRendererRewindExportMixin",
+    "GuiNewChatRewindExportMixin"
   ],
   "verbose": true
 }

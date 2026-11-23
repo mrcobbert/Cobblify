@@ -77,6 +77,11 @@ final class ExportTarget {
         return fbo;
     }
 
+    /** The colour texture (the preview draws it into the window). */
+    int texture() {
+        return texture;
+    }
+
     /** Binds the target and sets the viewport to its size. */
     void bind() {
         bindRaw(fbo);

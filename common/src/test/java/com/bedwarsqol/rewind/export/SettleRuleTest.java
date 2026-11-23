@@ -7,12 +7,14 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * {@link SettleRule} with a fake wall clock (Rewind Export PLAN Solution 2 "Settle rule", review I6; Phase 2): a held
- * frame is taken once at least {@code holdMs} has passed since the terrain tick and the last three draws agree; a draw
- * that differs restarts the three; the 2 s cap ends it.
+ * {@link SettleRule} with a fake wall clock, reduced to the frame-0 rule (Rewind Export PLAN Revision 4 and 4.1):
+ * frame 0 is taken once the last three draws agree, with no hold; a draw that differs restarts the three; the vanilla
+ * renderer's queue signal is only an extra wait (a draw while the queues are busy does not count); the 2 s cap ends it
+ * and reports {@code capped}. Mid-range holds are gone: nothing in the rule knows packet classes.
  */
 public class SettleRuleTest {
 
@@ -23,46 +25,32 @@ public class SettleRuleTest {
     }
 
     @Test
-    public void threeEqualGridsInsideTheHoldDoNotSettle() {
-        SettleRule r = SettleRule.bestEffort(100, 1_000);
+    public void threeEqualDrawsSettleFrameZeroWithNoHold() {
+        SettleRule r = SettleRule.frameZero(1_000);
         assertEquals(SettleRule.State.SETTLING, r.offer(grid(10), 1_000));
         assertEquals(SettleRule.State.SETTLING, r.offer(grid(10), 1_005));
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(10), 1_010));
-        for (long t = 1_015; t < 1_100; t += 5) {
-            assertEquals("at " + t, SettleRule.State.SETTLING, r.offer(grid(10), t));
-        }
-        assertEquals(SettleRule.State.SETTLED, r.offer(grid(10), 1_100));
-        assertEquals(1_100 - 1_000, r.waitedMs());
+        assertEquals("the third equal draw, 10 ms in: no hold", SettleRule.State.SETTLED, r.offer(grid(10), 1_010));
+        assertEquals(10, r.waitedMs());
+        assertFalse(r.capped());
     }
 
     @Test
-    public void aChangedGridRestartsTheCount() {
-        // Hold 100 ms: the old picture is stable for 75 ms, then at 80 ms the mesh lands late.
-        SettleRule r2 = SettleRule.bestEffort(100, 0);
-        for (long t = 0; t <= 75; t += 5) {
-            assertEquals(SettleRule.State.SETTLING, r2.offer(grid(10), t));
-        }
-        assertEquals(SettleRule.State.SETTLING, r2.offer(grid(40), 80)); // differs: count restarts at 1
-        assertEquals(SettleRule.State.SETTLING, r2.offer(grid(40), 85));
-        assertEquals(SettleRule.State.SETTLING, r2.offer(grid(40), 90)); // three equal, hold not passed
-        assertEquals(SettleRule.State.SETTLED, r2.offer(grid(40), 100));
-
-        SettleRule r3 = SettleRule.bestEffort(50, 0);
-        for (long t = 0; t < 50; t += 5) {
-            assertEquals(SettleRule.State.SETTLING, r3.offer(grid(10), t));
-        }
-        assertEquals(SettleRule.State.SETTLING, r3.offer(grid(40), 80));
-        assertEquals(SettleRule.State.SETTLING, r3.offer(grid(40), 85));
-        assertEquals(SettleRule.State.SETTLED, r3.offer(grid(40), 90)); // only after three equal grids past it
+    public void aChangedDrawRestartsTheCount() {
+        SettleRule r = SettleRule.frameZero(0);
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(10), 0));
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(10), 5));
+        assertEquals("differs: count restarts at 1", SettleRule.State.SETTLING, r.offer(grid(40), 80));
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(40), 85));
+        assertEquals("only after three equal draws past it", SettleRule.State.SETTLED, r.offer(grid(40), 90));
     }
 
     @Test
     public void smallDifferencesCountAsEqual() {
-        SettleRule r = SettleRule.bestEffort(0, 0);
+        SettleRule r = SettleRule.frameZero(0);
         assertEquals(SettleRule.State.SETTLING, r.offer(grid(10f), 0));
         assertEquals(SettleRule.State.SETTLING, r.offer(grid(10.9f), 1));
         assertEquals(SettleRule.State.SETTLED, r.offer(grid(11.8f), 2)); // each step 0.9 <= 1.0
-        SettleRule s = SettleRule.bestEffort(0, 0);
+        SettleRule s = SettleRule.frameZero(0);
         s.offer(grid(10f), 0);
         s.offer(grid(11.2f), 1); // 1.2 > 1.0: restarts
         assertEquals(SettleRule.State.SETTLING, s.offer(grid(11.2f), 2));
@@ -70,43 +58,49 @@ public class SettleRuleTest {
     }
 
     @Test
-    public void aClassWithNoHoldSettlesOnStabilityAlone() {
-        SettleRule r = SettleRule.bestEffort(0, 500);
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(3), 500));
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(3), 501));
-        assertEquals(SettleRule.State.SETTLED, r.offer(grid(3), 502));
+    public void theQueueSignalIsAnExtraWaitOnly() {
+        SettleRule r = SettleRule.frameZero(0);
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 0, false));
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 1, false));
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 2, false));
+        assertEquals("stable draws count once the queues read idle", SettleRule.State.SETTLING,
+                r.offer(grid(1), 3, true));
+        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 4, true));
+        assertEquals(SettleRule.State.SETTLED, r.offer(grid(1), 5, true));
+        SettleRule busy = SettleRule.frameZero(0);
+        busy.offer(grid(1), 0, true);
+        busy.offer(grid(1), 1, true);
+        assertEquals("busy again: restart", SettleRule.State.SETTLING, busy.offer(grid(1), 2, false));
+        busy.offer(grid(1), 3, true);
+        busy.offer(grid(1), 4, true);
+        assertEquals(SettleRule.State.SETTLED, busy.offer(grid(1), 5, true));
     }
 
     @Test
     public void theCapEndsItAndReportsCapped() {
-        SettleRule r = SettleRule.bestEffort(100, 0);
+        SettleRule r = SettleRule.frameZero(0);
         float v = 0;
-        SettleRule.State s = SettleRule.State.SETTLING;
-        long t = 0;
-        for (; t < SettleRule.CAP_MS; t += 16) {
-            s = r.offer(grid(v += 5), t);
-            assertEquals("at " + t, SettleRule.State.SETTLING, s);
+        for (long t = 0; t < SettleRule.CAP_MS; t += 16) {
+            assertEquals("at " + t, SettleRule.State.SETTLING, r.offer(grid(v += 5), t));
         }
         assertEquals(SettleRule.State.CAPPED, r.offer(grid(v + 5), SettleRule.CAP_MS));
         assertTrue(r.capped());
+        SettleRule q = SettleRule.frameZero(0);
+        for (long t = 0; t < SettleRule.CAP_MS; t += 16) {
+            q.offer(grid(1), t, false);
+        }
+        assertEquals("busy queues end at the cap too", SettleRule.State.CAPPED, q.offer(grid(1), SettleRule.CAP_MS, false));
     }
 
+    /** Revision 4: no per-class hold is left in the rule (no hold constants, no hold factory). */
     @Test
-    public void readySignalIgnoresTheHoldButWaitsForReady() {
-        SettleRule r = SettleRule.readySignal(0);
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 0, false));
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 1, false));
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 2, false));
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 3, true)); // stable draws count once ready
-        assertEquals(SettleRule.State.SETTLING, r.offer(grid(1), 4, true));
-        assertEquals(SettleRule.State.SETTLED, r.offer(grid(1), 5, true));
-        SettleRule late = SettleRule.readySignal(0);
-        late.offer(grid(1), 0, true);
-        late.offer(grid(1), 1, true);
-        assertEquals(SettleRule.State.SETTLING, late.offer(grid(1), 2, false)); // not ready again: restart
-        late.offer(grid(1), 3, true);
-        late.offer(grid(1), 4, true);
-        assertEquals(SettleRule.State.SETTLED, late.offer(grid(1), 5, true));
+    public void noMidRangeHoldIsLeft() {
+        for (java.lang.reflect.Field f : SettleRule.class.getDeclaredFields()) {
+            assertFalse("hold constant " + f.getName(), f.getName().startsWith("HOLD_"));
+        }
+        for (java.lang.reflect.Method m : SettleRule.class.getDeclaredMethods()) {
+            assertFalse("hold factory " + m.getName(), m.getName().equals("bestEffort") || m.getName().equals("readySignal"));
+        }
     }
 
     @Test

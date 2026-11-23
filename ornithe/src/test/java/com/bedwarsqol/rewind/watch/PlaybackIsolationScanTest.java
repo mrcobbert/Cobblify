@@ -289,6 +289,112 @@ public class PlaybackIsolationScanTest {
         }
     }
 
+    // ------------------------------------------------------------------ Rewind Export (TASK X1)
+
+    /** Every file of the export: the common and Ornithe packages and its mixins. */
+    static List<File> exportFiles() {
+        List<File> out = new ArrayList<File>();
+        out.addAll(javaFiles(new File(commonRoot(), "com/bedwarsqol/rewind/export")));
+        out.addAll(javaFiles(new File(mainRoot(), "com/bedwarsqol/rewind/export")));
+        for (File f : javaFiles(new File(mainRoot(), "com/bedwarsqol/mixin"))) {
+            if (f.getName().contains("RewindExport")) {
+                out.add(f);
+            }
+        }
+        return out;
+    }
+
+    /** Reviewed references from the export into {@code feature}, {@code stats} or {@code bedwars}: class -> why. */
+    private static final Map<String, String> EXPORT_REFS = new TreeMap<String, String>();
+    /** What no export file names: sends, the recorder and the live trackers (the recorded HUD's list and more). */
+    private static final String[] EXPORT_FORBIDDEN = {"sendPacket", "addToSendQueue", "writeAndFlush", "getNetHandler",
+            "sendChatMessage", "CaptureSession", "RewindWriter", "HudCapture", "ViewCapture", "StateCapture",
+            "markerKeyPressed", "onMarkerKey", "GeneratorTracker", "SessionStatsWatch", "SessionStats",
+            "HeightLimitWatch", "HeightLimitCore", "HeightLimitTable", "TeamUpgradesWatch", "TeamUpgradeLifecycle",
+            "HypixelContext", "ClickCounter", "LEFT_CLICKS", "RIGHT_CLICKS", "KS_FADES", "LiveHudSource",
+            "getPlayerInfo"};
+
+    static {
+        EXPORT_REFS.put("feature.MotionBlur", "suppressed for the export's length and put back (P3, P7)");
+        EXPORT_REFS.put("feature.DiagLog", "counts-only log lines: codes, numbers, no game text");
+    }
+
+    /**
+     * TASK X1: no export code path sends or changes a packet, starts a recording or calls a live tracker. Every file of
+     * the export (both packages and its mixins) reaches {@code feature}, {@code stats} and {@code bedwars} only through
+     * the reviewed list, names no send, no recorder entry and no live tracker, and starts a process only in
+     * {@code HelperProcess} (from an argument list, never a shell).
+     */
+    @Test
+    public void theExportSendsNothingRecordsNothingAndCallsNoLiveTracker() throws IOException {
+        List<File> files = exportFiles();
+        Set<String> names = new TreeSet<String>();
+        for (File f : files) {
+            names.add(f.getName());
+        }
+        for (String must : new String[]{"ExportJob.java", "HelperProcess.java", "HelperStore.java", "RewindExport.java",
+                "ExportSoundTap.java", "ExportOverlay.java", "GuiNewChatRewindExportMixin.java",
+                "MinecraftRewindExportMixin.java", "EntityRendererRewindExportMixin.java"}) {
+            assertTrue("the scan covers " + must + ": " + names, names.contains(must));
+        }
+        Pattern refs = Pattern.compile("\\bcom\\.bedwarsqol\\.((?:feature|stats|bedwars)\\.[A-Z]\\w*)");
+        Set<String> seen = new TreeSet<String>();
+        List<String> bad = new ArrayList<String>();
+        for (File f : files) {
+            String src = strip(read(f));
+            Matcher m = refs.matcher(src);
+            while (m.find()) {
+                seen.add(m.group(1));
+                if (!EXPORT_REFS.containsKey(m.group(1))) {
+                    bad.add(f.getName() + ":" + line(src, m.start()) + " " + m.group(1) + " is not reviewed");
+                }
+            }
+            for (String token : EXPORT_FORBIDDEN) {
+                Matcher t = Pattern.compile("(?<![\\w])" + Pattern.quote(token) + "\\b").matcher(src);
+                while (t.find()) {
+                    bad.add(f.getName() + ":" + line(src, t.start()) + " names " + token);
+                }
+            }
+            Matcher w = Pattern.compile("\\bctx\\s*\\.\\s*write").matcher(src);
+            while (w.find()) {
+                bad.add(f.getName() + ":" + line(src, w.start()) + " writes to a channel");
+            }
+            boolean starts = Pattern.compile("\\bnew\\s+ProcessBuilder\\b|\\bRuntime\\s*\\.\\s*getRuntime\\b")
+                    .matcher(src).find();
+            if (starts && !f.getName().equals("HelperProcess.java")) {
+                bad.add(f.getName() + " starts a process");
+            }
+            if (Pattern.compile("\"/bin/(?:ba)?sh\"|\"cmd(?:\\.exe)?\"").matcher(read(f)).find()) {
+                bad.add(f.getName() + " names a shell");
+            }
+        }
+        assertEquals(Collections.<String>emptyList(), bad);
+        for (String cls : EXPORT_REFS.keySet()) {
+            assertTrue("stale reviewed entry " + cls, seen.contains(cls));
+        }
+    }
+
+    /** {@link #exportFiles()} for the recorder scan in another package. */
+    public static List<File> exportFilesForScan() {
+        return exportFiles();
+    }
+
+    /** {@link #strip} for the recorder scan in another package. */
+    public static String stripForScan(String src) {
+        return strip(src);
+    }
+
+    /** {@code common/src/main/java}, from Gradle's working directory or the repo root. */
+    static File commonRoot() {
+        for (String p : new String[]{"../common/src/main/java", "common/src/main/java"}) {
+            File f = new File(p);
+            if (new File(f, "com/bedwarsqol/rewind/export/ExportPlan.java").isFile()) {
+                return f;
+            }
+        }
+        throw new AssertionError("common/src/main/java not found from " + new File(".").getAbsolutePath());
+    }
+
     /** The checker itself: an ungated call is found, a gated one is not, a javadoc mention is not a call. */
     @Test
     public void theGateCheckerSeesThroughCommentsAndFindsUngatedCalls() {

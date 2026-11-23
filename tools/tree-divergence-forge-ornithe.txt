@@ -459,3 +459,8 @@ one-sided main ornithe com/bedwarsqol/rewind/export/ExportSoundTap.java
 one-sided main ornithe com/bedwarsqol/rewind/export/OggPcm.java
 one-sided test ornithe com/bedwarsqol/rewind/export/ExportSoundTapTest.java
 one-sided test ornithe com/bedwarsqol/rewind/export/OggPcmTest.java
+
+# Rewind Export Phase 5 (Ornithe only): the export preview and key, the Chat-off mixin, the export camera test.
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportOverlay.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatRewindExportMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ExportCameraTest.java
