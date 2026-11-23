@@ -48,8 +48,14 @@ pub struct Helper {
 
 impl Helper {
     pub fn start(args: &[String]) -> Helper {
+        Helper::start_env(args, &[])
+    }
+
+    /// `start` with extra environment variables (the helper's test hooks).
+    pub fn start_env(args: &[String], env: &[(&str, &str)]) -> Helper {
         let mut child = Command::new(BIN)
             .args(args)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

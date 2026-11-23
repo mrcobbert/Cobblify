@@ -16,7 +16,8 @@ import java.nio.charset.StandardCharsets;
  * wrong protocol), {@code stall} (ready, then never reads), {@code exit5} (ready, then exits 5), {@code error} (ready,
  * then an error line and exit 2), {@code args} (writes its arguments after OUT to OUT, one per line, then ready and
  * waits), {@code probe} (writes its arguments after OUT to OUT, then noise on both streams and one probe line, exit
- * 0), {@code probe-none} (noise only, exit 4).
+ * 0), {@code probe-none} (noise only, exit 4), {@code hold} (ready, then keeps the
+ * file after {@code --out} in place until it is killed).
  */
 public final class FakeHelper {
 
@@ -71,6 +72,9 @@ public final class FakeHelper {
                 out.println("probing...");
                 System.exit(4);
                 return;
+            case "hold":
+                holdOutput(out, a);
+                return;
             default:
                 break;
         }
@@ -106,6 +110,36 @@ public final class FakeHelper {
         }
         drain(System.in); // stdin stays open until the done line was read
         System.exit(0);
+    }
+
+    /**
+     * Ready, then the file after {@code --out} stays there whatever happens to the input, as a Windows writer that
+     * still holds it open would keep it (a delete fails there; here the file is made again at once), until killed.
+     */
+    private static void holdOutput(PrintStream out, String[] a) throws Exception {
+        java.io.File file = null;
+        for (int i = 2; i + 1 < a.length; i++) {
+            if ("--out".equals(a[i])) {
+                file = new java.io.File(a[i + 1]);
+            }
+        }
+        new FileOutputStream(file).close();
+        out.println("{\"ready\":true,\"protocol\":1}");
+        Thread reader = new Thread(() -> {
+            try {
+                drain(System.in);
+            } catch (IOException ignored) {
+                // closed
+            }
+        });
+        reader.setDaemon(true);
+        reader.start();
+        while (true) {
+            if (!file.exists()) {
+                new FileOutputStream(file).close();
+            }
+            Thread.sleep(5);
+        }
     }
 
     private static void drain(InputStream in) throws IOException {

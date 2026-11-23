@@ -232,7 +232,7 @@ impl Encoder {
         let buffer = unsafe { self.pixel_buffer(bgra_bottom_up)? };
         self.pending_video.push_back((buffer, self.frames_in));
         self.frames_in += 1;
-        self.pump(false)
+        self.pump(false, &|| false)
     }
 
     pub fn sound(&mut self, pcm: &[u8]) -> Result<(), Failure> {
@@ -243,19 +243,35 @@ impl Encoder {
         let buffer = unsafe { self.sample_buffer(pcm, samples)? };
         self.samples_in += samples;
         self.pending_audio.push_back(buffer);
-        self.pump(false)
+        self.pump(false, &|| false)
     }
 
-    pub fn finish(mut self, _cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
-        self.pump(true)?;
+    /// Drains and finishes the file. A closed input (`cancelled`) ends the wait at once: the caller
+    /// deletes the file and exits, so the writer is not cancelled here (`cancelWriting` blocks
+    /// until pending writes complete). A native call that blocks anyway is ended by main.rs's
+    /// watcher.
+    pub fn finish(mut self, cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
+        self.pump(true, cancelled)?;
+        crate::test_finish_stall();
         let (tx, rx) = mpsc::channel::<()>();
         let block = RcBlock::new(move || {
             let _ = tx.send(());
         });
         unsafe { self.writer.finishWritingWithCompletionHandler(&block) };
-        if rx.recv_timeout(Duration::from_secs(120)).is_err() {
-            unsafe { self.writer.cancelWriting() };
-            return Err(Failure::new("finish_timeout"));
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(()) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if cancelled() {
+                return Err(Failure::new("cancelled"));
+            }
+            if Instant::now() > deadline {
+                unsafe { self.writer.cancelWriting() };
+                return Err(Failure::new("finish_timeout"));
+            }
         }
         let status = unsafe { self.writer.status() };
         if status != AVAssetWriterStatus::Completed {
@@ -263,6 +279,11 @@ impl Encoder {
             return Err(Failure::with("finish_failed", code));
         }
         Ok(())
+    }
+
+    /// Nothing to let go of when the watcher ends the run: macOS deletes a file that is still open.
+    pub fn release(&self) -> Release {
+        Release
     }
 
     pub fn abort(self) {
@@ -275,10 +296,14 @@ impl Encoder {
     }
 
     /// Appends whatever the inputs accept. With `drain` it waits until everything is written and
-    /// marks the inputs finished; otherwise it waits only while too many frames are held.
-    fn pump(&mut self, drain: bool) -> Result<(), Failure> {
+    /// marks the inputs finished; otherwise it waits only while too many frames are held. Stops
+    /// waiting when `cancelled` turns true.
+    fn pump(&mut self, drain: bool, cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
         let mut last_progress = Instant::now();
         loop {
+            if cancelled() {
+                return Err(Failure::new("cancelled"));
+            }
             let mut progressed = false;
             unsafe {
                 if let Some(audio) = &self.audio {
@@ -399,6 +424,13 @@ impl Encoder {
         let sample = NonNull::new(sample).filter(|_| rc == 0).ok_or(Failure::with("sound_failed", rc as i64))?;
         Ok(CFRetained::from_raw(sample))
     }
+}
+
+/// What main.rs's watcher lets go of before it deletes the file (nothing on macOS).
+pub struct Release;
+
+impl Release {
+    pub fn release(&self) {}
 }
 
 /// s16 little-endian interleaved stereo at 48 kHz.

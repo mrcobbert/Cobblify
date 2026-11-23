@@ -54,6 +54,13 @@ mod platform {
             Err(Failure::new("unsupported_os"))
         }
         pub fn abort(self) {}
+        pub fn release(&self) -> Release {
+            Release
+        }
+    }
+    pub struct Release;
+    impl Release {
+        pub fn release(&self) {}
     }
 }
 
@@ -61,9 +68,10 @@ use args::{Codec, Command, EncodeArgs};
 use protocol::{Packet, PacketReader, ReadError};
 use std::io::{BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 /// An encoder failure: a short code plus the OS status number when there is one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,10 +163,14 @@ fn encode(a: &EncodeArgs) -> u8 {
         say(&protocol::error_line("no_frames", None));
         return EXIT_ERROR;
     }
-    // Input that closes before our final line is still a cancel, also while finishing.
-    let closed = watch_for_close();
+    // Input that closes before our final line is still a cancel, also while finishing. The native
+    // finish may block without looking at the flag; the watcher then ends the helper itself.
+    let ended = Arc::new(Mutex::new(false));
+    let closed = watch_for_close(a.out.clone(), enc.release(), ended.clone());
     let cancelled = || closed.load(Ordering::SeqCst);
     let result = enc.finish(&cancelled);
+    // From here the watcher leaves the ending to us (it holds this lock while it ends the helper).
+    *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
     if cancelled() {
         remove(&a.out);
         return EXIT_CANCELLED;
@@ -177,8 +189,27 @@ fn encode(a: &EncodeArgs) -> u8 {
     }
 }
 
-/// Reads (and ignores) stdin on a thread; the flag turns true when it closes.
-fn watch_for_close() -> Arc<AtomicBool> {
+/// Test hook (encoder/tests): `COBBLIFY_ENCODE_TEST_FINISH_STALL_MS` blocks the native finish for
+/// that long without looking at the input, as a slow `finishWriting` or `Finalize` would. Unset in
+/// the game; values over 60 s are ignored.
+pub fn test_finish_stall() {
+    if let Some(ms) = std::env::var("COBBLIFY_ENCODE_TEST_FINISH_STALL_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if ms <= 60_000 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+}
+
+/// After the input closes during the finish, the finish has this long to see the flag and end the
+/// run itself; then the watcher ends it (TASK X3: gone within 2 s, its file removed).
+const FINISH_CANCEL_GRACE: Duration = Duration::from_millis(700);
+
+/// Reads (and ignores) stdin on a thread; the flag turns true when it closes. If the finish has not
+/// ended `FINISH_CANCEL_GRACE` later (a native call that blocks without looking at the flag, code
+/// review 1 I2), the watcher releases the writer's file (`release`), removes the output and its
+/// side files and exits the process with the cancel code, holding `ended`'s lock so the main
+/// thread cannot report done meanwhile.
+fn watch_for_close(out: PathBuf, release: platform::Release, ended: Arc<Mutex<bool>>) -> Arc<AtomicBool> {
     let closed = Arc::new(AtomicBool::new(false));
     let flag = closed.clone();
     std::thread::spawn(move || {
@@ -193,6 +224,21 @@ fn watch_for_close() -> Arc<AtomicBool> {
             }
         }
         flag.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + FINISH_CANCEL_GRACE;
+        while Instant::now() < deadline {
+            if *ended.lock().unwrap_or_else(|e| e.into_inner()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let guard = ended.lock().unwrap_or_else(|e| e.into_inner());
+        if *guard {
+            return;
+        }
+        release.release();
+        delete_tries(&out, 15);
+        remove_side_files(&out);
+        std::process::exit(EXIT_CANCELLED as i32);
     });
     closed
 }
@@ -225,7 +271,11 @@ fn remove_side_files(path: &Path) {
 }
 
 fn delete(file: &Path) {
-    for _ in 0..50 {
+    delete_tries(file, 50);
+}
+
+fn delete_tries(file: &Path, tries: u32) {
+    for _ in 0..tries {
         match std::fs::remove_file(file) {
             Ok(()) => return,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,

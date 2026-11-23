@@ -193,6 +193,31 @@ public class HelperProcessTest {
     }
 
     /**
+     * Code review 1 I2 (TASK F2, X3): a helper that does not go when its input closes (a native finish that blocks) is
+     * killed after 2 s, and the unfinished file it kept in place is deleted once it is gone, even though the game's own
+     * delete right after the cancel came too early.
+     */
+    @Test
+    public void aCancelledHelperThatHoldsItsFileIsKilledAndTheFileDeletedAfterwards() throws Exception {
+        File partial = new File(tmp.getRoot(), "Solo - Map.partial.mp4");
+        HelperProcess p = start(fake("hold", tmp.newFile("unused"), "--out", partial.getAbsolutePath()), 16, 10_000);
+        await(p, ExportJob.Encoder.Status.READY, 20_000);
+        assertTrue(partial.exists());
+        long t0 = System.currentTimeMillis();
+        p.cancel();
+        partial.delete(); // ExportJob's delete right after the cancel: the helper still holds the file
+        long end = t0 + 6_000;
+        while ((p.alive() || partial.exists()) && System.currentTimeMillis() < end) {
+            Thread.sleep(10);
+        }
+        assertFalse("killed", p.alive());
+        assertFalse("the partial file is deleted after the helper is gone ("
+                + (System.currentTimeMillis() - t0) + " ms)", partial.exists());
+        Thread.sleep(200);
+        assertFalse("and stays deleted", partial.exists());
+    }
+
+    /**
      * Rewind Export Phase 7: the probe ({@code helper probe [--size WxH]}) runs to its end from an argument list, its
      * standard error drained and kept out of the result; the probe line is found among other output; no line gives a
      * code with the exit status; a helper that never ends is killed after the limit.

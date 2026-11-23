@@ -1,6 +1,7 @@
 package com.bedwarsqol.rewind.export;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -54,6 +55,8 @@ public final class HelperProcess implements ExportJob.Encoder {
     }
 
     private final List<String> command;
+    /** The file after {@code --out} (the export's partial file), or null. */
+    private final File out;
     private final int frameBytes;
     private final Launcher launcher;
     private final long stallMs;
@@ -78,6 +81,8 @@ public final class HelperProcess implements ExportJob.Encoder {
      */
     public HelperProcess(List<String> command, int frameBytes, Launcher launcher, long stallMs) {
         this.command = command;
+        int o = command.indexOf("--out");
+        this.out = o >= 0 && o + 1 < command.size() ? new File(command.get(o + 1)) : null;
         this.frameBytes = frameBytes;
         this.launcher = launcher;
         this.stallMs = stallMs;
@@ -252,10 +257,16 @@ public final class HelperProcess implements ExportJob.Encoder {
         enqueue(new Packet(FINISH, null, new byte[0]));
     }
 
-    /** Closes the helper's input (it cancels and deletes its file) and kills it if it is still there after 2 s. */
+    /**
+     * Closes the helper's input (it cancels and deletes its file) and kills it if it is still there after 2 s. Once it
+     * is gone its unfinished file ({@code --out}) is deleted again (code review 1 I2): on Windows a file the helper
+     * still holds cannot be deleted, so the game's own delete right after the cancel may have failed.
+     */
     @Override
     public void cancel() {
+        boolean unfinished;
         synchronized (lock) {
+            unfinished = status != Status.DONE;
             if (status != Status.DONE && status != Status.FAILED) {
                 status = Status.FAILED;
                 failure = "cancelled";
@@ -266,16 +277,36 @@ public final class HelperProcess implements ExportJob.Encoder {
         // closing may wait for a write the helper does not read: never on the caller's (the game's) thread
         thread("cobblify-encode-close", this::closeInput);
         final Process p = process;
-        if (p != null && p.isAlive()) {
+        final File doomed = unfinished ? out : null;
+        if (p != null) {
             thread("cobblify-encode-reaper", () -> {
                 try {
                     if (!p.waitFor(2, TimeUnit.SECONDS)) {
                         p.destroyForcibly();
                     }
+                    p.waitFor(2, TimeUnit.SECONDS);
                 } catch (InterruptedException ignored) {
                     p.destroyForcibly();
                 }
+                deleteAfterExit(doomed);
             });
+        }
+    }
+
+    /** Deletes {@code f} (null: nothing), retrying for a second while the system still holds it. */
+    private static void deleteAfterExit(File f) {
+        if (f == null) {
+            return;
+        }
+        for (int i = 0; i < 20; i++) {
+            if (!f.exists() || f.delete()) {
+                return;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
     }
 

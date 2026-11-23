@@ -243,6 +243,7 @@ impl Encoder {
     }
 
     pub fn finish(self, cancelled: &dyn Fn() -> bool) -> Result<(), Failure> {
+        crate::test_finish_stall();
         let result = unsafe { self.writer.Finalize().map_err(hr("finish_failed")) };
         drop(self.writer);
         let _ = unsafe { self.file.Close() };
@@ -251,10 +252,30 @@ impl Encoder {
         faststart::move_index_first(&self.out, cancelled).map(|_| ()).map_err(|e| Failure::new(e.code()))
     }
 
+    /// The file's byte stream, for main.rs's watcher: when a closed input finds `Finalize` still
+    /// running it closes the stream so the file can be deleted before the process exits.
+    pub fn release(&self) -> Release {
+        Release(self.file.clone())
+    }
+
     /// Drops the writer without finalizing and closes the file so the caller can delete it.
     pub fn abort(self) {
         drop(self.writer);
         let _ = unsafe { self.file.Close() };
+    }
+}
+
+/// The output's byte stream, closed from the watcher thread. COM is initialised multithreaded
+/// (`init`), so the stream may be called from any thread of the process.
+pub struct Release(IMFByteStream);
+
+// SAFETY: an MTA object; `init` joins the process to the multithreaded apartment and the watcher
+// thread belongs to it implicitly.
+unsafe impl Send for Release {}
+
+impl Release {
+    pub fn release(&self) {
+        let _ = unsafe { self.0.Close() };
     }
 }
 

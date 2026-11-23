@@ -114,7 +114,42 @@ fn closing_input_after_finish_but_before_done_cancels_and_deletes_the_file() {
     let (status, took) = helper.wait(Duration::from_secs(10));
     println!("cancel while finishing: exit {:?} after {:?}", status.code(), took);
     assert_eq!(status.code(), Some(3), "{:?}", helper.seen);
+    assert!(took <= Duration::from_secs(2), "exit took {took:?}");
     assert!(!helper.seen.iter().any(|l| l.contains("\"done\"")), "no done line");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing left in the folder");
+}
+
+/// Code review 1 I2 (TASK X3): the native finalization blocks for 5 s without looking at the
+/// input (the test hook `COBBLIFY_ENCODE_TEST_FINISH_STALL_MS` holds it, as a slow
+/// `finishWriting` or `Finalize` would) and the input closes 300 ms into it: the helper still
+/// exits within 2 s and leaves nothing behind, also on Windows where the writer holds the file.
+#[test]
+fn closing_input_during_a_slow_native_finish_exits_within_2_s_and_deletes_the_file() {
+    let _g = serial();
+    let dir = scratch("cancel-slow-finish");
+    let out = dir.join("slow.partial.mp4");
+    let args: Vec<String> = [
+        "encode", "--out", &out.to_string_lossy(), "--width", "640", "--height", "360", "--fps", "60",
+        "--codec", "h264", "--bitrate", "4000000",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut helper = Helper::start_env(&args, &[("COBBLIFY_ENCODE_TEST_FINISH_STALL_MS", "5000")]);
+    helper.line(Duration::from_secs(20)).expect("ready");
+    for i in 0..30u32 {
+        helper.send(1, &to_protocol_bgra(&pattern_rgb(640, 360, i), 640, 360)).unwrap();
+        helper.send(2, &tone_left(i as u64 * 800, (i as u64 + 1) * 800)).unwrap();
+    }
+    helper.send(3, &[]).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    helper.close_stdin();
+    let (status, took) = helper.wait(Duration::from_secs(15));
+    println!("cancel during a slow finish: exit {:?} after {:?}", status.code(), took);
+    assert_eq!(status.code(), Some(3), "{:?}", helper.seen);
+    assert!(took <= Duration::from_secs(2), "exit took {took:?}");
+    assert!(!helper.seen.iter().any(|l| l.contains("\"done\"")), "no done line");
+    assert!(!out.exists(), "partial file removed");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing left in the folder");
 }
 
