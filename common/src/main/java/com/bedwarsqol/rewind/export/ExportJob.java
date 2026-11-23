@@ -431,10 +431,10 @@ public final class ExportJob {
     /** A counts-only summary for the log. */
     public String summary() {
         return String.format(Locale.ROOT, "frames=%d/%d rule=%s settleCapped=%d frame0Draws=%d frame0Ms=%d"
-                        + " queueWaits=%d queueCapped=%d draws=%d renderFps=%.2f soundsMissing=%d soundsDropped=%d"
-                        + " bitrate=%d",
+                        + " queueWaits=%d queueCapped=%d draws=%d renderFps=%.2f soundsMissing=%d soundsUndecodable=%d"
+                        + " soundsDropped=%d bitrate=%d",
                 sent, plan.frames(), rule(), settleCapped, frameZeroDraws, frameZeroMs, queueWaits, queueCapped, draws,
-                renderFps(), mixer.missing(), log.dropped(), bps);
+                renderFps(), log.missing(), log.undecodable() + mixer.missing(), log.dropped(), bps);
     }
 
     // ------------------------------------------------------------------ inside

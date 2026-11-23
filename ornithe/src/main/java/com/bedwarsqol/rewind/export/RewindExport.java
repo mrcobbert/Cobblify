@@ -788,7 +788,8 @@ public final class RewindExport {
         b.append(",\"stopSounds\":").append(x.stopSounds);
         b.append(",\"sounds\":{\"logged\":").append(ExportSoundTap.game().logged()).append(",\"discarded\":")
                 .append(ExportSoundTap.game().discarded()).append(",\"missing\":")
-                .append(ExportSoundTap.game().missing()).append('}');
+                .append(ExportSoundTap.game().missing()).append(",\"undecodable\":")
+                .append(ExportSoundTap.game().undecodable()).append('}');
         b.append(",\"tail\":").append(x.tailSeen);
         b.append(",\"file\":").append(x.sink != null || !j.finished() ? "null"
                 : "\"" + json((j.state() == ExportJob.State.DONE ? j.outFile() : j.partialFile()).getAbsolutePath())

@@ -225,6 +225,28 @@ public class ExportSoundTapTest {
         assertEquals(1, tap.undecodable());
     }
 
+    /**
+     * Code review 1 O1 (TASK S5): a sound left out because its variant is unknown or its file cannot be decoded is
+     * counted in the export's log line ({@link ExportJob#summary()}, written at done, cancel and failure), through the
+     * job's own sound log as the game wires the tap.
+     */
+    @Test
+    public void soundsLeftOutAreCountedInTheExportsLogLine() {
+        ExportJob.Request r = new ExportJob.Request();
+        r.plan = new ExportPlan(1_000_000L, 5_000_000L, 60);
+        r.width = 1280;
+        r.height = 720;
+        r.out = new java.io.File("Solo - Map - 2026-11-22 10.00.00.mp4");
+        ExportJob job = new ExportJob(r, null, null, null, null, sound -> null);
+        tap.start(job.soundLog(), ctx);
+        assertTrue(tap.take(sound("broken", false, ISound.AttenuationType.LINEAR, 1f, 1f), 0));
+        assertTrue(tap.take(sound("no.such.sound", false, ISound.AttenuationType.LINEAR, 1f, 1f), 0));
+        assertTrue(tap.take(sound("broken", false, ISound.AttenuationType.LINEAR, 1f, 1f), 0));
+        String line = job.summary();
+        assertTrue(line, line.contains(" soundsUndecodable=2"));
+        assertTrue(line, line.contains(" soundsMissing=1"));
+    }
+
     @Test
     public void duringThePrerollSoundsAreCancelledAndDiscarded() {
         ctx.discard = true;
