@@ -453,3 +453,9 @@ one-sided main ornithe com/bedwarsqol/rewind/export/VanillaChunkQueues.java
 one-sided main ornithe com/bedwarsqol/mixin/MinecraftRewindExportMixin.java
 one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindExportMixin.java
 one-sided test ornithe com/bedwarsqol/rewind/export/RealRecordingTerrainTicksTest.java
+
+# Rewind Export Phase 4 (Ornithe only): the export sound tap and Ogg decode.
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportSoundTap.java
+one-sided main ornithe com/bedwarsqol/rewind/export/OggPcm.java
+one-sided test ornithe com/bedwarsqol/rewind/export/ExportSoundTapTest.java
+one-sided test ornithe com/bedwarsqol/rewind/export/OggPcmTest.java
