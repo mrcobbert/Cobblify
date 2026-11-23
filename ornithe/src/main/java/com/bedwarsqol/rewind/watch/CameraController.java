@@ -189,7 +189,7 @@ public final class CameraController {
             return;
         }
         GameSettings g = Minecraft.getMinecraft().gameSettings;
-        FreeCameraMath.look(free, dx, dy, g.mouseSensitivity, g.invertMouse);
+        freeLook(com.bedwarsqol.rewind.export.RewindExport.active(), dx, dy, g.mouseSensitivity, g.invertMouse);
     }
 
     /** A mouse wheel delta: one speed level per notch; shows the speed bar. */
@@ -273,13 +273,42 @@ public final class CameraController {
             youPoseValid = true;
         }
         long now = System.nanoTime();
-        if (view().freeCamera()) {
-            double seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, (now - lastFrameNanos) / 1e9));
+        double seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, (now - lastFrameNanos) / 1e9));
+        freeStep(view().freeCamera(), com.bedwarsqol.rewind.export.RewindExport.active(), seconds);
+        lastFrameNanos = now;
+        apply(cam);
+    }
+
+    /**
+     * One frame's free-camera movement by {@code seconds}: none while an export runs (TASK P4, PLAN Solution 2: the
+     * export films from the pose Export was pressed at), and keys held then do not carry over.
+     */
+    static void freeStep(boolean freeView, boolean exporting, double seconds) {
+        if (exporting) {
+            clearMove();
+        } else if (freeView) {
             FreeCameraMath.move(free, moveForward, moveStrafe, moveVertical, level, seconds);
             clearMove();
         }
-        lastFrameNanos = now;
-        apply(cam);
+    }
+
+    /** The free camera's pose (tests read and set it). */
+    static FreeCameraMath.Camera freePose() {
+        return free;
+    }
+
+    /** The movement keys held, as {@link #move} sets them in the free camera (tests). */
+    static void holdMove(int forward, int strafe, int vertical) {
+        moveForward = forward;
+        moveStrafe = strafe;
+        moveVertical = vertical;
+    }
+
+    /** The free camera's mouse look: none while an export runs (TASK P4). */
+    static void freeLook(boolean exporting, double dx, double dy, float sensitivity, boolean invert) {
+        if (!exporting) {
+            FreeCameraMath.look(free, dx, dy, sensitivity, invert);
+        }
     }
 
     /** After an S01/S07 made a new camera: it takes the current pose at once. */

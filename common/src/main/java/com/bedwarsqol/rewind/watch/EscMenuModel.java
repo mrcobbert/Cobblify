@@ -1,14 +1,14 @@
 package com.bedwarsqol.rewind.watch;
 
 /**
- * The Esc menu while watching (G40, R2 subset; TASK A12; mockup {@code drawEsc}): a 172 su card over the darkened
- * view with Resume, Rejoin Hypixel (the hero key), Gallery (full width: R2 shows no Export key) and Quit to Title.
+ * The Esc menu while watching (G40; TASK A12, Rewind Export TASK U1; mockup {@code drawEsc}): a 172 su card over the
+ * darkened view with Resume, Rejoin Hypixel (the hero key), Export and Gallery sharing a row, and Quit to Title.
  * Opening it pauses; Resume restores the play state from before, except at the end, where playback stays paused.
  * Esc resumes. A key fires when it is pressed and released over the same key.
  */
 public final class EscMenuModel {
 
-    public enum Key { RESUME, REJOIN, GALLERY, QUIT }
+    public enum Key { RESUME, REJOIN, EXPORT, GALLERY, QUIT }
 
     public static final float CARD_W = 172f;
     public static final float KEY_H = 20f;
@@ -30,9 +30,21 @@ public final class EscMenuModel {
             return new float[]{x, y, CARD_W, CARD_H};
         }
 
-        /** {x, y, w, h} of a key. */
+        /** {x, y, w, h} of a key. Export and Gallery split the third row, a {@code GAP} between them. */
         public float[] key(Key k) {
-            return new float[]{x + PAD_X, y + PAD_Y + k.ordinal() * (KEY_H + GAP), CARD_W - 2 * PAD_X, KEY_H};
+            float w = CARD_W - 2 * PAD_X, half = (w - GAP) / 2f;
+            switch (k) {
+                case RESUME:
+                    return new float[]{x + PAD_X, y + PAD_Y, w, KEY_H};
+                case REJOIN:
+                    return new float[]{x + PAD_X, y + PAD_Y + (KEY_H + GAP), w, KEY_H};
+                case EXPORT:
+                    return new float[]{x + PAD_X, y + PAD_Y + 2 * (KEY_H + GAP), half, KEY_H};
+                case GALLERY:
+                    return new float[]{x + PAD_X + half + GAP, y + PAD_Y + 2 * (KEY_H + GAP), half, KEY_H};
+                default:
+                    return new float[]{x + PAD_X, y + PAD_Y + 3 * (KEY_H + GAP), w, KEY_H};
+            }
         }
 
         /** The key under the point, or null. */
@@ -62,6 +74,8 @@ public final class EscMenuModel {
                 return "Resume";
             case REJOIN:
                 return "Rejoin Hypixel";
+            case EXPORT:
+                return "Export";
             case GALLERY:
                 return "Gallery";
             default:

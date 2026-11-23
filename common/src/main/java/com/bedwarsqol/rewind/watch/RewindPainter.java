@@ -5,6 +5,7 @@ import com.bedwarsqol.gui.sheet.SheetColors;
 import com.bedwarsqol.gui.sheet.SheetPainter;
 import com.bedwarsqol.gui.sheet.TextMetrics;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportPanelModel;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +35,9 @@ import static com.bedwarsqol.gui.sheet.SheetColors.WELL_TOP;
 
 /**
  * Draws Rewind's own screens in the Cobblify sheet style (G49, G51) on a {@link Canvas}, as the mockup
- * {@code .ai/mockups/rewind.html} paints them: the loading card, the viewer bar with its camera menu, the free
- * camera's speed bar, the Esc menu and the gallery. No text but the labels: titles, times, key labels.
+ * {@code .ai/mockups/rewind.html} paints them: the loading card, the viewer bar with its camera menu (and, in export
+ * mode, the range handles), the free camera's speed bar, the Esc menu, the gallery and the export panel. No text but
+ * the labels: titles, times, key labels.
  *
  * <p>World dimming behind the Esc menu and gallery, and the title-screen backdrop, are the screens' vanilla calls. The
  * one thing a canvas cannot draw is a skin: {@link #faces} says where the screen draws your face over the head frame.
@@ -115,6 +117,8 @@ public final class RewindPainter {
         public boolean dragging;
         /** The marker last jumped to ({@code MarkerNav}'s cursor), drawn highlighted; -1 for none. */
         public int cursorMarker = -1;
+        /** Export mode: the handle being dragged (0 start, 1 end), drawn lit; -1 for none. */
+        public int dragHandle = -1;
         /** The bar's fade ({@code BarFade}); nothing is drawn below 0.004. */
         public float alpha = 1f;
         public SheetColors.Shades accent = SheetColors.Shades.of(0xC0DCFF);
@@ -170,6 +174,12 @@ public final class RewindPainter {
         c.fill(sx, sy, sw, sh, BLACK);
         c.fill(sx + 1, sy + 1, sw - 2, sh - 2, PIT);
         float xt = l.xOf(s.timeUs), played = xt - sx - 1;
+        float xa = 0, xb = 0;
+        if (l.exportMode()) { // the range's stretch of the recess, under the played part (mockup drawBar)
+            xa = l.xOf(l.range().startUs());
+            xb = l.xOf(l.range().endUs());
+            c.fill(xa, sy + 1, xb - xa, sh - 2, GROOVE);
+        }
         if (played > 0) {
             c.fill(sx + 1, sy + 1, played, sh - 2, acc.dp);
             c.fill(sx + 1, sy + 1, played, 1, acc.base);
@@ -183,6 +193,10 @@ public final class RewindPainter {
         float[] k = l.knob(s.timeUs);
         raisedBox(c, k[0], k[1], k[2], k[3], s.knobHover || s.dragging ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE,
                 KNOB_LOWER, KNOB_LOWER, KNOB_DEPTH);
+        if (l.exportMode()) { // the handles go over the knob
+            handle(c, xa, sy, sh, true, is(s.hover, ViewerLayout.Part.HANDLE, 0) || s.dragHandle == 0 ? TEXT_HI : acc.base);
+            handle(c, xb, sy, sh, false, is(s.hover, ViewerLayout.Part.HANDLE, 1) || s.dragHandle == 1 ? TEXT_HI : acc.base);
+        }
 
         // the camera menu, above its key: Free camera, You, then a row per player
         if (s.menuOpen) {
@@ -196,6 +210,18 @@ public final class RewindPainter {
             }
         }
         c.popAlpha();
+    }
+
+    /** An export handle at x: a bracket over the recess, its feet pointing into the range (mockup drawBar). */
+    private static void handle(Canvas c, float x, float sy, float sh, boolean start, int colour) {
+        float bx = start ? Math.round(x) - 2 : Math.round(x);
+        float foot = start ? bx : bx - 2;
+        c.fill(bx - 1, sy - 4, 4, sh + 8, BLACK);
+        c.fill(foot - 1, sy - 4, 6, 3, BLACK);
+        c.fill(foot - 1, sy + sh + 1, 6, 3, BLACK);
+        c.fill(bx, sy - 3, 2, sh + 6, colour);
+        c.fill(foot, sy - 3, 4, 1, colour);
+        c.fill(foot, sy + sh + 2, 4, 1, colour);
     }
 
     /**
@@ -333,6 +359,11 @@ public final class RewindPainter {
         SheetPainter.hero(c, l.watch[0], l.watch[1], l.watch[2], l.watch[3], "Watch", ViewerLayout.FONT, accent, wh,
                 wh && part(p, GalleryModel.Hit.Part.WATCH));
         if (none) c.endDisabled();
+        boolean eh = !none && part(hover, GalleryModel.Hit.Part.EXPORT);
+        if (none) c.beginDisabled(BAND);
+        button(c, l.export[0], l.export[1], l.export[2], l.export[3], "Export", eh,
+                eh && part(p, GalleryModel.Hit.Part.EXPORT));
+        if (none) c.endDisabled();
         boolean dh = !none && part(hover, GalleryModel.Hit.Part.DELETE);
         boolean dd = dh && part(p, GalleryModel.Hit.Part.DELETE);
         if (m.armed()) {
@@ -349,6 +380,117 @@ public final class RewindPainter {
 
     private static boolean part(GalleryModel.Hit h, GalleryModel.Hit.Part part) {
         return h != null && h.part == part;
+    }
+
+    // ------------------------------------------------------------------ the export panel (G10, G42)
+
+    /**
+     * The export panel: a card with the five rows (a label, then sheet options; Chat a switch) and the Export key in
+     * its footer band. While an export fills the rows are dimmed and the key fills in the accent; Failed is the red key.
+     */
+    public static void exportPanel(Canvas c, ExportPanelModel m, ExportPanelModel.Layout l, ExportPanelModel.Hit hover,
+                                   SheetColors.Shades accent) {
+        card(c, l.x, l.y, l.w, l.h);
+        ExportPanelModel.KeyState state = m.keyState();
+        boolean busy = state == ExportPanelModel.KeyState.FILLING;
+        ExportPanelModel.Hit p = m.pressed();
+        for (ExportPanelModel.Row r : ExportPanelModel.Row.values()) {
+            text(c, ExportPanelModel.label(r), l.labelX, l.labelTop(r), busy ? TEXT_LO : TEXT_HI);
+            if (r == ExportPanelModel.Row.CHAT) {
+                float[] t = l.toggle();
+                boolean th = !busy && hover != null && hover.part == ExportPanelModel.Hit.Part.TOGGLE;
+                if (busy) c.beginDisabled(BAND);
+                toggle(c, t[0], t[1], t[2], t[3], m.chosen(r) == 0, th, accent);
+                if (busy) c.endDisabled();
+                continue;
+            }
+            int chosen = m.chosen(r);
+            for (int i = 0; i < l.count(r); i++) {
+                float[] o = l.option(r, i);
+                boolean off = busy || !m.available(r, i);
+                boolean h = !off && hover != null && hover.part == ExportPanelModel.Hit.Part.OPTION && hover.row == r
+                        && hover.index == i;
+                boolean d = h && p != null && p.part == ExportPanelModel.Hit.Part.OPTION && p.row == r && p.index == i;
+                if (off) c.beginDisabled(BAND);
+                option(c, o[0], o[1], o[2], o[3], m.options(r).get(i), i == chosen, h, d, accent);
+                if (off) c.endDisabled();
+            }
+        }
+        float fy = l.footTop();
+        c.fill(l.x + 1, fy, l.w - 2, ExportPanelModel.FOOT_H, BAND);
+        c.fill(l.x + 1, fy, l.w - 2, 1, BLACK);
+        float[] k = l.key();
+        boolean kh = hover != null && hover.part == ExportPanelModel.Hit.Part.KEY;
+        boolean kd = kh && p != null && p.part == ExportPanelModel.Hit.Part.KEY;
+        switch (state) {
+            case FILLING: {
+                pressedBox(c, k[0], k[1] + 2, k[2], k[3] - 2, FACE, SH, SH2);
+                float fx = Math.round(k[2] * m.fill());
+                if (fx > 0) {
+                    c.pushClip(k[0], k[1], fx, k[3]);
+                    pressedBox(c, k[0], k[1] + 2, k[2], k[3] - 2, accent.base, accent.sh, accent.sh2);
+                    textCentred(c, "Export", k[0], k[1] + 3, k[2], k[3] - 4, accent.on);
+                    c.popClip();
+                }
+                if (fx < k[2]) {
+                    c.pushClip(k[0] + fx, k[1], k[2] - fx, k[3]);
+                    textCentred(c, "Export", k[0], k[1] + 3, k[2], k[3] - 4, TEXT_HI);
+                    c.popClip();
+                }
+                break;
+            }
+            case OPEN_FOLDER:
+                SheetPainter.hero(c, k[0], k[1], k[2], k[3], "Open Folder", ViewerLayout.FONT, accent, kh, kd);
+                break;
+            case FAILED:
+                SheetPainter.hero(c, k[0], k[1], k[2], k[3], "Failed", ViewerLayout.FONT, RED, kh, kd);
+                break;
+            case DISABLED:
+                c.beginDisabled(BAND);
+                SheetPainter.hero(c, k[0], k[1], k[2], k[3], "Export", ViewerLayout.FONT, accent, false, false);
+                c.endDisabled();
+                break;
+            default:
+                SheetPainter.hero(c, k[0], k[1], k[2], k[3], "Export", ViewerLayout.FONT, accent, kh, kd);
+                break;
+        }
+    }
+
+    /** A sheet option: raised, sunk while held; the chosen one sunk in the accent (as SheetPainter draws it). */
+    private static void option(Canvas c, float x, float y, float w, float h, String label, boolean chosen,
+                               boolean hover, boolean down, SheetColors.Shades a) {
+        if (chosen || down) {
+            int face = chosen ? a.base : hover ? FACE_HOVER : FACE;
+            if (chosen && hover) face = SheetColors.brightness(face, 1.06f);
+            pressedBox(c, x, y + 2, w, h - 2, face, chosen ? a.sh : SH, chosen ? a.sh2 : SH2);
+            textCentred(c, label, x, y + 3, w, h - 4, chosen ? a.on : hover ? TEXT_HI : TEXT_MID);
+        } else {
+            raisedFace(c, x, y, w, h, hover);
+            textCentred(c, label, x, y + 1, w, h - 4, hover ? TEXT_HI : TEXT_MID);
+        }
+    }
+
+    /** The sheet's on/off switch, at rest (as SheetPainter draws a row's 28 x 14 toggle). */
+    private static void toggle(Canvas c, float x, float y, float w, float h, boolean on, boolean hover,
+                               SheetColors.Shades a) {
+        c.fill(x - 1, y - 1, w + 2, h + 2, RIM);
+        c.fill(x, y, w, h, BLACK);
+        c.fill(x + 1, y + 1, w - 2, h - 2, PIT);
+        if (on) {
+            c.fill(x + 1, y + 1, 13, h - 2, a.base);
+            c.fill(x + 1, y + h - 2, 13, 1, a.ln);
+            c.fill(x + 1, y + 1, 13, 1, a.hl);
+            c.fill(x + 1 + 6, y + 1 + 3, 1, 6, a.on);
+        } else {
+            float ox = x + w - 1 - 3 - 5, oy = y + 1 + 3;
+            c.fill(ox, oy, 5, 1, TEXT_LO);
+            c.fill(ox, oy + 5, 5, 1, TEXT_LO);
+            c.fill(ox, oy + 1, 1, 4, TEXT_LO);
+            c.fill(ox + 4, oy + 1, 1, 4, TEXT_LO);
+        }
+        float kx = x + (on ? 13 : 0);
+        raisedBox(c, kx, y - 1, 14, 18, hover ? KNOB_HOVER : KNOB, KNOB_EDGE, KNOB_EDGE, KNOB_LOWER, KNOB_LOWER,
+                KNOB_DEPTH);
     }
 
     // ------------------------------------------------------------------ marker icons

@@ -130,6 +130,39 @@ public final class RewindPlayback implements ClientOps {
         Minecraft.getMinecraft().displayGuiScreen(screen);
     }
 
+    private static com.bedwarsqol.gui.sheet.McCanvas riddenCanvas;
+
+    /**
+     * The ridden player's name as the viewer draws it, in another player's view with the clean view off: the one piece
+     * of the viewer's own canvas an export frame holds (Rewind Export TASK P3). Client thread.
+     */
+    public static void drawRiddenName() {
+        PlaybackSession s = INSTANCE.session;
+        if (!s.playingWorld() || s.view().clean()) {
+            return;
+        }
+        int riding = RiddenView.ridingIndex();
+        PlayerListModel players = RiddenView.players();
+        if (riding < 0 || riding >= players.size()) {
+            return;
+        }
+        Minecraft mc = Minecraft.getMinecraft();
+        int scale = new net.minecraft.client.gui.ScaledResolution(mc).getScaleFactor();
+        com.bedwarsqol.config.ClientSettings cfg = com.bedwarsqol.BedwarsQol.config;
+        if (riddenCanvas == null) {
+            riddenCanvas = new com.bedwarsqol.gui.sheet.McCanvas();
+        }
+        riddenCanvas.begin(scale, 0f, 0f, mc.displayHeight, scale, cfg == null || cfg.minecraftFont());
+        RewindPainter.riddenName(riddenCanvas, mc.displayWidth / (float) scale, players.get(riding).name,
+                players.get(riding).colour);
+        riddenCanvas.end();
+    }
+
+    /** Opens the viewer of the session playing now (after an export, Rewind Export Phase 5). Client thread. */
+    public static void displayViewer() {
+        display(screens.viewer(INSTANCE.session));
+    }
+
     /** Registers the loading card and viewer (null: the minimal built-in ones). */
     public static void setScreens(Screens s) {
         screens = s == null ? MINIMAL : s;
@@ -255,6 +288,16 @@ public final class RewindPlayback implements ClientOps {
         }
     }
 
+    static void partsExportStart() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).exportStart();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "exportStart", t);
+            }
+        }
+    }
+
     static void partsExit() {
         for (int i = 0; i < PARTS.size(); i++) {
             try {
@@ -265,8 +308,8 @@ public final class RewindPlayback implements ClientOps {
         }
     }
 
-    /** The viewer's underlay slot (under the bar). */
-    static void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
+    /** The viewer's underlay slot (under the bar); also the export frame's screen (Rewind Export). */
+    public static void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
         for (int i = 0; i < PARTS.size(); i++) {
             try {
                 PARTS.get(i).drawUnder(width, height, mouseX, mouseY, partial);
@@ -696,6 +739,11 @@ public final class RewindPlayback implements ClientOps {
         Supplier<GuiScreen> source = failureGallery;
         GuiScreen g = source == null ? null : source.get();
         mc().displayGuiScreen(g != null ? g : new GuiMainMenu());
+    }
+
+    @Override
+    public void exportStart() {
+        partsExportStart(); // Rewind Export Phase 1: every part forgets what was watched before the pre-roll
     }
 
     @Override

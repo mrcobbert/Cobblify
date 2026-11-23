@@ -193,4 +193,24 @@ public class MarkerNavTest {
         assertEquals(-1, n.previous(100));
         assertEquals(-1, n.cursor(0));
     }
+
+    /** Rewind Export TASK U3: the marker last jumped to is remembered after the playhead moves on, also past a seek. */
+    @Test
+    public void lastJumpedSurvivesThePlayheadLeavingTheMarker() {
+        MarkerNav n = nav(10 * S, 20 * S, 30 * S);
+        assertEquals("before any jump", -1, n.lastJumped());
+        n.next(0);
+        assertEquals(0, n.lastJumped());
+        long past = n.markerTick(0) + 40;
+        assertEquals("the cursor clears past the marker", -1, n.cursor(past));
+        assertEquals(0, n.lastJumped());
+        n.clear(); // a seek that is not a marker jump
+        assertEquals(0, n.lastJumped());
+        n.jump(2);
+        assertEquals(2, n.lastJumped());
+        n.previous(n.landingTick(2) + PAST);
+        assertEquals(1, n.lastJumped());
+        assertEquals("out of range changes nothing", -1, n.jump(7));
+        assertEquals(1, n.lastJumped());
+    }
 }

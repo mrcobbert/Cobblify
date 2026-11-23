@@ -286,6 +286,47 @@ public class ClientSettingsConfigTest {
         assertEquals(0, off.sessionStatsKeyCode);
     }
 
+    /**
+     * Rewind Export (TASK U4): the five export settings default to 1080p, 60, High, H.264, Chat on for a config saved
+     * before them, out-of-list values reset, and the last used values round-trip through the config file.
+     */
+    @Test
+    public void rewindExportSettingsDefaultResetAndRoundTrip() {
+        ClientSettings old = GSON.fromJson("{\"guiSize\":1,\"rewind\":true}", ClientSettings.class);
+        old.sanitize();
+        assertEquals(1080, old.rewindExportHeight);
+        assertEquals(60, old.rewindExportFps);
+        assertEquals("high", old.rewindExportQuality);
+        assertEquals("h264", old.rewindExportCodec);
+        assertTrue(old.rewindExportChat);
+        assertEquals("unrelated setting survives", 1, old.guiSize);
+
+        ClientSettings bad = GSON.fromJson("{\"rewindExportHeight\":999,\"rewindExportFps\":75,"
+                + "\"rewindExportQuality\":\"ultra\",\"rewindExportCodec\":\"vp9\",\"rewindExportChat\":false}",
+                ClientSettings.class);
+        bad.sanitize();
+        assertEquals(1080, bad.rewindExportHeight);
+        assertEquals(60, bad.rewindExportFps);
+        assertEquals("high", bad.rewindExportQuality);
+        assertEquals("h264", bad.rewindExportCodec);
+        assertFalse(bad.rewindExportChat);
+
+        ClientSettings used = new ClientSettings();
+        used.rewindExportHeight = 2160;
+        used.rewindExportFps = 240;
+        used.rewindExportQuality = "max";
+        used.rewindExportCodec = "hevc";
+        used.rewindExportChat = false;
+        String out = GSON.toJson(used);
+        ClientSettings back = GSON.fromJson(out, ClientSettings.class);
+        back.sanitize();
+        assertEquals(2160, back.rewindExportHeight);
+        assertEquals(240, back.rewindExportFps);
+        assertEquals("max", back.rewindExportQuality);
+        assertEquals("hevc", back.rewindExportCodec);
+        assertFalse(back.rewindExportChat);
+    }
+
     @Test
     public void fontDefaultsToMinecraftAndOnlyModernSwitchesIt() {
         ClientSettings s = new ClientSettings();

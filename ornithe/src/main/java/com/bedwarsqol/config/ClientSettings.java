@@ -210,6 +210,14 @@ public class ClientSettings {
     public int rewindMarkerKey = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_MARKER_KEY;
     /** Rewind's Clean View Key, encoded like {@link #sessionStatsKeyCode}; 0 = unbound. Stored only, used from R3. */
     public int rewindCleanViewKey = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_CLEAN_VIEW_KEY;
+    /** Rewind export (G10, G12, G42): the values last exported with; the first time 1080p, 60, High, H.264, Chat on. */
+    public int rewindExportHeight = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_EXPORT_HEIGHT;
+    public int rewindExportFps = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_EXPORT_FPS;
+    /** {@code standard}, {@code high} or {@code max}. */
+    public String rewindExportQuality = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_EXPORT_QUALITY;
+    /** {@code h264} or {@code hevc}. */
+    public String rewindExportCodec = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_EXPORT_CODEC;
+    public boolean rewindExportChat = com.bedwarsqol.rewind.RewindDefaults.DEFAULT_EXPORT_CHAT;
 
     // --- Chat module ---
 
@@ -537,6 +545,12 @@ public class ClientSettings {
         if (!SessionHoldKey.isValidBinding(sessionStatsKeyCode)) sessionStatsKeyCode = 0;
         if (!SessionHoldKey.isValidBinding(rewindMarkerKey)) rewindMarkerKey = 0;
         if (!SessionHoldKey.isValidBinding(rewindCleanViewKey)) rewindCleanViewKey = 0;
+        com.bedwarsqol.rewind.export.ExportSettings export = com.bedwarsqol.rewind.export.ExportSettings.of(
+                rewindExportHeight, rewindExportFps, rewindExportQuality, rewindExportCodec, rewindExportChat);
+        rewindExportHeight = export.height();
+        rewindExportFps = export.fps();
+        rewindExportQuality = export.quality();
+        rewindExportCodec = export.codec();
         if (sessionStatsHudScale < 0.3f || sessionStatsHudScale > 10.0f) sessionStatsHudScale = defaultTextSizeScale();
         heightLimitHudAnchor = clamp(heightLimitHudAnchor, HudPlacement.AUTO, 8);
         if (heightLimitHudScale < 0.3f || heightLimitHudScale > 10.0f) heightLimitHudScale = defaultTextSizeScale();

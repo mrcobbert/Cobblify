@@ -28,6 +28,9 @@ import java.util.TimeZone;
  * GUI px (one sheet unit per GUI pixel); this screen feeds them LWJGL input and carries out the model's intents with
  * {@link Rewind#library()}.
  *
+ * <p>Export opens the game like Watch, with a request the viewer reads when it first shows it: export mode, paused at
+ * the first marker ({@link RewindViewerScreen#requestExport}).
+ *
  * <p><b>Backdrop.</b> Opened from the title screen, the title's own panorama turns behind the card with vanilla's two
  * gradients and no logo (mockup {@code drawTitleBg(false)}); otherwise vanilla's default background (the dimmed world
  * of a playing session).
@@ -199,10 +202,19 @@ public final class RewindGalleryScreen extends GuiScreen {
         actions.accept(model.key(keyCode, repeatEvent.getAsBoolean(), System.currentTimeMillis()));
     }
 
-    private void apply(GalleryModel.Intent intent) {
+    /** Opens a recording in the viewer (a test replaces it). */
+    java.util.function.Consumer<String> opener = RewindPlayback::open;
+
+    /** Carries out the model's intent ({@link #actions} in production). */
+    void apply(GalleryModel.Intent intent) {
         switch (intent.kind) {
             case WATCH:
-                RewindPlayback.open(intent.id);
+                RewindViewerScreen.requestExport(null);
+                opener.accept(intent.id);
+                break;
+            case EXPORT: // the viewer opens it in export mode, paused at its first marker (Rewind Export TASK U2)
+                RewindViewerScreen.requestExport(intent.id);
+                opener.accept(intent.id);
                 break;
             case DELETE:
                 if (Rewind.library().delete(intent.id)) model.removed(intent.id);

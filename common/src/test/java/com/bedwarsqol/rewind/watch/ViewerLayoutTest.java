@@ -2,6 +2,7 @@ package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportRange;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -17,7 +18,8 @@ import static org.junit.Assert.assertTrue;
 /**
  * TASK A9, A10: the viewer bar's geometry (mockup {@code drawBar}), time and x, marker hit rects, seek on release.
  * The bar sits at the bottom edge (the user's call after dev.102, replacing parity B11/Q1's top bar); its camera menu
- * opens upward and the flight-speed bar and the ridden name sit at the top.
+ * opens upward and the flight-speed bar and the ridden name sit at the top. Rewind Export TASK U3: the export range's
+ * two handles on the timeline.
  */
 public class ViewerLayoutTest {
 
@@ -455,5 +457,106 @@ public class ViewerLayoutTest {
         // on the play key: closes the menu and the key still works on release
         assertSame(ViewerLayout.Action.Kind.CLOSE_MENU, p.down(l, l.play[0] + 2, l.play[1] + 2, true, false).kind);
         assertSame(ViewerLayout.Action.Kind.PLAY_PAUSE, p.up(l, l.play[0] + 2, l.play[1] + 2).kind);
+    }
+
+    // ------------------------------------------------------------------ export handles (Rewind Export TASK U3)
+
+    @Test
+    public void withExportModeOffTheLayoutIsTodays() {
+        ViewerLayout l = plain(640);
+        assertFalse(l.exportMode());
+        assertSame(l, l.export(100_000_000L, null));
+        ViewerLayout e = l.export(100_000_000L, ExportRange.around(LEN, 100_000_000L));
+        assertTrue(e.exportMode());
+        assertArrayEquals(l.bar, e.bar, 0f);
+        assertArrayEquals(l.play, e.play, 0f);
+        assertArrayEquals(l.speed, e.speed, 0f);
+        assertArrayEquals(l.camera, e.camera, 0f);
+        assertEquals(l.stripX, e.stripX, 0f);
+        assertEquals(l.stripW, e.stripW, 0f);
+        assertArrayEquals(l.markerHit(1), e.markerHit(1), 0f);
+        assertArrayEquals(l.dropdown(), e.dropdown(), 0f);
+        // away from the handles and the knob every point hits the same part
+        for (float x = 0; x < 640; x += 3) {
+            for (float y = l.bar[1] - 4; y < l.bar[1] + 30; y += 2) {
+                boolean nearExport = false;
+                for (int h = 0; h < 2; h++) {
+                    float[] r = e.handle(h);
+                    nearExport |= x >= r[0] - 1 && x < r[0] + r[2] + 1;
+                }
+                float[] k = l.knob(100_000_000L);
+                nearExport |= x >= k[0] - 1 && x < k[0] + k[2] + 1;
+                if (nearExport) continue;
+                assertEquals(x + "," + y, l.hit(x, y, false).toString(), e.hit(x, y, false).toString());
+            }
+        }
+    }
+
+    @Test
+    public void theHandlesSitOnTheRangeEndsOfTheTimeline() {
+        ViewerLayout l = plain(640).export(0, ExportRange.around(LEN, 100_000_000L));
+        float xa = l.xOf(90_000_000L), xb = l.xOf(105_000_000L);
+        assertArrayEquals(new float[]{xa - 4, l.stripY - 4, 8, l.stripH + 8}, l.handle(0), 0f);
+        assertArrayEquals(new float[]{xb - 4, l.stripY - 4, 8, l.stripH + 8}, l.handle(1), 0f);
+        assertEquals(90_000_000L, l.range().startUs());
+        assertEquals(105_000_000L, l.range().endUs());
+    }
+
+    @Test
+    public void aHandleWinsOverTheKnobAndTheKnobOverAMarker() {
+        long[] us = {60_000_000L, 200_000_000L};
+        ViewerLayout base = layout(640, LEN, us, new int[]{D, F});
+        float[] icon = base.markerIcon(0);
+        float mx = icon[0] + 3, my = icon[1] + 3;
+        assertSame(ViewerLayout.Part.MARKER, base.hit(mx, my, false).part);
+        // the playhead on the marker, the range far away: the knob wins (a press drags the playhead)
+        ViewerLayout knob = base.export(base.timeAt(mx), ExportRange.around(LEN, 300_000_000L));
+        assertSame(ViewerLayout.Part.STRIP, knob.hit(mx, my, false).part);
+        // a handle on the marker and the playhead: the handle wins
+        ViewerLayout handle = base.export(base.timeAt(mx), new ExportRange(LEN, base.timeAt(mx), 250_000_000L));
+        ViewerLayout.Hit h = handle.hit(mx, my, false);
+        assertSame(ViewerLayout.Part.HANDLE, h.part);
+        assertEquals(0, h.index);
+        float[] end = handle.handle(1);
+        ViewerLayout.Hit he = handle.hit(end[0] + 4, end[1] + 1, false);
+        assertSame(ViewerLayout.Part.HANDLE, he.part);
+        assertEquals(1, he.index);
+        // an open camera menu stays on top of everything
+        float[] row = handle.dropdownRow(0);
+        assertSame(ViewerLayout.Part.CAMERA_OPTION, handle.hit(row[0] + 2, row[1] + 2, true).part);
+    }
+
+    @Test
+    public void draggingAHandleMovesTheRangeAndDoesNotSeek() {
+        ViewerLayout.Pointer p = new ViewerLayout.Pointer();
+        p.range(ExportRange.around(LEN, 100_000_000L));
+        ViewerLayout l = plain(640).export(20_000_000L, p.range());
+        float[] a = l.handle(0);
+        ViewerLayout.Action act = p.down(l, a[0] + 4, a[1] + 6, false, false);
+        assertSame(ViewerLayout.Action.Kind.NONE, act.kind);
+        assertEquals(0, p.handle());
+        assertFalse("not a timeline drag", p.dragging());
+        float x = l.xOf(50_000_000L);
+        p.move(l, x);
+        assertEquals(l.timeAt(x), p.range().startUs());
+        assertEquals(105_000_000L, p.range().endUs());
+        act = p.up(l, l.xOf(70_000_000L), l.bar[1] - 40);
+        assertSame("no seek", ViewerLayout.Action.Kind.NONE, act.kind);
+        assertEquals(l.timeAt(l.xOf(70_000_000L)), p.range().startUs());
+        assertEquals(-1, p.handle());
+
+        // the end handle dragged before the start stops 1 s after it
+        l = plain(640).export(20_000_000L, p.range());
+        float[] b = l.handle(1);
+        p.down(l, b[0] + 4, b[1] + 6, false, false);
+        assertEquals(1, p.handle());
+        p.move(l, l.stripX);
+        assertEquals(p.range().startUs() + 1_000_000L, p.range().endUs());
+        p.up(l, l.stripX, b[1] + 6);
+        assertEquals(p.range().startUs() + 1_000_000L, p.range().endUs());
+        // cancel forgets the drag
+        p.down(l, plain(640).export(0, p.range()).handle(0)[0] + 4, b[1] + 6, false, false);
+        p.cancel();
+        assertEquals(-1, p.handle());
     }
 }

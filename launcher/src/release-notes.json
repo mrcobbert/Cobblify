@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.19.0-dev.111",
+    "channel": "dev",
+    "date": "2026-11-22",
+    "sections": [
+      ["New", [
+        "Rewind: export part of a recorded game as an MP4 with sound. Press Export in the viewer's Esc menu or in the gallery, drag the handles on the bar to pick the range, then choose size, frame rate and quality."
+      ]]
+    ]
+  },
+  {
     "version": "0.19.0-dev.110",
     "channel": "dev",
     "date": "2026-11-22",

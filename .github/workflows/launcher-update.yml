@@ -150,7 +150,13 @@ jobs:
           export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
           export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
           test -n "$JAVA_HOME_25_X64"
-          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo test --locked --manifest-path encoder/Cargo.toml
+          bash encoder/build.sh
+          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew assemble --no-daemon -PrequireEncodeHelper=true -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
+          listing=$(unzip -Z1 "ornithe/build/libs/Cobblify-1.8.9-ornithe-${{ inputs.version }}.jar" | tr -d '\r')
+          grep -qx 'com/bedwarsqol/rewind/export/helper/cobblify-encode' <<<"$listing"
+          grep -qx 'com/bedwarsqol/rewind/export/helper/cobblify-encode.properties' <<<"$listing"
           (cd lunar && ./gradlew assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \
@@ -339,7 +345,12 @@ jobs:
           export ORG_GRADLE_PROJECT_cobblifyBackendToken="$BACKEND_TOKEN"
           export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$RUNNER_TEMP/gradle-home}"
           test -n "$JAVA_HOME_25_X64"
-          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
+          cargo test --locked --manifest-path encoder/Cargo.toml
+          bash encoder/build.sh
+          (cd ornithe && JAVA_HOME="$JAVA_HOME_25_X64" ./gradlew.bat assemble --no-daemon -PrequireEncodeHelper=true -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64)
+          listing=$(unzip -Z1 "ornithe/build/libs/Cobblify-1.8.9-ornithe-${{ inputs.version }}.jar" | tr -d '\r')
+          grep -qx 'com/bedwarsqol/rewind/export/helper/cobblify-encode.exe' <<<"$listing"
+          grep -qx 'com/bedwarsqol/rewind/export/helper/cobblify-encode.properties' <<<"$listing"
           (cd lunar && ./gradlew.bat assemble --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64)
           test -n "$WEAVE_AGENT_PASSPHRASE"
           node launcher/tools/weave-agent-crypto.mjs decrypt \

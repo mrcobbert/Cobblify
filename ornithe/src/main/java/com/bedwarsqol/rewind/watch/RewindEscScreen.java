@@ -13,10 +13,11 @@ import org.lwjgl.input.Mouse;
 
 /**
  * Esc while watching (G40, G48, R2 subset; TASK A12; mockup {@code drawEsc}): a card over the darkened view with
- * Resume, Rejoin Hypixel (the accent key), Gallery and Quit to Title ({@link EscMenuModel}, drawn by
+ * Resume, Rejoin Hypixel (the accent key), Export, Gallery and Quit to Title ({@link EscMenuModel}, drawn by
  * {@link RewindPainter#escMenu}). Opening it pauses playback; Resume (or Esc) restores the play state from before and
  * returns to the viewer; Rejoin ends the session and reconnects to the server that was left (no command is sent);
- * Gallery opens the gallery, whose Done comes back here; Quit to Title ends the session on the title screen.
+ * Export returns to the viewer in export mode, still paused (Rewind Export TASK U1); Gallery opens the gallery, whose
+ * Done comes back here; Quit to Title ends the session on the title screen.
  */
 public final class RewindEscScreen extends RewindScreen {
 
@@ -49,13 +50,20 @@ public final class RewindEscScreen extends RewindScreen {
         return m;
     }
 
+    /** {@link #apply(EscMenuModel.Key, PlaybackSession, EscMenuModel, Runnable, Runnable, Runnable)} with no Export. */
+    static void apply(EscMenuModel.Key key, PlaybackSession session, EscMenuModel model, Runnable showViewer,
+                      Runnable showGallery) {
+        apply(key, session, model, showViewer, showGallery, null);
+    }
+
     /**
      * Carries out a key: Resume restores the play state ({@link EscMenuModel#resumePlays}) and runs
      * {@code showViewer}; Rejoin and Quit to Title end the session ({@link PlaybackSession.Exit#REJOIN},
-     * {@link PlaybackSession.Exit#TITLE}); Gallery runs {@code showGallery} and keeps the session.
+     * {@link PlaybackSession.Exit#TITLE}); Export runs {@code showExport} (the viewer in export mode), playback stays
+     * paused; Gallery runs {@code showGallery} and keeps the session.
      */
     static void apply(EscMenuModel.Key key, PlaybackSession session, EscMenuModel model, Runnable showViewer,
-                      Runnable showGallery) {
+                      Runnable showGallery, Runnable showExport) {
         if (key == null) {
             return;
         }
@@ -67,6 +75,11 @@ public final class RewindEscScreen extends RewindScreen {
                 break;
             case REJOIN:
                 session.requestExit(PlaybackSession.Exit.REJOIN);
+                break;
+            case EXPORT:
+                if (showExport != null) {
+                    showExport.run();
+                }
                 break;
             case GALLERY:
                 showGallery.run();
@@ -82,7 +95,13 @@ public final class RewindEscScreen extends RewindScreen {
     private void fire(EscMenuModel.Key key) {
         final GuiScreen self = this;
         apply(key, session, model, () -> RewindPlayback.display(viewer),
-                () -> RewindPlayback.display(new RewindGalleryScreen(GalleryModel.Origin.PLAYING, self)));
+                () -> RewindPlayback.display(new RewindGalleryScreen(GalleryModel.Origin.PLAYING, self)),
+                () -> {
+                    if (viewer instanceof RewindViewerScreen) {
+                        ((RewindViewerScreen) viewer).openExport();
+                    }
+                    RewindPlayback.display(viewer);
+                });
     }
 
     // ------------------------------------------------------------------ screen

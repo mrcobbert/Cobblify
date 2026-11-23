@@ -9,6 +9,7 @@ import com.bedwarsqol.rewind.ExtCodec;
 import com.bedwarsqol.rewind.HudCapture;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportPlan;
 import com.mojang.authlib.GameProfile;
 import io.netty.buffer.Unpooled;
 import net.minecraft.block.Block;
@@ -16,11 +17,16 @@ import net.minecraft.block.state.IBlockState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.SoundHandler;
+import net.minecraft.client.entity.EntityOtherPlayerMP;
 import net.minecraft.client.multiplayer.PlayerControllerMP;
+import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.network.NetHandlerPlayClient;
+import net.minecraft.client.network.NetworkPlayerInfo;
 import net.minecraft.client.particle.EffectRenderer;
 import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.settings.GameSettings;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Blocks;
 import net.minecraft.init.Bootstrap;
 import net.minecraft.init.Items;
@@ -38,6 +44,8 @@ import net.minecraft.network.play.server.S30PacketWindowItems;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
+import net.minecraft.util.IntHashMap;
+import net.minecraft.world.IWorldAccess;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldProviderSurface;
 import net.minecraft.world.WorldSettings;
@@ -56,6 +64,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +74,8 @@ import java.util.UUID;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -511,6 +522,14 @@ public class RewindParityPlaybackTest {
         @Override public void openRejoin() { }
         @Override public void openGallery() { }
         @Override public void log(String line) { }
+
+        @Override
+        public void exportStart() {
+            for (PlaybackPart p : RewindPlayback.parts()) {
+                p.exportStart();
+            }
+        }
+
         @Override public float timerSpeed() { return timerSpeed; }
         @Override public void setTimerSpeed(float speed) { timerSpeed = speed; }
         @Override public int thirdPersonView() { return thirdPerson; }
@@ -1002,5 +1021,229 @@ public class RewindParityPlaybackTest {
         frame(0);
         assertFalse("nothing plays: vanilla's overlay, nothing added", HudPlayback.skipsOverlay(mc));
         assertEquals(2, p.overlays);
+    }
+
+    // ------------------------------------------------------------------ Rewind Export Phase 1: state at frame 0
+
+    /**
+     * One segment of 60 ticks 50 ms apart; 12 ms after tick 20's head, one record of each time-scoped state tag:
+     * VIEW (chat open), CHAT_INPUT, MOUSE, FOV and INPUT (W held). Keystrokes is on.
+     */
+    File writeStateRecording(File dir) throws Exception {
+        RecordingFixture.WriterRun w = new RecordingFixture.WriterRun(dir, 10_000_000L);
+        w.connect(16_384);
+        w.advance(1_000);
+        w.boundary(0, RecordingFixture.joinGame(0), 0);
+        w.open();
+        ExtCodec c = new ExtCodec();
+        c.beginSettings();
+        c.settingInt(RewindFormat.settingHudKey(RewindFormat.HUD_KEYSTROKES, RewindFormat.HUD_FIELD_ENABLED), 1);
+        ext(w, c, RewindFormat.TAG_SETTINGS, c.endSettings());
+        int pending = 1;
+        long base = w.nowUs + 10_000L;
+        for (int i = 0; i < 60; i++) {
+            w.nowUs = base + i * TICK_US;
+            ext(w, c, RewindFormat.TAG_TICK_HEAD, c.tickHead(pending));
+            pending = 0;
+            if (i == 0) {
+                w.advance(1_000);
+                ext(w, c, RewindFormat.TAG_VIEW, c.view(0, 0, RewindFormat.SCREEN_NONE));
+                ext(w, c, RewindFormat.TAG_INPUT, c.input(0));
+                ext(w, c, RewindFormat.TAG_FOV, c.fov(70f));
+                ext(w, c, RewindFormat.TAG_HUD, c.beginHud(RewindFormat.HUD_KEYSTROKES,
+                        RewindFormat.HUD_FLAG_ON_SCREEN).end());
+            }
+            if (i == 20) {
+                w.advance(12_000);
+                ext(w, c, RewindFormat.TAG_VIEW, c.view(0, 0, RewindFormat.SCREEN_CHAT));
+                ext(w, c, RewindFormat.TAG_CHAT_INPUT, c.chatInput("/fake hi", 8));
+                ext(w, c, RewindFormat.TAG_MOUSE, c.mouse(-30, 10));
+                ext(w, c, RewindFormat.TAG_FOV, c.fov(55f));
+                ext(w, c, RewindFormat.TAG_INPUT, c.input(RewindFormat.INPUT_W));
+            }
+            w.advance(1_000);
+            int n = w.enc.tick(0.1 * i, 64, 0, 0f, 0f, 0f, RewindFormat.FLAG_ON_GROUND, 1, -1, 0);
+            if (n > 0) {
+                w.track(RewindFormat.TAG_TICK, Arrays.copyOf(w.enc.buffer(), n));
+            }
+            w.advance(10_000);
+            w.step();
+        }
+        return w.close();
+    }
+
+    /** A frame with no clock help: {@code wallNs} of wall time, then the loop as {@link #frame} runs it. */
+    void frameAfter(long wallNs) {
+        ops.nanos += wallNs;
+        ops.elapsed = 0;
+        session.frameStart();
+        for (int j = 0; j < ops.elapsed; j++) {
+            session.tickHead();
+            if (mc.theWorld != null && !ops.paused && mc.thePlayer != null) {
+                mc.thePlayer.onUpdate();
+            }
+            session.tickEnd();
+        }
+        ops.paused = false;
+        session.afterPauseWrite();
+        RewindPlayback.onRenderWorld(ops.partial);
+        frames++;
+    }
+
+    /** What the time-scoped state tags show now, read where the parts read them. */
+    Map<String, String> stateTags() throws Exception {
+        Map<String, String> g = new LinkedHashMap<String, String>();
+        ViewState v = session.view();
+        g.put("view", "perspective " + v.perspective() + " screen " + v.screenKind() + " hideGui " + v.hideGui()
+                + " tab " + v.tabList());
+        g.put("fov", String.valueOf(fovPart().recorded()));
+        RecordedScreens screens = (RecordedScreens) RewindCamera.screenHolder();
+        g.put("chat", screens.chatShown() + " " + screens.chatText() + " " + screens.chatCursor());
+        g.put("cursor", screens.cursorX(427) + "," + screens.cursorY(240));
+        g.put("hud", HudPlayback.debugState());
+        return g;
+    }
+
+    /**
+     * Rewind Export PLAN Phase 1 (review B1): an export that starts 13 ms after a VIEW, CHAT_INPUT, MOUSE, FOV and
+     * INPUT record (and 25 ms after a tick) shows on frame 0 what straight play shows at that time, after a backward
+     * rebuild from further on; the records themselves are what it shows.
+     */
+    @Test
+    public void anExportsFrameZeroShowsTheStateRecordsInEffectAtItsStart() throws Exception {
+        open(writeStateRecording(tmp.newFolder("rewind")));
+        ExtRecords ext = session.recording().ext();
+        long stamp = -1;
+        for (int i = 0; i < ext.size(); i++) {
+            if (ext.tag(i) == RewindFormat.TAG_CHAT_INPUT) {
+                stamp = ext.timeUs(i);
+            }
+        }
+        long start = stamp + 13_000L;
+        TickTable table = session.timeline().ticks();
+        assertTrue("not on a tick", table.timeOf(table.tickOf(start)) != start);
+        while (session.renderTimeUs() < start) {
+            frameAfter(Math.min(16_000L, start - session.renderTimeUs()) * 1000L);
+        }
+        assertEquals(start, session.renderTimeUs());
+        Map<String, String> straight = stateTags();
+        assertEquals("perspective 0 screen " + RewindFormat.SCREEN_CHAT + " hideGui false tab false",
+                straight.get("view"));
+        assertTrue(straight.get("chat"), straight.get("chat").startsWith("true /fake hi"));
+        assertTrue(straight.get("hud"), straight.get("hud").startsWith("keys H"));
+
+        while (session.ticks().ticksRun() < 50) {
+            frame(1);
+        }
+        assertTrue(session.beginExport(new ExportPlan(start, start + 1_000_000L, 60)));
+        for (int i = 0; i < 1_000 && session.exportFrame() != 0; i++) {
+            ops.nanos += 20_000_000L; // wall time passes: the export's steps are paced to it (PLAN Revision 4.1)
+            frame(0);
+        }
+        assertEquals(0, session.exportFrame());
+        assertEquals(start, session.renderTimeUs());
+        assertEquals("frame 0 == straight play at the start", straight, stateTags());
+        session.endExport();
+        assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
+        assertEquals(0, connection.discarded());
+    }
+
+    // ------------------------------------------------------------------ D4: the ridden player leaves
+
+    static final int OTHER_ID = 4242;
+    private static final GameProfile OTHER = new GameProfile(new UUID(21L, 22L), "FakeOther");
+
+    /**
+     * Another player in the playback world, as vanilla's S0C and S38 handlers leave them: in the world's entity map
+     * and player list with a tab entry (the S0C spawn's chunk bookkeeping is left out: the test world has no chunks).
+     * The world's collections the constructor would make are made here, so vanilla's own removal can run on it.
+     */
+    private EntityOtherPlayerMP spawnOther() throws Exception {
+        BlockPredictionTest.Client.set(WorldClient.class, world, "mc", mc);
+        BlockPredictionTest.Client.set(WorldClient.class, world, "entityList", new HashSet<Entity>());
+        BlockPredictionTest.Client.set(WorldClient.class, world, "entitySpawnQueue", new HashSet<Entity>());
+        BlockPredictionTest.Client.set(World.class, world, "entitiesById", new IntHashMap<Entity>());
+        BlockPredictionTest.Client.set(World.class, world, "playerEntities", new ArrayList<EntityPlayer>());
+        BlockPredictionTest.Client.set(World.class, world, "worldAccesses", new ArrayList<IWorldAccess>());
+        EntityOtherPlayerMP p = new EntityOtherPlayerMP(world, OTHER);
+        p.setEntityId(OTHER_ID);
+        Field byId = World.class.getDeclaredField("entitiesById");
+        byId.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        IntHashMap<Entity> ids = (IntHashMap<Entity>) byId.get(world);
+        ids.addKey(OTHER_ID, p);
+        world.playerEntities.add(p);
+        Field list = WorldClient.class.getDeclaredField("entityList");
+        list.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Set<Entity> entities = (java.util.Set<Entity>) list.get(world);
+        entities.add(p);
+        Field info = NetHandlerPlayClient.class.getDeclaredField("playerInfoMap");
+        info.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<UUID, NetworkPlayerInfo> tab = (Map<UUID, NetworkPlayerInfo>) info.get(connection.handler());
+        tab.put(OTHER.getId(), new NetworkPlayerInfo(OTHER));
+        return p;
+    }
+
+    private static void assertEye(String what, RewindCamera cam, double x, double eyeY, double z, float yaw,
+                                  float pitch) {
+        assertEquals(what + " x", x, cam.posX, 1e-9);
+        assertEquals(what + " eye y", eyeY, cam.posY + cam.getEyeHeight(), 1e-9);
+        assertEquals(what + " z", z, cam.posZ, 1e-9);
+        assertEquals(what + " yaw", yaw, cam.rotationYaw, 1e-4f);
+        assertEquals(what + " pitch", pitch, cam.rotationPitch, 1e-4f);
+    }
+
+    /**
+     * TASK D4 (outcome review I1): when the ridden player leaves the world the view becomes the free camera where the
+     * ridden view was. The client path, not the model alone: key 3 ({@link RewindPlayback#cyclePlayer}) rides another
+     * player of the playback world, vanilla's S13 removal ({@code WorldClient.removeEntityFromWorld}) takes them out,
+     * and the next drawn frame ({@code RiddenView.follow} -> {@code toFree} -> {@link
+     * CameraController#selectFreeCameraAt}) is the free camera at their last eye and head turn, viewed from the
+     * camera; playback keeps running and the free camera stays there.
+     */
+    @Test
+    public void whenTheRiddenPlayerLeavesTheViewBecomesTheFreeCameraWhereItWas() throws Exception {
+        open(writeRecording(tmp.newFolder("rewind")));
+        frame(1);
+        EntityOtherPlayerMP other = spawnOther();
+        other.setPositionAndRotation(20.5, 70, -8.25, 135f, -20f);
+        RewindCamera cam = (RewindCamera) mc.thePlayer;
+
+        assertTrue("key 3 rides the other player", RewindPlayback.cyclePlayer(1));
+        assertEquals(OTHER_ID, RewindPlayback.view().riddenEntityId());
+        frame(1);
+        assertSame("vanilla views from them", other, mc.getRenderViewEntity());
+        assertEye("the camera at their eye", cam, 20.5, 70.0 + other.getEyeHeight(), -8.25, 135f, -20f);
+
+        other.setPositionAndRotation(21.0, 70.5, -9.0, 140f, -25f); // where they are last seen
+        frame(1);
+        assertEye("following them", cam, 21.0, 70.5 + (double) other.getEyeHeight(), -9.0, 140f, -25f);
+        double lastEyeY = 70.5 + (double) other.getEyeHeight();
+
+        assertSame("vanilla's S13 removal", other, world.removeEntityFromWorld(OTHER_ID));
+        assertNull("they left the world", world.getEntityByID(OTHER_ID));
+        long ticks = session.ticks().ticksRun();
+        frame(1);
+        assertTrue("the free camera", RewindPlayback.view().freeCamera());
+        assertEquals(CameraController.FREE_CAMERA, CameraController.cameraIndex());
+        assertEquals("nobody is ridden any more", -1, RewindPlayback.view().riddenEntityId());
+        assertSame("viewed from the camera again", cam, mc.getRenderViewEntity());
+        assertSame("the same camera", cam, mc.thePlayer);
+        assertEye("where the ridden view was", cam, 21.0, lastEyeY, -9.0, 140f, -25f);
+
+        for (int i = 0; i < 5; i++) {
+            frame(1);
+        }
+        assertEquals("playback keeps running", PlaybackSession.State.WATCHING, session.state());
+        assertFalse(session.ticks().paused());
+        assertEquals("a tick per frame", ticks + 6, session.ticks().ticksRun());
+        assertTrue("the free camera still", RewindPlayback.view().freeCamera());
+        assertEye("the free camera stays there", cam, 21.0, lastEyeY, -9.0, 140f, -25f);
+
+        assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
+        assertEquals("nothing reached the playback channel", 0, connection.discarded());
+        assertTrue(connection.channel().outboundMessages().isEmpty());
     }
 }

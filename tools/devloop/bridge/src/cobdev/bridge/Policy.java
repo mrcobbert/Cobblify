@@ -215,11 +215,12 @@ final class Policy {
                 return null;
             default:
                 return OVERLAY_PROBES.contains(name) || MOTION_BLUR_PROBES.contains(name)
-                        || REWIND_PROBES.contains(name) || REWIND_WATCH_PROBES.contains(name) ? null
+                        || REWIND_PROBES.contains(name) || REWIND_WATCH_PROBES.contains(name)
+                        || REWIND_EXPORT_PROBES.contains(name) ? null
                         : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
                         + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ", "
                         + String.join(", ", MOTION_BLUR_PROBES) + ", " + String.join(", ", REWIND_PROBES) + ", "
-                        + String.join(", ", REWIND_WATCH_PROBES) + ")";
+                        + String.join(", ", REWIND_WATCH_PROBES) + ", " + String.join(", ", REWIND_EXPORT_PROBES) + ")";
         }
     }
 
@@ -285,11 +286,19 @@ final class Policy {
      * chest the server filled with 54 stacks, then puts the world and the inventory back on cleanup) and
      * {@code rewind-watch-window} (while a recording plays: the held recorded screen, its slot counts and a hash of
      * the camera's inventory).
+     *
+     * <p>{@code rewind-watch-fov} (TASK C7, while a recording plays): the world FOV the frame uses, the client's FOV
+     * setting and the recording's own FOV at the playback time; {@code rewind-watch-fov set DEGREES} changes the
+     * client's FOV setting for this session only (never written to options.txt; the first value is kept) and
+     * {@code rewind-watch-fov restore} puts that value back.
      */
     static final java.util.List<String> REWIND_WATCH_PROBES = java.util.Arrays.asList("rewind-watch-swing",
             "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek", "rewind-watch-play-to",
             "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage", "rewind-watch-actions",
-            "rewind-watch-window");
+            "rewind-watch-window", "rewind-watch-fov");
+    /** Vanilla's FOV slider range, the only values {@code rewind-watch-fov set} writes. */
+    static final float FOV_MIN = 30f;
+    static final float FOV_MAX = 110f;
     /** {@code rewind-watch-actions}' one argument. */
     static final java.util.List<String> REWIND_ACTIONS = java.util.Arrays.asList("start", "status", "cleanup");
     /** The longest seek {@code rewind-watch-seek by MS} takes, either way: a day. */
@@ -316,9 +325,19 @@ final class Policy {
         throw new Refused("probe rewind-watch-seek TICK or rewind-watch-seek by MS");
     }
 
-    /** {@code rewind-watch-play-to TICK}: the tick, 0 or more. */
+    /** {@code rewind-watch-play-to TICK [1x]}: with {@code 1x} the approach plays at real speed (Rewind Export K11). */
+    static boolean rewindPlayToRealSpeed(java.util.List<String> args) {
+        if (args.size() == 2) {
+            if (!"1x".equals(args.get(1))) throw new Refused("probe rewind-watch-play-to TICK [1x]");
+            return true;
+        }
+        return false;
+    }
+
+    /** {@code rewind-watch-play-to TICK [1x]}: the tick, 0 or more. */
     static long rewindPlayTo(java.util.List<String> args) {
-        if (args.size() != 1) throw new Refused("probe rewind-watch-play-to TICK");
+        if (args.size() == 2 && rewindPlayToRealSpeed(args)) args = args.subList(0, 1);
+        if (args.size() != 1) throw new Refused("probe rewind-watch-play-to TICK [1x]");
         try {
             long t = Long.parseLong(args.get(0));
             if (t >= 0) return t;
@@ -334,6 +353,24 @@ final class Policy {
             throw new Refused("probe rewind-watch-swing ITEM (e.g. minecraft:stone_sword)");
         }
         return args.get(0);
+    }
+
+    /**
+     * {@code rewind-watch-fov}: null for a read, an empty array for {@code restore}, {DEGREES} for {@code set DEGREES}
+     * (vanilla's slider range, 30 to 110).
+     */
+    static float[] rewindFov(java.util.List<String> args) {
+        if (args.isEmpty()) return null;
+        if (args.size() == 1 && "restore".equals(args.get(0))) return new float[0];
+        if (args.size() == 2 && "set".equals(args.get(0))) {
+            try {
+                float v = Float.parseFloat(args.get(1));
+                if (v >= FOV_MIN && v <= FOV_MAX) return new float[]{v};
+            } catch (NumberFormatException ignored) {
+                // refused below
+            }
+        }
+        throw new Refused("probe rewind-watch-fov, rewind-watch-fov set DEGREES (30 to 110) or rewind-watch-fov restore");
     }
 
     /** {@code rewind-watch-actions start|status|cleanup}: the one word, else refused. */
@@ -357,6 +394,242 @@ final class Policy {
     /** Recording files {@code rewind-watch-stage} copies: a recording and its metadata, not its stats. */
     static boolean rewindStageFile(String name) {
         return rewindFile(name) && !name.endsWith(".stats.json");
+    }
+
+    // ------------------------------------------------------------------ Rewind Export (cycle 2026-11-22, Phase 2 spike)
+
+    /**
+     * Step RWX's probes (Rewind Export PLAN Phase 2). {@code rewind-export-spike ROUTE W H FPS FRAMES SETTLE START_MS
+     * HOLD_CHUNK_MS HOLD_BLOCK_MS RUN} starts an off-screen export of the recording playing (only one of cobdev's own
+     * folder), frames as PNGs plus {@code frames.json} in {@link #EXPORT_ROOT}{@code /RUN} ({@code -}: discarded);
+     * {@code -status}, {@code -cancel}; {@code -screen export|viewer} (the export screen as the real screen, for K3);
+     * {@code -gl} (sizes, GUI scale, framebuffer, viewport, vsync, frame limit: K8); {@code -shot RUN NAME} (the main
+     * framebuffer as a PNG in that folder); {@code -compare RUN_A NAME_A RUN_B NAME_B} (mean difference, and the
+     * box of differing pixels); {@code -stats RUN} (luma variance per frame and frame-to-frame difference);
+     * {@code -grid watch|log} (per drawn frame: wall time and luma-grid change, with the last ticks' wall times: K10);
+     * {@code -terrain} (the playing recording's ticks with chunk data and block changes); {@code -env} (loaded mods
+     * and the renderer config files the game wrote: K10's readiness search); {@code -clean} (toggles the clean view);
+     * {@code -ui} (Phase 7: the open Rewind screen's rects in GUI px and export mode's state, read only);
+     * {@code -helper hide|restore} (Phase 8: the next export finds no helper, then the old override is back).
+     * Counts, flags, ticks and hashes only.
+     */
+    static final java.util.List<String> REWIND_EXPORT_PROBES = java.util.Arrays.asList("rewind-export-spike",
+            "rewind-export-status", "rewind-export-cancel", "rewind-export-screen", "rewind-export-gl",
+            "rewind-export-shot", "rewind-export-compare", "rewind-export-stats", "rewind-export-grid",
+            "rewind-export-terrain", "rewind-export-env", "rewind-export-clean",
+            // Phase 5 (step RWE and the K11 rerun)
+            "rewind-export-start", "rewind-export-state", "rewind-export-live-sound", "rewind-export-chat-type",
+            "rewind-export-k11", "rewind-export-region",
+            // Phase 7 (step RWU: export mode's screens, read only)
+            "rewind-export-ui",
+            // Phase 8 (step RWU's Failed check when the game runs the jar's own helper)
+            "rewind-export-helper");
+    /** The only folder the spike writes and reads (cobdev stage creates {@code exports/} world-writable). */
+    static final String EXPORT_ROOT = "/Users/Shared/cobblify-dev/exports/spike";
+    private static final java.util.regex.Pattern EXPORT_RUN = java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9-]{0,31}$");
+    private static final java.util.List<String> EXPORT_ROUTES = java.util.Arrays.asList("own", "main", "window");
+    /** none: raw speed; rule, ready, paced: the product rule (Revision 4: real-time floor); fixed: references. */
+    private static final java.util.List<String> EXPORT_SETTLE = java.util.Arrays.asList("none", "rule", "ready", "fixed",
+            "paced");
+    private static final java.util.List<Integer> EXPORT_FPS = java.util.Arrays.asList(30, 60, 120, 240);
+
+    /** A run folder's name: lower-case letters, digits and dashes, at most 32. */
+    static String exportRun(String name) {
+        if (name == null || !EXPORT_RUN.matcher(name).matches()) {
+            return "a run name is lower-case letters, digits and dashes (at most 32)";
+        }
+        return null;
+    }
+
+    /** A picture's name inside a run folder (no extension, no path). */
+    static String exportName(String name) {
+        return exportRun(name) == null ? null : "a picture name is lower-case letters, digits and dashes";
+    }
+
+    /** The run's folder under {@link #EXPORT_ROOT}; refused for any other name. */
+    static String exportFolder(String run) {
+        Refused.check(exportRun(run));
+        return EXPORT_ROOT + "/" + run;
+    }
+
+    /**
+     * {@code rewind-export-spike}'s ten or eleven arguments: {route, w, h, fps, frames, settle, startMs, holdChunk,
+     * holdBlock, run, chat}; the eleventh is {@code chat-on} (default) or {@code chat-off}; START_MS may be
+     * {@code START_MSuUS} for a start in microseconds ({@code 2500u250}: 2,500,250 us).
+     */
+    static Object[] exportSpike(java.util.List<String> a) {
+        if (a.size() != 10 && a.size() != 11) {
+            throw new Refused("probe rewind-export-spike ROUTE W H FPS FRAMES SETTLE START_MS HOLD_CHUNK_MS HOLD_BLOCK_MS RUN"
+                    + " [chat-on|chat-off]");
+        }
+        boolean chat = true;
+        if (a.size() == 11) {
+            if (!"chat-on".equals(a.get(10)) && !"chat-off".equals(a.get(10))) throw new Refused("chat-on or chat-off");
+            chat = "chat-on".equals(a.get(10));
+        }
+        try {
+            String route = a.get(0);
+            if (!EXPORT_ROUTES.contains(route)) throw new Refused("ROUTE is own, main or window");
+            int w = Integer.parseInt(a.get(1)), h = Integer.parseInt(a.get(2));
+            if (w < 16 || h < 16 || w > 7680 || h > 4320 || (w & 1) != 0 || (h & 1) != 0) {
+                throw new Refused("W and H are even, 16 to 7680 x 4320");
+            }
+            int fps = Integer.parseInt(a.get(3));
+            if (!EXPORT_FPS.contains(fps)) throw new Refused("FPS is 30, 60, 120 or 240");
+            int frames = Integer.parseInt(a.get(4));
+            if (frames < 1 || frames > 14_400) throw new Refused("FRAMES is 1 to 14400");
+            String settle = a.get(5);
+            if (!EXPORT_SETTLE.contains(settle)) throw new Refused("SETTLE is none, rule, ready or fixed");
+            String st = a.get(6);
+            long startUs;
+            if (st.matches("\\d{1,9}u\\d{1,3}")) {
+                startUs = Long.parseLong(st.substring(0, st.indexOf('u'))) * 1000L
+                        + Long.parseLong(st.substring(st.indexOf('u') + 1));
+            } else {
+                startUs = Long.parseLong(st) * 1000L;
+            }
+            long start = startUs / 1000L;
+            if (start < 0 || start > REWIND_MAX_SEEK_MS) throw new Refused("START_MS is 0 to a day");
+            long chunk = Long.parseLong(a.get(7)), block = Long.parseLong(a.get(8));
+            if (chunk < 0 || block < 0 || chunk > 2000 || block > 2000) throw new Refused("holds are 0 to 2000 ms");
+            String run = a.get(9);
+            if (!"-".equals(run)) Refused.check(exportRun(run));
+            return new Object[]{route, w, h, fps, frames, settle, start, chunk, block, run, chat, startUs};
+        } catch (NumberFormatException e) {
+            throw new Refused("rewind-export-spike takes whole numbers");
+        }
+    }
+
+    // ------------------------------------------------------------------ Rewind Export Phase 5 (step RWE, K11)
+
+    /** Where the dev client's exports go: {@code -Dcobblify.exportDir} must point inside it. */
+    static final String EXPORTS_DIR = "/Users/Shared/cobblify-dev/exports";
+    private static final java.util.List<String> START_KEYS = java.util.Arrays.asList("startUs", "endUs", "width",
+            "height", "fps", "quality", "codec", "chat", "route", "helper");
+
+    /**
+     * {@code rewind-export-start JSON}: an export of the recording playing to the dev client's own export folder. Only
+     * in a game whose {@code -Dcobblify.exportDir} lies inside {@link #EXPORTS_DIR} (cobdev stage sets it), so a probe
+     * never writes into the player's Movies folder. JSON: one flat object; {@code startUs}, {@code endUs} (from the
+     * timeline's first tick, end after start, at most 10 minutes), {@code width} and {@code height} (even, 128 to
+     * 7680 x 4320; or {@code height} alone, one of 720/1080/1440/2160), {@code fps} (30/60/120/240), {@code quality}
+     * (standard/high/max), {@code codec} (h264/hevc), {@code chat} (true/false), {@code route} (own/window),
+     * {@code helper} (jar/missing). Returns {startUs, endUs, width, height, fps, quality, codec, chat, route, helper}.
+     */
+    static Object[] exportStart(String json, String exportDirProperty) {
+        if (exportDirProperty == null || !exportDirProperty.startsWith(EXPORTS_DIR + "/")
+                || exportDirProperty.contains("/../") || exportDirProperty.endsWith("/..")) {
+            throw new Refused("rewind-export-start needs -Dcobblify.exportDir inside " + EXPORTS_DIR + " (cobdev stage)");
+        }
+        java.util.Map<String, String> m = flatJson(json);
+        for (String k : m.keySet()) {
+            if (!START_KEYS.contains(k)) throw new Refused("unknown key " + k);
+        }
+        try {
+            long start = Long.parseLong(req(m, "startUs"));
+            long end = Long.parseLong(req(m, "endUs"));
+            if (start < 0 || end <= start || end - start > 600_000_000L || start > REWIND_MAX_SEEK_MS * 1000L) {
+                throw new Refused("startUs >= 0, endUs after it, at most 10 minutes");
+            }
+            int h = Integer.parseInt(req(m, "height"));
+            int w = m.containsKey("width") ? Integer.parseInt(m.get("width")) : 0;
+            if (w == 0 && !java.util.Arrays.asList(720, 1080, 1440, 2160).contains(h)) {
+                throw new Refused("height alone is 720, 1080, 1440 or 2160");
+            }
+            if (w != 0 && (w < 128 || h < 128 || w > 7680 || h > 4320 || (w & 1) != 0 || (h & 1) != 0)) {
+                throw new Refused("width and height are even, 128 to 7680 x 4320");
+            }
+            int fps = Integer.parseInt(req(m, "fps"));
+            if (!EXPORT_FPS.contains(fps)) throw new Refused("fps is 30, 60, 120 or 240");
+            String q = m.getOrDefault("quality", "high");
+            if (!java.util.Arrays.asList("standard", "high", "max").contains(q)) throw new Refused("quality");
+            String codec = m.getOrDefault("codec", "h264");
+            if (!"h264".equals(codec) && !"hevc".equals(codec)) throw new Refused("codec is h264 or hevc");
+            String chat = m.getOrDefault("chat", "true");
+            if (!"true".equals(chat) && !"false".equals(chat)) throw new Refused("chat is true or false");
+            String route = m.getOrDefault("route", "own");
+            if (!"own".equals(route) && !"window".equals(route)) throw new Refused("route is own or window");
+            String helper = m.getOrDefault("helper", "jar");
+            if (!"jar".equals(helper) && !"missing".equals(helper)) throw new Refused("helper is jar or missing");
+            return new Object[]{start, end, w, h, fps, q, codec, "true".equals(chat), route, helper};
+        } catch (NumberFormatException e) {
+            throw new Refused("rewind-export-start takes whole numbers");
+        }
+    }
+
+    private static String req(java.util.Map<String, String> m, String k) {
+        String v = m.get(k);
+        if (v == null) throw new Refused("missing " + k);
+        return v;
+    }
+
+    /** One flat JSON object of strings, whole numbers and booleans, else refused. */
+    static java.util.Map<String, String> flatJson(String json) {
+        if (json == null) throw new Refused("no JSON");
+        String t = json.trim();
+        if (!t.startsWith("{") || !t.endsWith("}")) throw new Refused("a JSON object");
+        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+        java.util.regex.Matcher pair = java.util.regex.Pattern.compile(
+                "\\s*\"([A-Za-z]+)\"\\s*:\\s*(\"([a-z0-9]*)\"|(-?\\d{1,12})|(true|false))\\s*(,|$)")
+                .matcher(t.substring(1, t.length() - 1));
+        int at = 0;
+        String body = t.substring(1, t.length() - 1);
+        while (at < body.length()) {
+            if (!pair.find(at) || pair.start() != at) throw new Refused("flat JSON only (strings, numbers, booleans)");
+            String v = pair.group(3) != null ? pair.group(3) : pair.group(4) != null ? pair.group(4) : pair.group(5);
+            if (m.put(pair.group(1), v) != null) throw new Refused("duplicate key " + pair.group(1));
+            at = pair.end();
+        }
+        return m;
+    }
+
+    /**
+     * {@code rewind-export-chat-type type TEXT} (a test string for the fixture's typed chat, lower-case words only) or
+     * {@code rewind-export-chat-type close} (closes vanilla's chat without sending): the text, or null for close.
+     */
+    static String exportChatText(java.util.List<String> args) {
+        if (args.size() == 1 && "close".equals(args.get(0))) {
+            return null;
+        }
+        if (args.size() != 2 || !"type".equals(args.get(0)) || args.get(1) == null
+                || !args.get(1).matches("[a-z0-9 ]{1,40}")) {
+            throw new Refused("probe rewind-export-chat-type type TEXT (lower-case letters, digits, spaces; at most 40)"
+                    + " | close");
+        }
+        return args.get(1);
+    }
+
+    /** {@code rewind-export-region RUN_A NAME_A RUN_B NAME_B X0 Y0 X1 Y1}: the box, top-left origin, inclusive. */
+    static int[] exportRegion(java.util.List<String> a) {
+        if (a.size() != 8) throw new Refused("probe rewind-export-region RUN_A NAME_A RUN_B NAME_B X0 Y0 X1 Y1");
+        Refused.check(exportRun(a.get(0)));
+        Refused.check(exportName(a.get(1)));
+        Refused.check(exportRun(a.get(2)));
+        Refused.check(exportName(a.get(3)));
+        try {
+            int[] r = {Integer.parseInt(a.get(4)), Integer.parseInt(a.get(5)), Integer.parseInt(a.get(6)),
+                    Integer.parseInt(a.get(7))};
+            if (r[0] < 0 || r[1] < 0 || r[2] < r[0] || r[3] < r[1] || r[2] > 8191 || r[3] > 8191) {
+                throw new Refused("a box inside the picture");
+            }
+            return r;
+        } catch (NumberFormatException e) {
+            throw new Refused("the box takes whole numbers");
+        }
+    }
+
+    /** {@code rewind-export-k11 RUN_X J0 RUN_REF K}: frame j0 of RUN_X against RUN_REF's frames 0..K+1. */
+    static Object[] exportK11(java.util.List<String> a) {
+        if (a.size() != 4) throw new Refused("probe rewind-export-k11 RUN_X J0 RUN_REF K");
+        Refused.check(exportRun(a.get(0)));
+        Refused.check(exportRun(a.get(2)));
+        try {
+            int j0 = Integer.parseInt(a.get(1)), k = Integer.parseInt(a.get(3));
+            if (j0 < 1 || j0 > 14_400 || k < 1 || k > 60) throw new Refused("J0 1 to 14400, K 1 to 60");
+            return new Object[]{a.get(0), j0, a.get(2), k};
+        } catch (NumberFormatException e) {
+            throw new Refused("rewind-export-k11 takes whole numbers");
+        }
     }
 
     // ------------------------------------------------------------------ Motion Blur (cycle 2026-11-17)

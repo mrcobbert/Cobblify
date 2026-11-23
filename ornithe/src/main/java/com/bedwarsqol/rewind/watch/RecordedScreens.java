@@ -1,6 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportLayers;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
@@ -26,6 +27,8 @@ import net.minecraft.util.IChatComponent;
 import net.minecraft.world.IInteractionObject;
 import net.minecraft.world.WorldSettings;
 import org.lwjgl.opengl.GL11;
+
+import java.util.Set;
 
 /**
  * Recorded screens (PLAN "Recorded screens", Phase 9; TASK B9, B10, B13; coordinator amendment 2): the chest and shop
@@ -109,6 +112,14 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
 
         /** The segment of the tick the picture shows ({@code TickTable.segment}; -1 unknown). */
         int segment();
+
+        /**
+         * The layers an export frame asks for ({@link ExportLayers}), or null when this frame is not an export frame
+         * (watching draws everything as recorded).
+         */
+        default Set<ExportLayers.Layer> exportLayers() {
+            return null;
+        }
     }
 
     private static final Context SESSION = new Context() {
@@ -173,6 +184,11 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
         public int segment() {
             return ViewPart.segmentNow(RewindPlayback.session());
         }
+
+        @Override
+        public Set<ExportLayers.Layer> exportLayers() {
+            return com.bedwarsqol.rewind.export.RewindExport.frameLayers();
+        }
     };
 
     private static final RecordedScreens INSTANCE = new RecordedScreens(SESSION);
@@ -195,7 +211,8 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
     private RewindCamera inventoryOwner;
     private long inventorySinceUs;
     /** v2: the chat input bar while the recorded screen is chat. */
-    private final ChatBar chatBar = new ChatBar();
+    /** The recorded chat input bar (a test counts its draws). */
+    ChatBar chatBar = new ChatBar();
 
     RecordedScreens(Context context) {
         this.context = context;
@@ -421,7 +438,7 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
             }
             s.drawScreen(x, y, partial);
         } else {
-            chatBar.draw(chatField(width, height), width, height, chatBlinkTicks());
+            drawChatInput(width, height);
         }
         if (x != OFF_SCREEN && y != OFF_SCREEN) {
             CursorPainter.draw(cursorGuiX(width), cursorGuiY(height), new ScaledResolution(mc).getScaleFactor());
@@ -431,6 +448,19 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
         GlStateManager.disableLighting();
         GlStateManager.color(1f, 1f, 1f, 1f);
         GlStateManager.clear(GL11.GL_DEPTH_BUFFER_BIT);
+    }
+
+    /**
+     * The recorded chat input bar with its typed text, unless this is an export frame with Chat off (Rewind Export
+     * review I4, TASK P5: the typed text is private player data). @return true if it was drawn
+     */
+    boolean drawChatInput(int width, int height) {
+        Set<ExportLayers.Layer> layers = context.exportLayers();
+        if (layers != null && !layers.contains(ExportLayers.Layer.CHAT_INPUT)) {
+            return false;
+        }
+        chatBar.draw(chatField(width, height), width, height, chatBlinkTicks());
+        return true;
     }
 
     /**
@@ -823,7 +853,7 @@ public final class RecordedScreens implements RecordedScreenHolder, PlaybackPart
      * the field is given the recorded text again every frame. One field per recorded chat, so its scroll follows the
      * typing as vanilla's did; the cursor blinks on the recorded ticks.
      */
-    static final class ChatBar {
+    static class ChatBar {
         private GuiTextField field;
         private Object font;
         private int width;

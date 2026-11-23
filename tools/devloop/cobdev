@@ -467,6 +467,25 @@ def newest_release_jar(wt):
     return max(jars, key=os.path.getmtime)
 
 
+# Rewind Export Phase 2 (RWX): the game (the user's account) writes the spike's pictures here; world-writable so the
+# agent can read and delete what it wrote (bridge Policy.EXPORT_ROOT).
+EXPORTS = os.path.join(SHARED, "exports")
+
+
+# Rewind Export Phase 5 (RWE): the dev client's own export folder (-Dcobblify.exportDir) and its copy of the helper
+# (-Dcobblify.encodeHelper), staged from encoder/dist/ (bash encoder/build.sh).
+RWE_DIR = os.path.join(EXPORTS, "rwe")
+
+
+def make_exports_dir():
+    for d in (EXPORTS, os.path.join(EXPORTS, "spike"), RWE_DIR):
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.chmod(d, 0o777)
+        except OSError:
+            pass  # made by the game: already open
+
+
 def cmd_stage(args, wt=None):
     wt = wt or worktree(args)
     require_setup()
@@ -487,6 +506,7 @@ def cmd_stage(args, wt=None):
     runtime = os.path.join(SHARED, "runtimes", name)
     launch = os.path.join(runtime, "launch")
     os.makedirs(launch, mode=0o755)
+    make_exports_dir()
     m = Mapper(wt, runtime)
 
     dli = [a for a in dump["jvmArgs"] if a.startswith("-Dfabric.dli.config=")]
@@ -500,7 +520,13 @@ def cmd_stage(args, wt=None):
     copy_file(AGENT_JAR, agent)
     bridge = os.path.join(runtime, "bridge", "cobdev-bridge.jar")
     copy_file(dump["bridgeJar"], bridge)
-    common = launch_flags(agent, mode)
+    if mode == "prod" and jar_has_encode_helper(dump["releaseJar"]):
+        # As a release runs it: no override; the game unpacks the jar's helper to ~/.cobblify/bin (TASK B2).
+        helper = None
+        print("note: the release jar carries the encoder helper; prod uses it (no -Dcobblify.encodeHelper)")
+    else:
+        helper = stage_encode_helper(wt, runtime)
+    common = launch_flags(agent, mode, helper)
 
     if mode == "dev":
         # Pylon replaces LWJGL 2 (its jar carries the LWJGL 2 API on LWJGL 3 + SDL3); keeping both on the
@@ -578,10 +604,37 @@ def cmd_stage(args, wt=None):
     print("staged %s (%s, %s mode) in %.0fs" % (branch, os.path.basename(wt), mode, time.time() - started))
 
 
-def launch_flags(agent, mode):
-    """The JVM flags every staged runtime starts with (both modes)."""
+def launch_flags(agent, mode, helper=None):
+    """The JVM flags every staged runtime starts with (both modes): its own Rewind folder, its own export folder and,
+    when encoder/dist/ holds one, its own copy of the encoder helper."""
     return (["-Xms512M", "-Xmx2G"] + MAC_FLAGS + JAVA25_FLAGS
-            + ["-javaagent:" + agent, "-Dcobdev.mode=" + mode, "-Dcobblify.rewindDir=" + REWIND_DIR])
+            + ["-javaagent:" + agent, "-Dcobdev.mode=" + mode, "-Dcobblify.rewindDir=" + REWIND_DIR,
+               "-Dcobblify.exportDir=" + RWE_DIR]
+            + (["-Dcobblify.encodeHelper=" + helper] if helper else []))
+
+
+def stage_encode_helper(wt, runtime):
+    """encoder/dist/cobblify-encode into the runtime (world-readable, executable), or None when it was not built."""
+    src = os.path.join(wt, "encoder", "dist", "cobblify-encode")
+    if not os.path.isfile(src):
+        print("note: encoder/dist/cobblify-encode missing (bash encoder/build.sh): exports will fail as helper-missing")
+        return None
+    dst = os.path.join(runtime, "bin", "cobblify-encode")
+    copy_file(src, dst)
+    os.chmod(dst, 0o755)
+    return dst
+
+
+ENCODE_HELPER_ENTRY = "com/bedwarsqol/rewind/export/helper/cobblify-encode"
+
+
+def jar_has_encode_helper(path):
+    """The jar holds the Mac encoder helper and its properties (ornithe/build.gradle.kts, PLAN D1)."""
+    if not path or not os.path.isfile(path):
+        return False
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+    return ENCODE_HELPER_ENTRY in names and ENCODE_HELPER_ENTRY + ".properties" in names
 
 
 def prune_runtimes():
@@ -4973,16 +5026,20 @@ def rww_seek(s, *args):
     return rww_wait(s)
 
 
+RWW_COUNTER_SLACK_TICKS = 60  # 3 s of title-screen ticks around the open and the quit
+
+
 def smoke_rewind_watch(s):
     """RWW (PLAN Phase 7): watch the single-player recording RW just made, in cobdev's own folder.
     1 open: WATCHING, gate on, failures 0, your view; 2 free camera moves while paused; 3 straight play, a forward
     seek and a backward seek to the same tick K give equal hashes in every contract group (the seven of R2 and Rewind
     parity's view, window, dig and HUD groups) and the recorded HUD shows at K; 3b your view's hand
     at the recorded swing, none of it in the free camera; 3c (rww_parity) the recorded F5 and the double chest RW's
-    actions opened, 54 slots filled from its first tick; 4 Quit to Title restores what playback changed and leaves
-    no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
+    actions opened, 54 slots filled from its first tick; 3d (rww_fov) your view's world FOV is the recorded FOV with
+    the client's FOV setting changed, and the setting is put back; 4 Quit to Title restores what playback changed
+    and leaves no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
     watching (every rebuild's join adds its own client settings and brand, nothing else)."""
-    s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, exit)")
+    s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, FOV, exit)")
     pre, err = s.try_call("/probe", post={"name": "rewind-watch-state", "args": ""})
     if pre is None:
         return s.unavailable("the running bridge has no rewind-watch probes (stage a build with them): %s" % err)
@@ -5071,6 +5128,9 @@ def smoke_rewind_watch(s):
         # 3c (Rewind parity Phase 16) the recorded F5 and the double chest RW's actions opened
         rww_parity(s, st, end)
 
+        # 3d (TASK C7) your view's world FOV is the recorded one, whatever the client's FOV setting
+        rww_fov(s, end)
+
         # 4 Quit to Title
         s.probe("rewind-watch-quit")
         st = rww_wait(s, 30)
@@ -5080,8 +5140,14 @@ def smoke_rewind_watch(s):
                 {"title": title, "state": st.get("state")})
         restored = {key: [pre.get(key), st.get(key)] for key in ("timerSpeed", "thirdPersonView", "chatLines",
                                                                     "updateCounter")}
-        s.check("4 timer speed, F5 view, chat lines and update counter are back", all(
-            v[0] == v[1] for v in restored.values()), restored)
+        # The update counter ticks on the title screen too, so it moves between this step's first probe and the
+        # open, and again after the quit: "back" is the value before, plus those few ticks (never playback's own
+        # count, which starts at 0).
+        counter = restored["updateCounter"]
+        counter_back = (isinstance(counter[0], int) and isinstance(counter[1], int)
+                        and 0 <= counter[1] - counter[0] <= RWW_COUNTER_SLACK_TICKS)
+        s.check("4 timer speed, F5 view, chat lines and update counter are back", counter_back and all(
+            v[0] == v[1] for key, v in restored.items() if key != "updateCounter"), restored)
         after = (s.probe("rewind-latest") or {}).get("closed")
         s.check("4 watching recorded nothing", after == files_before, {"before": files_before, "after": after})
     finally:
@@ -5113,6 +5179,73 @@ def rww_parity(s, st, end):
             {"held": inside.get("held"), "slots": inside.get("slots"), "ownFilled": inside.get("ownFilled"),
              "inventorySame": inside.get("inventory") == before.get("inventory")})
     s.shot("rww-double-chest", wait=500)
+
+
+# RWW 3d (TASK C7): the FOV settings tried, inside vanilla's slider (30 to 110), and how far from both the recorded FOV
+# and the player's own setting the one used must be, so an equal world FOV cannot be the setting showing through.
+RWW_FOV_CHOICES = (110.0, 30.0, 50.0, 90.0)
+RWW_FOV_GAP = 15.0
+RWW_FOV_TOLERANCE = 0.01  # degrees; the recorded value is returned as it was read, so it is exact in practice
+
+
+def rww_fov_setting(recorded, own):
+    """The FOV setting 3d uses: the first choice at least RWW_FOV_GAP degrees from the recorded FOV and from the
+    player's own setting (else the choice farthest from both)."""
+    for c in RWW_FOV_CHOICES:
+        if abs(c - recorded) >= RWW_FOV_GAP and abs(c - own) >= RWW_FOV_GAP:
+            return c
+    return max(RWW_FOV_CHOICES, key=lambda c: min(abs(c - recorded), abs(c - own)))
+
+
+def rww_num(x):
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
+def rww_fov(s, end):
+    """RWW 3d (TASK C7): at a tick after RW's FOV record (extFov=1), with the client's FOV setting changed to a value
+    far from the recorded FOV, your view's world FOV (getFOVModifier's world pass with every injector) equals the
+    recorded FOV, read by the bridge from the recording's own FOV records; in the free camera it follows the setting
+    instead (so the probe reads the live value). The client's own setting is put back whatever happens."""
+    first = s.probe("rewind-watch-fov")
+    own = rww_num(first.get("setting"))
+    tick = rww_num(first.get("firstFovTick"))
+    if tick is not None and tick >= 0:
+        rww_seek(s, min(end, tick + 1))
+    at = s.probe("rewind-watch-fov")
+    recorded = rww_num(at.get("recorded"))
+    if not s.check("3d RW recorded a FOV and your view is past it (one sample, not between two)",
+                   tick is not None and tick >= 0 and recorded is not None and own is not None
+                   and at.get("interpolating") is False and at.get("camera") == "YOU",
+                   {k: at.get(k) for k in ("firstFovTick", "fovRecords", "playhead", "recorded", "interpolating",
+                                           "camera", "setting")}):
+        return
+    changed = rww_fov_setting(recorded, own)
+    try:
+        s.probe("rewind-watch-fov", "set", changed)
+        time.sleep(0.3)  # a few frames drawn with the new setting
+        mine = s.probe("rewind-watch-fov")
+        applied = rww_num(mine.get("applied"))
+        s.check("3d the client's FOV setting is changed to differ from the recorded FOV",
+                close_enough(rww_num(mine.get("setting")), changed, 1e-3) and abs(changed - recorded) >= RWW_FOV_GAP,
+                {"own": own, "setting": mine.get("setting"), "recorded": recorded})
+        s.check("3d your view: the world FOV is the recorded FOV, not the client's setting",
+                mine.get("camera") == "YOU" and close_enough(applied, recorded, RWW_FOV_TOLERANCE),
+                {"applied": applied, "recorded": mine.get("recorded"), "setting": mine.get("setting"),
+                 "playhead": mine.get("playhead"), "camera": mine.get("camera")})
+        s.call("/key", {"code": KEYS["2"]})
+        time.sleep(0.3)
+        free = s.probe("rewind-watch-fov")
+        free_applied = rww_num(free.get("applied"))
+        s.check("3d free camera: the world FOV follows the client's setting, not the recording",
+                free.get("camera") == "FREE" and free_applied is not None and abs(free_applied - recorded) > 1.0,
+                {"applied": free_applied, "recorded": recorded, "setting": free.get("setting"),
+                 "camera": free.get("camera")})
+        s.call("/key", {"code": KEYS["1"]})
+    finally:
+        back, err = s.try_call("/probe", post={"name": "rewind-watch-fov", "args": "restore"})
+        s.check("3d the client's FOV setting is put back",
+                back is not None and rww_num(back.get("setting")) == own,
+                {"own": own, "now": back.get("setting") if back else None, "error": err})
 
 
 def smoke_rewind_timings(s):
@@ -5165,6 +5298,1217 @@ def smoke_rewind_timings(s):
             s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
             rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
         s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+
+
+# Rewind Export Phase 2 (cycle 2026-11-22-rewind-export, PLAN Phase 2 step RWX): the off-screen spike. The bridge's
+# rewind-export-* probes write PNGs into SHARED/exports/spike/<run> (the game's account) and compare them in the game;
+# replies are counts, means, boxes and ticks. Checks K1-K10 of PLAN Phase 2.
+REWIND_EXPORT = "com.bedwarsqol.rewind.export.RewindExport"
+RWX_W, RWX_H, RWX_FPS = 1920, 1080, 60
+RWX_REFRESH_MS = (1000 / 60.0, 1000 / 120.0, 1000 / 144.0)  # display refresh intervals a mean must not sit at (K9)
+RWX_CHUNK_SAMPLES = 14
+RWX_MEASURE_S = 2.2
+
+
+def rwx_status(s):
+    """rewind-export-status with its "export" object parsed (the bridge passes RewindExport's JSON as text)."""
+    st = s.peek("rewind-export-status") or {}
+    ex = st.get("export")
+    if isinstance(ex, str):
+        try:
+            st["export"] = json.loads(ex)
+        except ValueError:
+            st["export"] = {}
+    return st
+
+
+def rwx_wait_export(s, timeout=600):
+    """Polls rewind-export-status until the export finished and its frames.json is saved (or discarded)."""
+    deadline = time.time() + timeout
+    st = {}
+    while time.time() < deadline:
+        st = rwx_status(s)
+        ex = st.get("export") or {}
+        if not ex.get("active") and ex.get("outcome") and (st.get("saved") or st.get("queued", 0) == 0
+                                                             and "written" not in st):
+            break
+        time.sleep(0.25)
+    s.step["commands"].append({"call": "/probe rewind-export-status (last poll)", "result": st})
+    return st
+
+
+def rwx_spike(s, run, w, h, fps, frames, settle, start_ms, hold_chunk=0, hold_block=0, timeout=900):
+    """One export; returns (status, frames.json lines or [])."""
+    s.probe("rewind-export-spike", "own", w, h, fps, frames, settle, int(start_ms), int(hold_chunk), int(hold_block),
+            run)
+    st = rwx_wait_export(s, timeout)
+    lines = []
+    if run != "-":
+        path = os.path.join(EXPORTS, "spike", run, "frames.json")
+        for _ in range(40):
+            if os.path.isfile(path):
+                break
+            time.sleep(0.25)
+            rwx_status(s)
+        try:
+            with open(path) as f:
+                lines = [l for l in json.load(f).get("lines", []) if isinstance(l, dict)]
+        except (OSError, ValueError):
+            lines = []
+    return st.get("export") or {}, lines
+
+
+RWX_K7_KEYS = ("i", "P", "ticks", "partial", "pose", "hud", "view", "screen")
+
+
+def rwx_k7(a, b):
+    """The frames whose K7 fields differ between two runs' frame logs ([] when equal; lengths must match)."""
+    if len(a) != len(b) or not a:
+        return ["length %d vs %d" % (len(a), len(b))]
+    return [x.get("i") for x, y in zip(a, b) if any(x.get(k) != y.get(k) for k in RWX_K7_KEYS)]
+
+
+def rwx_latency(log, tick):
+    """K10: (L in ms from the tick's end to the last draw whose grid changed, still changing in the last 200 ms of
+    the window) from a rewind-export-grid log; None when the tick's end is not in the log."""
+    t0 = None
+    for ms, run in log.get("ticks") or []:
+        if run == tick:
+            t0 = ms
+    if t0 is None:
+        return None, False
+    frames = [(ms, d) for ms, d in log.get("frames") or [] if ms >= t0]
+    changed = [ms for ms, d in frames if d > 0]
+    last = max(changed) if changed else t0
+    end = frames[-1][0] if frames else t0
+    return last - t0, bool(changed) and end - last < 200
+
+
+def rwx_median(xs):
+    xs = sorted(xs)
+    return None if not xs else xs[len(xs) // 2] if len(xs) % 2 else (xs[len(xs) // 2 - 1] + xs[len(xs) // 2]) / 2.0
+
+
+def smoke_rewind_export(s, cfg, mode):
+    """RWX (Rewind Export PLAN Phase 2): record a fixture in the smoke world (a turn, blocks placed and broken in view,
+    a 200-block teleport), watch it, then export it off-screen and check K1-K10."""
+    s.begin("RWX", "Rewind Export spike: complete off-screen frames (K1-K10)")
+    if not cfg or not s.has(REWIND_EXPORT, "capture"):
+        return s.unavailable(REWIND_EXPORT + " is not in this build")
+    on, rec, fps_on = cfg + ".rewind", cfg + ".rewindRecordGames", cfg + ".fpsEnabled"
+    was = s.field(on).get("value"), s.field(rec).get("value"), s.field(fps_on).get("value")
+    opened = False
+    results = s.step.setdefault("results", {})
+    try:
+        # 1 the fixture recording
+        s.field(on, True)
+        s.field(rec, True)
+        s.field(fps_on, True)  # one Cobblify HUD item in the frame
+        tu_reopen_world(s)
+        s.check("cobdev's own Rewind folder starts empty", s.probe("rewind-clear").get("left") == 0)
+        s.cmd("/gamerule doDaylightCycle false")
+        s.cmd("/time set 6000")
+        s.cmd("/gamemode 0")
+        s.cmd("/tp @p 0.5 4 0.5 0 0")
+        s.probe("rewind-watch-swing", RWW_ITEM)
+        time.sleep(1.0)
+        s.probe("mb-turn", -30, 30, 60)  # 1 s of turning: frames that differ (K2)
+        time.sleep(1.1)
+        s.probe("mb-pose", 0, 0)
+        for dx, dy, block in ((0, 0, "minecraft:wool"), (1, 0, "minecraft:wool"), (-1, 1, "minecraft:stone"),
+                              (0, 0, "minecraft:air"), (1, 0, "minecraft:air"), (-1, 1, "minecraft:air")):
+            s.probe("block", dx, dy, 3, block)  # in view, 3 ahead: S23 block changes (0x23)
+            time.sleep(0.5)
+        time.sleep(2.0)  # still: K3/K4/K6 moment
+        s.cmd("/tp @p ~200 ~ ~")  # new chunks (0x21/0x26)
+        time.sleep(4.0)
+        s.cmd("/tp @p ~-200 ~ ~")
+        time.sleep(1.5)
+        s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
+        s.cmd("/gamemode 1")
+        s.call("/world", {"leave": "1"}, timeout=90)
+        r = rewind_latest(s)
+        if not s.check("the fixture recording closed and passes RewindCheck", r.get("found") and r.get("pass"),
+                       r.get("line")):
+            return
+
+        # 2 watch it
+        s.probe("rewind-watch-open")
+        opened = True
+        st = rww_wait(s, 60)
+        if not s.check("the fixture opens to WATCHING", st.get("state") == "WATCHING", st.get("state")):
+            return
+        if not st.get("paused"):
+            s.call("/key", {"code": KEYS["space"]})
+        start = st.get("startTick", 0)
+        env = s.probe("rewind-export-env")  # K10 search: loaded mods, renderer config files the game wrote
+        results["env"] = {"mods": [m for m in env.get("mods") or [] if not m.startswith(("io_netty", "osl-"))],
+                          "rendererConfigs": env.get("rendererConfigs")}
+        ter = s.probe("rewind-export-terrain")
+        chunk, block = ter.get("chunk") or [], ter.get("block") or []
+        s.note("terrain ticks (ticks run after them)", {"start": start, "chunk": len(chunk), "block": block[:12],
+                                                         "firstChunk": chunk[:3]})
+        if not s.check("the fixture holds block changes and chunk data", block and chunk,
+                       {"block": len(block), "chunk": len(chunk)}):
+            return
+        first_block, last_block = block[0], block[-1]
+        tp_tick = min([c for c in chunk if c > last_block] or [chunk[-1]])
+        tick_ms = lambda k: (k - start) * 50
+        move_ms = max(0, tick_ms(first_block) - 1500)  # the turn ends about 0.6 s before the first block change
+        still_ms = tick_ms(last_block) + 1500  # after the last change, before the teleport
+
+        x_tick = first_block - 30
+        gl_before = s.probe("rewind-export-gl")
+
+        # K10 measure: latency per packet class on the window path (export screen: no chrome animating)
+        renderer_ready = mode == "dev"
+        lat = {"chunk": [], "block": []}
+        late = []
+        samples = sorted(set(block + [c for c in chunk if c >= tp_tick][:RWX_CHUNK_SAMPLES]))
+        rww_seek(s, samples[0] - 2)
+        s.probe("rewind-export-screen", "export")  # after the seek: a backward seek ends on the viewer
+        # A backward seek rebuilds the whole world: wait until the picture has not changed for 1.5 s (at most 30 s),
+        # so the first sample measures its own tick, not the rebuild.
+        quiet = None
+        for _ in range(20):
+            s.peek("rewind-export-grid", "watch")
+            time.sleep(1.5)
+            log = s.peek("rewind-export-grid", "log") or {}
+            quiet = not any(d > 0 for _, d in log.get("frames") or [])
+            if quiet:
+                break
+        s.note("K10 the rebuilt world was still before the first sample", quiet)
+        for k in samples:
+            s.peek("rewind-export-grid", "watch")
+            s.probe("rewind-watch-play-to", k)
+            rww_wait(s, 30)
+            time.sleep(RWX_MEASURE_S)
+            log = s.peek("rewind-export-grid", "log") or {}
+            L, still = rwx_latency(log, k)
+            if L is None:
+                s.note("K10 tick %d: its end was not logged" % k)
+                continue
+            for cls, ticks in (("chunk", chunk), ("block", block)):
+                if k in ticks:
+                    lat[cls].append(L)
+            if still:
+                late.append(k)
+        table = {cls: {"n": len(v), "max": max(v) if v else None, "median": rwx_median(v)} for cls, v in lat.items()}
+        results["latencyMs"] = table
+        results["stillChangingAt2s"] = late
+        s.note("K10 L per packet class (ms, window path, %s)" % mode, table)
+        draw_ms = 1000.0 / max(1, (s.peek("rewind-export-gl") or {}).get("fps") or 60)
+        holds = {cls: (0 if (t["max"] or 0) <= draw_ms else max(50, 2 * t["max"])) for cls, t in table.items()}
+        results["holdMsUncapped"] = dict(holds)
+        holds = {cls: min(int(v), 2000) for cls, v in holds.items()}  # the settle cap (SettleRule.CAP_MS)
+        results["holdMs"] = holds
+        s.check("K10 L under 1 s and no tick still changing at the 2 s mark",
+                all((t["max"] or 0) <= 1000 for t in table.values()) and not late, {"table": table, "late": late})
+
+        # K1/K2/K4/K5/K7: the moving stretch at 1080p60, twice
+        settle = "ready" if renderer_ready else "rule"
+        hc, hb = holds["chunk"], holds["block"]
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        s.probe("rewind-export-spike", "own", RWX_W, RWX_H, RWX_FPS, 60, settle, move_ms, hc, hb, "move-a")
+        time.sleep(1.0)
+        k5 = s.probe("rewind-export-shot", "k5", "mid")  # mid-spike: the window must be black
+        st_a = rwx_wait_export(s, 900).get("export") or {}
+        lines_a = []
+        try:
+            with open(os.path.join(EXPORTS, "spike", "move-a", "frames.json")) as f:
+                lines_a = [l for l in json.load(f).get("lines", []) if isinstance(l, dict)]
+        except (OSError, ValueError):
+            pass
+        stats = s.probe("rewind-export-stats", "move-a")
+        sizes = sorted(set(e.get("size") for e in stats.get("each") or []))
+        win = (s.status() or {}).get("display")
+        s.check("K1 every PNG is 1920x1080 while the window is %s" % win,
+                sizes == ["1920x1080"] and stats.get("frames") == 60 and win != "1920x1080",
+                {"sizes": sizes, "frames": stats.get("frames"), "window": win})
+        each = stats.get("each") or []
+        var_ok = all((e.get("variance") or 0) > 0 for e in each)
+        moving = [e.get("diffPrev") for e in each[1:]]
+        s.check("K2 luma variance > 0 on every frame; consecutive frames differ while the player turns",
+                var_ok and moving and sum(1 for d in moving if d and d > 0) >= len(moving) // 2,
+                {"minVariance": min((e.get("variance") or 0) for e in each) if each else None,
+                 "framesDiffering": sum(1 for d in moving if d and d > 0), "of": len(moving)})
+        s.check("K4 binding at read-back is ours on every frame, glGetError 0, start-up check ok",
+                st_a.get("bindingMismatches") == 0 and st_a.get("glErrorFrames") == 0
+                and str(st_a.get("startup", "")).startswith("OWN"),
+                {k: st_a.get(k) for k in ("bindingMismatches", "glErrorFrames", "startup", "rebinds", "outcome")})
+        s.check("K5 the window is black mid-spike (no HUD batch landed in it)", k5.get("maxLuma") == 0,
+                {k: k5.get(k) for k in ("maxLuma", "meanLuma", "width", "height")})
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        st_b, lines_b = rwx_spike(s, "move-b", RWX_W, RWX_H, RWX_FPS, 60, settle, move_ms, hc, hb)
+        diff7 = rwx_k7(lines_a, lines_b)
+        s.check("K7 two runs give equal frames.json (P, ticks, partial, pose, HUD digest, view, screen)", not diff7,
+                {"differ": diff7[:10], "frames": len(lines_a)})
+        results["move"] = {k: st_a.get(k) for k in ("meanFrameMs", "meanDrawMs", "heldFrames", "heldDraws",
+                                                     "settleCapped", "maxWaitMs", "scale", "windowScale")}
+
+        # K4 HUD: the same still frame with and without the HUD (clean view)
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        rwx_spike(s, "k4-hud", RWX_W, RWX_H, 30, 1, "fixed", still_ms)
+        s.probe("rewind-export-clean")
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        rwx_spike(s, "k4-clean", RWX_W, RWX_H, 30, 1, "fixed", still_ms)
+        s.probe("rewind-export-clean")
+        hud = s.probe("rewind-export-compare", "k4-hud", "frame-00000", "k4-clean", "frame-00000")
+        run_ = hud.get("centreRun")  # the hotbar: the differing run of columns through the centre, bottom band
+        centre = None if not run_ else (run_[0] + run_[1]) / 2.0
+        s.check("K4 the hotbar is centred on the bottom edge at 1080p and HUD text is in the frame",
+                run_ is not None and abs(centre - (RWX_W - 1) / 2.0) <= 2 and run_[3] >= RWX_H - 3
+                and hud.get("differingTop30", 0) > 0,
+                {"centreRun": run_, "centre": centre, "differingTop30": hud.get("differingTop30"),
+                 "hotbarWidthPx": None if not run_ else run_[1] - run_[0] + 1})
+
+        # K6: frame 0 against the same moment held 2 s; K3: window size against the window path
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        rwx_spike(s, "k6-ref", RWX_W, RWX_H, RWX_FPS, 1, "fixed", move_ms)
+        k6 = s.probe("rewind-export-compare", "move-a", "frame-00000", "k6-ref", "frame-00000")
+        s.check("K6 frame 0 equals the same moment after a 2 s wait (mean <= 2/255)", k6.get("mean", 255) <= 2.0,
+                {k: k6.get(k) for k in ("mean", "max", "differing", "box")})
+        g3 = s.probe("rewind-export-gl")
+        disp = (g3.get("displayWidth") or 0) & ~1, (g3.get("displayHeight") or 0) & ~1
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        s.probe("rewind-export-screen", "export")  # the window path draws the export screen too (no chrome)
+        rwx_spike(s, "k3", disp[0], disp[1], 30, 1, "fixed", still_ms)
+        time.sleep(1.0)
+        s.probe("rewind-export-shot", "k3", "window")
+        k3 = s.probe("rewind-export-compare", "k3", "frame-00000", "k3", "window")
+        s.check("K3 a capture at the window's size equals the window path at the same paused moment (mean <= 2/255)",
+                k3.get("mean", 255) <= 2.0,
+                {k: k3.get(k) for k in ("mean", "max", "differing", "box", "size")})
+
+        # K9: speed with frames discarded
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        st9, _ = rwx_spike(s, "-", RWX_W, RWX_H, RWX_FPS, 120, "none", move_ms)
+        mean9 = float(st9.get("meanFrameMs") or 0)
+        results["speed"] = {"meanFrameMs": mean9, "fps": round(1000.0 / mean9, 1) if mean9 else None,
+                            "meanDrawMs": st9.get("meanDrawMs")}
+        s.check("K9 mean time per frame is not at a display refresh interval (within 5%)",
+                mean9 > 0 and all(abs(mean9 - r) > 0.05 * r for r in RWX_REFRESH_MS), results["speed"])
+        st_rule = None
+        if renderer_ready:
+            s.probe("rewind-watch-seek", start)
+            rww_wait(s, 60)
+            st_rule, _ = rwx_spike(s, "-", RWX_W, RWX_H, RWX_FPS, 120, "ready", move_ms)
+            results["speedReady"] = {"meanFrameMs": st_rule.get("meanFrameMs")}
+
+        # K10 check: every exported fixture frame equals a reference held 2 s
+        windows = (("blocks", tick_ms(first_block) - 100, int((tick_ms(last_block) - tick_ms(first_block) + 400) * 30
+                                                              / 1000)),
+                   ("chunks", tick_ms(tp_tick) - 50, 45))
+        k10 = {}
+        for name, at, n in windows:
+            for run, mode_ in ((name + "-x", settle), (name + "-ref", "fixed")):
+                s.probe("rewind-watch-seek", start)
+                rww_wait(s, 60)
+                stx, _ = rwx_spike(s, run, RWX_W, RWX_H, 30, n, mode_, at, hc, hb, timeout=1800)
+                if mode_ != "fixed":
+                    k10[name + "-export"] = {k: stx.get(k) for k in ("heldFrames", "heldDraws", "settleCapped",
+                                                                     "maxWaitMs", "meanFrameMs", "outcome")}
+            cmp_ = s.probe("rewind-export-compare", name + "-x", "*", name + "-ref", "*")
+            bad = [e.get("name") for e in cmp_.get("each") or [] if e.get("mean", 255) > 2.0]
+            k10[name] = {"pairs": cmp_.get("pairs"), "worstMean": cmp_.get("worstMean"), "over": bad[:10]}
+        results["k10"] = k10
+        s.check("K10 every exported fixture frame equals its 2 s reference (mean <= 2/255), rule %s" % settle,
+                all(v.get("pairs") and not v.get("over") for kk, v in k10.items() if kk in ("blocks", "chunks")),
+                k10)
+
+        # K8: the paused viewer before and after one export (sizes against the real window: the user's window
+        # manager may resize it during a long run)
+        s.probe("rewind-export-screen", "viewer")
+        rww_seek(s, x_tick)
+        time.sleep(3)
+        gl_before = s.probe("rewind-export-gl")
+        s.probe("rewind-export-shot", "k8", "before")
+        s.probe("rewind-watch-seek", start)
+        rww_wait(s, 60)
+        rwx_spike(s, "k8-run", RWX_W, RWX_H, RWX_FPS, 30, settle, move_ms, hc, hb)
+        s.probe("rewind-export-screen", "viewer")
+        rww_seek(s, x_tick)
+        time.sleep(3)
+        gl_after = s.probe("rewind-export-gl")
+        s.probe("rewind-export-shot", "k8", "after")
+        k8 = s.probe("rewind-export-compare", "k8", "before", "k8", "after")
+        keys = ("window", "displayWidth", "displayHeight", "guiScale", "scaleFactor", "framebuffer", "viewport",
+                "vsync", "limitFramerate", "motionBlurSuppressed", "exportActive", "mainFramebufferSize")
+        changed = {k: [gl_before.get(k), gl_after.get(k)] for k in keys if gl_before.get(k) != gl_after.get(k)}
+        sized = all("%sx%s" % (g.get("displayWidth"), g.get("displayHeight")) == g.get("window")
+                    == g.get("mainFramebufferSize") and g.get("viewport") == "0,0,%s,%s" % (
+                        g.get("displayWidth"), g.get("displayHeight")) for g in (gl_before, gl_after))
+        s.check("K8 sizes, GUI scale, framebuffer, viewport, vsync, frame limit restored; viewer shot equal",
+                not changed and sized and k8.get("mean", 255) <= 2.0,
+                {"changed": changed, "sizedToWindow": sized, "shotMean": k8.get("mean"),
+                 "after": {k: gl_after.get(k) for k in keys}})
+    finally:
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        s.field(on, was[0])
+        s.field(rec, was[1])
+        s.field(fps_on, was[2])
+        tu_save(s, cfg)
+
+
+# Rewind Export Phase 5 (cycle 2026-11-22-rewind-export, PLAN Phase 5 step RWE and Revision 4/4.1 check K11). The game
+# writes MP4s into RWE_DIR (-Dcobblify.exportDir) and spike PNGs into SHARED/exports/spike/<run>; this side reads the
+# MP4s with ffprobe and asks the game for counts, means and per-cell comparisons. Only the cobdev world is recorded.
+RWE_TEXT = "cobdev test 123"
+K11_AFTER = 8  # reference frames after a change: a change later than this many frames counts as not shown
+
+
+def ffprobe_json(path):
+    exe = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+    p = subprocess.run([exe, "-v", "error", "-show_streams", "-show_format", "-count_frames", "-of", "json", path],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        return None
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        return None
+
+
+def rwe_streams(info):
+    v = next((x for x in (info or {}).get("streams", []) if x.get("codec_type") == "video"), {})
+    a = next((x for x in (info or {}).get("streams", []) if x.get("codec_type") == "audio"), {})
+    return v, a
+
+
+def rwe_expected_mbps(w, h, fps, quality, codec):
+    """ExportQuality (PLAN D7), for the requested-rate check."""
+    base = {"standard": 8, "high": 16, "max": 30}.get(quality, 16)
+    m = base * ((w * h) / (1920.0 * 1080.0)) ** 0.85 * (fps / 60.0) ** 0.6
+    if codec == "hevc":
+        m *= 0.6
+    m = math.floor(m * 2 + 0.5) / 2.0
+    return max(0.5, min(150.0, m))
+
+
+def rwe_files():
+    try:
+        return sorted(n for n in os.listdir(RWE_DIR) if n.endswith(".mp4"))
+    except OSError:
+        return []
+
+
+def rwe_state(s, *args):
+    """rewind-export-state with its "export" object (and "frames" list) parsed: the bridge passes JSON as text."""
+    st = s.peek("rewind-export-state", *args) or {}
+    for k in ("export", "frames"):
+        if isinstance(st.get(k), str):
+            try:
+                st[k] = json.loads(st[k])
+            except ValueError:
+                st[k] = {} if k == "export" else []
+    return st
+
+
+def rwe_wait(s, timeout=900):
+    deadline = time.time() + timeout
+    st = {}
+    while time.time() < deadline:
+        st = rwe_state(s).get("export") or {}
+        if st.get("active") is False and st.get("outcome"):
+            break
+        time.sleep(0.25)
+    s.step["commands"].append({"call": "/probe rewind-export-state (last poll)", "result": st})
+    return st
+
+
+def rwe_export(s, spec, timeout=900, on_running=None):
+    """One export through rewind-export-start; returns (state, frame lines, new mp4 names)."""
+    before = set(rwe_files())
+    s.probe("rewind-export-start", json.dumps(spec, separators=(",", ":")))
+    if on_running:
+        on_running()
+    st = rwe_wait(s, timeout)
+    lines = rwe_state(s, "frames").get("frames") or []
+    return st, lines, sorted(set(rwe_files()) - before)
+
+
+def rwe_record_fixture(s, cfg):
+    """The RW session for RWE and K11, in the smoke world: a click, a turn, blocks placed and broken in view, one chat
+    line, chat opened with a test string typed, a 200-block teleport (K10's), a marker. Returns rewind_latest."""
+    s.check("cobdev's own Rewind folder starts empty", s.probe("rewind-clear").get("left") == 0)
+    s.cmd("/gamerule doDaylightCycle false")
+    s.cmd("/gamerule sendCommandFeedback false")
+    s.cmd("/time set 6000")
+    s.cmd("/gamemode 0")
+    s.cmd("/tp @p 0.5 4 0.5 0 0")
+    s.probe("rewind-watch-swing", RWW_ITEM)
+    time.sleep(0.8)
+    s.call("/invoke", post={"path": "com.bedwarsqol.rewind.ViewCapture.mousePressed", "args": "0"})  # a TAP (LMB)
+    time.sleep(0.6)
+    s.probe("mb-turn", -30, 30, 60)
+    time.sleep(1.1)
+    s.probe("mb-pose", 0, 0)
+    for dx, dy, block in ((0, 0, "minecraft:wool"), (1, 0, "minecraft:wool"), (-1, 1, "minecraft:stone"),
+                          (0, 0, "minecraft:air"), (1, 0, "minecraft:air"), (-1, 1, "minecraft:air")):
+        s.probe("block", dx, dy, 3, block)
+        time.sleep(0.5)
+    time.sleep(1.5)  # still, no chat yet: the chat region's reference
+    s.cmd("/say cobdev chat line")
+    time.sleep(0.8)
+    s.probe("chat-open")
+    time.sleep(0.4)
+    s.probe("rewind-export-chat-type", "type", RWE_TEXT)
+    time.sleep(1.5)
+    s.probe("rewind-export-chat-type", "close")
+    time.sleep(0.8)
+    s.cmd("/tp @p ~200 ~ ~")
+    time.sleep(4.0)
+    s.cmd("/tp @p ~-200 ~ ~")
+    time.sleep(1.5)
+    s.call("/invoke", post={"path": REWIND + ".markerKeyPressed", "args": ""})
+    s.cmd("/gamemode 1")
+    s.call("/world", {"leave": "1"}, timeout=90)
+    return rewind_latest(s)
+
+
+def rwe_open(s):
+    s.probe("rewind-watch-open")
+    st = rww_wait(s, 60)
+    if st.get("state") == "WATCHING" and not st.get("paused"):
+        s.call("/key", {"code": KEYS["space"]})
+    return st
+
+
+def rwe_frame_time(start_us, i, fps):
+    return start_us + (i // fps) * 1000000 + (i % fps) * 1000000 // fps
+
+
+def rwe_spike_start(us):
+    return "%du%d" % (us // 1000, us % 1000)
+
+
+def smoke_rewind_export_pipeline(s, cfg, mode):
+    """RWE (Rewind Export PLAN Phase 5): the whole pipeline on a cobdev-world recording, read back with ffprobe."""
+    s.begin("RWE", "Rewind Export: frames and sound to an MP4 (%s)" % mode)
+    if not cfg or not s.has(REWIND_EXPORT, "start"):
+        return s.unavailable(REWIND_EXPORT + ".start is not in this build")
+    keys = cfg + ".rewind", cfg + ".rewindRecordGames", cfg + ".fpsEnabled", cfg + ".keystrokesEnabled"
+    was = [s.field(k).get("value") for k in keys]
+    opened = False
+    results = s.step.setdefault("results", {})
+    try:
+        for k in keys:
+            s.field(k, True)
+        tu_reopen_world(s)
+        r = rwe_record_fixture(s, cfg)
+        if not s.check("the fixture recording closed and passes RewindCheck", r.get("found") and r.get("pass"),
+                       r.get("line")):
+            return
+        st = rwe_open(s)
+        opened = True
+        if not s.check("the fixture opens to WATCHING", st.get("state") == "WATCHING", st.get("state")):
+            return
+        ter = s.probe("rewind-export-terrain")
+        taps, times = ter.get("tapsUs") or [], ter.get("timesUs") or {}
+        block = ter.get("block") or []
+        if not s.check("the fixture holds a recorded click and block changes", taps and block,
+                       {"taps": len(taps), "block": len(block)}):
+            return
+        start = taps[0] + 30000
+        if start % 50000 == 0:
+            start += 250
+        start += 250  # not on a tick (ticks every 50 ms in the smoke world)
+        end = start + 3000000 + 7000  # 3.007 s: not on a frame at 60 fps
+        base = {"startUs": start, "endUs": end, "height": 1080, "fps": 60, "quality": "high", "codec": "h264",
+                "chat": True, "route": "own"}
+        fps_frames = (end - start) * 60 // 1000000
+
+        # 1-2: the same export twice, a live sound ringing at the first press
+        s.probe("rewind-export-live-sound", "play")
+        time.sleep(0.5)
+        live = s.probe("rewind-export-live-sound", "check")
+        s.note("a live sound plays before the export", live.get("playing"))
+        checks_live = {}
+
+        def after_start():
+            time.sleep(1.5)
+            checks_live["playing"] = (s.peek("rewind-export-live-sound", "check") or {}).get("playing")
+
+        uptime_a = os.getloadavg()
+        st_a, lines_a, files_a = rwe_export(s, base, on_running=after_start)
+        results["loadBefore"] = [round(x, 2) for x in uptime_a]
+        s.check("1 the export ends done with one new MP4", st_a.get("outcome") == "done" and len(files_a) == 1,
+                {k: st_a.get(k) for k in ("outcome", "taken", "frames", "route", "startup", "rule", "settleCapped")}
+                | {"files": files_a})
+        s.check("1 stopSounds ran once and the tail step ran", st_a.get("stopSounds") == 1 and st_a.get("tail") is True,
+                {"stopSounds": st_a.get("stopSounds"), "tail": st_a.get("tail")})
+        if live.get("playing"):
+            s.check("S4 the live sound ringing at Export stopped", checks_live.get("playing") is False, checks_live)
+        else:
+            s.note("S4 live sound: none could start in this client (isSoundPlaying false before the export); the stop "
+                   "itself is not observed here (gate OG2)", {"before": live.get("playing"), "after": checks_live})
+        results["speed"] = {"renderFps": st_a.get("renderFps"), "elapsedMs": st_a.get("elapsedMs"),
+                            "load": [round(x, 2) for x in os.getloadavg()], "loadBefore": results["loadBefore"]}
+        if files_a:
+            info = ffprobe_json(os.path.join(RWE_DIR, files_a[0]))
+            v, a = rwe_streams(info)
+            vframes = int(v.get("nb_read_frames") or v.get("nb_frames") or 0)
+            vdur = float(v.get("duration") or 0)
+            adur = float(a.get("duration") or 0)
+            results["file1"] = {"codec": v.get("codec_name"), "profile": v.get("profile"), "size": "%sx%s" % (
+                v.get("width"), v.get("height")), "rate": v.get("r_frame_rate"), "frames": vframes, "videoS": vdur,
+                "audio": "%s %s %s" % (a.get("codec_name"), a.get("sample_rate"), a.get("channels")), "audioS": adur,
+                "bytes": os.path.getsize(os.path.join(RWE_DIR, files_a[0])), "name": files_a[0]}
+            s.check("P1 1920x1080, 60 fps, floor(3.007 s x 60) = %d frames, duration frames/60 within a frame"
+                    % fps_frames, v.get("width") == 1920 and v.get("height") == 1080 and v.get("r_frame_rate") == "60/1"
+                    and vframes == fps_frames and abs(vdur - fps_frames / 60.0) <= 1 / 60.0, results["file1"])
+            s.check("S1 one AAC stereo 48 kHz track within 50 ms of the video",
+                    a.get("codec_name") == "aac" and str(a.get("sample_rate")) == "48000" and a.get("channels") == 2
+                    and abs(adur - vdur) <= 0.05, results["file1"])
+            s.check("F1 the name is <mode> - <map> - <date time>.mp4 in the export folder",
+                    re.match(r"^(.+ - )?\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}( \(\d+\))?\.mp4$", files_a[0])
+                    is not None, files_a[0])
+        st_b, lines_b, files_b = rwe_export(s, base)
+        diff = rwx_k7(lines_a, lines_b)
+        s.check("P2 two exports give equal frame logs (P, ticks, partial, pose, HUD digest, view, screen)",
+                st_b.get("outcome") == "done" and not diff, {"differ": diff[:10], "frames": len(lines_a)})
+        k0a = lines_a[0].get("keys") if lines_a else None
+        k0b = lines_b[0].get("keys") if lines_b else None
+        levels = [int(x) for x in re.findall(r"[H-](\d+)", k0a or "")]
+        s.check("P2 frame 0, 30 ms after the recorded click, shows the flash part-way, equal in both runs",
+                k0a is not None and k0a == k0b and lines_a[0].get("P") == lines_b[0].get("P")
+                and any(0 < x < 255 for x in levels),
+                {"frame0keys": k0a, "frame0P": lines_a[0].get("P") if lines_a else None})
+        results["frame0"] = {"keys": k0a, "draws": lines_a[0].get("draws") if lines_a else None}
+
+        # 3: Standard and Max: the requested rates are the table's
+        rates = {"high": st_a.get("bitrate")}
+        sizes = {"high": results.get("file1", {}).get("bytes")}
+        for q in ("standard", "max"):
+            stq, _, fq = rwe_export(s, dict(base, quality=q))
+            rates[q] = stq.get("bitrate")
+            sizes[q] = os.path.getsize(os.path.join(RWE_DIR, fq[0])) if fq else None
+        want = {q: int(rwe_expected_mbps(1920, 1080, 60, q, "h264") * 1000000) for q in rates}
+        results["rates"] = {"requested": rates, "table": want, "bytes": sizes}
+        s.check("P10 the helper was asked for the table's rate per quality (8 / 16 / 30 Mbit/s)", rates == want,
+                results["rates"])
+
+        # 4: 640x360 HEVC, Chat off
+        st4, _, f4 = rwe_export(s, dict(base, width=640, height=360, codec="hevc", chat=False))
+        v4, _ = rwe_streams(ffprobe_json(os.path.join(RWE_DIR, f4[0])) if f4 else None)
+        s.check("P10 640x360 HEVC (hvc1)", st4.get("outcome") == "done" and v4.get("codec_name") == "hevc"
+                and v4.get("codec_tag_string") == "hvc1" and v4.get("width") == 640 and v4.get("height") == 360,
+                {"outcome": st4.get("outcome"), "codec": v4.get("codec_name"), "tag": v4.get("codec_tag_string"),
+                 "size": "%sx%s" % (v4.get("width"), v4.get("height"))})
+
+        # 5: the route forced to WINDOW: the window's own size, rounded down to even
+        g = s.probe("rewind-export-gl")
+        st5, _, f5 = rwe_export(s, dict(base, route="window"))
+        v5, _ = rwe_streams(ffprobe_json(os.path.join(RWE_DIR, f5[0])) if f5 else None)
+        ww, wh = (g.get("displayWidth") or 0) & ~1, (g.get("displayHeight") or 0) & ~1
+        s.check("P9 forced WINDOW: the file is the window's even size %dx%d" % (ww, wh),
+                st5.get("outcome") == "done" and v5.get("width") == ww and v5.get("height") == wh
+                and st5.get("route") == "WINDOW", {"outcome": st5.get("outcome"), "size": "%sx%s" % (
+                    v5.get("width"), v5.get("height")), "route": st5.get("route")})
+
+        # 6: cancelled at about half: no file
+        long_spec = dict(base, endUs=start + 8000000)
+        before = set(os.listdir(RWE_DIR))
+        s.probe("rewind-export-start", json.dumps(long_spec, separators=(",", ":")))
+        deadline = time.time() + 300
+        prog = 0
+        while time.time() < deadline:
+            ex = rwe_state(s).get("export") or {}
+            prog = ex.get("progress") or 0
+            if float(prog) >= 0.5 or not ex.get("active"):
+                break
+            time.sleep(0.1)
+        s.probe("rewind-export-cancel")
+        st6 = rwe_wait(s, 60)
+        time.sleep(1.0)
+        left = sorted(set(os.listdir(RWE_DIR)) - before)
+        s.check("F2 cancelled at about half: CANCELLED, no file of it left", str(st6.get("outcome", "")).startswith(
+            "cancelled") and not left, {"outcome": st6.get("outcome"), "progressAtCancel": prog, "left": left})
+
+        # 7: the helper path points at nothing
+        before = set(os.listdir(RWE_DIR))
+        st7, _, _ = rwe_export(s, dict(base, helper="missing"), timeout=60)
+        left = sorted(set(os.listdir(RWE_DIR)) - before)
+        s.check("U6 a missing helper fails with its code and leaves no file",
+                st7.get("outcome") == "failed-helper-missing" and not left, {"outcome": st7.get("outcome"),
+                                                                             "left": left})
+        g2 = s.probe("rewind-export-gl")
+        keys8 = ("displayWidth", "displayHeight", "guiScale", "vsync", "limitFramerate", "motionBlurSuppressed",
+                 "exportActive", "framebuffer")
+        changed = {k: [g.get(k), g2.get(k)] for k in keys8 if g.get(k) != g2.get(k)}
+        s.check("P7 sizes, GUI scale, vsync, frame limit, Motion Blur and framebuffer as before the exports",
+                not changed, changed)
+
+        # 8: Chat off on the typed-chat stretch (lossless captures through the same pipeline)
+        # the typed stretch: after the last block change (+1.5 s quiet, then /say, then chat for 1.5 s)
+        last_block = max(int(t) for t in times if int(t) in block) if block else None
+        if last_block is not None:
+            t_last = times[str(last_block)]
+            ref_us, typed_us = t_last + 900000, t_last + 4300000  # before the /say line; while typing
+            for run, at, chat in (("rwe-ref", ref_us, "chat-off"), ("rwe-typed-off", typed_us, "chat-off"),
+                                  ("rwe-typed-on", typed_us, "chat-on")):
+                rwx_spike_chat(s, run, at, chat)
+            scale = (rwx_status(s).get("export") or {}).get("scale") or 2
+            x1 = 960 - 91 * scale - 8 * scale
+            box = (0, 1080 - 120 * scale, max(0, x1), 1079)
+            off = s.probe("rewind-export-region", "rwe-typed-off", "frame-00000", "rwe-ref", "frame-00000", *box)
+            on = s.probe("rewind-export-region", "rwe-typed-on", "frame-00000", "rwe-ref", "frame-00000", *box)
+            results["chatRegion"] = {"box": box, "off": off.get("differing"), "on": on.get("differing"),
+                                     "pixels": off.get("pixels")}
+            s.check("P5 Chat off: the chat region of a typed-chat frame equals the no-chat reference; Chat on differs",
+                    off.get("differing", 1) <= 0.002 * (off.get("pixels") or 1) and on.get("differing", 0) > 200,
+                    results["chatRegion"])
+        else:
+            s.check("P5 chat region: the fixture's block changes were found", False)
+    finally:
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        for k, v in zip(keys, was):
+            s.field(k, v)
+        tu_save(s, cfg)
+
+
+# Rewind Export Phase 7 (PLAN Phase 7, step RWU): export mode driven through the real screens with cobdev's input. The
+# Esc menu's Export, the handles (a drag), the panel's rows clicked, a full export from its key (progress, Open Folder,
+# never pressed: it would open a Finder window in the user's session), the gallery's Export, Failed with the helper
+# moved away, and shots at GUI scales 1-3 (and three window sizes in dev mode). Shots are copied to RWU_SHOTS.
+RWU_SHOTS = os.path.join(SHARED, "shots", "export-p7")
+RWU_ESC_KEYS = ["RESUME", "REJOIN", "EXPORT", "GALLERY", "QUIT"]
+
+
+def rwu_ui(s):
+    return s.peek("rewind-export-ui") or {}
+
+
+def rwu_until(s, pred, timeout=20.0):
+    deadline = time.time() + timeout
+    ui = {}
+    while time.time() < deadline:
+        ui = rwu_ui(s)
+        try:
+            if pred(ui):
+                return ui
+        except (KeyError, TypeError, IndexError):
+            pass
+        time.sleep(0.2)
+    s.step["commands"].append({"call": "/probe rewind-export-ui (last poll)", "result": ui})
+    return ui
+
+
+def rwu_click(s, r, settle=0.4):
+    s.call("/click", {"x": int(r[0] + r[2] / 2), "y": int(r[1] + r[3] / 2)})
+    time.sleep(settle)
+
+
+def rwu_shot(s, name, window=False):
+    """A shot of the last frame (or, with window, of what the window shows: an export draws its preview and key into
+    the window only) copied to RWU_SHOTS."""
+    os.makedirs(RWU_SHOTS, exist_ok=True)
+    dst = os.path.join(RWU_SHOTS, "%s-%s.png" % (s.report["mode"], name))
+    if window:
+        s.probe("rewind-export-shot", "rwu", name, "window")
+        path = os.path.join(EXPORTS, "spike", "rwu", name + ".png")
+        s.step["shots"].append(path)
+    else:
+        path, _ = s.shot("rwu-" + name)
+    shutil.copyfile(path, dst)
+    s.step.setdefault("results", {}).setdefault("shots", []).append(dst)
+    return dst
+
+
+def rwu_export(s, ui, on_running=None, timeout=300):
+    """Clicks the panel's key and follows the export: (final state, new files, progress seen, ui while running)."""
+    files = set(rwe_files())
+    rwu_click(s, ui["key"], settle=0)
+    prog = {}
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        prog = rwe_state(s).get("export") or {}
+        if (prog.get("active") and float(prog.get("progress") or 0) >= 0.3) or prog.get("outcome"):
+            break
+        time.sleep(0.1)
+    mid = rwu_ui(s)
+    if on_running:
+        on_running()
+    st = rwe_wait(s, timeout)
+    return st, sorted(set(rwe_files()) - files), prog, mid
+
+
+def rwu_range(length, start, end):
+    """ExportRange's constructor: inside the game, at least 1 s."""
+    if length <= 1000000:
+        return [0, length]
+    a = min(max(start, 0), length - 1000000)
+    return [a, min(max(end, a + 1000000), length)]
+
+
+def rwu_around(length, c):
+    c = min(max(c, 0), length)
+    return rwu_range(length, c - 10000000, min(length, c + 5000000))
+
+
+def rwu_layout_ok(ui):
+    """The panel inside the screen and above the bar; the handles on the bar."""
+    p, bar, gui = ui.get("panel"), ui.get("bar"), ui.get("gui")
+    if not (p and bar and gui):
+        return False
+    return (p[0] >= 0 and p[1] >= 0 and p[0] + p[2] <= gui[0] + 0.01 and p[1] + p[3] <= bar[1] + 0.01
+            and bar[1] + bar[3] <= gui[1] + 0.01)
+
+
+def smoke_rewind_export_ui(s, cfg, mode):
+    """RWU (Rewind Export PLAN Phase 7): export mode through the real screens (TASK U1-U6)."""
+    s.begin("RWU", "Rewind Export UI: Esc menu Export, handles, panel, export key, gallery Export, Failed (%s)" % mode)
+    if not cfg or not s.has(REWIND_EXPORT, "matrix"):
+        return s.unavailable(REWIND_EXPORT + ".matrix is not in this build")
+    keys = (cfg + ".rewind", cfg + ".rewindRecordGames")
+    ex_keys = tuple(cfg + ".rewindExport" + k for k in ("Height", "Fps", "Quality", "Codec", "Chat"))
+    was = [s.field(k).get("value") for k in keys + ex_keys]
+    st0 = s.status()
+    old_scale = st0.get("guiScaleSetting")
+    old_display = st0.get("display")
+    real = [int(x) for x in str(old_display).split("x")] if old_display and "x" in str(old_display) else None
+    helper = os.path.join(os.path.realpath(os.path.join(SHARED, "current")), "bin", "cobblify-encode")
+    hidden = helper + ".rwu-hidden"
+    jar_hidden = False
+    opened = False
+    res = s.step.setdefault("results", {})
+    try:
+        for k in keys:
+            s.field(k, True)
+        for k, v in zip(ex_keys, (1080, 60, "high", "h264", True)):  # the defaults, as a first export finds them
+            s.field(k, v)
+        s.call("/scale", {"n": 2})
+        if mode == "dev":
+            s.call("/size", {"w": 1280, "h": 720})
+        tu_reopen_world(s)
+        r = rwe_record_fixture(s, cfg)
+        if not s.check("the fixture recording closed and passes RewindCheck", r.get("found") and r.get("pass"),
+                       r.get("line")):
+            return
+        st = rwe_open(s)
+        opened = True
+        if not s.check("the fixture opens to WATCHING", st.get("state") == "WATCHING", st.get("state")):
+            return
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("paused") is True)
+        playhead = ui.get("playheadUs") or 0
+
+        # U1: the Esc menu's keys, and its Export opens export mode
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindEscScreen" and u.get("esc"))
+        esc = ui.get("esc") or {}
+        s.check("U1 the Esc menu has Resume, Rejoin, Export, Gallery, Quit to Title", list(esc) == RWU_ESC_KEYS,
+                list(esc))
+        rwu_shot(s, "esc-menu")
+        rwu_click(s, esc["EXPORT"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("exportMode")
+                       and u.get("keyState") == "EXPORT", timeout=40)
+        rng = ui.get("range") or [0, 0, 0]
+        res["route"] = {"sessionRoute": ui.get("sessionRoute"), "routeChecked": ui.get("routeChecked")}
+        s.check("U1 Export opens export mode, paused, its probe answered (the key reads Export)",
+                ui.get("exportMode") and ui.get("paused") is True and ui.get("keyState") == "EXPORT",
+                {k: ui.get(k) for k in ("screen", "exportMode", "paused", "keyState")})
+        s.check("U3 no marker jumped to: the handles 10 s before and 5 s after the playhead",
+                rng[:2] == rwu_around(rng[2], playhead), {"range": rng, "playheadUs": playhead})
+        s.note("the off-screen start-up check ran on opening", res["route"])
+        rows = ui.get("rows") or {}
+        want_res = (["720p", "1080p", "1440p", "4K"] if ui.get("sessionRoute") == "OWN"
+                    else ["%dx%d" % ((ui["display"][0] & ~1), (ui["display"][1] & ~1))])
+        s.check("U4 five rows with their values; first time 1080p, 60, High, H.264, Chat on",
+                rows.get("RESOLUTION", {}).get("options") == want_res
+                and rows.get("FRAME_RATE", {}).get("options") == ["30", "60", "120", "240"]
+                and rows.get("QUALITY", {}).get("options") == ["Standard", "High", "Max"]
+                and rows.get("CODEC", {}).get("options") in (["H.264", "HEVC"], ["H.264"])
+                and rows.get("CHAT", {}).get("options") == ["On", "Off"]
+                and [rows[k]["chosen"] for k in ("FRAME_RATE", "QUALITY", "CODEC", "CHAT")] == [1, 1, 0, 0]
+                and (ui.get("sessionRoute") != "OWN" or rows["RESOLUTION"]["chosen"] == 1),
+                {k: [v.get("options"), v.get("chosen"), v.get("available")] for k, v in rows.items()})
+        s.check("U3 the panel sits inside the screen above the bar", rwu_layout_ok(ui),
+                {k: ui.get(k) for k in ("panel", "bar", "gui")})
+        rwu_shot(s, "panel")
+
+        # GUI scales 1-3 (and three window sizes in dev mode): the panel stays inside the screen above the bar
+        sizes = [(854, 480), (1280, 720), (1920, 1080)] if mode == "dev" else [None]
+        looks = []
+        for size in sizes:
+            if size:
+                s.call("/size", {"w": size[0], "h": size[1]})
+            for n in (1, 2, 3):
+                s.call("/scale", {"n": n})
+                time.sleep(0.6)
+                u = rwu_until(s, lambda x: x.get("panel") and x.get("exportMode"), timeout=10)
+                tag = "s%d-%s" % (n, "%dx%d" % size if size else "window")
+                rwu_shot(s, tag)
+                looks.append({"shot": tag, "scaleFactor": u.get("scaleFactor"), "gui": u.get("gui"),
+                              "ok": rwu_layout_ok(u)})
+        res["looks"] = looks
+        s.check("U3 at GUI scales 1-3%s the panel is inside the screen above the bar"
+                % (" and three window sizes" if mode == "dev" else ""), all(x["ok"] for x in looks), looks)
+        s.call("/scale", {"n": 2})
+        if mode == "dev" and real:  # the window's real size again: the window shot reads its real drawable
+            s.call("/size", {"w": real[0], "h": real[1]})
+        time.sleep(0.6)
+        ui = rwu_until(s, lambda u: u.get("handle1") and u.get("panel"))
+
+        # U3: a drag of the end handle moves it and never seeks
+        h0, h1 = ui["handle0"], ui["handle1"]
+        before = ui.get("range")
+        x0, x1, y = h0[0] + h0[2] / 2, h1[0] + h1[2] / 2, int(h1[1] + h1[3] / 2)
+        to = int(x0 + (x1 - x0) * 0.35)
+        s.call("/down", {"x": int(x1), "y": y})
+        s.call("/drag", {"x": int((x1 + to) / 2), "y": y})
+        s.call("/drag", {"x": to, "y": y})
+        s.call("/up", {"x": to, "y": y})
+        time.sleep(0.4)
+        ui = rwu_until(s, lambda u: u.get("range") and u["range"][1] < before[1])
+        after = ui.get("range") or before
+        s.check("U3 dragging the end handle moves the end only, at least 1 s after the start, and does not seek",
+                after[0] == before[0] and before[1] > after[1] >= after[0] + 1000000
+                and ui.get("playheadUs") == playhead and ui.get("paused") is True,
+                {"before": before, "after": after, "playheadUs": [playhead, ui.get("playheadUs")]})
+        rwu_shot(s, "handle-drag")
+
+        # U4: rows clicked (each pick shows), then 720p, 30, Standard, H.264, Chat on for the export
+        picks = []
+
+        def pick(row, i):
+            u = rwu_ui(s)
+            rect = (u.get("rows") or {}).get(row, {}).get("rects") or []
+            if i < len(rect):
+                rwu_click(s, rect[i])
+            u = rwu_ui(s)
+            picks.append([row, i, u.get("rows", {}).get(row, {}).get("chosen")])
+            return u
+
+        pick("QUALITY", 2)
+        u = rwu_ui(s)
+        rwu_click(s, u["toggle"])
+        u = rwu_ui(s)
+        picks.append(["CHAT", "toggle", u["rows"]["CHAT"]["chosen"]])
+        rwu_shot(s, "panel-rows")
+        rwu_click(s, u["toggle"])
+        u = rwu_ui(s)
+        picks.append(["CHAT", "toggle", u["rows"]["CHAT"]["chosen"]])
+        own = u.get("sessionRoute") == "OWN"
+        if own:
+            pick("RESOLUTION", 0)
+        pick("FRAME_RATE", 0)
+        pick("QUALITY", 0)
+        res["picks"] = picks
+        s.check("U4 a click picks the option (Max; Chat off then on; 720p; 30; Standard)",
+                picks[0][2] == 2 and picks[1][2] == 1 and picks[2][2] == 0
+                and all(p[2] == p[1] for p in picks[3:]), picks)
+
+        # U5: the key fills while the window shows the frames; then Open Folder (not pressed)
+        ui = rwu_ui(s)
+        st_x, new, prog, mid = rwu_export(s, ui, on_running=lambda: rwu_shot(s, "progress", window=True))
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "OPEN_FOLDER",
+                       timeout=30)
+        s.check("U5 while it runs the export screen is current and the key fills",
+                mid.get("screen") == "RewindExportScreen" and prog.get("active") is True,
+                {"screen": mid.get("screen"), "progress": prog.get("progress")})
+        s.check("U5 the export ends done, one new file; back in export mode, the key reads Open Folder, paused",
+                st_x.get("outcome") == "done" and len(new) == 1 and ui.get("exportMode")
+                and ui.get("keyState") == "OPEN_FOLDER" and ui.get("paused") is True,
+                {"outcome": st_x.get("outcome"), "files": new, "keyState": ui.get("keyState")})
+        if new:
+            v, _ = rwe_streams(ffprobe_json(os.path.join(RWE_DIR, new[0])))
+            want = "1280x720" if own else "%sx%s" % (st_x.get("width"), st_x.get("height"))
+            got = "%sx%s" % (v.get("width"), v.get("height"))
+            s.check("U4 the file has the panel's choice (%s, 30 fps)" % want,
+                    got == want and v.get("r_frame_rate") == "30/1", {"size": got, "rate": v.get("r_frame_rate")})
+        stored = [s.field(k).get("value") for k in ex_keys]
+        s.check("U4 the values exported with are remembered", stored[1:] == [30, "standard", "h264", True]
+                and (stored[0] == 720 or not own), stored)
+        rwu_shot(s, "open-folder")
+
+        # U5: Esc while it runs cancels it (no file) and returns to export mode with the key reading Export
+        pick("QUALITY", 1)  # a changed row makes the key read Export again
+        ui = rwu_ui(s)
+        files = set(os.listdir(RWE_DIR))
+        rwu_click(s, ui["key"], settle=0)
+        prog = {}
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            prog = rwe_state(s).get("export") or {}
+            if (prog.get("active") and float(prog.get("progress") or 0) >= 0.1) or prog.get("outcome"):
+                break
+            time.sleep(0.1)
+        s.call("/key", {"code": KEYS["esc"]})
+        st_c = rwe_wait(s, 60)
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "EXPORT",
+                       timeout=30)
+        time.sleep(1.0)
+        left = sorted(set(os.listdir(RWE_DIR)) - files)
+        s.check("U5 Esc while it runs cancels it: no file left, back in export mode, the key reads Export",
+                str(st_c.get("outcome", "")) == "cancelled-esc" and not left and ui.get("exportMode")
+                and ui.get("keyState") == "EXPORT",
+                {"outcome": st_c.get("outcome"), "progressAtEsc": prog.get("progress"), "left": left,
+                 "keyState": ui.get("keyState")})
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and not u.get("exportMode"))
+        s.check("U5 Esc after the export leaves export mode", ui.get("exportMode") is False, ui.get("exportMode"))
+
+        # U2: the gallery's Export opens the game in export mode, paused at its first marker
+        s.call("/key", {"code": KEYS["esc"]})
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindEscScreen" and u.get("esc"))
+        rwu_click(s, ui["esc"]["GALLERY"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindGalleryScreen" and u.get("galleryExport"))
+        rwu_shot(s, "gallery")
+        rwu_click(s, ui["galleryExport"])
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("exportMode")
+                       and u.get("firstMarkerTick") is not None and u.get("playheadTick") == u.get("firstMarkerTick")
+                       and u.get("keyState") == "EXPORT", timeout=90)
+        rng = ui.get("range") or [0, 0, 0]
+        s.check("U2 the gallery's Export: export mode, paused, the playhead at the first marker, the handles around it",
+                ui.get("exportMode") and ui.get("paused") is True
+                and ui.get("playheadTick") == ui.get("firstMarkerTick")
+                and rng[:2] == rwu_around(rng[2], ui.get("firstMarkerUs") or 0),
+                {k: ui.get(k) for k in ("exportMode", "paused", "playheadTick", "firstMarkerTick", "firstMarkerUs",
+                                         "range")})
+        rwu_shot(s, "gallery-export")
+
+        # U2: a full export from the gallery's export mode (the start handle dragged to a 3 s range first)
+        h0, h1 = ui["handle0"], ui["handle1"]
+        rng0 = ui.get("range")
+        y = int(h0[1] + h0[3] / 2)
+        x0, x1 = h0[0] + h0[2] / 2, h1[0] + h1[2] / 2
+        to = int(x1 - (x1 - x0) * 0.3)
+        s.call("/down", {"x": int(x0), "y": y})
+        s.call("/drag", {"x": int((x0 + to) / 2), "y": y})
+        s.call("/drag", {"x": to, "y": y})
+        s.call("/up", {"x": to, "y": y})
+        time.sleep(0.4)
+        ui = rwu_until(s, lambda u: u.get("range") and u["range"][0] > rng0[0])
+        rng1 = ui.get("range") or rng0
+        s.check("U3 dragging the start handle moves the start only and does not seek",
+                rng1[1] == rng0[1] and rng1[0] > rng0[0] and ui.get("playheadTick") == ui.get("firstMarkerTick"),
+                {"before": rng0, "after": rng1})
+        st_g, new_g, _, _ = rwu_export(s, ui)
+        ui = rwu_until(s, lambda u: u.get("screen") == "RewindViewerScreen" and u.get("keyState") == "OPEN_FOLDER",
+                       timeout=30)
+        s.check("U2 the export from the gallery's export mode ends done with one new file",
+                st_g.get("outcome") == "done" and len(new_g) == 1 and ui.get("keyState") == "OPEN_FOLDER",
+                {"outcome": st_g.get("outcome"), "files": new_g})
+        pick("QUALITY", 0)
+        ui = rwu_ui(s)
+
+        # U6: the helper moved away: Failed in red, no file; the game stays usable. With the jar's own helper (prod, no
+        # staged copy) the game is pointed at a missing helper instead (rewind-export-helper hide).
+        files = set(os.listdir(RWE_DIR))
+        moved = os.path.isfile(helper)
+        hid = False
+        if moved:
+            os.rename(helper, hidden)
+        else:
+            jar_hidden = True  # the finally below restores it whatever happens
+            hid = bool(s.probe("rewind-export-helper", "hide").get("hidden"))
+        rwu_click(s, ui["key"])
+        ui = rwu_until(s, lambda u: u.get("keyState") == "FAILED" and not u.get("busy"), timeout=30)
+        st_f = rwe_state(s).get("export") or {}
+        if moved:
+            os.rename(hidden, helper)
+        else:
+            s.probe("rewind-export-helper", "restore")
+            jar_hidden = False
+        left = sorted(set(os.listdir(RWE_DIR)) - files)
+        s.check("U6 with the helper gone the key reads Failed, the outcome names it, no file is left",
+                (moved or hid) and ui.get("keyState") == "FAILED"
+                and st_f.get("outcome") == "failed-helper-missing" and not left,
+                {"keyState": ui.get("keyState"), "outcome": st_f.get("outcome"), "left": left, "moved": moved,
+                 "jarHelperHidden": hid})
+        rwu_shot(s, "failed")
+        s.call("/key", {"code": KEYS["left"]})  # 5 s back (the playhead stands at the range's end, the game's end)
+        time.sleep(0.8)
+        ui2 = rwu_ui(s)
+        s.check("U6 the game stays usable after Failed (a seek works)",
+                (ui2.get("playheadUs") or 0) < (ui.get("playheadUs") or 0), [ui.get("playheadUs"),
+                                                                            ui2.get("playheadUs")])
+    finally:
+        if os.path.isfile(hidden) and not os.path.exists(helper):
+            os.rename(hidden, helper)
+        if jar_hidden:
+            s.try_call("/probe", post={"name": "rewind-export-helper", "args": "restore"})
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        for k, v in zip(keys + ex_keys, was):
+            if v is not None:
+                s.field(k, v)
+        if old_scale is not None:
+            s.try_call("/scale", {"n": old_scale})
+        if mode == "dev" and real:
+            s.try_call("/size", {"w": real[0], "h": real[1]})
+        tu_save(s, cfg)
+
+
+def rwx_spike_chat(s, run, at_us, chat, frames=1):
+    """One product-rule spike capture of `frames` frames from at_us (from the first tick), Chat on or off."""
+    s.probe("rewind-export-spike", "own", RWX_W, RWX_H, RWX_FPS, frames, "paced", rwe_spike_start(at_us), 0, 0, run,
+            chat)
+    rwx_wait_export(s, 600)
+    path = os.path.join(EXPORTS, "spike", run, "frames.json")
+    for _ in range(40):
+        if os.path.isfile(path):
+            break
+        time.sleep(0.25)
+        rwx_status(s)
+
+
+def smoke_rewind_export_k11(s, cfg, mode):
+    """K11 (PLAN Revision 4 and 4.1): the K10 fixture under the real-time floor. Per terrain change, in its own screen
+    region: frames late in the export (against settled 2 s references) minus frames late while watching at 1x in the
+    window; fails when export is later than watching by more than 2 frames at 60 fps; a negative fixture (the old
+    picture left in place) must never count as shown."""
+    s.begin("RWX-K11", "Rewind Export K11: each terrain change, export vs watching at 1x (%s)" % mode)
+    if not cfg or not s.has(REWIND_EXPORT, "start"):
+        return s.unavailable(REWIND_EXPORT + ".start is not in this build")
+    keys = cfg + ".rewind", cfg + ".rewindRecordGames", cfg + ".fpsEnabled", cfg + ".keystrokesEnabled"
+    was = [s.field(k).get("value") for k in keys]
+    opened = False
+    results = s.step.setdefault("results", {})
+    try:
+        for k in keys:
+            s.field(k, True)
+        tu_reopen_world(s)
+        r = rwe_record_fixture(s, cfg)
+        if not s.check("the fixture recording closed and passes RewindCheck", r.get("found") and r.get("pass"),
+                       r.get("line")):
+            return
+        st = rwe_open(s)
+        opened = True
+        if not s.check("the fixture opens to WATCHING", st.get("state") == "WATCHING", st.get("state")):
+            return
+        start_tick = st.get("startTick", 0)
+        ter = s.probe("rewind-export-terrain")
+        chunk, block, times = ter.get("chunk") or [], ter.get("block") or [], ter.get("timesUs") or {}
+        if not s.check("the fixture holds block changes and chunk data", block and chunk,
+                       {"block": len(block), "chunk": len(chunk)}):
+            return
+        tp = min([c for c in chunk if c > block[-1]] or [chunk[-1]])
+        changes = [("block", k) for k in block] + [("chunk", k) for k in sorted(c for c in chunk if c >= tp)[:3]]
+
+        # watch side: the window at 1x, each change held 2.2 s, per changed cell. The window is made 16:9 in dev mode
+        # (cobdev size), so it sees what the 1920x1080 export sees; prod starts at 1280x720.
+        watch = {}
+        disp = (s.status() or {}).get("display")
+        if mode == "dev":
+            s.call("/size", {"w": 1280, "h": 720})
+            time.sleep(1.0)
+        results["watchWindow"] = (s.status() or {}).get("display")
+        rww_seek(s, changes[0][1] - 2)
+        s.probe("rewind-export-screen", "export")
+        for _ in range(20):
+            s.peek("rewind-export-grid", "watch")
+            time.sleep(1.5)
+            log = s.peek("rewind-export-grid", "log") or {}
+            if not any(d > 0 for _, d in log.get("frames") or []):
+                break
+        for cls, k in changes:
+            s.peek("rewind-export-grid", "watch")
+            s.probe("rewind-watch-play-to", k, "1x")
+            rww_wait(s, 30)
+            time.sleep(RWX_MEASURE_S)
+            c = s.probe("rewind-export-grid", "cells", k)
+            s.peek("rewind-export-grid", "log")
+            late_ms = c.get("lateMs")
+            watch[k] = {"cells": c.get("cells"), "lateMs": late_ms,
+                        "frames": None if late_ms is None else int(late_ms * 60 // 1000)}
+        s.probe("rewind-export-screen", "viewer")
+        if mode == "dev" and disp:
+            s.call("/size", {"w": int(disp.split("x")[0]), "h": int(disp.split("x")[1])})
+
+        # export side: the product rule (paced) over each stretch, then settled references per change
+        stretches = {"block": (times[str(block[0])] - 1000000, times[str(block[-1])] + 400000),
+                     "chunk": (times[str(changes[-3][1])] - 500000 if len(changes) >= 3 else 0,
+                               times[str(changes[-1][1])] + 400000)}
+        export = {}
+        loads = []
+        for name, (a_us, b_us) in stretches.items():
+            n = (b_us - a_us) * RWX_FPS // 1000000
+            loads.append([round(x, 2) for x in os.getloadavg()])
+            s.probe("rewind-watch-seek", start_tick)
+            rww_wait(s, 60)
+            s.probe("rewind-export-spike", "own", RWX_W, RWX_H, RWX_FPS, n, "paced", rwe_spike_start(a_us), 0, 0,
+                    "k11-x-" + name)
+            stx = rwx_wait_export(s, 1800).get("export") or {}
+            export[name] = {"startUs": a_us, "frames": n, "renderFps": stx.get("renderFps"),
+                            "outcome": stx.get("outcome"), "settleCapped": stx.get("settleCapped"),
+                            "rule": stx.get("rule")}
+        results["load"] = loads
+        results["export"] = export
+        table = []
+        for i, (cls, k) in enumerate(changes):
+            a_us = stretches[cls][0]
+            t = times[str(k)]
+            j0 = 0
+            while rwe_frame_time(a_us, j0, RWX_FPS) < t:
+                j0 += 1
+            # reference frame 0 before the change, frame 1 at or after it: start in [T - 1e6 // fps, T) (the
+            # reference's own grid is floor(m x 1e6 / fps) from its start, which can sit 1 us off the export's)
+            ref_start = max(rwe_frame_time(a_us, j0 - 1, RWX_FPS), t - 1000000 // RWX_FPS)
+            run = "k11-ref-%d" % i
+            s.probe("rewind-watch-seek", start_tick)
+            rww_wait(s, 60)
+            s.probe("rewind-export-spike", "own", RWX_W, RWX_H, RWX_FPS, K11_AFTER + 2, "fixed",
+                    rwe_spike_start(ref_start), 0, 0, run)
+            rwx_wait_export(s, 900)
+            path = os.path.join(EXPORTS, "spike", run, "frames.json")
+            for _ in range(40):
+                if os.path.isfile(path):
+                    break
+                time.sleep(0.25)
+                rwx_status(s)
+            c = s.probe("rewind-export-k11", "k11-x-" + cls, j0, run, K11_AFTER)
+            w = watch.get(k) or {}
+            row = {"change": cls, "tick": k, "j0": j0, "cells": c.get("cells"), "exportLate": c.get("late"),
+                   "watchLate": w.get("frames"), "watchLateMs": w.get("lateMs"), "watchCells": w.get("cells"),
+                   "negative": c.get("negativeLate")}
+            row["exportMinusWatch"] = (None if row["exportLate"] is None or row["watchLate"] is None
+                                       else row["exportLate"] - row["watchLate"])
+            table.append(row)
+        results["k11"] = table
+        for row in table:
+            s.note("K11 %s tick %d" % (row["change"], row["tick"]), row)
+        visible = [r_ for r_ in table if r_["cells"] and r_["watchCells"]]
+        unseen = [r_["tick"] for r_ in table if r_["cells"] and not r_["watchCells"]]
+        if unseen:
+            s.note("K11 changes the window's view did not show while watching (no watching number)", unseen)
+        blank = [r_["tick"] for r_ in table if not r_["cells"] and not r_["watchCells"]]
+        if blank:
+            s.note("K11 terrain ticks with no visible change on either side (no region to measure)", blank)
+        s.check("K11 detector: every visible change is seen in its own region and the negative fixture never shows it",
+                len(visible) >= 6 and all(r_["cells"] or not r_["watchCells"] for r_ in table)
+                and all(r_["negative"] is None for r_ in table),
+                [{"tick": r_["tick"], "cells": r_["cells"], "negative": r_["negative"]} for r_ in table])
+        s.check("K11 export is never later than watching at 1x by more than 2 frames (60 fps)",
+                visible and all(r_["exportMinusWatch"] is not None and r_["exportMinusWatch"] <= 2 for r_ in visible),
+                [{"tick": r_["tick"], "export": r_["exportLate"], "watch": r_["watchLate"]} for r_ in table])
+    finally:
+        if opened:
+            s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
+            s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})
+            rww_wait(s, 30, until=lambda x: x.get("state") == "IDLE")
+        s.try_call("/probe", post={"name": "rewind-clear", "args": ""})
+        for k, v in zip(keys, was):
+            s.field(k, v)
+        tu_save(s, cfg)
 
 
 def smoke_team_upgrades_look(s, cfg, mode):
@@ -5572,6 +6916,19 @@ def cmd_smoke(args):
     cfg_box = {}
     if args.only == "overlays" and not args.boot_only:
         steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s))] + overlay_steps(s, cfg_box)
+    elif args.only == "rewind-export-spike" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind_export(s, cfg_box.get("cfg"), mode)]
+    elif args.only == "rewind-export" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind_export_pipeline(s, cfg_box.get("cfg"), mode),
+                  lambda: smoke_rewind_export_ui(s, cfg_box.get("cfg"), mode)]
+    elif args.only == "rewind-export-ui" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind_export_ui(s, cfg_box.get("cfg"), mode)]
+    elif args.only == "rewind-export-k11" and not args.boot_only:
+        steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_rewind_export_k11(s, cfg_box.get("cfg"), mode)]
     elif args.only == "rewind" and not args.boot_only:
         steps += [lambda: smoke_world(s), lambda: cfg_box.setdefault("cfg", find_config(s)),
                   lambda: smoke_rewind(s, cfg_box.get("cfg"))]
@@ -5759,9 +7116,12 @@ def build_parser():
     p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
     p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
     p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
-    p.add_argument("--only", choices=["overlays", "team-upgrades", "rewind", "motion-blur"],
+    p.add_argument("--only", choices=["overlays", "team-upgrades", "rewind", "motion-blur", "rewind-export-spike",
+                                      "rewind-export", "rewind-export-k11", "rewind-export-ui"],
                    help="boot, world, then only these steps (overlays: OV-*; team-upgrades: TU, TU-look;"
-                        " rewind: RW, RWW, RWW-time; motion-blur: MB, MB-cut, MB-still, MB-turn)")
+                        " rewind: RW, RWW, RWW-time; motion-blur: MB, MB-cut, MB-still, MB-turn;"
+                        " rewind-export-spike: RWX; rewind-export: RWE then RWU; rewind-export-k11: RWX-K11;"
+                        " rewind-export-ui: RWU)")
     add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
     p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
     p.add_argument("jar", nargs="?")

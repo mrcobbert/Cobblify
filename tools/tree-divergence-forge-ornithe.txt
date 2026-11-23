@@ -439,3 +439,28 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java
 # Split (0.19.0): Ornithe and Lunar only; Forge is retiring.
 one-sided main ornithe com/bedwarsqol/feature/SplitWatch.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSplitTest.java
+
+# Rewind Export Phase 1 (Ornithe only): export start state and the real-recording export dry run.
+one-sided test ornithe com/bedwarsqol/rewind/watch/ExportStartStateTest.java
+one-sided test ornithe com/bedwarsqol/rewind/export/RealRecordingExportDryRunTest.java
+
+# Rewind Export Phase 2 (Ornithe only): off-screen export frames (spike) and their two mixins.
+one-sided main ornithe com/bedwarsqol/rewind/export/RewindExport.java
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportTarget.java
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportFrames.java
+one-sided main ornithe com/bedwarsqol/rewind/export/RewindExportScreen.java
+one-sided main ornithe com/bedwarsqol/rewind/export/VanillaChunkQueues.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftRewindExportMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererRewindExportMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/export/RealRecordingTerrainTicksTest.java
+
+# Rewind Export Phase 4 (Ornithe only): the export sound tap and Ogg decode.
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportSoundTap.java
+one-sided main ornithe com/bedwarsqol/rewind/export/OggPcm.java
+one-sided test ornithe com/bedwarsqol/rewind/export/ExportSoundTapTest.java
+one-sided test ornithe com/bedwarsqol/rewind/export/OggPcmTest.java
+
+# Rewind Export Phase 5 (Ornithe only): the export preview and key, the Chat-off mixin, the export camera test.
+one-sided main ornithe com/bedwarsqol/rewind/export/ExportOverlay.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiNewChatRewindExportMixin.java
+one-sided test ornithe com/bedwarsqol/rewind/watch/ExportCameraTest.java

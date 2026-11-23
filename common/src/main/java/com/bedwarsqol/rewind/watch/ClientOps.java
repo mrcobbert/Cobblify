@@ -83,6 +83,13 @@ public interface ClientOps extends PlaybackRestore.Client {
     /** Exit to the gallery after a failure; its Done leads to the title screen (the session is over). */
     void openGallery();
 
+    /**
+     * An export's start has landed, before its pre-roll (Rewind Export PLAN Solution 1 "Pre-roll", review r2-I2):
+     * every playback part forgets state built while watching ({@code PlaybackPart.exportStart}). Default: nothing.
+     */
+    default void exportStart() {
+    }
+
     /** A counts-only diagnostics line (DiagLog in the client). Never recording content. */
     void log(String line);
 }

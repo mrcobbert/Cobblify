@@ -80,6 +80,13 @@ final class Probes {
             return "rewind-latest".equals(name) ? rewindLatest() : rewindClear();
         }
         if (Policy.REWIND_WATCH_PROBES.contains(name)) return RewindWatchProbes.run(name, args);
+        if (Policy.REWIND_EXPORT_PROBES.contains(name)) {
+            Bridge.onMain(() -> {
+                Bridge.requireLocal(); // never on a server; a Rewind recording passes
+                return null;
+            });
+            return RewindExportProbes.run(name, args);
+        }
         Bridge.onMain(() -> {
             Bridge.requireSingleplayerWorld();
             return null;

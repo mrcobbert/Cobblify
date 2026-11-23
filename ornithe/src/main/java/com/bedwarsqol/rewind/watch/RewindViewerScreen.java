@@ -5,6 +5,11 @@ import com.bedwarsqol.config.ClientSettings;
 import com.bedwarsqol.gui.render.GuiTheme;
 import com.bedwarsqol.gui.sheet.McCanvas;
 import com.bedwarsqol.gui.sheet.SheetColors;
+import com.bedwarsqol.rewind.export.ExportJob;
+import com.bedwarsqol.rewind.export.ExportPanelModel;
+import com.bedwarsqol.rewind.export.ExportRange;
+import com.bedwarsqol.rewind.export.ExportSettings;
+import com.bedwarsqol.rewind.export.RewindExport;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.entity.AbstractClientPlayer;
@@ -50,8 +55,18 @@ import java.util.List;
  *       shows them and their name sits in their team's colour at the top (not in the clean view).</li>
  * </ul>
  *
- * <p>The session opens a new viewer after every rebuild behind the loading card; what must outlive one screen (marker
- * cursor, bar fade, camera menu) lives in {@link Controls}, one per loaded timeline.
+ * <p><b>Export mode</b> (Rewind Export TASK U1-U6): opened by the Esc menu's Export ({@link #openExport}) or the
+ * gallery's ({@link #requestExport}: the game opens paused at its first marker). The bar stays up with the range's two
+ * handles on the timeline ({@link ViewerLayout#export}, dragged through {@link ViewerLayout.Pointer}) and the export
+ * panel above it at the right ({@link ExportPanelModel}, drawn by {@link RewindPainter#exportPanel}); seeking and the
+ * camera keys still work. The panel's Export key starts {@link RewindExport}; while it runs nothing but Esc does
+ * anything (Esc cancels), and the key then reads Open Folder, Failed, or Export again after a cancel. Esc: a running
+ * export is cancelled first, then the camera menu closes, the free camera's cursor is let go, export mode is left,
+ * and only then does the Esc menu open.
+ *
+ * <p>The session opens a new viewer after every rebuild behind the loading card (and after an export); what must
+ * outlive one screen (marker cursor, bar fade, camera menu, export mode) lives in {@link Controls}, one per loaded
+ * timeline.
  */
 public final class RewindViewerScreen extends RewindScreen {
 
@@ -82,10 +97,32 @@ public final class RewindViewerScreen extends RewindScreen {
     private int lastMouseX, lastMouseY;
     private int accent = -1;
     private SheetColors.Shades accentShades = SheetColors.Shades.of(0xC0DCFF);
+    /** The export panel as the last frame laid it out (null outside export mode). */
+    private ExportPanelModel.Layout panelLayout;
+    /** The left button went down on the panel: its release is the panel's. */
+    private boolean panelPress;
 
     RewindViewerScreen(PlaybackSession session) {
         this.session = session;
         this.controls = controlsFor(session);
+    }
+
+    /** The Esc menu's Export: this viewer in export mode (TASK U1). */
+    void openExport() {
+        controls.openExport();
+    }
+
+    /**
+     * The gallery's Export (TASK U2): the next viewer of recording {@code recordingId} opens in export mode, paused at
+     * its first marker; null forgets the request.
+     */
+    static void requestExport(String recordingId) {
+        Controls.exportRequest = recordingId;
+    }
+
+    /** The gallery's pending request, or null. */
+    static String exportRequest() {
+        return Controls.exportRequest;
     }
 
     /** Installs the loading card and the viewer as the session's screens. Call once, on the client thread. */
@@ -151,6 +188,13 @@ public final class RewindViewerScreen extends RewindScreen {
         lastMouseX = rawX;
         lastMouseY = rawY;
         float[] m = mouse(rawX, rawY);
+        ExportPanelModel panel = controls.panel();
+        if (panel != null) { // the probe, the start-up check and the key's state, every frame
+            panel.probe(RewindExport.matrix(mc.displayWidth, mc.displayHeight));
+            RewindExport.checkRoute();
+            panel.route(RewindExport.sessionRoute(), mc.displayWidth, mc.displayHeight);
+            controls.syncExport();
+        }
 
         RewindPlayback.drawUnder(width, height, mouseX, mouseY, partialTicks);
         ClientSettings cfg = BedwarsQol.config;
@@ -165,10 +209,10 @@ public final class RewindViewerScreen extends RewindScreen {
         int riding = RiddenView.ridingIndex();
         int option = controls.free() ? ViewerCameraControls.FREE
                 : riding >= 0 ? ViewerLayout.FIRST_PLAYER + riding : ViewerCameraControls.YOU;
-        layout = ViewerLayout.of(sw, sh, canvas, tl, names, option);
+        layout = ViewerLayout.of(sw, sh, canvas, tl, names, option).export(controls.playheadUs(), controls.range());
         boolean inside = !grabbed && Mouse.isInsideWindow(); // a held cursor points at nothing
         float alpha = controls.fade.update(nowMs, inside && layout.over(m[0], m[1]),
-                controls.pointer.dragging() || controls.menuOpen);
+                controls.pointer.dragging() || controls.menuOpen || controls.barPinned());
         SheetColors.Shades acc = accent(cfg);
         if (controls.free()) {
             RewindPainter.flySpeed(canvas, sw, sh, ViewerCameraControls.get().flyLevel(),
@@ -190,8 +234,19 @@ public final class RewindViewerScreen extends RewindScreen {
         s.pressed = controls.pointer.pressed();
         s.dragging = controls.pointer.dragging();
         s.cursorMarker = controls.highlightedMarker();
+        s.dragHandle = controls.pointer.handle();
         s.alpha = alpha;
         s.accent = acc;
+        panelLayout = panel == null ? null : panel.layout(sw, layout.bar[1], canvas);
+        if (panelLayout != null) { // under the bar's camera menu, which opens over it
+            ExportPanelModel.Hit ph = inside && !controls.menuOpen && !controls.exportBusy()
+                    ? panelLayout.hit(m[0], m[1]) : null;
+            if (ph != null && ph.part != ExportPanelModel.Hit.Part.NONE) {
+                s.hover = null; // the bar's parts under the panel are not hovered
+                s.knobHover = false;
+            }
+            RewindPainter.exportPanel(canvas, panel, panelLayout, ph, acc);
+        }
         RewindPainter.bar(canvas, layout, s);
         if (riding >= 0 && !session.view().clean()) {
             RewindPainter.riddenName(canvas, sw, names[riding], colours[riding]);
@@ -333,6 +388,11 @@ public final class RewindViewerScreen extends RewindScreen {
         int button = Mouse.getEventButton();
         int dx = Mouse.getEventDX(), dy = Mouse.getEventDY();
         int wheel = Mouse.getEventDWheel();
+        if (controls.exportBusy()) { // an export runs: no click, drag or wheel does anything (TASK U5)
+            controls.pointer.cancel();
+            panelPress = false;
+            return;
+        }
         if (Mouse.isGrabbed()) { // the free camera holds the cursor (it looks in drawRewind): no bar under it
             if (button > 0 && Mouse.getEventButtonState()) {
                 cleanViewButton(l, button, m, true);
@@ -346,6 +406,9 @@ public final class RewindViewerScreen extends RewindScreen {
         }
         if (button != -1 || dx != 0 || dy != 0) {
             controls.fade.mouseMoved(nowMs);
+        }
+        if (panelMouse(button, m)) {
+            return;
         }
         if (button > 0 && Mouse.getEventButtonState() && cleanViewButton(l, button, m, false)) {
             return;
@@ -373,13 +436,42 @@ public final class RewindViewerScreen extends RewindScreen {
                 controls.act(controls.pointer.up(l, m[0], m[1]));
             }
         } else if (dx != 0 || dy != 0) {
-            if (controls.pointer.dragging()) {
+            if (controls.pointer.dragging() || controls.pointer.handle() >= 0) {
                 controls.pointer.move(l, m[0]);
             }
         }
         if (wheel != 0) {
             controls.scroll(wheel, nowMs);
         }
+    }
+
+    /**
+     * The export panel's share of the mouse: a press on it (the camera menu, when open, is over it) and the release
+     * that follows; buttons other than the left do nothing there. @return true if the panel took the event
+     */
+    private boolean panelMouse(int button, float[] m) {
+        ExportPanelModel panel = controls.panel();
+        ExportPanelModel.Layout pl = panelLayout;
+        if (panel == null || pl == null || button < 0) {
+            return false;
+        }
+        boolean down = Mouse.getEventButtonState();
+        if (button == 0 && !down && panelPress) {
+            panelPress = false;
+            controls.panelIntent(panel.mouseUp(pl, m[0], m[1]));
+            return true;
+        }
+        if (!down || controls.menuOpen || pl.hit(m[0], m[1]).part == ExportPanelModel.Hit.Part.NONE) {
+            return false;
+        }
+        if (button == 0) {
+            panelPress = true;
+            panel.mouseDown(pl, m[0], m[1]);
+            if (panel.pressed() != null) {
+                click();
+            }
+        }
+        return true;
     }
 
     /**
@@ -429,24 +521,215 @@ public final class RewindViewerScreen extends RewindScreen {
      * and the last scroll. Minecraft-free.
      */
     static final class Controls {
+
+        /**
+         * The export the viewer starts and follows ({@link GameExporter}: {@link RewindExport}); a test replaces it.
+         */
+        interface Exporter {
+            /** The settings last exported with (the defaults the first time). */
+            ExportSettings stored();
+
+            /**
+             * Exports {@code [startUs, endUs)} (the recording's clock) with {@code choice}; {@code panel}'s key fills
+             * in the window meanwhile. @return null when started, else why not
+             */
+            String start(long startUs, long endUs, ExportPanelModel.Choice choice, ExportPanelModel panel);
+
+            /** An export runs. */
+            boolean active();
+
+            /** The share of frames done of the running export. */
+            float progress();
+
+            /** How the last export ended ({@code DONE}, {@code CANCELLED}, {@code FAILED}), or null. */
+            ExportJob.State outcome();
+
+            /** Asks the running export to stop. */
+            void cancel();
+
+            /** Shows the folder that holds the last finished file. */
+            void openFolder();
+        }
+
+        private static Exporter exporter;
+        /** The gallery's Export: the recording whose next viewer opens in export mode ({@link #requestExport}). */
+        static String exportRequest;
+
         final PlaybackSession session;
         final Timeline timeline;
         final MarkerNav nav;
         final BarFade fade = new BarFade();
         final ViewerLayout.Pointer pointer = new ViewerLayout.Pointer();
         boolean menuOpen;
+        /** Export mode's panel; null outside export mode. */
+        private ExportPanelModel panel;
+        /** An export this viewer started has not been seen ending yet. */
+        private boolean started;
         /** The free camera holds the cursor (mouse look) unless Esc let it go. */
         private boolean grab;
         private boolean wasFree;
         private boolean scrolled;
         private long lastScrollMs;
 
-        /** Controls for the session's current timeline; a new session starts in your view. */
+        /**
+         * Controls for the session's current timeline; a new session starts in your view, and in export mode when the
+         * gallery asked for it (the request is used by the first controls made after it, whichever game they show).
+         */
         Controls(PlaybackSession session) {
             this.session = session;
             this.timeline = session.timeline();
             this.nav = timeline == null ? null : new MarkerNav(timeline);
             ViewerCameraControls.get().select(ViewerCameraControls.YOU);
+            String asked = exportRequest;
+            exportRequest = null;
+            if (asked != null && timeline != null && asked.equals(session.recordingId())) {
+                openExportFromGallery();
+            }
+        }
+
+        /** Replaces the export ({@code null}: the game's). */
+        static void setExporter(Exporter e) {
+            exporter = e;
+        }
+
+        static Exporter exporter() {
+            Exporter e = exporter;
+            return e != null ? e : GameExporter.INSTANCE;
+        }
+
+        // -------------------------------------------------------------- export mode
+
+        boolean exportMode() {
+            return panel != null;
+        }
+
+        /** The range the handles set (from the game start), or null outside export mode. */
+        ExportRange range() {
+            return panel == null ? null : pointer.range();
+        }
+
+        ExportPanelModel panel() {
+            return panel;
+        }
+
+        /** The bar stays up (export mode). */
+        boolean barPinned() {
+            return panel != null;
+        }
+
+        /** An export runs: no key but Esc and no click does anything. */
+        boolean exportBusy() {
+            return exporter().active();
+        }
+
+        /**
+         * Export mode from the viewer (the Esc menu's Export): the handles 10 s before and 5 s after the marker last
+         * jumped to in this viewing, else the playhead (TASK U3); the panel with the settings last exported with.
+         */
+        void openExport() {
+            if (timeline == null) {
+                return;
+            }
+            int last = nav == null ? -1 : nav.lastJumped();
+            long marker = last < 0 ? -1 : Math.max(0L, nav.markerUs(last) - timeline.gameStartUs());
+            enterExport(ExportRange.forViewer(timeline.lengthUs(), marker, playheadUs()));
+        }
+
+        /** Export mode from the gallery (TASK U2): paused at the first marker (or the start), the handles around it. */
+        private void openExportFromGallery() {
+            boolean any = nav != null && nav.count() > 0;
+            long first = any ? Math.max(0L, nav.markerUs(0) - timeline.gameStartUs()) : -1;
+            enterExport(ExportRange.forGallery(timeline.lengthUs(), first));
+            session.setPaused(true);
+            session.seekTo(any ? nav.markerTick(0) : timeline.startTick());
+        }
+
+        private void enterExport(ExportRange r) {
+            menuOpen = false;
+            pointer.cancel();
+            pointer.range(r);
+            panel = new ExportPanelModel(exporter().stored());
+            started = false;
+        }
+
+        /** Leaves export mode (the range and the panel are forgotten). */
+        void leaveExport() {
+            pointer.range(null);
+            panel = null;
+            started = false;
+        }
+
+        /** What the panel's mouse asked for. */
+        void panelIntent(ExportPanelModel.Intent i) {
+            if (i == null || panel == null) {
+                return;
+            }
+            switch (i.kind) {
+                case EXPORT:
+                    startExport(i.choice);
+                    break;
+                case OPEN_FOLDER:
+                    exporter().openFolder();
+                    break;
+                case CANCEL:
+                    exporter().cancel();
+                    break;
+                case LEAVE:
+                    leaveExport();
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /**
+         * The Export key: the range on the recording's clock, never before its first tick (where an export cannot
+         * start), with the panel's choice.
+         */
+        private void startExport(ExportPanelModel.Choice choice) {
+            ExportRange r = pointer.range();
+            if (choice == null || r == null || timeline == null || exporter().active()) {
+                return;
+            }
+            long base = timeline.gameStartUs();
+            long first = timeline.timeOfTick(timeline.startTick());
+            long start = Math.max(base + r.startUs(), first);
+            long end = base + r.endUs();
+            String why = exporter().start(start, end, choice, panel);
+            if (why == null) {
+                started = true;
+                panel.filling(0f);
+            } else {
+                started = false;
+                panel.failed();
+                com.bedwarsqol.feature.DiagLog.log("rewind-export: not started " + why);
+            }
+        }
+
+        /** Each frame in export mode: the key follows the export (filling, then Open Folder, Failed or Export). */
+        void syncExport() {
+            if (panel == null) {
+                return;
+            }
+            Exporter e = exporter();
+            if (e.active()) {
+                if (started) {
+                    panel.filling(e.progress());
+                }
+                return;
+            }
+            if (!started) {
+                return;
+            }
+            started = false;
+            ExportJob.State o = e.outcome();
+            if (o == ExportJob.State.DONE) {
+                panel.done();
+            } else if (o == ExportJob.State.FAILED) {
+                panel.failed();
+            } else {
+                panel.idle();
+            }
         }
 
         boolean free() {
@@ -506,6 +789,12 @@ public final class RewindViewerScreen extends RewindScreen {
 
         /** A key press; {@code cleanViewKey} is the user's Clean View Key (0 unbound). */
         void key(int keyCode, boolean shift, int cleanViewKey, Runnable openEsc) {
+            if (exportBusy()) { // an export runs: Esc cancels it, nothing else does anything (TASK U5)
+                if (keyCode == ViewerKeys.KEY_ESCAPE) {
+                    exporter().cancel();
+                }
+                return;
+            }
             ViewerKeys.Action a = ViewerKeys.action(keyCode, shift, free(), cleanViewKey);
             switch (a) {
                 case TOGGLE_PLAY:
@@ -557,6 +846,8 @@ public final class RewindViewerScreen extends RewindScreen {
                     } else if (grab && free()) {
                         grab = false; // the cursor comes back, with the bar
                         fade.mouseMoved(System.nanoTime() / 1_000_000L);
+                    } else if (panel != null) {
+                        leaveExport();
                     } else if (openEsc != null) {
                         openEsc.run();
                     }
@@ -570,7 +861,7 @@ public final class RewindViewerScreen extends RewindScreen {
 
         /** A bar action ({@link ViewerLayout.Pointer}). */
         void act(ViewerLayout.Action a) {
-            if (a == null) {
+            if (a == null || exportBusy()) {
                 return;
             }
             switch (a.kind) {
@@ -659,6 +950,69 @@ public final class RewindViewerScreen extends RewindScreen {
             } else {
                 session.faster();
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ the game's export
+
+    /** {@link Controls.Exporter} on {@link RewindExport}: the settings come from and go to the config file. */
+    static final class GameExporter implements Controls.Exporter {
+        static final GameExporter INSTANCE = new GameExporter();
+
+        @Override
+        public ExportSettings stored() {
+            ClientSettings c = BedwarsQol.config;
+            return c == null ? ExportSettings.defaults() : ExportSettings.of(c.rewindExportHeight, c.rewindExportFps,
+                    c.rewindExportQuality, c.rewindExportCodec, c.rewindExportChat);
+        }
+
+        @Override
+        public String start(long startUs, long endUs, ExportPanelModel.Choice choice, ExportPanelModel panel) {
+            if (choice == null) {
+                return "no-choice";
+            }
+            RewindExport.Request q = new RewindExport.Request();
+            q.startUs = startUs;
+            q.endUs = endUs;
+            q.settings = choice.settings();
+            q.panel = panel;
+            String why = RewindExport.start(q);
+            ClientSettings c = BedwarsQol.config;
+            if (why == null && c != null) { // the values last exported with (TASK U4)
+                ExportSettings s = choice.settings();
+                c.rewindExportHeight = s.height();
+                c.rewindExportFps = s.fps();
+                c.rewindExportQuality = s.quality();
+                c.rewindExportCodec = s.codec();
+                c.rewindExportChat = s.chat();
+                c.save();
+            }
+            return why;
+        }
+
+        @Override
+        public boolean active() {
+            return RewindExport.active();
+        }
+
+        @Override
+        public float progress() {
+            return RewindExport.progress();
+        }
+
+        @Override
+        public ExportJob.State outcome() {
+            return RewindExport.lastState();
+        }
+
+        @Override
+        public void cancel() {
+            RewindExport.cancel("esc");
+        }
+
+        @Override
+        public void openFolder() {
+            RewindExport.openFolder();
         }
     }
 }

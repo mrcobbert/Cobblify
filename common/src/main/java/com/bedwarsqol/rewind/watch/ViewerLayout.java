@@ -3,6 +3,7 @@ package com.bedwarsqol.rewind.watch;
 import com.bedwarsqol.gui.sheet.SheetFont;
 import com.bedwarsqol.gui.sheet.TextMetrics;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportRange;
 
 import java.util.List;
 
@@ -13,8 +14,11 @@ import java.util.List;
  * above its bottom, {@value #BAR_H} su tall, holding the play/pause key, the timeline (a recess with marker icons and
  * the playhead), the time ({@code m:ss / m:ss}), the speed key and the camera key with its menu opening upward above
  * it (You, Free camera, then every player another player's view can ride, Phase 14); the free camera's speed bar and
- * the ridden player's name sit at the top of the screen ({@link #flySpeedTop()}, {@link #riddenNameTop()}). R2 draws
- * no export handles.
+ * the ridden player's name sit at the top of the screen ({@link #flySpeedTop()}, {@link #riddenNameTop()}).
+ *
+ * <p><b>Export mode</b> (Rewind Export TASK U3): {@link #export} adds the export range's two handles on the timeline
+ * ({@link #handle}). There a press hits, top first: an open camera menu, a handle, the playhead knob (a timeline drag),
+ * a marker. Without a range the layout is exactly the one above.
  *
  * <p>Times are microseconds from the game start, from 0 to the game's length (the timeline runs from the game start
  * to the recording's end, so its length equals the gallery's). Marker indexes are the order the markers were given in,
@@ -55,7 +59,8 @@ public final class ViewerLayout {
     public static final float TOP_LINE = 6f;
     private static final float[] SPEEDS = {0.25f, 0.5f, 1f, 2f, 4f};
 
-    public enum Part { NONE, BAR, PLAY, STRIP, MARKER, SPEED, CAMERA, DROPDOWN, CAMERA_OPTION }
+    /** {@code HANDLE}: an export handle, index 0 the start, 1 the end (export mode only). */
+    public enum Part { NONE, BAR, PLAY, STRIP, MARKER, SPEED, CAMERA, DROPDOWN, CAMERA_OPTION, HANDLE }
 
     /** What is under a point: a part and, for a marker or a camera option, its index (else -1). */
     public static final class Hit {
@@ -96,6 +101,9 @@ public final class ViewerLayout {
     private final String keyLabel;
     private final int menuRows, menuCols;
     private final float menuColW;
+    /** Export mode: the range (null when off) and the playhead, whose knob a press then prefers to a marker. */
+    private final ExportRange range;
+    private final long playheadUs;
 
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds) {
         this(screenW, screenH, m, lengthUs, markerUs, kinds, null, YOU);
@@ -104,6 +112,8 @@ public final class ViewerLayout {
     private ViewerLayout(float screenW, float screenH, TextMetrics m, long lengthUs, long[] markerUs, int[] kinds,
                          String[] players, int cameraOption) {
         this.metrics = m;
+        this.range = null;
+        this.playheadUs = 0;
         this.lengthUs = Math.max(0L, lengthUs);
         float bx = EDGE, bw = screenW - 2 * EDGE, by = screenH - GAP - BAR_H;
         bar = new float[]{bx, by, bw, BAR_H};
@@ -158,6 +168,35 @@ public final class ViewerLayout {
             for (int i = n - 2; i >= 0; i--) markerX[i] = Math.min(markerX[i], markerX[i + 1] - MARKER_STEP);
             for (int i = 0; i < n; i++) markerX[i] = Math.max(markerX[i], minX);
         }
+    }
+
+    /** {@code o} in export mode: the same geometry with the range's handles. */
+    private ViewerLayout(ViewerLayout o, long playheadUs, ExportRange range) {
+        bar = o.bar;
+        play = o.play;
+        camera = o.camera;
+        speed = o.speed;
+        timeLeft = o.timeLeft;
+        timeRight = o.timeRight;
+        stripX = o.stripX;
+        stripW = o.stripW;
+        stripY = o.stripY;
+        stripH = o.stripH;
+        metrics = o.metrics;
+        lengthUs = o.lengthUs;
+        total = o.total;
+        totalW = o.totalW;
+        kinds = o.kinds;
+        markerX = o.markerX;
+        markerW = o.markerW;
+        options = o.options;
+        keyOption = o.keyOption;
+        keyLabel = o.keyLabel;
+        menuRows = o.menuRows;
+        menuCols = o.menuCols;
+        menuColW = o.menuColW;
+        this.range = range;
+        this.playheadUs = playheadUs;
     }
 
     /**
@@ -245,6 +284,34 @@ public final class ViewerLayout {
 
     public long lengthUs() {
         return lengthUs;
+    }
+
+    // ------------------------------------------------------------------ export mode
+
+    /**
+     * This bar in export mode with {@code range}'s handles, the playhead at {@code playheadUs} (both from the game
+     * start); {@code range} null gives this layout unchanged.
+     */
+    public ViewerLayout export(long playheadUs, ExportRange range) {
+        return range == null ? this : new ViewerLayout(this, playheadUs, range);
+    }
+
+    public boolean exportMode() {
+        return range != null;
+    }
+
+    /** The export range, or null outside export mode. */
+    public ExportRange range() {
+        return range;
+    }
+
+    /**
+     * {x, y, w, h} of handle 0 (the range start) or 1 (its end): an 8 su wide hit rect centred on its time, 4 su above
+     * and below the recess (mockup {@code drawBar}).
+     */
+    public float[] handle(int which) {
+        long us = range == null ? 0 : which == 0 ? range.startUs() : range.endUs();
+        return new float[]{xOf(us) - 4, stripY - 4, 8, stripH + 8};
     }
 
     // ------------------------------------------------------------------ time and x
@@ -371,6 +438,17 @@ public final class ViewerLayout {
             }
             if (in(dropdown(), x, y)) return new Hit(Part.DROPDOWN, -1);
         }
+        if (range != null) {
+            // the handle whose time is nearer the point wins where the two overlap
+            float[] a = handle(0), b = handle(1);
+            boolean ina = in(a, x, y), inb = in(b, x, y);
+            if (ina && inb) {
+                return new Hit(Part.HANDLE, Math.abs(x - (b[0] + 4)) < Math.abs(x - (a[0] + 4)) ? 1 : 0);
+            }
+            if (ina) return new Hit(Part.HANDLE, 0);
+            if (inb) return new Hit(Part.HANDLE, 1);
+            if (in(knob(playheadUs), x, y)) return new Hit(Part.STRIP, -1);
+        }
         for (int i = kinds.length - 1; i >= 0; i--) {
             if (in(markerHit(i), x, y)) return new Hit(Part.MARKER, i);
         }
@@ -428,12 +506,15 @@ public final class ViewerLayout {
 
     /**
      * The mouse on the bar: keys and markers fire when pressed and released over the same part; a press on the
-     * timeline starts a drag whose position is only a preview until release, which seeks.
+     * timeline starts a drag whose position is only a preview until release, which seeks. In export mode a press on a
+     * handle drags it: {@link #range()} follows the mouse under {@link ExportRange}'s rules and nothing seeks.
      */
     public static final class Pointer {
         private Hit pressed;
         private boolean dragging;
         private long previewUs;
+        private ExportRange range;
+        private int handle = -1;
 
         /**
          * A button goes down at (x, y). {@code right} is the right button (it only steps the speed down). Returns
@@ -444,12 +525,17 @@ public final class ViewerLayout {
             Hit h = l.hit(x, y, menuOpen);
             pressed = null;
             dragging = false;
+            handle = -1;
             boolean inMenu = h.part == Part.CAMERA_OPTION || h.part == Part.DROPDOWN || h.part == Part.CAMERA;
             Action pre = menuOpen && !inMenu ? Action.CLOSE_MENU : Action.NONE;
             if (right) {
                 return h.part == Part.SPEED ? Action.of(Action.Kind.SPEED_DOWN) : pre;
             }
             switch (h.part) {
+                case HANDLE:
+                    if (range == null) range = l.range();
+                    handle = h.index;
+                    return pre;
                 case STRIP:
                     dragging = true;
                     previewUs = l.timeAt(x);
@@ -469,10 +555,16 @@ public final class ViewerLayout {
         /** The mouse moved while a button is down. */
         public void move(ViewerLayout l, float x) {
             if (dragging) previewUs = l.timeAt(x);
+            if (handle >= 0 && range != null) range = range.drag(handle, l.timeAt(x));
         }
 
         /** The button comes up at (x, y). */
         public Action up(ViewerLayout l, float x, float y) {
+            if (handle >= 0) {
+                if (range != null) range = range.drag(handle, l.timeAt(x));
+                handle = -1;
+                return Action.NONE;
+            }
             if (dragging) {
                 dragging = false;
                 return new Action(Action.Kind.SEEK, -1, l.timeAt(x));
@@ -511,10 +603,27 @@ public final class ViewerLayout {
             return pressed;
         }
 
+        /** Enters export mode with {@code r} (null leaves it); a handle drag in progress is dropped. */
+        public void range(ExportRange r) {
+            range = r;
+            handle = -1;
+        }
+
+        /** The export range as the handles have set it; null outside export mode. */
+        public ExportRange range() {
+            return range;
+        }
+
+        /** The handle being dragged (0 start, 1 end; drawn lit), or -1. */
+        public int handle() {
+            return handle;
+        }
+
         /** Forgets a press, e.g. when the screen loses the mouse. */
         public void cancel() {
             pressed = null;
             dragging = false;
+            handle = -1;
         }
     }
 }

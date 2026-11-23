@@ -447,3 +447,7 @@ launcher/src-tauri/resources.aside/
 
 # The launcher embeds this one (reproducible from launcher/guard/src; launcher/guard/build.sh).
 !launcher/guard/Cobblify-Guard.jar
+
+# Rewind export helper (encoder/build.sh output and cargo builds)
+encoder/target/
+encoder/dist/

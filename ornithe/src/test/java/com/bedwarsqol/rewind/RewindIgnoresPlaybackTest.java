@@ -243,4 +243,29 @@ public class RewindIgnoresPlaybackTest {
         assertEquals(1, h.ids().size());
         assertTrue(RewindWriterTest.jsonOf(RewindWriterTest.onlyCbr(h.dir)).complete);
     }
+    /**
+     * Rewind Export (TASK X1, "never starts a recording"): no export file (the common and Ornithe packages and the
+     * export mixins) names the recorder: not {@code Rewind} itself, its capture classes or its writer. An export runs
+     * inside playback, so the gate above already keeps the recorder silent; this keeps the export from reaching it.
+     */
+    @Test
+    public void theExportNeverReachesTheRecorder() throws Exception {
+        java.util.List<File> files = com.bedwarsqol.rewind.watch.PlaybackIsolationScanTest.exportFilesForScan();
+        assertTrue("the export's files: " + files.size(), files.size() >= 20);
+        java.util.regex.Pattern recorder = java.util.regex.Pattern.compile("(?<![\\w.])(?:Rewind|RewindWriter|CaptureSession"
+                + "|HudCapture|ViewCapture|StateCapture|RewindRecorder)\\s*\\.|\\bcom\\.bedwarsqol\\.rewind\\."
+                + "(?:Rewind|RewindWriter|CaptureSession|HudCapture|ViewCapture|StateCapture)\\b(?!\\.\\w)|"
+                + "\\bcom\\.bedwarsqol\\.rewind\\.(?:Rewind|RewindWriter|CaptureSession|HudCapture|ViewCapture"
+                + "|StateCapture)\\s*\\.\\s*\\w+\\s*\\(");
+        java.util.List<String> bad = new java.util.ArrayList<String>();
+        for (File f : files) {
+            String src = com.bedwarsqol.rewind.watch.PlaybackIsolationScanTest.stripForScan(
+                    new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+            java.util.regex.Matcher m = recorder.matcher(src);
+            while (m.find()) {
+                bad.add(f.getName() + ": " + m.group().trim());
+            }
+        }
+        assertEquals(java.util.Collections.<String>emptyList(), bad);
+    }
 }

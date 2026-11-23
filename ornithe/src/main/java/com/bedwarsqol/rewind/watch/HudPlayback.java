@@ -148,6 +148,35 @@ public final class HudPlayback implements PlaybackPart {
         return true;
     }
 
+    /**
+     * The recorded HUD's state at the frame being drawn, for an export's frame log (Rewind Export PLAN K7):
+     * {@link RecordedHudSource#digest} where {@link #draw} draws the HUD, {@value #HUD_OFF} where it does not. Read it
+     * after the frame's HUD pass. {@value #HUD_OFF} at once when nothing plays.
+     */
+    public static String debugState() {
+        if (!RewindPlayback.active()) {
+            return HUD_OFF;
+        }
+        PlaybackSession s = RewindPlayback.session();
+        LoadedRecording r = s.playingWorld() ? s.recording() : null;
+        if (r == null) {
+            return HUD_OFF;
+        }
+        return INSTANCE.debugState(s.view(), r.extTrack(), ViewPart.segmentNow(s), s.renderTimeUs());
+    }
+
+    static final String HUD_OFF = "hud off";
+
+    /** {@link #debugState()} for {@code view} at {@code timeUs}: the same guard and source as {@link #draw}. */
+    String debugState(ViewState view, ExtTrack track, int segment, long timeUs) {
+        if (track == null || view == null || !track.has(RewindFormat.TAG_HUD) || !view.recordedHud()) {
+            return HUD_OFF;
+        }
+        int seg = ViewTrack.segmentFor(track, RewindFormat.TAG_SETTINGS, segment, timeUs);
+        source.at(track, seg, timeUs);
+        return source.settings() == null ? HUD_OFF : source.digest();
+    }
+
     /** The source the painters read (tests). */
     RecordedHudSource source() {
         return source;
@@ -170,6 +199,12 @@ public final class HudPlayback implements PlaybackPart {
         } catch (RewindFormat.FormatException e) {
             // the loader counted it; no flash
         }
+    }
+
+    /** An export starts: no flash or fade from what was watched before (its pre-roll rebuilds them). */
+    @Override
+    public void exportStart() {
+        source.reset();
     }
 
     @Override
