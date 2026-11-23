@@ -9,7 +9,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/** TASK A12, G40 (R2 subset): Resume, Rejoin Hypixel (hero), Gallery (full width), Quit to Title; Resume restores play. */
+/**
+ * TASK A12, G40; Rewind Export TASK U1: Resume, Rejoin Hypixel (hero), Export and Gallery sharing a row, Quit to Title;
+ * Resume restores play; Esc resumes.
+ */
 public class EscMenuModelTest {
 
     private static final int KEY_ESCAPE = 1;
@@ -18,11 +21,13 @@ public class EscMenuModelTest {
     @Test
     public void keysInOrderWithLabels() {
         EscMenuModel.Key[] keys = EscMenuModel.Key.values();
-        assertEquals(4, keys.length);
+        assertEquals(5, keys.length);
         assertEquals("Resume", EscMenuModel.label(keys[0]));
         assertEquals("Rejoin Hypixel", EscMenuModel.label(keys[1]));
-        assertEquals("Gallery", EscMenuModel.label(keys[2]));
-        assertEquals("Quit to Title", EscMenuModel.label(keys[3]));
+        assertEquals("Export", EscMenuModel.label(keys[2]));
+        assertEquals("Gallery", EscMenuModel.label(keys[3]));
+        assertEquals("Quit to Title", EscMenuModel.label(keys[4]));
+        assertSame(EscMenuModel.Key.EXPORT, keys[2]);
         assertTrue(EscMenuModel.hero(EscMenuModel.Key.REJOIN));
         for (EscMenuModel.Key k : keys) if (k != EscMenuModel.Key.REJOIN) assertFalse(EscMenuModel.hero(k));
     }
@@ -35,8 +40,9 @@ public class EscMenuModelTest {
         assertArrayEquals(new float[]{x, y, 172, h}, l.card(), 0f);
         assertArrayEquals(new float[]{x + 10, y + 10, 152, 20}, l.key(EscMenuModel.Key.RESUME), 0f);
         assertArrayEquals(new float[]{x + 10, y + 34, 152, 20}, l.key(EscMenuModel.Key.REJOIN), 0f);
-        // R2 shows no Export key: Gallery takes the full width
-        assertArrayEquals(new float[]{x + 10, y + 58, 152, 20}, l.key(EscMenuModel.Key.GALLERY), 0f);
+        // Export and Gallery share the third row, half each with a 4 su gap (mockup drawEsc)
+        assertArrayEquals(new float[]{x + 10, y + 58, 74, 20}, l.key(EscMenuModel.Key.EXPORT), 0f);
+        assertArrayEquals(new float[]{x + 10 + 74 + 4, y + 58, 74, 20}, l.key(EscMenuModel.Key.GALLERY), 0f);
         assertArrayEquals(new float[]{x + 10, y + 82, 152, 20}, l.key(EscMenuModel.Key.QUIT), 0f);
     }
 
@@ -49,6 +55,8 @@ public class EscMenuModelTest {
             assertSame(k, l.hit(r[0] + r[2] - 0.5f, r[1] + r[3] - 0.5f));
             assertNull(l.hit(r[0] - 0.5f, r[1] + 5));
         }
+        float[] ex = l.key(EscMenuModel.Key.EXPORT);
+        assertNull("the gap between Export and Gallery", l.hit(ex[0] + ex[2] + 2, ex[1] + 5));
         float[] c = l.card();
         assertNull(l.hit(c[0] + 2, c[1] + 2)); // the card itself is no key
         assertTrue(l.insideCard(c[0] + 2, c[1] + 2));
@@ -84,6 +92,9 @@ public class EscMenuModelTest {
         assertNull(m.pressed());
         m.mouseDown(l, quit[0] + 3, quit[1] + 3);
         assertSame(EscMenuModel.Key.QUIT, m.mouseUp(l, quit[0] + 4, quit[1] + 4));
+        float[] ex = l.key(EscMenuModel.Key.EXPORT);
+        m.mouseDown(l, ex[0] + 3, ex[1] + 3);
+        assertSame(EscMenuModel.Key.EXPORT, m.mouseUp(l, ex[0] + 4, ex[1] + 4));
         m.mouseDown(l, 0, 0);
         assertNull(m.pressed());
         assertNull(m.mouseUp(l, 0, 0));

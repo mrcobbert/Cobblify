@@ -28,6 +28,7 @@ public final class MarkerNav {
     private final Timeline timeline;
     private final long[] markerUs;
     private int cursor = -1;
+    private int lastJumped = -1;
 
     public MarkerNav(Timeline timeline) {
         this.timeline = timeline;
@@ -102,7 +103,16 @@ public final class MarkerNav {
             return -1;
         }
         cursor = i;
+        lastJumped = i;
         return i;
+    }
+
+    /**
+     * The marker last jumped to in this viewing, or -1 before any jump. Unlike the cursor it survives the playhead
+     * moving on and other seeks: the export range starts around it (G38; Rewind Export TASK U3).
+     */
+    public int lastJumped() {
+        return lastJumped;
     }
 
     /** Any seek that is not a marker jump clears the cursor. */

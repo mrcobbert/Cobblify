@@ -13,7 +13,8 @@ import java.util.TimeZone;
 /**
  * The gallery (G17, G39, G46; TASK A2, A3; mockup {@code drawGallery}): one row per closed recording, newest first,
  * with a star (keep forever), mode · map, WIN/LOSS or blank, the date, the length and a mini timeline of marker icons;
- * keys Watch (hero), Delete (the second press confirms; the armed key turns red) and Done. R2 shows no Export key.
+ * keys Watch (hero), Export (Rewind Export TASK U2: opens the game in the viewer's export mode), Delete (the second
+ * press confirms; the armed key turns red) and Done.
  * Hypixel replay-viewer visits are never listed (coordinator amendment 2).
  *
  * <p>The model holds selection, the armed Delete and the scroll; it changes no file. Actions come back as an
@@ -103,7 +104,9 @@ public final class GalleryModel {
             /** Set recording {@link #id}'s star to {@link #starred}. */
             STAR,
             /** Leave to {@link #done}. */
-            DONE
+            DONE,
+            /** Open recording {@link #id} in the viewer's export mode. */
+            EXPORT
         }
 
         public final Kind kind;
@@ -128,7 +131,7 @@ public final class GalleryModel {
         public final int rows, first;
         public final float titleX, titleW, resultX, dateX, lengthRight;
         /** {x, y, w, h} of the footer keys. */
-        public final float[] watch, delete, done;
+        public final float[] watch, export, delete, done;
 
         Layout(float x, float y, float w, float h, int rows, int first, float titleX, float titleW, float resultX,
                float dateX, float lengthRight) {
@@ -145,7 +148,8 @@ public final class GalleryModel {
             this.lengthRight = lengthRight;
             float ky = y + h - 1 - FOOT_H + 1 + 8;
             watch = new float[]{x + 11, ky, 72, 20};
-            delete = new float[]{x + 11 + 72 + 4, ky, 64, 20};
+            export = new float[]{x + 11 + 72 + 4, ky, 64, 20};
+            delete = new float[]{x + 11 + 72 + 4 + 64 + 4, ky, 64, 20};
             done = new float[]{x + w - 11 - 64, ky, 64, 20};
         }
 
@@ -182,6 +186,7 @@ public final class GalleryModel {
                 if (in(row(s), px, py)) return new Hit(Hit.Part.ROW, first + s);
             }
             if (in(watch, px, py)) return new Hit(Hit.Part.WATCH, -1);
+            if (in(export, px, py)) return new Hit(Hit.Part.EXPORT, -1);
             if (in(delete, px, py)) return new Hit(Hit.Part.DELETE, -1);
             if (in(done, px, py)) return new Hit(Hit.Part.DONE, -1);
             if (px >= x && py >= y && px < x + w && py < y + h) return new Hit(Hit.Part.CARD, -1);
@@ -195,7 +200,7 @@ public final class GalleryModel {
 
     /** What is under a point; {@link #row} is the entry index for ROW and STAR, else -1. */
     public static final class Hit {
-        public enum Part { NONE, CARD, ROW, STAR, WATCH, DELETE, DONE }
+        public enum Part { NONE, CARD, ROW, STAR, WATCH, EXPORT, DELETE, DONE }
 
         public final Part part;
         public final int row;
@@ -284,6 +289,13 @@ public final class GalleryModel {
             return Intent.NONE;
         }
         return new Intent(Intent.Kind.DELETE, entries.get(selected).id, false, null);
+    }
+
+    /** Export the selected game (opens it in the viewer's export mode); nothing when the list is empty. */
+    public Intent export() {
+        armed = false;
+        if (entries.isEmpty()) return Intent.NONE;
+        return new Intent(Intent.Kind.EXPORT, entries.get(selected).id, false, null);
     }
 
     public Intent done() {
@@ -444,6 +456,8 @@ public final class GalleryModel {
                 return clickStar(p.row);
             case WATCH:
                 return watch();
+            case EXPORT:
+                return export();
             case DELETE:
                 return delete();
             case DONE:

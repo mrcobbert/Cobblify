@@ -18,7 +18,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/** TASK A2, A3 and coordinator amendment 2: gallery rows, order, selection, star, armed delete, Done, keys. */
+/**
+ * TASK A2, A3 and coordinator amendment 2: gallery rows, order, selection, star, armed delete, Done, keys; Rewind
+ * Export TASK U2: the Export key.
+ */
 public class GalleryModelTest {
 
     static final TimeZone TZ = TimeZone.getTimeZone("UTC");
@@ -291,7 +294,7 @@ public class GalleryModelTest {
 
     @Test
     public void anyOtherActionResetsTheArmedDelete() {
-        String[] actions = {"up", "down", "enter", "click", "star", "watch", "done", "esc"};
+        String[] actions = {"up", "down", "enter", "click", "star", "watch", "export", "done", "esc"};
         for (String a : actions) {
             GalleryModel m = model(GalleryModel.Origin.TITLE, three());
             m.key(KEY_DOWN, NOW);
@@ -303,6 +306,7 @@ public class GalleryModelTest {
             else if (a.equals("click")) m.clickRow(1, NOW);
             else if (a.equals("star")) m.clickStar(2);
             else if (a.equals("watch")) m.watch();
+            else if (a.equals("export")) m.export();
             else if (a.equals("done")) m.done();
             else m.key(KEY_ESCAPE, NOW);
             assertFalse(a, m.armed());
@@ -360,7 +364,10 @@ public class GalleryModelTest {
         assertEquals(fy + 1 + 8, l.watch[1], 0f);
         assertEquals(x + 11, l.watch[0], 0f);
         assertEquals(72, l.watch[2], 0f);
-        assertEquals(x + 11 + 72 + 4, l.delete[0], 0f);
+        assertEquals(x + 11 + 72 + 4, l.export[0], 0f);
+        assertEquals(64, l.export[2], 0f);
+        assertEquals(l.watch[1], l.export[1], 0f);
+        assertEquals(x + 11 + 72 + 4 + 64 + 4, l.delete[0], 0f);
         assertEquals(x + 440 - 11 - 64, l.done[0], 0f);
     }
 
@@ -374,6 +381,8 @@ public class GalleryModelTest {
             assertTrue("w " + w, l.dateX + dateW <= lenLeft);
             assertTrue("w " + w, l.resultX + MC.width("LOSS", ViewerLayout.FONT) < l.dateX);
             assertTrue("w " + w, l.titleW > 60);
+            assertTrue(l.watch[0] + l.watch[2] < l.export[0]);
+            assertTrue(l.export[0] + l.export[2] < l.delete[0]);
             assertTrue(l.delete[0] + l.delete[2] < l.done[0]);
         }
     }
@@ -414,6 +423,8 @@ public class GalleryModelTest {
         assertSame(GalleryModel.Hit.Part.STAR, h.part);
         assertEquals(2, h.row);
         assertSame(GalleryModel.Hit.Part.WATCH, l.hit(l.watch[0] + 2, l.watch[1] + 2).part);
+        assertSame(GalleryModel.Hit.Part.EXPORT, l.hit(l.export[0] + 2, l.export[1] + 2).part);
+        assertSame(GalleryModel.Hit.Part.EXPORT, l.hit(l.export[0] + l.export[2] - 0.5f, l.export[1] + 19).part);
         assertSame(GalleryModel.Hit.Part.DELETE, l.hit(l.delete[0] + 2, l.delete[1] + 2).part);
         assertSame(GalleryModel.Hit.Part.DONE, l.hit(l.done[0] + 2, l.done[1] + 2).part);
         assertSame(GalleryModel.Hit.Part.CARD, l.hit(l.x + 3, l.y + l.h - 3).part);
@@ -436,6 +447,42 @@ public class GalleryModelTest {
         GalleryModel.Intent d = m.mouseUp(l, l.done[0] + 3, l.done[1] + 3, NOW);
         assertSame(GalleryModel.Intent.Kind.DONE, d.kind);
         assertFalse(m.armed());
+    }
+
+    @Test
+    public void exportReturnsTheSelectedGame() {
+        GalleryModel m = model(GalleryModel.Origin.TITLE, three());
+        m.key(KEY_DOWN, NOW);
+        GalleryModel.Intent i = m.export();
+        assertSame(GalleryModel.Intent.Kind.EXPORT, i.kind);
+        assertEquals(m.entries().get(1).id, i.id);
+        assertEquals("20261114-200000-aaaa", i.id);
+    }
+
+    @Test
+    public void exportWithNothingToSelectDoesNothing() {
+        GalleryModel m = model(GalleryModel.Origin.TITLE, Collections.<RecordingMeta>emptyList());
+        assertSame(GalleryModel.Intent.Kind.NONE, m.export().kind);
+        GalleryModel.Layout l = m.layout(960, 540, MC);
+        m.mouseDown(l, l.export[0] + 2, l.export[1] + 2);
+        assertSame(GalleryModel.Intent.Kind.NONE, m.mouseUp(l, l.export[0] + 2, l.export[1] + 2, NOW).kind);
+    }
+
+    @Test
+    public void theExportKeyClicksAndDisarmsDelete() {
+        GalleryModel m = model(GalleryModel.Origin.TITLE, three());
+        GalleryModel.Layout l = m.layout(960, 540, MC);
+        m.delete();
+        assertTrue(m.armed());
+        m.mouseDown(l, l.export[0] + 2, l.export[1] + 2);
+        assertSame(GalleryModel.Hit.Part.EXPORT, m.pressed().part);
+        GalleryModel.Intent i = m.mouseUp(l, l.export[0] + 3, l.export[1] + 3, NOW);
+        assertSame(GalleryModel.Intent.Kind.EXPORT, i.kind);
+        assertEquals(m.entries().get(0).id, i.id);
+        assertFalse(m.armed());
+        m.mouseDown(l, l.export[0] + 2, l.export[1] + 2);
+        assertSame("released elsewhere", GalleryModel.Intent.Kind.NONE,
+                m.mouseUp(l, l.done[0] + 2, l.done[1] + 2, NOW).kind);
     }
 
     @Test

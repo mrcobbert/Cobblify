@@ -463,6 +463,14 @@ public class RewindViewerActionsTest {
         assertEquals("the gallery keeps the session", PlaybackSession.State.WATCHING, session.state());
         checked.add(EscMenuModel.Key.GALLERY);
 
+        // Rewind Export Phase 6 adds the Export key to the model only; Phase 7 wires it to export mode and replaces
+        // this check. Until then it changes nothing: no screen, the session keeps watching.
+        RewindEscScreen.apply(EscMenuModel.Key.EXPORT, session, model, viewer, gallery);
+        assertEquals(2, views[0]);
+        assertEquals(1, galleries[0]);
+        assertEquals(PlaybackSession.State.WATCHING, session.state());
+        checked.add(EscMenuModel.Key.EXPORT);
+
         RewindEscScreen.apply(EscMenuModel.Key.REJOIN, session, model, viewer, gallery);
         h.loop.frame(1);
         assertEquals(PlaybackSession.State.IDLE, session.state());
