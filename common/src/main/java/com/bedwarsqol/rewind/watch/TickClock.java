@@ -17,6 +17,9 @@ package com.bedwarsqol.rewind.watch;
  *       cursor to P without dispatching what is stamped before P (seek, catch-up, restart). A record stamped exactly
  *       at P stays: a seek lands at the next tick's time, and that tick (with its records) runs after the seek
  *       (review code-2 O10).</li>
+ *   <li>An export (Rewind Export PLAN Solution 1) does not use wall time: {@link #step} sets P to each frame's time,
+ *       {@link #dueAll} runs every tick reached without the 10-tick cap, {@link #seatTimed} puts the cursor at the
+ *       export's start.</li>
  * </ul>
  *
  * So a tick runs in the first frame whose playback time has reached its recorded time: at 1x its error is at most
@@ -33,6 +36,9 @@ public final class TickClock {
     /** Playback nanoseconds not yet a whole microsecond (no drift at speeds like 0.25x). */
     private long remNanos;
     private int timedNext;
+    /** The stamp of the record {@link #dispatchTimed} is handing over ({@link #dispatching()}). */
+    private long dispatchingUs;
+    private boolean dispatching;
 
     public TickClock(TickTable table) {
         this.table = table;
@@ -79,6 +85,37 @@ public final class TickClock {
         return due;
     }
 
+    /**
+     * An export's fixed step (Rewind Export PLAN Solution 1): P is {@code us}, exactly. Wall time and speed play no
+     * part; the caller sets the clock again ({@link #set}) when the export ends.
+     */
+    public void step(long us) {
+        playUs = us;
+        remNanos = 0;
+    }
+
+    /**
+     * {@link #due} without vanilla's 10-tick cap, for an export: every tick {@code k >= ticksRun} with
+     * {@code T[k] <= P}, at most {@code ticksToStop}; P is never pulled back (a recorded freeze's catch-up ticks all
+     * run in the frame that reaches them).
+     */
+    public int dueAll(long ticksRun, long ticksToStop) {
+        long cap = Math.min(Integer.MAX_VALUE, Math.max(0, ticksToStop));
+        int due = 0;
+        while (due < cap && table.timeOf(ticksRun + due) <= playUs) {
+            due++;
+        }
+        return due;
+    }
+
+    /**
+     * The dispatch cursor to the first time-scoped record stamped at or after {@code us}, wherever P is (an export's
+     * start, review B1: a seek lands on a tick and {@link #skipTimed} passes what lies before it).
+     */
+    public void seatTimed(ExtRecords ext, long us) {
+        timedNext = ext == null ? 0 : ext.firstTimedAfter(us - 1);
+    }
+
     /** The partial tick to draw once tick {@code lastRun} has run. */
     public float partial(long lastRun) {
         return table.partial(lastRun, playUs);
@@ -101,9 +138,25 @@ public final class TickClock {
                 break;
             }
             timedNext++;
-            sink.timed(ext.tag(i), ext.timeUs(i), ext.buffer(), ext.offset(i), ext.length(i));
+            dispatching = true;
+            dispatchingUs = ext.timeUs(i);
+            try {
+                sink.timed(ext.tag(i), ext.timeUs(i), ext.buffer(), ext.offset(i), ext.length(i));
+            } finally {
+                dispatching = false;
+            }
             n++;
         }
         return n;
+    }
+
+    /** True while {@link #dispatchTimed} hands a record to the sink. */
+    public boolean dispatching() {
+        return dispatching;
+    }
+
+    /** The stamp of the record being handed over (meaningful while {@link #dispatching()}). */
+    public long dispatchingUs() {
+        return dispatchingUs;
     }
 }

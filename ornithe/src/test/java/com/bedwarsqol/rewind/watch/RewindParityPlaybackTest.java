@@ -9,6 +9,7 @@ import com.bedwarsqol.rewind.ExtCodec;
 import com.bedwarsqol.rewind.HudCapture;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportPlan;
 import com.mojang.authlib.GameProfile;
 import io.netty.buffer.Unpooled;
 import net.minecraft.block.Block;
@@ -511,6 +512,14 @@ public class RewindParityPlaybackTest {
         @Override public void openRejoin() { }
         @Override public void openGallery() { }
         @Override public void log(String line) { }
+
+        @Override
+        public void exportStart() {
+            for (PlaybackPart p : RewindPlayback.parts()) {
+                p.exportStart();
+            }
+        }
+
         @Override public float timerSpeed() { return timerSpeed; }
         @Override public void setTimerSpeed(float speed) { timerSpeed = speed; }
         @Override public int thirdPersonView() { return thirdPerson; }
@@ -1002,5 +1011,129 @@ public class RewindParityPlaybackTest {
         frame(0);
         assertFalse("nothing plays: vanilla's overlay, nothing added", HudPlayback.skipsOverlay(mc));
         assertEquals(2, p.overlays);
+    }
+
+    // ------------------------------------------------------------------ Rewind Export Phase 1: state at frame 0
+
+    /**
+     * One segment of 60 ticks 50 ms apart; 12 ms after tick 20's head, one record of each time-scoped state tag:
+     * VIEW (chat open), CHAT_INPUT, MOUSE, FOV and INPUT (W held). Keystrokes is on.
+     */
+    File writeStateRecording(File dir) throws Exception {
+        RecordingFixture.WriterRun w = new RecordingFixture.WriterRun(dir, 10_000_000L);
+        w.connect(16_384);
+        w.advance(1_000);
+        w.boundary(0, RecordingFixture.joinGame(0), 0);
+        w.open();
+        ExtCodec c = new ExtCodec();
+        c.beginSettings();
+        c.settingInt(RewindFormat.settingHudKey(RewindFormat.HUD_KEYSTROKES, RewindFormat.HUD_FIELD_ENABLED), 1);
+        ext(w, c, RewindFormat.TAG_SETTINGS, c.endSettings());
+        int pending = 1;
+        long base = w.nowUs + 10_000L;
+        for (int i = 0; i < 60; i++) {
+            w.nowUs = base + i * TICK_US;
+            ext(w, c, RewindFormat.TAG_TICK_HEAD, c.tickHead(pending));
+            pending = 0;
+            if (i == 0) {
+                w.advance(1_000);
+                ext(w, c, RewindFormat.TAG_VIEW, c.view(0, 0, RewindFormat.SCREEN_NONE));
+                ext(w, c, RewindFormat.TAG_INPUT, c.input(0));
+                ext(w, c, RewindFormat.TAG_FOV, c.fov(70f));
+                ext(w, c, RewindFormat.TAG_HUD, c.beginHud(RewindFormat.HUD_KEYSTROKES,
+                        RewindFormat.HUD_FLAG_ON_SCREEN).end());
+            }
+            if (i == 20) {
+                w.advance(12_000);
+                ext(w, c, RewindFormat.TAG_VIEW, c.view(0, 0, RewindFormat.SCREEN_CHAT));
+                ext(w, c, RewindFormat.TAG_CHAT_INPUT, c.chatInput("/fake hi", 8));
+                ext(w, c, RewindFormat.TAG_MOUSE, c.mouse(-30, 10));
+                ext(w, c, RewindFormat.TAG_FOV, c.fov(55f));
+                ext(w, c, RewindFormat.TAG_INPUT, c.input(RewindFormat.INPUT_W));
+            }
+            w.advance(1_000);
+            int n = w.enc.tick(0.1 * i, 64, 0, 0f, 0f, 0f, RewindFormat.FLAG_ON_GROUND, 1, -1, 0);
+            if (n > 0) {
+                w.track(RewindFormat.TAG_TICK, Arrays.copyOf(w.enc.buffer(), n));
+            }
+            w.advance(10_000);
+            w.step();
+        }
+        return w.close();
+    }
+
+    /** A frame with no clock help: {@code wallNs} of wall time, then the loop as {@link #frame} runs it. */
+    void frameAfter(long wallNs) {
+        ops.nanos += wallNs;
+        ops.elapsed = 0;
+        session.frameStart();
+        for (int j = 0; j < ops.elapsed; j++) {
+            session.tickHead();
+            if (mc.theWorld != null && !ops.paused && mc.thePlayer != null) {
+                mc.thePlayer.onUpdate();
+            }
+            session.tickEnd();
+        }
+        ops.paused = false;
+        session.afterPauseWrite();
+        RewindPlayback.onRenderWorld(ops.partial);
+        frames++;
+    }
+
+    /** What the time-scoped state tags show now, read where the parts read them. */
+    Map<String, String> stateTags() throws Exception {
+        Map<String, String> g = new LinkedHashMap<String, String>();
+        ViewState v = session.view();
+        g.put("view", "perspective " + v.perspective() + " screen " + v.screenKind() + " hideGui " + v.hideGui()
+                + " tab " + v.tabList());
+        g.put("fov", String.valueOf(fovPart().recorded()));
+        RecordedScreens screens = (RecordedScreens) RewindCamera.screenHolder();
+        g.put("chat", screens.chatShown() + " " + screens.chatText() + " " + screens.chatCursor());
+        g.put("cursor", screens.cursorX(427) + "," + screens.cursorY(240));
+        g.put("hud", HudPlayback.debugState());
+        return g;
+    }
+
+    /**
+     * Rewind Export PLAN Phase 1 (review B1): an export that starts 13 ms after a VIEW, CHAT_INPUT, MOUSE, FOV and
+     * INPUT record (and 25 ms after a tick) shows on frame 0 what straight play shows at that time, after a backward
+     * rebuild from further on; the records themselves are what it shows.
+     */
+    @Test
+    public void anExportsFrameZeroShowsTheStateRecordsInEffectAtItsStart() throws Exception {
+        open(writeStateRecording(tmp.newFolder("rewind")));
+        ExtRecords ext = session.recording().ext();
+        long stamp = -1;
+        for (int i = 0; i < ext.size(); i++) {
+            if (ext.tag(i) == RewindFormat.TAG_CHAT_INPUT) {
+                stamp = ext.timeUs(i);
+            }
+        }
+        long start = stamp + 13_000L;
+        TickTable table = session.timeline().ticks();
+        assertTrue("not on a tick", table.timeOf(table.tickOf(start)) != start);
+        while (session.renderTimeUs() < start) {
+            frameAfter(Math.min(16_000L, start - session.renderTimeUs()) * 1000L);
+        }
+        assertEquals(start, session.renderTimeUs());
+        Map<String, String> straight = stateTags();
+        assertEquals("perspective 0 screen " + RewindFormat.SCREEN_CHAT + " hideGui false tab false",
+                straight.get("view"));
+        assertTrue(straight.get("chat"), straight.get("chat").startsWith("true /fake hi"));
+        assertTrue(straight.get("hud"), straight.get("hud").startsWith("keys H"));
+
+        while (session.ticks().ticksRun() < 50) {
+            frame(1);
+        }
+        assertTrue(session.beginExport(new ExportPlan(start, start + 1_000_000L, 60)));
+        for (int i = 0; i < 1_000 && session.exportFrame() != 0; i++) {
+            frame(0);
+        }
+        assertEquals(0, session.exportFrame());
+        assertEquals(start, session.renderTimeUs());
+        assertEquals("frame 0 == straight play at the start", straight, stateTags());
+        session.endExport();
+        assertTrue("no part threw: " + failedParts().keySet(), failedParts().isEmpty());
+        assertEquals(0, connection.discarded());
     }
 }

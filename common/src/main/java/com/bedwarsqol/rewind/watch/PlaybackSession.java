@@ -1,6 +1,7 @@
 package com.bedwarsqol.rewind.watch;
 
 import com.bedwarsqol.rewind.RecordingMeta;
+import com.bedwarsqol.rewind.export.ExportPlan;
 
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
@@ -35,6 +36,9 @@ import java.util.function.LongSupplier;
  * which ends vanilla's loop after this tick: no tick runs past a seek target or the end, paused or not.
  * {@link #afterPauseWrite} forces the pause flag again after vanilla wrote it. A seek or catch-up sets playback time to
  * the time of the tick it lands on and plays no time-scoped record it passed.
+ *
+ * <p><b>Export</b> ({@link #beginExport}, Rewind Export PLAN Solution 1): while an export runs, each frame's playback
+ * time is the export's next frame time, not wall time x speed; pause, speed and seeks from the viewer do nothing.
  *
  * <p><b>Deferred work.</b> Seeks and exits asked for by screens (whose input may arrive inside a tick) are applied at
  * the next {@link #frameStart}, outside {@code runTick}, so a world is never rebuilt in the middle of a tick. A hook
@@ -219,6 +223,32 @@ public final class PlaybackSession {
     private boolean catchUpRestart;
     /** A seek while watching whose target is the tick already reached: no tick runs, playback time stays. */
     private boolean seekInPlace;
+    /** The recorded time of the tick running now (between {@link #tickHead} and {@link #tickEnd}). */
+    private long tickTimeUs;
+
+    /** Where a running export is ({@link #beginExport}). */
+    private enum ExportStage {
+        /** The seek to the pre-roll's start has not landed yet. */
+        SEEKING,
+        /** Uncaptured frames from the pre-roll's start up to the range start. */
+        PREROLL,
+        /** The frames to capture. */
+        FRAMES,
+        /** The last frame was captured; playback time holds until the tail is asked for. */
+        LAST_TAKEN,
+        /** The tail step ran. */
+        TAIL_DONE
+    }
+
+    private ExportPlan export;
+    private ExportStage exportStage;
+    private long exportPreUs;
+    private long exportIndex;
+    /** The frame {@link #exportIndex} was captured ({@link #advanceExportFrame}); the next frame moves on. */
+    private boolean exportTaken;
+    private boolean tailAsked;
+    /** The next pre-roll frame on the export's grid ({@link #gridTime}; negative). */
+    private long prerollGrid;
 
     public PlaybackSession(ClientOps ops, PlaybackGate gate) {
         this.ops = ops;
@@ -434,6 +464,8 @@ public final class PlaybackSession {
             ops.setGamePaused(false);
             ops.setPartialTicks(1f);
             deadline = ops.nanoTime() + (behindCard ? CARD_BUDGET_NS : VIEW_BUDGET_NS);
+        } else if (export != null) {
+            exportControl();
         } else {
             boolean paused = ticks.paused();
             clock.advance(ops.nanoTime(), ticks.speed(), paused);
@@ -465,6 +497,7 @@ public final class PlaybackSession {
         }
         try {
             long k = ticks.beginTick();
+            tickTimeUs = timeline.ticks().timeOf(k);
             worldTicked = true;
             TickFeeder.State s = feeder.feedForTick(k, ops.sink());
             if (s == TickFeeder.State.FAILED) {
@@ -568,9 +601,14 @@ public final class PlaybackSession {
         return (state == State.CATCHING_UP || state == State.WATCHING) && ticks != null && pendingExit == null;
     }
 
+    /** Playing and no export runs: the viewer's play, speed and seek commands apply. */
+    private boolean steerable() {
+        return playing() && export == null;
+    }
+
     /** Space / K: play or pause; at the end it plays from the game start. */
     public void togglePlay() {
-        if (!playing()) {
+        if (!steerable()) {
             return;
         }
         if (ticks.togglePlay() == ReplayTicks.PlayToggle.RESTART) {
@@ -579,26 +617,26 @@ public final class PlaybackSession {
     }
 
     public void setPaused(boolean paused) {
-        if (playing()) {
+        if (steerable()) {
             ticks.setPaused(paused);
         }
     }
 
     public void faster() {
-        if (playing()) {
+        if (steerable()) {
             ticks.faster();
         }
     }
 
     public void slower() {
-        if (playing()) {
+        if (steerable()) {
             ticks.slower();
         }
     }
 
     /** Seeks to {@code tick} (clamped to the timeline) at the next frame. */
     public void seekTo(long tick) {
-        if (!playing()) {
+        if (!steerable()) {
             return;
         }
         seekTarget = SeekPlanner.clamp(timeline, tick);
@@ -607,7 +645,7 @@ public final class PlaybackSession {
 
     /** Seeks {@code deltaUs} from the playhead (or from a seek not applied yet), in whole ticks. */
     public void seekBy(long deltaUs) {
-        if (!playing()) {
+        if (!steerable()) {
             return;
         }
         seekTo(SeekPlanner.relative(timeline, playheadTick(), deltaUs));
@@ -733,6 +771,8 @@ public final class PlaybackSession {
         opened = false;
         loops = 0;
         worldTicked = false;
+        export = null;
+        exportStage = null;
     }
 
     private void log(String line) {
@@ -741,6 +781,199 @@ public final class PlaybackSession {
         } catch (Throwable ignored) {
             // logging never matters more than playback
         }
+    }
+
+    // ================================================================== export (Rewind Export PLAN Solution 1)
+
+    /**
+     * Starts exporting {@code plan} at a fixed step; the viewer's play, speed and seek commands do nothing until
+     * {@link #endExport}. The start is the same whatever was watched before (review B1, r2-I2): at the next frame
+     * the session seeks to {@code n0} = the count of ticks recorded at or before the pre-roll's start
+     * ({@code max(first tick, start - }{@link ExportPlan#PREROLL_US}{@code )}), rebuilding backward or catching up
+     * forward; once it has landed, {@link ClientOps#exportStart} (every part forgets what was watched), playback
+     * time is stepped to the pre-roll's start and the timed cursor seated at the first record stamped at or after it;
+     * then uncaptured pre-roll frames on the export's frame grid run ticks and dispatch every timed record up to the
+     * start ({@link #exportPreroll()}), and frame 0 is at the start exactly. Each frame steps playback time to
+     * {@code plan.timeOfFrame(i)}, runs every tick recorded at or before it ({@link TickClock#dueAll}), writes the
+     * partial tick and dispatches the timed records reached; the index moves only on {@link #advanceExportFrame}.
+     *
+     * @return false (nothing changes) unless a world plays, no export runs and the start is not before the first tick
+     */
+    public boolean beginExport(ExportPlan plan) {
+        if (plan == null || !playing() || export != null || timeline == null || clock == null) {
+            return false;
+        }
+        long first = timeline.timeOfTick(timeline.startTick());
+        if (plan.startUs() < first) {
+            return false;
+        }
+        export = plan;
+        exportStage = ExportStage.SEEKING;
+        exportIndex = 0;
+        exportTaken = false;
+        tailAsked = false;
+        exportPreUs = Math.max(first, plan.startUs() - ExportPlan.PREROLL_US);
+        ticks.setPaused(false);
+        seekTarget = SeekPlanner.clamp(timeline, timeline.ticks().tickOf(exportPreUs + 1));
+        seekPending = true;
+        log("rewind-export: begin frames=" + plan.frames() + " fps=" + plan.fps() + " prerollMs="
+                + (plan.startUs() - exportPreUs) / 1000L + " restart=" + (seekTarget < ticks.ticksRun()));
+        return true;
+    }
+
+    /** The frame of a running export's fixed step (WATCHING): see {@link #beginExport}. */
+    private void exportControl() {
+        ExportPlan plan = export;
+        long t = Long.MIN_VALUE;
+        if (exportStage == ExportStage.SEEKING) {
+            ops.exportStart();
+            clock.step(exportPreUs);
+            clock.seatTimed(recording.ext(), exportPreUs);
+            if (exportPreUs < plan.startUs()) {
+                exportStage = ExportStage.PREROLL;
+                prerollGrid = firstGridAfter(plan, exportPreUs);
+                t = exportPreUs;
+            } else {
+                exportStage = ExportStage.FRAMES;
+            }
+        } else if (exportStage == ExportStage.PREROLL) {
+            t = gridTime(plan, prerollGrid++);
+            if (t >= plan.startUs()) {
+                // Records stamped after the last pre-roll frame but before the start still belong to the pre-roll
+                // (their sounds are discarded); they reach the parts before frame 0 is drawn, with their own
+                // stamps, as straight play hands them to the first frame at or after them.
+                clock.step(plan.startUs() - 1);
+                clock.dispatchTimed(recording.ext(), ops.sink());
+                exportStage = ExportStage.FRAMES;
+                t = Long.MIN_VALUE;
+            }
+        } else if (exportStage == ExportStage.FRAMES && exportTaken) {
+            exportTaken = false;
+            if (exportIndex + 1 < plan.frames()) {
+                exportIndex++;
+            } else {
+                exportStage = ExportStage.LAST_TAKEN;
+            }
+        }
+        if (exportStage == ExportStage.FRAMES && t == Long.MIN_VALUE) {
+            t = plan.timeOfFrame(exportIndex);
+        } else if (exportStage == ExportStage.LAST_TAKEN && tailAsked) {
+            // up to the selected end, not including it: records and ticks at the end belong to no frame
+            t = Math.max(clock.playbackUs(), plan.endUs() - 1);
+            exportStage = ExportStage.TAIL_DONE;
+        } else if (t == Long.MIN_VALUE) {
+            t = clock.playbackUs(); // after the last frame: hold
+        }
+        clock.step(t);
+        int due = clock.dueAll(ticks.ticksRun(), ticks.ticksToNextStop());
+        ops.setTimerSpeed(1f);
+        ops.setElapsedTicks(due);
+        ops.setGamePaused(false);
+        ops.setPartialTicks(clock.partial(ticks.ticksRun() + due - 1));
+        clock.dispatchTimed(recording.ext(), ops.sink());
+    }
+
+    /** The export's frame grid, also before frame 0: {@code start + floor(i x 1e6 / fps)}, any i. */
+    private static long gridTime(ExportPlan plan, long i) {
+        return plan.startUs() + Math.floorDiv(i * 1_000_000L, plan.fps());
+    }
+
+    /** The first grid index whose time is after {@code us} (a time at most a pre-roll before the start). */
+    private static long firstGridAfter(ExportPlan plan, long us) {
+        long i = Math.floorDiv((us - plan.startUs()) * plan.fps(), 1_000_000L) - 1;
+        while (gridTime(plan, i) <= us) {
+            i++;
+        }
+        return i;
+    }
+
+    /** An export is running ({@link #beginExport} until {@link #endExport} or the session's end). */
+    public boolean exporting() {
+        return export != null;
+    }
+
+    /** The running export's plan, or null. */
+    public ExportPlan exportPlan() {
+        return export;
+    }
+
+    /**
+     * The index of the export frame this game-loop pass draws (0 to {@code frames - 1}; decided at its
+     * {@link #frameStart}, so it stays the same until the next one), or -1: no export, before frame 0 (the seek and
+     * the pre-roll), after the last frame was taken, and the tail. Only these frames are captured.
+     */
+    public long exportFrame() {
+        return export != null && exportStage == ExportStage.FRAMES ? exportIndex : -1;
+    }
+
+    /**
+     * The frame drawn now was captured: the next {@link #frameStart} draws the next one; after the last, playback
+     * time holds until {@link #collectExportTail}. Until this is called the same frame is drawn again with nothing run
+     * twice (settling). Calling it twice for one frame advances once.
+     */
+    public void advanceExportFrame() {
+        if (export != null && exportStage == ExportStage.FRAMES) {
+            exportTaken = true;
+        }
+    }
+
+    /**
+     * After the last frame was captured (review I1): the next frame steps playback time to the selected range end
+     * (less a microsecond), running the ticks and dispatching the timed records recorded before it, and is not
+     * captured. Read {@link #exportTailCollected()} after that frame's ticks. Calling it again does nothing.
+     */
+    public void collectExportTail() {
+        if (export != null && (exportStage == ExportStage.LAST_TAKEN || exportStage == ExportStage.FRAMES
+                && exportTaken && exportIndex + 1 >= export.frames())) {
+            tailAsked = true;
+        }
+    }
+
+    /** The tail step has run (its ticks have run once the frame that took it has). */
+    public boolean exportTailCollected() {
+        return export != null && exportStage == ExportStage.TAIL_DONE;
+    }
+
+    /**
+     * Before frame 0 of a running export (the seek and the pre-roll, review r2-I2): what is drawn is not captured and
+     * no sound that plays now may reach the export.
+     */
+    public boolean exportPreroll() {
+        return export != null && (exportStage == ExportStage.SEEKING || exportStage == ExportStage.PREROLL);
+    }
+
+    /**
+     * Ends the export (done, cancelled or failed): the session is paused where playback time stands, and wall time
+     * counts from now, so nothing jumps; play, speed and seeks work again.
+     */
+    public void endExport() {
+        if (export == null) {
+            return;
+        }
+        export = null;
+        exportStage = null;
+        if (ticks != null) {
+            ticks.setPaused(true);
+        }
+        if (clock != null) {
+            clock.set(clock.playbackUs(), ops.nanoTime());
+        }
+        log("rewind-export: end");
+    }
+
+    /**
+     * When something that happens now happened on the recording's clock (an export's sound log, PLAN Solution 3):
+     * the running tick's recorded time inside a tick, a timed record's own stamp while it is dispatched, else
+     * playback time ({@link #renderTimeUs()}).
+     */
+    public long eventTimeUs() {
+        if (clock != null && clock.dispatching()) {
+            return clock.dispatchingUs();
+        }
+        if (worldTicked) {
+            return tickTimeUs;
+        }
+        return renderTimeUs();
     }
 
     // ================================================================== state for screens and hooks

@@ -439,3 +439,7 @@ one-sided test ornithe com/bedwarsqol/rewind/watch/RewindParityPlaybackTest.java
 # Split (0.19.0): Ornithe and Lunar only; Forge is retiring.
 one-sided main ornithe com/bedwarsqol/feature/SplitWatch.java
 one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSplitTest.java
+
+# Rewind Export Phase 1 (Ornithe only): export start state and the real-recording export dry run.
+one-sided test ornithe com/bedwarsqol/rewind/watch/ExportStartStateTest.java
+one-sided test ornithe com/bedwarsqol/rewind/export/RealRecordingExportDryRunTest.java

@@ -27,6 +27,7 @@ import net.minecraft.client.network.NetworkPlayerInfo;
  *       took its pose; {@link #drawUnder} under the viewer bar and {@link #drawOver} over it.</li>
  *   <li>{@link #viewChanged()}: the view changed ({@link ViewState}: your view, free camera, ridden, F5, clean
  *       view), applied at once even while paused.</li>
+ *   <li>{@link #exportStart()}: an export's start has landed, before its pre-roll.</li>
  *   <li>{@link #exit()}: the session ends (every path). Put back anything you changed outside the playback world.</li>
  * </ol>
  *
@@ -95,6 +96,14 @@ public interface PlaybackPart {
     /** The tab entry {@code player} (the camera or the puppet) is drawn with, or null for vanilla's own lookup. */
     default NetworkPlayerInfo playerInfo(AbstractClientPlayer player) {
         return null;
+    }
+
+    /**
+     * An export starts (Rewind Export PLAN Solution 1 "Pre-roll"): after the session's seek to the pre-roll has landed
+     * and before the pre-roll's first frame. Forget state that draws build from what was watched (a fade, a flash),
+     * so the export's frames are the same whatever was watched before; the pre-roll rebuilds it.
+     */
+    default void exportStart() {
     }
 
     /** The session ends. */

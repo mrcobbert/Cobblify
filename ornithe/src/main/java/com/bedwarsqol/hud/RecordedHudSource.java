@@ -150,6 +150,35 @@ public final class RecordedHudSource implements HudSource {
         if (cap >= 0) fades[cap].tap(Math.floorDiv(timeUs, 1000L));
     }
 
+    /**
+     * What the painters read now, as text, for an export's frame log (Rewind Export PLAN K7, P2): per Keystrokes cap
+     * held ({@code H}/{@code -}) and, where Keystrokes is drawn, its flash level in 1/255 steps; per HUD item its
+     * on-screen flag and the record its values come from; the SETTINGS record in effect. Call it after {@link #at}
+     * for the frame. Changes nothing a draw would not: a cap's level is read as the Keystrokes painter reads it (only
+     * where Keystrokes is drawn), and a second read at the same time with the same keys returns the same level and
+     * leaves the fade as it was. Counts and flags only, never recording content.
+     */
+    public String digest() {
+        StringBuilder b = new StringBuilder(160);
+        boolean caps = settings != null && settings.keystrokesEnabled && shows(BedwarsHudRenderer.KEYSTROKES_HUD);
+        long now = now();
+        b.append("keys");
+        for (int i = 0; i < CAPS; i++) {
+            b.append(' ').append(held[i] ? 'H' : '-');
+            if (caps) {
+                b.append(Math.round(fades[i].level(held[i], now) * 255f));
+            }
+        }
+        b.append(" | hud");
+        for (int m = RewindFormat.HUD_POTION; m < MODULES; m++) {
+            HudModel.Values v = values[m];
+            b.append(' ').append(m).append(':').append(v != null && v.onScreen ? '1' : '0').append('/')
+                    .append(valueRecord[m]);
+        }
+        b.append(" | settings ").append(settingsRecord);
+        return b.toString();
+    }
+
     // ------------------------------------------------------------------ HudSource
 
     @Override
