@@ -226,6 +226,13 @@ teleport), watches it and exports it off-screen through the `rewind-export-*` pr
 `frames.json` to `/Users/Shared/cobblify-dev/exports/spike/<run>` (`stage` makes `exports/` world-writable) and
 compares them itself; replies are counts, means, boxes and ticks.
 
+RWW then watches that recording (`rewind-watch-*` probes). Its FOV check `3d` (TASK C7) uses
+`probe rewind-watch-fov`, while a recording plays: the world FOV the frame uses (`getFOVModifier(partial, true)` with
+every injector), the client's FOV setting, and the recording's own FOV at the playback time, decoded by the bridge from
+its FOV records. `rewind-watch-fov set DEGREES` (30 to 110) changes the client's FOV setting for this session only
+(never written to options.txt) and `rewind-watch-fov restore` puts the first value back; 3d restores it whatever
+happens.
+
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
 release-jar check.

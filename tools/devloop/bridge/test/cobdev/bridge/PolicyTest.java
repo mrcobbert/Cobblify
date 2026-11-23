@@ -174,9 +174,21 @@ public final class PolicyTest {
         refusedCall(() -> Policy.modifiers("shift", true, false, false));
         for (String p : new String[]{"rewind-watch-swing", "rewind-watch-open", "rewind-watch-state", "rewind-watch-seek",
                 "rewind-watch-play-to", "rewind-watch-snapshot", "rewind-watch-quit", "rewind-watch-stage",
-                "rewind-watch-actions", "rewind-watch-window"}) {
+                "rewind-watch-actions", "rewind-watch-window", "rewind-watch-fov"}) {
             allowed(Policy.probeName(p));
         }
+        checks++;
+        if (Policy.rewindFov(java.util.Collections.<String>emptyList()) != null) fail("no argument reads");
+        if (Policy.rewindFov(java.util.Arrays.asList("restore")).length != 0) fail("restore sets nothing");
+        same("110.0", String.valueOf(Policy.rewindFov(java.util.Arrays.asList("set", "110"))[0]));
+        same("30.0", String.valueOf(Policy.rewindFov(java.util.Arrays.asList("set", "30"))[0]));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("set", "111")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("set", "29.9")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("set", "NaN")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("set", "x")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("set")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("restore", "now")));
+        refusedCall(() -> Policy.rewindFov(java.util.Arrays.asList("90")));
         for (String a : new String[]{"start", "status", "cleanup"}) {
             same(a, Policy.rewindActions(java.util.Arrays.asList(a)));
         }

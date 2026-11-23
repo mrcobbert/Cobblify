@@ -5009,16 +5009,20 @@ def rww_seek(s, *args):
     return rww_wait(s)
 
 
+RWW_COUNTER_SLACK_TICKS = 60  # 3 s of title-screen ticks around the open and the quit
+
+
 def smoke_rewind_watch(s):
     """RWW (PLAN Phase 7): watch the single-player recording RW just made, in cobdev's own folder.
     1 open: WATCHING, gate on, failures 0, your view; 2 free camera moves while paused; 3 straight play, a forward
     seek and a backward seek to the same tick K give equal hashes in every contract group (the seven of R2 and Rewind
     parity's view, window, dig and HUD groups) and the recorded HUD shows at K; 3b your view's hand
     at the recorded swing, none of it in the free camera; 3c (rww_parity) the recorded F5 and the double chest RW's
-    actions opened, 54 slots filled from its first tick; 4 Quit to Title restores what playback changed and leaves
-    no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
+    actions opened, 54 slots filled from its first tick; 3d (rww_fov) your view's world FOV is the recorded FOV with
+    the client's FOV setting changed, and the setting is put back; 4 Quit to Title restores what playback changed
+    and leaves no new recording. Nothing is sent after the join: the playback channel's discard count stays put while
     watching (every rebuild's join adds its own client settings and brand, nothing else)."""
-    s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, exit)")
+    s.begin("RWW", "Rewind: watch RW's recording (views, seek equivalence, hand, FOV, exit)")
     pre, err = s.try_call("/probe", post={"name": "rewind-watch-state", "args": ""})
     if pre is None:
         return s.unavailable("the running bridge has no rewind-watch probes (stage a build with them): %s" % err)
@@ -5107,6 +5111,9 @@ def smoke_rewind_watch(s):
         # 3c (Rewind parity Phase 16) the recorded F5 and the double chest RW's actions opened
         rww_parity(s, st, end)
 
+        # 3d (TASK C7) your view's world FOV is the recorded one, whatever the client's FOV setting
+        rww_fov(s, end)
+
         # 4 Quit to Title
         s.probe("rewind-watch-quit")
         st = rww_wait(s, 30)
@@ -5116,8 +5123,14 @@ def smoke_rewind_watch(s):
                 {"title": title, "state": st.get("state")})
         restored = {key: [pre.get(key), st.get(key)] for key in ("timerSpeed", "thirdPersonView", "chatLines",
                                                                     "updateCounter")}
-        s.check("4 timer speed, F5 view, chat lines and update counter are back", all(
-            v[0] == v[1] for v in restored.values()), restored)
+        # The update counter ticks on the title screen too, so it moves between this step's first probe and the
+        # open, and again after the quit: "back" is the value before, plus those few ticks (never playback's own
+        # count, which starts at 0).
+        counter = restored["updateCounter"]
+        counter_back = (isinstance(counter[0], int) and isinstance(counter[1], int)
+                        and 0 <= counter[1] - counter[0] <= RWW_COUNTER_SLACK_TICKS)
+        s.check("4 timer speed, F5 view, chat lines and update counter are back", counter_back and all(
+            v[0] == v[1] for key, v in restored.items() if key != "updateCounter"), restored)
         after = (s.probe("rewind-latest") or {}).get("closed")
         s.check("4 watching recorded nothing", after == files_before, {"before": files_before, "after": after})
     finally:
@@ -5149,6 +5162,73 @@ def rww_parity(s, st, end):
             {"held": inside.get("held"), "slots": inside.get("slots"), "ownFilled": inside.get("ownFilled"),
              "inventorySame": inside.get("inventory") == before.get("inventory")})
     s.shot("rww-double-chest", wait=500)
+
+
+# RWW 3d (TASK C7): the FOV settings tried, inside vanilla's slider (30 to 110), and how far from both the recorded FOV
+# and the player's own setting the one used must be, so an equal world FOV cannot be the setting showing through.
+RWW_FOV_CHOICES = (110.0, 30.0, 50.0, 90.0)
+RWW_FOV_GAP = 15.0
+RWW_FOV_TOLERANCE = 0.01  # degrees; the recorded value is returned as it was read, so it is exact in practice
+
+
+def rww_fov_setting(recorded, own):
+    """The FOV setting 3d uses: the first choice at least RWW_FOV_GAP degrees from the recorded FOV and from the
+    player's own setting (else the choice farthest from both)."""
+    for c in RWW_FOV_CHOICES:
+        if abs(c - recorded) >= RWW_FOV_GAP and abs(c - own) >= RWW_FOV_GAP:
+            return c
+    return max(RWW_FOV_CHOICES, key=lambda c: min(abs(c - recorded), abs(c - own)))
+
+
+def rww_num(x):
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
+def rww_fov(s, end):
+    """RWW 3d (TASK C7): at a tick after RW's FOV record (extFov=1), with the client's FOV setting changed to a value
+    far from the recorded FOV, your view's world FOV (getFOVModifier's world pass with every injector) equals the
+    recorded FOV, read by the bridge from the recording's own FOV records; in the free camera it follows the setting
+    instead (so the probe reads the live value). The client's own setting is put back whatever happens."""
+    first = s.probe("rewind-watch-fov")
+    own = rww_num(first.get("setting"))
+    tick = rww_num(first.get("firstFovTick"))
+    if tick is not None and tick >= 0:
+        rww_seek(s, min(end, tick + 1))
+    at = s.probe("rewind-watch-fov")
+    recorded = rww_num(at.get("recorded"))
+    if not s.check("3d RW recorded a FOV and your view is past it (one sample, not between two)",
+                   tick is not None and tick >= 0 and recorded is not None and own is not None
+                   and at.get("interpolating") is False and at.get("camera") == "YOU",
+                   {k: at.get(k) for k in ("firstFovTick", "fovRecords", "playhead", "recorded", "interpolating",
+                                           "camera", "setting")}):
+        return
+    changed = rww_fov_setting(recorded, own)
+    try:
+        s.probe("rewind-watch-fov", "set", changed)
+        time.sleep(0.3)  # a few frames drawn with the new setting
+        mine = s.probe("rewind-watch-fov")
+        applied = rww_num(mine.get("applied"))
+        s.check("3d the client's FOV setting is changed to differ from the recorded FOV",
+                close_enough(rww_num(mine.get("setting")), changed, 1e-3) and abs(changed - recorded) >= RWW_FOV_GAP,
+                {"own": own, "setting": mine.get("setting"), "recorded": recorded})
+        s.check("3d your view: the world FOV is the recorded FOV, not the client's setting",
+                mine.get("camera") == "YOU" and close_enough(applied, recorded, RWW_FOV_TOLERANCE),
+                {"applied": applied, "recorded": mine.get("recorded"), "setting": mine.get("setting"),
+                 "playhead": mine.get("playhead"), "camera": mine.get("camera")})
+        s.call("/key", {"code": KEYS["2"]})
+        time.sleep(0.3)
+        free = s.probe("rewind-watch-fov")
+        free_applied = rww_num(free.get("applied"))
+        s.check("3d free camera: the world FOV follows the client's setting, not the recording",
+                free.get("camera") == "FREE" and free_applied is not None and abs(free_applied - recorded) > 1.0,
+                {"applied": free_applied, "recorded": recorded, "setting": free.get("setting"),
+                 "camera": free.get("camera")})
+        s.call("/key", {"code": KEYS["1"]})
+    finally:
+        back, err = s.try_call("/probe", post={"name": "rewind-watch-fov", "args": "restore"})
+        s.check("3d the client's FOV setting is put back",
+                back is not None and rww_num(back.get("setting")) == own,
+                {"own": own, "now": back.get("setting") if back else None, "error": err})
 
 
 def smoke_rewind_timings(s):
