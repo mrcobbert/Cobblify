@@ -157,6 +157,37 @@ public class ExportPacingTest {
         assertFloor();
     }
 
+    /**
+     * Code review 1 B1: the interval is counted from when the previous step's packets were really fed (its ticks,
+     * after Minecraft ran them), not from the wall time sampled at {@code frameStart()}. Frame 6's pass stalls 100 ms
+     * between {@code frameStart()} and {@code tickHead()}; at 1 ms passes frame 7 must still wait a whole step after
+     * frame 6's tick was fed.
+     */
+    @Test
+    public void theIntervalCountsFromWhenTheTicksWereFedNotFromFrameStart() {
+        final ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 2_000_000L, 60);
+        final boolean[] armed = {false};
+        final long[] fed = {-1};
+        run(plan, last -> {
+            if (armed[0] && fed[0] < 0 && fx.stallBeforeTicksNs == 0) {
+                fed[0] = fx.ops.nanos; // the pass that just ended fed frame 6's tick after the stall
+            }
+            if (!armed[0] && last == 5) {
+                armed[0] = true;
+                fx.stallBeforeTicksNs = 100 * MS_NS;
+            }
+            return MS_NS;
+        }, null);
+        assertNoStepSkipped(plan);
+        assertTrue("frame 6's tick was fed after the stall", fed[0] > 0);
+        assertEquals("the stall fed frame 6's step", fed[0], captures.get(6)[1]);
+        long need = (plan.timeOfFrame(7) - plan.timeOfFrame(6)) * 1000L;
+        long got = captures.get(7)[1] - fed[0];
+        assertTrue("frame 7 only " + got / 1000 + " us after frame 6's tick was fed, needs " + need / 1000,
+                got >= need);
+        assertFloor();
+    }
+
     @Test
     public void thePreRollAndTheFirstStepAfterTheSeekArePacedToo() {
         ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 1_200_000L, 60);

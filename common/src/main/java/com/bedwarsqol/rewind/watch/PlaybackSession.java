@@ -532,6 +532,11 @@ public final class PlaybackSession {
             return;
         }
         worldTicked = false;
+        if (export != null) {
+            // this tick's records were fed and Minecraft has run it: the next paced step counts from now (code
+            // review 1 B1), not from the frame start that asked for it
+            exportAppliedNs = ops.nanoTime();
+        }
         try {
             boolean stop = ticks.finishTick();
             if (stop) {
@@ -809,8 +814,9 @@ public final class PlaybackSession {
      *
      * <p><b>Real-time floor</b> (PLAN Revision 4, as amended by 4.1 r3-B1): a step that moves playback time from t to
      * t' (the first step after the seek, every pre-roll step, every frame) is not applied before {@code t' - t} of wall
-     * time ({@link ClientOps#nanoTime}) has passed since the previous step was really applied (the first step: one
-     * frame interval after the seek landed). Until then the pass is drawn again at t, with nothing run and nothing to
+     * time ({@link ClientOps#nanoTime}) has passed since the previous step was really applied: its frame start, or the
+     * end of the last of its ticks when it ran any (Minecraft runs them after the frame start; code review 1 B1); the
+     * first step: one frame interval after the seek landed. Until then the pass is drawn again at t, with nothing run and nothing to
      * capture ({@link #exportWaiting()}). So a terrain packet applied at wall w is followed by the frame for recording
      * time T + d no earlier than w + d, stall or not; a slow machine is never held back. The tail is not paced: it
      * captures nothing.

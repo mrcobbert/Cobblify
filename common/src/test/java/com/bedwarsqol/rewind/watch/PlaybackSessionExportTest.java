@@ -181,11 +181,21 @@ public class PlaybackSessionExportTest {
         tickSounds.clear();
     }
 
+    /**
+     * Wall time that passes once, between the next {@code frameStart()} that runs ticks and its first
+     * {@code tickHead()} (a slow frame start, before Minecraft runs the requested ticks); 0: none.
+     */
+    long stallBeforeTicksNs;
+
     /** One {@code runGameLoop} pass, {@code wallNs} after the last. */
     void frame(long wallNs) {
         ops.nanos += wallNs;
         session.frameStart();
         for (int j = 0; j < ops.elapsed; j++) { // re-read before every pass
+            if (stallBeforeTicksNs > 0) {
+                ops.nanos += stallBeforeTicksNs;
+                stallBeforeTicksNs = 0;
+            }
             session.tickHead();
             if (ops.world && !ops.paused) {
                 worldTicks++;
