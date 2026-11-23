@@ -263,11 +263,11 @@ public class RewindPainterTest {
     // ------------------------------------------------------------------ Esc menu
 
     @Test
-    public void escMenuDrawsItsFourKeysWithRejoinInTheAccent() {
+    public void escMenuDrawsItsFiveKeysWithRejoinInTheAccent() {
         SheetFixtures.Recorder r = new SheetFixtures.Recorder(new SheetFixtures.MinecraftMetrics(2f));
         EscMenuModel.Layout l = EscMenuModel.layout(640, 360);
         RewindPainter.escMenu(r, l, null, null, ACC);
-        assertEquals(Arrays.asList("Resume", "Rejoin Hypixel", "Gallery", "Quit to Title"), texts(r));
+        assertEquals(Arrays.asList("Resume", "Rejoin Hypixel", "Export", "Gallery", "Quit to Title"), texts(r));
         float[] rejoin = l.key(EscMenuModel.Key.REJOIN);
         assertTrue(hasFill(r, rejoin[0] + 2, rejoin[1] + 2, rejoin[2] - 4, rejoin[3] - 6, ACC.base));
         float[] resume = l.key(EscMenuModel.Key.RESUME);
@@ -303,7 +303,7 @@ public class RewindPainterTest {
         GalleryModel m = gallery();
         RewindPainter.gallery(r, m, m.layout(640, 360, r), null, ACC);
         assertEquals(Arrays.asList("Fours · Lighthouse", "WIN", "Today 21:00", "6:47", "Solo", "Today 20:00",
-                "6:47", "Watch", "Delete", "Done"), texts(r));
+                "6:47", "Watch", "Export", "Delete", "Done"), texts(r));
         int win = r.textColours.get(1);
         assertEquals(0xFF55FF55, win);
     }
@@ -328,11 +328,11 @@ public class RewindPainterTest {
     }
 
     @Test
-    public void anEmptyGalleryDisablesWatchAndDelete() {
+    public void anEmptyGalleryDisablesWatchExportAndDelete() {
         Spy r = new Spy();
         GalleryModel m = new GalleryModel(GalleryModel.Origin.TITLE, Collections.<RecordingMeta>emptyList(), NOW, UTC);
         RewindPainter.gallery(r, m, m.layout(640, 360, r), null, ACC);
-        assertEquals(2, r.disabled.size());
-        assertEquals(Arrays.asList("Watch", "Delete", "Done"), texts(r.rec));
+        assertEquals(3, r.disabled.size());
+        assertEquals(Arrays.asList("Watch", "Export", "Delete", "Done"), texts(r.rec));
     }
 }
