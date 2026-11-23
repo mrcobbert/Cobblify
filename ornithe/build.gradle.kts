@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -84,10 +85,56 @@ val generateBackendProperties by tasks.registering {
     }
 }
 
+// Rewind Export (PLAN decision D1): the host OS's encoder helper, built by `bash encoder/build.sh` into encoder/dist/,
+// goes into the jar under com/bedwarsqol/rewind/export/helper/ with cobblify-encode.properties (sha256, size,
+// protocol, os); HelperStore unpacks it from there. Without the file the jar still builds and loads, and Export
+// fails as helper-missing; -PrequireEncodeHelper=true (the release flow) fails the build instead.
+val encodeHelperDir = layout.buildDirectory.dir("generated/encodeHelper")
+val encodeHelperOs: String? = System.getProperty("os.name").lowercase().let {
+    when {
+        it.startsWith("mac") -> "mac"
+        it.startsWith("windows") -> "windows"
+        else -> null
+    }
+}
+val encodeHelperName = if (encodeHelperOs == "windows") "cobblify-encode.exe" else "cobblify-encode"
+val encodeHelperFile = rootDir.parentFile.resolve("encoder/dist/$encodeHelperName")
+val helperProtocolSource =
+    rootDir.parentFile.resolve("common/src/main/java/com/bedwarsqol/rewind/export/HelperProtocol.java")
+val generateEncodeHelper by tasks.registering {
+    val require = providers.gradleProperty("requireEncodeHelper").map { it.toBoolean() }.orElse(false)
+    inputs.property("requireEncodeHelper", require)
+    inputs.property("os", encodeHelperOs ?: "none")
+    inputs.files(encodeHelperFile, helperProtocolSource)
+    outputs.dir(encodeHelperDir)
+    doLast {
+        val out = encodeHelperDir.get().asFile
+        out.deleteRecursively()
+        if (encodeHelperOs == null || !encodeHelperFile.isFile) {
+            if (require.get()) {
+                throw GradleException("requireEncodeHelper: $encodeHelperFile is missing (run bash encoder/build.sh)")
+            }
+            logger.lifecycle("No encoder helper at $encodeHelperFile: this jar's Rewind Export fails as helper-missing")
+            return@doLast
+        }
+        val protocol = Regex("""PROTOCOL\s*=\s*(\d+)""").find(helperProtocolSource.readText())?.groupValues?.get(1)
+            ?: throw GradleException("PROTOCOL not found in $helperProtocolSource")
+        val bytes = encodeHelperFile.readBytes()
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        val dir = out.resolve("com/bedwarsqol/rewind/export/helper")
+        dir.mkdirs()
+        dir.resolve(encodeHelperName).writeBytes(bytes)
+        dir.resolve("cobblify-encode.properties")
+            .writeText("sha256=$sha256\nsize=${bytes.size}\nprotocol=$protocol\nos=$encodeHelperOs\n")
+    }
+}
+
 // fabric.mod.json and com/bedwarsqol/version.properties carry the version (replaces Forge's
 // Blossom @VER@ token; BedwarsQol.VERSION reads the properties file).
 tasks.processResources {
     dependsOn(generateBackendProperties)
+    dependsOn(generateEncodeHelper)
     inputs.property("version", modVersion)
     filesMatching(listOf("fabric.mod.json", "com/bedwarsqol/version.properties")) {
         expand("version" to modVersion)
@@ -101,6 +148,7 @@ sourceSets {
     main {
         java.srcDir(rootDir.parentFile.resolve("common/src/main/java"))
         resources.srcDir(backendPropsDir)
+        resources.srcDir(encodeHelperDir)
     }
     test {
         java.srcDir(rootDir.parentFile.resolve("common/src/test/java"))

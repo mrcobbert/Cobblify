@@ -520,7 +520,12 @@ def cmd_stage(args, wt=None):
     copy_file(AGENT_JAR, agent)
     bridge = os.path.join(runtime, "bridge", "cobdev-bridge.jar")
     copy_file(dump["bridgeJar"], bridge)
-    helper = stage_encode_helper(wt, runtime)
+    if mode == "prod" and jar_has_encode_helper(dump["releaseJar"]):
+        # As a release runs it: no override; the game unpacks the jar's helper to ~/.cobblify/bin (TASK B2).
+        helper = None
+        print("note: the release jar carries the encoder helper; prod uses it (no -Dcobblify.encodeHelper)")
+    else:
+        helper = stage_encode_helper(wt, runtime)
     common = launch_flags(agent, mode, helper)
 
     if mode == "dev":
@@ -618,6 +623,18 @@ def stage_encode_helper(wt, runtime):
     copy_file(src, dst)
     os.chmod(dst, 0o755)
     return dst
+
+
+ENCODE_HELPER_ENTRY = "com/bedwarsqol/rewind/export/helper/cobblify-encode"
+
+
+def jar_has_encode_helper(path):
+    """The jar holds the Mac encoder helper and its properties (ornithe/build.gradle.kts, PLAN D1)."""
+    if not path or not os.path.isfile(path):
+        return False
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+    return ENCODE_HELPER_ENTRY in names and ENCODE_HELPER_ENTRY + ".properties" in names
 
 
 def prune_runtimes():
@@ -6067,6 +6084,7 @@ def smoke_rewind_export_ui(s, cfg, mode):
     real = [int(x) for x in str(old_display).split("x")] if old_display and "x" in str(old_display) else None
     helper = os.path.join(os.path.realpath(os.path.join(SHARED, "current")), "bin", "cobblify-encode")
     hidden = helper + ".rwu-hidden"
+    jar_hidden = False
     opened = False
     res = s.step.setdefault("results", {})
     try:
@@ -6289,20 +6307,30 @@ def smoke_rewind_export_ui(s, cfg, mode):
         pick("QUALITY", 0)
         ui = rwu_ui(s)
 
-        # U6: the helper moved away: Failed in red, no file; the game stays usable
+        # U6: the helper moved away: Failed in red, no file; the game stays usable. With the jar's own helper (prod, no
+        # staged copy) the game is pointed at a missing helper instead (rewind-export-helper hide).
         files = set(os.listdir(RWE_DIR))
         moved = os.path.isfile(helper)
+        hid = False
         if moved:
             os.rename(helper, hidden)
+        else:
+            jar_hidden = True  # the finally below restores it whatever happens
+            hid = bool(s.probe("rewind-export-helper", "hide").get("hidden"))
         rwu_click(s, ui["key"])
         ui = rwu_until(s, lambda u: u.get("keyState") == "FAILED" and not u.get("busy"), timeout=30)
         st_f = rwe_state(s).get("export") or {}
         if moved:
             os.rename(hidden, helper)
+        else:
+            s.probe("rewind-export-helper", "restore")
+            jar_hidden = False
         left = sorted(set(os.listdir(RWE_DIR)) - files)
         s.check("U6 with the helper gone the key reads Failed, the outcome names it, no file is left",
-                moved and ui.get("keyState") == "FAILED" and st_f.get("outcome") == "failed-helper-missing" and not left,
-                {"keyState": ui.get("keyState"), "outcome": st_f.get("outcome"), "left": left, "moved": moved})
+                (moved or hid) and ui.get("keyState") == "FAILED"
+                and st_f.get("outcome") == "failed-helper-missing" and not left,
+                {"keyState": ui.get("keyState"), "outcome": st_f.get("outcome"), "left": left, "moved": moved,
+                 "jarHelperHidden": hid})
         rwu_shot(s, "failed")
         s.call("/key", {"code": KEYS["left"]})  # 5 s back (the playhead stands at the range's end, the game's end)
         time.sleep(0.8)
@@ -6313,6 +6341,8 @@ def smoke_rewind_export_ui(s, cfg, mode):
     finally:
         if os.path.isfile(hidden) and not os.path.exists(helper):
             os.rename(hidden, helper)
+        if jar_hidden:
+            s.try_call("/probe", post={"name": "rewind-export-helper", "args": "restore"})
         if opened:
             s.try_call("/probe", post={"name": "rewind-export-cancel", "args": ""})
             s.try_call("/probe", post={"name": "rewind-watch-quit", "args": ""})

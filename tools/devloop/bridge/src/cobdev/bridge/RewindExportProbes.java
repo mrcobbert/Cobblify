@@ -66,6 +66,9 @@ final class RewindExportProbes {
     private static final List<long[]> TICKS = new ArrayList<>();
     private static long lastTicksRun = -1;
     private static GuiScreen savedScreen;
+    private static final String HELPER_PROPERTY = "cobblify.encodeHelper";
+    private static boolean helperHidden;
+    private static String helperWas;
 
     private RewindExportProbes() {
     }
@@ -89,6 +92,8 @@ final class RewindExportProbes {
                 return region(args);
             case "rewind-export-k11":
                 return k11(args);
+            case "rewind-export-helper":
+                return helper(args);
             default:
                 break;
         }
@@ -782,6 +787,39 @@ final class RewindExportProbes {
     }
 
     // ------------------------------------------------------------------ Phase 5: the pipeline (step RWE) and K11
+
+    /**
+     * {@code rewind-export-helper hide|restore} (Phase 8, step RWU when the game uses the jar's own helper): hide points
+     * {@code cobblify.encodeHelper} at a file that does not exist in cobdev's export folder, so the next export finds no
+     * helper; restore puts the value it had back (none in a prod run). Repeating either is harmless.
+     */
+    private static Map<String, Object> helper(List<String> args) {
+        String what = args.size() == 1 ? args.get(0) : "";
+        synchronized (RewindExportProbes.class) {
+            if ("hide".equals(what)) {
+                if (!helperHidden) {
+                    helperWas = System.getProperty(HELPER_PROPERTY);
+                    helperHidden = true;
+                }
+                System.setProperty(HELPER_PROPERTY, Policy.EXPORTS_DIR + "/no-such-helper");
+            } else if ("restore".equals(what)) {
+                if (helperHidden) {
+                    if (helperWas == null) {
+                        System.clearProperty(HELPER_PROPERTY);
+                    } else {
+                        System.setProperty(HELPER_PROPERTY, helperWas);
+                    }
+                    helperHidden = false;
+                    helperWas = null;
+                }
+            } else {
+                throw new Refused("probe rewind-export-helper hide|restore");
+            }
+            Map<String, Object> out = Bridge.ok();
+            out.put("hidden", helperHidden);
+            return out;
+        }
+    }
 
     /** {@code rewind-export-start JSON}: a real export (helper, MP4) into the dev client's own export folder. */
     private static Map<String, Object> start(List<String> args) throws Exception {

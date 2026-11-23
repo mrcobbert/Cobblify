@@ -233,6 +233,28 @@ its FOV records. `rewind-watch-fov set DEGREES` (30 to 110) changes the client's
 (never written to options.txt) and `rewind-watch-fov restore` puts the first value back; 3d restores it whatever
 happens.
 
+`cobdev smoke [--prod] --only rewind-export` runs the boot and world steps, then `RWE` (Rewind Export PLAN Phase 5:
+real MP4 exports into `/Users/Shared/cobblify-dev/exports/rwe`, checked with ffprobe) and after it `RWU`. `--only
+rewind-export-ui` runs `RWU` alone, `--only rewind-export-k11` the K11 terrain check. `RWU` (Phase 7) drives export
+mode through the real screens with cobdev's input: the Esc menu's Export, the range handles (a drag), the panel's rows
+clicked, a full export from its key, Esc cancel, the gallery's Export, and Failed with no helper (TASK U1-U6). It never
+presses Open Folder (that would open Finder in the user's session). Its shots go to
+`/Users/Shared/cobblify-dev/shots/export-p7/`. The probes it uses:
+
+```
+cobdev probe rewind-export-ui                    # the open Rewind screen's rects (GUI px) and export mode's state:
+                                                 #   range, panel key state and fill, chosen values, playhead (read only)
+cobdev probe rewind-export-shot RUN NAME window  # what the window last showed (its back buffer between frames) as
+                                                 #   exports/spike/RUN/NAME.png; without window, the main framebuffer
+cobdev probe rewind-export-helper hide|restore   # point cobblify.encodeHelper at a missing file / put it back
+```
+
+The encoder helper: `stage` copies `encoder/dist/cobblify-encode` (`bash encoder/build.sh`) into the runtime and
+passes `-Dcobblify.encodeHelper` in dev, and in prod when the release jar has no helper. A release jar that carries
+the helper (`ornithe/build.gradle.kts` puts it in when `encoder/dist/` holds one) runs as a release does: no override,
+the game unpacks the jar's helper to `~/.cobblify/bin/` in the user's account. `RWU`'s Failed check moves the staged
+copy away; with the jar's helper it uses `rewind-export-helper hide` instead. Both are put back whatever happens.
+
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
 release-jar check.
