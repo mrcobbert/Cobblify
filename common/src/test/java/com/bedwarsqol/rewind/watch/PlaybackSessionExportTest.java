@@ -684,6 +684,56 @@ public class PlaybackSessionExportTest {
         assertEquals("inside already: it stays", inside, session.renderTimeUs());
     }
 
+    /** The reviewer's legal v2 freeze: tick heads at 0, 1 s and 5 s only, 6 s long; the range [2 s, 3 s) holds no tick. */
+    static final long[] FREEZE_HEADS = {0L, 1_000_000L, 5_000_000L};
+
+    void assertParkedInside(String when, ExportPlan plan) {
+        for (int i = 0; i < 10; i++) {
+            frame(EVEN_NS);
+        }
+        for (int i = 0; i < 200 && session.state() != PlaybackSession.State.WATCHING; i++) {
+            frame(EVEN_NS);
+        }
+        assertEquals(when, PlaybackSession.State.WATCHING, session.state());
+        assertTrue(when + ": paused", session.ticks().paused());
+        long p = session.renderTimeUs();
+        assertTrue(when + ": the picture at " + (p - ORIGIN) + " us, inside the range",
+                p >= plan.startUs() && p < plan.endUs());
+        long head = session.playheadUs();
+        assertTrue(when + ": the viewer's playhead at " + (head - ORIGIN) + " us, inside the range",
+                head >= plan.startUs() && head < plan.endUs());
+        frame(5_000_000_000L);
+        frame(EVEN_NS);
+        assertEquals(when + ": it stays", p, session.renderTimeUs());
+    }
+
+    /**
+     * Code review 2 I3 (TASK P7), the reviewer's fixture: no recorded tick lies inside the range, so parking on "the
+     * first tick at or after the start" leaves it (that tick is at 5 s). An export cancelled in its pre-roll, and one
+     * that never began ({@code pauseInside}), still leave the viewer paused at a time inside the range, by the picture
+     * and by the playhead.
+     */
+    @Test
+    public void terminationParksInsideARangeThatHoldsNoTick() throws IOException {
+        ExportPlan plan = new ExportPlan(ORIGIN + 2_000_000L, ORIGIN + 3_000_000L, 60);
+        recording(FREEZE_HEADS, 6_000_000L, null);
+        open();
+        assertTrue(session.beginExport(plan));
+        for (int i = 0; i < 40; i++) {
+            frame(EVEN_NS);
+        }
+        assertTrue("cancelled in the pre-roll", session.exportPreroll());
+        assertTrue(session.renderTimeUs() < plan.startUs());
+        session.endExport();
+        assertParkedInside("pre-roll", plan);
+
+        client();
+        recording(FREEZE_HEADS, 6_000_000L, null);
+        open();
+        session.pauseInside(plan);
+        assertParkedInside("never began", plan);
+    }
+
     /** {@code eventTimeUs()}: the running tick's time inside a tick, a record's stamp inside its dispatch, else P. */
     @Test
     public void eventTimeIsTheTicksTimeTheRecordsStampOrPlaybackTime() throws IOException {

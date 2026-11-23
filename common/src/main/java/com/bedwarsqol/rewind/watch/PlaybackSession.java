@@ -223,6 +223,11 @@ public final class PlaybackSession {
     private boolean catchUpRestart;
     /** A seek while watching whose target is the tick already reached: no tick runs, playback time stays. */
     private boolean seekInPlace;
+    /**
+     * Where a park ({@link #parkInside}) puts playback time once its seek lands, or MIN: the range start, which may lie
+     * between recorded ticks (code review 2 I3).
+     */
+    private long parkUs = Long.MIN_VALUE;
     /** The recorded time of the tick running now (between {@link #tickHead} and {@link #tickEnd}). */
     private long tickTimeUs;
 
@@ -445,7 +450,12 @@ public final class PlaybackSession {
         if (export != null) {
             exportAppliedNs = ops.nanoTime(); // the seek landed: the first step waits from here (Revision 4.1)
         }
-        if (!seekInPlace) {
+        if (parkUs != Long.MIN_VALUE) {
+            // a park lands at its time, not at its tick's: inside the range even when no tick is (code review 2 I3)
+            clock.set(parkUs, ops.nanoTime());
+            clock.skipTimed(recording.ext());
+            parkUs = Long.MIN_VALUE;
+        } else if (!seekInPlace) {
             clock.set(timeline.timeOfTick(ticks.ticksRun()), ops.nanoTime());
             clock.skipTimed(recording.ext());
         }
@@ -655,6 +665,7 @@ public final class PlaybackSession {
         }
         seekTarget = SeekPlanner.clamp(timeline, tick);
         seekPending = true;
+        parkUs = Long.MIN_VALUE; // the viewer's own seek replaces a park not landed yet
     }
 
     /** Seeks {@code deltaUs} from the playhead (or from a seek not applied yet), in whole ticks. */
@@ -788,6 +799,7 @@ public final class PlaybackSession {
         export = null;
         exportStage = null;
         exportWaiting = false;
+        parkUs = Long.MIN_VALUE;
     }
 
     private void log(String line) {
@@ -840,6 +852,7 @@ public final class PlaybackSession {
             return false;
         }
         export = plan;
+        parkUs = Long.MIN_VALUE;
         exportStage = ExportStage.SEEKING;
         exportIndex = 0;
         exportTaken = false;
@@ -1039,7 +1052,7 @@ public final class PlaybackSession {
      * Ends the export (done, cancelled or failed): the session is paused inside the selected range (TASK P7) and wall
      * time counts from now, so nothing jumps; play, speed and seeks work again. From frame 0 on playback time is
      * already inside the range and stays where it stands; an export ended before frame 0 (its seek or pre-roll, code
-     * review 1 I3) seeks to the first tick at or after the range start instead.
+     * review 1 I3) parks at the range start instead ({@link #parkInside}).
      */
     public void endExport() {
         if (export == null) {
@@ -1062,7 +1075,10 @@ public final class PlaybackSession {
 
     /**
      * Playback time stays when {@code mayStay} and it is inside {@code plan}'s range (no seek pending); otherwise the
-     * session seeks to the first tick at or after the range start. Call with play paused. @return true when it seeks
+     * session parks at the range start by time (code review 2 I3): it seeks to the first tick at or after the start
+     * (every tick recorded before it run, as any seek lands) and, once that seek has landed, playback time is the start
+     * itself, not that tick's time, which lies past the range end when the range holds no recorded tick (a recorded
+     * freeze). Call with play paused. @return true when it seeks
      */
     private boolean parkInside(ExportPlan plan, boolean mayStay) {
         boolean inside = mayStay && state == State.WATCHING && !seekPending && clock != null
@@ -1071,6 +1087,7 @@ public final class PlaybackSession {
             return false;
         }
         seekTo(SeekPlanner.tickForTime(timeline, plan.startUs()));
+        parkUs = plan.startUs();
         return true;
     }
 
@@ -1157,6 +1174,23 @@ public final class PlaybackSession {
         }
         long need = ticks.target() - catchUpFrom;
         return need <= 0 ? 1f : Math.max(0f, Math.min(1f, (ticks.ticksRun() - catchUpFrom) / (float) need));
+    }
+
+    /**
+     * The viewer's playhead on the recording's clock: the time of {@link #playheadTick()}, except inside a recorded
+     * gap of more than one tick interval while WATCHING (a freeze, or a park between ticks, code review 2 I3), where it
+     * is playback time, the time the picture shows; outside gaps straight play shows what it always did.
+     */
+    public long playheadUs() {
+        if (timeline == null || ticks == null) {
+            return 0;
+        }
+        long next = timeline.timeOfTick(playheadTick());
+        if (seekPending || ticks.catchingUp() || state != State.WATCHING || clock == null) {
+            return next;
+        }
+        long p = clock.playbackUs();
+        return next - p > Timeline.TICK_US ? p : next;
     }
 
     /** Where the playhead stands: a seek's target (pending or running), else the ticks run. */

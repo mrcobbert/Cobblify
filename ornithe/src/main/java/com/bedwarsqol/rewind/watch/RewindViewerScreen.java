@@ -777,7 +777,8 @@ public final class RewindViewerScreen extends RewindScreen {
             if (timeline == null) {
                 return 0;
             }
-            long t = timeline.timeOfTick(session.playheadTick()) - timeline.gameStartUs();
+            // the session's playhead time: inside a recorded freeze it is the picture's time (code review 2 I3)
+            long t = session.playheadUs() - timeline.gameStartUs();
             return Math.max(0L, Math.min(timeline.lengthUs(), t));
         }
 
