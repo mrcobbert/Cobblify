@@ -16,7 +16,8 @@ import java.util.Locale;
  *
  * <ul>
  *   <li><b>PREPARING</b> ({@link #prepare}): a stale {@code .partial.mp4} of the same name is deleted, the helper starts
- *       with the bit rate of the chosen quality ({@link ExportQuality}) and writes to the partial file. Once it is
+ *       with the bit rate of the chosen quality ({@link ExportQuality}) and writes to this job's own partial file
+ *       ({@link ExportFileName#partial(File, String)}). Once it is
  *       ready: every sound still playing stops ({@link Game#stopSounds}, once), the sound tap turns on, and the
  *       session begins the export (its seek and pre-roll).</li>
  *   <li><b>SETTLING</b>: the seek and the 1 s pre-roll are drawn, never sent; their sounds are discarded
@@ -127,6 +128,8 @@ public final class ExportJob {
         public String codec = "h264";
         /** The final file ({@link ExportFileName#pick}). */
         public File out;
+        /** The partial file's token ({@link ExportFileName#partial(File, String)}); null: a new one (the product). */
+        public String partialToken;
         /** The helper to run ({@link HelperStore#find}); null with {@link #helperProblem} when there is none. */
         public File helper;
         public String helperProblem;
@@ -190,7 +193,9 @@ public final class ExportJob {
         this.game = game;
         this.encoders = encoders;
         this.files = files;
-        this.partial = ExportFileName.partial(request.out);
+        // its own partial name: a cancelled helper's late cleanup cannot reach the next export (code review 2 I1)
+        this.partial = ExportFileName.partial(request.out,
+                request.partialToken != null ? request.partialToken : ExportFileName.newToken());
         this.bps = ExportQuality.bitsPerSecond(request.width, request.height, plan.fps(), request.quality,
                 request.codec);
         this.log = new SoundLog(plan.startUs(), plan.endUs());

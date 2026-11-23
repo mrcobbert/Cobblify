@@ -17,7 +17,9 @@ import java.nio.charset.StandardCharsets;
  * then an error line and exit 2), {@code args} (writes its arguments after OUT to OUT, one per line, then ready and
  * waits), {@code probe} (writes its arguments after OUT to OUT, then noise on both streams and one probe line, exit
  * 0), {@code probe-none} (noise only, exit 4), {@code hold} (ready, then keeps the
- * file after {@code --out} in place until it is killed).
+ * file after {@code --out} in place until it is killed), {@code stall-out} (makes the file after {@code --out}, ready,
+ * then never reads), {@code slow-cancel} (makes the file after {@code --out}, ready, and 1 s after its input closed
+ * deletes that path and exits 3, as the real helper's slow cancel does).
  */
 public final class FakeHelper {
 
@@ -75,6 +77,23 @@ public final class FakeHelper {
             case "hold":
                 holdOutput(out, a);
                 return;
+            case "stall-out":
+                // ready with its file made, then never reads and never goes on its own (killed after 2 s)
+                new FileOutputStream(outArg(a)).close();
+                out.println("{\"ready\":true,\"protocol\":1}");
+                Thread.sleep(60_000);
+                return;
+            case "slow-cancel": {
+                // ready with its file made; when its input closes it takes 1 s, then deletes that path and exits 3
+                java.io.File f = outArg(a);
+                new FileOutputStream(f).close();
+                out.println("{\"ready\":true,\"protocol\":1}");
+                drain(System.in);
+                Thread.sleep(1_000);
+                f.delete();
+                System.exit(3);
+                return;
+            }
             default:
                 break;
         }
@@ -140,6 +159,16 @@ public final class FakeHelper {
             }
             Thread.sleep(5);
         }
+    }
+
+    /** The file after {@code --out}. */
+    private static java.io.File outArg(String[] a) {
+        for (int i = 2; i + 1 < a.length; i++) {
+            if ("--out".equals(a[i])) {
+                return new java.io.File(a[i + 1]);
+            }
+        }
+        throw new IllegalArgumentException("no --out");
     }
 
     private static void drain(InputStream in) throws IOException {

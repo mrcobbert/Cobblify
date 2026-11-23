@@ -3,7 +3,9 @@ package com.bedwarsqol.rewind.export;
 import com.bedwarsqol.rewind.export.audio.Mixer;
 import com.bedwarsqol.rewind.export.audio.SoundEvent;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -33,11 +35,15 @@ public class ExportJobTest {
     static final int W = 64;
     static final int H = 36;
 
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
+
     /** Everything the fakes saw, in order. */
     final List<String> events = new ArrayList<String>();
     final Set<File> files = new HashSet<File>();
     final File out = new File("/exports/Solo - Map - 2026-11-22 10.00.00.mp4");
-    final File partial = new File("/exports/Solo - Map - 2026-11-22 10.00.00.partial.mp4");
+    /** The fake-file tests give their job the token {@code job}. */
+    final File partial = new File("/exports/Solo - Map - 2026-11-22 10.00.00.job.partial.mp4");
 
     FakeSession session;
     FakeGame game;
@@ -295,6 +301,7 @@ public class ExportJobTest {
         r.quality = quality;
         r.codec = "h264";
         r.out = out;
+        r.partialToken = "job";
         r.helper = new File("/bin/cobblify-encode-0123");
         return r;
     }
@@ -741,6 +748,102 @@ public class ExportJobTest {
         pass();
         assertTrue(events.contains("end"));
         assertFalse("begun: the session's own end", events.contains("park"));
+    }
+
+    /** The real file system. */
+    static final ExportJob.Files REAL_FILES = new ExportJob.Files() {
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
+
+        @Override
+        public boolean delete(File f) {
+            return f.delete();
+        }
+
+        @Override
+        public boolean rename(File from, File to) {
+            return from.renameTo(to);
+        }
+    };
+
+    /** A job as RewindExport makes it: production HelperProcess running FakeHelper {@code mode}, real files. */
+    ExportJob realJob(File out, final String mode, final List<HelperProcess> helpers) {
+        ExportJob.Request r = request(new ExportPlan(0, 100_000L, 60), "high");
+        r.out = out;
+        r.partialToken = null; // a new token, as RewindExport leaves it
+        session = new FakeSession();
+        job = new ExportJob(r, session, game, args -> {
+            String p = args.get(args.indexOf("--out") + 1);
+            List<String> c = new ArrayList<String>();
+            c.add(new File(System.getProperty("java.home"), "bin/java").getAbsolutePath());
+            c.add("-cp");
+            c.add(System.getProperty("java.class.path"));
+            c.add(FakeHelper.class.getName());
+            c.add(mode);
+            c.add(p);
+            c.add("--out");
+            c.add(p);
+            HelperProcess h = new HelperProcess(c, W * H * 4, HelperProcess.processBuilder(), 10_000);
+            helpers.add(h);
+            h.start();
+            return h;
+        }, REAL_FILES, IMPULSE);
+        job.prepare(now);
+        return job;
+    }
+
+    /** Passes (each after 5 ms of real time) until {@code done} or 20 s. */
+    void passWhile(java.util.function.BooleanSupplier more) throws InterruptedException {
+        long end = System.currentTimeMillis() + 20_000;
+        while (more.getAsBoolean() && !job.finished() && System.currentTimeMillis() < end) {
+            Thread.sleep(5);
+            pass();
+        }
+    }
+
+    /**
+     * Code review 2 I1 (TASK F2, U6): an export is cancelled while its helper is slow to go (one that never reads and
+     * is killed after 2 s, so the game's reaper deletes afterwards; one that deletes its own file 1 s after its input
+     * closed, as the real helper's cancel does). A new export of the same mode and map starts in the same second, so
+     * it gets the same name through the production picker. The old helper's late cleanup must not touch the new
+     * export's unfinished file: it survives the old helper's end and the new export publishes.
+     */
+    @Test
+    public void aCancelledHelpersLateCleanupNeverDeletesTheNextExportsFile() throws Exception {
+        for (String mode : new String[]{"stall-out", "slow-cancel"}) {
+            fresh();
+            File dir = tmp.newFolder(mode);
+            String base = "Solo - Map - 2026-11-22 10.00.00";
+            List<HelperProcess> helpers = new ArrayList<HelperProcess>();
+            File first = ExportFileName.pickAfterSweep(dir, base, dir.listFiles(), File::exists, File::delete);
+            ExportJob a = realJob(first, mode, helpers);
+            passWhile(() -> a.state() == ExportJob.State.PREPARING);
+            assertEquals(mode, ExportJob.State.SETTLING, a.state());
+            assertTrue(mode + ": the old helper made its file", a.partialFile().exists());
+            a.cancel("esc");
+            pass();
+            assertEquals(ExportJob.State.CANCELLED, a.state());
+            assertTrue(mode + ": the old helper is still there", helpers.get(0).alive());
+
+            File second = ExportFileName.pickAfterSweep(dir, base, dir.listFiles(), File::exists, File::delete);
+            assertEquals(mode + ": the same second gives the same name", first, second);
+            ExportJob b = realJob(second, "ok", helpers);
+            passWhile(() -> b.state() == ExportJob.State.PREPARING);
+            assertEquals(mode, ExportJob.State.SETTLING, b.state());
+            long end = System.currentTimeMillis() + 10_000;
+            while (helpers.get(0).alive() && System.currentTimeMillis() < end) {
+                Thread.sleep(10);
+            }
+            assertFalse(mode + ": the old helper is gone", helpers.get(0).alive());
+            Thread.sleep(500); // its cleanup, after it went
+            assertTrue(mode + ": the new export's unfinished file survives the old helper's cleanup",
+                    b.partialFile().exists());
+            passWhile(() -> true);
+            assertEquals(mode + " (failure " + b.failure() + ")", ExportJob.State.DONE, b.state());
+            assertTrue(mode + ": published", second.exists() && second.length() > 0);
+        }
     }
 
     @Test
