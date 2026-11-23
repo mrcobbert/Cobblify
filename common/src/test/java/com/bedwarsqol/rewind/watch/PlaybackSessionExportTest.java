@@ -653,6 +653,37 @@ public class PlaybackSessionExportTest {
         }
     }
 
+    /**
+     * Code review 1 I3 (TASK P7): an export that never began (its helper failed or Esc came while it started) leaves
+     * the viewer paused inside the range too: from straight play outside it, and without a move from inside it.
+     */
+    @Test
+    public void anExportThatNeverBeganPausesInsideTheRange() throws IOException {
+        recording(every50(3_000_000L), 3_000_000L, null);
+        open();
+        ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 2_000_000L, 60);
+        watchTo(2_500_000L);
+        assertFalse(session.ticks().paused());
+        session.pauseInside(plan);
+        for (int i = 0; i < 200 && (session.state() != PlaybackSession.State.WATCHING || i < 3); i++) {
+            frame(EVEN_NS);
+        }
+        assertTrue("paused", session.ticks().paused());
+        long p = session.renderTimeUs();
+        assertTrue("at " + (p - ORIGIN) + " us, inside the range", p >= plan.startUs() && p < plan.endUs());
+        long head = session.timeline().timeOfTick(session.playheadTick());
+        assertTrue("the playhead inside the range", head >= plan.startUs() && head < plan.endUs());
+
+        session.setPaused(false);
+        frame(EVEN_NS);
+        frame(EVEN_NS);
+        long inside = session.renderTimeUs();
+        session.pauseInside(plan);
+        frame(EVEN_NS);
+        assertTrue(session.ticks().paused());
+        assertEquals("inside already: it stays", inside, session.renderTimeUs());
+    }
+
     /** {@code eventTimeUs()}: the running tick's time inside a tick, a record's stamp inside its dispatch, else P. */
     @Test
     public void eventTimeIsTheTicksTimeTheRecordsStampOrPlaybackTime() throws IOException {

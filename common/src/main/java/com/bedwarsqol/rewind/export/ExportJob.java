@@ -63,6 +63,9 @@ public final class ExportJob {
 
         /** {@code endExport()}. */
         void end();
+
+        /** {@code pauseInside(plan)}: the export ended before {@link #begin} (TASK P7). */
+        void park(ExportPlan plan);
     }
 
     /** The game around the job. */
@@ -482,6 +485,8 @@ public final class ExportJob {
         }
         if (begun) {
             session.end();
+        } else {
+            session.park(plan);
         }
         game.soundTap(null);
     }

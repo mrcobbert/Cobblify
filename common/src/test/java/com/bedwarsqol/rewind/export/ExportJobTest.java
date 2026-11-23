@@ -163,6 +163,11 @@ public class ExportJobTest {
             events.add("end");
             ended = true;
         }
+
+        @Override
+        public void park(ExportPlan p) {
+            events.add("park");
+        }
     }
 
     final class FakeGame implements ExportJob.Game {
@@ -625,6 +630,45 @@ public class ExportJobTest {
         pass();
         assertEquals(ExportJob.State.FAILED, job.state());
         assertEquals("helper-timeout", job.failure());
+    }
+
+    /**
+     * Code review 1 I3 (TASK P7): an export that ends before the session began it (cancelled while the helper starts,
+     * the helper missing or never ready) still leaves the viewer paused inside the range; one that began ends the
+     * session's export instead.
+     */
+    @Test
+    public void anExportEndedBeforeItsSeekStillParksTheViewerInsideTheRange() {
+        ExportJob.Request r = request(new ExportPlan(0, 200_000L, 60), "high");
+        r.helper = null;
+        job(r);
+        assertEquals(ExportJob.State.FAILED, job.state());
+        assertTrue("parked: " + events, events.contains("park"));
+        assertFalse(events.contains("end"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        job.cancel("esc");
+        pass();
+        assertEquals(ExportJob.State.CANCELLED, job.state());
+        assertTrue(events.contains("park"));
+        assertFalse(events.contains("end"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        now += ExportJob.START_TIMEOUT_MS + 1;
+        pass();
+        assertEquals("helper-timeout", job.failure());
+        assertTrue(events.contains("park"));
+
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        encoder.status = ExportJob.Encoder.Status.READY;
+        runUntil(ExportJob.State.RENDERING, 100);
+        job.cancel("esc");
+        pass();
+        assertTrue(events.contains("end"));
+        assertFalse("begun: the session's own end", events.contains("park"));
     }
 
     @Test

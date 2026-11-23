@@ -1056,13 +1056,34 @@ public final class PlaybackSession {
         if (clock != null) {
             clock.set(clock.playbackUs(), ops.nanoTime());
         }
-        boolean inside = state == State.WATCHING && !seekPending && stage != ExportStage.SEEKING
-                && stage != ExportStage.PREROLL && clock != null && clock.playbackUs() >= plan.startUs()
-                && clock.playbackUs() < plan.endUs();
-        if (!inside && timeline != null && playing()) {
-            seekTo(SeekPlanner.tickForTime(timeline, plan.startUs()));
+        boolean moved = parkInside(plan, stage != ExportStage.SEEKING && stage != ExportStage.PREROLL);
+        log("rewind-export: end" + (moved ? " seek to the range start" : ""));
+    }
+
+    /**
+     * Playback time stays when {@code mayStay} and it is inside {@code plan}'s range (no seek pending); otherwise the
+     * session seeks to the first tick at or after the range start. Call with play paused. @return true when it seeks
+     */
+    private boolean parkInside(ExportPlan plan, boolean mayStay) {
+        boolean inside = mayStay && state == State.WATCHING && !seekPending && clock != null
+                && clock.playbackUs() >= plan.startUs() && clock.playbackUs() < plan.endUs();
+        if (inside || timeline == null || !playing()) {
+            return false;
         }
-        log("rewind-export: end" + (inside ? "" : " seek to the range start"));
+        seekTo(SeekPlanner.tickForTime(timeline, plan.startUs()));
+        return true;
+    }
+
+    /**
+     * An export that never began ({@link #beginExport} not called: it failed or was cancelled while its helper started,
+     * code review 1 I3): the session is paused inside {@code plan}'s range as after {@link #endExport} (TASK P7).
+     */
+    public void pauseInside(ExportPlan plan) {
+        if (plan == null || export != null || !playing()) {
+            return;
+        }
+        ticks.setPaused(true);
+        parkInside(plan, true);
     }
 
     /**

@@ -916,6 +916,11 @@ public final class RewindExport {
         public void end() {
             s.endExport();
         }
+
+        @Override
+        public void park(ExportPlan plan) {
+            s.pauseInside(plan);
+        }
     }
 
     /** The game around the job: sounds, the queue signal, the logs. */
