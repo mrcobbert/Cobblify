@@ -215,11 +215,12 @@ final class Policy {
                 return null;
             default:
                 return OVERLAY_PROBES.contains(name) || MOTION_BLUR_PROBES.contains(name)
-                        || REWIND_PROBES.contains(name) || REWIND_WATCH_PROBES.contains(name) ? null
+                        || REWIND_PROBES.contains(name) || REWIND_WATCH_PROBES.contains(name)
+                        || REWIND_EXPORT_PROBES.contains(name) ? null
                         : "unknown probe " + name + " (fov, hurt, player, block, clutch-blast, use-item, open-shop, hud-boxes, "
                         + "sheet-node, " + String.join(", ", OVERLAY_PROBES) + ", "
                         + String.join(", ", MOTION_BLUR_PROBES) + ", " + String.join(", ", REWIND_PROBES) + ", "
-                        + String.join(", ", REWIND_WATCH_PROBES) + ")";
+                        + String.join(", ", REWIND_WATCH_PROBES) + ", " + String.join(", ", REWIND_EXPORT_PROBES) + ")";
         }
     }
 
@@ -357,6 +358,81 @@ final class Policy {
     /** Recording files {@code rewind-watch-stage} copies: a recording and its metadata, not its stats. */
     static boolean rewindStageFile(String name) {
         return rewindFile(name) && !name.endsWith(".stats.json");
+    }
+
+    // ------------------------------------------------------------------ Rewind Export (cycle 2026-11-22, Phase 2 spike)
+
+    /**
+     * Step RWX's probes (Rewind Export PLAN Phase 2). {@code rewind-export-spike ROUTE W H FPS FRAMES SETTLE START_MS
+     * HOLD_CHUNK_MS HOLD_BLOCK_MS RUN} starts an off-screen export of the recording playing (only one of cobdev's own
+     * folder), frames as PNGs plus {@code frames.json} in {@link #EXPORT_ROOT}{@code /RUN} ({@code -}: discarded);
+     * {@code -status}, {@code -cancel}; {@code -screen export|viewer} (the export screen as the real screen, for K3);
+     * {@code -gl} (sizes, GUI scale, framebuffer, viewport, vsync, frame limit: K8); {@code -shot RUN NAME} (the main
+     * framebuffer as a PNG in that folder); {@code -compare RUN_A NAME_A RUN_B NAME_B} (mean difference, and the
+     * box of differing pixels); {@code -stats RUN} (luma variance per frame and frame-to-frame difference);
+     * {@code -grid watch|log} (per drawn frame: wall time and luma-grid change, with the last ticks' wall times: K10);
+     * {@code -terrain} (the playing recording's ticks with chunk data and block changes); {@code -env} (loaded mods
+     * and the renderer config files the game wrote: K10's readiness search); {@code -clean} (toggles the clean view).
+     * Counts, flags, ticks and hashes only.
+     */
+    static final java.util.List<String> REWIND_EXPORT_PROBES = java.util.Arrays.asList("rewind-export-spike",
+            "rewind-export-status", "rewind-export-cancel", "rewind-export-screen", "rewind-export-gl",
+            "rewind-export-shot", "rewind-export-compare", "rewind-export-stats", "rewind-export-grid",
+            "rewind-export-terrain", "rewind-export-env", "rewind-export-clean");
+    /** The only folder the spike writes and reads (cobdev stage creates {@code exports/} world-writable). */
+    static final String EXPORT_ROOT = "/Users/Shared/cobblify-dev/exports/spike";
+    private static final java.util.regex.Pattern EXPORT_RUN = java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9-]{0,31}$");
+    private static final java.util.List<String> EXPORT_ROUTES = java.util.Arrays.asList("own", "main", "window");
+    private static final java.util.List<String> EXPORT_SETTLE = java.util.Arrays.asList("none", "rule", "ready", "fixed");
+    private static final java.util.List<Integer> EXPORT_FPS = java.util.Arrays.asList(30, 60, 120, 240);
+
+    /** A run folder's name: lower-case letters, digits and dashes, at most 32. */
+    static String exportRun(String name) {
+        if (name == null || !EXPORT_RUN.matcher(name).matches()) {
+            return "a run name is lower-case letters, digits and dashes (at most 32)";
+        }
+        return null;
+    }
+
+    /** A picture's name inside a run folder (no extension, no path). */
+    static String exportName(String name) {
+        return exportRun(name) == null ? null : "a picture name is lower-case letters, digits and dashes";
+    }
+
+    /** The run's folder under {@link #EXPORT_ROOT}; refused for any other name. */
+    static String exportFolder(String run) {
+        Refused.check(exportRun(run));
+        return EXPORT_ROOT + "/" + run;
+    }
+
+    /** {@code rewind-export-spike}'s ten arguments: {route, w, h, fps, frames, settle, startMs, holdChunk, holdBlock, run}. */
+    static Object[] exportSpike(java.util.List<String> a) {
+        if (a.size() != 10) {
+            throw new Refused("probe rewind-export-spike ROUTE W H FPS FRAMES SETTLE START_MS HOLD_CHUNK_MS HOLD_BLOCK_MS RUN");
+        }
+        try {
+            String route = a.get(0);
+            if (!EXPORT_ROUTES.contains(route)) throw new Refused("ROUTE is own, main or window");
+            int w = Integer.parseInt(a.get(1)), h = Integer.parseInt(a.get(2));
+            if (w < 16 || h < 16 || w > 7680 || h > 4320 || (w & 1) != 0 || (h & 1) != 0) {
+                throw new Refused("W and H are even, 16 to 7680 x 4320");
+            }
+            int fps = Integer.parseInt(a.get(3));
+            if (!EXPORT_FPS.contains(fps)) throw new Refused("FPS is 30, 60, 120 or 240");
+            int frames = Integer.parseInt(a.get(4));
+            if (frames < 1 || frames > 14_400) throw new Refused("FRAMES is 1 to 14400");
+            String settle = a.get(5);
+            if (!EXPORT_SETTLE.contains(settle)) throw new Refused("SETTLE is none, rule, ready or fixed");
+            long start = Long.parseLong(a.get(6));
+            if (start < 0 || start > REWIND_MAX_SEEK_MS) throw new Refused("START_MS is 0 to a day");
+            long chunk = Long.parseLong(a.get(7)), block = Long.parseLong(a.get(8));
+            if (chunk < 0 || block < 0 || chunk > 2000 || block > 2000) throw new Refused("holds are 0 to 2000 ms");
+            String run = a.get(9);
+            if (!"-".equals(run)) Refused.check(exportRun(run));
+            return new Object[]{route, w, h, fps, frames, settle, start, chunk, block, run};
+        } catch (NumberFormatException e) {
+            throw new Refused("rewind-export-spike takes whole numbers");
+        }
     }
 
     // ------------------------------------------------------------------ Motion Blur (cycle 2026-11-17)

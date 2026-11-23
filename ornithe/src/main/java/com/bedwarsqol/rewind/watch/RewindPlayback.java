@@ -255,6 +255,16 @@ public final class RewindPlayback implements ClientOps {
         }
     }
 
+    static void partsExportStart() {
+        for (int i = 0; i < PARTS.size(); i++) {
+            try {
+                PARTS.get(i).exportStart();
+            } catch (Throwable t) {
+                partFailed(PARTS.get(i), "exportStart", t);
+            }
+        }
+    }
+
     static void partsExit() {
         for (int i = 0; i < PARTS.size(); i++) {
             try {
@@ -265,8 +275,8 @@ public final class RewindPlayback implements ClientOps {
         }
     }
 
-    /** The viewer's underlay slot (under the bar). */
-    static void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
+    /** The viewer's underlay slot (under the bar); also the export frame's screen (Rewind Export). */
+    public static void drawUnder(int width, int height, int mouseX, int mouseY, float partial) {
         for (int i = 0; i < PARTS.size(); i++) {
             try {
                 PARTS.get(i).drawUnder(width, height, mouseX, mouseY, partial);
@@ -696,6 +706,11 @@ public final class RewindPlayback implements ClientOps {
         Supplier<GuiScreen> source = failureGallery;
         GuiScreen g = source == null ? null : source.get();
         mc().displayGuiScreen(g != null ? g : new GuiMainMenu());
+    }
+
+    @Override
+    public void exportStart() {
+        partsExportStart(); // Rewind Export Phase 1: every part forgets what was watched before the pre-roll
     }
 
     @Override

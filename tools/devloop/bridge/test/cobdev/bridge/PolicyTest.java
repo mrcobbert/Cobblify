@@ -213,6 +213,54 @@ public final class PolicyTest {
             fail("staged files: the recording and its metadata only");
         }
 
+        // Rewind Export Phase 2 (spike): its probes are known, its arguments bounded, its folder fixed.
+        for (String n : Policy.REWIND_EXPORT_PROBES) allowed(Policy.probeName(n));
+        refused(Policy.probeName("rewind-export-anything"));
+        checks++;
+        Object[] spike = Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "rule", "2500",
+                "120", "0", "dev-own-1"));
+        same("own,1920,1080,60,60,rule,2500,120,0,dev-own-1", spike[0] + "," + spike[1] + "," + spike[2] + ","
+                + spike[3] + "," + spike[4] + "," + spike[5] + "," + spike[6] + "," + spike[7] + "," + spike[8] + ","
+                + spike[9]);
+        same("-", String.valueOf(Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "none",
+                "0", "0", "0", "-"))[9])); // "-": frames are discarded (timing only)
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1921", "1080", "60", "60", "rule", "0",
+                "0", "0", "a"))); // odd width
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "50", "60", "rule", "0",
+                "0", "0", "a"))); // fps not 30/60/120/240
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "8000", "1080", "60", "60", "rule", "0",
+                "0", "0", "a"))); // wider than 4K x 2
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "0", "rule", "0",
+                "0", "0", "a"))); // no frames
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "maybe", "0",
+                "0", "0", "a")));
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "rule", "0",
+                "5000", "0", "a"))); // hold above the 2 s cap
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080", "60", "60", "rule", "0",
+                "0", "0", "../x")));
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("tv", "1920", "1080", "60", "60", "rule", "0",
+                "0", "0", "a")));
+        refusedCall(() -> Policy.exportSpike(java.util.Arrays.asList("own", "1920", "1080")));
+        allowed(Policy.exportRun("dev-own-1"));
+        refused(Policy.exportRun("../etc"));
+        refused(Policy.exportRun("A"));
+        refused(Policy.exportRun("-"));
+        refused(Policy.exportRun(""));
+        refused(Policy.exportRun(null));
+        refused(Policy.exportRun("a234567890123456789012345678901234567890"));
+        allowed(Policy.exportName("frame-00012"));
+        allowed(Policy.exportName("window-k3"));
+        refused(Policy.exportName("../../x"));
+        refused(Policy.exportName("x.png"));
+        same("/Users/Shared/cobblify-dev/exports/spike/dev-own-1", Policy.exportFolder("dev-own-1"));
+        checks++;
+        try {
+            Policy.exportFolder("../x");
+            fail("export folder outside spike/");
+        } catch (Refused expected) {
+            // refused
+        }
+
         allowed(Policy.chatClick(true));
         refused(Policy.chatClick(false)); // any other screen, a subclass, or none
         for (String id : new String[]{"scoreboard", "chat", "tablist"}) allowed(Policy.placeItem(id));

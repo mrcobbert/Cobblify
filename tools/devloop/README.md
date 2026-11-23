@@ -220,6 +220,12 @@ every segment starting at its boundary packet). Every staged runtime records int
 `~/.cobblify/rewind`; `probe rewind-clear` deletes the closed recordings there and refuses without that flag. Both
 Rewind probes work without a world (never on a server).
 
+`cobdev smoke [--prod] --only rewind-export-spike` runs the boot and world steps, then `RWX` (Rewind Export PLAN
+Phase 2, checks K1-K10): it records a fixture in the smoke world (a turn, blocks placed and broken in view, a 200-block
+teleport), watches it and exports it off-screen through the `rewind-export-*` probes. The game writes the PNGs and
+`frames.json` to `/Users/Shared/cobblify-dev/exports/spike/<run>` (`stage` makes `exports/` world-writable) and
+compares them itself; replies are counts, means, boxes and ticks.
+
 `cobdev selftest` runs the checks that need no game: the bridge's refusal rules
 (`bridge/test/.../PolicyTest.java`), image and launch-config helpers (`test_cobdev.py`), and the
 release-jar check.

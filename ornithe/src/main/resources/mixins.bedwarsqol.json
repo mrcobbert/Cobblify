@@ -74,7 +74,9 @@
     "SoundHandlerRewindRecordMixin",
     "PacketThreadUtilRunMixin",
     "GuiIngameRewindMixin",
-    "EntityXPOrbRewindMixin"
+    "EntityXPOrbRewindMixin",
+    "MinecraftRewindExportMixin",
+    "EntityRendererRewindExportMixin"
   ],
   "verbose": true
 }

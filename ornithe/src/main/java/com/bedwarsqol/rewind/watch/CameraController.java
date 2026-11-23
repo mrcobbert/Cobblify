@@ -273,9 +273,12 @@ public final class CameraController {
             youPoseValid = true;
         }
         long now = System.nanoTime();
-        if (view().freeCamera()) {
+        if (view().freeCamera() && !com.bedwarsqol.rewind.export.RewindExport.active()) {
+            // an export's free camera neither moves nor turns (Rewind Export PLAN Solution 2)
             double seconds = Math.min(MAX_STEP_SECONDS, Math.max(0, (now - lastFrameNanos) / 1e9));
             FreeCameraMath.move(free, moveForward, moveStrafe, moveVertical, level, seconds);
+            clearMove();
+        } else if (com.bedwarsqol.rewind.export.RewindExport.active()) {
             clearMove();
         }
         lastFrameNanos = now;

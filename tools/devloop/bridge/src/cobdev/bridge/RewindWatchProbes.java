@@ -270,7 +270,9 @@ final class RewindWatchProbes {
         out.put("stopAt", stopAt);
         out.put("stoppedAt", stoppedAt);
         Object timer = timer(mc);
-        out.put("timerSpeed", timer == null ? null : timer.getClass().getField("timerSpeed").get(timer));
+        // A compiled field access (remapped with the bridge), not reflection by its MCP name: that fails in prod mode.
+        out.put("timerSpeed", timer instanceof net.minecraft.util.Timer ? ((net.minecraft.util.Timer) timer).timerSpeed
+                : null);
         out.put("thirdPersonView", mc.gameSettings.thirdPersonView);
         out.put("chatLines", chatLines(mc).size());
         out.put("updateCounter", mc.ingameGUI.getUpdateCounter());
