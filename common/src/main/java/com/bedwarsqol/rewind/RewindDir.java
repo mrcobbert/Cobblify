@@ -39,7 +39,8 @@ public final class RewindDir {
         return open(dir, openCommand(System.getProperty("os.name"), dir));
     }
 
-    static Thread open(final File dir, final String[] command) {
+    /** Shows {@code dir} with {@code command} ({@link #openCommand}) on a daemon thread (Rewind Export's Open Folder). */
+    public static Thread open(final File dir, final String[] command) {
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {

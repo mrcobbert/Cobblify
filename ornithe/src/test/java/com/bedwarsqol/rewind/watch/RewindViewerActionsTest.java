@@ -1,12 +1,20 @@
 package com.bedwarsqol.rewind.watch;
 
+import com.bedwarsqol.gui.sheet.SheetFont;
+import com.bedwarsqol.gui.sheet.TextMetrics;
 import com.bedwarsqol.rewind.RecordingMeta;
 import com.bedwarsqol.rewind.RewindFormat;
+import com.bedwarsqol.rewind.export.ExportJob;
+import com.bedwarsqol.rewind.export.ExportPanelModel;
+import com.bedwarsqol.rewind.export.ExportRange;
+import com.bedwarsqol.rewind.export.ExportSettings;
+import com.bedwarsqol.rewind.export.RenderRoute;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -14,6 +22,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -21,6 +30,11 @@ import static org.junit.Assert.assertTrue;
  * the Esc menu ({@link EscMenuModel.Key}) reaches the session (or the camera controls) as the plan says, against a real
  * {@link PlaybackSession} driven to WATCHING by {@link PlaybackSessionTest}'s fake client on a recording with three
  * markers. Each enum is covered value by value: a new action without a mapping fails here.
+ *
+ * <p>Rewind Export Phase 7: the viewer's export mode (TASK U1-U6) against the same session, with the export itself
+ * replaced by a recorder ({@link FakeExporter}): the range around the marker last jumped to, the gallery's request,
+ * the panel's key states from the export's progress and outcome, and the Esc order (a running export is cancelled
+ * first, then export mode is left, then the Esc menu opens).
  */
 public class RewindViewerActionsTest {
 
@@ -37,6 +51,7 @@ public class RewindViewerActionsTest {
     private PlaybackSessionTest h;
     private PlaybackSession session;
     private FakeCameras cameras;
+    private FakeExporter exporter;
     private RewindViewerScreen.Controls controls;
     private int escOpened;
     private final Runnable openEsc = () -> escOpened++;
@@ -78,7 +93,86 @@ public class RewindViewerActionsTest {
         }
     }
 
+    /** The export the viewer starts (RewindExport in the game); here it only records. */
+    static final class FakeExporter implements RewindViewerScreen.Controls.Exporter {
+        ExportSettings stored = ExportSettings.of(720, 30, "standard", "hevc", false);
+        String refuse;
+        boolean active;
+        float progress;
+        ExportJob.State outcome;
+        long startUs, endUs;
+        ExportPanelModel.Choice choice;
+        ExportPanelModel panel;
+        final List<String> calls = new ArrayList<String>();
+
+        @Override
+        public ExportSettings stored() {
+            return stored;
+        }
+
+        @Override
+        public String start(long startUs, long endUs, ExportPanelModel.Choice choice, ExportPanelModel panel) {
+            calls.add("start");
+            this.startUs = startUs;
+            this.endUs = endUs;
+            this.choice = choice;
+            this.panel = panel;
+            if (refuse != null) return refuse;
+            active = true;
+            progress = 0f;
+            outcome = null;
+            return null;
+        }
+
+        @Override
+        public boolean active() {
+            return active;
+        }
+
+        @Override
+        public float progress() {
+            return progress;
+        }
+
+        @Override
+        public ExportJob.State outcome() {
+            return outcome;
+        }
+
+        @Override
+        public void cancel() {
+            calls.add("cancel");
+        }
+
+        @Override
+        public void openFolder() {
+            calls.add("openFolder");
+        }
+
+        /** The running export ended with {@code s}. */
+        void end(ExportJob.State s) {
+            active = false;
+            outcome = s;
+        }
+    }
+
+    /** Minecraft's font at one device px per su, for the panel's layout. */
+    static final TextMetrics MC = new TextMetrics() {
+        @Override public float unit() { return 1f; }
+        @Override public float width(String s, SheetFont font) { return s.length() * 6f; }
+        @Override public float ascent(SheetFont font) { return 7.5f; }
+        @Override public float descent(SheetFont font) { return 1.5f; }
+        @Override public float normalLineHeight(SheetFont font) { return 9f; }
+        @Override public boolean minecraftFont() { return true; }
+        @Override public float pixel(SheetFont font) { return 1f; }
+    };
+
     private static File writeRecording(File dir) throws Exception {
+        return writeRecording(dir, 0);
+    }
+
+    /** The recording, its game start {@code startShiftUs} after its tick (negative: before). */
+    private static File writeRecording(File dir, long startShiftUs) throws Exception {
         String id = PlaybackSessionTest.ID;
         RecordingFixture f = new RecordingFixture();
         f.header(1, RewindFormat.SOURCE_CLIENT_SNAPSHOT, ORIGIN, TickFeederTest.standardHeader0());
@@ -100,7 +194,7 @@ public class RewindViewerActionsTest {
             marks[i] = RecordingFixture.marker(ORIGIN + MARKER_TICKS[i] * TICK, MARKER_KINDS[i]);
         }
         f.track(1, ORIGIN + MARKER_TICKS[0] * TICK, marks);
-        long start = ORIGIN + START_TICK * TICK, end = ORIGIN + END_TICK * TICK;
+        long start = ORIGIN + START_TICK * TICK + startShiftUs, end = ORIGIN + END_TICK * TICK;
         RecordingMeta meta = RecordingFixture.meta(id, start, end);
         f.end(meta, end);
         f.write(dir, id);
@@ -125,6 +219,8 @@ public class RewindViewerActionsTest {
 
         cameras = new FakeCameras();
         ViewerCameraControls.set(cameras);
+        exporter = new FakeExporter();
+        RewindViewerScreen.Controls.setExporter(exporter);
         controls = new RewindViewerScreen.Controls(session);
         assertEquals("a new session starts in your view", "select " + ViewerCameraControls.YOU, cameras.calls.get(0));
         cameras.calls.clear();
@@ -133,6 +229,8 @@ public class RewindViewerActionsTest {
     @org.junit.After
     public void unwire() {
         ViewerCameraControls.set(null);
+        RewindViewerScreen.Controls.setExporter(null);
+        RewindViewerScreen.requestExport(null);
     }
 
     /** Lets a pending seek land (applied at the next frame start, then caught up). */
@@ -435,6 +533,218 @@ public class RewindViewerActionsTest {
                 + FreeCameraMath.SPEED_BAR_FADE_MS), 0f);
     }
 
+
+    // ------------------------------------------------------------------ export mode (Rewind Export Phase 7)
+
+    /** Microseconds from the game start of tick {@code k}. */
+    private long fromStart(long k) {
+        return session.timeline().timeOfTick(k) - session.timeline().gameStartUs();
+    }
+
+    /** A probe that opens H.264 at 1080p60 and 720p30 only. */
+    private static ExportPanelModel.Matrix matrix() {
+        return new ExportPanelModel.Matrix(Arrays.asList(new int[]{1920, 1080, 60}, new int[]{1280, 720, 30}), null);
+    }
+
+    /** The panel's key pressed and released (as a click on it). */
+    private void pressKey(ExportPanelModel p) {
+        ExportPanelModel.Layout l = p.layout(960, 510, MC);
+        float[] k = l.key();
+        p.mouseDown(l, k[0] + 2, k[1] + 2);
+        controls.panelIntent(p.mouseUp(l, k[0] + 2, k[1] + 2));
+    }
+
+    @Test
+    public void exportModeOpensAroundTheMarkerLastJumpedToAndEscLeavesIt() {
+        session.setPaused(true); // the playhead stays where a step puts it
+        assertFalse(controls.exportMode());
+        assertNull(controls.panel());
+
+        // the marker last jumped to holds after the playhead moved on (U3)
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.MARKER, 2, 0));
+        settle();
+        seekTo(800);
+        assertEquals(-1, controls.highlightedMarker());
+        controls.openExport();
+        assertTrue(controls.exportMode());
+        long marker = fromStart(700);
+        ExportRange r = controls.range();
+        assertEquals("10 s before the marker", marker - 10_000_000L, r.startUs());
+        assertEquals("5 s after it", marker + 5_000_000L, r.endUs());
+        assertNotNull(controls.panel());
+        assertEquals("the panel starts from the stored settings: Standard", 0,
+                controls.panel().chosen(ExportPanelModel.Row.QUALITY));
+        assertEquals("and Chat off", 1, controls.panel().chosen(ExportPanelModel.Row.CHAT));
+        assertTrue("the bar is pinned in export mode", controls.barPinned());
+
+        // seeking and the camera keys still work; the range stays
+        key(ViewerKeys.KEY_RIGHT, false);
+        assertEquals(900, session.playheadTick());
+        settle();
+        key(ViewerKeys.KEY_2, false);
+        assertTrue(controls.free());
+        key(ViewerKeys.KEY_1, false);
+        assertEquals(r.startUs(), controls.range().startUs());
+        assertEquals(r.endUs(), controls.range().endUs());
+
+        // Esc: the camera menu first, then export mode, then the Esc menu
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertFalse(controls.menuOpen());
+        assertTrue(controls.exportMode());
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertFalse("Esc leaves export mode", controls.exportMode());
+        assertNull(controls.panel());
+        assertNull(controls.range());
+        assertFalse(controls.barPinned());
+        assertEquals(0, escOpened);
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertEquals("then the Esc menu", 1, escOpened);
+
+        // no marker jumped to in this viewing: around the playhead
+        RewindViewerScreen.Controls fresh = new RewindViewerScreen.Controls(session);
+        fresh.openExport();
+        assertEquals(fromStart(900) - 10_000_000L, fresh.range().startUs());
+        assertEquals(fromStart(900) + 5_000_000L, fresh.range().endUs());
+        assertTrue(exporter.calls.isEmpty());
+    }
+
+    @Test
+    public void escCancelsARunningExportBeforeItLeavesExportModeAndTheKeyFollowsTheExport() {
+        session.setPaused(true); // the playhead stays where a step puts it
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.MARKER, 2, 0));
+        settle();
+        controls.openExport();
+        ExportPanelModel p = controls.panel();
+        p.probe(matrix());
+        p.route(RenderRoute.Route.OWN, 1280, 720);
+        assertEquals(ExportPanelModel.KeyState.EXPORT, p.keyState());
+
+        // the Export key: the range on the recording's clock and the panel's choice
+        pressKey(p);
+        assertEquals(Arrays.asList("start"), exporter.calls);
+        long start = session.timeline().gameStartUs();
+        assertEquals(start + controls.range().startUs(), exporter.startUs);
+        assertEquals(start + controls.range().endUs(), exporter.endUs);
+        assertEquals(1280, exporter.choice.width());
+        assertEquals(30, exporter.choice.fps());
+        assertEquals("the overlay fills this panel's key", p, exporter.panel);
+        exporter.progress = 0.25f;
+        controls.syncExport();
+        assertEquals(ExportPanelModel.KeyState.FILLING, p.keyState());
+        assertEquals(0.25f, p.fill(), 0f);
+
+        // while it runs no key does anything but Esc (U5)
+        long tick = session.playheadTick();
+        int cameraCalls = cameras.calls.size();
+        boolean clean = session.view().clean();
+        for (int code : new int[]{ViewerKeys.KEY_RIGHT, ViewerKeys.KEY_PERIOD, ViewerKeys.KEY_2, ViewerKeys.KEY_F1,
+                ViewerKeys.KEY_SPACE, ViewerKeys.KEY_RBRACKET}) {
+            key(code, false);
+        }
+        settle();
+        assertEquals(tick, session.playheadTick());
+        assertEquals(cameraCalls, cameras.calls.size());
+        assertEquals(clean, session.view().clean());
+        assertEquals(ReplayTicks.DEFAULT_SPEED_INDEX, speedIndex());
+        assertTrue(controls.exportBusy());
+        controls.act(new ViewerLayout.Action(ViewerLayout.Action.Kind.CAMERA_MENU, -1, 0));
+        assertFalse("bar actions do nothing while it runs", controls.menuOpen());
+
+        // Esc order: cancel the export (export mode stays), then leave export mode, then the Esc menu
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertEquals(Arrays.asList("start", "cancel"), exporter.calls);
+        assertTrue(controls.exportMode());
+        assertEquals(0, escOpened);
+        exporter.end(ExportJob.State.CANCELLED);
+        controls.syncExport();
+        assertFalse(controls.exportBusy());
+        assertEquals("cancelled: back to Export", ExportPanelModel.KeyState.EXPORT, p.keyState());
+        assertTrue(controls.exportMode());
+
+        // done: Open Folder opens the file's folder
+        pressKey(p);
+        exporter.progress = 1f;
+        controls.syncExport();
+        exporter.end(ExportJob.State.DONE);
+        controls.syncExport();
+        assertEquals(ExportPanelModel.KeyState.OPEN_FOLDER, p.keyState());
+        pressKey(p);
+        assertEquals(Arrays.asList("start", "cancel", "start", "openFolder"), exporter.calls);
+
+        // a changed row makes the key read Export again (ExportPanelModel); failed: Failed in red, and the key starts
+        // another export (U6)
+        p.pick(ExportPanelModel.Row.QUALITY, 2);
+        assertEquals(ExportPanelModel.KeyState.EXPORT, p.keyState());
+        pressKey(p);
+        exporter.end(ExportJob.State.FAILED);
+        controls.syncExport();
+        assertEquals(ExportPanelModel.KeyState.FAILED, p.keyState());
+        exporter.refuse = "busy";
+        pressKey(p);
+        assertEquals(Arrays.asList("start", "cancel", "start", "openFolder", "start", "start"), exporter.calls);
+        assertEquals("a refused start reads Failed", ExportPanelModel.KeyState.FAILED, p.keyState());
+        assertFalse(controls.exportBusy());
+
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertFalse(controls.exportMode());
+        assertEquals(0, escOpened);
+        key(ViewerKeys.KEY_ESCAPE, false);
+        assertEquals(1, escOpened);
+    }
+
+    @Test
+    public void aRangeFromTheGameStartBeginsAtTheFirstRecordedTick() throws Exception {
+        // a game whose start lies 25 ms before its first tick (the export cannot start before that tick)
+        File cbr = writeRecording(h.tmp.newFolder("offtick"), -25_000L);
+        session.requestExit(PlaybackSession.Exit.TITLE);
+        h.loop.frame(1);
+        assertEquals(PlaybackSession.State.IDLE, session.state());
+        h.ops.loadCbr = cbr;
+        h.ops.loadJson = new File(cbr.getParentFile(), PlaybackSessionTest.ID + ".json");
+        session.open(PlaybackSessionTest.ID);
+        h.loop.until(PlaybackSession.State.WATCHING, 1);
+        session.setPaused(true);
+        long first = session.timeline().timeOfTick(session.timeline().startTick());
+        assertEquals("the fixture's game start is off its tick", first - 25_000L, session.timeline().gameStartUs());
+
+        RewindViewerScreen.Controls c = new RewindViewerScreen.Controls(session);
+        c.openExport();
+        assertEquals(0, c.range().startUs());
+        ExportPanelModel p = c.panel();
+        p.probe(matrix());
+        ExportPanelModel.Layout l = p.layout(960, 510, MC);
+        float[] k = l.key();
+        p.mouseDown(l, k[0] + 2, k[1] + 2);
+        c.panelIntent(p.mouseUp(l, k[0] + 2, k[1] + 2));
+        assertEquals(Arrays.asList("start"), exporter.calls);
+        assertEquals("never before the first tick (beginExport refuses that)", first, exporter.startUs);
+        assertEquals(session.timeline().gameStartUs() + c.range().endUs(), exporter.endUs);
+    }
+
+    @Test
+    public void theGalleryRequestOpensExportModePausedAtTheFirstMarker() {
+        // another game's request does nothing and is dropped
+        RewindViewerScreen.requestExport("someone-else");
+        RewindViewerScreen.Controls other = new RewindViewerScreen.Controls(session);
+        assertFalse(other.exportMode());
+
+        RewindViewerScreen.requestExport(PlaybackSessionTest.ID);
+        RewindViewerScreen.Controls c = new RewindViewerScreen.Controls(session);
+        assertTrue("the gallery's Export opens export mode (U2)", c.exportMode());
+        ExportRange r = c.range();
+        long first = fromStart(MARKER_TICKS[0]);
+        assertEquals(ExportRange.forGallery(session.timeline().lengthUs(), first).startUs(), r.startUs());
+        assertEquals(ExportRange.forGallery(session.timeline().lengthUs(), first).endUs(), r.endUs());
+        settle();
+        assertEquals("the playhead at the first marker", MARKER_TICKS[0], session.playheadTick());
+        assertTrue("paused", paused());
+        assertNotNull(c.panel());
+
+        RewindViewerScreen.Controls again = new RewindViewerScreen.Controls(session);
+        assertFalse("the request is used once", again.exportMode());
+    }
+
     // ------------------------------------------------------------------ the Esc menu
 
     @Test
@@ -442,8 +752,10 @@ public class RewindViewerActionsTest {
         Set<EscMenuModel.Key> checked = EnumSet.noneOf(EscMenuModel.Key.class);
         int[] views = {0};
         int[] galleries = {0};
+        int[] exports = {0};
         Runnable viewer = () -> views[0]++;
         Runnable gallery = () -> galleries[0]++;
+        Runnable export = () -> exports[0]++;
 
         // opening pauses; Resume restores the play state from before
         EscMenuModel model = RewindEscScreen.opened(session);
@@ -463,11 +775,13 @@ public class RewindViewerActionsTest {
         assertEquals("the gallery keeps the session", PlaybackSession.State.WATCHING, session.state());
         checked.add(EscMenuModel.Key.GALLERY);
 
-        // Rewind Export Phase 6 adds the Export key to the model only; Phase 7 wires it to export mode and replaces
-        // this check. Until then it changes nothing: no screen, the session keeps watching.
-        RewindEscScreen.apply(EscMenuModel.Key.EXPORT, session, model, viewer, gallery);
-        assertEquals(2, views[0]);
+        // Export (TASK U1): the viewer in export mode, still paused as the menu left it; the session keeps watching
+        model = RewindEscScreen.opened(session);
+        RewindEscScreen.apply(EscMenuModel.Key.EXPORT, session, model, viewer, gallery, export);
+        assertEquals(1, exports[0]);
+        assertEquals("Export opens no plain viewer", 2, views[0]);
         assertEquals(1, galleries[0]);
+        assertTrue("export mode starts paused", paused());
         assertEquals(PlaybackSession.State.WATCHING, session.state());
         checked.add(EscMenuModel.Key.EXPORT);
 
@@ -489,6 +803,7 @@ public class RewindViewerActionsTest {
 
         assertEquals("every Esc key is checked", EnumSet.allOf(EscMenuModel.Key.class), checked);
         assertEquals(2, views[0]);
+        assertEquals(1, exports[0]);
     }
 
     @Test

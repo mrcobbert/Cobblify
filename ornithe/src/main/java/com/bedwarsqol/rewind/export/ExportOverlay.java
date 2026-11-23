@@ -1,5 +1,14 @@
 package com.bedwarsqol.rewind.export;
 
+import com.bedwarsqol.BedwarsQol;
+import com.bedwarsqol.config.ClientSettings;
+import com.bedwarsqol.gui.render.GuiTheme;
+import com.bedwarsqol.gui.sheet.McCanvas;
+import com.bedwarsqol.gui.sheet.SheetColors;
+import com.bedwarsqol.rewind.watch.RewindPainter;
+import com.bedwarsqol.rewind.watch.RewindPlayback;
+import com.bedwarsqol.rewind.watch.Timeline;
+import com.bedwarsqol.rewind.watch.ViewerLayout;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
@@ -11,22 +20,27 @@ import org.lwjgl.opengl.GL11;
 
 /**
  * What the window shows while an export renders (Rewind Export PLAN Solution 2, decision 4; TASK U5): the frame just
- * rendered as a preview (OWN route: our framebuffer's texture, letterboxed to the window) and the Export key filling
- * with the share of frames done, red when the export failed. Drawn at {@code Minecraft.updateDisplay} HEAD, after the
- * read-back, so neither is ever in the file. Phase 7 replaces the key with the export panel's own; this is the
- * minimal one the pipeline needs. Game thread.
+ * rendered as a preview (OWN route: our framebuffer's texture, letterboxed to the window) and the export panel where
+ * the viewer has it, its rows dimmed and its Export key filling with the share of frames done, red when the export
+ * failed ({@link RewindPainter#exportPanel}). Drawn at {@code Minecraft.updateDisplay} HEAD, after the read-back, so
+ * neither is ever in the file. Game thread.
  */
 final class ExportOverlay {
 
     private ExportOverlay() {
     }
 
+    private static final McCanvas CANVAS = new McCanvas();
+    private static int accent = -1;
+    private static SheetColors.Shades accentShades = SheetColors.Shades.of(0xC0DCFF);
+
     /**
      * @param target   the OWN route's framebuffer (null: WINDOW, whose window already shows the frame)
+     * @param panel    the export panel whose key fills (null: no key)
      * @param progress frames sent / frames
      * @param failed   the export failed
      */
-    static void draw(Minecraft mc, ExportTarget target, double progress, boolean failed) {
+    static void draw(Minecraft mc, ExportTarget target, ExportPanelModel panel, double progress, boolean failed) {
         int w = mc.displayWidth;
         int h = mc.displayHeight;
         OpenGlHelper.glBindFramebuffer(OpenGlHelper.GL_FRAMEBUFFER, 0);
@@ -65,19 +79,14 @@ final class ExportOverlay {
             t.draw();
             GlStateManager.bindTexture(0);
         }
-        int sf = new ScaledResolution(mc).getScaleFactor();
-        int kw = 120 * sf;
-        int kh = 6 * sf;
-        int kx = w - kw - 8 * sf;
-        int ky = h - kh - 8 * sf;
-        double share = Math.max(0, Math.min(1, progress));
-        GlStateManager.disableTexture2D();
-        GlStateManager.enableBlend();
-        GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, 1, 0);
-        rect(t, r, kx, ky, kx + kw, ky + kh, 0x99000000);
-        rect(t, r, kx, ky, kx + (int) Math.round(kw * (failed ? 1 : share)), ky + kh, failed ? 0xFFD9493F : 0xFFF0F0F0);
-        GlStateManager.disableBlend();
-        GlStateManager.enableTexture2D();
+        if (panel != null) {
+            if (failed) {
+                panel.failed();
+            } else {
+                panel.filling((float) progress);
+            }
+            panel(mc, panel, w, h);
+        }
         GlStateManager.colorMask(true, true, true, true);
         GlStateManager.enableDepth();
         GlStateManager.enableAlpha();
@@ -87,16 +96,30 @@ final class ExportOverlay {
         GlStateManager.popMatrix();
     }
 
-    private static void rect(Tessellator t, WorldRenderer r, int x0, int y0, int x1, int y1, int argb) {
-        float a = (argb >>> 24) / 255f;
-        float red = (argb >> 16 & 255) / 255f;
-        float g = (argb >> 8 & 255) / 255f;
-        float b = (argb & 255) / 255f;
-        r.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_COLOR);
-        r.pos(x0, y1, 0).color(red, g, b, a).endVertex();
-        r.pos(x1, y1, 0).color(red, g, b, a).endVertex();
-        r.pos(x1, y0, 0).color(red, g, b, a).endVertex();
-        r.pos(x0, y0, 0).color(red, g, b, a).endVertex();
-        t.draw();
+    /** The panel at the viewer's spot: above the bar's top, at the window's GUI scale, in window pixels. */
+    private static void panel(Minecraft mc, ExportPanelModel panel, int w, int h) {
+        Timeline tl = RewindPlayback.session().timeline();
+        if (tl == null) {
+            return;
+        }
+        ClientSettings cfg = BedwarsQol.config;
+        int sf = new ScaledResolution(mc).getScaleFactor();
+        float sw = w / (float) sf, sh = h / (float) sf;
+        CANVAS.begin(sf, 0f, 0f, h, 1, cfg == null || cfg.minecraftFont());
+        try {
+            float barTop = ViewerLayout.of(sw, sh, CANVAS, tl).bar[1];
+            RewindPainter.exportPanel(CANVAS, panel, panel.layout(sw, barTop, CANVAS), null, accent(cfg));
+        } finally {
+            CANVAS.end();
+        }
+    }
+
+    private static SheetColors.Shades accent(ClientSettings cfg) {
+        int a = SheetColors.legible(GuiTheme.color(cfg == null ? null : cfg.guiAccent));
+        if (a != accent) {
+            accent = a;
+            accentShades = SheetColors.Shades.of(a);
+        }
+        return accentShades;
     }
 }

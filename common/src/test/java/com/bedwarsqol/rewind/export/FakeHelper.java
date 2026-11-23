@@ -15,7 +15,8 @@ import java.nio.charset.StandardCharsets;
  * frames line per frame, done on kind 3, then waits for its input to close), {@code protocol2} (a ready line with the
  * wrong protocol), {@code stall} (ready, then never reads), {@code exit5} (ready, then exits 5), {@code error} (ready,
  * then an error line and exit 2), {@code args} (writes its arguments after OUT to OUT, one per line, then ready and
- * waits).
+ * waits), {@code probe} (writes its arguments after OUT to OUT, then noise on both streams and one probe line, exit
+ * 0), {@code probe-none} (noise only, exit 4).
  */
 public final class FakeHelper {
 
@@ -52,6 +53,23 @@ public final class FakeHelper {
                 }
                 out.println("{\"ready\":true,\"protocol\":1}");
                 drain(System.in);
+                return;
+            case "probe":
+                try (OutputStream f = new FileOutputStream(a[1])) {
+                    for (int i = 2; i < a.length; i++) {
+                        f.write((a[i] + "\n").getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                for (int i = 0; i < 2000; i++) {
+                    System.err.println("diagnostic line " + i + " that the game never logs");
+                }
+                out.println("probing...");
+                out.println("{\"protocol\":1,\"videosDir\":\"/Users/x/Movies\",\"h264\":[[1920,1080,60]],\"hevc\":[]}");
+                System.exit(0);
+                return;
+            case "probe-none":
+                out.println("probing...");
+                System.exit(4);
                 return;
             default:
                 break;

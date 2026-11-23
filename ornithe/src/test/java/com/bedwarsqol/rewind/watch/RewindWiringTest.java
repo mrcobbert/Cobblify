@@ -96,6 +96,24 @@ public class RewindWiringTest {
         return (List<PlaybackPart>) f.get(null);
     }
 
+    /**
+     * Rewind Export Phase 7: the viewer's export seam is the game's export ({@code RewindExport}) unless a test replaces
+     * it. With nothing being watched it starts nothing, and nothing runs.
+     */
+    @Test
+    public void theViewersExportSeamDrivesTheGamesExport() {
+        RewindViewerScreen.Controls.setExporter(null);
+        RewindViewerScreen.Controls.Exporter e = RewindViewerScreen.Controls.exporter();
+        assertTrue("the game's export", e instanceof RewindViewerScreen.GameExporter);
+        assertFalse(e.active());
+        com.bedwarsqol.rewind.export.ExportPanelModel p = new com.bedwarsqol.rewind.export.ExportPanelModel(null);
+        p.probe(new com.bedwarsqol.rewind.export.ExportPanelModel.Matrix(
+                java.util.Collections.singletonList(new int[]{1920, 1080, 60}), null));
+        assertEquals("not-watching", e.start(1_000_000L, 2_000_000L, p.choice(), p));
+        assertFalse(e.active());
+        assertEquals("nothing ended yet in this JVM", null, e.outcome());
+    }
+
     @Test
     public void playbackReadsThroughTheRecordersStore() {
         assertSame(Rewind.store(), RewindPlayback.store());

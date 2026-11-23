@@ -8,7 +8,9 @@ import java.util.List;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * {@link HelperProtocol} (Rewind Export PLAN Solution 4; HANDOFF Phase 3 protocol): packet headers {@code u8 kind,
@@ -65,5 +67,42 @@ public class HelperProtocolTest {
         List<String> a = HelperProtocol.encodeArgs("/h/cobblify-encode", out, 1920, 1080, 60, "hevc", 9_500_000L);
         assertEquals(Arrays.asList("/h/cobblify-encode", "encode", "--out", out.getAbsolutePath(), "--width", "1920",
                 "--height", "1080", "--fps", "60", "--codec", "hevc", "--bitrate", "9500000"), a);
+    }
+
+    /**
+     * Rewind Export Phase 7: the probe's one line (HANDOFF Phase 3: {@code {"protocol":1,"videosDir":"..."|null,
+     * "h264":[[w,h,fps]...],"hevc":[...]}}) gives the panel its matrix and the export folder its videos folder; the
+     * window's size goes as {@code --size} only when the helper accepts it (even, 128 to 8192).
+     */
+    @Test
+    public void theProbeLineAndArguments() {
+        HelperProtocol.Probe p = HelperProtocol.parseProbe(
+                "{\"protocol\":1,\"videosDir\":\"C:\\\\Users\\\\a\\\\Videos\",\"h264\":[[1280,720,30],[1280,720,60]],"
+                        + "\"hevc\":[]}");
+        assertEquals(1, p.protocol);
+        assertEquals("C:\\Users\\a\\Videos", p.videosDir);
+        assertEquals(2, p.h264.size());
+        assertArrayEquals(new int[]{1280, 720, 60}, p.h264.get(1));
+        assertEquals(0, p.hevc.size());
+        ExportPanelModel.Matrix m = p.matrix();
+        assertTrue(m.has("h264", 1280, 720, 30));
+        assertFalse(m.any("hevc"));
+
+        HelperProtocol.Probe q = HelperProtocol.parseProbe(
+                " {\"protocol\": 1, \"videosDir\": null, \"extra\": {\"a\": [1]}, \"h264\": [], "
+                        + "\"hevc\": [[1920, 1080, 240]]} ");
+        assertNull(q.videosDir);
+        assertArrayEquals(new int[]{1920, 1080, 240}, q.hevc.get(0));
+
+        assertNull("garbage", HelperProtocol.parseProbe("probe failed"));
+        assertNull("a row that is not three numbers", HelperProtocol.parseProbe(
+                "{\"protocol\":1,\"videosDir\":null,\"h264\":[[1280,720]],\"hevc\":[]}"));
+        assertNull("no rows at all", HelperProtocol.parseProbe("{\"protocol\":1,\"videosDir\":null}"));
+        assertNull(HelperProtocol.parseProbe(null));
+
+        assertEquals(Arrays.asList("/h/cobblify-encode", "probe", "--size", "1366x768"),
+                HelperProtocol.probeArgs("/h/cobblify-encode", 1367, 769));
+        assertEquals(Arrays.asList("/h/cobblify-encode", "probe"), HelperProtocol.probeArgs("/h/cobblify-encode", 100, 768));
+        assertEquals(Arrays.asList("/h/cobblify-encode", "probe"), HelperProtocol.probeArgs("/h/cobblify-encode", 1366, 9000));
     }
 }

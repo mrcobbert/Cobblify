@@ -2,6 +2,7 @@ package com.bedwarsqol.rewind.export;
 
 import com.bedwarsqol.feature.DiagLog;
 import com.bedwarsqol.rewind.RecordingMeta;
+import com.bedwarsqol.rewind.RewindDir;
 import com.bedwarsqol.rewind.watch.HudPlayback;
 import com.bedwarsqol.rewind.watch.LoadedRecording;
 import com.bedwarsqol.rewind.watch.ModeLabels;
@@ -44,6 +45,12 @@ import java.util.TimeZone;
  * The first frame read back is the start-up check ({@link RenderRoute#decide}); a failure ends the export and selects
  * WINDOW for the rest of the game session. Motion Blur, vsync and the frame limit are put back through one
  * {@link ExportRestore}. Game thread, except {@link #statusJson}, {@link #frameLog} and {@link #cancel}.
+ *
+ * <p><b>Export mode</b> (Phase 7, the viewer's panel): {@link #matrix} runs the helper's probe off the client thread
+ * when export mode opens and again when the window's pixel size changed (the panel's choices, and the videos folder
+ * the files go to); {@link #checkRoute} runs the off-screen route's start-up check on one drawn frame, once per game
+ * session, so a machine that fails it is offered the window's own size before its first export (TASK P9).
+ * {@link #lastState} and {@link #openFolder} are the viewer's key states after an export.
  */
 public final class RewindExport {
 
@@ -82,6 +89,8 @@ public final class RewindExport {
         /** An exact size instead of the settings' 16:9 height (cobdev's 640x360 step); 0: the settings'. */
         public int width;
         public int height;
+        /** The viewer's export panel, whose key fills in the window while the export draws; null: a panel of its own. */
+        public ExportPanelModel panel;
     }
 
     /** The game session's route: WINDOW once a start-up check failed (TASK P9). */
@@ -91,6 +100,27 @@ public final class RewindExport {
     private static volatile List<String> lastFrames = Collections.emptyList();
     /** At most this many frame lines are kept for the probes. */
     static final int FRAME_LOG_LIMIT = 20_000;
+    /** The helper's probe is given this long (Windows measured 10.2 s in Phase 3). */
+    static final long PROBE_TIMEOUT_MS = 60_000;
+    /** The start-up check draws one frame at this size. */
+    static final int CHECK_W = 1920, CHECK_H = 1080;
+
+    private static final Object PROBE_LOCK = new Object();
+    /** The last probe that answered; null before. */
+    private static volatile HelperProtocol.Probe probe;
+    /** The last probe gave no answer (no helper, bad digest, no line). */
+    private static volatile boolean probeFailed;
+    /** The window size ({@code WxH}) of the probe that ran last or runs now. */
+    private static String probedSize;
+    private static Thread probing;
+    /** The start-up check: asked by export mode, done once per game session. */
+    private static volatile boolean routeCheckAsked;
+    private static volatile boolean routeChecked;
+    private static Check check;
+    /** The last export that ended: its state, its file when done, and how far it got. */
+    private static volatile ExportJob.State lastState;
+    private static volatile File lastFile;
+    private static volatile float lastProgress;
 
     private RewindExport() {
     }
@@ -122,7 +152,8 @@ public final class RewindExport {
             return "bad-range";
         }
         ExportPlan plan = new ExportPlan(q.startUs, q.endUs, set.fps());
-        File dir = ExportDirs.resolve(System.getProperty(ExportDirs.OVERRIDE_PROPERTY), null,
+        HelperProtocol.Probe pr = probe;
+        File dir = ExportDirs.resolve(System.getProperty(ExportDirs.OVERRIDE_PROPERTY), pr == null ? null : pr.videosDir,
                 System.getProperty("user.home"), System.getProperty("os.name"));
         if (!dir.isDirectory() && !dir.mkdirs()) {
             return "folder";
@@ -132,9 +163,7 @@ public final class RewindExport {
                 System.currentTimeMillis(), TimeZone.getDefault());
         File out = ExportFileName.pick(dir, base, File::exists);
 
-        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
-        HelperStore store = new HelperStore(new File(new File(System.getProperty("user.home"), ".cobblify"), "bin"),
-                windows, HelperStore.jar(RewindExport.class));
+        HelperStore store = store();
         String override = q.helperOverride != null ? q.helperOverride : System.getProperty(HelperStore.OVERRIDE_PROPERTY);
         HelperStore.Found found = store.find(override);
         ExportJob.Request r = new ExportJob.Request();
@@ -155,7 +184,15 @@ public final class RewindExport {
             p.start();
             return p;
         };
-        return begin(r, route, set.chat(), Mode.PRODUCT, null, encoders, REAL_FILES, false);
+        return begin(r, route, set.chat(), Mode.PRODUCT, null, encoders, REAL_FILES, false,
+                q.panel != null ? q.panel : new ExportPanelModel(set));
+    }
+
+    /** The helper's store: {@code ~/.cobblify/bin}, the jar's copy and digest. */
+    private static HelperStore store() {
+        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
+        return new HelperStore(new File(new File(System.getProperty("user.home"), ".cobblify"), "bin"), windows,
+                HelperStore.jar(RewindExport.class));
     }
 
     /**
@@ -180,13 +217,18 @@ public final class RewindExport {
         r.fixedHoldMs = options.mode == Mode.FIXED ? options.fixedHoldMs : 0;
         r.settleFrameZero = options.mode != Mode.RAW;
         SinkEncoder enc = new SinkEncoder(sink, r.width, r.height);
-        return begin(r, options.route, options.chat, options.mode, sink, args -> enc, NO_FILES, options.clearWindow);
+        return begin(r, options.route, options.chat, options.mode, sink, args -> enc, NO_FILES, options.clearWindow,
+                null);
     }
 
     private static String begin(ExportJob.Request r, RenderRoute.Route route, boolean chat, Mode mode, FrameSink sink,
-                                ExportJob.EncoderStart encoders, ExportJob.Files files, boolean clearWindow) {
+                                ExportJob.EncoderStart encoders, ExportJob.Files files, boolean clearWindow,
+                                ExportPanelModel panel) {
         if (run != null) {
             return "busy";
+        }
+        if (check != null) {
+            return "busy"; // the start-up check draws this frame
         }
         if (route == RenderRoute.Route.MAIN) {
             return "route-main"; // not built: the spike found OWN works (HANDOFF Phase 2)
@@ -216,7 +258,7 @@ public final class RewindExport {
                 ExportFrames.bindMain(mc);
             });
         }
-        Run x = new Run(r, route, chat, mode, sink, target, scale, windowScale, restore, clearWindow);
+        Run x = new Run(r, route, chat, mode, sink, target, scale, windowScale, restore, clearWindow, panel);
         x.frames = new ExportFrames(mc, target, scale, x.screen);
         x.job = new ExportJob(r, new SessionAdapter(s, mode != Mode.RAW), new GameAdapter(x), encoders, files,
                 ExportSoundTap.game().source());
@@ -234,6 +276,123 @@ public final class RewindExport {
         }
         publish(x);
         return null;
+    }
+
+    // ================================================================== export mode (Phase 7)
+
+    /**
+     * What the encoders open, for the export panel (client thread). Export mode calls it every frame: the first call,
+     * and the first after the window's pixel size changed, starts the helper's probe ({@code probe --size WxH}) on a
+     * thread of its own, from the hash-checked helper with an argument list (TASK X2). Null until the first answer.
+     * When the helper cannot be run or gives no answer, every preset and the window's size at every rate in H.264,
+     * so Export can still be pressed and fails as TASK U6 says (B2: a jar without the helper).
+     */
+    public static ExportPanelModel.Matrix matrix(int windowW, int windowH) {
+        final int w = Math.max(0, windowW) & ~1;
+        final int h = Math.max(0, windowH) & ~1;
+        String size = w + "x" + h;
+        synchronized (PROBE_LOCK) {
+            if (!size.equals(probedSize) && probing == null) {
+                probedSize = size;
+                Thread t = new Thread(() -> runProbe(w, h), "Cobblify Rewind export probe");
+                t.setDaemon(true);
+                probing = t;
+                t.start();
+            }
+        }
+        HelperProtocol.Probe p = probe;
+        if (p != null) {
+            return p.matrix();
+        }
+        return probeFailed ? fallbackMatrix(w, h) : null;
+    }
+
+    private static ExportPanelModel.Matrix fallbackMatrix(int w, int h) {
+        List<int[]> rows = new ArrayList<int[]>();
+        for (int fps : ExportSettings.RATES) {
+            for (int ph : ExportSettings.HEIGHTS) {
+                rows.add(new int[]{ExportSettings.width(ph), ph, fps});
+            }
+            rows.add(new int[]{w, h, fps});
+        }
+        return new ExportPanelModel.Matrix(rows, null);
+    }
+
+    /** The probe thread: one {@code probe} run, its line parsed; codes and counts to the log. */
+    private static void runProbe(int w, int h) {
+        long t0 = System.nanoTime();
+        HelperProtocol.Probe got = null;
+        String why = null;
+        try {
+            HelperStore store = store();
+            HelperStore.Found found = store.find(System.getProperty(HelperStore.OVERRIDE_PROPERTY));
+            if (found.file == null) {
+                why = "helper-" + found.problem;
+            } else if (!store.verify(found.file)) {
+                why = "digest";
+            } else {
+                HelperProcess.ProbeRun pr = HelperProcess.probe(
+                        HelperProtocol.probeArgs(found.file.getAbsolutePath(), w, h), PROBE_TIMEOUT_MS,
+                        HelperProcess.processBuilder());
+                got = pr.probe;
+                why = pr.failure;
+                if (got != null && got.protocol != HelperProtocol.PROTOCOL) {
+                    why = "protocol-" + got.protocol;
+                    got = null;
+                }
+            }
+        } catch (Throwable t) {
+            why = "probe-" + t.getClass().getSimpleName();
+        }
+        synchronized (PROBE_LOCK) {
+            if (got != null) {
+                probe = got;
+                probeFailed = false;
+            } else {
+                probeFailed = true;
+            }
+            probing = null;
+        }
+        DiagLog.log("rewind-export: probe size=" + w + "x" + h + " ms=" + (System.nanoTime() - t0) / 1_000_000L
+                + (got == null ? " failed " + why : " h264=" + got.h264.size() + " hevc=" + got.hevc.size()
+                + " videosDir=" + (got.videosDir != null)));
+    }
+
+    /**
+     * Export mode opened: the off-screen route's start-up check runs on the next drawn frame of a watched game, once
+     * per game session (PLAN Solution 2); a failure selects WINDOW for the session (TASK P9).
+     */
+    public static void checkRoute() {
+        if (!routeChecked && sessionRoute == RenderRoute.Route.OWN) {
+            routeCheckAsked = true;
+        }
+    }
+
+    /** The start-up check has run this game session (or was not needed). */
+    public static boolean routeChecked() {
+        return routeChecked || sessionRoute != RenderRoute.Route.OWN;
+    }
+
+    /** The share of frames done of the running export, else of the last one. */
+    public static float progress() {
+        Run x = run;
+        return x != null ? (float) x.job.progress() : lastProgress;
+    }
+
+    /** How the last export ended ({@code DONE}, {@code CANCELLED}, {@code FAILED}); null before any ended. */
+    public static ExportJob.State lastState() {
+        return lastState;
+    }
+
+    /** Open Folder: shows the folder that holds the last finished file. @return false when there is none */
+    public static boolean openFolder() {
+        File f = lastFile;
+        File dir = f == null ? null : f.getAbsoluteFile().getParentFile();
+        if (dir == null) {
+            return false;
+        }
+        RewindDir.open(dir, RewindDir.openCommand(System.getProperty("os.name"), dir));
+        return true;
     }
 
     /** An export runs (from {@link #start} until it ended). */
@@ -282,6 +441,7 @@ public final class RewindExport {
     public static void beforeRender() {
         Run x = run;
         if (x == null) {
+            beginCheck();
             return;
         }
         try {
@@ -314,6 +474,15 @@ public final class RewindExport {
 
     /** {@code updateCameraAndRender}, right after vanilla's mid-frame {@code getFramebuffer().bindFramebuffer(true)}. */
     public static void afterMidFrameBind() {
+        Check c = check;
+        if (c != null && c.frames.inFrame()) {
+            try {
+                c.frames.rebind();
+            } catch (Throwable ignored) {
+                // the read-back's binding check reports it
+            }
+            return;
+        }
         Run x = run;
         if (x != null && x.frames.inFrame()) {
             try {
@@ -333,6 +502,10 @@ public final class RewindExport {
 
     /** {@code runGameLoop}, right after {@code updateCameraAndRender} returned: the OWN route's read-back. */
     public static void afterRender() {
+        if (check != null) {
+            endCheck();
+            return;
+        }
         Run x = run;
         if (x == null || !x.frames.inFrame()) {
             return;
@@ -375,11 +548,106 @@ public final class RewindExport {
             if (x.clearWindow) {
                 ExportFrames.clearWindow(mc);
             } else {
-                ExportOverlay.draw(mc, x.route == RenderRoute.Route.OWN ? x.target : null, x.job.progress(),
+                ExportOverlay.draw(mc, x.route == RenderRoute.Route.OWN ? x.target : null, x.panel, x.job.progress(),
                         x.job.state() == ExportJob.State.FAILED);
             }
         } catch (Throwable ignored) {
             // the window's look only
+        }
+    }
+
+    // ================================================================== the start-up check (one drawn frame)
+
+    /** {@code beforeRender} with no export: the asked start-up check's frame is drawn into our framebuffer. */
+    private static void beginCheck() {
+        if (!routeCheckAsked || routeChecked || check != null) {
+            return;
+        }
+        PlaybackSession s = RewindPlayback.session();
+        if (!RewindPlayback.active() || s.state() != PlaybackSession.State.WATCHING || s.exporting()
+                || sessionRoute != RenderRoute.Route.OWN) {
+            return;
+        }
+        routeCheckAsked = false;
+        routeChecked = true;
+        Minecraft mc = Minecraft.getMinecraft();
+        int windowScale = new ScaledResolution(mc).getScaleFactor();
+        ExportTarget t = ExportTarget.create(CHECK_W, CHECK_H);
+        ExportFrames.bindMain(mc);
+        if (t == null) {
+            checkFailed("no-framebuffers");
+            return;
+        }
+        Check c = new Check(t, new ExportFrames(mc, t, ExportGuiScale.of(windowScale, mc.displayHeight, CHECK_H),
+                new RewindExportScreen()));
+        check = c;
+        try {
+            c.frames.begin(false); // the main framebuffer keeps the last frame: the window shows it once more
+        } catch (Throwable e) {
+            check = null;
+            try {
+                c.frames.end();
+            } catch (Throwable ignored) {
+                // below
+            }
+            t.delete();
+            ExportFrames.bindMain(mc);
+            checkFailed("begin-" + e.getClass().getSimpleName());
+        }
+    }
+
+    /** {@code afterRender} of the check's frame: read back, decide, put everything back. */
+    private static void endCheck() {
+        Check c = check;
+        check = null;
+        Minecraft mc = Minecraft.getMinecraft();
+        String failed = null;
+        try {
+            ByteBuffer px = c.frames.readBack();
+            RenderRoute.Check k = new RenderRoute.Check();
+            k.complete = c.target.complete();
+            k.boundAtReadBack = c.frames.boundAtReadBack == c.target.id();
+            k.glError = c.frames.glError;
+            k.uniform = RenderRoute.uniform(px, CHECK_W, CHECK_H);
+            RenderRoute.Decision d = RenderRoute.decide(RenderRoute.Route.OWN, k);
+            if (d.route != RenderRoute.Route.OWN) {
+                failed = d.code;
+            }
+        } catch (Throwable t) {
+            failed = "read-" + t.getClass().getSimpleName();
+        } finally {
+            try {
+                c.frames.end();
+            } catch (Throwable ignored) {
+                // bindMain below
+            }
+            try {
+                c.target.delete();
+            } catch (Throwable ignored) {
+                // GL objects only
+            }
+            ExportFrames.bindMain(mc);
+        }
+        if (failed != null) {
+            checkFailed(failed);
+        } else {
+            DiagLog.log("rewind-export: start-up check passed route=OWN api=" + c.target.apiName());
+        }
+    }
+
+    private static void checkFailed(String code) {
+        sessionRoute = RenderRoute.Route.WINDOW;
+        DiagLog.log("rewind-export: start-up check failed " + code + ": WINDOW for this game session");
+    }
+
+    /** The start-up check's frame. */
+    private static final class Check {
+        final ExportTarget target;
+        final ExportFrames frames;
+
+        Check(ExportTarget target, ExportFrames frames) {
+            this.target = target;
+            this.frames = frames;
         }
     }
 
@@ -441,6 +709,9 @@ public final class RewindExport {
             // the session handles its screens
         }
         x.endNanos = System.nanoTime();
+        lastProgress = (float) x.job.progress();
+        lastFile = x.job.state() == ExportJob.State.DONE && x.sink == null ? x.job.outFile() : null;
+        lastState = x.job.state();
         log(x, "rewind-export: end " + x.job.state() + (x.job.failure() == null ? "" : " " + x.job.failure())
                 + " " + x.job.summary() + " route=" + x.route + " startup=" + x.startup + " bindingMismatches="
                 + x.bindingMismatches + " glErrorFrames=" + x.glErrorFrames
@@ -847,6 +1118,8 @@ public final class RewindExport {
         final int windowScale;
         final ExportRestore restore;
         final boolean clearWindow;
+        /** The panel whose key fills in the window (null for the spike's captures). */
+        final ExportPanelModel panel;
         final RewindExportScreen screen = new RewindExportScreen();
         final BitSet chunkTicks = new BitSet();
         final BitSet blockTicks = new BitSet();
@@ -872,7 +1145,8 @@ public final class RewindExport {
         String startup;
 
         Run(ExportJob.Request req, RenderRoute.Route route, boolean chat, Mode mode, FrameSink sink,
-            ExportTarget target, int scale, int windowScale, ExportRestore restore, boolean clearWindow) {
+            ExportTarget target, int scale, int windowScale, ExportRestore restore, boolean clearWindow,
+            ExportPanelModel panel) {
             this.req = req;
             this.route = route;
             this.chat = chat;
@@ -883,6 +1157,7 @@ public final class RewindExport {
             this.windowScale = windowScale;
             this.restore = restore;
             this.clearWindow = clearWindow;
+            this.panel = panel;
             lastFrames = frameLines;
         }
 

@@ -102,6 +102,43 @@ public class RewindGalleryInputTest {
         assertTrue(text.contains("repeatEvent = Keyboard::isRepeatEvent"));
     }
 
+    /**
+     * Rewind Export Phase 7 (TASK U2): the gallery's Export opens that game with a request the viewer reads when it
+     * first shows it (export mode, paused at the first marker; {@code RewindViewerActionsTest}). Watch opens it with no
+     * request. The opener is a recorder here, so no recording is ever opened.
+     */
+    @Test
+    public void exportOpensTheGameWithTheExportModeRequest() {
+        try {
+            RewindGalleryScreen g = gallery(false, new Counter());
+            GalleryModel m = new GalleryModel(GalleryModel.Origin.TITLE, GalleryModelTest.three(), GalleryModelTest.NOW,
+                    GalleryModelTest.TZ);
+            g.useModel(m);
+            final java.util.List<String> opened = new java.util.ArrayList<String>();
+            g.opener = opened::add;
+            GalleryModel.Intent export = m.export();
+            assertEquals(GalleryModel.Intent.Kind.EXPORT, export.kind);
+            g.apply(export);
+            assertEquals(java.util.Collections.singletonList(export.id), opened);
+            assertEquals("the viewer will open it in export mode", export.id, RewindViewerScreen.exportRequest());
+
+            RewindViewerScreen.requestExport(null);
+            g.apply(m.watch());
+            assertEquals(2, opened.size());
+            assertEquals("Watch asks for no export mode", null, RewindViewerScreen.exportRequest());
+        } finally {
+            RewindViewerScreen.requestExport(null);
+        }
+    }
+
+    @Test
+    public void productionWiringOpensThroughThePlaybackSession() throws Exception {
+        java.io.File src = new java.io.File(PlaybackIsolationScanTest.mainRoot(),
+                "com/bedwarsqol/rewind/watch/RewindGalleryScreen.java");
+        String text = PlaybackIsolationScanTest.strip(PlaybackIsolationScanTest.read(src));
+        assertTrue(text.contains("opener = RewindPlayback::open"));
+    }
+
     @Test
     public void productionWiringReadsThePlaybackSession() {
         RewindGalleryScreen g = new RewindGalleryScreen(GalleryModel.Origin.TITLE, new GuiScreen() {

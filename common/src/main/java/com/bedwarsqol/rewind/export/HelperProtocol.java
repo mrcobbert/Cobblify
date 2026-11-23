@@ -38,7 +38,90 @@ public final class HelperProtocol {
         public String encoder;
     }
 
+    /** The probe's one line: what the encoders open, and the system's videos folder. */
+    public static final class Probe {
+        public int protocol = -1;
+        /** An absolute path, or null. */
+        public String videosDir;
+        public final List<int[]> h264 = new ArrayList<int[]>();
+        public final List<int[]> hevc = new ArrayList<int[]>();
+
+        /** The rows as the export panel reads them. */
+        public ExportPanelModel.Matrix matrix() {
+            return new ExportPanelModel.Matrix(h264, hevc);
+        }
+    }
+
     private HelperProtocol() {
+    }
+
+    /**
+     * The probe's line ({@code {"protocol":1,"videosDir":"..."|null,"h264":[[w,h,fps]...],"hevc":[...]}}), or null
+     * when it is not one flat JSON object holding both row lists, or a row is not three whole numbers. Other keys are
+     * ignored.
+     */
+    public static Probe parseProbe(String line) {
+        if (line == null) {
+            return null;
+        }
+        Parser p = new Parser(line.trim());
+        try {
+            Probe out = new Probe();
+            boolean h264 = false;
+            boolean hevc = false;
+            p.expect('{');
+            p.ws();
+            if (p.peek() != '}') {
+                while (true) {
+                    p.ws();
+                    String key = p.string();
+                    p.ws();
+                    p.expect(':');
+                    p.ws();
+                    if ("h264".equals(key) || "hevc".equals(key)) {
+                        p.rows("h264".equals(key) ? out.h264 : out.hevc);
+                        if ("h264".equals(key)) {
+                            h264 = true;
+                        } else {
+                            hevc = true;
+                        }
+                    } else {
+                        Object v = p.value();
+                        if ("protocol".equals(key) && v instanceof Long) {
+                            out.protocol = (int) (long) (Long) v;
+                        } else if ("videosDir".equals(key)) {
+                            out.videosDir = v instanceof String ? (String) v : null;
+                        }
+                    }
+                    p.ws();
+                    if (p.peek() == ',') {
+                        p.pos++;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            p.expect('}');
+            p.ws();
+            return p.pos == p.s.length() && h264 && hevc ? out : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@code helper probe [--size WxH]}: the window's pixel size rounded down to even goes as {@code --size} when the
+     * helper accepts it (both sides 128 to 8192), so the window route's one size has rows of its own.
+     */
+    public static List<String> probeArgs(String helper, int windowW, int windowH) {
+        List<String> out = new ArrayList<String>(Arrays.asList(helper, "probe"));
+        int w = Math.max(0, windowW) & ~1;
+        int h = Math.max(0, windowH) & ~1;
+        if (w >= 128 && h >= 128 && w <= 8192 && h <= 8192) {
+            out.add("--size");
+            out.add(w + "x" + h);
+        }
+        return out;
     }
 
     /** A packet's five header bytes. */
@@ -225,6 +308,42 @@ public final class HelperProtocol {
             } catch (NumberFormatException e) {
                 Double.parseDouble(n); // a number, just not a whole one
                 return n;
+            }
+        }
+
+        /** {@code [[w,h,fps],...]}: each row exactly three whole numbers, added to {@code out}. */
+        void rows(List<int[]> out) {
+            expect('[');
+            ws();
+            if (peek() == ']') {
+                pos++;
+                return;
+            }
+            while (true) {
+                ws();
+                expect('[');
+                int[] r = new int[3];
+                for (int i = 0; i < 3; i++) {
+                    ws();
+                    Object v = value();
+                    if (!(v instanceof Long) || (Long) v < 0 || (Long) v > Integer.MAX_VALUE) {
+                        throw new IllegalArgumentException("row");
+                    }
+                    r[i] = (int) (long) (Long) v;
+                    ws();
+                    if (i < 2) {
+                        expect(',');
+                    }
+                }
+                expect(']');
+                out.add(r);
+                ws();
+                if (peek() == ',') {
+                    pos++;
+                    continue;
+                }
+                expect(']');
+                return;
             }
         }
 

@@ -83,6 +83,81 @@ public final class HelperProcess implements ExportJob.Encoder {
         this.stallMs = stallMs;
     }
 
+    /** One probe run: the probe's line, or why there is none ({@code start}, {@code timeout}, {@code no-line-exit-N}). */
+    public static final class ProbeRun {
+        public HelperProtocol.Probe probe;
+        public String failure;
+    }
+
+    /**
+     * Runs {@code helper probe [--size WxH]} ({@link HelperProtocol#probeArgs}) to its end (Rewind Export Phase 7):
+     * started from the argument list, its input closed, its standard error drained and dropped, its output read line by
+     * line for the probe line (the last one that parses). A run still going after {@code timeoutMs} is killed. Blocks:
+     * call it off the client thread.
+     */
+    public static ProbeRun probe(List<String> command, long timeoutMs, Launcher launcher) {
+        ProbeRun out = new ProbeRun();
+        final Process p;
+        try {
+            p = launcher.start(command);
+        } catch (IOException | RuntimeException e) {
+            out.failure = "start";
+            return out;
+        }
+        final boolean[] killed = new boolean[1];
+        try {
+            p.getOutputStream().close();
+        } catch (IOException ignored) {
+            // the helper reads nothing in probe mode
+        }
+        thread("cobblify-encode-probe-stderr", () -> drain(p.getErrorStream()));
+        thread("cobblify-encode-probe-watchdog", () -> {
+            try {
+                if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    synchronized (killed) {
+                        killed[0] = true;
+                    }
+                    p.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                p.destroyForcibly();
+            }
+        });
+        HelperProtocol.Probe got = null;
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = in.readLine()) != null) {
+                HelperProtocol.Probe q = HelperProtocol.parseProbe(line);
+                if (q != null) {
+                    got = q;
+                }
+            }
+        } catch (IOException ignored) {
+            // killed or closed: judged below
+        }
+        int exit;
+        try {
+            exit = p.waitFor();
+        } catch (InterruptedException e) {
+            p.destroyForcibly();
+            Thread.currentThread().interrupt();
+            out.failure = "interrupted";
+            return out;
+        }
+        synchronized (killed) {
+            if (killed[0]) {
+                out.failure = "timeout";
+                return out;
+            }
+        }
+        if (got == null) {
+            out.failure = "no-line-exit-" + exit;
+        } else {
+            out.probe = got;
+        }
+        return out;
+    }
+
     /** {@code new ProcessBuilder(command).start()}: an argument list, no shell. */
     public static Launcher processBuilder() {
         return command -> new ProcessBuilder(command).start();

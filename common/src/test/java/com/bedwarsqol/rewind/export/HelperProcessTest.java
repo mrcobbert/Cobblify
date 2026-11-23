@@ -191,4 +191,37 @@ public class HelperProcessTest {
         assertEquals(ExportJob.Encoder.Status.FAILED, p.status());
         assertEquals("cancelled", p.failure());
     }
+
+    /**
+     * Rewind Export Phase 7: the probe ({@code helper probe [--size WxH]}) runs to its end from an argument list, its
+     * standard error drained and kept out of the result; the probe line is found among other output; no line gives a
+     * code with the exit status; a helper that never ends is killed after the limit.
+     */
+    @Test
+    public void theProbeRunsToItsEndAndAHungOneIsKilled() throws Exception {
+        File args = tmp.newFile("args");
+        HelperProcess.ProbeRun ok = HelperProcess.probe(fake("probe", args, "probe", "--size", "1366x768"), 20_000,
+                HelperProcess.processBuilder());
+        assertEquals(null, ok.failure);
+        assertEquals("/Users/x/Movies", ok.probe.videosDir);
+        assertArrayEquals(new int[]{1920, 1080, 60}, ok.probe.h264.get(0));
+        assertEquals("probe\n--size\n1366x768\n", new String(Files.readAllBytes(args.toPath()), StandardCharsets.UTF_8));
+
+        HelperProcess.ProbeRun none = HelperProcess.probe(fake("probe-none", tmp.newFile("y")), 20_000,
+                HelperProcess.processBuilder());
+        assertEquals(null, none.probe);
+        assertEquals("no-line-exit-4", none.failure);
+
+        long t0 = System.currentTimeMillis();
+        HelperProcess.ProbeRun hung = HelperProcess.probe(fake("stall", tmp.newFile("z")), 1_000,
+                HelperProcess.processBuilder());
+        long took = System.currentTimeMillis() - t0;
+        assertEquals(null, hung.probe);
+        assertEquals("timeout", hung.failure);
+        assertTrue("killed after the limit, not the helper's 60 s: " + took, took < 15_000);
+
+        HelperProcess.ProbeRun cannot = HelperProcess.probe(Arrays.asList(new File(tmp.getRoot(), "none").getPath(),
+                "probe"), 1_000, HelperProcess.processBuilder());
+        assertEquals("start", cannot.failure);
+    }
 }
