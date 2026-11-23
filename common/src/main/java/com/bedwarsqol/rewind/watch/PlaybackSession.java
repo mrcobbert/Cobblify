@@ -1036,13 +1036,17 @@ public final class PlaybackSession {
     }
 
     /**
-     * Ends the export (done, cancelled or failed): the session is paused where playback time stands, and wall time
-     * counts from now, so nothing jumps; play, speed and seeks work again.
+     * Ends the export (done, cancelled or failed): the session is paused inside the selected range (TASK P7) and wall
+     * time counts from now, so nothing jumps; play, speed and seeks work again. From frame 0 on playback time is
+     * already inside the range and stays where it stands; an export ended before frame 0 (its seek or pre-roll, code
+     * review 1 I3) seeks to the first tick at or after the range start instead.
      */
     public void endExport() {
         if (export == null) {
             return;
         }
+        ExportPlan plan = export;
+        ExportStage stage = exportStage;
         export = null;
         exportStage = null;
         exportWaiting = false;
@@ -1052,7 +1056,13 @@ public final class PlaybackSession {
         if (clock != null) {
             clock.set(clock.playbackUs(), ops.nanoTime());
         }
-        log("rewind-export: end");
+        boolean inside = state == State.WATCHING && !seekPending && stage != ExportStage.SEEKING
+                && stage != ExportStage.PREROLL && clock != null && clock.playbackUs() >= plan.startUs()
+                && clock.playbackUs() < plan.endUs();
+        if (!inside && timeline != null && playing()) {
+            seekTo(SeekPlanner.tickForTime(timeline, plan.startUs()));
+        }
+        log("rewind-export: end" + (inside ? "" : " seek to the range start"));
     }
 
     /**

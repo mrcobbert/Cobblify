@@ -612,6 +612,47 @@ public class PlaybackSessionExportTest {
         assertEquals(p + EVEN_NS / 1000, session.renderTimeUs());
     }
 
+    /**
+     * Code review 1 I3 (TASK P7): an export ended before frame 0 (cancelled or failed in its pre-roll, or before its
+     * seek landed) returns paused inside the selected range, by the picture and by the viewer's playhead, and stays
+     * there.
+     */
+    @Test
+    public void endingBeforeFrameZeroReturnsPausedInsideTheRange() throws IOException {
+        recording(every50(3_000_000L), 3_000_000L, null);
+        open();
+        ExportPlan plan = new ExportPlan(ORIGIN + 1_000_000L, ORIGIN + 2_000_000L, 60);
+        for (String when : new String[]{"pre-roll", "seek"}) {
+            watchTo(2_500_000L);
+            assertTrue(session.beginExport(plan));
+            if (when.equals("pre-roll")) {
+                for (int i = 0; i < 10_000 && !(session.state() == PlaybackSession.State.WATCHING
+                        && session.exportPreroll() && session.renderTimeUs() >= ORIGIN + 216_666L
+                        && session.renderTimeUs() < plan.startUs()); i++) {
+                    frame(EVEN_NS);
+                }
+                assertTrue(when, session.exportPreroll());
+                assertTrue(when + ": in the pre-roll", session.renderTimeUs() < plan.startUs());
+            }
+            session.endExport();
+            for (int i = 0; i < 200 && (session.state() != PlaybackSession.State.WATCHING || i < 3); i++) {
+                frame(EVEN_NS);
+            }
+            assertEquals(when, PlaybackSession.State.WATCHING, session.state());
+            assertTrue(when + ": paused", session.ticks().paused());
+            long p = session.renderTimeUs();
+            long head = session.timeline().timeOfTick(session.playheadTick());
+            assertTrue(when + ": the picture at " + (p - ORIGIN) + " us, inside the range",
+                    p >= plan.startUs() && p < plan.endUs());
+            assertTrue(when + ": the playhead at " + (head - ORIGIN) + " us, inside the range",
+                    head >= plan.startUs() && head < plan.endUs());
+            frame(5_000_000_000L);
+            frame(EVEN_NS);
+            assertEquals(when + ": it stays", p, session.renderTimeUs());
+            session.setPaused(false);
+        }
+    }
+
     /** {@code eventTimeUs()}: the running tick's time inside a tick, a record's stamp inside its dispatch, else P. */
     @Test
     public void eventTimeIsTheTicksTimeTheRecordsStampOrPlaybackTime() throws IOException {
