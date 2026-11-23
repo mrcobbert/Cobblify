@@ -633,6 +633,46 @@ public class ExportJobTest {
     }
 
     /**
+     * Code review 1 I1 (TASK F2), through the production name picker: a partial file left by a crash is removed by the
+     * next export, which gets its name back; a partial of another name (yesterday's) goes too; finished files stay.
+     */
+    @Test
+    public void aPartialLeftByACrashIsRemovedByTheNextExportWhichGetsItsName() {
+        File dir = out.getParentFile();
+        File yesterday = new File(dir, "Solo - Map - 2026-11-21 09.00.00.partial.mp4");
+        File finished = new File(dir, "Solo - Map - 2026-11-21 08.00.00.mp4");
+        File other = new File(dir, "notes.txt");
+        files.add(partial);
+        files.add(yesterday);
+        files.add(finished);
+        files.add(other);
+        File chosen = ExportFileName.pickAfterSweep(dir, "Solo - Map - 2026-11-22 10.00.00",
+                files.toArray(new File[0]), fakeFiles::exists, fakeFiles::delete);
+        assertEquals("the crashed export's name is free again", out, chosen);
+        assertFalse("the crashed partial is gone", files.contains(partial));
+        assertFalse("yesterday's partial is gone", files.contains(yesterday));
+        assertTrue(files.contains(finished));
+        assertTrue(files.contains(other));
+        ExportJob.Request r = request(new ExportPlan(0, 200_000L, 60), "high");
+        r.out = chosen;
+        job(r);
+        assertEquals(partial.getAbsolutePath(), startArgs.get(startArgs.indexOf("--out") + 1));
+    }
+
+    /** Export mode's sweep: every partial in the folder, nothing else; a missing folder is no error. */
+    @Test
+    public void theSweepRemovesEveryPartialAndNothingElse() {
+        File dir = out.getParentFile();
+        File upper = new File(dir, "Duels - 2026-11-20 10.00.00 (2).PARTIAL.MP4");
+        files.add(partial);
+        files.add(upper);
+        files.add(out);
+        assertEquals(2, ExportFileName.sweep(files.toArray(new File[0]), fakeFiles::delete));
+        assertEquals(new HashSet<File>(Arrays.asList(out)), files);
+        assertEquals(0, ExportFileName.sweep(null, fakeFiles::delete));
+    }
+
+    /**
      * Code review 1 I3 (TASK P7): an export that ends before the session began it (cancelled while the helper starts,
      * the helper missing or never ready) still leaves the viewer paused inside the range; one that began ends the
      * session's export instead.

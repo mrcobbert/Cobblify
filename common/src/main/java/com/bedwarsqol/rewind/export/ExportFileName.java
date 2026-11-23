@@ -62,6 +62,34 @@ public final class ExportFileName {
         }
     }
 
+    /**
+     * Removes abandoned unfinished files (TASK F2, code review 1 I1): every {@code *.partial.mp4} in {@code listing}
+     * (the export folder's files; null: none) is deleted. Only called while no export of this game runs.
+     *
+     * @return how many were deleted
+     */
+    public static int sweep(File[] listing, Predicate<File> delete) {
+        int n = 0;
+        if (listing == null) {
+            return 0;
+        }
+        for (File f : listing) {
+            if (f != null && f.getName().toLowerCase(Locale.ROOT).endsWith(PARTIAL_SUFFIX) && delete.test(f)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** The next export's file: {@link #sweep} the folder, then {@link #pick} the name. */
+    public static File pickAfterSweep(File dir, String base, File[] listing, Predicate<File> exists,
+                                      Predicate<File> delete) {
+        sweep(listing, delete);
+        return pick(dir, base, exists);
+    }
+
+    private static final String PARTIAL_SUFFIX = ".partial.mp4";
+
     /** {@code <name minus .mp4>.partial.mp4}, where the helper writes until it is done. */
     public static File partial(File finalFile) {
         String n = finalFile.getName();

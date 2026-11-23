@@ -152,16 +152,15 @@ public final class RewindExport {
             return "bad-range";
         }
         ExportPlan plan = new ExportPlan(q.startUs, q.endUs, set.fps());
-        HelperProtocol.Probe pr = probe;
-        File dir = ExportDirs.resolve(System.getProperty(ExportDirs.OVERRIDE_PROPERTY), pr == null ? null : pr.videosDir,
-                System.getProperty("user.home"), System.getProperty("os.name"));
+        File dir = exportDir();
         if (!dir.isDirectory() && !dir.mkdirs()) {
             return "folder";
         }
         RecordingMeta meta = s.meta();
         String base = ExportFileName.base(meta == null ? null : ModeLabels.mode(meta), meta == null ? null : meta.map,
                 System.currentTimeMillis(), TimeZone.getDefault());
-        File out = ExportFileName.pick(dir, base, File::exists);
+        // unfinished files a crash left are removed first, so their names are free again (TASK F2)
+        File out = ExportFileName.pickAfterSweep(dir, base, dir.listFiles(), File::exists, File::delete);
 
         HelperStore store = store();
         String override = q.helperOverride != null ? q.helperOverride : System.getProperty(HelperStore.OVERRIDE_PROPERTY);
@@ -186,6 +185,32 @@ public final class RewindExport {
         };
         return begin(r, route, set.chat(), Mode.PRODUCT, null, encoders, REAL_FILES, false,
                 q.panel != null ? q.panel : new ExportPanelModel(set));
+    }
+
+    /** The export folder ({@link ExportDirs#resolve}, with the probe's videos folder once it answered). */
+    private static File exportDir() {
+        HelperProtocol.Probe pr = probe;
+        return ExportDirs.resolve(System.getProperty(ExportDirs.OVERRIDE_PROPERTY), pr == null ? null : pr.videosDir,
+                System.getProperty("user.home"), System.getProperty("os.name"));
+    }
+
+    /**
+     * Export mode opened (TASK F2, code review 1 I1): every unfinished {@code .partial.mp4} a crashed game left in the
+     * export folder is deleted. Nothing while an export of this game runs.
+     */
+    public static void sweepPartials() {
+        if (run != null) {
+            return;
+        }
+        try {
+            File dir = exportDir();
+            int n = ExportFileName.sweep(dir.listFiles(), File::delete);
+            if (n > 0) {
+                DiagLog.log("rewind-export: removed " + n + " unfinished file(s)");
+            }
+        } catch (RuntimeException e) {
+            DiagLog.log("rewind-export: sweep failed " + e.getClass().getSimpleName());
+        }
     }
 
     /** The helper's store: {@code ~/.cobblify/bin}, the jar's copy and digest. */

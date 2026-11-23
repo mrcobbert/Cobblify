@@ -549,6 +549,9 @@ public final class RewindViewerScreen extends RewindScreen {
 
             /** Shows the folder that holds the last finished file. */
             void openFolder();
+
+            /** Export mode opened: unfinished files a crash left in the export folder are removed (TASK F2). */
+            void sweep();
         }
 
         private static Exporter exporter;
@@ -650,6 +653,7 @@ public final class RewindViewerScreen extends RewindScreen {
             pointer.range(r);
             panel = new ExportPanelModel(exporter().stored());
             started = false;
+            exporter().sweep();
         }
 
         /** Leaves export mode (the range and the panel are forgotten). */
@@ -1013,6 +1017,11 @@ public final class RewindViewerScreen extends RewindScreen {
         @Override
         public void openFolder() {
             RewindExport.openFolder();
+        }
+
+        @Override
+        public void sweep() {
+            RewindExport.sweepPartials();
         }
     }
 }
