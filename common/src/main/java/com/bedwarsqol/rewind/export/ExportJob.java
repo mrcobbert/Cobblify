@@ -30,7 +30,8 @@ import java.util.Locale;
  *       sound is sent (to {@link ExportPlan#audioSamples()}), then finish; on the helper's {@code done} the partial
  *       file is renamed to the final name.</li>
  *   <li><b>DONE</b>, <b>CANCELLED</b>, <b>FAILED</b>(code): cancel and failure close the helper's input (it deletes
- *       its file) and delete the partial file as well; the session ends; the tap turns off.</li>
+ *       its file) and delete the partial file as well; the session ends (before it began: the viewer is paused inside
+ *       the range, {@link Session#park}); the tap turns off. A render error ({@link #renderError}) is a failure.</li>
  * </ul>
  * Game thread.
  */
@@ -155,6 +156,7 @@ public final class ExportJob {
     private State state = State.PREPARING;
     private String failure;
     private String cancelAsked;
+    private String renderFailure;
     private boolean begun;
     private long preparedMs;
     private long finishMs;
@@ -221,6 +223,10 @@ public final class ExportJob {
     /** Once per pass, before the frame. */
     public void pass(long nowMs) {
         if (finished()) {
+            return;
+        }
+        if (renderFailure != null) {
+            fail(renderFailure);
             return;
         }
         if (cancelAsked != null) {
@@ -344,6 +350,16 @@ public final class ExportJob {
     public void cancel(String why) {
         if (!finished() && cancelAsked == null) {
             cancelAsked = why == null ? "cancel" : why;
+        }
+    }
+
+    /**
+     * Drawing, reading back or preparing a frame threw (the game's render hooks; TASK U6): the export ends FAILED with
+     * {@code <where>-<exception class>} at the next pass, its file deleted.
+     */
+    public void renderError(String where, Throwable t) {
+        if (!finished() && renderFailure == null) {
+            renderFailure = where + "-" + (t == null ? "error" : t.getClass().getSimpleName());
         }
     }
 

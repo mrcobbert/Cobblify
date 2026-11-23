@@ -493,7 +493,7 @@ public final class RewindExport {
                 x.frames.begin(x.clearWindow);
             }
         } catch (Throwable t) {
-            x.job.cancel("begin-" + t.getClass().getSimpleName());
+            x.job.renderError("begin", t);
         }
     }
 
@@ -541,7 +541,7 @@ public final class RewindExport {
             x.glError = x.frames.glError;
             drawn(x, px);
         } catch (Throwable t) {
-            x.job.cancel("frame-" + t.getClass().getSimpleName());
+            x.job.renderError("frame", t);
         } finally {
             try {
                 x.frames.end();
@@ -566,7 +566,7 @@ public final class RewindExport {
                 drawn(x, px);
             }
         } catch (Throwable t) {
-            x.job.cancel("window-" + t.getClass().getSimpleName());
+            x.job.renderError("window", t);
         }
         x.drawing = false;
         try {

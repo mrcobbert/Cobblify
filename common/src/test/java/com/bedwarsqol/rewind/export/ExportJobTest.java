@@ -673,6 +673,38 @@ public class ExportJobTest {
     }
 
     /**
+     * Code review 1 I4 (TASK U6): an exception while a frame is drawn, read back or begun (the game's render hooks)
+     * ends the export FAILED with its code, not CANCELLED: the key turns red. No file is left and the session ends.
+     */
+    @Test
+    public void aRenderErrorEndsFailedNotCancelled() {
+        for (ExportJob.State at : new ExportJob.State[]{ExportJob.State.SETTLING, ExportJob.State.RENDERING,
+                ExportJob.State.FINISHING}) {
+            fresh();
+            job(request(new ExportPlan(0, 200_000L, 60), "high"));
+            encoder.status = ExportJob.Encoder.Status.READY;
+            runUntil(at, 100);
+            job.renderError("frame", new IllegalStateException("GL"));
+            pass();
+            assertEquals(at + "", ExportJob.State.FAILED, job.state());
+            assertEquals("frame-IllegalStateException", job.failure());
+            assertTrue(at + ": the helper's input closed", encoder.cancelled);
+            assertFalse(at + ": no file", files.contains(partial) || files.contains(out));
+            assertTrue(at + ": the session ends", events.contains("end"));
+        }
+        // Esc and a render error in one pass: the error wins
+        fresh();
+        job(request(new ExportPlan(0, 200_000L, 60), "high"));
+        encoder.status = ExportJob.Encoder.Status.READY;
+        runUntil(ExportJob.State.RENDERING, 100);
+        job.cancel("esc");
+        job.renderError("window", new RuntimeException());
+        pass();
+        assertEquals(ExportJob.State.FAILED, job.state());
+        assertEquals("window-RuntimeException", job.failure());
+    }
+
+    /**
      * Code review 1 I3 (TASK P7): an export that ends before the session began it (cancelled while the helper starts,
      * the helper missing or never ready) still leaves the viewer paused inside the range; one that began ends the
      * session's export instead.
