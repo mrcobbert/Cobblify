@@ -27,21 +27,45 @@ cd "$repo" || exit 1
 
 CHECK=tools/check-tree-drift.sh
 MANIFEST=tools/tree-divergence.txt
+# Everything the checker reads besides the tree: copied into each clone.
+TOOLING="$CHECK tools/tree-divergence.txt tools/tree-divergence-ornithe-lunar.txt
+         tools/tree-divergence-forge-ornithe.txt tools/forge-port-base.txt tools/forge-port-base.sh"
+BASE_MSG="port this change to ornithe/, then update its line in tools/forge-port-base.txt"
 pass=0; fail=0
 
 listing() { git ls-files "$1" | sed "s|^$1/||" | LC_ALL=C sort; }
 
 # --- derive fixtures from the current tree ----------------------------------
 
+# Whether the committed tree (what each clone holds) has the Ornithe tree. Once
+# it does, the real tree and its real manifests are the Ornithe fixture, and a
+# fixture file must hold its shape in the Ornithe pairs too.
+ORNITHE_REAL=0
+[ -z "$(git ls-tree -r --name-only HEAD -- ornithe/src | head -1)" ] || ORNITHE_REAL=1
+OL_MANIFEST=tools/tree-divergence-ornithe-lunar.txt
+FO_MANIFEST=tools/tree-divergence-forge-ornithe.txt
+
 # A live mirrored pair that is byte-identical and NOT declared: perturbing it
 # must be reported as undeclared drift.
 MIRROR=$(comm -12 <(listing src/main/java) <(listing lunar/src/main/java) | while read -r f; do
   cmp -s "src/main/java/$f" "lunar/src/main/java/$f" || continue
   grep -Fq " $f" "$MANIFEST" && continue
+  if [ "$ORNITHE_REAL" -eq 1 ]; then
+    cmp -s "src/main/java/$f" "ornithe/src/main/java/$f" || continue
+    grep -Fq " $f" "$OL_MANIFEST" && continue
+    grep -Fq " $f" "$FO_MANIFEST" && continue
+  fi
   echo "$f"; break
 done)
-# A declared-divergent pair, and a declared Forge-only file.
-DIVERGENT=$(awk '$1=="divergent" && $2=="main" { print $3; exit }' "$MANIFEST")
+# A declared-divergent pair (declared in every active manifest), and a declared
+# Forge-only file.
+DIVERGENT=$(awk '$1=="divergent" && $2=="main" { print $3 }' "$MANIFEST" | while read -r f; do
+  if [ "$ORNITHE_REAL" -eq 1 ]; then
+    grep -Fqx "divergent main $f" "$OL_MANIFEST" || continue
+    grep -Fqx "divergent main $f" "$FO_MANIFEST" || continue
+  fi
+  echo "$f"; break
+done)
 ONESIDED=$(awk '$1=="one-sided" && $2=="main" && $3=="forge" { print $4; exit }' "$MANIFEST")
 
 # The same two shapes under the mirrored resource trees, which are compared too.
@@ -76,8 +100,11 @@ clone() {
   # Everything else in the clone is HEAD. A case that depends on an uncommitted
   # source edit therefore stays red until that edit is committed - which is the
   # point: the checker and its manifest are under test, the tree is the subject.
-  cp "$repo/$CHECK" "$d/c/$CHECK" && chmod +x "$d/c/$CHECK" \
-    && cp "$repo/$MANIFEST" "$d/c/$MANIFEST" || { rm -rf "$d"; return 1; }
+  local f
+  for f in $TOOLING; do
+    cp "$repo/$f" "$d/c/$f" || { rm -rf "$d"; return 1; }
+  done
+  chmod +x "$d/c/$CHECK" "$d/c/tools/forge-port-base.sh" || { rm -rf "$d"; return 1; }
   echo "$d"
 }
 
@@ -91,7 +118,9 @@ run() { # <label> <expected exit> <expected message substring>; setup on stdin
   if [ "$rc" -ne "$want" ]; then
     printf '  [BAD ] %-44s expected exit %s, got %s\n' "$label" "$want" "$rc"
     printf '%s\n' "$out" | head -3 | sed 's/^/           /'; fail=$((fail+1))
-  elif [ -n "$msg" ] && ! printf '%s' "$out" | grep -qF "$msg"; then
+  # A here-string, not `printf | grep -q`: grep -q exits at the first match, and
+  # under pipefail the writer's SIGPIPE on a long report would read as "missing".
+  elif [ -n "$msg" ] && ! grep -qF -- "$msg" <<<"$out"; then
     printf '  [BAD ] %-44s missing: %s\n' "$label" "$msg"
     printf '%s\n' "$out" | head -3 | sed 's/^/           /'; fail=$((fail+1))
   else
@@ -106,7 +135,7 @@ shimmed() { # <label> <expected exit> <msg> <tool> <shim body>; no stdin setup
   c="$d/c"; mkdir -p "$c/.shim"
   printf '%s\n' "$body" > "$c/.shim/$tool"; chmod +x "$c/.shim/$tool"
   out=$(cd "$c" && PATH="$c/.shim:$PATH" ./$CHECK 2>&1); rc=$?
-  if [ "$rc" -eq "$want" ] && printf '%s' "$out" | grep -qF "$msg"; then
+  if [ "$rc" -eq "$want" ] && grep -qF -- "$msg" <<<"$out"; then
     printf '  [ OK ] %-44s exit=%s\n' "$label" "$rc"; pass=$((pass+1))
   else
     printf '  [BAD ] %-44s expected exit %s, got %s\n' "$label" "$want" "$rc"
@@ -204,6 +233,11 @@ F=$(printf 'src/main/java/com/bedwarsqol/Tab\tName.java')
 L=$(printf 'lunar/src/main/java/com/bedwarsqol/Tab\tName.java')
 printf 'class X{}\n' > "$F"; printf 'class X{}\n' > "$L"
 git add -- "$F" "$L"
+if [ -d ornithe/src ]; then
+  O=$(printf 'ornithe/src/main/java/com/bedwarsqol/Tab\tName.java')
+  printf 'class X{}\n' > "$O"; git add -- "$O"
+fi
+tools/forge-port-base.sh update "$F"
 CMD
 
 run "newline in a path is refused" 2 "contains a newline" <<CMD
@@ -281,6 +315,157 @@ run "emptied Forge index is drift, not infra" 1 "exists only in the Lunar tree" 
 git rm --cached -r -q src/main/java
 CMD
 
+# --- the Ornithe pairs ------------------------------------------------------
+#
+# Once the Ornithe tree is committed, it and its real manifests are the fixture
+# (ORNITHE_FIXTURE does nothing). Before that, a fixture builds one in the clone:
+# a copy of the Forge roots, with the Forge/Lunar declarations re-sided for
+# ornithe/lunar and one real divergence ($DIVERGENT) declared for forge/ornithe.
+# ORNITHE_ABSENT removes the tree and empties both Ornithe manifests of entries,
+# the state before the tree existed.
+
+echo "ornithe pairs:"
+
+if [ "$ORNITHE_REAL" -eq 1 ]; then
+  ORNITHE_FIXTURE="true"
+else
+  ORNITHE_FIXTURE="
+mkdir -p ornithe/src/main ornithe/src/test
+cp -R src/main/java ornithe/src/main/java
+cp -R src/main/resources ornithe/src/main/resources
+cp -R src/test/java ornithe/src/test/java
+printf 'class OrnitheOnly {}\n' >> 'ornithe/src/main/java/$DIVERGENT'
+git add ornithe/src
+sed 's/^\(one-sided [a-z]*\) forge /\1 ornithe /' tools/tree-divergence.txt > tools/tree-divergence-ornithe-lunar.txt
+printf 'divergent main %s\n' '$DIVERGENT' >> tools/tree-divergence-forge-ornithe.txt
+"
+fi
+ORNITHE_ABSENT='
+git rm -r -q --ignore-unmatch ornithe/src
+for m in tools/tree-divergence-ornithe-lunar.txt tools/tree-divergence-forge-ornithe.txt; do
+  sed -e "/^divergent /d" -e "/^one-sided /d" "$m" > "$m.t" && mv "$m.t" "$m"
+done
+'
+
+run "ornithe pairs skipped when the tree is absent" 0 "ornithe/lunar: skipped" <<CMD
+$ORNITHE_ABSENT
+CMD
+
+run "ornithe manifest entries without the tree" 1 "does not exist. Remove the stale entries" <<CMD
+$ORNITHE_ABSENT
+printf 'divergent main %s\n' "$DIVERGENT" >> tools/tree-divergence-forge-ornithe.txt
+CMD
+
+run "ornithe tree checks three pairs" 0 "OK (3 tree pair(s) checked)" <<CMD
+$ORNITHE_FIXTURE
+CMD
+
+run "ornithe/lunar undeclared drift" 1 "ornithe/lunar main: $MIRROR differs between trees but is not declared" <<CMD
+$ORNITHE_FIXTURE
+printf '\n' >> "ornithe/src/main/java/$MIRROR"
+git add -- "ornithe/src/main/java/$MIRROR"
+CMD
+
+run "forge/ornithe missing copy" 1 "forge/ornithe main: $MIRROR exists only in the Forge tree" <<CMD
+$ORNITHE_FIXTURE
+git rm -q -f -- "ornithe/src/main/java/$MIRROR"
+CMD
+
+run "forge/ornithe stale divergent entry" 1 "the two copies are now identical" <<CMD
+$ORNITHE_FIXTURE
+printf 'divergent main %s\n' "$MIRROR" >> tools/tree-divergence-forge-ornithe.txt
+CMD
+
+run "forge/ornithe comment-only divergence" 1 "differ only in comments or whitespace" <<CMD
+$ORNITHE_FIXTURE
+{ cat "src/main/java/$DIVERGENT"; printf '// comment only\n'; } > "ornithe/src/main/java/$DIVERGENT"
+git add -- "ornithe/src/main/java/$DIVERGENT"
+CMD
+
+run "emptied Ornithe index is drift, not a skip" 1 "exists only in the Lunar tree" <<CMD
+$ORNITHE_FIXTURE
+git rm --cached -r -q ornithe/src
+CMD
+
+run "missing Ornithe manifest refused" 2 "missing tools/tree-divergence-forge-ornithe.txt" <<CMD
+$ORNITHE_FIXTURE
+rm tools/tree-divergence-forge-ornithe.txt
+CMD
+
+# --- the Forge port base guard ----------------------------------------------
+#
+# A pair check allows any difference inside a declared-divergent pair, so a Forge
+# fix landing there would never reach Ornithe. The guard pins every Forge file to
+# its blob id at the port base.
+
+echo "forge port base:"
+
+run "Forge edit inside a divergent pair fails" 1 "forge port base: src/main/java/$DIVERGENT changed since the port base; $BASE_MSG" <<CMD
+$ORNITHE_FIXTURE
+printf 'class ForgeFix {}\n' >> "src/main/java/$DIVERGENT"
+git add -- "src/main/java/$DIVERGENT"
+CMD
+
+run "updating its base line passes" 0 "OK (3 tree pair(s) checked)" <<CMD
+$ORNITHE_FIXTURE
+printf 'class ForgeFix {}\n' >> "src/main/java/$DIVERGENT"
+git add -- "src/main/java/$DIVERGENT"
+tools/forge-port-base.sh update "src/main/java/$DIVERGENT"
+CMD
+
+# The added/removed file goes in (or out of) every tree, Ornithe's too when it
+# exists, so the only thing left to catch is the guard.
+ORNITHE_ADDED='
+if [ -d ornithe/src ]; then
+  cp src/main/java/com/bedwarsqol/Added.java ornithe/src/main/java/com/bedwarsqol/Added.java
+  git add -- ornithe/src/main/java/com/bedwarsqol/Added.java
+fi
+'
+ORNITHE_REMOVED="
+if [ -e 'ornithe/src/main/java/$MIRROR' ]; then git rm -q -- 'ornithe/src/main/java/$MIRROR'; fi
+"
+
+run "added Forge file fails" 1 "forge port base: src/main/java/com/bedwarsqol/Added.java was added to the Forge tree; $BASE_MSG" <<CMD
+printf 'class Added {}\n' > src/main/java/com/bedwarsqol/Added.java
+cp src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+git add -- src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+$ORNITHE_ADDED
+CMD
+
+run "added Forge file acknowledged passes" 0 "tree drift check: OK" <<CMD
+printf 'class Added {}\n' > src/main/java/com/bedwarsqol/Added.java
+cp src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+git add -- src/main/java/com/bedwarsqol/Added.java lunar/src/main/java/com/bedwarsqol/Added.java
+$ORNITHE_ADDED
+tools/forge-port-base.sh update src/main/java/com/bedwarsqol/Added.java
+CMD
+
+run "removed Forge file fails" 1 "forge port base: src/main/java/$MIRROR was removed from the Forge tree; $BASE_MSG" <<CMD
+git rm -q -- "src/main/java/$MIRROR" "lunar/src/main/java/$MIRROR"
+$ORNITHE_REMOVED
+CMD
+
+run "removed Forge file acknowledged passes" 0 "tree drift check: OK" <<CMD
+git rm -q -- "src/main/java/$MIRROR" "lunar/src/main/java/$MIRROR"
+$ORNITHE_REMOVED
+tools/forge-port-base.sh update "src/main/java/$MIRROR"
+CMD
+
+run "guard covers uncompared Forge roots" 1 "$BASE_MSG" <<'CMD'
+f=$(git ls-files src/test/resources | head -1)
+printf '\n' >> "$f"; git add -- "$f"
+CMD
+
+run "malformed base line refused" 2 "malformed lines in tools/forge-port-base.txt" <<'CMD'
+printf 'not-a-blob-id src/main/java/X.java\n' >> tools/forge-port-base.txt
+CMD
+
+run "guard off without its base file" 0 "forge port base: off" <<CMD
+rm tools/forge-port-base.txt
+printf 'class ForgeFix {}\n' >> "src/main/java/$DIVERGENT"
+git add -- "src/main/java/$DIVERGENT"
+CMD
+
 # --- tool failures must never read as "clean" -------------------------------
 
 echo "tool failures fail closed:"
@@ -307,7 +492,7 @@ if [ -n "$d" ]; then
   out=$(cd "$c" && ./$CHECK 2>&1)
   want=$(cd "$c" && comm -12 <(git ls-files src/main/java | sed 's|^src/main/java/||' | LC_ALL=C sort) \
                              <(git ls-files lunar/src/main/java | sed 's|^lunar/src/main/java/||' | LC_ALL=C sort) | wc -l | tr -d ' ')
-  got=$(printf '%s' "$out" | sed -n 's/.*OK (\([0-9]*\) mirrored main pairs.*/\1/p')
+  got=$(printf '%s' "$out" | sed -n 's|^  forge/lunar: \([0-9]*\) mirrored main pairs.*|\1|p')
   if [ "$want" = "$got" ]; then
     printf '  [ OK ] %-44s %s pairs\n' "reported pair count is truthful" "$got"; pass=$((pass+1))
   else
@@ -315,7 +500,7 @@ if [ -n "$d" ]; then
   fi
   rwant=$(cd "$c" && comm -12 <(git ls-files src/main/resources | sed 's|^src/main/resources/||' | LC_ALL=C sort) \
                               <(git ls-files lunar/src/main/resources | sed 's|^lunar/src/main/resources/||' | LC_ALL=C sort) | wc -l | tr -d ' ')
-  rgot=$(printf '%s' "$out" | sed -n 's/.*, \([0-9][0-9]*\) mirrored res pairs.*/\1/p')
+  rgot=$(printf '%s' "$out" | sed -n 's|^  forge/lunar: .*, \([0-9][0-9]*\) mirrored res pairs.*|\1|p')
   if [ "$rwant" = "$rgot" ]; then
     printf '  [ OK ] %-44s %s pairs\n' "reported res pair count is truthful" "$rgot"; pass=$((pass+1))
   else

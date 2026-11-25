@@ -4,7 +4,7 @@
 #
 # This is the Phase 3 manual gate. It is NOT the owner packaging path: it runs no
 # Gradle build and touches no backend token. It injects the current locally built
-# Lunar and Forge jars plus the Weave agent already installed on this machine
+# Lunar and Ornithe jars plus the Weave agent already installed on this machine
 # (~/.weave) into the blank launcher build, signs it, and drops it on the Desktop
 # ready to open.
 #
@@ -45,7 +45,7 @@ cobblify_assert_blank_app "$app_src"
 # --- 3. locate inputs: local build outputs + installed Weave agent -------------
 #
 # Version comes from the Gradle project so filenames cannot drift from source.
-# Lunar and Forge jars must be freshly built locally; only the Weave agent is
+# Lunar and Ornithe jars must be freshly built locally; only the Weave agent is
 # read from ~/.weave.
 
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/lunar/build.gradle.kts" | head -1)
@@ -53,15 +53,15 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/lunar/build.gradle.kt
 
 agent_src=$(cobblify_find_weave_agent "$HOME/.weave")
 mod_src="$repo_root/lunar/build/libs/Cobblify-Lunar-$version.jar"
-forge_src="$repo_root/versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar"
+ornithe_src="$repo_root/ornithe/build/libs/Cobblify-1.8.9-ornithe-$version.jar"
 
 [ -n "$agent_src" ] || die "no Weave agent found in ~/.weave"
 [ -f "$mod_src" ] || die "no Lunar jar at lunar/build/libs/Cobblify-Lunar-$version.jar - build it with: ( cd \"$repo_root/lunar\" && ./gradlew assemble )"
-[ -f "$forge_src" ] || die "no Forge jar at versions/1.8.9-forge/build/libs/Cobblify-1.8.9-forge-$version.jar - build it with: \"$repo_root/gradlew\" -p \"$repo_root\" :1.8.9-forge:assemble"
+[ -f "$ornithe_src" ] || die "no Ornithe jar at ornithe/build/libs/Cobblify-1.8.9-ornithe-$version.jar - build it with: ( cd \"$repo_root/ornithe\" && ./gradlew assemble )"
 
 echo "  agent:   $(basename "$agent_src")"
 echo "  mod:     $(basename "$mod_src")  (v$version)"
-echo "  forge:   $(basename "$forge_src")"
+echo "  ornithe: $(basename "$ornithe_src")"
 
 # --- 4. stage on the Desktop, inject, sign -----------------------------------
 #
@@ -71,7 +71,7 @@ echo "  forge:   $(basename "$forge_src")"
 dest="$HOME/Desktop/$COBBLIFY_APP_NAME"
 rm -rf "$dest"
 cp -R "$app_src" "$dest"
-cobblify_inject_app "$dest" "$mod_src" "$agent_src" "$version" "$forge_src"
+cobblify_inject_app "$dest" "$mod_src" "$agent_src" "$version" "$ornithe_src"
 cobblify_sign_app "$dest"
 
 echo ""

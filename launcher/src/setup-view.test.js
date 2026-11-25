@@ -32,11 +32,12 @@ function renderedText(status) {
 test("setup headings map issue codes, not message text", () => {
   assert.equal(setupHeading(PREVIEW_STATUS.lunarJars.targets[0], PREVIEW_STATUS.lunarJars), "Conflicting Jars");
   assert.equal(setupHeading(PREVIEW_STATUS.lunarBlocked.targets[0], PREVIEW_STATUS.lunarBlocked), "Quit Lunar");
-  assert.equal(setupHeading(PREVIEW_STATUS.prismChoose.targets[1], PREVIEW_STATUS.prismChoose), "Choose Prism");
+  assert.equal(setupHeading(PREVIEW_STATUS.prismSetup.targets[1], PREVIEW_STATUS.prismSetup), "Setup");
   assert.equal(
-    setupHeading(PREVIEW_STATUS.prismNoCompatible.targets[1], PREVIEW_STATUS.prismNoCompatible),
-    "No Compatible Prism Instance",
+    setupHeading(PREVIEW_STATUS.prismNewSetup.targets[1], PREVIEW_STATUS.prismNewSetup),
+    "Prism Needs a New Setup",
   );
+  assert.equal(setupHeading(PREVIEW_STATUS.noPrismBuild.targets[1], PREVIEW_STATUS.noPrismBuild), "Prism Unavailable");
   assert.equal(setupHeading(PREVIEW_STATUS.prismNoInstances.targets[1], PREVIEW_STATUS.prismNoInstances), "Get Prism");
   assert.equal(setupHeading(PREVIEW_STATUS.lunarAbsent.targets[0], PREVIEW_STATUS.lunarAbsent), "Get Lunar");
 });
@@ -60,17 +61,17 @@ test("preview matrix exposes distinct actionable states", () => {
       assert.match(text, /Open Prism Folder/);
       continue;
     }
-    if (key === "prismChoose") {
-      assert.match(text, /Choose Prism/);
-      assert.match(text, /Hypixel-1.8.9/);
+    if (key === "prismNewSetup") {
+      assert.match(text, /Prism Needs a New Setup/);
       assert.match(text, /Set Up/);
     }
+    assert.doesNotMatch(text, /Forge/);
     if (key === "bothReady") {
       assert.equal(setupBlocks(status).length, 0);
     }
   }
   assert.notEqual(headings.get("lunarBlocked"), headings.get("lunarUninitialized"));
-  assert.notEqual(headings.get("prismNoInstances"), headings.get("prismNoCompatible"));
+  assert.notEqual(headings.get("prismNoInstances"), headings.get("prismNewSetup"));
 });
 
 test("rendered setup never includes filesystem paths", () => {
@@ -86,15 +87,10 @@ test("rendered setup never includes filesystem paths", () => {
   assert.doesNotMatch(blob, /"compat"/);
 });
 
-test("chooser rows only include eligible id/name candidates", () => {
-  const choose = PREVIEW_STATUS.prismChoose.targets.find((t) => t.action === "choose");
-  assert.deepEqual(choose.candidates, [
-    { id: "d0", name: "Hypixel-1.8.9" },
-    { id: "d1", name: "Skyblock-1.8.9" },
-  ]);
-  const block = setupBlocks(PREVIEW_STATUS.prismChoose).find((b) => b.heading === "Choose Prism");
-  assert.equal(block.candidates.length, 2);
-  assert.deepEqual(Object.keys(block.candidates[0]), ["id", "name", "action"]);
+test("no Prism state lists instances to choose from", () => {
+  for (const key of PREVIEW_SETUP_KEYS) {
+    for (const block of setupBlocks(PREVIEW_STATUS[key])) assert.equal(block.candidates.length, 0, key);
+  }
 });
 
 test("dual conflict collapses to one block with two folder actions", () => {
@@ -125,10 +121,10 @@ test("setup actions include refresh, open, download, and setup", () => {
     ["download"],
   );
   assert.deepEqual(
-    setupActions(PREVIEW_STATUS.prismNoCompatible.targets[1], PREVIEW_STATUS.prismNoCompatible).map(
+    setupActions(PREVIEW_STATUS.prismNewSetup.targets[1], PREVIEW_STATUS.prismNewSetup).map(
       (a) => a.kind,
     ),
-    ["open_launcher"],
+    ["setup_prism"],
   );
   assert.deepEqual(
     setupActions(PREVIEW_STATUS.lunarJars.targets[0], PREVIEW_STATUS.lunarJars).map((a) => a.kind),
@@ -162,18 +158,8 @@ test("a ready target never shows a setup block", () => {
   assert.deepEqual(setupBlocks(PREVIEW_STATUS.bothReady), []);
 });
 
-test("no compatible Prism state explains the required version behind details", () => {
-  const block = setupBlocks(PREVIEW_STATUS.prismNoCompatible).find(
-    (b) => b.heading === "No Compatible Prism Instance",
-  );
-  assert.equal(block.hasDetails, true);
-  assert.equal(
-    block.detailText,
-    "Prism instances must use Minecraft 1.8.9 with Forge.",
-  );
-});
-
 test("issue constants stay aligned with backend codes", () => {
   assert.equal(ISSUE.MISSING_LAUNCHER, "missing_launcher");
-  assert.equal(ISSUE.NO_COMPATIBLE_PRISM, "no_compatible_prism_instance");
+  assert.equal(ISSUE.PRISM_NEW_SETUP, "prism_new_setup");
+  assert.equal(ISSUE.MISSING_BUNDLED_FORGE, "missing_bundled_forge_jar");
 });

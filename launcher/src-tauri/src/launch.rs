@@ -278,24 +278,17 @@ fn open_bare_play_link() -> Result<(), String> {
 }
 
 fn dispatch_forge(home: &Path, use_external_overlay: bool) -> Result<DispatchResult, String> {
-    let saved = forge::load_target(home).ok_or("Choose a Prism Forge instance before launching.")?;
-    if saved.marker.as_deref() != Some("mmc-pack.json") {
-        return Err(
-            "The saved Forge target is not a Prism instance - set up Prism first.".to_string(),
-        );
-    }
-    let fresh = forge::revalidate(&saved)
-        .ok_or("That Prism instance changed - reopen Cobblify and set it up again.")?;
-    let instance_id = fresh
-        .game_dir
-        .parent()
-        .and_then(std::path::Path::file_name)
+    let saved = crate::ornithe::load_target(home).ok_or("Set up Prism before launching.")?;
+    let root = crate::ornithe::revalidate(&saved)
+        .ok_or("Cobblify's Prism instance changed - set up Prism again.")?;
+    let instance_id = root
+        .file_name()
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .ok_or("Cannot determine the Prism instance id.")?;
 
     // The Prism that holds this instance (Windows can have several, each with its own data).
-    let exe = forge::prism_exe_for(fresh.instance_root().as_deref());
+    let exe = forge::prism_exe_for(Some(root.as_path()));
     if !exe.is_file() {
         return Err("Prism Launcher is not installed in its standard location.".to_string());
     }

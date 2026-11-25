@@ -80,11 +80,11 @@ vm="$vendor/manifest.json"
 [ -f "$vm" ] || die "$vm not found"
 mod_jar=$(json_field "$vm" mod_jar)
 agent_jar=$(json_field "$vm" agent_jar)
-forge_jar=$(json_field "$vm" forge_jar)
+ornithe_jar=$(json_field "$vm" ornithe_jar)
 mod_version=$(json_field "$vm" mod_version)
 printf '%s' "$mod_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "vendor mod_version '$mod_version' is not X.Y.Z; the launcher only accepts release-named jars"
-for pair in "mod_jar:mod_sha256" "agent_jar:agent_sha256" "forge_jar:forge_sha256"; do
+for pair in "mod_jar:mod_sha256" "agent_jar:agent_sha256" "ornithe_jar:ornithe_sha256"; do
   name=$(json_field "$vm" "${pair%%:*}")
   want=$(json_field "$vm" "${pair##*:}")
   [ -f "$vendor/$name" ] || die "vendor jar $name missing"
@@ -119,7 +119,7 @@ rm -rf "$stage_dir"
 mkdir -p "$stage_dir"
 ditto "$built" "$stage_dir/$COBBLIFY_APP_NAME"
 app="$stage_dir/$COBBLIFY_APP_NAME"
-cobblify_inject_app "$app" "$vendor/$mod_jar" "$vendor/$agent_jar" "$mod_version" "$vendor/$forge_jar"
+cobblify_inject_app "$app" "$vendor/$mod_jar" "$vendor/$agent_jar" "$mod_version" "$vendor/$ornithe_jar"
 cobblify_sign_app "$app"
 check "injected and ad-hoc signed"
 
@@ -139,7 +139,7 @@ verify_app() {
   if grep -Eqi "$UPDATE_HOST_PATTERN" <<<"$s"; then die "$a: binary contains an update host"; fi
   check "no update host in the binary"
   local f want got
-  for f in mod_jar:mod_sha256 agent_jar:agent_sha256 forge_jar:forge_sha256; do
+  for f in mod_jar:mod_sha256 agent_jar:agent_sha256 ornithe_jar:ornithe_sha256; do
     want=$(json_field "$vm" "${f##*:}")
     [ "$(json_field "$res/manifest.json" "${f##*:}")" = "$want" ] || die "$a: manifest ${f##*:} differs from the vendor"
     got=$(sha "$res/$(json_field "$res/manifest.json" "${f%%:*}")")

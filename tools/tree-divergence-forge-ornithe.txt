@@ -1,0 +1,180 @@
+# Declared differences between the Forge tree and the Ornithe tree.
+#
+# Transitional: this pair exists only while both trees do, and this file is
+# deleted with the Forge tree (P10). It records what the port deliberately
+# changed; tools/forge-port-base.txt separately catches Forge edits made after
+# the port, including edits inside the files declared divergent here.
+#
+# Checked by tools/check-tree-drift.sh, but only while the Ornithe tree exists
+# (ornithe/src on disk or in the index). Until then this file must hold no
+# entries. Once it exists, anything NOT declared here must be byte-identical in
+# both trees, or the check fails; an empty manifest is refused.
+#
+# Format (whitespace separated, `#` starts a comment):
+#
+#   divergent <tree> <path>          - present in both trees, allowed to differ
+#   one-sided <tree> <side> <path>   - present on <side> only
+#
+#   <tree> = main | test | res  <side> = forge | ornithe
+#   main = src/main/java       vs ornithe/src/main/java
+#   test = src/test/java       vs ornithe/src/test/java
+#   res  = src/main/resources  vs ornithe/src/main/resources
+#   <path> is package-relative for main and test, e.g.
+#     com/bedwarsqol/gui/SettingsGui.java, and relative to the resources root
+#     for res, e.g. mcmod.info
+#
+# Entries are validated in both directions, exactly as in
+# tools/tree-divergence.txt: a `divergent` entry whose copies are identical, or
+# (java) differ only in comments or whitespace, fails; a `one-sided` entry that
+# is in both trees, on the wrong side, or in neither fails. Stale entries are
+# errors, not noise.
+#
+# Give each group of entries a comment saying WHY the trees differ.
+
+# ---------------------------------------------------------------------------
+# divergent: same path in both trees, contents legitimately differ
+# ---------------------------------------------------------------------------
+
+# Loader entry point: Forge @Mod + MinecraftForge.EVENT_BUS vs the OSL client-init
+# entrypoint (fabric.mod.json), which registers every handler on ModEvents.
+divergent main com/bedwarsqol/BedwarsQol.java
+
+# Event API: Forge @SubscribeEvent handlers (ClientChatReceivedEvent, TickEvent with
+# its phase check, WorldEvent.Load, RenderGameOverlayEvent, RenderLivingEvent,
+# DrawBlockHighlightEvent, MouseEvent) vs plain methods registered on ModEvents
+# (com.bedwarsqol.ornithe event types; tick and world-load handlers take no event,
+# and priority/receiveCanceled moved to the registration in BedwarsQol).
+divergent main com/bedwarsqol/bedwars/GeneratorTracker.java
+divergent main com/bedwarsqol/feature/AutoGg.java
+divergent main com/bedwarsqol/feature/BlockOverlayRenderer.java
+divergent main com/bedwarsqol/feature/ChatNameTags.java
+divergent main com/bedwarsqol/feature/ChatNotifications.java
+divergent main com/bedwarsqol/feature/GameRosterChat.java
+divergent main com/bedwarsqol/feature/LobbyChatWatch.java
+divergent main com/bedwarsqol/feature/NametagStats.java
+divergent main com/bedwarsqol/feature/NickUtils.java
+divergent main com/bedwarsqol/feature/OutgoingChat.java
+divergent main com/bedwarsqol/feature/PartyJoinAlert.java
+divergent main com/bedwarsqol/feature/QueueAlert.java
+divergent main com/bedwarsqol/feature/SessionStatsWatch.java
+divergent main com/bedwarsqol/feature/SweatReport.java
+divergent main com/bedwarsqol/feature/TntFuseDisplay.java
+divergent main com/bedwarsqol/feature/UrchinAlert.java
+divergent main com/bedwarsqol/hud/BedwarsHudRenderer.java
+divergent main com/bedwarsqol/stats/BedwarsModeDetector.java
+divergent main com/bedwarsqol/stats/GameSessionTracker.java
+
+# Key handlers: Forge InputEvent.KeyInputEvent / TickEvent vs polled from
+# ModEvents.CLIENT_TICK (OSL TICK_END); the vanilla KeyBinding press count carries
+# every press since the last poll.
+divergent main com/bedwarsqol/feature/IncSender.java
+divergent main com/bedwarsqol/feature/PauseKeyHandler.java
+divergent main com/bedwarsqol/feature/SettingsKeyHandler.java
+
+# Server connect: FMLNetworkEvent.ClientConnectedToServerEvent and the Forge-added
+# NetworkManager.channel() vs ServerConnectEvent (NetHandlerLoginClientMixin) and
+# NetworkManagerAccessor for vanilla's private channel.
+divergent main com/bedwarsqol/feature/HeightLimitWatch.java
+
+# Config directory: Forge Loader.getConfigDir() vs ConfigDir.get() (Fabric's config
+# dir, the same <gameDir>/config path, so cobblify.json carries over).
+divergent main com/bedwarsqol/config/SettingsManager.java
+divergent main com/bedwarsqol/stats/StatsCache.java
+
+# Clutch Practice: Forge's server events (PlayerInteractEvent, ExplosionEvent.Detonate,
+# PlayerTickEvent, LivingHurtEvent) vs hook methods the server-side mixins call at the
+# same vanilla positions. DamageSource(String) is protected in vanilla (Forge's access
+# transformer opened it), so the port uses an anonymous subclass.
+divergent main com/bedwarsqol/feature/ClutchPractice.java
+
+# Zoom and No Hurt Cam are Ornithe-only (P4): the settings fields and the sheet rows,
+# which only Ornithe's SettingsBindings opts in to via hasPlatformOnly.
+divergent main com/bedwarsqol/config/ClientSettings.java
+divergent main com/bedwarsqol/gui/SettingsBindings.java
+
+# Forge-patched GuiScreen.mouseClicked/keyTyped throw IOException; vanilla's do not.
+# The Ornithe copy is Lunar's (byte-identical to lunar/).
+divergent main com/bedwarsqol/gui/EditHudGui.java
+
+# Mixin config: Forge carries the refmap and asks for minVersion 0.7. Ornithe has no
+# refmap (Loom remaps annotation targets straight into the release jar), asks for 0.8,
+# and lists the server-side Clutch mixins plus the client mixins that stand in for
+# Forge's events and hooks (see the one-sided mixins below).
+divergent res mixins.bedwarsqol.json
+
+# ---------------------------------------------------------------------------
+# one-sided: exists in one tree only
+# ---------------------------------------------------------------------------
+
+# Config directory seam replacing Forge's Loader.getConfigDir(), and its test. The
+# Forge test tree instead stubs Loader, which throws outside LaunchWrapper.
+one-sided main ornithe com/bedwarsqol/config/ConfigDir.java
+one-sided test ornithe com/bedwarsqol/config/ConfigDirTest.java
+one-sided test forge net/minecraftforge/fml/common/Loader.java
+
+# Event bus: Ornithe has no MinecraftForge.EVENT_BUS. ModEvents holds one dispatcher
+# per event the features listen to; these are the event types it carries.
+one-sided main ornithe com/bedwarsqol/ornithe/BlockHighlightEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ChatReceivedEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ModEvents.java
+one-sided main ornithe com/bedwarsqol/ornithe/MouseButtonEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/NametagRenderEvent.java
+one-sided main ornithe com/bedwarsqol/ornithe/ServerConnectEvent.java
+
+# Mixins that post ModEvents at the vanilla positions Forge posts its events from
+# (GuiIngameForge text/post layers, MouseEvent, ClientChatReceivedEvent,
+# ClientConnectedToServerEvent, RenderLivingEvent.Specials.Post, WorldEvent.Load,
+# DrawBlockHighlightEvent), plus an accessor for the Forge-added NetworkManager.channel().
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameHudMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/MinecraftMouseMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetHandlerLoginClientMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetHandlerPlayClientMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/NetworkManagerAccessor.java
+one-sided main ornithe com/bedwarsqol/mixin/RendererLivingEntityMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/WorldClientMixin.java
+
+# Client commands: Forge's ClientCommandHandler and its GuiChat tab-completion patch
+# vs a vanilla CommandHandler fed by two mixins (no OSL commands module).
+one-sided main ornithe com/bedwarsqol/ornithe/ClientCommands.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiChatCompletionMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiScreenCommandMixin.java
+
+# Clutch Practice server-side hooks, at Forge's PlayerInteractEvent,
+# ExplosionEvent.Detonate, PlayerTickEvent and LivingHurtEvent positions.
+one-sided main ornithe com/bedwarsqol/mixin/EntityPlayerMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ExplosionMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/ItemInWorldManagerMixin.java
+
+# Zoom, No Hurt Cam and Dynamic FOV: Ornithe-only features (P4), with their sheet-row test.
+one-sided main ornithe com/bedwarsqol/feature/CameraOptions.java
+one-sided main ornithe com/bedwarsqol/mixin/EntityRendererCameraMixin.java
+one-sided main ornithe com/bedwarsqol/mixin/AbstractClientPlayerFovMixin.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsCameraTest.java
+
+# Argentum compatibility: Scoreboard Size, Tab List Size and tab stats applied from the
+# renderGameOverlay call sites, because Argentum's Font Batching draws those overlays after
+# the callee returns (outside an in-method scale or translate).
+one-sided main ornithe com/bedwarsqol/hud/OverlayScale.java
+one-sided main ornithe com/bedwarsqol/hud/TabOverlayScale.java
+one-sided main ornithe com/bedwarsqol/mixin/GuiIngameOverlayScaleMixin.java
+divergent main com/bedwarsqol/mixin/GuiIngameMixin.java
+divergent main com/bedwarsqol/mixin/GuiPlayerTabOverlayMixin.java
+
+# Toggle Sprint: Ornithe-only feature (Lunar has its own), its key-binding accessor and sheet-row test.
+one-sided main ornithe com/bedwarsqol/feature/ToggleSprint.java
+one-sided main ornithe com/bedwarsqol/mixin/KeyBindingAccessor.java
+one-sided test ornithe com/bedwarsqol/gui/SettingsBindingsSprintTest.java
+
+# ---------------------------------------------------------------------------
+# res: src/main/resources vs ornithe/src/main/resources
+# ---------------------------------------------------------------------------
+
+# Mod descriptor: Forge's mcmod.info vs Fabric's fabric.mod.json (client-init
+# entrypoint, OSL module dependencies).
+one-sided res forge mcmod.info
+one-sided res ornithe fabric.mod.json
+
+# Mod version: Forge substitutes it into the @Mod VERSION constant at build time;
+# Ornithe reads it at runtime from this file, filled by processResources.
+one-sided res ornithe com/bedwarsqol/version.properties

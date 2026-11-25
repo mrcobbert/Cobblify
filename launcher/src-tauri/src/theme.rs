@@ -2,7 +2,8 @@
 //! decision 8). Read-only: the mod owns `cobblify.json`.
 //!
 //! - Lunar: `~/.cobblify/cobblify.json` (lunar SettingsManager.settingsFile).
-//! - Forge: `<instance game dir>/config/cobblify.json` (Forge's config dir).
+//! - Prism (wire kind "forge"): `<instance game dir>/config/cobblify.json` of Cobblify's
+//!   Ornithe instance (`ornithe::saved_game_dir`; the same path the Forge build used).
 //!
 //! Tokens are passed through as written, lowercased; the frontend maps them to colours with a
 //! table checked against `GuiTheme.Accent`. Anything missing or malformed reads as "no
@@ -20,7 +21,7 @@ pub struct GameTheme {
     pub font: Option<String>,
 }
 
-/// Where the config of `kind` ("lunar" or "forge") lives, if it can be known.
+/// Where the config of `kind` ("lunar" or "forge" = Prism) lives, if it can be known.
 pub fn config_path(home: &Path, kind: &str, forge_game_dir: Option<&str>) -> Option<PathBuf> {
     match kind {
         "lunar" => Some(home.join(".cobblify").join("cobblify.json")),

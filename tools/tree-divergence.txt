@@ -1,7 +1,9 @@
 # Declared differences between the Forge tree and the Lunar tree.
 #
 # Checked by tools/check-tree-drift.sh. Anything NOT declared here must be
-# byte-identical in both trees, or the check fails.
+# byte-identical in both trees, or the check fails. The Ornithe pairs have their
+# own manifests: tools/tree-divergence-ornithe-lunar.txt and
+# tools/tree-divergence-forge-ornithe.txt.
 #
 # Format (whitespace separated, `#` starts a comment):
 #

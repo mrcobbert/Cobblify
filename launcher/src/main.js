@@ -36,7 +36,7 @@ import { createApp } from "./ui/app.js";
 import { CL, uiId } from "./ui/art.js";
 import { NEW_PLAYER_THEME, themeFor } from "./ui/accent.js";
 import { setAccent, setFont, watchUnits, wordmark } from "./ui/kit.js";
-import { homeModel, isInstalled, isSetUp, prismInstances, setUpClients, sheetModel, stuckAfter } from "./ui/model.js";
+import { homeModel, isInstalled, prismInstances, setUpClients, sheetModel, stuckAfter } from "./ui/model.js";
 
 const el = (id) => document.getElementById(id);
 const stage = el("stage");
@@ -82,7 +82,7 @@ function previewStatus(which) {
       const out = { ...t, installed: t.issue !== "missing_launcher" || previewInstalled.has(t.kind), set_up: t.state === "ready" || done };
       if (done && t.state !== "ready") Object.assign(out, { state: "ready", issue: null, action: "none", candidates: [] });
       if (t.kind === "forge") {
-        out.instances = (t.candidates ?? []).map((c, i) => ({ id: c.id, name: c.name, detail: "Forge 11.15.1.2318", last_launch_ms: 100 - i }));
+        out.instances = (t.candidates ?? []).map((c, i) => ({ id: c.id, name: c.name, detail: "1.8.9", last_launch_ms: 100 - i }));
       }
       return out;
     }),
@@ -447,8 +447,8 @@ const ui = createApp(el("app"), {
     pick = { picked: id };
     refreshUi();
   },
-  // Settings' Change: the instance pick, then setup on the chosen instance.
-  change: () => openPick(),
+  // Settings' Prism Repair: Prism's setup again (no instance pick: Cobblify's own instance).
+  change: () => addClient("prism"),
   refresh: () => {
     invoke("refresh_setup")
       .then((next) => next && setStatus(next))
@@ -496,8 +496,8 @@ const setupShown = () => setupSnap != null;
 const setupRunning = () => setupRequest || (setupSnap != null && setupSnap.phase !== "failed");
 
 /**
- * Sets a client up (proto addClient): the menu and the sheet close, a pending wait is dropped. Prism with several
- * compatible instances and none picked shows the pick first; a Prism that is already set up uses its own instance.
+ * Sets a client up (proto addClient): the menu and the sheet close, a pending wait is dropped. Prism always gets
+ * Cobblify's own Ornithe instance, so there is no instance pick.
  */
 async function addClient(id, instanceId) {
   if (setupRunning()) return;
@@ -508,10 +508,6 @@ async function addClient(id, instanceId) {
   if (addWait === id) addWait = null;
   pick = null;
   const kind = CL[id].kind;
-  if (kind === "forge" && instanceId === undefined && !isSetUp(lastStatus, "prism") && prismInstances(lastStatus).length >= 2) {
-    openPick();
-    return;
-  }
   setupRequest = true;
   try {
     const snap = await beginSetup(invoke, kind, instanceId);
@@ -519,11 +515,6 @@ async function addClient(id, instanceId) {
     onSetupSnapshot(snap, { fromReply: true, fresh: true });
   } catch (e) {
     setupRequest = false;
-    if (String(e) === "choose_instance") {
-      await refreshStatusQuietly();
-      openPick();
-      return;
-    }
     console.warn("begin_setup failed", kind, e);
     refreshUi();
   }

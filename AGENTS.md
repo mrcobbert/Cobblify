@@ -2,25 +2,36 @@
 
 ## Project shape
 
-- This is a Java 8 Minecraft 1.8.9 Forge mod built with Gradle.
-- Forge source lives under `src/main/`; Lunar (Weave) source under `lunar/src/main/`.
-- `common/src/` holds code that is identical on both platforms and imports no Minecraft, Forge,
-  Weave, LWJGL or Mixin type. **Both builds compile it**, as additional main and test source
-  directories. Edit it once.
-- The two platform trees still mirror each other for 48 main files. Some differ on purpose, some
+- This is a Java 8 Minecraft 1.8.9 mod built with Gradle, in three platform trees:
+  - Ornithe (Fabric Loader, run on Java 25 through a Prism instance the launcher builds) under
+    `ornithe/src/main/`. It replaces Forge.
+  - Lunar (Weave) under `lunar/src/main/`.
+  - Forge under `src/main/`: retiring. It is kept only until the user signs off the Ornithe dev
+    build. Port new work to Ornithe and Lunar; `tools/forge-port-base.txt` flags any Forge edit
+    that was not ported to Ornithe.
+- `common/src/` holds code that is identical on every platform and imports no Minecraft, Forge,
+  Fabric, Weave, LWJGL or Mixin type. **Every build compiles it**, as additional main and test
+  source directories. Edit it once.
+- The platform trees still mirror each other for many main files. Some differ on purpose, some
   are identical but touch `net.minecraft` and were left alone. Before changing a mirrored file,
-  compare both trees and keep intentional equivalents synchronized.
-- `tools/tree-divergence.txt` declares every legitimate difference: pairs allowed to differ, and
-  files that exist on one side only. `tools/check-tree-drift.sh` enforces it; run it before you
-  finish. If you make the trees differ, declare it there or the check fails.
+  compare the trees and keep intentional equivalents synchronized.
+- The manifests declare every legitimate difference, meaning pairs allowed to differ and files
+  that exist on one side only:
+  - `tools/tree-divergence.txt` covers Forge/Lunar.
+  - `tools/tree-divergence-forge-ornithe.txt` covers Forge/Ornithe.
+  - `tools/tree-divergence-ornithe-lunar.txt` covers Ornithe/Lunar.
+  `tools/check-tree-drift.sh` enforces them; run it before you finish. If you make the trees
+  differ, declare it there or the check fails.
 - Writing **new** platform-neutral code? Put it straight in `common/`. Do not create a copy in each
   tree first - that is the duplication this layout exists to prevent.
 - **Moving an existing mirrored file** into `common/` is only correct if the two copies are already
   byte-identical and it has no platform imports. If it needs an edit to compile on both, it does
   not belong there.
-- Build with `./gradlew build` (Forge, JDK 17-21) and `./gradlew build` in `lunar/`. Run narrower
-  relevant checks first when available. Note `harness.LaneContrastTest` is a wall-clock benchmark,
-  not a correctness test - it dominates the Forge suite runtime and is timing-sensitive.
+- Build with `./gradlew build` in `ornithe/` (Gradle runs on JDK 25, picked by
+  `ornithe/gradle/gradle-daemon-jvm.properties`; Ploceus maps it to MCP names), `./gradlew build`
+  in `lunar/`, and `./gradlew build` at the root (Forge, JDK 17-21). Run narrower relevant checks
+  first when available. Note `harness.LaneContrastTest` is a wall-clock benchmark, not a
+  correctness test. It dominates the Forge and Ornithe suite runtimes and is timing-sensitive.
 - `lunar/` pins a Java 8 toolchain and Gradle must be able to SEE a JDK 8: foojay auto-provisioning
   (resolver 0.8.0) fails on Gradle 9.4 with `JvmVendorSpec ... IBM_SEMERU`. Point
   `org.gradle.java.installations.paths` at a JDK 8 in `~/.gradle/gradle.properties`.
@@ -35,8 +46,8 @@
   hot-swaps code into a running game, opens and clicks Cobblify screens, and saves screenshots you
   can look at. The game runs in the user's account (agents cannot open windows); read
   `tools/devloop/README.md` before using it. One worktree drives it at a time (`cobdev status`).
-- It runs the Forge tree only. A screenshot from it is real Minecraft rendering, but still not proof
-  of Lunar behavior.
+- It runs the Ornithe tree only. A screenshot from it is real Minecraft rendering, but still not
+  proof of Lunar behavior.
 
 ## Windows build box
 

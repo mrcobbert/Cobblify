@@ -226,7 +226,7 @@ public final class SheetLayout {
             }
         } else {
             for (Module m : c.modules) {
-                if (!values.has(m.id)) continue;
+                if (!SheetSchema.shows(values, m.id)) continue;
                 y = module(f, m, y, first, null, null, state.open.contains(m.id), visibleRows(m), false);
                 first = false;
             }
@@ -236,7 +236,7 @@ public final class SheetLayout {
 
     private List<Row> visibleRows(Module m) {
         List<Row> out = new ArrayList<Row>();
-        for (Row r : m.rows) if (values.has(r.id)) out.add(r);
+        for (Row r : m.rows) if (SheetSchema.shows(values, r.id)) out.add(r);
         return out;
     }
 

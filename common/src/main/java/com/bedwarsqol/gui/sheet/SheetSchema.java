@@ -3,15 +3,19 @@ package com.bedwarsqol.gui.sheet;
 import com.bedwarsqol.gui.render.GuiTheme;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Everything the settings sheet lists: categories, modules, their rows and the Settings page sections, in the
  * approved prototype's order and copy ({@code CATS} in its {@code app.js}). A tree shows only the modules and rows
- * its {@link SheetValues} has, so Lunar's shorter list comes from the same table.
+ * its {@link SheetValues} has, so Lunar's shorter list comes from the same table. Platform-only modules (Zoom and No
+ * Hurt Cam, Ornithe) also need the tree to opt in ({@link SheetValues#hasPlatformOnly}); see {@link #shows}.
  */
 public final class SheetSchema {
 
@@ -201,6 +205,11 @@ public final class SheetSchema {
     public static final List<Category> CATS;
     private static final Map<String, Row> ROWS = new LinkedHashMap<String, Row>();
     private static final Map<String, Module> MODULES = new LinkedHashMap<String, Module>();
+    /**
+     * Modules only some platforms have: a tree whose {@link SheetValues#has} accepts every schema id (Forge's does)
+     * still lists these only if it opts in. Zoom, No Hurt Cam, Dynamic FOV and Toggle Sprint are the Ornithe build's; Lunar has its own.
+     */
+    private static final Set<String> PLATFORM_ONLY = new HashSet<String>(Arrays.asList("zoom", "noHurtCam", "toggleSprint", "dynamicFov"));
 
     static {
         Row sessionKey = dependsOn(new Row("sessionKey", Kind.KEY, "Key", "The key you hold", null),
@@ -236,6 +245,10 @@ public final class SheetSchema {
                 module("tnt", "TNT Countdown", "Fuse timer for nearby TNT", "fuse explode",
                         seg("tntRadius", "Radius", "How far away TNT is tracked, in blocks", null, "5", "10", "15", "20", "30")),
                 module("noEsc", "Disable Esc Menu", "Stop Esc pausing the game", "pause escape"),
+                module("zoom", "Zoom", "Zoom in while held; bind in Controls", "fov optifine magnify"),
+                module("noHurtCam", "No Hurt Cam", "No screen tilt when you take damage", "damage shake tilt"),
+                module("dynamicFov", "Dynamic FOV", "FOV changes when sprinting, with Speed and bows", "fov effects optifine static"),
+                module("toggleSprint", "Toggle Sprint", "Press once to keep sprinting; bind in Controls", "auto sprint run"),
                 module("clutch", "Clutch Practice", "Pearl and fireball drill in singleplayer", "void fireball pearl",
                         toggle("clutchBlocks", "Block Damage", "Fireballs break wool, wood and clay"))));
         cats.add(category("visuals", "Visuals",
@@ -306,6 +319,18 @@ public final class SheetSchema {
 
     public static Row row(String id) {
         return ROWS.get(id);
+    }
+
+    /** Whether {@code id} is a platform-only module, or a row of one. */
+    public static boolean platformOnly(String id) {
+        Row r = ROWS.get(id);
+        Module m = r != null ? r.module : MODULES.get(id);
+        return m != null && PLATFORM_ONLY.contains(m.id);
+    }
+
+    /** Whether the sheet lists module or row {@code id} on the platform behind {@code values}. */
+    public static boolean shows(SheetValues values, String id) {
+        return values.has(id) && (!platformOnly(id) || values.hasPlatformOnly(id));
     }
 
     public static Module module(String id) {

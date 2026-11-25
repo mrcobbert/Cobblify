@@ -10,13 +10,13 @@
 //!     unknown key, a declared filename that is not a safe leaf, or a `.jar` in the
 //!     directory that no manifest field declares.
 //!   * PER TARGET, isolated: each target's own file-exists + SHA-256 check produces its
-//!     own `Result`, so a corrupt Forge jar cannot suppress a healthy Lunar setup, or
+//!     own `Result`, so a corrupt Ornithe jar cannot suppress a healthy Lunar setup, or
 //!     the other way round.
 //!
 //! Declaration and verification are DIFFERENT steps. A name is *declared* - and so
 //! allow-listed by `reject_unexpected_jars` - when it is paired with a non-empty digest
 //! and passes the leaf checks. Whether its bytes match that digest is a per-target
-//! question. Conflating the two would turn a hash-failed Forge jar into an "unexpected"
+//! question. Conflating the two would turn a hash-failed Ornithe jar into an "unexpected"
 //! jar and abort globally, destroying the isolation this module exists to provide.
 
 use std::fs;
@@ -25,9 +25,10 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// The wire shape, exactly as the packaging scripts write it. `forge_jar`/`forge_sha256`
-/// are optional so a bundle built before Forge support still verifies; `deny_unknown_fields`
-/// still rejects anything else.
+/// The wire shape, exactly as the packaging scripts write it. `ornithe_jar`/`ornithe_sha256`
+/// (they replaced `forge_jar`/`forge_sha256`; the manifest ships inside the same app as the
+/// launcher, so no older bundle is ever read) are optional so a Lunar-only bundle still
+/// verifies; `deny_unknown_fields` still rejects anything else, the old Forge keys included.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifest {
@@ -38,17 +39,17 @@ struct RawManifest {
     agent_sha256: String,
     /// Serde maps BOTH an absent key and an explicit `null` to `None`, and that is
     /// deliberate here: the two are equivalent, and policing the difference would buy
-    /// nothing. What matters is the pair invariant enforced in `fold_forge`.
+    /// nothing. What matters is the pair invariant enforced in `fold_ornithe`.
     #[serde(default)]
-    forge_jar: Option<String>,
+    ornithe_jar: Option<String>,
     #[serde(default)]
-    forge_sha256: Option<String>,
+    ornithe_sha256: Option<String>,
 }
 
-/// A declared Forge resource: a safe leaf name paired with a non-empty digest. Its
+/// A declared Ornithe resource: a safe leaf name paired with a non-empty digest. Its
 /// existence says nothing about whether the bytes match.
 #[derive(Debug, Clone)]
-pub struct ForgeRes {
+pub struct OrnitheRes {
     pub jar: String,
     pub sha256: String,
 }
@@ -60,8 +61,8 @@ pub struct Manifest {
     pub mod_version: String,
     pub mod_sha256: String,
     pub agent_sha256: String,
-    /// `None` = this bundle predates Forge support, or declares no Forge jar.
-    pub forge: Option<ForgeRes>,
+    /// `None` = this bundle predates Ornithe support, or declares no Ornithe jar.
+    pub ornithe: Option<OrnitheRes>,
 }
 
 /// Lunar's two jars, self-contained so `install` needs nothing else.
@@ -76,7 +77,7 @@ pub struct LunarJars {
 }
 
 #[derive(Debug, Clone)]
-pub struct ForgeJar {
+pub struct OrnitheJar {
     pub src: PathBuf,
     pub name: String,
     pub sha256: String,
@@ -85,11 +86,11 @@ pub struct ForgeJar {
 #[derive(Debug)]
 pub struct Resources {
     pub manifest: Manifest,
-    /// Lunar's own resource result. An `Err` here never blocks Forge.
+    /// Lunar's own resource result. An `Err` here never blocks Ornithe.
     pub lunar: Result<LunarJars, String>,
     /// `None` = nothing declared. `Some(Err(..))` = declared but the bytes are wrong;
     /// Lunar is unaffected either way.
-    pub forge: Option<Result<ForgeJar, String>>,
+    pub ornithe: Option<Result<OrnitheJar, String>>,
 }
 
 /// What a friend is told when the bundled build is missing, incomplete or tampered with.
@@ -164,11 +165,9 @@ fn safe_leaf(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Our Forge releases are named `<prefix>-<major>.<minor>.<patch>.jar`, and the launcher
-/// depends on that shape: `forge::classify` derives the release prefix from this very name
-/// by cutting at its last `-`, and judges every Cobblify-looking jar in `mods/` against
-/// it. A name with no `-` makes the prefix the whole name and the judgement meaningless,
-/// so the shape is checked where the name enters the launcher.
+/// Our releases are named `<prefix>-<major>.<minor>.<patch>.jar` (the Ornithe build:
+/// `Cobblify-1.8.9-ornithe-<version>.jar`, CONTRACT "Release jar"); the shape is checked
+/// where the name enters the launcher.
 fn is_release_jar_name(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".jar") else {
         return false;
@@ -184,38 +183,38 @@ fn is_release_jar_name(name: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The Forge pair is all-or-nothing. Half a record must never be usable: a name without a
+/// The Ornithe pair is all-or-nothing. Half a record must never be usable: a name without a
 /// digest would enter the allow list and never be hashed.
-fn fold_forge(
+fn fold_ornithe(
     jar: Option<String>,
     sha256: Option<String>,
-) -> Result<Option<ForgeRes>, String> {
+) -> Result<Option<OrnitheRes>, String> {
     match (jar, sha256) {
         (None, None) => Ok(None),
         (Some(jar), Some(sha256)) => {
             if jar.trim().is_empty() || sha256.trim().is_empty() {
                 return Err(
-                    "manifest declares an empty forge_jar or forge_sha256.".to_string()
+                    "manifest declares an empty ornithe_jar or ornithe_sha256.".to_string()
                 );
             }
             if !is_release_jar_name(&jar) {
                 return Err(format!(
-                    "manifest declares forge_jar {jar}, which is not named <prefix>-<major>.<minor>.<patch>.jar."
+                    "manifest declares ornithe_jar {jar}, which is not named <prefix>-<major>.<minor>.<patch>.jar."
                 ));
             }
-            Ok(Some(ForgeRes { jar, sha256 }))
+            Ok(Some(OrnitheRes { jar, sha256 }))
         }
         (Some(_), None) => {
-            Err("manifest declares forge_jar without forge_sha256.".to_string())
+            Err("manifest declares ornithe_jar without ornithe_sha256.".to_string())
         }
         (None, Some(_)) => {
-            Err("manifest declares forge_sha256 without forge_jar.".to_string())
+            Err("manifest declares ornithe_sha256 without ornithe_jar.".to_string())
         }
     }
 }
 
 /// Fails closed on anything GLOBAL: a missing manifest, an unknown key, an unsafe name,
-/// a half-declared Forge pair, or an undeclared jar sitting in the directory. Per-target
+/// a half-declared Ornithe pair, or an undeclared jar sitting in the directory. Per-target
 /// byte failures are reported inside `Resources`, not here.
 pub fn verify(dir: &Path) -> Result<Resources, String> {
     verify_detailed(dir).map_err(bundle_error)
@@ -234,8 +233,8 @@ fn verify_detailed(dir: &Path) -> Result<Resources, String> {
 
     safe_leaf(&raw.mod_jar)?;
     safe_leaf(&raw.agent_jar)?;
-    let forge = fold_forge(raw.forge_jar, raw.forge_sha256)?;
-    if let Some(f) = &forge {
+    let ornithe = fold_ornithe(raw.ornithe_jar, raw.ornithe_sha256)?;
+    if let Some(f) = &ornithe {
         safe_leaf(&f.jar)?;
     }
 
@@ -245,7 +244,7 @@ fn verify_detailed(dir: &Path) -> Result<Resources, String> {
         mod_version: raw.mod_version,
         mod_sha256: raw.mod_sha256,
         agent_sha256: raw.agent_sha256,
-        forge,
+        ornithe,
     };
 
     // Global: every jar present must be one this manifest DECLARES. Runs before the
@@ -253,12 +252,12 @@ fn verify_detailed(dir: &Path) -> Result<Resources, String> {
     reject_unexpected_jars(dir, &manifest)?;
 
     let lunar = verify_lunar(dir, &manifest);
-    let forge = manifest.forge.as_ref().map(|f| verify_forge(dir, f));
+    let ornithe = manifest.ornithe.as_ref().map(|f| verify_ornithe(dir, f));
 
     Ok(Resources {
         manifest,
         lunar,
-        forge,
+        ornithe,
     })
 }
 
@@ -277,10 +276,10 @@ fn verify_lunar(dir: &Path, m: &Manifest) -> Result<LunarJars, String> {
     })
 }
 
-fn verify_forge(dir: &Path, f: &ForgeRes) -> Result<ForgeJar, String> {
+fn verify_ornithe(dir: &Path, f: &OrnitheRes) -> Result<OrnitheJar, String> {
     let src = dir.join(&f.jar);
     check_hash(&src, &f.sha256)?;
-    Ok(ForgeJar {
+    Ok(OrnitheJar {
         src,
         name: f.jar.clone(),
         sha256: f.sha256.clone(),
@@ -322,7 +321,7 @@ fn reject_unexpected_jars(dir: &Path, manifest: &Manifest) -> Result<(), String>
         }
         let declared = name == manifest.mod_jar
             || name == manifest.agent_jar
-            || manifest.forge.as_ref().is_some_and(|f| f.jar == name);
+            || manifest.ornithe.as_ref().is_some_and(|f| f.jar == name);
         if !declared {
             return Err(format!(
                 "Unexpected jar {name} in the bundled resources. Refusing to install."
@@ -338,13 +337,13 @@ pub(crate) mod tests {
 
     const MOD: &str = "Cobblify-Lunar-0.8.1.jar";
     const AGENT: &str = "Weave-Loader-Agent-1.3.3.jar";
-    const FORGE: &str = "Cobblify-1.8.9-forge-0.8.1.jar";
+    const ORNITHE: &str = "Cobblify-1.8.9-ornithe-0.8.1.jar";
 
     fn sha(bytes: &[u8]) -> String {
         hex(&Sha256::digest(bytes))
     }
 
-    /// A pre-Forge, five-key bundle.
+    /// A pre-Ornithe, five-key bundle.
     fn write_lunar_only(dir: &Path, mod_bytes: &[u8], agent_bytes: &[u8]) {
         fs::write(dir.join(MOD), mod_bytes).unwrap();
         fs::write(dir.join(AGENT), agent_bytes).unwrap();
@@ -359,15 +358,15 @@ pub(crate) mod tests {
     /// The seven-key bundle this change introduces. `pub(crate)` so `main.rs`'s
     /// setup tests can build a real, verifiable bundle instead of a hand-made
     /// `Resources`.
-    pub(crate) fn write_bundle(dir: &Path, mod_bytes: &[u8], agent_bytes: &[u8], forge_bytes: &[u8]) {
+    pub(crate) fn write_bundle(dir: &Path, mod_bytes: &[u8], agent_bytes: &[u8], ornithe_bytes: &[u8]) {
         fs::write(dir.join(MOD), mod_bytes).unwrap();
         fs::write(dir.join(AGENT), agent_bytes).unwrap();
-        fs::write(dir.join(FORGE), forge_bytes).unwrap();
+        fs::write(dir.join(ORNITHE), ornithe_bytes).unwrap();
         let manifest = format!(
-            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":"{FORGE}","forge_sha256":"{}"}}"#,
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","ornithe_jar":"{ORNITHE}","ornithe_sha256":"{}"}}"#,
             sha(mod_bytes),
             sha(agent_bytes),
-            sha(forge_bytes)
+            sha(ornithe_bytes)
         );
         fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
@@ -385,29 +384,29 @@ pub(crate) mod tests {
     #[test]
     fn matching_bundle_verifies() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
         let res = verify(dir.path()).unwrap();
         assert_eq!(res.manifest.mod_version, "0.8.1");
         assert!(res.lunar.is_ok());
-        assert!(res.forge.as_ref().unwrap().is_ok());
+        assert!(res.ornithe.as_ref().unwrap().is_ok());
     }
 
-    /// Acceptance criterion 6: a bundle built before Forge support still runs, with Forge
+    /// Acceptance criterion 6: a bundle built before Ornithe support still runs, with Ornithe
     /// simply unavailable rather than an error.
     #[test]
-    fn a_five_key_bundle_still_verifies_with_forge_absent() {
+    fn a_five_key_bundle_still_verifies_with_ornithe_absent() {
         let dir = tempfile::tempdir().unwrap();
         write_lunar_only(dir.path(), b"mod", b"agent");
         let res = verify(dir.path()).unwrap();
         assert!(res.lunar.is_ok());
-        assert!(res.forge.is_none(), "no forge jar was declared");
-        assert!(res.manifest.forge.is_none());
+        assert!(res.ornithe.is_none(), "no ornithe jar was declared");
+        assert!(res.manifest.ornithe.is_none());
     }
 
     #[test]
     fn hash_mismatch_fails_the_target_not_the_bundle() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
         fs::write(dir.path().join(MOD), b"tampered").unwrap();
         let res = verify_detailed(dir.path()).unwrap();
         assert!(res.lunar.is_err());
@@ -416,25 +415,25 @@ pub(crate) mod tests {
 
     /// PLAN 2.2 / round-1 B1: the two targets are isolated in BOTH directions.
     #[test]
-    fn a_corrupt_forge_jar_leaves_lunar_installable() {
+    fn a_corrupt_ornithe_jar_leaves_lunar_installable() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
-        fs::write(dir.path().join(FORGE), b"tampered").unwrap();
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
+        fs::write(dir.path().join(ORNITHE), b"tampered").unwrap();
         let res = verify_detailed(dir.path()).unwrap();
-        assert!(res.lunar.is_ok(), "a bad forge jar must not suppress lunar");
-        assert!(res.forge.unwrap().is_err());
+        assert!(res.lunar.is_ok(), "a bad ornithe jar must not suppress lunar");
+        assert!(res.ornithe.unwrap().is_err());
     }
 
     #[test]
-    fn a_corrupt_lunar_jar_leaves_forge_installable() {
+    fn a_corrupt_lunar_jar_leaves_ornithe_installable() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
         fs::write(dir.path().join(AGENT), b"tampered").unwrap();
         let res = verify_detailed(dir.path()).unwrap();
         assert!(res.lunar.is_err());
         assert!(
-            res.forge.unwrap().is_ok(),
-            "a bad lunar agent must not suppress forge"
+            res.ornithe.unwrap().is_ok(),
+            "a bad lunar agent must not suppress ornithe"
         );
     }
 
@@ -442,31 +441,31 @@ pub(crate) mod tests {
     /// DECLARED jar whose bytes are wrong is a per-target failure, never an "unexpected"
     /// jar. Getting this wrong would abort globally and destroy the isolation above.
     #[test]
-    fn a_declared_but_corrupt_forge_jar_is_not_an_unexpected_jar() {
+    fn a_declared_but_corrupt_ornithe_jar_is_not_an_unexpected_jar() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
-        fs::write(dir.path().join(FORGE), b"tampered").unwrap();
-        // The whole bundle still verifies; only the forge target carries the error.
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
+        fs::write(dir.path().join(ORNITHE), b"tampered").unwrap();
+        // The whole bundle still verifies; only the ornithe target carries the error.
         let res = verify_detailed(dir.path()).expect("must not abort globally");
-        assert!(res.forge.unwrap().is_err());
+        assert!(res.ornithe.unwrap().is_err());
     }
 
     #[test]
     fn extra_jar_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
         fs::write(dir.path().join("Something-Else.jar"), b"x").unwrap();
         let err = verify_detailed(dir.path()).unwrap_err();
         assert!(err.contains("Unexpected jar"), "{err}");
     }
 
-    /// The forge jar must stop being "unexpected" once it is declared - and must still be
+    /// The ornithe jar must stop being "unexpected" once it is declared - and must still be
     /// unexpected when it is not.
     #[test]
-    fn an_undeclared_forge_jar_is_still_rejected() {
+    fn an_undeclared_ornithe_jar_is_still_rejected() {
         let dir = tempfile::tempdir().unwrap();
         write_lunar_only(dir.path(), b"mod", b"agent");
-        fs::write(dir.path().join(FORGE), b"forge").unwrap();
+        fs::write(dir.path().join(ORNITHE), b"ornithe").unwrap();
         let err = verify_detailed(dir.path()).unwrap_err();
         assert!(err.contains("Unexpected jar"), "{err}");
     }
@@ -474,26 +473,42 @@ pub(crate) mod tests {
     #[test]
     fn missing_jar_fails_its_own_target() {
         let dir = tempfile::tempdir().unwrap();
-        write_bundle(dir.path(), b"mod", b"agent", b"forge");
+        write_bundle(dir.path(), b"mod", b"agent", b"ornithe");
         fs::remove_file(dir.path().join(AGENT)).unwrap();
         let res = verify_detailed(dir.path()).unwrap();
         assert!(res.lunar.unwrap_err().contains("Cannot read"));
-        assert!(res.forge.unwrap().is_ok());
+        assert!(res.ornithe.unwrap().is_ok());
     }
 
-    // ── the Forge pair invariant (round-1 B2, round-3 I1) ──────────────────────
+    /// The Forge keys are gone: a manifest still naming them is unknown, so refused whole.
+    #[test]
+    fn a_manifest_with_the_old_forge_keys_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(MOD), b"mod").unwrap();
+        fs::write(dir.path().join(AGENT), b"agent").unwrap();
+        let manifest = format!(
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":"Cobblify-1.8.9-forge-0.8.1.jar","forge_sha256":"ff"}}"#,
+            sha(b"mod"),
+            sha(b"agent")
+        );
+        fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+        let err = verify_detailed(dir.path()).unwrap_err();
+        assert!(err.contains("forge_jar"), "{err}");
+    }
+
+    // ── the Ornithe pair invariant (round-1 B2, round-3 I1) ──────────────────────
 
     #[test]
-    fn forge_pair_is_all_or_nothing() {
-        assert!(fold_forge(None, None).unwrap().is_none());
+    fn ornithe_pair_is_all_or_nothing() {
+        assert!(fold_ornithe(None, None).unwrap().is_none());
         // A release-shaped name: the name rule is asserted separately, below.
-        assert!(fold_forge(Some(FORGE.into()), Some("ff".into()))
+        assert!(fold_ornithe(Some(ORNITHE.into()), Some("ff".into()))
             .unwrap()
             .is_some());
-        assert!(fold_forge(Some(FORGE.into()), None).is_err());
-        assert!(fold_forge(None, Some("ff".into())).is_err());
-        assert!(fold_forge(Some(String::new()), Some("ff".into())).is_err());
-        assert!(fold_forge(Some(FORGE.into()), Some(String::new())).is_err());
+        assert!(fold_ornithe(Some(ORNITHE.into()), None).is_err());
+        assert!(fold_ornithe(None, Some("ff".into())).is_err());
+        assert!(fold_ornithe(Some(String::new()), Some("ff".into())).is_err());
+        assert!(fold_ornithe(Some(ORNITHE.into()), Some(String::new())).is_err());
     }
 
     /// L10: the stale-jar classifier derives our release prefix from this name by cutting
@@ -501,11 +516,11 @@ pub(crate) mod tests {
     /// Cobblify-looking jar in `mods/` is then judged against a prefix that leaves no
     /// version behind. The manifest is where that shape is checked.
     #[test]
-    fn a_forge_jar_without_a_dashed_version_is_refused() {
+    fn a_ornithe_jar_without_a_dashed_version_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         write_lunar_only(dir.path(), b"mod", b"agent");
         let manifest = format!(
-            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":"Cobblify.jar","forge_sha256":"ff"}}"#,
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","ornithe_jar":"Cobblify.jar","ornithe_sha256":"ff"}}"#,
             sha(b"mod"),
             sha(b"agent")
         );
@@ -519,47 +534,47 @@ pub(crate) mod tests {
 
     #[test]
     fn a_dashed_release_name_is_the_shape_the_manifest_wants() {
-        assert!(fold_forge(Some(FORGE.into()), Some("ff".into()))
+        assert!(fold_ornithe(Some(ORNITHE.into()), Some("ff".into()))
             .unwrap()
             .is_some());
-        assert!(fold_forge(Some("Cobblify-0.8.1.jar".into()), Some("ff".into())).is_ok());
+        assert!(fold_ornithe(Some("Cobblify-0.8.1.jar".into()), Some("ff".into())).is_ok());
         // A dash, but no version after it.
-        assert!(fold_forge(Some("Cobblify-dev.jar".into()), Some("ff".into())).is_err());
+        assert!(fold_ornithe(Some("Cobblify-dev.jar".into()), Some("ff".into())).is_err());
         // A version, but nothing before the dash.
-        assert!(fold_forge(Some("-0.8.1.jar".into()), Some("ff".into())).is_err());
+        assert!(fold_ornithe(Some("-0.8.1.jar".into()), Some("ff".into())).is_err());
         // Two-part versions are not the shape either.
-        assert!(fold_forge(Some("Cobblify-0.8.jar".into()), Some("ff".into())).is_err());
+        assert!(fold_ornithe(Some("Cobblify-0.8.jar".into()), Some("ff".into())).is_err());
     }
 
     /// Round-3 I1: serde cannot tell an absent key from an explicit `null`, and this is
-    /// the behaviour that follows - both mean "no Forge jar". A one-sided `null` is still
+    /// the behaviour that follows - both mean "no Ornithe jar". A one-sided `null` is still
     /// a hard error, which is the property that actually matters.
     #[test]
-    fn explicit_null_forge_keys_read_as_absent() {
+    fn explicit_null_ornithe_keys_read_as_absent() {
         let dir = tempfile::tempdir().unwrap();
         write_lunar_only(dir.path(), b"mod", b"agent");
         let manifest = format!(
-            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":null,"forge_sha256":null}}"#,
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","ornithe_jar":null,"ornithe_sha256":null}}"#,
             sha(b"mod"),
             sha(b"agent")
         );
         fs::write(dir.path().join("manifest.json"), manifest).unwrap();
         let res = verify_detailed(dir.path()).unwrap();
-        assert!(res.forge.is_none());
+        assert!(res.ornithe.is_none());
     }
 
     #[test]
-    fn a_one_sided_null_forge_pair_fails_closed() {
+    fn a_one_sided_null_ornithe_pair_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         write_lunar_only(dir.path(), b"mod", b"agent");
         let manifest = format!(
-            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","forge_jar":null,"forge_sha256":"abc"}}"#,
+            r#"{{"mod_jar":"{MOD}","agent_jar":"{AGENT}","mod_version":"0.8.1","mod_sha256":"{}","agent_sha256":"{}","ornithe_jar":null,"ornithe_sha256":"abc"}}"#,
             sha(b"mod"),
             sha(b"agent")
         );
         fs::write(dir.path().join("manifest.json"), manifest).unwrap();
         let err = verify_detailed(dir.path()).unwrap_err();
-        assert!(err.contains("without forge_jar"), "{err}");
+        assert!(err.contains("without ornithe_jar"), "{err}");
     }
 
     #[test]
@@ -629,7 +644,7 @@ pub(crate) mod tests {
         // Interior periods are normal for our own names - the device check must split at
         // the first period without rejecting these.
         for good in [
-            "Cobblify-1.8.9-forge-0.9.0.jar",
+            "Cobblify-1.8.9-ornithe-0.9.0.jar",
             "Cobblify-Lunar-0.9.0.jar",
             "Weave-Loader-Agent-1.3.3.jar",
             "conform.jar", // starts with "con" but is not "CON"

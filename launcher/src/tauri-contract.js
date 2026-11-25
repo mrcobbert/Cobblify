@@ -42,11 +42,10 @@ export const CMD = {
 export const SETUP_EVENT = "setup://progress";
 
 /**
- * Starts setting up one client from check 1. `instanceId` (Prism only) is an id from the
- * forge target's `instances` (most recently played first). Without one, Prism uses its
- * saved or only compatible instance, or makes "Cobblify 1.8.9" when none is compatible;
- * several and no pick rejects with "choose_instance" (show the pick first). Replies with
- * the first snapshot; progress follows on `SETUP_EVENT`. Rejects with "busy" while
+ * Starts setting up one client from check 1. Prism always gets Cobblify's own Ornithe
+ * instance (the saved one, else the one Cobblify made, else a new "Cobblify 1.8.9 Ornithe"
+ * with the player's Forge settings copied in); `instanceId` is accepted and ignored. Replies
+ * with the first snapshot; progress follows on `SETUP_EVENT`. Rejects with "busy" while
  * anything else (another setup included) runs.
  * @param {"lunar"|"forge"} kind
  * @param {string} [instanceId]

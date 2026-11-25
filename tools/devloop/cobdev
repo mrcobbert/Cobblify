@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cobdev - drive the Cobblify UI dev client from an agent session.
+"""cobdev - drive the Cobblify dev client (Ornithe 1.8.9) from an agent session.
 
 The dev client runs in the user's own macOS account (bin/start.sh in /Users/Shared/cobblify-dev)
 because the agent account cannot open windows. cobdev stages the game files where that account can
@@ -11,25 +11,29 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+import zlib
 
 SHARED = "/Users/Shared/cobblify-dev"
 API = "http://127.0.0.1:47821"
-JDK_URL = "https://cdn.azul.com/zulu/bin/zulu8.96.0.205-ca-jdk8.0.504-macosx_x64.tar.gz"
-JDK_SHA256 = "e35bc8a4401193aa670146762bbad132bf0651fee5e3f16acbb3a5db0e0b0cff"
-BUILD_JDK = "/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home"
+JAVA_HOME = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home"
 HOME = os.path.expanduser("~")
 GRADLE_CACHES = os.path.join(HOME, ".gradle", "caches")
 HERE = os.path.dirname(os.path.realpath(__file__))
 SHOTS = os.path.join(HOME, ".cache", "cobdev", "shots")
+REPORTS = os.path.join(HOME, ".cache", "cobdev", "smoke")
 LOCK = os.path.join(SHARED, "LOCK")
+# The Forge-era agent stays at SHARED/devagent.jar for branches that still run the Forge client.
+AGENT_JAR = os.path.join(SHARED, "agent", "devagent.jar")
+MODS = os.path.join(SHARED, "cache", "mods")
 KEEP_RUNTIMES = 3
 SCREENS = {
     "settings": "com.bedwarsqol.gui.SettingsGui",
@@ -40,9 +44,53 @@ KEYS = {"esc": 1, "backspace": 14, "tab": 15, "enter": 28, "space": 57, "up": 20
 START = SHARED + "/bin/start.sh"
 NOT_RUNNING = ("the dev client is not running. Ask the user to run this in a terminal pane from their"
                " own account (not agent):\n  " + START)
+ARG_SEP = "\x1f"  # joins multi-value arguments for the bridge (no argument contains it)
+
+# Vanilla 1.8.9 client jar (Loom's cached copy is the production game jar for --prod).
+CLIENT_JAR = os.path.join(GRADLE_CACHES, "fabric-loom", "1.8.9", "minecraft-client.jar")
+CLIENT_SHA1 = "3870888a6c3d349d3771a3e9d16c9bf5e076b908"
+KNOT = "net.fabricmc.loader.impl.launch.knot.KnotClient"
+JAVA25_FLAGS = ["--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow"]
+# Both reference production setups (Ornithe installer trait, Polyfrost profile) start on the first thread.
+MAC_FLAGS = ["-XstartOnFirstThread"]
+READY_LINE = "Cobblify ready (ornithe)"      # CONTRACT: logged at OSL MinecraftClientEvents.READY
+STUB_LINE = "Cobblify (ornithe) initialized"  # the Phase 1 stub's only line
+
+# CONTRACT "Pinned runtime mods" (research/ornithe-launcher.md section 3; OSL = what ornithe/ compiles
+# against). dev: loaded by the dev client (Loom remaps them to MCP names); prod: the mods folder.
+# Argentum is prod-only: Loom cannot remap it to MCP names (ParticleCaptureBuffer declares reset()
+# and overrides a vanilla method that MCP also names reset() - "unfixable conflicts").
+PINS = [
+    {"name": "pylon", "file": "pylon-0.2.8.jar", "size": 15312680, "modes": ("dev", "prod"),
+     "url": "https://cdn.modrinth.com/data/wx17t6U9/versions/zz9ReJww/pylon-0.2.8.jar",
+     "sha512": "d993bbbc1bcbc42698ec4d3685a849b4e247298435513249b96f51fb2e3756db7df24809305643dd1e4dcb623b81c26d68cb0a404f23cb5f71341e6f10a83cfc"},
+    {"name": "argentum", "file": "argentum-1.0.3-beta.8.jar", "size": 1900696, "modes": ("prod",),
+     "url": "https://github.com/Polyfrost/Argentum/releases/download/v1.0.3-beta.8/argentum-1.0.3-beta.8.jar",
+     "sha512": "991de0675a595a7dcf1629e3eaace35d05bd825f1bce2c0554013c6d10f13fa2b33f538ae13f95a508328a46c92612041fd14c2933e94ef9979f6e7377986b67"},
+    {"name": "sarcio", "file": "Sarcio-1.2.0-beta.1.jar", "size": 3197918, "modes": ("dev", "prod"),
+     "url": "https://github.com/Polyfrost/Sarcio/releases/download/v1.2.0-beta.1/Sarcio-1.2.0-beta.1.jar",
+     "sha512": "92b6830f4609745836880446c8e71ec223fb9f34f2a1acc6d5379d70050b01fc3b1f7f1e5b02d5df50d495d2bcc4a15e15a26373f48caab209d961cd3afe8a00"},
+    {"name": "slipstream", "file": "slipstream-1.8.9-0.1.0.jar", "size": 194995, "modes": ("dev", "prod"),
+     "url": "https://cdn.modrinth.com/data/XDGYMuZ6/versions/7yvc7d4F/slipstream-1.8.9-0.1.0.jar",
+     "sha512": "270d7c4cad3e05b63ec07cd766d17f9146981dc721b751d16e2b33bace22de240694a5247e4cc054b742d1d5bdab492459d7fe4855ff756edc028678d7b05200"},
+    # dev already has the 8 OSL modules ornithe/ depends on (Loom-remapped); a second copy would clash.
+    {"name": "osl", "file": "ornithe-standard-libraries-0.23.1.jar", "size": 5569488, "modes": ("prod",),
+     "url": "https://cdn.modrinth.com/data/EHGtwpJv/versions/840EtTTj/ornithe-standard-libraries-0.23.1.jar",
+     "sha512": "85210284ba82c90cefe06f0325cc3cac0497faf341cc5494843e4e1e6b272c5346e909b68021555e188fdbb61f7a4316e4e133388b0947b363c06029d7811bea"},
+    # start.sh --hypixel only (added to fabric.addMods at launch).
+    {"name": "devauth", "file": "DevAuth-fabric-1.2.2.jar", "size": 275163, "modes": (),
+     "url": "https://pkgs.dev.azure.com/djtheredstoner/DevAuth/_packaging/public/maven/v1/me/djtheredstoner/DevAuth-fabric/1.2.2/DevAuth-fabric-1.2.2.jar",
+     "sha512": "ae80c0976b5407f800925d468d92604674eb91ef42fed54a07e9d39fc2714bcf986f66a900d64d1d7836b28303030dea3cfd2b6c73f93049f6afd3661174c9d3"},
+]
+EXPECTED_MODS = {"dev": ["bedwarsqol", "cobdev-bridge", "pylon", "sarcio", "slipstream", "osl-entrypoints"],
+                 "prod": ["bedwarsqol", "cobdev-bridge", "pylon", "argentum", "sarcio", "slipstream", "osl-entrypoints"]}
 
 # 127.0.0.1 must never go through an HTTP proxy from the environment.
 _http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class ApiError(Exception):
+    pass
 
 
 def die(msg):
@@ -52,7 +100,8 @@ def die(msg):
 
 # ------------------------------------------------------------------------------------------ API
 
-def api(path, params=None, post=None, timeout=30, raw=False):
+def api_try(path, params=None, post=None, timeout=30, raw=False):
+    """Like api() but raises ApiError instead of exiting (smoke uses it to record failures)."""
     url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
     data = urllib.parse.urlencode(post).encode() if post is not None else None
     try:
@@ -61,12 +110,19 @@ def api(path, params=None, post=None, timeout=30, raw=False):
     except urllib.error.HTTPError as e:
         body = e.read()
         try:
-            die(json.loads(body).get("error") or body)
+            raise ApiError(json.loads(body).get("error") or body)
         except ValueError:
-            die("HTTP %d from %s" % (e.code, path))
+            raise ApiError("HTTP %d from %s" % (e.code, path))
     except (urllib.error.URLError, OSError):
-        die(NOT_RUNNING)
+        raise ApiError(NOT_RUNNING)
     return body if raw else json.loads(body)
+
+
+def api(path, params=None, post=None, timeout=30, raw=False):
+    try:
+        return api_try(path, params, post, timeout, raw)
+    except ApiError as e:
+        die(e)
 
 
 def api_quiet(path, timeout=3):
@@ -86,8 +142,8 @@ def git(wt, *args):
 
 def worktree(args):
     wt = os.path.realpath(args.worktree) if args.worktree else git(os.getcwd(), "rev-parse", "--show-toplevel")
-    if not wt or not os.path.exists(os.path.join(wt, "versions", "mainProject")):
-        die("run cobdev from inside a Cobblify checkout (or pass --worktree)")
+    if not wt or not os.path.exists(os.path.join(wt, "ornithe", "build.gradle.kts")):
+        die("run cobdev from inside a Cobblify checkout that has the ornithe/ project (or pass --worktree)")
     return wt
 
 
@@ -140,16 +196,48 @@ def copy_tree(src, dst):
             copy_file(s, os.path.join(dst, os.path.relpath(s, src)))
 
 
+def sha512(path):
+    h = hashlib.sha512()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha1(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def pin_path(name):
+    return os.path.join(MODS, next(p for p in PINS if p["name"] == name)["file"])
+
+
+def pins_for(mode):
+    return [p for p in PINS if mode in p["modes"]]
+
+
 def require_setup():
-    for p in (SHARED + "/jdk/bin/java", SHARED + "/devagent.jar", START):
-        if not os.path.exists(p):
-            die("not set up yet; run: tools/devloop/cobdev setup")
+    missing = [p for p in (AGENT_JAR, START, JAVA_HOME + "/bin/java") if not os.path.exists(p)]
+    missing += [pin_path(p["name"]) for p in PINS if not os.path.exists(pin_path(p["name"]))]
+    if missing:
+        die("not set up yet (missing %s); run: tools/devloop/cobdev setup" % ", ".join(missing))
 
 
-def gradle(wt, *args):
-    p = subprocess.run([os.path.join(wt, "gradlew"), "-q"] + list(args), cwd=wt,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out = "\n".join(l for l in p.stdout.splitlines() if "duplicate input class" not in l)
+def gradle(wt, *args, init=True, extra_props=None):
+    cmd = [os.path.join(wt, "ornithe", "gradlew"), "-q"]
+    if init:
+        cmd += ["--init-script", os.path.join(HERE, "devloop.init.gradle"),
+                "-PcobdevBridgeDir=" + os.path.join(HERE, "bridge"),
+                "-PcobdevDevMods=" + ",".join(pin_path(p["name"]) for p in pins_for("dev"))]
+    cmd += ["-P%s=%s" % kv for kv in (extra_props or {}).items()] + list(args)
+    p = subprocess.run(cmd, cwd=os.path.join(wt, "ornithe"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True)
+    noise = ("duplicate input class", "WARNING:", "is obsolete", "-Xlint:-options", "warnings")
+    out = "\n".join(l for l in p.stdout.splitlines() if not any(n in l for n in noise))
     if p.returncode != 0:
         print(out)
         die("gradle failed")
@@ -165,6 +253,13 @@ def runtime_of(classes_dir):
 def source_of(runtime):
     with open(os.path.join(runtime, "launch", "source.json")) as f:
         return json.load(f)
+
+
+def running_runtime(st):
+    """Runtime dir of the running game (prod runs have no classes dir; they report their runtime)."""
+    if st.get("classesDir"):
+        return runtime_of(st["classesDir"])
+    return None
 
 
 def wait_ready(old_pid=None, timeout=240):
@@ -186,10 +281,11 @@ def cmd_setup(args):
     if os.stat(SHARED).st_uid != os.getuid():
         die(SHARED + " is owned by another account; it must belong to this one")
     os.chmod(SHARED, 0o755)
-    for sub in ("bin", "cache", "runtimes"):
+    for sub in ("bin", "cache", "runtimes", "agent", "cache/mods"):
         os.makedirs(os.path.join(SHARED, sub), mode=0o755, exist_ok=True)
-    install_jdk()
+    check_java()
     build_agent()
+    fetch_pins()
     for name, mode in (("start.sh", 0o755), ("cobdev", 0o755), ("devloop.init.gradle", 0o644)):
         dst = os.path.join(SHARED, "bin", name)
         shutil.copyfile(os.path.join(HERE, name), dst + ".tmp-cobdev")
@@ -198,65 +294,57 @@ def cmd_setup(args):
     print("setup done. Next: cobdev stage, then the user runs " + START)
 
 
-def install_jdk():
-    java = SHARED + "/jdk/bin/java"
-    if os.path.exists(java):
-        print("Intel Java 8: already installed")
-        return
-    print("downloading Intel Java 8 (Azul Zulu, ~100 MB)...")
-    archive = SHARED + "/.jdk-download.tar.gz"
-    with _http.open(JDK_URL, timeout=600) as r, open(archive, "wb") as f:
-        shutil.copyfileobj(r, f)
-    digest = hashlib.sha256(open(archive, "rb").read()).hexdigest()
-    if digest != JDK_SHA256:
-        os.remove(archive)
-        die("JDK checksum mismatch: got " + digest)
-    dist = SHARED + "/jdk-dist"
-    shutil.rmtree(dist, ignore_errors=True)
-    with tarfile.open(archive) as t:
-        for m in t.getmembers():
-            if m.name.startswith("/") or ".." in m.name.split("/"):
-                die("unsafe path in JDK archive: " + m.name)
-        t.extractall(dist)
-    os.remove(archive)
-    homes = [r for r, _, _ in os.walk(dist)
-             if r.endswith("/Contents/Home") and os.path.exists(os.path.join(r, "bin", "java"))]
-    if not homes:
-        die("unexpected JDK archive layout")
-    tmp = SHARED + "/.jdk-link"
-    if os.path.lexists(tmp):
-        os.remove(tmp)
-    os.symlink(homes[0], tmp)
-    os.replace(tmp, SHARED + "/jdk")
-    print(subprocess.run([java, "-version"], capture_output=True, text=True).stderr.strip().splitlines()[0])
+def check_java():
+    java = JAVA_HOME + "/bin/java"
+    if not os.path.exists(java):
+        die("JDK 25 not found at %s (install Temurin 25 arm64; the user's account must be able to read it)" % JAVA_HOME)
+    p = subprocess.run([java, "-XshowSettings:properties", "-version"], capture_output=True, text=True)
+    props = dict(re.findall(r"^\s+(\S+) = (.*)$", p.stderr, re.M))
+    if not props.get("java.version", "").startswith("25") or props.get("os.arch") != "aarch64":
+        die("%s is Java %s on %s; cobdev needs Java 25 on aarch64" % (java, props.get("java.version"), props.get("os.arch")))
+    print("Java: %s %s (%s)" % (props.get("java.vendor"), props.get("java.version"), props.get("os.arch")))
 
 
 def build_agent():
-    jdk = BUILD_JDK if os.path.exists(BUILD_JDK) else SHARED + "/jdk"
-    lwjgl = None
-    for root, _, files in os.walk(os.path.join(GRADLE_CACHES, "modules-2", "files-2.1", "org.lwjgl.lwjgl", "lwjgl")):
-        for name in files:
-            if name == "lwjgl-2.9.2-nightly-20140822.jar":
-                lwjgl = os.path.join(root, name)
-    if not lwjgl:
-        die("LWJGL 2.9.2 not in the Gradle cache yet; run ./gradlew build once in a checkout")
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(HERE, "agent", "src")
         sources = [os.path.join(r, n) for r, _, fs in os.walk(src) for n in fs if n.endswith(".java")]
         out = os.path.join(tmp, "classes")
         os.makedirs(out)
-        p = subprocess.run([jdk + "/bin/javac", "-source", "8", "-target", "8", "-nowarn", "-cp", lwjgl,
+        # Pure JDK: the agent never links against Minecraft, LWJGL or Pylon (see Game.java).
+        p = subprocess.run([JAVA_HOME + "/bin/javac", "--release", "8", "-nowarn", "-Xlint:-options",
                             "-d", out] + sources, capture_output=True, text=True)
         if p.returncode != 0:
             print(p.stdout + p.stderr)
             die("devagent compile failed")
         manifest = os.path.join(tmp, "MANIFEST.MF")
         write_text(manifest, "Premain-Class: cobdev.DevAgent\nCan-Redefine-Classes: true\n")
-        jar = SHARED + "/devagent.jar.tmp-cobdev"
-        subprocess.run([jdk + "/bin/jar", "cfm", jar, manifest, "-C", out, "."], check=True)
+        jar = AGENT_JAR + ".tmp-cobdev"
+        subprocess.run([JAVA_HOME + "/bin/jar", "cfm", jar, manifest, "-C", out, "."], check=True)
         os.chmod(jar, 0o644)
-        os.replace(jar, SHARED + "/devagent.jar")
+        os.replace(jar, AGENT_JAR)
     print("devagent.jar: built")
+
+
+def fetch_pins():
+    """Downloads each pinned mod once and keeps it only if size and sha512 match the pin."""
+    os.makedirs(MODS, mode=0o755, exist_ok=True)
+    for pin in PINS:
+        dst = os.path.join(MODS, pin["file"])
+        if os.path.exists(dst) and sha512(dst) == pin["sha512"]:
+            continue
+        print("downloading %s ..." % pin["file"])
+        tmp = dst + ".tmp-cobdev"
+        req = urllib.request.Request(pin["url"], headers={"User-Agent": "cobdev-dev-tool"})
+        with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        got = sha512(tmp)
+        if got != pin["sha512"] or os.path.getsize(tmp) != pin["size"]:
+            os.remove(tmp)
+            die("%s does not match its pin (sha512 %s..., %d bytes)" % (pin["file"], got[:16], os.path.getsize(tmp)))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dst)
+    print("pinned mods: %d verified in %s" % (len(PINS), MODS))
 
 
 # --------------------------------------------------------------------------------------- stage
@@ -269,6 +357,8 @@ class Mapper:
         self.runtime = runtime
 
     def dest(self, src):
+        if src.startswith(SHARED + "/"):
+            return src
         if src.startswith(GRADLE_CACHES + "/"):
             return SHARED + "/cache/gradle/" + src[len(GRADLE_CACHES) + 1:]
         if src.startswith(self.wt + "/"):
@@ -277,6 +367,8 @@ class Mapper:
 
     def stage(self, src):
         dst = self.dest(src)
+        if dst == src:
+            return dst
         if os.path.isdir(src):
             copy_tree(src, dst)
         elif os.path.exists(src):
@@ -287,57 +379,183 @@ class Mapper:
         return text.replace(self.wt + "/", self.runtime + "/wt/").replace(GRADLE_CACHES + "/", SHARED + "/cache/gradle/")
 
 
+CFG_PATH = re.compile(r"/Users/[^\s:=,]+")
+NATIVES_PROPS = ("java.library.path=", "org.lwjgl.librarypath=")
+
+
+def rewrite_launch_cfg(cfg, mapper, drop_natives):
+    """DevLaunchInjector's launch.cfg for the shared runtime: paths rewritten, our client args added.
+
+    drop_natives: Pylon brings LWJGL 3 natives in its own jar; Loom's natives dir holds LWJGL 2's, and
+    org.lwjgl.librarypath would point LWJGL 3 at the wrong directory.
+    """
+    lines = []
+    for line in cfg.splitlines():
+        if drop_natives and line.strip().startswith(NATIVES_PROPS):
+            continue
+        lines.append(line)
+        if line == "clientArgs":
+            lines += ["\t--username", "\tCobblifyDev", "\t--width", "\t1280", "\t--height", "\t720"]
+    if "clientArgs" not in lines:
+        lines += ["clientArgs", "\t--username", "\tCobblifyDev", "\t--width", "\t1280", "\t--height", "\t720"]
+    return mapper.rewrite("\n".join(lines) + "\n")
+
+
+def cfg_values(cfg, key):
+    return [l.strip()[len(key) + 1:] for l in cfg.splitlines() if l.strip().startswith(key + "=")]
+
+
+def cfg_client_arg(cfg, name):
+    toks = [l.strip() for l in cfg.splitlines()]
+    return toks[toks.index(name) + 1] if name in toks else None
+
+
+def is_lwjgl2(path):
+    return "/org.lwjgl.lwjgl/" in path
+
+
+def check_release_jar(path, expect_version=None):
+    """The release jar must be Cobblify alone: no cobdev bridge, no dev runtime mods nested in it."""
+    problems = []
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        bad = [n for n in names if n.startswith("cobdev/") or "cobdev" in n.lower()]
+        if bad:
+            problems.append("cobdev entries: " + ", ".join(bad[:5]))
+        nested = [n for n in names if n.startswith("META-INF/jars/") and n.endswith(".jar")]
+        pinned = [n for n in nested if any(p["name"] in n.lower() for p in PINS)]
+        if pinned:
+            problems.append("nested dev runtime mods: " + ", ".join(pinned))
+        try:
+            meta = json.loads(z.read("fabric.mod.json"))
+            if meta.get("id") != "bedwarsqol":
+                problems.append("fabric.mod.json id is %s, not bedwarsqol" % meta.get("id"))
+            if expect_version and meta.get("version") != expect_version:
+                problems.append("fabric.mod.json version %s != %s" % (meta.get("version"), expect_version))
+        except KeyError:
+            problems.append("no fabric.mod.json")
+    return problems
+
+
+def cmd_jarcheck(args):
+    wt = worktree(args)
+    jar = args.jar or newest_release_jar(wt)
+    problems = check_release_jar(jar)
+    if problems:
+        die("%s: %s" % (jar, "; ".join(problems)))
+    print("%s: no cobdev bridge or dev runtime mods inside" % jar)
+
+
+def newest_release_jar(wt):
+    libs = os.path.join(wt, "ornithe", "build", "libs")
+    jars = [os.path.join(libs, n) for n in os.listdir(libs) if n.endswith(".jar") and "-dev" not in n
+            and "sources" not in n] if os.path.isdir(libs) else []
+    if not jars:
+        die("no release jar in %s; run: cd ornithe && ./gradlew build" % libs)
+    return max(jars, key=os.path.getmtime)
+
+
 def cmd_stage(args, wt=None):
     wt = wt or worktree(args)
     require_setup()
     take_lock(wt, args.steal)
+    mode = "prod" if getattr(args, "prod", False) else "dev"
     started = time.time()
+    if mode == "prod":
+        # The release jar exactly as a release builds it: no init script, so no bridge source set and
+        # no dev runtime mods exist in this configuration.
+        gradle(wt, "remapJar", init=False)
     with tempfile.TemporaryDirectory() as tmp:
         dump_file = os.path.join(tmp, "dump.json")
-        gradle(wt, "--init-script", os.path.join(HERE, "devloop.init.gradle"), ":1.8.9-forge:cobdevDump",
-               "-PcobdevOut=" + dump_file)
+        gradle(wt, "cobdevDump", extra_props={"cobdevOut": dump_file})
         with open(dump_file) as f:
             dump = json.load(f)
     branch = git(wt, "rev-parse", "--abbrev-ref", "HEAD")
-    name = time.strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9._-]", "_", branch)
+    name = time.strftime("%Y%m%d-%H%M%S") + "-" + mode + "-" + re.sub(r"[^A-Za-z0-9._-]", "_", branch)
     runtime = os.path.join(SHARED, "runtimes", name)
-    os.makedirs(os.path.join(runtime, "launch"), mode=0o755)
+    launch = os.path.join(runtime, "launch")
+    os.makedirs(launch, mode=0o755)
     m = Mapper(wt, runtime)
 
-    classpath = [m.stage(p) for p in dump["classpath"]]
-
-    # launch.cfg (read by dev-launch-injector) and the remap classpath file it names carry absolute
-    # paths too: stage everything they reference, then rewrite them to the shared copies.
-    cfg_path = os.path.join(dump["projectDir"], ".gradle", "loom-cache", "launch.cfg")
+    dli = [a for a in dump["jvmArgs"] if a.startswith("-Dfabric.dli.config=")]
+    if not dli:
+        die("runClient no longer passes -Dfabric.dli.config; update cobdev for this Loom")
+    cfg_path = dli[0].split("=", 1)[1]
     with open(cfg_path) as f:
         cfg = f.read()
-    for p in sorted(set(re.findall(r"/Users/[^\s:=]+", cfg))):
-        m.stage(p)
-        if p.endswith("remapClasspath.txt"):
-            with open(p) as f:
-                entries = [e for e in f.read().strip().split(":") if e]
-            write_text(m.dest(p), ":".join(m.stage(e) for e in entries))
-    # The release jar starts Mixin through its manifest's TweakClass; a classes directory has no
-    # manifest, so add the tweaker here (after FML's, which stays the primary tweaker).
-    fml = "\tnet.minecraftforge.fml.common.launcher.FMLTweaker\n"
-    if fml not in cfg:
-        die("launch.cfg no longer names FMLTweaker; update cobdev's Mixin bootstrap")
-    cfg = m.rewrite(cfg).replace(fml, fml + "\t--tweakClass\n\torg.spongepowered.asm.launch.MixinTweaker\n", 1)
-    cfg = cfg.replace("clientArgs\n", "clientArgs\n\t--username\n\tCobblifyDev\n"
-                                      "\t--width\n\t1280\n\t--height\n\t720\n", 1)
-    staged_cfg = m.dest(cfg_path)
-    write_text(staged_cfg, cfg)
 
-    jvm = ["-Dfabric.dli.config=" + staged_cfg, "-Dfabric.dli.env=client",
-           "-Dfabric.dli.main=net.minecraft.launchwrapper.Launch"] + dump["jvmArgs"]
-    launch = os.path.join(runtime, "launch")
+    agent = os.path.join(launch, "devagent.jar")
+    copy_file(AGENT_JAR, agent)
+    bridge = os.path.join(runtime, "bridge", "cobdev-bridge.jar")
+    copy_file(dump["bridgeJar"], bridge)
+    common = ["-Xms512M", "-Xmx2G"] + MAC_FLAGS + JAVA25_FLAGS + ["-javaagent:" + agent, "-Dcobdev.mode=" + mode]
+
+    if mode == "dev":
+        # Pylon replaces LWJGL 2 (its jar carries the LWJGL 2 API on LWJGL 3 + SDL3); keeping both on the
+        # classpath is what Pylon's and Argentum's own dev runs avoid.
+        classpath = [m.stage(p) for p in dump["classpath"] if not is_lwjgl2(p)]
+        for p in sorted(set(CFG_PATH.findall(cfg))):
+            if any(cfg_line.strip().startswith(NATIVES_PROPS) and p in cfg_line for cfg_line in cfg.splitlines()):
+                continue
+            m.stage(p)
+            if p.endswith("remapClasspath.txt"):
+                with open(p) as f:
+                    entries = [e for e in f.read().strip().split(":") if e]
+                write_text(m.dest(p), ":".join(m.stage(e) for e in entries))
+        staged_cfg = m.dest(cfg_path)
+        write_text(staged_cfg, rewrite_launch_cfg(cfg, m, drop_natives=True))
+        jvm = common + [("-Dfabric.dli.config=" + staged_cfg) if a.startswith("-Dfabric.dli.config=") else a
+                        for a in dump["jvmArgs"]]
+        main, prog = dump["mainClass"], []
+        classes_dir, resources_dir = m.stage(dump["classesDir"]), m.stage(dump["resourcesDir"])
+    else:
+        release = dump["releaseJar"]
+        if not os.path.exists(release):
+            die("release jar missing: " + release)
+        problems = check_release_jar(release)
+        if problems:
+            die("the release jar is not clean: " + "; ".join(problems))
+        if not os.path.exists(CLIENT_JAR) or sha1(CLIENT_JAR) != CLIENT_SHA1:
+            die("vanilla 1.8.9 client jar missing or wrong at %s (sha1 %s expected)" % (CLIENT_JAR, CLIENT_SHA1))
+        loader = [p for p in dump["classpath"] if os.path.basename(p).startswith("fabric-loader-")]
+        # Production classpath, as the Ornithe installer / Prism builds it: Minecraft's libraries (with
+        # the gen2 upgrades), Loader + ASM + Mixin, intermediary mappings, the vanilla (obfuscated) jar.
+        # MixinExtras is a development-only library here; the Loader jar nests its own copy.
+        loader_libs = [p for p in dump["loaderLibraries"] if "mixinextras" not in os.path.basename(p)]
+        classpath = [m.stage(p) for p in dump["mcLibraries"] + loader_libs + loader
+                     + [dump["intermediaryJar"], CLIENT_JAR]]
+        mods = os.path.join(runtime, "mods")
+        os.makedirs(mods, mode=0o755)
+        copy_file(release, os.path.join(mods, os.path.basename(release)))
+        for pin in pins_for("prod"):
+            copy_file(pin_path(pin["name"]), os.path.join(mods, pin["file"]))
+        natives = cfg_values(cfg, "java.library.path")
+        assets = cfg_client_arg(cfg, "--assetsDir")
+        index = cfg_client_arg(cfg, "--assetIndex")
+        if not natives or not assets or not index:
+            die("launch.cfg lacks natives/assets entries; update cobdev for this Loom")
+        jvm = common + ["-Dfabric.gameVersion=1.8.9", "-Dfabric.fixPackageAccess=true",
+                        "-Dfabric.modsFolder=" + mods, "-Djava.library.path=" + m.stage(natives[0])]
+        main = KNOT
+        prog = ["--username", "CobblifyDev", "--version", "1.8.9", "--accessToken", "0", "--userProperties", "{}",
+                "--assetsDir", m.stage(assets), "--assetIndex", index, "--width", "1280", "--height", "720"]
+        classes_dir, resources_dir = "", ""
+
+    write_text(os.path.join(launch, "java.txt"), JAVA_HOME + "/bin/java\n")
+    write_text(os.path.join(launch, "mode.txt"), mode + "\n")
     write_text(os.path.join(launch, "classpath.txt"), "\n".join(classpath) + "\n")
     write_text(os.path.join(launch, "jvm.args"), "\n".join(jvm) + "\n")
-    write_text(os.path.join(launch, "main.txt"), dump["mainClass"] + "\n")
-    write_text(os.path.join(launch, "classes.dir"), m.dest(dump["classesDir"]) + "\n")
+    write_text(os.path.join(launch, "args.txt"), "".join(a + "\n" for a in prog))
+    write_text(os.path.join(launch, "main.txt"), main + "\n")
+    write_text(os.path.join(launch, "addmods.txt"), bridge + "\n")
+    write_text(os.path.join(launch, "devauth.txt"), pin_path("devauth") + "\n")
+    write_text(os.path.join(launch, "classes.dir"), (classes_dir or os.path.join(runtime, "no-classes")) + "\n")
+    write_text(os.path.join(launch, "resources.dir"), resources_dir + "\n")
     write_text(os.path.join(launch, "source.json"), json.dumps({
-        "worktree": wt, "branch": branch, "commit": git(wt, "rev-parse", "--short", "HEAD"),
-        "buildClasses": dump["classesDir"], "staged": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2) + "\n")
+        "worktree": wt, "branch": branch, "commit": git(wt, "rev-parse", "--short", "HEAD"), "mode": mode,
+        "buildClasses": dump["classesDir"], "buildResources": dump["resourcesDir"],
+        "releaseJar": dump["releaseJar"] if mode == "prod" else None,
+        "staged": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2) + "\n")
 
     tmp_link = os.path.join(SHARED, ".current-tmp")
     if os.path.lexists(tmp_link):
@@ -345,14 +563,16 @@ def cmd_stage(args, wt=None):
     os.symlink(runtime, tmp_link)
     os.replace(tmp_link, os.path.join(SHARED, "current"))
     prune_runtimes()
-    print("staged %s (%s) in %.0fs" % (branch, os.path.basename(wt), time.time() - started))
+    print("staged %s (%s, %s mode) in %.0fs" % (branch, os.path.basename(wt), mode, time.time() - started))
 
 
 def prune_runtimes():
     keep = set()
     st = api_quiet("/status")
     if st and st.get("classesDir"):
-        keep.add(runtime_of(st["classesDir"]))
+        rel = os.path.relpath(st["classesDir"], SHARED + "/runtimes")
+        if not rel.startswith(".."):
+            keep.add(os.path.join(SHARED, "runtimes", rel.split(os.sep)[0]))
     root = os.path.join(SHARED, "runtimes")
     names = sorted(os.listdir(root))
     keep.update(os.path.join(root, n) for n in names[-KEEP_RUNTIMES:])
@@ -363,39 +583,56 @@ def prune_runtimes():
 
 # --------------------------------------------------------------------------- swap and restart
 
+RESTART_RESOURCES = ("fabric.mod.json", ".mixins.json", ".accesswidener", "refmap.json")
+
+
 def cmd_swap(args):
     wt = worktree(args)
     take_lock(wt, args.steal)
     st = api_quiet("/status")
     if not st:
         die(NOT_RUNNING)
+    if st.get("mode") == "prod":
+        die("the game runs the release jar (prod mode); cobdev stage && cobdev restart loads dev code")
     if not st.get("ready"):
         die("the game is still starting")
     running = st["classesDir"]
-    source = source_of(runtime_of(running))
+    runtime = runtime_of(running)
+    source = source_of(runtime)
     if source["worktree"] != wt:
         die("the game is running %s; `cobdev restart` loads this worktree instead" % source["worktree"])
     started = time.time()
-    gradle(wt, ":1.8.9-forge:classes")
-    build = source["buildClasses"]
+    gradle(wt, "classes")
+    with open(os.path.join(runtime, "launch", "resources.dir")) as f:
+        running_res = f.read().strip()
     classes, resources = [], []
-    for root, _, files in os.walk(build):
-        for name in files:
-            src = os.path.join(root, name)
-            rel = os.path.relpath(src, build)
-            dst = os.path.join(running, rel)
-            if os.path.exists(dst) and open(src, "rb").read() == open(dst, "rb").read():
-                continue
-            os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
-            shutil.copyfile(src, dst + ".tmp-cobdev")
-            os.chmod(dst + ".tmp-cobdev", 0o644)
-            os.replace(dst + ".tmp-cobdev", dst)
-            if rel.endswith(".class"):
-                classes.append(rel[:-len(".class")].replace(os.sep, "."))
-            else:
-                resources.append(rel)
+    for build, dest in ((source["buildClasses"], running), (source.get("buildResources"), running_res)):
+        if not build or not dest:
+            continue
+        for root, _, files in os.walk(build):
+            for name in files:
+                src = os.path.join(root, name)
+                rel = os.path.relpath(src, build)
+                dst = os.path.join(dest, rel)
+                if os.path.exists(dst) and open(src, "rb").read() == open(dst, "rb").read():
+                    continue
+                os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+                shutil.copyfile(src, dst + ".tmp-cobdev")
+                os.chmod(dst + ".tmp-cobdev", 0o644)
+                os.replace(dst + ".tmp-cobdev", dst)
+                if rel.endswith(".class"):
+                    classes.append(rel[:-len(".class")].replace(os.sep, "."))
+                else:
+                    resources.append(rel)
     if not classes and not resources:
         print("nothing changed since the last swap (%.1fs)" % (time.time() - started))
+        return
+    structural = [r for r in resources if r.endswith(RESTART_RESOURCES)]
+    if structural:
+        print("mod metadata changed (%s); restarting" % ", ".join(structural))
+        if args.no_restart:
+            die("rerun without --no-restart, or run cobdev restart")
+        restart(wt, args, stage=True)
         return
     if classes:
         r = api("/swap", post={"classes": ",".join(classes), "reinit": "1"})
@@ -439,7 +676,8 @@ def cmd_status(args):
     cur = os.path.join(SHARED, "current")
     if os.path.exists(cur):
         s = source_of(os.path.realpath(cur))
-        print("staged:  %s @ %s from %s (%s)" % (s["branch"], s["commit"], s["worktree"], s["staged"]))
+        print("staged:  %s @ %s from %s (%s mode, %s)" % (s["branch"], s["commit"], s["worktree"],
+                                                         s.get("mode", "forge"), s["staged"]))
     else:
         print("staged:  nothing")
     st = api_quiet("/status")
@@ -447,8 +685,10 @@ def cmd_status(args):
         print("game:    not running (user starts it with " + START + ")")
         return
     if st.get("classesDir"):
-        s = source_of(runtime_of(st["classesDir"]))
-        print("running: %s @ %s from %s" % (s["branch"], s["commit"], s["worktree"]))
+        rel = os.path.relpath(st["classesDir"], SHARED + "/runtimes")
+        if not rel.startswith("..") and os.path.exists(os.path.join(SHARED, "runtimes", rel.split(os.sep)[0])):
+            s = source_of(os.path.join(SHARED, "runtimes", rel.split(os.sep)[0]))
+            print("running: %s @ %s from %s (%s mode)" % (s["branch"], s["commit"], s["worktree"], s.get("mode", "forge")))
     print("game:    " + json.dumps({k: v for k, v in st.items() if k not in ("ok", "classesDir")}))
 
 
@@ -505,18 +745,59 @@ def cmd_shot(args):
     if args.at:
         locked(args)
         api("/hover", {"x": args.at[0], "y": args.at[1]})
-    png = api("/shot", {"wait": args.wait}, timeout=30, raw=True)
-    out = args.out or os.path.join(SHOTS, "shot-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
+    out, st = take_shot(args.out, args.wait)
+    print("%s  (%s px; GUI %s, so GUI coords = px / %s)" % (out, st.get("display"), st.get("gui"), st.get("scaleFactor")))
+
+
+def take_shot(out=None, wait=300, tag="shot"):
+    png = api_try("/shot", {"wait": wait}, timeout=30, raw=True)
+    out = out or os.path.join(SHOTS, "%s-%s-%03d.png" % (tag, time.strftime("%Y%m%d-%H%M%S"), int(time.time() * 1000) % 1000))
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "wb") as f:
         f.write(png)
-    st = api_quiet("/status") or {}
-    print("%s  (%s px; GUI %s, so GUI coords = px / %s)" % (out, st.get("display"), st.get("gui"), st.get("scaleFactor")))
+    return out, (api_quiet("/status") or {})
 
 
 def cmd_log(args):
     for line in api("/log", {"lines": args.lines})["lines"]:
         print(line)
+
+
+def cmd_field(args):
+    locked(args)
+    params = {"path": args.path}
+    if args.value is not None:
+        params["value"] = args.value
+    print(json.dumps(api("/field", post=params)))
+
+
+def cmd_invoke(args):
+    locked(args)
+    print(json.dumps(api("/invoke", post={"path": args.path, "args": ARG_SEP.join(args.args)})))
+
+
+def cmd_has(args):
+    print(json.dumps(api("/has", {"class": args.cls, **({"member": args.member} if args.member else {})})))
+
+
+def cmd_command(args):
+    locked(args)
+    api("/command", post={"command": args.command})
+
+
+def cmd_keyhold(args):
+    locked(args)
+    params = {}
+    if args.name:
+        if args.state not in ("on", "off"):
+            die("keyhold NAME on|off (or no arguments to list Cobblify's key bindings)")
+        params = {"name": args.name, "state": args.state}
+    print(json.dumps(api("/keyhold", params)))
+
+
+def cmd_probe(args):
+    locked(args)
+    print(json.dumps(api("/probe", post={"name": args.name, "args": ARG_SEP.join(args.args)}, timeout=30)))
 
 
 def cmd_lock(args):
@@ -534,6 +815,766 @@ def cmd_unlock(args):
     print("lock released")
 
 
+# ---------------------------------------------------------------------------- image analysis
+
+def png_read(data):
+    """Minimal PNG decoder for the bridge's own output (8-bit RGB/RGBA, not interlaced)."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    pos, idat, w = 8, b"", None
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            w, h, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            if depth != 8 or color not in (2, 6) or interlace:
+                raise ValueError("unsupported PNG format")
+            bpp = 3 if color == 2 else 4
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = w * bpp
+    rows, prev = [], bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if f == 1:
+                line[i] = (line[i] + a) & 255
+            elif f == 2:
+                line[i] = (line[i] + b) & 255
+            elif f == 3:
+                line[i] = (line[i] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line) if bpp == 3 else bytes(v for i, v in enumerate(line) if i % 4 != 3))
+        prev = line
+    return w, h, rows
+
+
+def png_write(w, h, rgb_rows):
+    """Tiny encoder (used by the self-test)."""
+    raw = b"".join(b"\x00" + bytes(r) for r in rgb_rows)
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def load_png(path):
+    with open(path, "rb") as f:
+        return png_read(f.read())
+
+
+def px(img, x, y):
+    w, h, rows = img
+    r = rows[y]
+    return r[3 * x], r[3 * x + 1], r[3 * x + 2]
+
+
+def spread(img, step=16):
+    """Largest per-channel standard deviation over a sample grid; ~0 for a blank frame."""
+    w, h, _ = img
+    best = 0.0
+    for ch in range(3):
+        vals = [px(img, x, y)[ch] for y in range(0, h, step) for x in range(0, w, step)]
+        mean = sum(vals) / len(vals)
+        best = max(best, (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5)
+    return best
+
+
+def diff(a, b, step=4, thresh=24, box=None):
+    """Fraction of sampled pixels that differ, plus their bounding box (x0, y0, x1, y1)."""
+    w, h, _ = a
+    if (w, h) != b[:2]:
+        return 1.0, None
+    x0, y0, x1, y1 = box or (0, 0, w, h)
+    n = changed = 0
+    bb = [w, h, -1, -1]
+    for y in range(y0, y1, step):
+        for x in range(x0, x1, step):
+            n += 1
+            pa, pb = px(a, x, y), px(b, x, y)
+            if max(abs(pa[0] - pb[0]), abs(pa[1] - pb[1]), abs(pa[2] - pb[2])) > thresh:
+                changed += 1
+                bb = [min(bb[0], x), min(bb[1], y), max(bb[2], x), max(bb[3], y)]
+    return (changed / n if n else 0.0), (tuple(bb) if bb[2] >= 0 else None)
+
+
+def horizon_row(img, x):
+    """Sky-to-ground boundary in column x: first row (from the top) whose blueness drops below half the sky's."""
+    w, h, _ = img
+    top = px(img, x, int(h * 0.15))
+    sky = top[2] - top[1]
+    if sky < 20:
+        return None
+    for y in range(int(h * 0.15), int(h * 0.9)):
+        p = px(img, x, y)
+        if p[2] - p[1] < sky / 2:
+            return y
+    return None
+
+
+def _median(vals):
+    vals = sorted(v for v in vals if v is not None)
+    return vals[len(vals) // 2] if vals else None
+
+
+def tilt(img):
+    """Horizon height on the left (x 15-40%) minus the right (x 60-85%), each a median over six
+    columns so a HUD element over one column cannot fake a tilt; 0 when the camera is level."""
+    w, _, _ = img
+    left = _median(horizon_row(img, int(w * f / 100)) for f in range(15, 41, 5))
+    right = _median(horizon_row(img, int(w * f / 100)) for f in range(60, 86, 5))
+    return None if left is None or right is None else left - right
+
+
+# ----------------------------------------------------------------------------------- smoke
+
+class Smoke:
+    """Records every command, status and shot of a smoke run, step by step, into one JSON report."""
+
+    def __init__(self, mode, source):
+        self.report = {"mode": mode, "source": source, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "steps": []}
+        self.step = None
+
+    def begin(self, sid, title):
+        self.step = {"id": sid, "title": title, "status": "pass", "checks": [], "commands": [], "shots": []}
+        self.report["steps"].append(self.step)
+        print("== %s %s" % (sid, title))
+
+    def call(self, path, params=None, post=None, timeout=60):
+        rec = {"call": path, "params": params or post or {}}
+        self.step["commands"].append(rec)
+        try:
+            r = api_try(path, params, post, timeout)
+            rec["result"] = r
+            return r
+        except ApiError as e:
+            rec["error"] = str(e)
+            raise
+
+    def try_call(self, path, params=None, post=None, timeout=60):
+        try:
+            return self.call(path, params, post, timeout), None
+        except ApiError as e:
+            return None, str(e)
+
+    def cmd(self, command):
+        self.call("/command", post={"command": command})
+        time.sleep(0.3)
+
+    def probe(self, name, *args):
+        return self.call("/probe", post={"name": name, "args": ARG_SEP.join(str(a) for a in args)})
+
+    def field(self, path, value=None):
+        post = {"path": path}
+        if value is not None:
+            post["value"] = str(value).lower() if isinstance(value, bool) else str(value)
+        return self.call("/field", post=post)
+
+    def shot(self, tag, wait=300):
+        path, _ = take_shot(wait=wait, tag="smoke-" + tag)
+        self.step["shots"].append(path)
+        return path, load_png(path)
+
+    def status(self):
+        st = api_quiet("/status") or {}
+        self.step["commands"].append({"call": "/status", "result": st})
+        return st
+
+    def check(self, name, ok, detail=None):
+        self.step["checks"].append({"check": name, "ok": bool(ok), "detail": detail})
+        if not ok:
+            self.step["status"] = "fail"
+        print("   %s %s%s" % ("ok  " if ok else "FAIL", name, "  (%s)" % detail if detail is not None else ""))
+        return ok
+
+    def unavailable(self, why):
+        self.step["status"] = "not available yet"
+        self.step["note"] = why
+        print("   not available yet: " + why)
+
+    def error(self, e):
+        self.step["status"] = "fail"
+        self.step["error"] = str(e)
+        print("   FAIL error: %s" % e)
+
+    def has(self, cls, member=None):
+        r, _ = self.try_call("/has", {"class": cls, **({"member": member} if member else {})})
+        return bool(r and r.get("present"))
+
+
+# Real names in ornithe/src (Track A, tracks/mod.md): BedwarsQol.config (ClientSettings), fields
+# zoomEnabled / noHurtCam / clutchPractice / clutchBlockDamage / tntFuseEnabled, the "Zoom" binding in
+# category "Cobblify" (options.txt key_Zoom, default KEY_C = 46), CameraRules.ZOOM_FACTOR.
+CONFIG_HOLDERS = ["com.bedwarsqol.BedwarsQol"]
+ZOOM_FIELDS = ["zoomEnabled"]
+NO_HURT_CAM_FIELDS = ["noHurtCam"]
+HUD_FIELDS = ["armorTypeEnabled", "potionStatusEnabled", "keystrokesEnabled"]
+ZOOM_FACTOR_FIELD = "com.bedwarsqol.feature.CameraRules.ZOOM_FACTOR"
+ZOOM_KEY = "Zoom"
+ZOOM_DEFAULT_CODE = 46  # Keyboard.KEY_C
+CLUTCH_GET = "com.bedwarsqol.feature.ClutchPractice.get"
+
+
+def find_config(s):
+    for holder in CONFIG_HOLDERS:
+        if s.has(holder, "config"):
+            r, _ = s.try_call("/field", post={"path": holder + ".config"})
+            if r and r.get("value") is not None:
+                return holder + ".config"
+    return None
+
+
+def find_field(s, cfg, names):
+    if not cfg:
+        return None
+    for n in names:
+        r, _ = s.try_call("/field", post={"path": cfg + "." + n})
+        if r is not None:
+            return cfg + "." + n
+    return None
+
+
+def parse_mod_list(lines):
+    """Fabric Loader's "Loading N mods:" block: top-level ("- id ver") and nested ("|-- id ver") entries."""
+    for i, line in enumerate(lines):
+        if re.search(r"Loading \d+ mods:", line):
+            ids = []
+            for entry in lines[i + 1:]:
+                m = re.match(r"^\t[\s|]*(?:[|\\]--|-) (\S+) ", entry)
+                if not m:
+                    break
+                ids.append(m.group(1))
+            return line.strip(), ids
+    return None, []
+
+
+def close_enough(a, b, tol):
+    return a is not None and b is not None and abs(a - b) <= tol
+
+
+def smoke_boot(s, mode, fresh):
+    s.begin("A3", "boot to title (%s mode): mods, ready line, no mixin errors" % mode)
+    st = s.status()
+    s.check("ready and responsive", st.get("ready") and st.get("responsive"), st.get("reason"))
+    if fresh or not st.get("inWorld"):
+        s.check("title screen reached", st.get("title") is True, st.get("screen"))
+    else:  # --no-stage on a game an earlier run left in the world: the title check needs a fresh boot
+        s.step["checks"].append({"check": "title screen reached", "ok": None,
+                                 "detail": "not checked: the running game is already in a world (no restart)"})
+        print("   n/a  title screen reached: game already in a world (rerun without --no-stage)")
+    s.check("running mode is " + mode, st.get("mode") == mode, st.get("mode"))
+    log = s.call("/log", {"lines": 4000})["lines"]
+    text = "\n".join(log)
+    header, listed = parse_mod_list(log)
+    s.step["modList"] = listed
+    s.check("Fabric lists its mods", bool(listed), header or "no 'Loading N mods' line")
+    for mod in EXPECTED_MODS[mode]:
+        s.check("mod loaded: " + mod, mod in listed)
+    if READY_LINE in text:
+        s.check("ready line: " + READY_LINE, True)
+    elif STUB_LINE in text:
+        s.step["checks"].append({"check": "ready line", "ok": None, "detail": "not available yet (stub logs '%s')" % STUB_LINE})
+        print("   n/a  ready line: not available yet (Phase 1 stub)")
+    else:
+        s.check("ready line: " + READY_LINE, False, "neither the ready line nor the stub's init line is in the log")
+    errors = [l for l in log if re.search(r"Mixin apply (for mod \S+ )?failed|InvalidInjectionException|MixinApplyError"
+                                          r"|InjectionError|Critical injection failure|MixinTransformerError"
+                                          r"|NoSuchFieldError|NoSuchMethodError|InvalidMixinException", l)]
+    s.check("no mixin/injection/linkage errors", not errors, errors[:5] or None)
+    warns = [l for l in log if "ClassNotFoundException" in l or "/ERROR]" in l]
+    s.step["logWarnings"] = warns[:20]
+    path, img = s.shot("title", wait=500)
+    s.check("title frame is not blank", spread(img) > 8, "spread %.1f" % spread(img))
+
+
+def smoke_screen(s, sid, title, key):
+    s.begin(sid, title)
+    cls = SCREENS[key]
+    if not s.has(cls):
+        return s.unavailable(cls + " is not in this build (Track A port)")
+    s.call("/open", {"class": cls})
+    time.sleep(0.5)
+    st = s.status()
+    s.check("screen is " + cls, st.get("screen") == cls, st.get("screen"))
+    _, img = s.shot(key)
+    s.check("frame is not blank", spread(img) > 8)
+    s.call("/close")
+
+
+SMOKE_SAVE = "cobdev"  # the bridge's /world creates and opens this save
+
+
+class ForeignSave(Exception):
+    """The open singleplayer world is not the smoke's own save: the smoke must not touch it."""
+
+
+def require_smoke_save(result):
+    save = (result or {}).get("save")
+    if save != SMOKE_SAVE:
+        raise ForeignSave("the open world is save %r, not %r: the smoke clears entities and terrain, so it "
+                          "stops here. Leave that world (or let a fresh boot open %r) and rerun"
+                          % (save, SMOKE_SAVE, SMOKE_SAVE))
+
+
+def smoke_world(s):
+    s.begin("A4-world", "flat creative world (normal, non-demo), stable frames")
+    require_smoke_save(s.call("/world", timeout=120))
+    for _ in range(90):
+        st = api_quiet("/status") or {}
+        if st.get("inWorld") and st.get("responsive"):
+            break
+        time.sleep(1)
+    st = s.status()
+    s.check("in a singleplayer world", st.get("inWorld") and not st.get("onServer"), st)
+    # Static scenes for frame diffs: no mobs wandering in (the world persists between runs).
+    for c in ("/gamerule doDaylightCycle false", "/gamerule doMobSpawning false", "/kill @e[type=!Player]",
+              "/time set 6000", "/weather clear", "/gamemode 1",
+              # Repair the test area (earlier runs' TNT craters), then a fixed spot near spawn (always
+              # loaded): Clutch knockback moves the player each run. Default flat layers: dirt 1-2, grass 3.
+              "/fill -24 1 -24 24 2 24 minecraft:dirt", "/fill -24 3 -24 24 3 24 minecraft:grass",
+              "/fill -24 4 -24 24 9 24 minecraft:air",
+              "/effect @p clear", "/tp @p 0.5 4 0.5 0 0"):
+        s.cmd(c)
+    s.call("/close")
+    time.sleep(3)  # chunks render
+
+
+def smoke_hurt(s, cfg):
+    s.begin("A6", "No Hurt Cam: horizon tilt within the hurt window")
+    s.cmd("/tp @p ~ ~ ~ 0 0")
+    time.sleep(1)
+    _, level = s.shot("level", wait=200)
+    t0 = tilt(level)
+    s.check("level frame has a horizon", t0 is not None and abs(t0) <= 3, "tilt %s px" % t0)
+    if t0 is None:
+        return
+    nhc = find_field(s, cfg, NO_HURT_CAM_FIELDS)
+
+    def rolled(t):  # against the level frame, not 0, so any fixed offset cancels out
+        return t is not None and abs(t - t0) > 6
+
+    def probe_tilt(tag):
+        s.probe("hurt")
+        _, img = s.shot(tag, wait=0)
+        return tilt(img)
+
+    def real_damage_tilt(tag):
+        """Instant Damage I in survival; shoot as soon as the client sees the hit (hurtTime > 0)."""
+        s.cmd("/effect @p 6 1 5")
+        time.sleep(1.2)
+        s.call("/command", post={"command": "/effect @p 7 1 0"})
+        hurt = 0
+        for _ in range(40):
+            hurt = s.probe("player")["client"]["hurtTime"]
+            if hurt > 0:
+                break
+            time.sleep(0.02)
+        _, img = s.shot(tag, wait=0)
+        return tilt(img), hurt
+
+    if nhc:
+        s.field(nhc, False)
+    t_off = probe_tilt("hurt-cam-on")
+    s.check("probe hurt tilts the camera (No Hurt Cam off%s)" % ("" if nhc else "; vanilla"), rolled(t_off),
+            "tilt %s px, level %s" % (t_off, t0))
+    s.cmd("/gamemode 0")
+    t_real, hurt = real_damage_tilt("real-damage-cam-on")
+    s.check("real damage tilts too (cross-check)", hurt > 0 and rolled(t_real),
+            "tilt %s px, level %s, hurtTime %s" % (t_real, t0, hurt))
+    if not nhc:
+        s.cmd("/effect @p 6 1 5")
+        s.cmd("/gamemode 1")
+        return s.unavailable("No Hurt Cam setting not found (%s); vanilla tilt checked above" % "/".join(NO_HURT_CAM_FIELDS))
+    s.field(nhc, True)
+    t_real_on, hurt_on = real_damage_tilt("real-damage-cam-off")
+    s.check("No Hurt Cam on: real damage, no tilt", hurt_on > 0 and t_real_on is not None and abs(t_real_on - t0) <= 3,
+            "tilt %s px, level %s, hurtTime %s" % (t_real_on, t0, hurt_on))
+    s.cmd("/effect @p 6 1 5")
+    s.cmd("/gamemode 1")
+    time.sleep(1)
+    t_on = probe_tilt("hurt-cam-off")
+    s.check("No Hurt Cam on: probe hurt, no tilt", t_on is not None and abs(t_on - t0) <= 3,
+            "tilt %s px, level %s" % (t_on, t0))
+    s.field(nhc, False)
+
+
+TOGGLE_SPRINT_KEY = "Toggle Sprint"
+PLAYER_LIST_KEY = "key.playerlist"
+
+
+def box_width(b):
+    return (b[2] - b[0]) if b else 0
+
+
+def smoke_overlays(s, cfg):
+    """Scoreboard Size and Tab List Size change the drawn size. In prod, Argentum's Font Batching draws both
+    overlays after their methods return (the 2026-11-13 regression: neither size applied)."""
+    s.begin("A4-overlays", "Scoreboard Size and Tab List Size shrink the drawn overlay")
+    if not cfg:
+        return s.unavailable("Cobblify config not found")
+    sb, tab = cfg + ".scoreboardSize", cfg + ".styledTabListSize"
+    sb0, tab0 = s.field(sb).get("value"), s.field(tab).get("value")
+    for c in ("/scoreboard objectives remove cobsb", "/scoreboard objectives add cobsb dummy Cobblify",
+              "/scoreboard players set CobblifyDev cobsb 7", "/scoreboard players set Beds cobsb 3",
+              "/scoreboard players set Finals cobsb 12", "/scoreboard objectives setdisplay sidebar",
+              "/scoreboard objectives setdisplay list cobsb", "/tp @p 0.5 4 0.5 0 0"):
+        s.cmd(c)
+    s.call("/close")
+    time.sleep(6)  # command chat fades
+    try:
+        _, base = s.shot("overlay-none")
+        w, h, _ = base
+        right = (w // 2, int(h * 0.1), w, int(h * 0.7))  # the sidebar; clear of chat, hotbar and top HUD
+        s.cmd("/scoreboard objectives setdisplay sidebar cobsb")
+        s.call("/close")
+        widths = {}
+        for size in (2, 0):
+            s.field(sb, size)
+            time.sleep(0.4)
+            _, img = s.shot("scoreboard-size%d" % size)
+            widths[size] = box_width(diff(base, img, box=right)[1])
+        s.step["scoreboardWidths"] = widths
+        s.check("the sidebar scoreboard is drawn", widths[2] > 0, widths)
+        s.check("Scoreboard Size Small draws it ~0.7x as wide as Large",
+                0 < widths[0] <= widths[2] * 0.8, "%s px vs %s px" % (widths[0], widths[2]))
+        s.cmd("/scoreboard objectives setdisplay sidebar")
+        s.call("/close")
+        time.sleep(0.4)
+        top = (0, 0, w, int(h * 0.6))
+        _, base2 = s.shot("overlay-notab")
+        widths = {}
+        s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "on"})
+        try:
+            for size in (2, 0):
+                s.field(tab, size)
+                time.sleep(0.4)
+                _, img = s.shot("tab-size%d" % size)
+                widths[size] = box_width(diff(base2, img, box=top)[1])
+        finally:
+            s.call("/keyhold", {"name": PLAYER_LIST_KEY, "state": "off"})
+        s.step["tabWidths"] = widths
+        s.check("the tab list is drawn while Tab is held", widths[2] > 0, widths)
+        s.check("Tab List Size Small draws it narrower than Large",
+                0 < widths[0] <= widths[2] * 0.85, "%s px vs %s px" % (widths[0], widths[2]))
+    finally:
+        s.field(sb, sb0)
+        s.field(tab, tab0)
+        s.cmd("/scoreboard objectives remove cobsb")
+
+
+def smoke_sprint(s, cfg):
+    s.begin("A5-sprint", "Toggle Sprint: its key toggles, the sprint key is held while on")
+    if not s.has("com.bedwarsqol.feature.ToggleSprint") or not cfg:
+        return s.unavailable("Toggle Sprint is not in this build")
+    en, on = cfg + ".toggleSprintEnabled", cfg + ".toggleSprintOn"
+    s.field(en, True)
+    s.field(on, False)
+    bindings = (s.call("/keyhold") or {}).get("bindings", [])
+    key = [k for k in bindings if k["name"] == TOGGLE_SPRINT_KEY]
+    if not s.check("Toggle Sprint is listed in Controls (category Cobblify)", bool(key), [k["name"] for k in bindings]):
+        return
+    s.check("Toggle Sprint key is G by default", key[0]["code"] == 34, "code %s" % key[0]["code"])
+
+    def press():
+        s.call("/keyhold", {"name": TOGGLE_SPRINT_KEY, "state": "on"})
+        time.sleep(0.3)
+        s.call("/keyhold", {"name": TOGGLE_SPRINT_KEY, "state": "off"})
+        time.sleep(0.3)
+        return s.field(on).get("value") in (True, "true"), s.probe("player")["client"]["sprintKeyDown"]
+
+    toggled, held = press()
+    s.check("one press toggles on and holds the sprint key", toggled and held, "on=%s held=%s" % (toggled, held))
+    toggled, held = press()
+    s.check("a second press toggles off and releases it", not toggled and not held, "on=%s held=%s" % (toggled, held))
+    press()
+    s.field(en, False)
+    time.sleep(0.3)
+    toggled = s.field(on).get("value") in (True, "true")
+    held = s.probe("player")["client"]["sprintKeyDown"]
+    s.check("turning Toggle Sprint off clears the toggle and releases the key", not toggled and not held,
+            "on=%s held=%s" % (toggled, held))
+    s.field(en, True)
+
+
+def smoke_zoom(s, cfg):
+    s.begin("A5", "Zoom: held lowers FOV, release restores it")
+    keys, err = s.try_call("/keyhold")
+    bindings = (keys or {}).get("bindings", [])
+    s.step["cobblifyBindings"] = bindings
+    zoom = [k for k in bindings if k["name"] == ZOOM_KEY]
+    if not s.check("Zoom is listed in Controls (category Cobblify)", bool(zoom),
+                   err or [k["name"] for k in bindings]):
+        return
+    s.check("Zoom key code (options key_Zoom)", zoom[0]["code"] != 0,
+            "code %s%s" % (zoom[0]["code"], " (default C)" if zoom[0]["code"] == ZOOM_DEFAULT_CODE else ""))
+    fr, _ = s.try_call("/field", post={"path": ZOOM_FACTOR_FIELD})
+    factor = float(fr["value"]) if fr else None
+    zf = find_field(s, cfg, ZOOM_FIELDS)
+    if zf:
+        s.field(zf, True)
+    s.cmd("/tp @p ~ ~ ~ 0 0")
+    time.sleep(0.5)
+    base = s.probe("fov")["fov"]
+    _, img0 = s.shot("zoom-base")
+    s.call("/keyhold", {"name": ZOOM_KEY, "state": "on"})
+    time.sleep(0.6)
+    held = s.probe("fov")["fov"]
+    _, img1 = s.shot("zoom-held")
+    s.call("/keyhold", {"name": ZOOM_KEY, "state": "off"})
+    time.sleep(0.6)
+    after = s.probe("fov")["fov"]
+    _, img2 = s.shot("zoom-released")
+    s.step["fov"] = {"baseline": base, "held": held, "released": after, "factor": factor,
+                     "ratio": held / base if base else None}
+    if factor:
+        s.check("held FOV <= baseline / ZOOM_FACTOR", held <= base / factor + 0.05,
+                "%.2f -> %.2f, factor %s" % (base, held, factor))
+    else:
+        s.check("held FOV well below baseline (ZOOM_FACTOR unreadable)", held < base * 0.75, "%.2f -> %.2f" % (base, held))
+    s.check("frame differs while held", diff(img0, img1)[0] > 0.05, "%.3f" % diff(img0, img1)[0])
+    s.check("release restores FOV (not latched)", close_enough(after, base, 0.5), "%.2f vs %.2f" % (after, base))
+    # Chat (bottom-left) fades and scrolls on its own; compare the rest of the frame. Chat is 320 GUI
+    # px wide at the default chat width/scale, so on a narrow window it reaches past the middle.
+    w, h, _ = img0
+    sf = (s.status() or {}).get("scaleFactor") or 2
+    chat_right = min(w, int((320 + 8) * sf))
+    boxes = [(0, 0, w, int(h * 0.7))] + ([(chat_right, int(h * 0.7), w, h)] if chat_right < w - 8 else [])
+    rest = max(diff(img0, img2, box=b)[0] for b in boxes)
+    s.check("released frame matches baseline (outside chat)", rest < 0.02, "%.3f (whole frame %.3f)"
+            % (rest, diff(img0, img2)[0]))
+    if zf:
+        s.field(zf, False)
+        s.call("/keyhold", {"name": ZOOM_KEY, "state": "on"})
+        time.sleep(0.6)
+        off = s.probe("fov")["fov"]
+        s.call("/keyhold", {"name": ZOOM_KEY, "state": "off"})
+        s.check("Zoom disabled: holding the key changes nothing", close_enough(off, base, 0.5), "%.2f" % off)
+        s.field(zf, True)
+    else:
+        s.check("Zoom setting found (%s)" % "/".join(ZOOM_FIELDS), False, "cannot check the disabled case")
+
+
+def smoke_hud(s, cfg):
+    s.begin("A4-hud", "HUD modules on vs off; TNT timer for a primed TNT")
+    if not cfg:
+        return s.unavailable("Cobblify config holder not found (%s) - Track A port" % "/".join(CONFIG_HOLDERS))
+    fields = [f for f in (find_field(s, cfg, [n]) for n in HUD_FIELDS) if f]
+    if not fields:
+        return s.unavailable("HUD module settings not found (%s)" % ", ".join(HUD_FIELDS))
+    for f in fields:
+        s.field(f, False)
+    time.sleep(0.5)
+    _, off = s.shot("hud-off")
+    for f in fields:
+        s.field(f, True)
+    time.sleep(0.5)
+    _, on = s.shot("hud-on")
+    frac, box = diff(off, on)
+    s.check("HUD pixels appear with the modules on", frac > 0.002, "diff %.4f in %s" % (frac, box))
+    s.check("the difference is confined (HUD, not the scene)", frac < 0.3, "diff %.4f" % frac)
+    for f in fields:
+        s.field(f, False)
+    tnt = find_field(s, cfg, ["tntFuseEnabled"])
+    if not tnt:
+        return s.check("tntFuseEnabled setting found", False)
+    s.field(tnt, True)
+    time.sleep(0.3)
+    _, before = s.shot("tnt-before")
+    s.cmd("/summon PrimedTnt ~6 ~ ~ {Fuse:100}")
+    time.sleep(0.8)
+    _, during = s.shot("tnt-timer")
+    w, h, _ = before
+    frac, box = diff(before, during, box=(w // 3, h // 3, 2 * w // 3, 2 * h // 3))
+    s.check("TNT timer drawn near the screen centre", frac > 0.001, "diff %.4f in %s" % (frac, box))
+    time.sleep(5)  # let it go off away from the clutch checks
+    s.field(tnt, False)
+
+
+def smoke_clutch(s, cfg):
+    s.begin("A2-clutch", "Clutch Practice: blast damage/knockback, block filter, damage cap, isolation, fire charge")
+    if not s.has("com.bedwarsqol.feature.ClutchPractice") or not cfg:
+        return s.unavailable("Clutch Practice is not in this build (Track A port)")
+    ready = s.call("/invoke", post={"path": CLUTCH_GET, "args": ""}).get("value")
+    if not s.check("ClutchPractice.get() is set (READY reached)", ready is not None, ready):
+        return
+    cp, bd = cfg + ".clutchPractice", cfg + ".clutchBlockDamage"
+
+    def heal():
+        s.cmd("/effect @p 6 1 5")
+        time.sleep(1.2)  # outlast hurtResistantTime
+
+    def place(dx, dy, dz, block):
+        """Places relative to the feet now; returns the absolute position for reads after the blast."""
+        return s.probe("block", dx, dy, dz, block)["pos"]
+
+    def read(pos):
+        return s.probe("block", "at", *pos)["block"]
+
+    # Health must only change through the checks below (no natural regeneration in between).
+    s.cmd("/gamerule naturalRegeneration false")
+    s.field(cp, True)
+    s.field(bd, False)
+    s.cmd("/gamemode 0")
+    s.cmd("/tp @p ~ ~ ~ 0 0")
+    heal()
+    r = s.probe("clutch-blast", 3, 0, 0)
+    drop = r["before"]["health"] - r["after"]["health"]
+    s.check("health drops by ClutchRules.damage(distance) once", close_enough(drop, r.get("expectedDamage"), 0.01),
+            "drop %.3f, expected %s" % (drop, r.get("expectedDamage")))
+    exp = r.get("expectedKnockback")
+    s.check("motion equals ClutchRules.knockback", exp and all(close_enough(a, b, 1e-6) for a, b in zip(r["after"]["motion"], exp)),
+            "motion %s, expected %s" % (r["after"]["motion"], exp))
+    time.sleep(0.5)
+    later = s.probe("player")["server"]["health"]
+    s.check("no extra (vanilla) explosion damage afterwards", later >= r["after"]["health"] - 0.01,
+            "%.3f then %.3f" % (r["after"]["health"], later))
+    for on in (True, False):
+        heal()
+        s.field(bd, on)
+        # Absolute positions, captured before the blast moves the player (review I3).
+        wool_at = place(3, 0, 1, "minecraft:wool")
+        stone_at = place(3, 0, -1, "minecraft:stone")
+        time.sleep(0.2)
+        s.probe("clutch-blast", 3, 0, 0)
+        time.sleep(0.2)
+        wool, stone = read(wool_at), read(stone_at)
+        label = "on" if on else "off"
+        if on:
+            s.check("Block Damage on: wool breaks", wool == "minecraft:air", "%s at %s" % (wool, wool_at))
+        else:
+            s.check("Block Damage off: wool stays", wool == "minecraft:wool", "%s at %s" % (wool, wool_at))
+        s.check("Block Damage %s: stone stays" % label, stone == "minecraft:stone", "%s at %s" % (stone, stone_at))
+    s.field(bd, False)
+    # Low health (review I4): Instant Damage I (6) three times takes 20 -> 2, so an uncapped 2-point
+    # blast would kill. (Duration 0 would remove the effect instead of applying it.)
+    heal()
+    for _ in range(3):
+        s.cmd("/effect @p 7 1 0")
+        time.sleep(1.2)
+    low = s.probe("clutch-blast", 3, 0, 0)
+    before, after = low["before"]["health"], low["after"]["health"]
+    dmg = low.get("expectedDamage") or 0
+    s.check("health is low enough that an uncapped blast would kill", 0 < before <= dmg,
+            "health %.2f, blast damage %s" % (before, dmg))
+    s.check("low health: the hit leaves >= half a heart", after >= 1.0 - 1e-6, "%.2f -> %.2f" % (before, after))
+    heal()
+    # Isolation (plan R1-I3): with Clutch Practice on and Block Damage off, an ordinary TNT blast
+    # stays vanilla: it still breaks blocks and still deals its own damage.
+    s.field(cp, True)
+    s.field(bd, False)
+    tnt_stone = place(4, 0, 0, "minecraft:stone")
+    s.cmd("/summon PrimedTnt ~5 ~ ~ {Fuse:0}")
+    time.sleep(0.6)
+    stone = read(tnt_stone)
+    s.check("Clutch on, Block Damage off: an ordinary explosion still breaks stone", stone == "minecraft:air",
+            "%s at %s" % (stone, tnt_stone))
+    # Damage needs a clear line (the stone above shields the player: exposure is computed before blocks
+    # break) and a non-peaceful world (explosions are difficulty-scaled; peaceful deals 0). At 6 blocks
+    # with full exposure vanilla TNT deals ~9.8 on Normal, far above Clutch's fixed blast.
+    s.cmd("/difficulty 2")
+    heal()
+    hp = s.probe("player")["server"]["health"]
+    s.cmd("/summon PrimedTnt ~ ~ ~6 {Fuse:0}")
+    time.sleep(0.6)
+    hit = s.probe("player")["server"]["health"]
+    s.check("Clutch on: an ordinary explosion deals vanilla damage, not Clutch's", hp - hit > 2.0 + 1e-6,
+            "%.2f -> %.2f" % (hp, hit))
+    heal()
+    u = s.probe("use-item", "minecraft:fire_charge")
+    s.check("use-item with a fire charge spawns a Clutch fireball",
+            any(c.endswith("ClutchFireball") for c in u.get("spawned", [])), u.get("spawned"))
+    s.field(cp, False)
+    s.cmd("/gamerule naturalRegeneration true")
+    s.cmd("/gamemode 1")
+    heal()
+
+
+def cmd_smoke(args):
+    wt = worktree(args)
+    take_lock(wt, args.steal)
+    mode = "prod" if args.prod else "dev"
+    st = api_quiet("/status")
+    if not st:
+        die(NOT_RUNNING)
+    fresh = st.get("mode") != mode or not args.no_stage
+    if fresh:
+        print("staging %s mode and restarting the game..." % mode)
+        args.prod = mode == "prod"
+        restart(wt, args, stage=True)
+    s = Smoke(mode, source_of(os.path.realpath(os.path.join(SHARED, "current"))))
+    steps = [lambda: smoke_boot(s, mode, fresh)]
+    cfg_box = {}
+    if not args.boot_only:
+        steps += [lambda: smoke_screen(s, "A4-settings", "settings screen", "settings"),
+                  lambda: smoke_screen(s, "A4-hudeditor", "HUD editor", "hud"),
+                  lambda: smoke_world(s),
+                  lambda: cfg_box.setdefault("cfg", find_config(s)),
+                  lambda: smoke_hurt(s, cfg_box.get("cfg")),
+                  lambda: smoke_zoom(s, cfg_box.get("cfg")),
+                  lambda: smoke_sprint(s, cfg_box.get("cfg")),
+                  lambda: smoke_hud(s, cfg_box.get("cfg")),
+                  lambda: smoke_overlays(s, cfg_box.get("cfg")),
+                  lambda: smoke_clutch(s, cfg_box.get("cfg"))]
+    for step in steps:
+        try:
+            step()
+        except ForeignSave as e:
+            s.error(e)  # every later step edits the world: stop the run
+            break
+        except (ApiError, KeyError, TypeError, ValueError) as e:
+            if s.step is None:
+                raise
+            s.error(e)
+    s.report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    s.report["finalStatus"] = api_quiet("/status")
+    os.makedirs(REPORTS, exist_ok=True)
+    out = os.path.join(REPORTS, "smoke-%s-%s.json" % (time.strftime("%Y%m%d-%H%M%S"), mode))
+    with open(out, "w") as f:
+        json.dump(s.report, f, indent=2)
+    print("\n%-14s %s" % ("step", "status"))
+    for step in s.report["steps"]:
+        print("%-14s %s" % (step["id"], step["status"]))
+    print("report: " + out)
+    if mode == "prod" and not args.keep:
+        print("back to dev mode...")
+        args.prod = False
+        restart(wt, args, stage=True)
+    if any(step["status"] == "fail" for step in s.report["steps"]):
+        sys.exit(1)
+
+
+# -------------------------------------------------------------------------------- self-test
+
+def cmd_selftest(args):
+    """Checks that need no game: the bridge's refusal rules, image helpers, launch.cfg rewriting, jar check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = [os.path.join(HERE, "bridge", "src", "cobdev", "bridge", n) for n in ("Policy.java", "Refused.java")]
+        src.append(os.path.join(HERE, "bridge", "test", "cobdev", "bridge", "PolicyTest.java"))
+        p = subprocess.run([JAVA_HOME + "/bin/javac", "--release", "8", "-Xlint:-options", "-d", tmp] + src,
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            die("PolicyTest compile failed:\n" + p.stdout + p.stderr)
+        p = subprocess.run([JAVA_HOME + "/bin/java", "-cp", tmp, "cobdev.bridge.PolicyTest"], capture_output=True, text=True)
+        print((p.stdout + p.stderr).strip())
+        if p.returncode != 0:
+            sys.exit(1)
+    p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "test_cobdev.py")], capture_output=True, text=True)
+    print((p.stdout + p.stderr).strip())
+    if p.returncode != 0:
+        sys.exit(1)
+    print("selftest passed")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="cobdev", description=__doc__.split("\n\n")[0])
     ap.add_argument("--worktree", help="checkout to use (default: the one containing the cwd)")
@@ -545,12 +1586,14 @@ def main():
         p.set_defaults(fn=fn)
         return p
 
-    add("setup", cmd_setup, "one-time: Intel Java 8, devagent.jar, start.sh under " + SHARED)
-    add("stage", cmd_stage, "build this worktree and stage it for the next game start")
-    p = add("swap", cmd_swap, "compile and hot-swap changed classes into the running game")
+    add("setup", cmd_setup, "one-time: check JDK 25, build devagent.jar, fetch pinned mods, install start.sh")
+    p = add("stage", cmd_stage, "build this worktree's ornithe/ client and stage it for the next game start")
+    p.add_argument("--prod", action="store_true", help="the release jar in a production Fabric layout")
+    p = add("swap", cmd_swap, "compile and hot-swap changed classes into the running game (dev mode)")
     p.add_argument("--no-restart", action="store_true", help="fail instead of restarting on structural changes")
     p = add("restart", cmd_restart, "stage and restart the game (it relaunches itself)")
     p.add_argument("--no-stage", action="store_true")
+    p.add_argument("--prod", action="store_true", help="stage prod mode before restarting")
     add("status", cmd_status, "lock, staged and running code, game state")
     p = add("open", cmd_open, "open a screen: settings, hud, or a com.bedwarsqol class name")
     p.add_argument("screen")
@@ -581,7 +1624,7 @@ def main():
     p.add_argument("--char", help="character to send with the key code")
     p = add("scale", cmd_simple("/scale", "n"), "set GUI scale 0 (auto) to 4")
     p.add_argument("n", type=int)
-    p = add("size", cmd_size, "resize the game window to W x H display px")
+    p = add("size", cmd_size, "resize the game window to W x H display px (dev mode)")
     p.add_argument("w", type=int)
     p.add_argument("h", type=int)
     add("world", cmd_world, "load (or create) the flat creative world 'cobdev'")
@@ -592,6 +1635,32 @@ def main():
     p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="hover here first")
     p = add("log", cmd_log, "tail the game log")
     p.add_argument("lines", nargs="?", type=int, default=100)
+    p = add("field", cmd_field, "read or set a com.bedwarsqol field path (e.g. com.bedwarsqol.BedwarsQol.config.x)")
+    p.add_argument("path")
+    p.add_argument("value", nargs="?")
+    p = add("invoke", cmd_invoke, "call a com.bedwarsqol method with string arguments")
+    p.add_argument("path")
+    p.add_argument("args", nargs="*")
+    p = add("has", cmd_has, "is a com.bedwarsqol class (and member) in the running build?")
+    p.add_argument("cls")
+    p.add_argument("member", nargs="?")
+    p = add("command", cmd_command, "run a chat command in the singleplayer world, e.g. '/time set 6000'")
+    p.add_argument("command")
+    p = add("keyhold", cmd_keyhold, "hold or release a Cobblify key binding (no arguments: list them)")
+    p.add_argument("name", nargs="?")
+    p.add_argument("state", nargs="?")
+    p = add("probe", cmd_probe, "named singleplayer probe: fov, hurt, player, block DX DY DZ [ID],"
+                                " clutch-blast DX DY DZ, use-item [ITEM]")
+    p.add_argument("name")
+    p.add_argument("args", nargs="*")
+    p = add("smoke", cmd_smoke, "in-game smoke checks (PLAN A3-A6 + Clutch), report in ~/.cache/cobdev/smoke")
+    p.add_argument("--prod", action="store_true", help="boot the release jar in the production layout")
+    p.add_argument("--boot-only", action="store_true", help="only the A3 boot checks")
+    p.add_argument("--no-stage", action="store_true", help="use what is running if it is already this mode")
+    p.add_argument("--keep", action="store_true", help="after --prod, leave the game in prod mode")
+    add("selftest", cmd_selftest, "checks that need no game (refusal rules, helpers, jar check)")
+    p = add("jarcheck", cmd_jarcheck, "prove the release jar carries no bridge or dev runtime mods")
+    p.add_argument("jar", nargs="?")
     add("lock", cmd_lock, "claim the dev client for this worktree")
     add("unlock", cmd_unlock, "release the dev client")
 
